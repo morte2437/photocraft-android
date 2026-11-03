@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn system_title_bar_defaults_to_integrated_and_preserves_saved_choices() {
+    let default = false;
+    assert_eq!(Interface::default().system_title_bar, default);
+    for saved in [json!({}), json!({"interface": {}})] {
+        let prefs: Preferences = serde_json::from_value(saved).unwrap();
+        assert_eq!(prefs.interface.system_title_bar, default);
+    }
+    for saved in [false, true] {
+        let prefs: Preferences = serde_json::from_value(json!({"interface": {"systemTitleBar": saved}})).unwrap();
+        assert_eq!(prefs.interface.system_title_bar, saved);
+        let restored: Preferences = serde_json::from_value(prefs.to_json()).unwrap();
+        assert_eq!(restored.interface.system_title_bar, saved);
+    }
+}
+
 fn session() -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
@@ -20,6 +36,21 @@ fn defaults_match_photoshop() {
     for (id, _) in SECTIONS {
         assert!(v.get(id).is_some_and(Value::is_object), "{id}");
     }
+}
+
+#[test]
+fn intermediate_ui_scale_presets_survive_restart() {
+    let mut s = Session::new();
+    assert_eq!(s.execute("prefs.get", json!({"path": "interface.uiScale"})).unwrap(), json!("auto"));
+    for scale in ["100", "105", "110", "115", "120", "125"] {
+        s.execute("prefs.set", json!({"path": "interface.uiScale", "value": scale})).unwrap();
+        let mut restored = Session::new();
+        restored.load_prefs_json(&s.prefs_to_json()).unwrap();
+        assert_eq!(restored.execute("prefs.get", json!({"path": "interface.uiScale"})).unwrap(), json!(scale));
+    }
+    // Presets remain discrete choices: arbitrary values must not silently replace a valid scale.
+    assert!(s.execute("prefs.set", json!({"path": "interface.uiScale", "value": "112"})).is_err());
+    assert_eq!(s.execute("prefs.get", json!({"path": "interface.uiScale"})).unwrap(), json!("125"));
 }
 
 /// #2264: the Studio workspace dot pattern can be hidden without changing themes.
@@ -343,6 +374,11 @@ fn shortcuts_normalise_and_detect_conflicts() {
     assert_eq!(normalize_shortcut("Cmd++").as_deref(), Some("Cmd++"));
     assert_eq!(normalize_shortcut("Cmd+Shift"), None);
     assert_eq!(normalize_shortcut("Cmd+A+B"), None);
+    // #6827: multi-word key names keep egui's spelling (Title case made `Pageup`, matching no key).
+    assert_eq!(normalize_shortcut("shift+pageup").as_deref(), Some("Shift+PageUp"));
+    assert_eq!(normalize_shortcut("Ctrl+Alt+PAGEDOWN").as_deref(), Some("Ctrl+Alt+PageDown"));
+    assert_eq!(normalize_shortcut("Cmd+openbracket").as_deref(), Some("Cmd+OpenBracket"));
+    assert_eq!(normalize_shortcut("home").as_deref(), Some("Home"));
     let c = conflicts([("a", "Cmd+J"), ("b", "cmd+j"), ("c", "Cmd+K")]);
     assert_eq!(c, vec![("Cmd+J".to_string(), vec!["a".to_string(), "b".to_string()])]);
 }
@@ -856,6 +892,29 @@ fn shift_key_tool_switch_is_on_by_default_and_a_stored_false_is_kept() {
     assert!(!stored.use_shift_key_for_tool_switch);
 }
 
+/// #5647: a settings file from before version 2 stored the switch off only because that was the
+/// old default, so it loads with the new default (on); one saved since keeps an explicit off.
+#[test]
+fn old_settings_files_take_the_shift_key_tool_switch_default() {
+    for old in
+        [json!({"tools": {"useShiftKeyForToolSwitch": false}}), json!({"version": 1, "tools": {"useShiftKeyForToolSwitch": false, "showTooltips": false}})]
+    {
+        let mut s = Session::new();
+        s.load_prefs_json(&old.to_string()).unwrap();
+        assert!(s.prefs().tools.use_shift_key_for_tool_switch, "{old}");
+    }
+    let mut s = Session::new();
+    s.load_prefs_json(&json!({"version": 1, "tools": {"showTooltips": false}}).to_string()).unwrap();
+    assert!(!s.prefs().tools.show_tooltips, "other tool settings are kept");
+    // Chosen off and saved now: kept on the next start.
+    s.edit_prefs(|p| p.tools.use_shift_key_for_tool_switch = false);
+    let saved = s.prefs_to_json();
+    assert_eq!(serde_json::from_str::<Value>(&saved).unwrap()["version"], json!(PREFS_VERSION));
+    let mut restored = Session::new();
+    restored.load_prefs_json(&saved).unwrap();
+    assert!(!restored.prefs().tools.use_shift_key_for_tool_switch);
+}
+
 /// Shortcut exports are all or nothing (#5801): a rename that fails after the first file was
 /// moved in puts the user's files back as they were and leaves nothing staged.
 #[test]
@@ -989,4 +1048,36 @@ fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
     let deep = format!("{{\"general\": {}1{}}}", "{\"a\":".repeat(100), "}".repeat(100));
     assert!(s.load_prefs_json(&deep).is_ok());
     assert!(s.load_prefs_json(r#"{"interface": {"theme": 3, "uiScale": [1]}, "workspaces": {"x": 1}, "menus": 1}"#).is_ok());
+}
+
+/// A saved Memory Usage is kept as stored, and means the same on desktop; only the web build
+/// caps what it honours.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_history_budget_is_the_stored_memory_usage_on_native() {
+    for mb in [0u32, 1, 1536, 8192, 65536, u32::MAX] {
+        let p = Performance { memory_usage_mb: mb, ..Performance::default() };
+        assert_eq!(p.effective_memory_usage_mb(), mb);
+        assert_eq!(p.history_budget_bytes(), (mb as usize) << 20, "{mb} MB");
+    }
+    let mut s = Session::new();
+    s.load_prefs_json(r#"{"performance": {"memoryUsageMb": 8192}}"#).unwrap();
+    assert_eq!(s.prefs().performance.memory_usage_mb, 8192);
+    assert_eq!(s.prefs().performance.history_budget_bytes(), 8192 << 20);
+}
+
+/// The web build honours Memory Usage up to its cap: below and at it as stored, above it the cap.
+#[test]
+fn the_web_build_caps_memory_usage() {
+    for (stored, honoured) in [
+        (0, 0),
+        (1024, 1024),
+        (WASM_MEMORY_USAGE_CAP_MB, WASM_MEMORY_USAGE_CAP_MB),
+        (WASM_MEMORY_USAGE_CAP_MB + 1, WASM_MEMORY_USAGE_CAP_MB),
+        (8192, WASM_MEMORY_USAGE_CAP_MB),
+        (u32::MAX, WASM_MEMORY_USAGE_CAP_MB),
+    ] {
+        assert_eq!(honoured_memory_usage_mb(stored, true), honoured, "web, {stored} MB");
+        assert_eq!(honoured_memory_usage_mb(stored, false), stored, "desktop, {stored} MB");
+    }
 }

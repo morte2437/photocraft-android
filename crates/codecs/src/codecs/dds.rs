@@ -117,15 +117,29 @@ impl Encoding {
         }
     }
 
-    /// Bytes of the top mip level.
-    fn level_size(&self, width: u32, height: u32) -> Option<usize> {
-        let (w, h) = (usize::try_from(width).ok()?, usize::try_from(height).ok()?);
-        let block = match self {
-            Encoding::Masks { bytes, .. } => return w.checked_mul(*bytes)?.checked_mul(h),
-            Encoding::Bc1 => 8,
-            Encoding::Bc2 | Encoding::Bc3 => 16,
+    /// Stored row stride and byte size of the top mip level (block rows for BC).
+    fn level_layout(&self, width: u32, height: u32, pitch: Option<u32>) -> Result<(usize, usize), CodecError> {
+        let overflow = || bad("pixel data size overflow");
+        let (w, h) = (usize::try_from(width).map_err(|_| overflow())?, usize::try_from(height).map_err(|_| overflow())?);
+        let (row_bytes, rows) = match self {
+            Encoding::Masks { bytes, .. } => {
+                let packed = w.checked_mul(*bytes).ok_or_else(overflow)?;
+                let row_bytes = match pitch {
+                    Some(pitch) => usize::try_from(pitch).map_err(|_| overflow())?,
+                    None => packed,
+                };
+                if row_bytes < packed {
+                    return Err(bad(format!("row pitch {row_bytes} is smaller than the {packed}-byte pixel row")));
+                }
+                (row_bytes, h)
+            }
+            Encoding::Bc1 | Encoding::Bc2 | Encoding::Bc3 => {
+                let block = if matches!(self, Encoding::Bc1) { 8 } else { 16 };
+                (w.div_ceil(4).checked_mul(block).ok_or_else(overflow)?, h.div_ceil(4))
+            }
         };
-        w.div_ceil(4).checked_mul(h.div_ceil(4))?.checked_mul(block)
+        let size = row_bytes.checked_mul(rows).ok_or_else(overflow)?;
+        Ok((row_bytes, size))
     }
 }
 
@@ -195,19 +209,25 @@ pub(crate) fn decode(b: &[u8], limits: &Limits) -> Result<Image, CodecError> {
     let (encoding, start) = if dx10 { (dx10_encoding(b)?, HEADER + DX10_HEADER) } else { (legacy_encoding(b)?, HEADER) };
     let layout = encoding.layout();
     limits.check(width, height, layout, SampleType::U8)?;
-    let size = encoding.level_size(width, height).ok_or_else(|| bad("pixel data size overflow"))?;
+    // The same header field is a total level size for BC, but a row stride when DDSD_PITCH is set.
+    let pitch = if flags & DDSD_PITCH != 0 { Some(le32(b, 20)?) } else { None };
+    let (row_pitch, size) = encoding.level_layout(width, height, pitch)?;
     let data = b.get(start..).and_then(|d| d.get(..size)).ok_or_else(|| bad(format!("truncated pixel data: {size} bytes needed")))?;
     let (w, h) = (width as usize, height as usize);
     let channels = layout.channels();
-    let total = w.checked_mul(h).and_then(|n| n.checked_mul(channels)).ok_or_else(|| bad("pixel size overflow"))?;
+    let row_size = w.checked_mul(channels).ok_or_else(|| bad("pixel size overflow"))?;
+    let total = row_size.checked_mul(h).ok_or_else(|| bad("pixel size overflow"))?;
     let mut pixels = vec![0u8; total];
     match encoding {
         Encoding::Masks { bytes, gray, fields } => {
-            for (src, dst) in data.chunks_exact(bytes).zip(pixels.chunks_exact_mut(channels)) {
-                let pixel = src.iter().rev().fold(0u32, |v, &byte| v << 8 | u32::from(byte));
-                let channel = |i: usize| fields[i].map_or(0, |f| f.get(pixel));
-                let values = if gray { [channel(0), channel(3), 0, 0] } else { [channel(0), channel(1), channel(2), channel(3)] };
-                dst.copy_from_slice(&values[..channels]);
+            for (src_row, dst_row) in data.chunks_exact(row_pitch).zip(pixels.chunks_exact_mut(row_size)) {
+                // Stop at the output width, leaving any stored row padding unread.
+                for (src, dst) in src_row.chunks_exact(bytes).zip(dst_row.chunks_exact_mut(channels)) {
+                    let pixel = src.iter().rev().fold(0u32, |v, &byte| v << 8 | u32::from(byte));
+                    let channel = |i: usize| fields[i].map_or(0, |f| f.get(pixel));
+                    let values = if gray { [channel(0), channel(3), 0, 0] } else { [channel(0), channel(1), channel(2), channel(3)] };
+                    dst.copy_from_slice(&values[..channels]);
+                }
             }
         }
         Encoding::Bc1 | Encoding::Bc2 | Encoding::Bc3 => {

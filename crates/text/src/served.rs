@@ -40,25 +40,60 @@ pub struct ServedFont {
 pub fn parse_manifest(text: &str) -> (Vec<ServedFont>, Vec<String>) {
     let mut fonts = Vec::new();
     let mut skipped = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let f: Vec<&str> = line.split(" | ").map(str::trim).collect();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let raw_fields: Vec<&str> = trimmed.split(" | ").collect();
+        let f: Vec<&str> = raw_fields.iter().map(|s| s.trim()).collect();
+        let raw_file = raw_fields.get(2).copied().unwrap_or("");
+        let valid_file = raw_file == f.get(2).copied().unwrap_or("") && is_relative_path(raw_file);
         match f.as_slice() {
-            [family, _style, file, rest @ ..] if !family.is_empty() && is_relative_path(file) => {
+            [family, _style, file, rest @ ..] if !family.is_empty() && valid_file => {
                 let scripts = rest.first().map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()).unwrap_or_default();
                 let integrity = rest.get(3).and_then(|sha| sri(sha));
                 fonts.push(ServedFont { family: (*family).to_string(), file: (*file).to_string(), scripts, integrity });
             }
-            [_, _, file, ..] if !is_relative_path(file) => skipped.push(format!("{line}: the file must be a relative path inside the site")),
-            _ => skipped.push(format!("{line}: expected `family | style | file | …`")),
+            [_, _, _, ..] if !valid_file => skipped.push(format!("{trimmed}: the file must be a relative path inside the site")),
+            _ => skipped.push(format!("{trimmed}: expected `family | style | file | …`")),
         }
     }
     (fonts, skipped)
 }
 
 /// A relative path that stays inside the site: no scheme, no leading `/`, no `..` segment, no
-/// query or fragment.
-fn is_relative_path(p: &str) -> bool {
-    !p.is_empty() && !p.starts_with('/') && !p.contains(['\\', '?', '#', ':']) && p.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+/// query or fragment, no ASCII control characters or whitespace, and no percent-encoded control,
+/// whitespace or separator characters.
+pub fn is_relative_path(p: &str) -> bool {
+    if p.is_empty()
+        || p.starts_with('/')
+        || p.bytes().any(|b| b <= b' ' || b == 0x7f || matches!(b, b'\\' | b'?' | b'#' | b':'))
+        || !p.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+    {
+        return false;
+    }
+    let b = p.as_bytes();
+    let mut decoded = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let Some(hex) = p.get(i + 1..i + 3) else { return false };
+            let Ok(byte) = u8::from_str_radix(hex, 16) else { return false };
+            // Never allow encoded path syntax (including '%' for a second decode), ASCII
+            // separators, or controls. High bytes are allowed only as valid UTF-8 below.
+            if byte <= b' ' || byte == 0x7f || matches!(byte, b'%' | b'/' | b'\\' | b'.' | b'?' | b'#' | b':') {
+                return false;
+            }
+            decoded.push(byte);
+            i = i.saturating_add(2);
+        } else {
+            let Some(&byte) = b.get(i) else { return false };
+            decoded.push(byte);
+        }
+        i = i.saturating_add(1);
+    }
+    std::str::from_utf8(&decoded).is_ok()
 }
 
 /// The scripts a served font can be the fallback for: those the bundled fonts (Inter, which covers
@@ -251,6 +286,11 @@ pub fn request_for_languages<'a>(languages: impl IntoIterator<Item = &'a str>) {
     }
 }
 
+/// The served fallback family for the script `language` (a BCP 47 tag) is written in, if any.
+pub fn fallback_for_language(language: &str) -> Option<String> {
+    fallback_for(&state().fallbacks, language_script(language)?)
+}
+
 /// Families the host can serve, installed or not (for font menus).
 pub fn families() -> Vec<String> {
     state().families.clone()
@@ -318,8 +358,31 @@ mod tests {
         assert_eq!(skipped.len(), 9, "{skipped:?}");
     }
 
-    /// One test for the whole queue: the catalog and the queue are process-wide, and parallel
-    /// tests taking each other's requests would be flaky.
+    #[test]
+    fn rejects_encoded_path_separators_and_malformed_escapes() {
+        for path in [
+            "fonts/%2e%2e/private.ttf",
+            "fonts%2fprivate.ttf",
+            "fonts%5cprivate.ttf",
+            "fonts/%00.ttf",
+            "fonts/a%7F.ttf",
+            "fonts/%20.ttf",
+            "fonts/%zz.ttf",
+            "fonts/%2.ttf",
+            "fonts/%C0%AF.ttf",
+            "fonts/%25%32%65%25%32%65/private.ttf",
+            "fonts/%C3%28.ttf",
+        ] {
+            assert!(!is_relative_path(path), "accepted {path}");
+        }
+        for path in ["fonts/OpenSans[wdth,wght].ttf", "fonts/é.ttf", "fonts/%C3%A9.ttf"] {
+            assert!(is_relative_path(path), "rejected {path}");
+        }
+        let (fonts, skipped) = parse_manifest("A | Regular | fonts/%2e%2e/a.ttf\nB | Regular | fonts/%zz.ttf\n");
+        assert!(fonts.is_empty());
+        assert_eq!(skipped.len(), 2);
+    }
+
     #[test]
     fn requests_are_limited_to_the_catalog_and_reach_layout() {
         let served = "Served Test Sans";

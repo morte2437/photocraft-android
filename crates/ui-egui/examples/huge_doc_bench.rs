@@ -97,6 +97,7 @@ fn text(name: &str, r: Rect) -> Layer {
             size: 4.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(1.0, 1.0, 1.0)),
+            overprint: false,
         }),
     ];
     l
@@ -144,6 +145,7 @@ fn build(w: u32, h: u32) -> Document {
             size: 3.0,
             position: StrokePosition::Outside,
             paint: FxPaint::Color(Color::rgb(0.1, 0.1, 0.1)),
+            overprint: false,
         }),
     ];
     d.layers.push(band);
@@ -173,7 +175,7 @@ fn refresh(g: &GpuCanvas, rs: &RenderState, doc: &Document, damage: Option<Rect>
     let r = g.refresh(doc.id.0, doc, damage, None);
     let _ = rs.device.poll(eframe::wgpu::PollType::Wait { submission_index: None, timeout: None });
     let kind = if r.kind.starts_with("gpu") { format!("{}, {} tiles up", r.kind, r.uploads) } else { r.kind.to_string() };
-    (kind, r.fallback)
+    (kind, r.fallback.map(|f| f.to_string()))
 }
 
 fn main() {
@@ -197,7 +199,7 @@ fn main() {
         .walk()
         .iter()
         .flat_map(|(_, _, l)| l.surface().into_iter().chain(l.mask.as_ref().map(|m| &m.surface)))
-        .map(|s| s.tiles().map(|(_, t)| t.bytes().len() as u64).sum::<u64>())
+        .map(|s| s.tiles().map(|(_, t)| t.len() as u64).sum::<u64>())
         .sum();
     let ram = photocraft_ui_egui::gpu_canvas::physical_memory();
     let vram = g.video_memory();

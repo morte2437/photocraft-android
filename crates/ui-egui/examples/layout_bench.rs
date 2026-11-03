@@ -144,6 +144,25 @@ fn point_on(h: &H, id: LayerId) -> Option<[f64; 2]> {
     None
 }
 
+/// Preserve current Smart Objects and restore only legacy pixel fallbacks in the fixture.
+fn restore_layout_smart_objects(s: &mut photocraft_engine::Session) -> Result<(), photocraft_engine::EngineError> {
+    let st = s.active().ok_or(photocraft_engine::EngineError::NoDocument)?;
+    let ids: Vec<_> = st
+        .doc
+        .walk()
+        .iter()
+        .filter(|(_, _, l)| {
+            (l.name == "Logo" || (l.name.starts_with("Product ") && !l.name.contains('—') && !l.is_group())) && !matches!(&l.content, LayerContent::Smart(_))
+        })
+        .map(|(_, _, l)| l.id.0)
+        .collect();
+    for id in ids {
+        s.execute("layer.select", json!({"layer": id}))?;
+        s.execute("layer.smartObjects.convertToSmartObject", json!({"layer": id}))?;
+    }
+    Ok(())
+}
+
 fn main() {
     reexec_with_gpu_sync();
     let args: Vec<String> = std::env::args().collect();
@@ -165,14 +184,13 @@ fn main() {
         let t = Instant::now();
         let r = photocraft_io::import("layout.psd", &psd).expect("psd import");
         println!("PSD: {:.1} MB, save {t_save:.0} ms, open {:.0} ms ({} warnings)", psd.len() as f64 / 1e6, ms(t), r.warnings.len());
-        // PSD export writes engine-made smart objects as pixels (no SoLd yet): convert them back,
-        // as a Photoshop-made file would have them.
+        // Current PSDs preserve Smart Objects. Restore only raster fallbacks from older
+        // writers, selecting each target before the command checks its enabled state.
         let mut s = photocraft_engine::Session::new();
         s.open_document(r.document, None);
-        let smart = |l: &photocraft_doc::Layer| l.name == "Logo" || (l.name.starts_with("Product ") && !l.name.contains('—') && !l.is_group());
-        let ids: Vec<u64> = s.active().map(|st| st.doc.walk().iter().filter(|(_, _, l)| smart(l)).map(|(_, _, l)| l.id.0).collect()).unwrap_or_default();
-        for id in ids {
-            s.execute("layer.smartObjects.convertToSmartObject", json!({"layer": id})).expect("convert");
+        if let Err(error) = restore_layout_smart_objects(&mut s) {
+            eprintln!("cannot prepare layout benchmark: {error}");
+            std::process::exit(1);
         }
         (*s.active().expect("doc").doc).clone()
     };
@@ -469,4 +487,39 @@ fn reexec_with_gpu_sync() {
     let exe = std::env::current_exe().expect("exe");
     let status = std::process::Command::new(exe).args(std::env::args().skip(1)).env("PHOTOCRAFT_GPU_SYNC", "1").status().expect("re-exec");
     std::process::exit(status.code().unwrap_or(1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_keeps_native_smart_objects_and_converts_legacy_pixels_once() {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 4, "height": 3, "background": "white"})).unwrap();
+        s.execute("layer.new.layer", json!({"name": "Logo"})).unwrap();
+        s.execute("edit.fill", json!({"contents": "color", "color": "#204060"})).unwrap();
+        s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        let native = s.active().unwrap().active_layer.unwrap();
+        let before = s.active().unwrap().doc.layer(native).unwrap().content.clone();
+        s.execute("layer.new.layer", json!({"name": "Product 1"})).unwrap();
+        s.execute("edit.fill", json!({"contents": "color", "color": "#406020"})).unwrap();
+        s.execute("layer.new.layer", json!({"name": "Tile 1"})).unwrap();
+        let tile = s.active().unwrap().active_layer.unwrap();
+        s.execute("layer.select", json!({"layer": native.0})).unwrap();
+        let history = s.active().unwrap().history.past_len();
+        restore_layout_smart_objects(&mut s).expect("mixed current and legacy fixture prepares without re-converting a Smart Object");
+        let st = s.active().unwrap();
+        assert_eq!(st.doc.layer(native).unwrap().content, before);
+        assert!(matches!(&st.doc.layer(tile).unwrap().content, LayerContent::Raster(_)));
+        assert!(st.doc.walk().iter().any(|(_, _, l)| l.name == "Product 1" && matches!(&l.content, LayerContent::Smart(_))));
+        assert_eq!(st.history.past_len(), history + 1);
+        restore_layout_smart_objects(&mut s).unwrap();
+        assert_eq!(s.active().unwrap().history.past_len(), history + 1, "preparation is idempotent");
+    }
+
+    #[test]
+    fn restore_without_a_document_returns_an_error() {
+        assert!(matches!(restore_layout_smart_objects(&mut photocraft_engine::Session::new()), Err(photocraft_engine::EngineError::NoDocument)));
+    }
 }

@@ -87,9 +87,9 @@ pub fn read_style_sheets(tysh: &[u8], dpi: f32) -> Option<PsdStyleSheets> {
     let normal_p = res.get("TheNormalParagraphSheet").and_then(E::as_i64).and_then(sheet_index).unwrap_or(0);
     let empty = E::dict();
     let base_data = sset.get(normal_c).and_then(|s| s.get("StyleSheetData"));
-    let normal_char = char_style(None, base_data.unwrap_or(&empty), &fonts, k);
+    let normal_char = char_style(&[], base_data.unwrap_or(&empty), &fonts, k);
     let base_props = pset.get(normal_p).and_then(|s| s.get("Properties"));
-    let normal_para = para_style(None, base_props.unwrap_or(&empty), k);
+    let normal_para = para_style(&[], base_props.unwrap_or(&empty), k);
     let mut out = PsdStyleSheets { normal_char, normal_para, ..Default::default() };
     for (i, s) in sset.iter().enumerate() {
         if i == normal_c {
@@ -97,7 +97,7 @@ pub fn read_style_sheets(tysh: &[u8], dpi: f32) -> Option<PsdStyleSheets> {
         }
         let name = s.get("Name").and_then(E::as_str).unwrap_or("").to_string();
         let data = s.get("StyleSheetData").unwrap_or(&empty);
-        out.char_sheets.push((i, name, char_style(base_data, data, &fonts, k)));
+        out.char_sheets.push((i, name, char_style(&[base_data], data, &fonts, k)));
     }
     for (i, s) in pset.iter().enumerate() {
         if i == normal_p {
@@ -106,8 +106,8 @@ pub fn read_style_sheets(tysh: &[u8], dpi: f32) -> Option<PsdStyleSheets> {
         let name = s.get("Name").and_then(E::as_str).unwrap_or("").to_string();
         let props = s.get("Properties").unwrap_or(&empty);
         let dss = s.get("DefaultStyleSheet").and_then(E::as_i64).and_then(sheet_index).filter(|i| *i != normal_c);
-        let cs = dss.and_then(|d| sset.get(d)).map(|d| char_style(base_data, d.get("StyleSheetData").unwrap_or(&empty), &fonts, k));
-        out.para_sheets.push((i, name, para_style(base_props, props, k), cs));
+        let cs = dss.and_then(|d| sset.get(d)).map(|d| char_style(&[base_data], d.get("StyleSheetData").unwrap_or(&empty), &fonts, k));
+        out.para_sheets.push((i, name, para_style(&[base_props], props, k), cs));
     }
     let snames = names(res.get("StyleSheetSet"));
     let pnames = names(res.get("ParagraphSheetSet"));

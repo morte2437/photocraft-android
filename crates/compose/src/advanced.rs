@@ -12,7 +12,9 @@
 //!   composites onto the result in its own mode, kept inside the base's shape (its alpha with
 //!   masks, times its opacity).
 //! - **Transparency Shapes Layer off.** The layer's effects and knockout cover the whole layer
-//!   (its masks still apply) instead of following its transparency.
+//!   (its masks still apply) instead of following its transparency. In the special eight
+//!   ([`crate::psblend::fill_is_special`]) the layer's own transparency then blends as Fill does
+//!   (`blend_layer_into` in `composite.rs`; measured in Photoshop, #5692).
 //! - **Layer / Vector Mask Hides Effects.** The effects are built from the layer without that
 //!   mask, and the mask is applied to the finished layer and effects.
 //!
@@ -30,6 +32,7 @@ use std::borrow::Cow;
 use photocraft_doc::{Knockout, Layer, LayerContent};
 use photocraft_geom::Rect;
 
+use crate::extents::recycle_mask;
 use crate::{Buffer, Ctx, composite_atop, composite_layer, effects, mask_vals, render_content};
 
 /// Where a layer stack sits, for knockouts: at the document's top level, and/or inside an
@@ -75,7 +78,13 @@ pub fn advanced_active(layer: &Layer, clipped: &[Layer]) -> bool {
         return false;
     }
     let fx = effects::has_effects(layer);
-    a.knockout != Knockout::None || clips_individually(layer, clipped) || (a.blend_interior && fx) || (!a.transparency_shapes && fx) || hides_effects(layer)
+    // Transparency Shapes Layer off changes the special eight's blend itself (#5692).
+    let shapeless_blend = crate::psblend::fill_is_special(layer.blend) && !matches!(layer.content, LayerContent::Adjustment(_));
+    a.knockout != Knockout::None
+        || clips_individually(layer, clipped)
+        || (a.blend_interior && fx)
+        || (!a.transparency_shapes && (fx || shapeless_blend))
+        || hides_effects(layer)
 }
 
 /// Whether the layer's effects (or knockout) cover the whole layer: Transparency Shapes Layer
@@ -149,6 +158,7 @@ pub(crate) fn knockout(layer: &Layer, backdrop: &mut Buffer, target: &Buffer, cl
     if target.rect != backdrop.rect || shape.len() != backdrop.px.len() {
         // Never reached (targets are built over the backdrop's rect); compositing without the
         // knockout beats a wrong pixel or a panic.
+        recycle_mask(Some(shape));
         draw(backdrop);
         return;
     }
@@ -164,7 +174,10 @@ pub(crate) fn knockout(layer: &Layer, backdrop: &mut Buffer, target: &Buffer, cl
     }
     let knocked = (layer.opacity < 1.0).then(|| backdrop.clone());
     draw(backdrop);
-    let Some(knocked) = knocked else { return };
+    let Some(knocked) = knocked else {
+        recycle_mask(Some(shape));
+        return;
+    };
     let rest = 1.0 - layer.opacity.clamp(0.0, 1.0);
     for (((p, b), k), s) in backdrop.px.iter_mut().zip(&before.px).zip(&knocked.px).zip(&shape) {
         if *s <= 0.0 {
@@ -178,6 +191,7 @@ pub(crate) fn knockout(layer: &Layer, backdrop: &mut Buffer, target: &Buffer, cl
         let a = pm[3].clamp(0.0, 1.0);
         *p = if a > 0.0 { [(pm[0] / a).clamp(0.0, 1.0), (pm[1] / a).clamp(0.0, 1.0), (pm[2] / a).clamp(0.0, 1.0), a] } else { [0.0; 4] };
     }
+    recycle_mask(Some(shape));
 }
 
 /// Composite a clipping group's clipped layers atop `base` (the base's isolated content, Blend
@@ -212,7 +226,12 @@ pub(crate) fn composite_clipped_individually(layer: &Layer, clipped: &[Layer], b
     let op = layer.opacity.clamp(0.0, 1.0);
     let clip: Vec<f32> = match render_content(layer, rect, cx) {
         Some(b) => b.px.iter().map(|p| p[3] * op).collect(),
-        None => mask_vals(layer, rect, cx).unwrap_or_else(|| vec![1.0; n]).iter().map(|m| m * op).collect(),
+        None => {
+            let mv = mask_vals(layer, rect, cx);
+            let clip = mv.as_ref().map_or_else(|| vec![op; n], |m| m.iter().map(|m| m * op).collect());
+            recycle_mask(mv);
+            clip
+        }
     };
     if clip.len() != n {
         return;

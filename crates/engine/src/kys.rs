@@ -49,6 +49,18 @@ pub struct KysSet {
     pub windows: bool,
 }
 
+/// The set name in the root `filename` attribute (`$$$/.../{name}={name}`). The name may itself
+/// contain `/` or `=`, so split on the key prefix and the doubled name, not on the last separator.
+fn filename_to_name(f: &str) -> &str {
+    let Some(rest) = f.strip_prefix("$$$/") else { return f.rsplit(['=', '/']).next().unwrap_or(f).trim() };
+    let rest = rest.strip_prefix("FileName/Presets/KeyboardCustomization/").unwrap_or(rest);
+    let mid = rest.len() / 2;
+    if rest.len() % 2 == 1 && rest.is_char_boundary(mid) && rest.as_bytes()[mid] == b'=' && rest[..mid] == rest[mid + 1..] {
+        return rest[..mid].trim();
+    }
+    rest.split_once('=').map_or(rest, |(_, n)| n).trim()
+}
+
 /// Parse a `.kys` file (or Photoshop's live `Keyboard Shortcuts.psp`, the same XML). Rows
 /// without a name or a shortcut are skipped.
 pub fn parse(text: &str) -> Result<KysSet, String> {
@@ -56,12 +68,12 @@ pub fn parse(text: &str) -> Result<KysSet, String> {
         return Err("not a keyboard shortcut set (.kys): larger than 4 MiB".into());
     }
     let text = text.trim_start_matches('\u{feff}');
-    let doc = roxmltree::Document::parse(text).map_err(|e| format!("not a keyboard shortcut set (.kys): {e}"))?;
+    let doc = photocraft_io::xml::parse(text, roxmltree::ParsingOptions::default()).map_err(|e| format!("not a keyboard shortcut set (.kys): {e}"))?;
     let root = doc.root_element();
     if root.tag_name().name() != "photoshop-keyboard-shortcuts" {
         return Err("not a keyboard shortcut set (.kys): no <photoshop-keyboard-shortcuts> root".into());
     }
-    let name = root.attribute("filename").map(|f| f.rsplit(['=', '/']).next().unwrap_or(f).trim()).filter(|n| !n.is_empty()).map(str::to_string);
+    let name = root.attribute("filename").map(filename_to_name).filter(|n| !n.is_empty()).map(str::to_string);
     let mut set = KysSet { name, ..Default::default() };
     for node in root.children().filter(|n| n.is_element()) {
         match node.tag_name().name() {
@@ -119,6 +131,7 @@ pub fn to_ours(set: &KysSet, sc: &str) -> Option<String> {
     }
     let (mods, key) = match sc.strip_suffix("++") {
         Some(m) => (m, "+"),
+        None if sc == "+" => ("", "+"),
         None => sc.rsplit_once('+').unwrap_or(("", sc)),
     };
     let mods: Vec<&str> = mods
@@ -262,6 +275,7 @@ pub fn photoshop_key(sc: &str) -> Option<String> {
     // The key is the last part; `Cmd++` ends in an empty part, so take it from the string.
     let (mods, key) = match n.strip_suffix("++") {
         Some(m) => (m, "+"),
+        None if n == "+" => ("", "+"),
         None => n.rsplit_once('+').unwrap_or(("", n.as_str())),
     };
     let has = |m: &str| mods.split('+').any(|x| x == m);
@@ -309,6 +323,13 @@ pub fn write(name: &str, entries: &[Entry]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn set_name_with_separators_round_trips() {
+        for n in ["Retouch 1/2", "a=b", "x/y=z"] {
+            assert_eq!(parse(&write(n, &[])).unwrap().name.as_deref(), Some(n));
+        }
+    }
+
     const SET: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <photoshop-keyboard-shortcuts version=\"4\" filename=\"$$$/FileName/Presets/KeyboardCustomization/texcuts=texcuts\">
 \t<command kind=\"static\" name=\"Levels...\" id=\"1801\"><shortcut>Cmd+L</shortcut></command>
@@ -321,6 +342,28 @@ mod tests {
 
     fn c(id: &str, label: &str, default: Option<&str>) -> Candidate {
         Candidate { id: id.into(), label: label.into(), default: default.map(str::to_string) }
+    }
+
+    #[test]
+    fn a_bare_plus_key_is_kept_when_saving() {
+        assert_eq!(photoshop_key("+").as_deref(), Some("+"));
+        assert_eq!(photoshop_key("Cmd++").as_deref(), Some("Cmd++"));
+        let e = Entry { id: "tools.zoom".into(), label: "Zoom Tool".into(), tool: true, keys: vec!["+".into()] };
+        assert!(write("Mine", &[e]).contains(">+</tool>"));
+    }
+
+    #[test]
+    fn a_bare_plus_command_survives_a_windows_set_with_a_ctrl_row() {
+        let xml = "<photoshop-keyboard-shortcuts>\
+            <command name=\"Copy\"><shortcut>Ctrl+C</shortcut></command>\
+            <command name=\"Zoom In\"><shortcut>+</shortcut></command>\
+            </photoshop-keyboard-shortcuts>";
+        let set = parse(xml).unwrap();
+        assert!(set.windows);
+        assert_eq!(to_ours(&set, "+").as_deref(), Some("+"));
+        let p = plan([c("edit.copy", "Copy", Some("Cmd+C")), c("view.zoomIn", "Zoom In", None)], &set);
+        assert_eq!(p.set.get("view.zoomIn").map(String::as_str), Some("+"));
+        assert!(p.unreadable.is_empty());
     }
 
     #[test]
@@ -340,6 +383,15 @@ mod tests {
         // #3665: the row's second key is kept as the command's alternate, not dropped.
         assert_eq!(p.alternate_keys.get("edit.undo"), Some(&vec!["F1".to_string()]));
         assert_eq!(p.alternate_keys.get("image.levels"), Some(&Vec::new()));
+    }
+
+    /// A set nested 20 000 deep overflowed the XML parser's recursion (an abort nothing can
+    /// catch); it is an error now. The small stack makes a regression abort instead of passing.
+    #[test]
+    fn deeply_nested_sets_are_an_error_not_a_stack_overflow() {
+        let xml = format!("<photoshop-keyboard-shortcuts>{}{}</photoshop-keyboard-shortcuts>", "<a>".repeat(20_000), "</a>".repeat(20_000));
+        let e = std::thread::Builder::new().stack_size(512 * 1024).spawn(move || parse(&xml).err()).unwrap().join().unwrap();
+        assert!(e.as_deref().is_some_and(|m| m.contains("nested")), "{e:?}");
     }
 
     #[test]

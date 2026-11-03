@@ -22,6 +22,8 @@
 //! (strings longer than one card on `CONTINUE` cards).
 //! Tile-compressed files (fpack `ZIMAGE` tables) are recognised and refused.
 
+use std::collections::HashMap;
+
 use crate::Format;
 use crate::error::CodecError;
 use crate::fidelity::Plan;
@@ -106,13 +108,19 @@ fn parse_card(raw: &[u8]) -> Card {
 
 struct Header {
     cards: Vec<Card>,
+    /// First-occurrence index of each non-HIERARCH keyword, so `get` is O(1). The card
+    /// count and the number of looked-up keywords (NAXIS1..NAXISn) are both file-controlled,
+    /// so a linear scan per lookup lets a crafted header multiply commentary cards by axis
+    /// count into quadratic work.
+    index: HashMap<String, usize>,
     /// Offset of the data unit.
     data_start: usize,
 }
 
 impl Header {
     fn get(&self, key: &str) -> Option<&Value> {
-        self.cards.iter().find(|c| !c.hierarch && c.key == key).and_then(|c| c.value.as_ref())
+        let c = &self.cards[*self.index.get(key)?];
+        c.value.as_ref()
     }
 
     fn int(&self, key: &str) -> Option<i64> {
@@ -167,7 +175,15 @@ fn parse_header(b: &[u8], start: usize) -> Result<Header, CodecError> {
         cards.push(card);
     }
     let data_start = pos.div_ceil(BLOCK).checked_mul(BLOCK).ok_or_else(|| err("header too long"))?;
-    Ok(Header { cards, data_start })
+    // Index each non-HIERARCH keyword to its first occurrence, matching the previous
+    // `find(|c| !c.hierarch && c.key == key)` lookup while making `get` O(1).
+    let mut index = HashMap::with_capacity(cards.len());
+    for (i, c) in cards.iter().enumerate() {
+        if !c.hierarch {
+            index.entry(c.key.clone()).or_insert(i);
+        }
+    }
+    Ok(Header { cards, index, data_start })
 }
 
 /// The axis lengths (`NAXIS1`, `NAXIS2`, …).

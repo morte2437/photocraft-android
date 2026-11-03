@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use photocraft_raw::{Demosaic, DevelopOptions, decode, develop_sensor, dump_structure, embedded_preview, identify};
+use photocraft_raw::{Demosaic, DevelopOptions, decode, develop_sensor, dump_structure, embedded_preview, embedded_preview_color_space, identify};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -76,7 +76,13 @@ fn main() {
             println!("{}", dump_structure(&bytes));
         }
         if let Some(p) = embedded_preview(&bytes) {
-            println!("   preview: {}x{} JPEG, {} bytes", p.width, p.height, p.jpeg.len());
+            println!(
+                "   preview: {}x{} JPEG, {} bytes, colour space stated by the file: {:?}",
+                p.width,
+                p.height,
+                p.jpeg.len(),
+                embedded_preview_color_space(&bytes)
+            );
             if let Some(dir) = png.as_ref().filter(|d| std::path::Path::new(d).is_dir()) {
                 let stem = std::path::Path::new(&f).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                 let _ = std::fs::write(format!("{dir}/{stem}.preview.jpg"), p.jpeg);

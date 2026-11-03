@@ -11,6 +11,10 @@ pub enum Value {
     Dict(Vec<(String, Value)>),
     Array(Vec<Value>),
     String(String),
+    /// A string the file stored as plain bytes, without the `FE FF` mark (one char per byte).
+    /// Kept apart from [`Value::String`] so it is written back as the same bytes: Photoshop
+    /// rejects a `Txt2` whose raw strings come back as UTF-16 (#9091).
+    RawString(String),
     Int(i64),
     Real(f64),
     Bool(bool),
@@ -67,7 +71,7 @@ impl Value {
     }
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Value::String(s) | Value::Name(s) => Some(s),
+            Value::String(s) | Value::RawString(s) | Value::Name(s) => Some(s),
             _ => None,
         }
     }
@@ -173,7 +177,7 @@ impl Parser<'_> {
                         }
                     }
                 }
-                Ok(Value::String(decode_string(&raw)))
+                Ok(decode_string(&raw))
             }
             Some(b'/') => Ok(Value::Name(self.name())),
             Some(_) => {
@@ -205,12 +209,12 @@ impl Parser<'_> {
     }
 }
 
-fn decode_string(raw: &[u8]) -> String {
+fn decode_string(raw: &[u8]) -> Value {
     if raw.len() >= 2 && raw[0] == 0xFE && raw[1] == 0xFF {
         let u: Vec<u16> = raw[2..].as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
-        String::from_utf16_lossy(&u)
+        Value::String(String::from_utf16_lossy(&u))
     } else {
-        raw.iter().map(|&c| c as char).collect()
+        Value::RawString(raw.iter().map(|&c| c as char).collect())
     }
 }
 
@@ -293,7 +297,18 @@ fn write_value(v: &Value, depth: usize, out: &mut Vec<u8>) {
             }
             out.extend_from_slice(b" ]");
         }
-        Value::String(s) => {
+        Value::RawString(s) if s.chars().all(|c| u32::from(c) <= 0xFF) => {
+            out.push(b'(');
+            for c in s.chars() {
+                let c = u32::from(c) as u8;
+                if matches!(c, b'(' | b')' | b'\\') {
+                    out.push(b'\\');
+                }
+                out.push(c);
+            }
+            out.push(b')');
+        }
+        Value::String(s) | Value::RawString(s) => {
             out.push(b'(');
             let mut raw = vec![0xFE, 0xFF];
             for u in s.encode_utf16() {
@@ -342,6 +357,9 @@ fn format_real(r: f64) -> String {
     if matches!(s.as_str(), "0." | "-0.") {
         return "0.0".into();
     }
+    if s.ends_with('.') {
+        s.push('0');
+    }
     if let Some(rest) = s.strip_prefix("0.") {
         s = format!(".{rest}");
     } else if let Some(rest) = s.strip_prefix("-0.") {
@@ -357,6 +375,18 @@ mod tests {
     const SAMPLE: &[u8] = b"\n\n<<\n\t/EngineDict\n\t<<\n\t\t/Editor\n\t\t<<\n\t\t\t/Text (\xFE\xFF\x00H\x00i\x00\\)\x00\r)\n\t\t>>\n\t\t/Nums [ 1.0 .5 -2 0 ]\n\t\t/Flag true\n\t\t/Kind /Roman\n\t\t/Runs [\n\t\t<<\n\t\t\t/A 1\n\t\t>>\n\t\t]\n\t>>\n>>";
 
     #[test]
+    fn format_real_never_ends_with_bare_dot() {
+        assert_eq!(format_real(5.000001), "5.0");
+        assert_eq!(format_real(12.000004), "12.0");
+        assert_eq!(format_real(-5.000001), "-5.0");
+        assert_eq!(format_real(1e20), "100000000000000000000.0");
+        assert_eq!(format_real(0.5), ".5");
+        assert_eq!(format_real(-0.25), "-.25");
+        assert_eq!(format_real(1e-9), "0.0");
+        assert_eq!(format_real(3.0), "3.0");
+    }
+
+    #[test]
     fn parses_sample() {
         let v = parse(SAMPLE).unwrap();
         assert_eq!(v.path(&["EngineDict", "Editor", "Text"]).and_then(Value::as_str), Some("Hi)\r"));
@@ -365,6 +395,17 @@ mod tests {
         assert_eq!(v.path(&["EngineDict", "Flag"]).and_then(Value::as_bool), Some(true));
         assert_eq!(v.path(&["EngineDict", "Kind"]), Some(&Value::Name("Roman".into())));
         assert_eq!(v.path(&["EngineDict", "Runs"]).unwrap().as_array().unwrap()[0].get("A").and_then(Value::as_i64), Some(1));
+    }
+
+    #[test]
+    fn raw_strings_are_written_back_as_the_same_bytes() {
+        let v = parse(b"<< /2 (0100\\)) /3 (\xFE\xFF\x00h) >>").unwrap();
+        assert_eq!(v.get("2"), Some(&Value::RawString("0100)".into())));
+        assert_eq!(v.get("2").and_then(Value::as_str), Some("0100)"));
+        assert_eq!(v.get("3"), Some(&Value::String("h".into())));
+        let bytes = write(&v);
+        assert!(bytes.windows(8).any(|w| w == b"(0100\\))"), "{:?}", String::from_utf8_lossy(&bytes));
+        assert_eq!(parse(&bytes).unwrap(), v);
     }
 
     #[test]

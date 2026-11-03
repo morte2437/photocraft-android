@@ -29,9 +29,9 @@ note = "paint.patch (retouch_cmds/patch.rs, source/destination) + Tool::Patch (J
 [[item]]
 id = "TOOL-213-4"
 target = "Content-Aware Move tool reusing inpaint completion"
-status = "partial"
+status = "done"
 issue = 213
-note = "paint.contentAwareMove (retouch_cmds/content_aware_move.rs: move/extend, Structure 1-7, Color 0-10, Sample All Layers, Transform On Drop's scaleX/scaleY/rotate; background job) + Tool::ContentAwareMove (J group: lasso, then drag; Transform On Drop puts a scale/rotate box on the dropped patch, cam_transform.rs: Enter commits as one step, Esc cancels). cam_preview.rs: once the pointer or the box rests, the result shows (a cancellable background job on a smaller sampling window, small selections only, #4385). Missing: a progressive preview for big selections"
+note = "paint.contentAwareMove (retouch_cmds/content_aware_move.rs: move/extend, Structure 1-7, Color 0-10, Sample All Layers, Transform On Drop's scaleX/scaleY/rotate; background job) + Tool::ContentAwareMove (J group: lasso, then drag; Transform On Drop puts a scale/rotate box on the dropped patch, cam_transform.rs: Enter commits as one step, Esc cancels). cam_preview.rs: once the pointer or the box rests, the result shows (a cancellable background job on a smaller sampling window, #4385); a selection over 256x256 shows a coarse result solved scaled down first, then the command's exact result as a second job (#6680; 24 MP document, release: 600x400 coarse 0.26 s then exact 0.8 s, 1500x1000 0.38 s then 4.1 s, 3000x2000 0.69 s then 9.4 s; was no preview above 256x256). Tests: content_aware_move_previews_large_selections_coarse_then_exact_at_all_depths, content_aware_move_coarse_preview_handles_transform_extend_and_limits, a_preview_within_the_full_resolution_budget_is_the_plain_solve_bit_for_bit, a_large_selection_shows_a_coarse_result_then_the_exact_one"
 
 [[item]]
 id = "TOOL-213-5"
@@ -52,7 +52,7 @@ id = "TOOL-213-7"
 target = "Live stroke preview for every brush-based retouch tool"
 status = "partial"
 issue = 213
-note = "Live (canvas.rs strokes_live): Brush, Pencil, Eraser, Blur, Sharpen, Smudge, Dodge, Burn, Sponge, Clone Stamp, Healing Brush, History Brush (#1026, #1040); the release commits the live stroke's pixels (P32). Not yet live: Spot Healing Brush, Mixer Brush, Background Eraser, Pattern Stamp"
+note = "Live (canvas.rs strokes_live): Brush, Pencil, Mixer Brush, Eraser, Color Replacement, Blur, Sharpen, Smudge, Dodge, Burn, Sponge, Clone Stamp, Healing Brush, History Brush (#1026, #1040), Pattern Stamp (aligned and Impressionist) and Background Eraser (#3754); the release commits the live stroke's pixels (P32) or, for the retouch tools, the same pixels the live stroke showed (tested equal at 8 and 16 bits). Spot Healing Brush shows the area it heals as a dark overlay and heals on release, as Photoshop does. Mixer Brush uses its incremental transaction and commits the displayed result (#3627)"
 
 [[item]]
 id = "TOOL-213-8"
@@ -115,7 +115,7 @@ id = "TOOL-214-1"
 target = "Select and Mask workspace: view modes, Refine Edge brush, 6 outputs"
 status = "partial"
 issue = 214
-note = "select.refineEdge dialog with a live preview in Photoshop's view modes: Onion Skin, Marching Ants, Overlay, On Black, On White, Black & White, On Layers, per-view Opacity, Show Edge (J), Show Original (P), F cycles, X shows the image (select_mask_view.rs, #1754); Refine Edge Brush (R, size, Expand Detection Area / Restore Original Edge, Alt swaps) paints select.refineEdge refineStrokes, estimated by colour-line matting (matting/brush.rs, #2972); outputs Selection, Layer Mask, New Layer, New Layer with Mask, New Document, New Document with Mask (#2998); no workspace layout"
+note = "Photoshop's full-window Select and Mask workspace (select_mask_ui.rs, #7069, #8148); OK applies select.refineEdge. Live preview in Photoshop's view modes: Onion Skin, Marching Ants, Overlay, On Black, On White, Black & White, On Layers, per-view Opacity, Show Edge (J), Show Original (P), F cycles, X shows the image (select_mask_view.rs, #1754); Refine Edge Brush (R, size, Expand Detection Area / Restore Original Edge, Alt swaps) paints select.refineEdge refineStrokes, estimated by colour-line matting (matting/brush.rs, #2972); outputs Selection, Layer Mask, New Layer, New Layer with Mask, New Document, New Document with Mask (#2998); the workspace has the options bar, tools Quick Selection W, Refine Edge Brush R, Brush B, Object Selection W, Lasso and Polygonal Lasso L, Hand H, Zoom Z, Properties with Remember Settings, View Mode (Real-Time Refinement, High Quality Preview, Overlay colour and Indicates), Refine Mode, Edge Detection, Global Refinements with Clear Selection and Invert, Output Settings; the tools run as select.refineEdge edits; Ctrl+Z per edit; no Refine Hair (#2671), Object Aware (#2788) or Presets"
 
 [[item]]
 id = "TOOL-214-2"
@@ -136,7 +136,7 @@ id = "TOOL-214-4"
 target = "Move tool: box-select layers, Auto-Select hover outline, double-click fit, drag to a tab"
 status = "partial"
 issue = 214
-note = "Auto-Select hover outline (Preferences › Tools › Show Highlight on Rollover, #2834) and box-select layers from an empty spot (move_box.rs, layer.selectInRect, #2844) done; double-click fit and drag to a tab open"
+note = "Auto-Select hover outline (Preferences › Tools › Show Highlight on Rollover, #2834) and box-select layers from an empty spot (move_box.rs:59, layer.selectInRect, #2844) done; dragging layers with the Move tool (or from the Layers panel) onto another document's tab copies them there (layer_transfer.rs:162, layer.copyToDocument, #589/#851); double-click fit and dragging a selection's pixels to another document open"
 
 [[item]]
 id = "TOOL-214-5"
@@ -190,23 +190,23 @@ note = "path.stroke tool: Brush, Pencil, Eraser and every other brush-based tool
 [[item]]
 id = "TOOL-214-12"
 target = "Shapes: on-canvas corner radius handles, shape feather, selection to shape with tolerance"
-status = "partial"
+status = "done"
 issue = 214
-note = "On-canvas corner radius widgets on every selected live rectangle with Path Selection, the Rectangle tool and Move + Show Transform Controls: drag rounds every corner of every selected rectangle alike, Alt that corner on each, corner radius cursor and R: readout, one history step (corner_radius.rs, 2026-10-13); select.convertToShape with tolerance (vector_cmds.rs:1256). Missing: shape feather"
+note = "On-canvas corner radius widgets on every selected live rectangle, triangle, polygon and star (LiveShape::Polygon corner_radius, shape.create/edit cornerRadius, vector shapes::round_corners) with Path Selection, the Rectangle/Triangle/Polygon tools and Move + Show Transform Controls: drag rounds every corner of every selected shape alike, Alt one corner of a rectangle, corner radius cursor and R: readout, one history step (corner_radius.rs, 2026-10-13); select.convertToShape with tolerance (vector_cmds.rs:1256); shape Density and Feather (Properties, layer.vectorMask.edit on a shape layer; the path as the fill's soft vector mask, Photoshop's 10 px feather ramp within 1 level; PSD mask parameters and .pcraft, #5846, 2026-10-15)"
 
 [[item]]
 id = "TOOL-214-13"
 target = "Mask Properties: Density and Feather controls"
-status = "partial"
+status = "done"
 issue = 214
-note = "Vector-mask density/feather in the engine (vector_cmds.rs:948); no UI controls"
+note = "Properties panel shows Density (%) and Feather (px) sliders for a targeted pixel mask (layer.layerMask.edit) and a targeted vector mask (layer.vectorMask.edit), non-destructive and one undo step per drag, with Photoshop's Refine row (mask_props_ui.rs:34 pixel mask, :48 vector mask, :52 the sliders; mask_props_ui_tests.rs:39 pixel_mask_properties_follow_target_for_raster_and_adjustment_in_both_themes, :81 mask_slider_drags_preview_live_and_undo_as_separate_gestures, :147 vector_mask_properties_edit_density_and_feather)"
 
 [[item]]
 id = "TOOL-214-14"
 target = "Vanishing Point window: draw and edit planes, paste, clone in perspective"
 status = "partial"
 issue = 214
-note = "filter.vanishingPoint (vp_cmds.rs:15); on-canvas plane editor (vp_ui.rs: Create/Edit Plane, edge nodes, valid/doubtful/invalid grid colours, Grid Size, clipboard pasted onto the plane on OK); clone stamp, marquee and tear-off planes in the window still missing"
+note = "filter.vanishingPoint (vp_cmds.rs:15); on-canvas window (vp_ui.rs: Create/Edit Plane, edge nodes, Ctrl/Cmd-drag tear-off planes with depth and Alt-drag angle, valid/doubtful/invalid grid colours, Grid Size, clipboard pasted onto the plane, Stamp tool cloning in perspective with live preview, all applied on OK as one step); the window's Marquee tool and the Stamp's Heal modes are still missing"
 
 [[item]]
 id = "TOOL-214-15"
@@ -290,7 +290,7 @@ id = "TOOL-1053-1"
 target = "Shape stroke controls: solid/dashed/dotted, custom dash/gap/offset, caps, joins, alignment, miter limit and opacity"
 status = "done"
 issue = 1053
-note = "shape_stroke_ui.rs: shared staged editor, renderer samples, cached Properties canvas preview; existing shape.create/edit/info; serde tool defaults, ui.set shapeStroke; pcraft and vstk style round trips. Gradient fill UI and saved stroke libraries remain open; Line retains filled-bar geometry"
+note = "shape_stroke_ui.rs: shared staged editor, renderer samples, cached Properties canvas preview; existing shape.create/edit/info; serde tool defaults, ui.set shapeStroke; pcraft and vstk style round trips. vector_ui.rs: the Fill and Stroke swatches (options bar and Properties) have a Gradient tab (shape_gradient_ui.rs: Recent row, presets, an editable stops strip with the selected stop's colour/opacity/location, style, angle, scale, reverse, Align with layer) for the next shape and the selected one. Pattern paint UI and saved stroke libraries remain open; Line retains filled-bar geometry"
 
 [[item]]
 id = "TOOL-213-19"
@@ -312,3 +312,10 @@ target = "Color Replacement tool on the toolbar"
 status = "done"
 issue = 1045
 note = "Tool::ColorReplacement in the Brush (B) flyout after the Mixer Brush; Mode/Sampling/Limits/Tolerance/Anti-alias options drive paint.colorReplacement with the foreground colour; live preview (LiveDab with the stroke's finishing dab), one History step; color_replacement_tests.rs"
+
+[[item]]
+id = "TOOL-213-20"
+target = "Art History Brush: Y-group, styles, Area, Tolerance, paints from a history state"
+status = "partial"
+issue = 213
+note = "paint.artHistoryBrush + Tool::ArtHistoryBrush in the Y flyout; 8 of 10 styles (no Tight Curl Long / Loose Curl Long); Area scales spacing, not coverage; rotated-patch look; no Mode/Opacity on the options bar, no pen pressure"

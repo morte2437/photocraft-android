@@ -224,3 +224,25 @@ fn crowded_tabs_keep_their_whole_names_and_the_menu_lists_every_document() {
         }
     }
 }
+
+/// #8290: the » button sits at the strip's right end, as Photoshop's does, not right after the
+/// last tab that fits (which left a gap of up to a tab's width after it), in both layouts: it is
+/// in the same place however many tabs fit before it.
+#[test]
+fn the_overflow_button_is_pinned_to_the_right_end() {
+    for theme in [ThemeKind::Pro, ThemeKind::Studio] {
+        let at = |docs: usize| {
+            let h = harness(docs, theme);
+            let s = strip(&h);
+            let button = h.get_by_label("More documents").rect();
+            let last = s.tabs.iter().map(|(_, r)| r.right()).fold(f32::MIN, f32::max);
+            assert!(button.left() >= last - 0.5, "{theme:?}: » {button:?} overlaps the last tab (ends at {last})");
+            // At the end of the strip (the Studio row keeps a small inset).
+            assert!(button.right() <= s.rect.right() + 0.5 && button.right() >= s.rect.right() - 10.0, "{theme:?}: » at {button:?} in {:?}", s.rect);
+            (button, last)
+        };
+        let ((a, last_a), (b, last_b)) = (at(14), at(23));
+        assert!((last_a - last_b).abs() > 1.0, "{theme:?}: the fits must end at different places to tell");
+        assert_eq!(a, b, "{theme:?}: the » button doesn't follow the last tab");
+    }
+}

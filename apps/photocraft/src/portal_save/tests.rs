@@ -235,3 +235,33 @@ fn a_single_file_type_keeps_the_typed_extension() {
     assert_eq!(save_as(&conn, req).unwrap(), Some(PathBuf::from("/tmp/photocraft-none/Swatches.ase")));
     daemon.kill().ok();
 }
+
+/// The same single type, with the name left as the dialog shows it: the bare stem comes back, and
+/// that one type gives it its extension instead of a file named `Swatches` being written.
+#[test]
+fn a_single_file_type_gives_the_bare_name_its_extension() {
+    let typed: &'static str = "file:///tmp/photocraft-none/Swatches";
+    let Some((conn, _seen, mut daemon)) = mock_portal(vec![(0, Some((typed, "Color Swatches")))]) else {
+        eprintln!("no dbus-daemon: skipped");
+        return;
+    };
+    let req = SaveRequest { filters: vec![("Color Swatches".into(), vec!["aco".into()])], ..request("Swatches.aco") };
+    assert_eq!(save_as(&conn, req).unwrap(), Some(PathBuf::from("/tmp/photocraft-none/Swatches.aco")));
+    daemon.kill().ok();
+}
+
+/// Which type's extensions the returned name gets. The portal cases above need a `dbus-daemon`,
+/// so the rule itself is checked here too, which needs none.
+#[test]
+fn the_type_that_gives_the_extension_is_the_one_picked() {
+    let one: Vec<Filter> = vec![("Color Swatches".into(), vec!["aco".into()])];
+    // One type offered: the dialog reports no pick, and it was given the stem.
+    assert_eq!(chosen_type(&one, None), Some(0));
+    assert_eq!(chosen_type(&one, Some(0)), Some(0));
+    let many: Vec<Filter> = request("test").filters;
+    assert_eq!(chosen_type(&many, Some(1)), Some(1));
+    // Several types and no pick: nothing to add, as before.
+    assert_eq!(chosen_type(&many, None), None);
+    // An answer naming a type this dialog never offered is not a pick either.
+    assert_eq!(chosen_type(&many, Some(99)), None);
+}

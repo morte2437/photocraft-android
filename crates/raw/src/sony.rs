@@ -114,11 +114,23 @@ pub(crate) fn read_craw(t: &Tiff, ifd: &Ifd, limits: &Limits) -> Result<Plane> {
     }
     let lut = tone_lut(&t.tag_uints(ifd, SONY_TONE_CURVE)).ok_or_else(|| RawError::unsupported("Sony compressed ARW without a usable tone curve (0x7010)"))?;
     limits.check(width as u64, height as u64, 2)?;
+    // The cRAW reader treats every segment as a sequence of full-width image rows. A tiled
+    // layout does not describe full-width rows, so accepting one would let repeated tile
+    // offsets push far more than `height` row references before the coverage check below.
+    // cRAW is only stored as strips, so reject tiles outright.
+    if t.tag_uint(ifd, tag::TILE_WIDTH).is_some() || t.tag_uint(ifd, tag::TILE_LENGTH).is_some() {
+        return Err(RawError::unsupported("tiled Sony compressed ARW is not supported"));
+    }
     // One byte per pixel: locate every row in the strips.
     let mut rows: Vec<&[u8]> = Vec::with_capacity(height);
     for s in segments(t, ifd, width, height)? {
         let n = s.h.min(height.saturating_sub(s.y));
         for r in 0..n {
+            // Never collect more rows than the image has; a malformed strip layout cannot
+            // grow the reference buffer past the image height.
+            if rows.len() >= height {
+                return Err(RawError::malformed("compressed ARW strips describe more rows than the image"));
+            }
             let at = s.offset.checked_add(r * width).ok_or_else(|| RawError::malformed("raw strip offset overflows"))?;
             if (r + 1) * width > s.len {
                 return Err(RawError::malformed("compressed ARW strip is shorter than its rows"));
@@ -143,7 +155,7 @@ pub(crate) fn read_craw(t: &Tiff, ifd: &Ifd, limits: &Limits) -> Result<Plane> {
             }
         }
     });
-    Ok(Plane { width, height, samples: 1, bits: 14, data })
+    Ok(Plane { width, height, samples: 1, bits: 14, data, float_scale: None })
 }
 
 #[cfg(test)]

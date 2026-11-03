@@ -79,4 +79,4 @@ id = "AUTO-219-10"
 target = "Agent acceptance suite grown to 30-50 workflows"
 status = "partial"
 issue = 219
-note = "automation/tests/agent_tasks.rs runs 10 workflows over MCP"
+note = "automation/tests/it/agent_tasks.rs runs 10 workflows over MCP"

@@ -2,8 +2,9 @@
 //!
 //! [`atomic_write`] never truncates the destination. It writes a temporary file in the **same
 //! directory**, flushes it to stable storage (`sync_all`), renames it over the destination and,
-//! on Unix, fsyncs the directory so the rename itself survives a power loss. If anything fails,
-//! the destination keeps its previous bytes and the temporary file is removed.
+//! flushes the directory so the rename itself survives a power loss. Failures before replacement
+//! keep the destination's previous bytes. On Windows a failed publication flush reports that the
+//! new file is in place but its durability could not be confirmed (#7858).
 //!
 //! - **Windows:** antivirus scanners and the search indexer briefly hold files open, which makes
 //!   the replacing rename fail with `PermissionDenied`. The rename is retried with exponential
@@ -68,7 +69,7 @@ pub trait AtomicFs {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     /// Remove a (temporary) file.
     fn remove(&self, path: &Path) -> io::Result<()>;
-    /// Flush a directory entry change (Unix); a no-op elsewhere.
+    /// Flush a directory entry change on Unix and Windows; a no-op elsewhere.
     fn sync_dir(&self, dir: &Path) -> io::Result<()>;
     /// Copy the metadata a replacement should keep — mode, extended attributes, ACL — from the
     /// file about to be replaced onto the temporary file. Best effort; see [`meta`].
@@ -113,7 +114,10 @@ impl AtomicFs for RealFs {
     fn write_new_stream(&self, tmp: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
         let f = std::fs::OpenOptions::new().write(true).create_new(true).open(tmp)?;
         let mut out = io::BufWriter::new(f);
-        write(&mut out)?;
+        // `AlreadyExists` means a temporary name collided, which makes the caller retry with
+        // another name and leave this one alone: from the writer, once the file is ours, it is
+        // a plain failure (the partial file is removed, the writer is not run again).
+        write(&mut out).map_err(|e| if e.kind() == io::ErrorKind::AlreadyExists { io::Error::other(e) } else { e })?;
         let f = out.into_inner().map_err(io::IntoInnerError::into_error)?;
         sync_file(&f)
     }
@@ -123,12 +127,27 @@ impl AtomicFs for RealFs {
     fn remove(&self, path: &Path) -> io::Result<()> {
         std::fs::remove_file(path)
     }
+    /// Flush directory publication using a directory handle on Unix and Windows.
+    /// Windows requests only `FILE_ADD_FILE`; opening or flushing the handle can fail the save.
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
         #[cfg(unix)]
         {
-            sync_file(&std::fs::File::open(dir)?)
+            open_dir_for_sync(dir)?.map_or(Ok(()), |d| sync_file(&d))
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            // FILE_ADD_FILE is the directory equivalent of FILE_WRITE_DATA. Requesting only
+            // this right permits FlushFileBuffers without requiring GENERIC_WRITE's additional
+            // directory permissions. BACKUP_SEMANTICS opens a directory, not a volume: no
+            // administrative privilege or volume-wide flush is needed.
+            const FILE_ADD_FILE: u32 = 0x0002;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            let directory = std::fs::OpenOptions::new().access_mode(FILE_ADD_FILE).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir)?;
+            directory.sync_all()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = dir;
             Ok(())
@@ -195,8 +214,8 @@ impl RenameRetry {
 
 /// Atomically replace (or create) `path` with `bytes`. See the module docs.
 ///
-/// Errors keep their [`io::ErrorKind`] and say what happened and that the original file is
-/// unchanged.
+/// Errors keep their [`io::ErrorKind`]. Before replacement they say the original is unchanged;
+/// a Windows publication-flush error says the new file may not survive a power loss.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     atomic_write_with(&RealFs, RenameRetry::platform(), path, bytes)
 }
@@ -330,10 +349,77 @@ fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &
         let _ = fs.remove(&tmp);
         return Err(rename_error(e, path));
     }
-    // The new bytes are in place; a failed directory fsync can't be undone and must not report
-    // the save as failed, so it is best effort.
-    let _ = fs.sync_dir(&dir);
+    // The new bytes are in place, but until the directory is flushed the rename may not survive
+    // a power loss (#4968). Windows fails the save on any failed flush (#7858). Elsewhere a file
+    // system that can't flush directories at all counts as done; any other failure is reported,
+    // so the caller keeps the document unsaved and its recovery data instead of discarding them
+    // on a save that may not last.
+    #[cfg(windows)]
+    fs.sync_dir(&dir).map_err(|e| publication_error(e, path))?;
+    #[cfg(not(windows))]
+    dir_synced(fs.sync_dir(&dir)).map_err(|e| unconfirmed_error(e, path))?;
     Ok(())
+}
+
+/// `dir` opened to flush it, or `None` when it can't be opened for that because it has no read
+/// permission (a write-and-search-only folder): no flush can be attempted there, so none failed.
+/// Any other error is returned.
+#[cfg(unix)]
+fn open_dir_for_sync(dir: &Path) -> io::Result<Option<std::fs::File>> {
+    match std::fs::File::open(dir) {
+        Ok(d) => Ok(Some(d)),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// `result` of flushing a directory, with "this file system can't flush directories" counted as
+/// success: `EINVAL` (Linux file systems without directory fsync), `ENOTSUP`/`EOPNOTSUPP` and,
+/// on Apple platforms, `ENOTTY`, or [`io::ErrorKind::Unsupported`]. Waiting or retrying won't
+/// change those, and failing every save there would make saving impossible. Any other error is
+/// returned: the flush was attempted and failed.
+#[cfg(not(windows))]
+pub(crate) fn dir_synced(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(e) if dir_sync_unsupported(&e) => Ok(()),
+        other => other,
+    }
+}
+
+#[cfg(not(windows))]
+fn dir_sync_unsupported(e: &io::Error) -> bool {
+    if e.kind() == io::ErrorKind::Unsupported {
+        return true;
+    }
+    // errno values: EINVAL is 22 everywhere; ENOTSUP and EOPNOTSUPP are 95 on Linux and
+    // Android, 45 and 102 on Apple platforms, 45 on the BSDs; ENOTTY is 25. Elsewhere 45 means
+    // something else (illumos: EDEADLK), so only EINVAL and `Unsupported` count there.
+    const EINVAL: i32 = 22;
+    let unsupported: &[i32] = if cfg!(any(target_os = "linux", target_os = "android")) {
+        &[EINVAL, 95]
+    } else if cfg!(target_vendor = "apple") {
+        &[EINVAL, 45, 102, 25]
+    } else if cfg!(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly")) {
+        &[EINVAL, 45]
+    } else if cfg!(unix) {
+        &[EINVAL]
+    } else {
+        &[]
+    };
+    e.raw_os_error().is_some_and(|code| unsupported.contains(&code))
+}
+
+/// The error for a file that was published but whose directory flush failed: same kind, saying
+/// the file is in place but may not survive a power loss. (Windows reports `publication_error`.)
+#[cfg(not(windows))]
+fn unconfirmed_error(e: io::Error, path: &Path) -> io::Error {
+    context(
+        e,
+        format!(
+            "{} was written, but the folder could not be flushed to disk, so the save may not survive a power loss or crash; save again or to another folder",
+            path.display()
+        ),
+    )
 }
 
 /// Run `rename`, retrying with backoff while it fails with `PermissionDenied` (see
@@ -407,6 +493,15 @@ fn context(e: io::Error, msg: String) -> io::Error {
 }
 
 const UNCHANGED: &str = "the original file was not changed";
+
+/// Replacement already happened: never claim that the original file is unchanged or undo it.
+#[cfg(windows)]
+pub(crate) fn publication_error(error: io::Error, path: &Path) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("wrote {}, but could not confirm the save is durable; it may not survive a power loss or crash: {error}", path.display()),
+    )
+}
 
 fn write_error(e: io::Error, path: &Path, dir: &Path) -> io::Error {
     let msg = match e.kind() {

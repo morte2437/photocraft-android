@@ -361,23 +361,7 @@ impl Plan {
         {
             return None;
         }
-        let mut scales = [0.0f64; 5];
-        for (i, pixel) in src.data.chunks_exact(src.ch).enumerate() {
-            if i % 4096 == 0 && ctl.cancelled() {
-                return None;
-            }
-            if pixel.iter().any(|value| !value.is_finite() || value.abs() > MAX_SAMPLE)
-                || (alpha && !pixel.last().is_some_and(|value| (0.0..=1.0).contains(value)))
-            {
-                return None;
-            }
-            let a = if alpha { *pixel.last()? } else { 1.0 };
-            for (c, &value) in pixel.iter().enumerate() {
-                let value = if alpha && c + 1 < src.ch { value * a } else { value };
-                let scale = scales.get_mut(c)?;
-                *scale = scale.max(f64::from(value.abs()));
-            }
-        }
+        let scales = channel_scales(src, alpha, ctl)?;
         let mut result = buffer(ow.checked_mul(oh)?.checked_mul(src.ch)?, 0.0f64)?;
         let read = self.read_rect(out)?;
         let used = read.intersect(&src.rect);
@@ -393,81 +377,18 @@ impl Plan {
             if ctl.cancelled() {
                 return None;
             }
+            let pair = ChannelPair { src, alpha, scales: &scales, channel };
             data.fill(Number::default());
-            for y in used.y0..used.y1 {
-                if (y - used.y0) % 8 == 0 && ctl.cancelled() {
-                    return None;
-                }
-                let source_start =
-                    usize::try_from(y - src.rect.y0).ok()?.checked_mul(sw)?.checked_add(usize::try_from(used.x0 - src.rect.x0).ok()?)?.checked_mul(src.ch)?;
-                let source_len = usize::try_from(used.x1 - used.x0).ok()?.checked_mul(src.ch)?;
-                let row = src.data.get(source_start..source_start.checked_add(source_len)?)?;
-                let start = usize::try_from(y - read.y0).ok()?.checked_mul(self.width)?.checked_add(usize::try_from(used.x0 - read.x0).ok()?)?;
-                let dst = data.get_mut(start..start.checked_add(source_len / src.ch)?)?;
-                for (pixel, dst) in row.chunks_exact(src.ch).zip(dst) {
-                    let a = if alpha { *pixel.last()? } else { 1.0 };
-                    // Normalize each channel separately before packing a pair.
-                    // Otherwise a bright HDR colour's FFT residual could swamp
-                    // a small alpha channel sharing the imaginary component.
-                    let sample = |c: usize| -> f64 {
-                        match (pixel.get(c), scales.get(c)) {
-                            (Some(&value), Some(&scale)) if scale > 0.0 => f64::from(if alpha && c + 1 < src.ch { value * a } else { value }) / scale,
-                            _ => 0.0,
-                        }
-                    };
-                    *dst = Number::new(sample(channel), sample(channel + 1));
-                }
-            }
+            self.pack_channel_pair(&pair, used, read, &mut data, ctl)?;
             self.transform(&mut data, &mut transposed, &mut scratch, false, ctl)?;
             for (value, kernel) in data.iter_mut().zip(&self.kernel) {
                 *value *= kernel;
             }
             self.transform(&mut data, &mut transposed, &mut scratch, true, ctl)?;
-            let x0 = usize::try_from(-self.min_x).ok()?;
-            let y0 = usize::try_from(-self.min_y).ok()?;
-            for (y, dst) in result.chunks_exact_mut(ow * src.ch).enumerate() {
-                let start = y.checked_add(y0)?.checked_mul(self.width)?.checked_add(x0)?;
-                let values = data.get(start..start.checked_add(ow)?)?;
-                for (pixel, value) in dst.chunks_exact_mut(src.ch).zip(values) {
-                    *pixel.get_mut(channel)? = value.re * norm * scales.get(channel)?;
-                    if let Some(next) = pixel.get_mut(channel + 1) {
-                        *next = value.im * norm * scales.get(channel + 1)?;
-                    }
-                }
-            }
+            self.unpack_channel_pair(&pair, &data, &mut result, ow, norm)?;
         }
         if alpha {
-            // The row kernel accumulates in f32. Recompute very small alpha
-            // near its cutoff so a different summation order cannot expose colour.
-            let uncertainty = f64::from(self.distance.abs().ceil()) * f64::from(f32::EPSILON) * scales.get(src.ch - 1)?;
-            for (i, pixel) in result.chunks_exact_mut(src.ch).enumerate() {
-                if i % 16 == 0 && ctl.cancelled() {
-                    return None;
-                }
-                let a = pixel.last_mut()?;
-                // Valid alpha is nonnegative. Remove transform roundoff at
-                // zero to keep fully transparent regions empty.
-                if a.abs() < 1e-14 * scales.get(src.ch - 1)? {
-                    *a = 0.0;
-                }
-                *a = a.clamp(0.0, 1.0);
-                let a = *a;
-                // The row kernel's f32 sum can straddle the cutoff at long distances.
-                // Keep its branch and straight colour exactly for that narrow
-                // range, rather than amplifying a tiny alpha difference.
-                if a > 0.0 && (a <= 1.01e-7 + uncertainty || (0.99e-7..=1.01e-7).contains(&(a as f32))) {
-                    let x = out.x0.checked_add(i32::try_from(i % ow).ok()?)?;
-                    let y = out.y0.checked_add(i32::try_from(i / ow).ok()?)?;
-                    let original = sample_row_point(src, x, y, alpha, &self.taps, ctl)?;
-                    for (dst, value) in pixel.iter_mut().zip(original) {
-                        *dst = f64::from(value);
-                    }
-                    continue;
-                }
-                for value in pixel.iter_mut().take(src.ch - 1) {
-                    *value = if a as f32 > 1e-7 { *value / a } else { 0.0 };
-                }
-            }
+            self.restore_small_alpha(src, out, ow, &scales, &mut result, ctl)?;
         }
         let mut output = buffer(result.len(), 0.0f32)?;
         for (dst, value) in output.iter_mut().zip(result) {
@@ -475,6 +396,125 @@ impl Plan {
         }
         Some(output)
     }
+
+    /// Packs the pair of channels into the real and imaginary parts of `data`, over the source
+    /// rows that fall inside the transform tile, each channel normalised by its own scale.
+    fn pack_channel_pair(&self, pair: &ChannelPair, used: Rect, read: Rect, data: &mut [Number], ctl: &Interrupt) -> Option<()> {
+        let ChannelPair { src, alpha, scales, channel } = *pair;
+        let (sw, _) = dimensions(src.rect)?;
+        for y in used.y0..used.y1 {
+            if (y - used.y0) % 8 == 0 && ctl.cancelled() {
+                return None;
+            }
+            let source_start =
+                usize::try_from(y - src.rect.y0).ok()?.checked_mul(sw)?.checked_add(usize::try_from(used.x0 - src.rect.x0).ok()?)?.checked_mul(src.ch)?;
+            let source_len = usize::try_from(used.x1 - used.x0).ok()?.checked_mul(src.ch)?;
+            let row = src.data.get(source_start..source_start.checked_add(source_len)?)?;
+            let start = usize::try_from(y - read.y0).ok()?.checked_mul(self.width)?.checked_add(usize::try_from(used.x0 - read.x0).ok()?)?;
+            let dst = data.get_mut(start..start.checked_add(source_len / src.ch)?)?;
+            for (pixel, dst) in row.chunks_exact(src.ch).zip(dst) {
+                let a = if alpha { *pixel.last()? } else { 1.0 };
+                // Normalize each channel separately before packing a pair.
+                // Otherwise a bright HDR colour's FFT residual could swamp
+                // a small alpha channel sharing the imaginary component.
+                let sample = |c: usize| -> f64 {
+                    match (pixel.get(c), scales.get(c)) {
+                        (Some(&value), Some(&scale)) if scale > 0.0 => f64::from(if alpha && c + 1 < src.ch { value * a } else { value }) / scale,
+                        _ => 0.0,
+                    }
+                };
+                *dst = Number::new(sample(channel), sample(channel + 1));
+            }
+        }
+        Some(())
+    }
+
+    /// Writes the filtered pair of channels from `data` into the output pixels, undoing the
+    /// per-channel normalisation.
+    fn unpack_channel_pair(&self, pair: &ChannelPair, data: &[Number], result: &mut [f64], ow: usize, norm: f64) -> Option<()> {
+        let ChannelPair { src, scales, channel, .. } = *pair;
+        let x0 = usize::try_from(-self.min_x).ok()?;
+        let y0 = usize::try_from(-self.min_y).ok()?;
+        for (y, dst) in result.chunks_exact_mut(ow * src.ch).enumerate() {
+            let start = y.checked_add(y0)?.checked_mul(self.width)?.checked_add(x0)?;
+            let values = data.get(start..start.checked_add(ow)?)?;
+            for (pixel, value) in dst.chunks_exact_mut(src.ch).zip(values) {
+                *pixel.get_mut(channel)? = value.re * norm * scales.get(channel)?;
+                if let Some(next) = pixel.get_mut(channel + 1) {
+                    *next = value.im * norm * scales.get(channel + 1)?;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// Straightens the colour of the filtered pixels by their alpha, taking care of the pixels
+    /// whose alpha is at the cutoff.
+    fn restore_small_alpha(&self, src: &Image, out: Rect, ow: usize, scales: &[f64; 5], result: &mut [f64], ctl: &Interrupt) -> Option<()> {
+        // The row kernel accumulates in f32. Recompute very small alpha
+        // near its cutoff so a different summation order cannot expose colour.
+        let uncertainty = f64::from(self.distance.abs().ceil()) * f64::from(f32::EPSILON) * scales.get(src.ch - 1)?;
+        for (i, pixel) in result.chunks_exact_mut(src.ch).enumerate() {
+            if i % 16 == 0 && ctl.cancelled() {
+                return None;
+            }
+            let a = pixel.last_mut()?;
+            // Valid alpha is nonnegative. Remove transform roundoff at
+            // zero to keep fully transparent regions empty.
+            if a.abs() < 1e-14 * scales.get(src.ch - 1)? {
+                *a = 0.0;
+            }
+            *a = a.clamp(0.0, 1.0);
+            let a = *a;
+            // The row kernel's f32 sum can straddle the cutoff at long distances.
+            // Keep its branch and straight colour exactly for that narrow
+            // range, rather than amplifying a tiny alpha difference.
+            if a > 0.0 && (a <= 1.01e-7 + uncertainty || (0.99e-7..=1.01e-7).contains(&(a as f32))) {
+                let x = out.x0.checked_add(i32::try_from(i % ow).ok()?)?;
+                let y = out.y0.checked_add(i32::try_from(i / ow).ok()?)?;
+                let original = sample_row_point(src, x, y, true, &self.taps, ctl)?;
+                for (dst, value) in pixel.iter_mut().zip(original) {
+                    *dst = f64::from(value);
+                }
+                continue;
+            }
+            for value in pixel.iter_mut().take(src.ch - 1) {
+                *value = if a as f32 > 1e-7 { *value / a } else { 0.0 };
+            }
+        }
+        Some(())
+    }
+}
+
+/// One pair of channels (packed as real and imaginary parts) of a filter call.
+#[derive(Clone, Copy)]
+struct ChannelPair<'a> {
+    src: &'a Image,
+    alpha: bool,
+    scales: &'a [f64; 5],
+    channel: usize,
+}
+
+/// Per-channel peak magnitude of the (alpha-premultiplied) samples. `None` when a sample is not
+/// finite, is too large, or its alpha is outside 0..=1, and when cancelled.
+fn channel_scales(src: &Image, alpha: bool, ctl: &Interrupt) -> Option<[f64; 5]> {
+    let mut scales = [0.0f64; 5];
+    for (i, pixel) in src.data.chunks_exact(src.ch).enumerate() {
+        if i % 4096 == 0 && ctl.cancelled() {
+            return None;
+        }
+        if pixel.iter().any(|value| !value.is_finite() || value.abs() > MAX_SAMPLE) || (alpha && !pixel.last().is_some_and(|value| (0.0..=1.0).contains(value)))
+        {
+            return None;
+        }
+        let a = if alpha { *pixel.last()? } else { 1.0 };
+        for (c, &value) in pixel.iter().enumerate() {
+            let value = if alpha && c + 1 < src.ch { value * a } else { value };
+            let scale = scales.get_mut(c)?;
+            *scale = scale.max(f64::from(value.abs()));
+        }
+    }
+    Some(scales)
 }
 
 #[cfg(test)]

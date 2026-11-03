@@ -1,14 +1,10 @@
 //! Opens the files written by `photocraft-psd`'s `big_psb` example and checks their pixels.
 //!
 //! `cargo run --release -p photocraft-io --example big_psb_check -- <file.psb>...`
+//!
+//! The opt-in tests in `tests/it/large_files.rs` generate and check the same files.
 
-fn sample(x: u32, y: u32, c: u32, rle: bool) -> u8 {
-    if c == 3 {
-        return 255;
-    }
-    let x = if rle { 0 } else { x };
-    (x.wrapping_mul(7).wrapping_add(y.wrapping_mul(13)).wrapping_add(c.wrapping_mul(101)) & 0xff) as u8
-}
+use photocraft_psd::fixtures::sample;
 
 fn main() {
     for path in std::env::args().skip(1) {

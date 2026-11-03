@@ -43,9 +43,9 @@ note = "release.yml:242-283 (freebsd job) + packaging/freebsd/package.sh; layout
 [[item]]
 id = "DIST-220-1"
 target = "Help > Check for Updates plus an opt-out periodic release-feed check on all desktops"
-status = "missing"
+status = "partial"
 issue = 220
-note = "No update check in crates"
+note = "2026-10-22 (#5485): Help > Check for Updates and an opt-out check once per launch (updates_cmds + the desktop HTTPS transport; none inside Flatpak, where flatpak update owns updates). Missing: a periodic recheck while the app stays open"
 
 [[item]]
 id = "DIST-220-2"
@@ -66,7 +66,7 @@ id = "DIST-220-4"
 target = "Translation coverage per language reported by xtask; RTL layout for Arabic and Hebrew"
 status = "partial"
 issue = 220
-note = "`cargo xtask i18n-coverage` reports per-language coverage (#427); RTL languages mirror the shell (`direction.rs`), not yet panel interiors or dialogs"
+note = "`cargo xtask i18n-coverage` reports per-language coverage (#427); RTL languages mirror the shell (`direction.rs`), not yet panel interiors or dialogs; Arabic (`ar`) is the first RTL catalog"
 
 [[item]]
 id = "DIST-220-5"

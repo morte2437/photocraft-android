@@ -14,6 +14,9 @@ use crate::pinned::{PinnedCorpus, Upstream};
 /// https://github.com/storytold/photocraft-corpus: our Photoshop-authored oracle PSDs
 /// (`photoshop/`). Bump through a PR after committing there.
 pub const PHOTOCRAFT_CORPUS_COMMIT: &str = "f5b1178cab15309e05b7b504545df3c701f6d8fd";
+/// https://github.com/storytold/photocraft-corpus: our GIMP-authored XCF oracles (`gimp/`). Its own
+/// pin, so that set can move without refetching `photoshop/`. Bump through a PR after committing there.
+pub const PHOTOCRAFT_CORPUS_GIMP_COMMIT: &str = "fbe9227a48d06de87061e527541209a178fd685c";
 /// https://github.com/psd-tools/psd-tools (MIT): `tests/psd_files` (main, 2026-10-05).
 pub const PSD_TOOLS_COMMIT: &str = "96eb134c17b2c65edf4c4151c0f00b802ada86c2";
 /// https://github.com/Agamnentzar/ag-psd (MIT): `test/` (master, 2026-07-02).
@@ -64,6 +67,31 @@ pub const PHOTOSHOP: PinnedCorpus = PinnedCorpus {
             "# Photoshop oracle corpus\n\n`photoshop/` of https://github.com/storytold/photocraft-corpus at commit {PHOTOCRAFT_CORPUS_COMMIT} \
              (see `README.md`). MIT OR Apache-2.0, authored by the PhotoCraft contributors. Fetched and sha256-verified by \
              `cargo xtask corpus --photoshop` against `{}`. Gitignored; never commit these files.\n",
+            c.manifest
+        )
+    },
+};
+
+/// `corpus/gimp`: 14 XCF files written by GIMP 3.2.6 by the photocraft-corpus generator, each with
+/// GIMP's merged rendering as a PNG (28 files), the oracles of `photocraft-io`'s XCF reader.
+pub const GIMP: PinnedCorpus = PinnedCorpus {
+    name: "gimp",
+    dest: "gimp",
+    upstreams: &[Upstream {
+        prefix: "",
+        repo: "storytold/photocraft-corpus",
+        commit: PHOTOCRAFT_CORPUS_GIMP_COMMIT,
+        subdir: "gimp",
+        extras: &[("README.md", "README.md"), ("LICENSE-MIT", "LICENSE-MIT"), ("LICENSE-APACHE", "LICENSE-APACHE")],
+    }],
+    manifest: "xtask/gimp-corpus.sha256",
+    exts: &["xcf", "png"],
+    subset: false,
+    sources_md: |c| {
+        format!(
+            "# GIMP XCF oracle corpus\n\n`gimp/` of https://github.com/storytold/photocraft-corpus at commit {PHOTOCRAFT_CORPUS_GIMP_COMMIT} \
+             (see `README.md`). MIT OR Apache-2.0, authored by the PhotoCraft contributors with GIMP 3.2.6. Fetched and sha256-verified by \
+             `cargo xtask corpus --gimp` against `{}`. Gitignored; never commit these files.\n",
             c.manifest
         )
     },
@@ -239,8 +267,75 @@ pub const AFFINITY: PinnedCorpus = PinnedCorpus {
         )
     },
 };
+/// Photoshop Actions files (`.atn`) from public repositories under permissive licences, the
+/// real-file oracles of `photocraft-psd::atn` and the engine's `.atn` import (2026-10-12).
+/// https://github.com/sbaril/Photoshop-Scripts (MIT): `Actions/`.
+pub const SBARIL_COMMIT: &str = "622493c9c617c9d2ff38500e8e512c0ad421eed9";
+/// https://github.com/bjango/Bjango-Actions (BSD, `Help/License.md`): three sets at the root.
+pub const BJANGO_COMMIT: &str = "0fdc790b4931fd36816e6056dd84c2aa0d3ff054";
+/// https://github.com/BKWLD/photoshop-actions (MIT).
+pub const BKWLD_COMMIT: &str = "d1a5d24e02bf23f78659106473ef7d8c747bea00";
+/// https://github.com/mrijk/atntools (MIT): the fixture of a Rust `.atn` reader.
+pub const ATNTOOLS_COMMIT: &str = "529db30b631f32bc7970121af0393853c2154fa0";
+/// https://github.com/damsmcfly/photoshop-cleaner-trimmer (Unlicense).
+pub const TRIMMER_COMMIT: &str = "fd3814df2a625ed7a015633eb91d8fe2f5bbe9a0";
+/// https://github.com/uclagamelab/AlphaUtilityAdditions (BSD-2-Clause).
+pub const ALPHA_UTILITY_COMMIT: &str = "7bdae950a7db4c6c2224bcaf08f4c17ec18958cb";
+/// https://github.com/overbyte/photoshop-gif-creator-script (MIT).
+pub const GIF_CREATOR_COMMIT: &str = "9fb78e8c09a21678afc84ccb31a435bd242894df";
+
+/// `corpus/atn`: Photoshop Actions sets from seven public repositories, one folder each.
+pub const ATN: PinnedCorpus = PinnedCorpus {
+    name: "atn",
+    dest: "atn",
+    upstreams: &[
+        Upstream { prefix: "sbaril/", repo: "sbaril/Photoshop-Scripts", commit: SBARIL_COMMIT, subdir: "Actions", extras: &[("LICENSE", "sbaril/LICENSE")] },
+        Upstream { prefix: "bjango/", repo: "bjango/Bjango-Actions", commit: BJANGO_COMMIT, subdir: "", extras: &[("Help/License.md", "bjango/License.md")] },
+        Upstream { prefix: "bkwld/", repo: "BKWLD/photoshop-actions", commit: BKWLD_COMMIT, subdir: "", extras: &[("LICENSE", "bkwld/LICENSE")] },
+        Upstream { prefix: "atntools/", repo: "mrijk/atntools", commit: ATNTOOLS_COMMIT, subdir: "", extras: &[("LICENSE", "atntools/LICENSE")] },
+        Upstream {
+            prefix: "trimmer/",
+            repo: "damsmcfly/photoshop-cleaner-trimmer",
+            commit: TRIMMER_COMMIT,
+            subdir: "",
+            extras: &[("LICENSE", "trimmer/LICENSE")],
+        },
+        Upstream {
+            prefix: "alpha-utility/",
+            repo: "uclagamelab/AlphaUtilityAdditions",
+            commit: ALPHA_UTILITY_COMMIT,
+            subdir: "",
+            extras: &[("LICENSE", "alpha-utility/LICENSE")],
+        },
+        Upstream {
+            prefix: "gif-creator/",
+            repo: "overbyte/photoshop-gif-creator-script",
+            commit: GIF_CREATOR_COMMIT,
+            subdir: "",
+            extras: &[("LICENSE", "gif-creator/LICENSE")],
+        },
+    ],
+    manifest: "xtask/atn-corpus.sha256",
+    exts: &["atn"],
+    subset: false,
+    sources_md: |c| {
+        format!(
+            "# Photoshop Actions (.atn) corpus\n\nAction sets from public repositories, unmodified, each in its own folder with its licence: \
+             `sbaril/` (https://github.com/sbaril/Photoshop-Scripts/tree/{SBARIL_COMMIT}/Actions, MIT), \
+             `bjango/` (https://github.com/bjango/Bjango-Actions/tree/{BJANGO_COMMIT}, BSD), \
+             `bkwld/` (https://github.com/BKWLD/photoshop-actions/tree/{BKWLD_COMMIT}, MIT), \
+             `atntools/` (https://github.com/mrijk/atntools/tree/{ATNTOOLS_COMMIT}, MIT), \
+             `trimmer/` (https://github.com/damsmcfly/photoshop-cleaner-trimmer/tree/{TRIMMER_COMMIT}, Unlicense), \
+             `alpha-utility/` (https://github.com/uclagamelab/AlphaUtilityAdditions/tree/{ALPHA_UTILITY_COMMIT}, BSD-2-Clause), \
+             `gif-creator/` (https://github.com/overbyte/photoshop-gif-creator-script/tree/{GIF_CREATOR_COMMIT}, MIT). \
+             Fetched and sha256-verified by `cargo xtask corpus --atn` against `{}`. Gitignored; never commit these files.\n",
+            c.manifest
+        )
+    },
+};
+
 /// Every pinned corpus, in fetch order.
-pub const ALL: &[&PinnedCorpus] = &[&PSD_MIXED, &PSD_TOOLS, &PHOTOSHOP, &HEIF, &EXR, &AFFINITY];
+pub const ALL: &[&PinnedCorpus] = &[&PSD_MIXED, &PSD_TOOLS, &PHOTOSHOP, &GIMP, &HEIF, &EXR, &AFFINITY, &ATN];
 
 /// `corpus/pixls`: real camera raws from <https://raw.pixls.us> (released into the public
 /// domain / CC0 by their photographers; see ATTRIBUTION.md). One file per decode path

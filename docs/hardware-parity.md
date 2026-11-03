@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (first version: GPU, pen tablets, displays, gestures per platform against Photoshop 2026) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-17 · **Change:** minor (Camera Raw's preview develops its per-pixel stages on the GPU) · **Target:** Adobe Photoshop 2026
 
 Each hardware feature Photoshop 2026 (27.11.0) uses, per platform, against PhotoCraft. Photoshop
 side: its bundle (Metal and OpenCL paths, "Precise Color Management for HDR Display" and EDR
@@ -19,7 +19,7 @@ HDR display to verify.
 |---|---|---|---|
 | GPU canvas, zoom/pan, rotate view | Metal (macOS), DirectX/OpenCL (Windows) | wgpu 30: Metal, Vulkan, DX12, GL; backend selectable | done |
 | GPU compositing of layers, blend modes, effects | partial (Photoshop composites mostly on CPU) | wgpu compositor, ≤ 1/255 vs CPU oracle; Multichannel and > texture-limit regions fall back to CPU | done (ahead in places) |
-| GPU filters (Blur Gallery, Liquify, Smart Sharpen, Camera Raw) | yes | CPU (rayon) for filters; GPU for compose and effects | partial |
+| GPU filters (Blur Gallery, Liquify, Smart Sharpen, Camera Raw) | yes | CPU (rayon) for filters; GPU for compose and effects. Camera Raw's preview runs its per-pixel stages (white balance to grain) in one wgpu pass, about 2-3 ms vs 11-28 ms on the CPU for the 858×572 proxy, depending on the machine; spatial stages, Calibration and OK still develop on the CPU (#6916) | partial |
 | Documents larger than the GPU texture limit | yes (tiled) | CPU fallback; tiling in progress (#49) | partial |
 | CPU-only fallback when no GPU | yes, reduced | `cpu` canvas preference; fails to start without an adapter on some Linux systems (#2519, #2412) | partial |
 | Choosing the GPU on a multi-GPU machine | Preferences › Performance › Use Graphics Processor | Linux only: Preferences › Performance › Advanced › GPU adapter and `PHOTOCRAFT_GPU_ADAPTER` (#1885); ignored on Windows and macOS | partial |
@@ -63,4 +63,5 @@ HDR display to verify.
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-10 | major | First version |
+| 2026-10-17 | minor | GPU filters: Camera Raw's preview, per-pixel stages (#6916 step 1) |
 | 2026-10-19 | minor | Graphics Adapter choice on Linux (#1885) |

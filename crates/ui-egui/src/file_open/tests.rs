@@ -18,7 +18,7 @@ fn app_with(answers: Vec<Option<FileDialogAnswer>>) -> (PhotocraftApp, Written) 
     let written: Written = Rc::default();
     let w = written.clone();
     let services = Services {
-        import: Some(Box::new(|name: &str, bytes: &[u8], _depth: usize| {
+        import: Some(Box::new(|name: &str, bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
             if bytes == b"bad" {
                 return Err("not an image".into());
             }
@@ -713,8 +713,17 @@ fn views_and_windows_stay_with_their_documents() {
     for (i, v) in app.ui.views.iter_mut().enumerate() {
         v.zoom = i as f32 + 1.0;
     }
-    app.ui.windows =
-        (0..4).map(|document| crate::state::DocWindow { id: document as u64, document, view: Default::default(), open: true, position: None }).collect();
+    app.ui.windows = (0..4)
+        .map(|document| crate::state::DocWindow {
+            id: document as u64,
+            document,
+            view: Default::default(),
+            open: true,
+            floating: false,
+            focused: false,
+            position: None,
+        })
+        .collect();
     let zooms = |app: &PhotocraftApp| app.ui.views.iter().map(|v| v.zoom).collect::<Vec<_>>();
     let windows = |app: &PhotocraftApp| app.ui.windows.iter().map(|w| (w.id, w.document)).collect::<Vec<_>>();
     assert_eq!(app.run("document.move", json!({"document": 0, "to": 3})).unwrap(), json!({"document": 3}));
@@ -818,6 +827,31 @@ fn natural_order_counts_numbers_by_value() {
     assert_eq!(names, ["A.psd", "b.psd", "file_1.psd", "File_03.psd", "File_9.psd", "File_10.psd", "File_100.psd"]);
 }
 
+/// Files on the command line open before the first frame applies the interface language: their
+/// status line follows the preference, not the English default.
+#[test]
+fn open_paths_reports_in_the_interface_language_before_the_first_frame() {
+    let pattern = |i: u8| {
+        let mut surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+        surface.fill_rect(photocraft_geom::Rect::new(0, 0, 4, 4), &[f32::from(i) / 3.0, 0.5, 0.2, 1.0]);
+        let mut p = photocraft_doc::Pattern::new("Launch", surface, 4, 4);
+        p.id = format!("6f1c2c1e-0000-4000-8000-00000000000{i}");
+        p
+    };
+    let bytes = photocraft_io::pattern_map::write_pat(&[pattern(1), pattern(2), pattern(3)]).unwrap();
+    let (dir, paths) = files("launch-language", &["launch.pat"], &bytes);
+    let (mut app, _) = app_with(Vec::new());
+    app.session.edit_prefs(|p| p.interface.language = "ar".into());
+    crate::i18n::set_current(crate::i18n::Lang::EN);
+    assert_eq!(app.open_paths(&paths), 1);
+    let ar = crate::i18n::Lang::from_code("ar").unwrap();
+    let want =
+        crate::i18n::fmt(&crate::i18n::trn(ar, 3, "Imported {n} pattern from {file}", "Imported {n} patterns from {file}"), &[("n", "3"), ("file", "launch")]);
+    assert_eq!(app.ui.status, want);
+    crate::i18n::set_current(crate::i18n::Lang::EN);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #3248: several files opened at once (File › Open, the command line, Finder) open in name order.
 #[test]
 fn open_paths_opens_a_set_in_name_order() {
@@ -858,7 +892,8 @@ fn a_set_of_background_opens_keeps_its_order_however_they_finish() {
         let i = app.jobs.opens.iter().position(|o| o.order.is_some_and(|x| x.seq == seq)).unwrap();
         let tab = app.jobs.opens.remove(i);
         let index = app.session.add_document(Document::new(&tab.name, Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
-        jobs_ui::finish_open_tab(&mut app, &tab, &json!({"document": index})).unwrap();
+        let id = app.session.documents()[index].doc.id;
+        jobs_ui::finish_open_tab(&mut app, &tab, &json!({"document": index, "docId": id.0})).unwrap();
     }
     assert_eq!(doc_names(&app), ["existing.psd", "f0.psd", "f1.psd", "f2.psd", "f3.psd"]);
     assert_eq!(app.session.active().map(|d| d.doc.name.as_str()), Some("f2.psd"), "the one that just opened is active");
@@ -867,10 +902,12 @@ fn a_set_of_background_opens_keeps_its_order_however_they_finish() {
     // A tab with a slot (dropped on the tabs) keeps it; one from a forgotten set goes to the end.
     let dropped = OpenTab { job: JobId(200), name: "dropped.psd".into(), path: None, slot: Some(0), order: None };
     let index = app.session.add_document(Document::new("dropped.psd", Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
-    jobs_ui::finish_open_tab(&mut app, &dropped, &json!({"document": index})).unwrap();
+    let id = app.session.documents()[index].doc.id;
+    jobs_ui::finish_open_tab(&mut app, &dropped, &json!({"document": index, "docId": id.0})).unwrap();
     let late = OpenTab { job: JobId(201), name: "late.psd".into(), path: None, slot: None, order: Some(OpenOrder { batch: 999, seq: 0 }) };
     let index = app.session.add_document(Document::new("late.psd", Size::new(4, 4), ColorMode::Rgb, SampleType::U8), None);
-    jobs_ui::finish_open_tab(&mut app, &late, &json!({"document": index})).unwrap();
+    let id = app.session.documents()[index].doc.id;
+    jobs_ui::finish_open_tab(&mut app, &late, &json!({"document": index, "docId": id.0})).unwrap();
     assert_eq!(doc_names(&app), ["dropped.psd", "existing.psd", "f0.psd", "f1.psd", "f2.psd", "f3.psd", "late.psd"]);
 }
 
@@ -896,6 +933,50 @@ fn save_a_copy_is_recorded_and_replayed_as_a_copy() {
     let st = app.session.active().unwrap();
     assert_eq!(st.path.as_deref(), Some("/pics/work.pcraft"), "the document keeps its file");
     assert!(st.is_dirty(), "and its unsaved changes");
+}
+
+/// #7207: File › Export › Export As is recorded in an action with its destination and settings,
+/// as Save a Copy is, and played back without the dialog: on another document it exports that
+/// document, with the recorded format, quality and scale.
+#[test]
+fn export_as_is_recorded_and_replayed() {
+    type Exported = Rc<RefCell<Vec<(String, u32, u32, Option<u8>)>>>;
+    let exported: Exported = Rc::default();
+    let e = exported.clone();
+    let services = Services {
+        export: Some(Box::new(move |doc: &Document, path: &str, s: &crate::ExportSettings| {
+            e.borrow_mut().push((path.to_string(), doc.size.width, doc.size.height, s.jpeg_quality));
+            Ok((b"out".to_vec(), Vec::new()))
+        })),
+        file_dialog: Some(file_dialog::fake(vec![Some(FileDialogAnswer::SaveTo("/pics/out.jpg".into()))]).0),
+        write: Some(Box::new(|_: &str, _: &[u8]| Ok(()))),
+        ..Default::default()
+    };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 40, "height": 20})).unwrap();
+    app.run("actions.record", json!({})).unwrap();
+    let id = menus::invoke(&mut app, &ctx, "file.export.exportAs", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    fields.insert("format".into(), json!("jpg"));
+    fields.insert("quality".into(), json!(70));
+    fields.insert("scale".into(), json!(50));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    answer(&mut app);
+    app.run("actions.stop", json!({})).unwrap();
+    assert_eq!(*exported.borrow(), [("/pics/out.jpg".to_string(), 20, 10, Some(70))]);
+    let (step_id, step) = app.session.actions.list[0].steps.last().cloned().unwrap();
+    assert_eq!(step_id, "file.export.exportAs");
+    assert_eq!((&step["path"], &step["format"], &step["quality"], &step["scale"]), (&json!("/pics/out.jpg"), &json!("jpg"), &json!(70), &json!(50)));
+    assert!(step.as_object().unwrap().keys().all(|k| !k.starts_with("__")), "only the destination and the dialog's settings: {step}");
+    assert_eq!(crate::actions::label_of("file.export.exportAs"), "Export As");
+
+    app.run("file.new", json!({"width": 100, "height": 60})).unwrap();
+    exported.borrow_mut().clear();
+    let played = app.run("actions.play", json!({"action": 0})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    assert_eq!(*exported.borrow(), [("/pics/out.jpg".to_string(), 50, 30, Some(70))], "the played document, scaled as recorded");
+    assert!(app.ui.dialogs.is_empty(), "no dialog on playback");
 }
 
 /// #4400: a new document saved under a name is listed in Open Recent (and on the Home screen),
@@ -935,7 +1016,7 @@ fn opening_type_in_a_missing_font_warns() {
     let (with_missing, installed) = (doc_with_type(Some(MISSING)), doc_with_type(None));
     let already = warning.clone();
     let services = Services {
-        import: Some(Box::new(move |name: &str, _bytes: &[u8], _depth: usize| {
+        import: Some(Box::new(move |name: &str, _bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
             Ok(match name {
                 "installed.psd" => (installed.clone(), Vec::new()),
                 "warned.psd" => (with_missing.clone(), vec![already.clone()]),
@@ -956,6 +1037,37 @@ fn opening_type_in_a_missing_font_warns() {
     assert_eq!(app.ui.notices.len(), 1);
     // The importer's own warning for the same font isn't doubled.
     assert_eq!(app.open_bytes("warned.psd", b"x").unwrap(), vec![warning]);
+}
+
+/// A file name that isn't valid Unicode on this platform: non-UTF-8 bytes on Unix, an unpaired
+/// surrogate on Windows.
+fn non_unicode_path() -> std::path::PathBuf {
+    #[cfg(unix)]
+    let name = {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(b"img\xFF.png").to_owned()
+    };
+    #[cfg(windows)]
+    let name = {
+        use std::os::windows::ffi::OsStringExt;
+        let mut wide: Vec<u16> = "img".encode_utf16().collect();
+        wide.push(0xD800);
+        wide.extend(".png".encode_utf16());
+        std::ffi::OsString::from_wide(&wide)
+    };
+    std::env::temp_dir().join(name)
+}
+
+/// #6601: a lossy copy of such a name is another file's name, so it is refused instead.
+#[test]
+fn a_path_that_is_not_valid_unicode_is_refused_not_rewritten() {
+    let bad = non_unicode_path();
+    let open = path_text(&bad, false).unwrap_err();
+    assert!(open.contains("not valid Unicode") && open.contains("open it again"), "{open}");
+    let save = path_text(&bad, true).unwrap_err();
+    assert!(save.contains("not valid Unicode") && save.contains("another name"), "{save}");
+    let good = std::env::temp_dir().join("img é.png");
+    assert_eq!(path_text(&good, true).as_deref(), Ok(good.to_str().unwrap()));
 }
 
 /// #6598: opening a file that is already open shows its document, as Photoshop does, rather than

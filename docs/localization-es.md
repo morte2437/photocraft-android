@@ -26,8 +26,8 @@ Filter Gallery names, Camera Raw, Lighting Effects, History and Layers controls,
 dialogs, status wrappers and System Info labels. Before this pass, those controls fell back to
 English because many are assembled dynamically and cannot be found by the static coverage scan.
 
-`spanish_covers_generated_filter_options_and_gallery_names` in `filter_dialog.rs` enumerates the
-generated filter and adjustment surface and fails if a future label has no Spanish row. A few
+A future generated label without a Spanish row shows in English. `cargo xtask i18n-coverage`
+lists missing rows for the keys it scans, which don't include these generated labels. A few
 unused legacy labels are retained so the complete catalogs stay aligned.
 
 ## Terminology

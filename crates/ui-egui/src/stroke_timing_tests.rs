@@ -387,11 +387,10 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
             }
             let t0 = crate::gpu_canvas::now_ms();
             let moves = ctx.input(|i| i.raw.events.iter().filter(|e| matches!(e, egui::Event::PointerMoved(_))).count());
-            app.stroke_trace.begin_frame(t0, moves);
-            app.stroke_trace.cpu_prev(Some(0.004));
+            app.perf.stage.start(t0, moves);
+            app.perf.stage.ui_start(t0, Some(0.004));
             egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
-            let stroking = app.live_stroke.is_some();
-            app.stroke_trace.end_frame(crate::gpu_canvas::now_ms() - t0, stroking, || "test".into());
+            app.finish_frame(crate::gpu_canvas::now_ms() - t0);
         },
         app,
     );
@@ -409,7 +408,7 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
     assert!(s.frames >= 6, "{s:?}");
     assert!(s.stroke[1] > 0.0 && s.ui[0] >= s.stroke[0], "{s:?}");
     assert_eq!(s.moves[1], 1.0, "one move per test frame: {s:?}");
-    assert_eq!(s.backend, "test");
+    assert_eq!(s.backend, "", "the app's adapter (none in a test)");
 }
 
 /// A Clone Stamp stroke through the canvas renders the points its commit gets (position and
@@ -456,4 +455,102 @@ fn releasing_a_clone_stamp_stroke_commits_what_a_replay_paints() {
     let b = photocraft_compose::render(&fresh.active().unwrap().doc, st.doc.bounds());
     assert_eq!(a.px.len(), b.px.len());
     assert!(a.px.iter().zip(&b.px).all(|(x, y)| x == y), "live commit and replay differ");
+}
+
+/// A Blur, Smudge or Dodge stroke through the canvas: releasing it commits the pixels its live
+/// stroke drew (`Session::offer_live_dab`), which are what replaying the journaled command paints.
+#[test]
+fn releasing_a_sequential_dab_stroke_commits_what_a_replay_paints() {
+    for (tool, cmd) in [(Tool::Blur, "paint.blur"), (Tool::Smudge, "paint.smudge"), (Tool::Dodge, "paint.dodge")] {
+        let setup = |run: &mut dyn FnMut(&str, Value)| {
+            run("tools.setBrush", json!({"brush": {"size": 24, "hardness": 0.2}}));
+            run("paint.stroke", json!({"points": [[10, 20], [190, 80]], "size": 30, "hardness": 0.5, "color": "#2060c0"}));
+        };
+        let mut h = harness();
+        setup(&mut |id, p| {
+            h.state_mut().run(id, p).unwrap();
+        });
+        h.state_mut().ui.tool = tool;
+        h.run_steps(1);
+        move_to(&mut h, 40.0, 30.0);
+        button(&mut h, 40.0, 30.0, true);
+        for (x, y) in [(70.0, 40.0), (100.0, 55.0), (130.0, 50.0), (160.0, 70.0)] {
+            move_to(&mut h, x, y);
+        }
+        assert!(h.state().live_stroke.is_some(), "{cmd}: a live stroke");
+        h.state_mut().retouch_from_live = false;
+        button(&mut h, 160.0, 70.0, false);
+        h.run_steps(2);
+        let app = h.state();
+        assert!(app.retouch_from_live, "{cmd}: the release took the live pixels instead of rendering the stroke again");
+        let (_, p) = app.session.journal.iter().rev().find(|(id, _)| id == cmd).cloned().expect("a committed stroke");
+        let mut fresh = photocraft_engine::Session::new();
+        fresh.execute("file.new", json!({"width": 200, "height": 100, "background": "white"})).unwrap();
+        setup(&mut |id, p| {
+            fresh.execute(id, p).unwrap();
+        });
+        let replayed = fresh.execute(cmd, p).unwrap();
+        assert!(replayed.get("fromLive").is_none());
+        let st = app.session.active().unwrap();
+        let a = photocraft_compose::render(&st.doc, st.doc.bounds());
+        let b = photocraft_compose::render(&fresh.active().unwrap().doc, st.doc.bounds());
+        assert_eq!(a.px.len(), b.px.len());
+        assert!(a.px.iter().zip(&b.px).all(|(x, y)| x == y), "{cmd}: live commit and replay differ");
+    }
+}
+
+/// Pressure changes Smudge's painted footprint, but not the square of colour it carries.
+/// Exercise the actual pen → live preview → release handoff → journal replay, then undo/redo.
+#[test]
+fn pressure_sized_smudge_release_matches_replay_and_undo_redo() {
+    use crate::stylus::PenSample;
+
+    let setup = |run: &mut dyn FnMut(&str, Value)| {
+        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"pressureSize":true,"smoothing":{"amount":0.4}}}));
+        run("paint.stroke", json!({"points":[[10,20],[190,80]],"size":30,"color":"#2060c0"}));
+    };
+    let mut h = harness();
+    h.state_mut().ui.tool = Tool::Smudge;
+    h.run_steps(1);
+    setup(&mut |id, p| {
+        h.state_mut().run(id, p).unwrap();
+    });
+    let before = h.state().session.active().unwrap().doc.clone();
+    h.state_mut().ui.tool_options.strength = 80.0;
+    h.run_steps(1);
+    let pen = |pressure| Some(PenSample { pressure, ..Default::default() });
+    h.state().stylus.feed.set(pen(0.1));
+    move_to(&mut h, 40.0, 30.0);
+    button(&mut h, 40.0, 30.0, true);
+    for (x, y, pressure) in [(65.0, 40.0, 0.4), (100.0, 55.0, 1.0), (140.0, 70.0, 0.7), (60.0, 40.0, 0.2)] {
+        h.state().stylus.feed.set(pen(pressure));
+        move_to(&mut h, x, y);
+    }
+    assert!(h.state().live_stroke.is_some());
+    button(&mut h, 60.0, 40.0, false);
+    h.run_steps(2);
+    assert!(h.state().retouch_from_live, "release must actually reuse the live pixels");
+    let (_, params) = h.state().session.journal.iter().rev().find(|(id, _)| id == "paint.smudge").cloned().unwrap();
+    let points = params["points"].as_array().unwrap();
+    assert!(points.iter().any(|p| p[2].as_f64().unwrap() < 0.2));
+    assert!(points.iter().any(|p| p[2].as_f64().unwrap() > 0.9));
+
+    let mut fresh = photocraft_engine::Session::new();
+    fresh.execute("file.new", json!({"width":200,"height":100,"background":"white"})).unwrap();
+    setup(&mut |id, p| {
+        fresh.execute(id, p).unwrap();
+    });
+    assert_eq!(h.state().session.tools.brush, fresh.tools.brush, "replay uses the Smudge tool's actual brush");
+    assert!(
+        photocraft_compose::render(&before, before.bounds()).px == photocraft_compose::render(&fresh.active().unwrap().doc, before.bounds()).px,
+        "the replay fixture starts with identical pixels"
+    );
+    assert!(fresh.execute("paint.smudge", params).unwrap().get("fromLive").is_none());
+    let committed = h.state().session.active().unwrap().doc.clone();
+    let expected = photocraft_compose::render(&fresh.active().unwrap().doc, committed.bounds());
+    assert!(photocraft_compose::render(&committed, committed.bounds()).px == expected.px, "live commit and replay must paint identical pixels");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert_eq!(h.state().session.active().unwrap().doc, before);
+    h.state_mut().run("edit.redo", json!({})).unwrap();
+    assert_eq!(h.state().session.active().unwrap().doc, committed);
 }

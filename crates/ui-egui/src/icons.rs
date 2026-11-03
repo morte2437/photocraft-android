@@ -23,6 +23,13 @@ pub fn exists(name: &str) -> bool {
     white_icons().contains(name)
 }
 
+/// Panel footer buttons share one glyph per action and one size, so the Layers footer and the
+/// Swatches, Gradients and Patterns footers read the same, as in Photoshop (#10656).
+pub const FOOTER_SIZE: f32 = 26.0;
+pub const FOOTER_NEW: &str = "square-plus";
+pub const FOOTER_NEW_GROUP: &str = "folder";
+pub const FOOTER_DELETE: &str = "trash";
+
 /// An egui image for an icon, tinted.
 pub fn image(name: &str, size: f32, tint: Color32) -> egui::Image<'static> {
     egui::Image::new(white_icons().source(name)).fit_to_exact_size(Vec2::splat(size)).tint(tint)
@@ -39,7 +46,7 @@ pub fn paint(ui: &egui::Ui, rect: Rect, name: &str, size: f32, tint: Color32) {
 /// cursor (`CursorIcon::None`).
 pub fn cursor(ctx: &egui::Context, name: &str, p: egui::Pos2, hot: Vec2, size: f32) {
     let rect = Rect::from_min_size(p - hot * size, Vec2::splat(size));
-    let area = egui::Area::new(egui::Id::new("pc-icon-cursor")).order(egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(false);
+    let area = egui::Area::new(egui::Id::unique("pc-icon-cursor")).order(egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(false);
     area.show(ctx, |ui| {
         let outline = image(name, size, Color32::from_black_alpha(200));
         for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)] {
@@ -64,7 +71,7 @@ pub fn cursor_copy_badge(ctx: &egui::Context, p: egui::Pos2) {
 fn badge(ctx: &egui::Context, name: &str, p: egui::Pos2, doubled: bool) {
     const SIZE: f32 = 12.0;
     let rect = Rect::from_center_size(p + egui::vec2(20.0, 19.0), Vec2::splat(SIZE));
-    let area = egui::Area::new(egui::Id::new("pc-cursor-badge")).order(egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(false);
+    let area = egui::Area::new(egui::Id::unique("pc-cursor-badge")).order(egui::Order::Tooltip).fixed_pos(rect.min).constrain(false).interactable(false);
     area.show(ctx, |ui| {
         let outline = image(name, SIZE, Color32::from_black_alpha(220));
         let halo = [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0)];
@@ -109,7 +116,7 @@ pub fn tool_icon(t: Tool) -> &'static str {
         Tool::Crop => "crop",
         Tool::PerspectiveCrop => "perspective-crop",
         Tool::Slice => "slice-knife",
-        Tool::SliceSelect => "square-dashed-mouse-pointer",
+        Tool::SliceSelect => "slice-select",
         Tool::Frame => "frame-placeholder",
         Tool::Gradient => "gradient",
         Tool::PaintBucket => "paint-bucket",
@@ -127,6 +134,7 @@ pub fn tool_icon(t: Tool) -> &'static str {
         Tool::CloneStamp => "stamp",
         Tool::PatternStamp => "grid-3x3",
         Tool::HistoryBrush => "clock",
+        Tool::ArtHistoryBrush => "sparkles",
         Tool::Blur => "droplet",
         Tool::Sharpen => "triangle",
         Tool::Smudge => "pointer",
@@ -211,7 +219,7 @@ pub fn rail_button(ui: &mut egui::Ui, name: &str, box_size: f32, on: bool, toolt
     }
     let tint = if on || resp.hovered() { t.text } else { t.text_faint };
     paint(ui, rect, name, (box_size * 0.52).round(), tint);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, tl!(tooltip)));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, tl!(tooltip)));
     resp.on_hover_text(tl!(tooltip))
 }
 
@@ -278,6 +286,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn slice_select_icon_is_its_own() {
+        // #7859: Slice Select reused Object Selection's dashed square with a pointer. As in
+        // Photoshop it is the Slice knife with a pointer: unlike Object Selection, and the Slice
+        // tool's knife plus ink of its own (the pointer).
+        assert_ne!(tool_icon(Tool::SliceSelect), tool_icon(Tool::ObjectSelection));
+        assert_ne!(tool_icon(Tool::SliceSelect), tool_icon(Tool::Slice));
+        for size in [14_u32, 28] {
+            let select = ink(tool_icon(Tool::SliceSelect), size);
+            assert!(select.iter().any(|&pixel| pixel), "Slice Select must have ink at {size}px");
+            let object = ink(tool_icon(Tool::ObjectSelection), size);
+            let shared = select.iter().zip(&object).filter(|(a, b)| **a && **b).count();
+            let union = select.iter().zip(&object).filter(|(a, b)| **a || **b).count();
+            assert!(union > 0, "icons must have ink at {size}px");
+            let overlap = shared as f32 / union as f32;
+            assert!(overlap < 0.5, "Slice Select and Object Selection must read as distinct: {overlap:.2} of their ink overlaps at {size}px");
+            let slice = ink(tool_icon(Tool::Slice), size);
+            let own = select.iter().zip(&slice).filter(|(a, b)| **a && !**b).count();
+            let total = select.iter().filter(|a| **a).count();
+            assert!(own as f32 >= 0.3 * total as f32, "the pointer sets Slice Select apart from Slice: {own} of {total} pixels at {size}px");
+        }
+    }
+
     /// Ink bounding box `(width, height)` of a rasterized mask.
     fn ink_extent(mask: &[bool], size: u32) -> (usize, usize) {
         let s = size as usize;
@@ -318,6 +349,14 @@ mod tests {
             assert_eq!(uri.as_ref(), format!("bytes://icons/{name}.svg"));
             assert_eq!(bytes.as_ref(), expected.as_bytes(), "{name}");
             assert!(!std::str::from_utf8(&bytes).unwrap().contains("currentColor"), "{name}");
+        }
+    }
+
+    /// #10656: a misspelt footer glyph would silently draw the fallback square.
+    #[test]
+    fn footer_glyphs_are_bundled() {
+        for name in [FOOTER_NEW, FOOTER_NEW_GROUP, FOOTER_DELETE] {
+            assert!(exists(name), "{name}");
         }
     }
 

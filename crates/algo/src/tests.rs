@@ -1,5 +1,20 @@
 use super::*;
 use photocraft_color::{PixelFormat, SampleType};
+mod ext;
+mod mosaic;
+mod selection_mix;
+
+#[test]
+fn relight_admission_tracks_the_document_dependent_working_set() {
+    let params = FilterParams::Relight { angle: 0.0, elevation: 45.0, intensity: 50.0, ambient: 50.0, warmth: 0.0, softness: 100.0 };
+    let small = Rect::new(0, 0, 128, 128);
+    let large = Rect::new(0, 0, 86400, 43200);
+    assert!(working_bytes(&params, small, small, 4) < working_bytes(&params, small, large, 4));
+    assert_eq!(working_bytes(&params, Rect::EMPTY, large, 4), 0);
+    // A tiny image must not reserve the 256 MiB group budget three times over.
+    let tiny = Rect::new(0, 0, 24, 18);
+    assert!(working_bytes(&params, tiny, tiny, 4) < 64 << 20, "{}", working_bytes(&params, tiny, tiny, 4));
+}
 
 fn fmt(s: SampleType) -> PixelFormat {
     PixelFormat::new(ColorMode::Rgb, s, true)
@@ -639,4 +654,13 @@ fn mix_selection_reads_the_selection_once_per_tile() {
         mix_selection_reference(&mut b, t, &sel, &orig, alpha);
         assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()), "alpha {alpha}: results differ");
     }
+}
+
+#[test]
+fn blur_halos_follow_the_clamped_radius_and_never_overflow() {
+    let smart = |radius| FilterParams::SmartBlur { radius, threshold: 25.0, quality: BlurQuality::default(), mode: SmartBlurMode::default() };
+    assert_eq!(smart(1e9).halo(), Halo::Radius(101));
+    assert_eq!(smart(f32::INFINITY).halo(), Halo::Radius(101));
+    let gaussian = FilterParams::GaussianBlur { radius: f32::INFINITY };
+    assert_eq!(gaussian.halo(), Halo::Radius(i32::MAX));
 }

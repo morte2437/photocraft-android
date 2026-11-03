@@ -72,6 +72,20 @@ fn navigator_draws_the_gpu_canvas_texture_and_follows_edits() {
     assert!(near(preview_px(&mut h, 0.75, 0.5), [0, 0, 255]), "right half now blue");
     assert!(!h.state().navigator_textures.contains_key(&id));
 
+    // Dragging the selected pixels with the Move tool keeps the Navigator on the GPU texture
+    // without falling back to a full-document CPU thumbnail composite on the UI thread.
+    h.state_mut().ui.tool = crate::state::Tool::Move;
+    crate::canvas::tool_event(h.state_mut(), crate::canvas::ToolEvent::Down { x: 250.0, y: 150.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    crate::canvas::tool_event(h.state_mut(), crate::canvas::ToolEvent::Move { x: 150.0, y: 150.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    h.run_steps(4);
+    assert!(h.state().navigator_gpu.contains_key(&id), "Navigator stays on GPU canvas during Move drag");
+    assert!(!h.state().navigator_textures.contains_key(&id), "no CPU thumbnail built during Move drag");
+    crate::canvas::tool_event(h.state_mut(), crate::canvas::ToolEvent::Up { x: 150.0, y: 150.0 }, egui::Modifiers::NONE);
+    h.state_mut().run("select.drop", json!({})).unwrap();
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.state_mut().run("select.deselect", json!({})).unwrap();
+    h.run_steps(4);
+
     // A flipped view draws on the CPU: the Navigator goes back to its CPU thumbnail.
     h.state_mut().ui.view.flip_horizontal = true;
     h.run_steps(6);

@@ -57,8 +57,9 @@ impl DuotoneInk {
 pub struct Duotone {
     pub inks: Vec<DuotoneInk>,
     /// The PSD colour-mode data this came from, written back unchanged while the inks are unedited.
+    /// Shared between document snapshots (#4535).
     #[serde(default)]
-    pub psd_raw: Option<Vec<u8>>,
+    pub psd_raw: Option<std::sync::Arc<[u8]>>,
 }
 
 impl DuotoneInk {

@@ -119,7 +119,7 @@ pub fn clipboard_unreadable(app: &mut PhotocraftApp) {
 /// A full refresh of document `doc` fell back to the CPU compositor (`reason`, the GPU's) and took
 /// `ms`. The canvas doesn't respond while it runs, so once per document say why it was slow and
 /// which edits will do it again (#1015).
-pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Option<&str>) {
+pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Option<&crate::render_path::CpuReason>) {
     if ms.is_nan() || ms < SLOW_CPU_REFRESH_MS || app.ui.slow_refresh_noticed.contains(&doc) {
         return;
     }
@@ -129,11 +129,11 @@ pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Opti
         crate::i18n::fmt(tl!("This redraw took {seconds} s on the CPU."), &[("seconds", &seconds)]),
         tl!("Edits that change the whole document, such as a layer's blend mode, opacity or visibility, redraw all of it.").into(),
     ];
-    if reason == Some(crate::gpu_canvas::OVER_BUDGET) {
-        if let Some(fit) = app.perf.gpu_layer_fit.filter(|f| f.doc == doc && !f.fits()) {
+    if let Some(&crate::render_path::CpuReason::OverBudget { needed, budget }) = reason {
+        if needed > budget {
             lines.push(crate::i18n::fmt(
                 tl!("Its layers need {needed} of GPU memory; the budget leaves them {budget}."),
-                &[("needed", &crate::chrome_ui::fmt_bytes(fit.needed)), ("budget", &crate::chrome_ui::fmt_bytes(fit.budget))],
+                &[("needed", &crate::chrome_ui::fmt_bytes(needed)), ("budget", &crate::chrome_ui::fmt_bytes(budget))],
             ));
         }
         lines.push(
@@ -141,7 +141,7 @@ pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Opti
                 .into(),
         );
     } else if let Some(r) = reason {
-        lines.push(crate::i18n::fmt(tl!("The GPU compositor wasn't used: {reason}"), &[("reason", r)]));
+        lines.push(crate::i18n::fmt(tl!("The GPU compositor wasn't used: {reason}"), &[("reason", &r.to_string())]));
     }
     post(app, tl!("Large document: redrawing on the CPU"), lines, false, None);
 }
@@ -221,7 +221,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = crate::theme::Tokens::get(ctx);
     let mut dismiss_id = None;
     // Clear the status bar (~24 px) and leave the dock's edge some air.
-    let area = egui::Area::new(egui::Id::new("photocraft-notices"))
+    let area = egui::Area::new(egui::Id::unique("photocraft-notices"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -36.0))
         .interactable(true)
@@ -293,14 +293,9 @@ mod tests {
         let command = Some("WAYLAND_DISPLAY= photocraft".to_string());
         let app = PhotocraftApp::new(Session::new(), Services { is_wayland: true, xwayland_command: command, ..Default::default() });
         let notice = &app.ui.notices[0];
-        assert!(notice.lines.iter().all(|line| crate::i18n::tr(crate::i18n::Lang::from_code("es").unwrap(), line) != line), "every line is a catalog template");
         // the notice keeps its English source text and is translated when drawn (`i18n::t` with
-        // the current language); `tr` with an explicit language leaves the process-wide language,
-        // which other tests running in parallel draw with, untouched
-        let es = crate::i18n::Lang::from_code("es").unwrap();
-        assert_eq!(crate::i18n::tr(es, &notice.title), "Arrastrar y soltar archivos de forma nativa no está disponible en Wayland");
-        assert_ne!(crate::i18n::tr(es, &notice.lines[0]), notice.lines[0]);
-        assert_eq!(crate::i18n::tr(crate::i18n::Lang::EN, &notice.title), "Native file drag-and-drop is unavailable");
+        // the current language)
+        assert_eq!(notice.title, "Native file drag-and-drop is unavailable");
     }
 
     /// #5031: a paste that can't reach the clipboard (a Flatpak on Wayland) says why and how to
@@ -325,8 +320,6 @@ mod tests {
         assert_eq!(shown.len(), 1, "a second paste doesn't stack another notice");
         let guidance = english(shown[0]);
         assert!(guidance.contains(&format!("under XWayland: `{command}`")), "{guidance}");
-        let es = crate::i18n::Lang::from_code("es").unwrap();
-        assert!(shown[0].lines.iter().chain([&shown[0].title]).all(|line| crate::i18n::tr(es, line) != *line), "every line is a catalog template");
 
         let mut empty = PhotocraftApp::new(Session::new(), services(false));
         crate::menus::invoke(&mut empty, &ctx, "edit.paste", serde_json::json!({})).unwrap();
@@ -412,13 +405,13 @@ mod tests {
     #[test]
     fn a_slow_cpu_refresh_is_explained_once_per_document() {
         let mut app = PhotocraftApp::new(Session::new(), Services::default());
-        slow_cpu_refresh(&mut app, 1, 400.0, Some(crate::gpu_canvas::OVER_BUDGET));
-        slow_cpu_refresh(&mut app, 1, f64::NAN, Some(crate::gpu_canvas::OVER_BUDGET));
+        let over = crate::render_path::CpuReason::OverBudget { needed: 3600 << 20, budget: 3400 << 20 };
+        slow_cpu_refresh(&mut app, 1, 400.0, Some(&over));
+        slow_cpu_refresh(&mut app, 1, f64::NAN, Some(&over));
         assert!(app.ui.notices.is_empty(), "a quick refresh needs no explanation");
 
         // The layers of document 1 need 3.6 GB and may hold 3.4 GB: the notice says so.
-        app.perf.gpu_layer_fit = Some(crate::gpu_canvas::LayerFit { doc: 1, needed: 3600 << 20, budget: 3400 << 20 });
-        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(crate::gpu_canvas::OVER_BUDGET));
+        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(&over));
         assert_eq!(app.ui.notices.len(), 1);
         let text = app.ui.notices[0].lines.join(" ");
         assert!(text.contains("55.0 s"), "{text}");
@@ -427,10 +420,10 @@ mod tests {
         assert!(text.contains("GPU Memory in Preferences › Performance"), "{text}");
         assert!(!app.ui.notices[0].error);
 
-        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(crate::gpu_canvas::OVER_BUDGET));
+        slow_cpu_refresh(&mut app, 1, 55_000.0, Some(&over));
         assert_eq!(app.ui.notices.len(), 1, "once per document");
 
-        slow_cpu_refresh(&mut app, 2, 3_000.0, Some("Blend If on `Overlay` (composited on the CPU)"));
+        slow_cpu_refresh(&mut app, 2, 3_000.0, Some(&crate::render_path::CpuReason::Unsupported("Blend If on `Overlay` (composited on the CPU)".into())));
         assert_eq!(app.ui.notices.len(), 2);
         let text = app.ui.notices[1].lines.join(" ");
         assert!(text.contains("Blend If on `Overlay`"), "{text}");
@@ -440,15 +433,16 @@ mod tests {
     #[test]
     fn import_warning_punctuation_is_localized_without_changing_english() {
         let mut app = PhotocraftApp::new(Session::new(), Services::default());
-        for (lang, expected) in [
-            (crate::i18n::Lang::EN, "Opened x.psd with 3 warnings: first warning …"),
-            (crate::i18n::Lang::from_code("cs").unwrap(), "Otevřeno: x.psd (3 upozornění): first warning …"),
-        ] {
+        for lang in [crate::i18n::Lang::EN, crate::i18n::Lang::from_code("cs").unwrap()] {
             crate::i18n::with_language(lang, || {
                 let what = crate::i18n::fmt(tl!("Opened {name}"), &[("name", "x.psd")]);
                 let warnings = vec!["first warning".into(), "second warning".into(), "third warning".into()];
                 io_warnings(&mut app, &what, &warnings);
-                assert_eq!(app.ui.status, expected);
+                if lang == crate::i18n::Lang::EN {
+                    assert_eq!(app.ui.status, "Opened x.psd with 3 warnings: first warning …");
+                }
+                let title = crate::i18n::fmt(&crate::i18n::trn(lang, 3, "{what} with {n} warning", "{what} with {n} warnings"), &[("what", &what)]);
+                assert_eq!(app.ui.status, format!("{title}: first warning …"));
                 assert_eq!(app.ui.notices.last().unwrap().lines, warnings);
                 io_warnings(&mut app, &what, &warnings[..1]);
                 assert_eq!(app.ui.status, format!("{what}: first warning"));

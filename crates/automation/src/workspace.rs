@@ -1,7 +1,7 @@
 //! Capability-based filesystem policy for untrusted automation paths.
 
 use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf, Prefix};
 use std::sync::Arc;
 
 use cap_std::ambient_authority;
@@ -16,16 +16,18 @@ const DENIED: &str = "automation filesystem access is not granted";
 #[derive(Clone)]
 struct RootCapability {
     dir: Arc<Dir>,
-    /// The root as an absolute path (trusted launch configuration), to recognise absolute request
+    /// The canonical root path (trusted launch configuration), to recognise absolute request
     /// paths that name a file beneath it.
     path: PathBuf,
+    /// The trusted launch spelling also names the same held capability, even through a link.
+    configured_path: PathBuf,
 }
 
 /// Separate directory capabilities for automation reads and writes.
 ///
 /// Root paths are trusted launch-time configuration. Request paths are always
 /// untrusted, forward-slash relative paths resolved by `cap-std` beneath the
-/// held directory handle, or absolute paths whose text lies beneath the root
+/// held directory handle, or absolute paths beneath the canonical or configured root spelling
 /// (translated to relative ones, see [`request_path`]). Parent traversal,
 /// alternate separators, Windows prefixes and empty components are rejected
 /// before I/O.
@@ -88,6 +90,22 @@ impl AuthorizedWorkspace {
         let relative = request_path(path, self.write.as_ref())?;
         let root = self.write.as_ref().ok_or_else(|| AutomationError::BadRequest(format!("{DENIED}: write authority is absent")))?;
         let leaf = relative.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // The bytes are an image or document whatever the name says (`format` picks them), so
+        // only a file of a kind PhotoCraft writes is replaced: never source, settings or notes
+        // that share the root (`src/main.rs`, `.env`; #9439). A new file may have any name, and
+        // an image saved under one (`out` with `format: png`) can be saved over again.
+        let exists = root.dir.symlink_metadata(&relative).is_ok();
+        // Only a regular file is ever opened below (its head here, its attributes on Unix): a
+        // FIFO would block that open until a writer appears, and with it every other request.
+        // Links are followed for this check; a dangling one falls through to the name rule.
+        if exists && root.dir.metadata(&relative).is_ok_and(|m| !m.is_file()) {
+            return Err(AutomationError::BadRequest(format!("automation write refused: `{path}` already exists and is not a regular file")));
+        }
+        if exists && !written_kind(&leaf) && !holds_image(&root.dir, &relative) {
+            return Err(AutomationError::BadRequest(format!(
+                "automation write refused: `{path}` already exists and is not an image or document file PhotoCraft writes; save to a new name"
+            )));
+        }
         let parent = relative.parent().map(Path::to_path_buf).unwrap_or_default();
         let tmp = parent.join(photocraft_format::atomic::temp_name(&leaf));
         let mut options = OpenOptions::new();
@@ -101,7 +119,10 @@ impl AuthorizedWorkspace {
                 // Best effort, and only when there is a file being replaced: a save still
                 // succeeds for a document whose Finder tag could not come along.
                 if let Ok(old) = root.dir.open(&relative) {
+                    let old = old.into_std();
                     let _ = photocraft_format::atomic::meta::copy_xattrs(old.as_fd(), file.as_fd());
+                    // The creation time too (#9388), through the same handles.
+                    let _ = photocraft_format::atomic::meta::copy_created_file(&old, &file);
                 }
             }
             // Falls back to a plain fsync on shares that refuse a full flush (#1336).
@@ -122,6 +143,23 @@ impl AuthorizedWorkspace {
         }
         Ok(())
     }
+}
+
+/// Whether `name`'s extension is one of the formats PhotoCraft saves or exports.
+fn written_kind(name: &str) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else { return false };
+    let ext = ext.to_ascii_lowercase();
+    ["psd", "psb", "ora", "pdf", photocraft_format::EXTENSION].contains(&ext.as_str()) || photocraft_codecs::from_extension(&ext).is_some()
+}
+
+/// Whether the file at `relative` starts like an image PhotoCraft reads (PSD/PSB or a codec's
+/// magic). Containers that also hold other things (zip, PDF) are judged by name only.
+fn holds_image(dir: &Dir, relative: &Path) -> bool {
+    let mut head = [0u8; 64];
+    let Ok(mut file) = dir.open(relative) else { return false };
+    let Ok(n) = file.read(&mut head) else { return false };
+    let head = &head[..n];
+    head.starts_with(b"8BPS") || photocraft_codecs::detect(head).is_some()
 }
 
 fn read_to_observed_length(reader: &mut impl Read, observed_length: u64) -> Result<Vec<u8>, AutomationError> {
@@ -157,35 +195,60 @@ fn open_root(path: Option<&Path>, authority: &str) -> Result<Option<RootCapabili
     if path.as_os_str().is_empty() {
         return Err(AutomationError::BadRequest(format!("automation {authority} root is empty")));
     }
-    let dir = Dir::open_ambient_dir(path, ambient_authority())
-        .map_err(|e| AutomationError::Io(format!("cannot open automation {authority} root `{}`: {e}", path.display())))?;
-    // Textual (no link resolution), like the request paths it is compared with.
+    // Windows absolute() removes parent components. Keep an absolute launch spelling intact:
+    // only that trusted prefix is exempt from request traversal checks, never its suffix.
+    let configured_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::path::absolute(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?
+    };
+    // Resolve trusted configuration once, before opening that exact directory as a capability.
     let absolute =
-        std::path::absolute(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?;
-    Ok(Some(RootCapability { dir: Arc::new(dir), path: absolute }))
+        std::fs::canonicalize(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?;
+    let dir = Dir::open_ambient_dir(&absolute, ambient_authority())
+        .map_err(|e| AutomationError::Io(format!("cannot open automation {authority} root `{}`: {e}", path.display())))?;
+    Ok(Some(RootCapability { dir: Arc::new(dir), path: absolute, configured_path }))
 }
 
-/// A request path as the relative path the root's capability resolves. An absolute path is
-/// accepted only when its text names a file beneath `root`: the root's components are
-/// stripped (the drive letter compared without case) and the rest must pass
-/// [`relative_path`], so `..`, prefixes and device names are refused as before. Nothing is
-/// resolved on the filesystem; the held directory handle still does all the opening, so
-/// links cannot escape the root.
+/// Both root spellings refer to the capability opened at startup. Do not resolve an untrusted
+/// absolute request using ambient filesystem access: strip a known root first and let cap-std
+/// resolve the remaining name. New targets and nested export directories need not exist yet.
 fn request_path(raw: &str, root: Option<&RootCapability>) -> Result<PathBuf, AutomationError> {
-    let Some(root) = root.filter(|_| Path::new(raw).is_absolute()) else { return relative_path(raw) };
-    let mut request = Path::new(raw).components();
-    for want in root.path.components() {
-        let same = match (request.next(), want) {
-            (Some(Component::Prefix(a)), Component::Prefix(b)) => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
-            (Some(got), want) => got == want,
-            (None, _) => false,
+    let path = Path::new(raw);
+    let Some(root) = root.filter(|_| path.is_absolute()) else { return relative_path(raw) };
+    // Prefer the trusted launch spelling: it can itself contain `..`. Only that
+    // exact granted prefix is exempt; traversal in the remaining request still fails below.
+    let request = path_beneath_root(path, &root.configured_path)
+        .or_else(|| path_beneath_root(path, &root.path))
+        .ok_or_else(|| path_error(raw, "absolute paths must be inside the automation root"))?;
+    let rest = request.map(|c| c.as_os_str().to_str().ok_or_else(|| path_error(raw, "path is not UTF-8"))).collect::<Result<Vec<_>, _>>()?;
+    relative_path(&rest.join("/"))
+}
+
+/// Strip a granted root prefix without resolving the client path with ambient authority.
+/// Windows ASCII case variants name the same grant; the unstripped suffix keeps its case.
+fn path_beneath_root<'a>(path: &'a Path, root: &Path) -> Option<Components<'a>> {
+    let mut request = path.components();
+    for want in root.components() {
+        let same = match (request.next()?, want) {
+            (Component::Prefix(a), Component::Prefix(b)) => match (a.kind(), b.kind()) {
+                // std::fs::canonicalize uses verbatim paths on Windows. Accept their ordinary
+                // drive/UNC spelling too, without treating a device prefix as a disk prefix.
+                (Prefix::Disk(a) | Prefix::VerbatimDisk(a), Prefix::Disk(b) | Prefix::VerbatimDisk(b)) => a.eq_ignore_ascii_case(&b),
+                (Prefix::UNC(a, b) | Prefix::VerbatimUNC(a, b), Prefix::UNC(c, d) | Prefix::VerbatimUNC(c, d)) => {
+                    a.eq_ignore_ascii_case(c) && b.eq_ignore_ascii_case(d)
+                }
+                _ => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
+            },
+            #[cfg(windows)]
+            (Component::Normal(a), Component::Normal(b)) => a.eq_ignore_ascii_case(b),
+            (got, want) => got == want,
         };
         if !same {
-            return Err(path_error(raw, "absolute paths must be inside the automation root"));
+            return None;
         }
     }
-    let rest: Vec<&str> = request.map(|c| c.as_os_str().to_str().unwrap_or("\u{FFFD}")).collect();
-    relative_path(&rest.join("/"))
+    Some(request)
 }
 
 fn relative_path(raw: &str) -> Result<PathBuf, AutomationError> {
@@ -221,11 +284,14 @@ fn relative_path(raw: &str) -> Result<PathBuf, AutomationError> {
     Ok(PathBuf::from(raw))
 }
 
+/// At least every name cap-std refuses to open on Windows (`COM0`–`COM9`, `COM¹`–`COM³`, the same
+/// for `LPT`, spaces before the extension ignored), so nothing written is unreadable (#9424).
 fn is_windows_device_name(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or(component).to_ascii_uppercase();
+    let stem = component.split('.').next().unwrap_or(component).trim_end().to_ascii_uppercase();
+    let port = |n: &str| matches!(n, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³");
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$")
-        || stem.strip_prefix("COM").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
-        || stem.strip_prefix("LPT").is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+        || stem.strip_prefix("COM").is_some_and(port)
+        || stem.strip_prefix("LPT").is_some_and(port)
 }
 
 fn path_error(path: &str, reason: &str) -> AutomationError {
@@ -286,6 +352,8 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
             | "layer.smartObjects.editContents"
             | "layer.smartObjects.convertToLayers"
             | "layer.smartObjects.saveContents"
+            | "layer.smartObjects.exportSvg"
+            | "layer.smartObjects.updateSvg"
     );
     if (id.starts_with("layer.smartObjects.") && !in_memory_smart_command)
         || matches!(
@@ -335,11 +403,17 @@ fn params_contain_ambient_path(id: &str, params: &Value) -> bool {
     let keys: &[&str] = match id {
         "image.adjustments.colorLookup" | "layer.newAdjustmentLayer.colorLookup" | "layer.setAdjustment" => &["file"],
         "filter.distort.displace" => &["mapPath"],
-        "layer.quickExportAsPng" | "layer.exportAs" | "image.applyDataSet" | "layer.smartObjects.editContents" | "layer.smartObjects.convertToLayers" => {
-            &["path"]
-        }
+        "layer.quickExportAsPng"
+        | "layer.exportAs"
+        | "image.applyDataSet"
+        | "layer.smartObjects.editContents"
+        | "layer.smartObjects.convertToLayers"
+        | "layer.smartObjects.exportSvg"
+        | "layer.smartObjects.updateSvg" => &["path"],
         "image.mode.rgb" | "image.mode.grayscale" | "image.mode.cmyk" | "image.mode.lab" => &["profile"],
         "edit.assignProfile" | "edit.convertToProfile" | "edit.profileInfo" | "view.proofSetup" | "view.gamutWarning" => &["profile"],
+        // New Document's Color Profile (#321) can name an .icc file.
+        "file.new" => &["profile"],
         "edit.colorSettings" => &["workingRgb", "workingCmyk", "workingGray"],
         _ => &[],
     };
@@ -355,6 +429,13 @@ fn profile_command_may_read_ambient(id: &str, params: &Value) -> bool {
     // Installed profiles scan OS and user directories even without a request path.
     if matches!(id, "color.profileMismatch" | "edit.colorSettings" | "edit.installedProfiles" | "view.proofSetup") {
         return true;
+    }
+    // New Document skips exact `working` and `none`; the other working aliases resolve
+    // the configured working space, which may be an .icc path.
+    if id == "file.new" {
+        return params.get("profile").and_then(Value::as_str).is_some_and(|profile| {
+            matches!(profile, "default" | "working-cmyk" | "workingCmyk" | "working-rgb" | "workingRgb" | "working-gray" | "workingGray")
+        });
     }
     matches!(id, "edit.assignProfile" | "edit.convertToProfile" | "edit.profileInfo")
         && params.get("profile").and_then(Value::as_str).is_some_and(|profile| {
@@ -374,18 +455,28 @@ fn preferences_may_grant_ambient_paths(id: &str, params: &Value) -> bool {
 fn preference_uses_ambient_filesystem(path: &str) -> bool {
     // The engine skips empty segments (`.scriptEvents.enabled` sets `scriptEvents.enabled`), so
     // judge the first non-empty one; no segment at all is the whole-preferences update.
-    let Some(section) = path.split('.').find(|segment| !segment.is_empty()) else { return true };
+    let mut segments = path.split('.').filter(|segment| !segment.is_empty());
+    let Some(section) = segments.next() else { return true };
+    // File Handling's LUT folder (#6558) is listed from disk; the rest of that section is not.
     matches!(section, "colorSettings" | "scriptEvents" | "historyLog" | "plugIns" | "scratchDisks")
+        || (section == "fileHandling" && segments.next().is_none_or(|key| key == "lutFolder"))
 }
 
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {
     match id {
-        "actions.load" | "brush.presets.importAbr" | "brush.presets.importImage" | "gradient.presets.importGrd" | "plugin.install" | "swatches.import" => {
+        "actions.load"
+        | "brush.presets.importAbr"
+        | "brush.presets.importImage"
+        | "gradient.presets.importGrd"
+        | "plugin.install"
+        | "swatches.import"
+        | "style.presets.importAsl"
+        | "layer.layerStyle.contours.load" => {
             // `data` wins over `path` in these commands; any `path` without it reads the filesystem.
             params.get("data").is_none() && params.get("path").is_some()
         }
         // With a `path` the file is written there; without one the bytes come back as `data`.
-        "actions.save" | "swatches.export" => params.get("path").is_some(),
+        "actions.save" | "swatches.export" | "style.presets.exportAsl" | "layer.layerStyle.contours.save" => params.get("path").is_some(),
         // Shortcut sets: a .kys read or written by path, or a Summarize page written by path.
         "edit.keyboardShortcuts" => {
             params.get("path").is_some() || ["importKys", "exportKys", "summarize"].iter().any(|k| params.get(*k).and_then(|v| v.get("path")).is_some())
@@ -464,560 +555,4 @@ impl Drop for ExportSequence {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn roots(name: &str) -> (PathBuf, PathBuf, AuthorizedWorkspace) {
-        let base = std::env::temp_dir().join(format!("photocraft-workspace-{}-{name}", std::process::id()));
-        let inside = base.join("inside");
-        let outside = base.join("outside");
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&inside).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        let workspace = AuthorizedWorkspace::new(Some(&inside), Some(&inside)).unwrap();
-        (inside, outside, workspace)
-    }
-
-    #[test]
-    fn export_cleanup_owns_only_created_files_even_during_unwind() {
-        let (inside, _, workspace) = roots("export-cleanup");
-        std::fs::create_dir(inside.join("frames")).unwrap();
-        std::fs::write(inside.join("frames/clip_0009.png"), b"old").unwrap();
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut export = workspace.export_sequence("frames").unwrap();
-            export.write("clip_0000.png", b"new").unwrap();
-            assert!(export.write("clip_0009.png", b"overwrite").is_err());
-            assert!(export.write("../escape.png", b"escape").is_err());
-            panic!("rendering panic");
-        }));
-        assert!(panic.is_err());
-        assert_eq!(std::fs::read_dir(inside.join("frames")).unwrap().count(), 1);
-        assert_eq!(std::fs::read(inside.join("frames/clip_0009.png")).unwrap(), b"old");
-        assert!(AuthorizedWorkspace::default().export_sequence("frames").is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn export_directory_symlinks_cannot_escape_the_granted_root() {
-        let (inside, outside, workspace) = roots("export-symlink");
-        std::os::unix::fs::symlink(&outside, inside.join("escape")).unwrap();
-        assert!(workspace.export_sequence("escape").is_err());
-        assert_eq!(std::fs::read_dir(outside).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn valid_read_and_nonexistent_output_write_stay_in_root() {
-        let (inside, _, workspace) = roots("valid");
-        std::fs::write(inside.join("read.txt"), b"canary").unwrap();
-        assert_eq!(workspace.read("read.txt").unwrap(), b"canary");
-        workspace.write("new-output.txt", b"created").unwrap();
-        assert_eq!(std::fs::read(inside.join("new-output.txt")).unwrap(), b"created");
-    }
-
-    #[test]
-    fn large_observed_length_does_not_trigger_a_fixed_limit_or_upfront_reservation() {
-        let mut shortened = std::io::Cursor::new(b"psb");
-        assert_eq!(read_to_observed_length(&mut shortened, (1 << 30) + 1).unwrap(), b"psb");
-    }
-
-    #[test]
-    fn read_growth_is_rejected_at_the_observed_length() {
-        let mut growing = std::io::repeat(b'x').take(65);
-        let error = read_to_observed_length(&mut growing, 64).unwrap_err().to_string();
-        assert!(error.contains("grew beyond its observed length of 64 bytes"), "{error}");
-        let mut allowed = std::io::repeat(b'x').take(64);
-        assert_eq!(read_to_observed_length(&mut allowed, 64).unwrap().len(), 64);
-        let mut empty = std::io::Cursor::new(b"x");
-        assert!(read_to_observed_length(&mut empty, 0).is_err());
-    }
-
-    #[test]
-    fn open_pcraft_loads_a_directory_below_the_read_root() {
-        let (inside, _, workspace) = roots("pcraft-dir");
-        let doc = photocraft_doc::Document::new("Native", photocraft_doc::Size::new(16, 12), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
-        photocraft_format::PcraftWriter::new().save_dir(&doc, &inside.join("native.pcraft"), &photocraft_format::SaveOptions::default()).unwrap();
-        let loaded = workspace.open_pcraft("native.pcraft").unwrap().expect("the directory form loads");
-        assert_eq!(loaded.name, doc.name);
-        assert_eq!((loaded.size.width, loaded.size.height), (16, 12));
-    }
-
-    #[test]
-    fn open_pcraft_reports_zip_files_and_missing_paths_clearly() {
-        let (inside, _, workspace) = roots("pcraft-errors");
-        let doc = photocraft_doc::Document::new("Zipped", photocraft_doc::Size::new(4, 4), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
-        let zip = inside.join("zipped.pcraft");
-        photocraft_format::PcraftWriter::new().save_path(&doc, &zip, &photocraft_format::SaveOptions::default()).unwrap();
-        assert!(zip.is_file());
-        assert!(workspace.open_pcraft("zipped.pcraft").unwrap().is_none(), "the zip form falls back to the bytes path");
-        let error = workspace.open_pcraft("missing.pcraft").unwrap_err().to_string();
-        assert!(error.contains("failed"), "a missing path propagates its io error: {error}");
-        assert!(AuthorizedWorkspace::default().open_pcraft("x.pcraft").is_err(), "no read authority fails closed");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn open_pcraft_rejects_non_regular_entries_and_escaping_symlinks() {
-        let (inside, _, workspace) = roots("pcraft-nonregular");
-        let bundle = inside.join("native.pcraft");
-        std::fs::create_dir_all(bundle.join("manifest.json")).unwrap();
-        let error = workspace.open_pcraft("native.pcraft").unwrap_err().to_string();
-        assert!(error.contains("not a regular file"), "a directory entry is refused, not streamed: {error}");
-
-        let (inside2, _, workspace2) = roots("pcraft-symlink");
-        let bundle2 = inside2.join("native.pcraft");
-        std::fs::create_dir(&bundle2).unwrap();
-        std::os::unix::fs::symlink("/dev/zero", bundle2.join("manifest.json")).unwrap();
-        assert!(workspace2.open_pcraft("native.pcraft").is_err(), "an escaping symlink entry is refused");
-    }
-
-    fn temp_files(dir: &Path) -> Vec<String> {
-        std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp")).collect()
-    }
-
-    #[test]
-    fn write_replaces_atomically_and_leaves_no_temp_file() {
-        let (inside, _, workspace) = roots("atomic");
-        std::fs::create_dir_all(inside.join("sub")).unwrap();
-        workspace.write("sub/out.psd", b"original").unwrap();
-        workspace.write("sub/out.psd", b"replacement").unwrap();
-        assert_eq!(std::fs::read(inside.join("sub/out.psd")).unwrap(), b"replacement");
-        assert!(temp_files(&inside.join("sub")).is_empty());
-        // Renaming over a directory fails: nothing is left behind and the directory survives.
-        std::fs::create_dir_all(inside.join("adir")).unwrap();
-        assert!(workspace.write("adir", b"x").is_err());
-        assert!(inside.join("adir").is_dir());
-        assert!(temp_files(&inside).is_empty());
-    }
-
-    /// #7095: replacing a file through the automation path keeps the old file's extended
-    /// attributes, the same as a save through `atomic_write` does.
-    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
-    #[test]
-    fn write_keeps_the_replaced_files_extended_attributes() {
-        #[cfg(target_os = "macos")]
-        const TAG: &str = "com.apple.metadata:_kMDItemUserTags";
-        #[cfg(not(target_os = "macos"))]
-        const TAG: &str = "user.photocraft.test";
-
-        let (inside, _, workspace) = roots("xattr");
-        let path = inside.join("doc.psd");
-        workspace.write("doc.psd", b"original").unwrap();
-        if rustix::fs::setxattr(&path, TAG, b"tagged", rustix::fs::XattrFlags::empty()).is_err() {
-            return; // a file system without extended attributes: nothing to assert
-        }
-
-        workspace.write("doc.psd", b"replacement, longer").unwrap();
-
-        assert_eq!(std::fs::read(&path).unwrap(), b"replacement, longer");
-        let mut buf = [0u8; 64];
-        let len = rustix::fs::getxattr(&path, TAG, buf.as_mut_slice()).expect("the attribute was dropped");
-        assert_eq!(&buf[..len], b"tagged");
-        assert!(temp_files(&inside).is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_into_read_only_folder_keeps_the_original() {
-        use std::os::unix::fs::PermissionsExt;
-        let (inside, _, workspace) = roots("readonly");
-        let ro = inside.join("ro");
-        std::fs::create_dir_all(&ro).unwrap();
-        std::fs::write(ro.join("doc.psd"), b"original").unwrap();
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let root_user = std::fs::File::create(ro.join("probe")).is_ok();
-        if !root_user {
-            assert!(workspace.write("ro/doc.psd", b"new").is_err());
-            assert_eq!(std::fs::read(ro.join("doc.psd")).unwrap(), b"original");
-            assert!(temp_files(&ro).is_empty());
-        }
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[test]
-    fn rejects_absolute_traversal_mixed_prefix_and_malformed_paths_without_panicking() {
-        let (_, _, workspace) = roots("reject");
-        for path in [
-            "",
-            "/absolute",
-            "../escape",
-            "a/../escape",
-            "a\\..\\escape",
-            "a\\b",
-            "C:/escape",
-            "a//b",
-            "./a",
-            "name:stream",
-            "NUL",
-            "con.txt",
-            "folder/COM1.log",
-        ] {
-            assert!(workspace.read(path).is_err(), "read accepted {path:?}");
-            assert!(workspace.write(path, b"x").is_err(), "write accepted {path:?}");
-        }
-    }
-
-    #[test]
-    fn read_and_write_authority_are_separate() {
-        let (inside, _, _) = roots("separate");
-        std::fs::write(inside.join("read.txt"), b"canary").unwrap();
-        let read_only = AuthorizedWorkspace::new(Some(&inside), None).unwrap();
-        assert_eq!(read_only.read("read.txt").unwrap(), b"canary");
-        assert!(read_only.write("blocked.txt", b"x").is_err());
-        let write_only = AuthorizedWorkspace::new(None, Some(&inside)).unwrap();
-        assert!(write_only.read("read.txt").is_err());
-        write_only.write("written.txt", b"ok").unwrap();
-    }
-
-    #[test]
-    fn missing_parent_is_a_stable_error_before_any_file_is_created() {
-        let (inside, _, workspace) = roots("missing-parent");
-        let error = workspace.write("missing/output.txt", b"x").unwrap_err().to_string();
-        assert!(error.contains("automation write"), "{error}");
-        assert!(!inside.join("missing").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlink_escape_is_rejected() {
-        use std::os::unix::fs::symlink;
-
-        let (inside, outside, workspace) = roots("symlink");
-        std::fs::write(outside.join("secret.txt"), b"outside").unwrap();
-        symlink(&outside, inside.join("link")).unwrap();
-        assert!(workspace.read("link/secret.txt").is_err());
-        assert!(workspace.write("link/new.txt", b"blocked").is_err());
-        assert!(!outside.join("new.txt").exists());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_symlink_escape_is_rejected_when_supported() {
-        use std::os::windows::fs::symlink_dir;
-
-        let (inside, outside, workspace) = roots("windows-link");
-        std::fs::write(outside.join("secret.txt"), b"outside").unwrap();
-        if symlink_dir(&outside, inside.join("link")).is_err() {
-            return;
-        }
-        assert!(workspace.read("link/secret.txt").is_err());
-        assert!(workspace.write("link/new.txt", b"blocked").is_err());
-        assert!(!outside.join("new.txt").exists());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_junction_escape_is_rejected_when_supported() {
-        use std::process::Command;
-
-        let (inside, outside, workspace) = roots("windows-junction");
-        std::fs::write(outside.join("secret.txt"), b"outside").unwrap();
-        let link = inside.join("junction");
-        let status = Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(&link).arg(&outside).status();
-        if !status.is_ok_and(|status| status.success()) {
-            return;
-        }
-        assert!(workspace.read("junction/secret.txt").is_err());
-        assert!(workspace.write("junction/new.txt", b"blocked").is_err());
-        assert!(!outside.join("new.txt").exists());
-        let _ = std::fs::remove_dir(link);
-    }
-
-    #[test]
-    fn filesystem_commands_fail_closed() {
-        for id in [
-            "file.open",
-            "file.openAs",
-            "file.save",
-            "file.saveAs",
-            "file.saveACopy",
-            "file.export.saveForWebLegacy",
-            "pattern.import",
-            "layer.smartObjects.exportContents",
-            "layer.smartObjects.replaceContents",
-            "layer.smartObjects.relinkToFile",
-            "layer.smartObjects.convertToLinked",
-            "measurementLog.export",
-            "layer.videoLayers.reloadFrame",
-            "edit.colorSettings",
-        ] {
-            assert!(authorize_engine_command(id, &serde_json::json!({})).is_err());
-        }
-        assert!(authorize_engine_command("file.new", &serde_json::json!({})).is_ok());
-        assert!(authorize_engine_command("file.automate.cropAndStraightenPhotos", &serde_json::json!({})).is_ok());
-        assert!(authorize_desktop_engine_command("file.automate.cropAndStraightenPhotos", &serde_json::json!({})).is_ok());
-        for id in ["layer.smartObjects.editContents", "layer.smartObjects.convertToLayers", "layer.smartObjects.saveContents"] {
-            assert!(authorize_desktop_engine_command(id, &serde_json::json!({"layer": 19})).is_ok(), "{id}");
-        }
-        for id in ["layer.smartObjects.editContents", "layer.smartObjects.convertToLayers"] {
-            assert!(authorize_engine_command(id, &serde_json::json!({"path": "/outside/source.psb"})).is_err(), "{id}");
-        }
-        // The UI-level examples in docs/control-protocol.md.
-        for id in ["view.zoomIn", "window.theme.pro", "edit.search"] {
-            assert!(authorize_desktop_engine_command(id, &serde_json::json!({})).is_ok(), "{id}");
-        }
-        assert!(authorize_engine_command("image.mode.cmyk", &serde_json::json!({})).is_ok());
-        assert!(authorize_desktop_engine_command("image.mode.cmyk", &serde_json::json!({})).is_err());
-        assert!(authorize_engine_command("image.mode.rgb", &serde_json::json!({"profile": "/outside/profile.icc"})).is_err());
-        assert!(authorize_engine_command("image.mode.rgb", &serde_json::json!({"profile": "srgb"})).is_ok());
-        // Shortcut sets: text in and out is fine; a path reads or writes the filesystem.
-        let ks = |p: serde_json::Value| authorize_engine_command("edit.keyboardShortcuts", &p);
-        assert!(ks(serde_json::json!({"exportKys": true, "summarize": true, "importKys": "<photoshop-keyboard-shortcuts/>"})).is_ok());
-        for key in ["importKys", "exportKys", "summarize"] {
-            assert!(ks(serde_json::json!({ key: {"path": "/outside/set.kys"} })).is_err(), "{key}");
-        }
-        assert!(authorize_engine_command("filter.distort.displace", &serde_json::json!({"mapPath": "outside.png"})).is_err());
-        assert!(authorize_engine_command("layer.setAdjustment", &serde_json::json!({"file": "outside.cube"})).is_err());
-        assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "colorSettings.workingRgb", "value": "outside.icc"})).is_err());
-        assert!(authorize_engine_step("file.open", &serde_json::json!({})).is_err());
-        assert!(authorize_engine_step("actions.play", &serde_json::json!({})).is_ok());
-        // An allowed command can't reach a denied one by running it on its own behalf.
-        let mut session = photocraft_engine::Session::new();
-        session.execute("file.new", serde_json::json!({"width": 4, "height": 4})).unwrap();
-        session.authorize = Some(authorize_desktop_engine_step);
-        let params = serde_json::json!({"to": "grayscale"});
-        assert!(authorize_desktop_engine_command("file.automate.conditionalModeChange", &params).is_ok());
-        assert!(session.execute("file.automate.conditionalModeChange", params).is_err());
-        assert_eq!(session.active().unwrap().doc.mode, photocraft_engine::doc::ColorMode::Rgb);
-        assert!(authorize_desktop_engine_step("file.saveACopy", &serde_json::json!({})).is_err());
-    }
-
-    #[test]
-    fn apply_data_set_is_judged_by_the_values_it_applies() {
-        let mut headless = crate::Headless::new();
-        headless.command_run("file.new", serde_json::json!({"width": 8, "height": 8})).unwrap();
-        let layer = headless.command_run("layer.new.layer", serde_json::json!({})).unwrap()["layer"].clone();
-        let defs = [
-            serde_json::json!({"name": "shown", "layer": layer, "type": "visibility"}),
-            serde_json::json!({"name": "photo", "layer": layer, "type": "pixelReplacement"}),
-        ];
-        headless.command_run("image.variables.define", serde_json::json!({"defs": defs})).unwrap();
-        let sets = serde_json::json!({"dataSets": [
-            {"name": "hidden", "values": [{"variable": "shown", "kind": "visibility", "value": false}]},
-            {"name": "swap", "values": [
-                {"variable": "shown", "kind": "visibility", "value": false},
-                {"variable": "photo", "kind": "pixels", "value": "/outside/photo.png"},
-            ]},
-        ]});
-        headless.command_run("image.variables.dataSets", sets).unwrap();
-        let visible = |headless: &crate::Headless| headless.session.active().unwrap().doc.layers.iter().all(|l| l.visible);
-        let refused = headless.command_run("image.applyDataSet", serde_json::json!({"name": "swap"})).unwrap_err();
-        assert!(refused.to_string().contains("ambient filesystem paths"), "{refused}");
-        assert!(visible(&headless), "a refused data set applies none of its values");
-        assert!(headless.command_run("image.applyDataSet", serde_json::json!({"name": "hidden"})).is_ok());
-        assert!(!visible(&headless));
-    }
-
-    #[test]
-    fn automation_rejects_ambient_path_commands_and_preferences() {
-        for (id, params) in [
-            ("brush.presets.importAbr", serde_json::json!({"path": "/outside/set.abr"})),
-            ("brush.presets.importImage", serde_json::json!({"path": "/outside/tip.png"})),
-            ("gradient.presets.importGrd", serde_json::json!({"path": "/outside/set.grd"})),
-            ("plugin.install", serde_json::json!({"path": "/outside/plugin.wasm"})),
-            ("plugin.reload", serde_json::json!({"path": "/outside/plugins"})),
-            ("plugin.reload", serde_json::json!({})),
-            ("plugin.install", serde_json::json!({"path": " "})),
-            ("swatches.import", serde_json::json!({"path": "/outside/set.aco"})),
-            ("swatches.export", serde_json::json!({"path": "/outside/set.ase"})),
-            ("actions.load", serde_json::json!({"path": "/outside/set.atn"})),
-            ("actions.save", serde_json::json!({"path": "/outside/set.atn"})),
-        ] {
-            assert!(authorize_engine_command(id, &params).is_err(), "{id}: {params}");
-        }
-        for (id, params) in [
-            ("brush.presets.importAbr", serde_json::json!({"data": "QUJD"})),
-            ("brush.presets.importImage", serde_json::json!({"data": "QUJD"})),
-            ("gradient.presets.importGrd", serde_json::json!({"data": "QUJD"})),
-            ("plugin.install", serde_json::json!({"data": "QUJD"})),
-            ("swatches.import", serde_json::json!({"data": "QUJD"})),
-            ("swatches.export", serde_json::json!({"format": "ase"})),
-            ("actions.load", serde_json::json!({"data": "QUJD"})),
-            ("actions.save", serde_json::json!({"set": "S"})),
-        ] {
-            assert!(authorize_engine_command(id, &params).is_ok(), "{id}: {params}");
-        }
-        for path in [
-            "",
-            "colorSettings",
-            "colorSettings.workingRgb",
-            "scriptEvents",
-            "scriptEvents.enabled",
-            ".scriptEvents",
-            ".scriptEvents.enabled",
-            "historyLog.filePath",
-            ".historyLog.filePath",
-            "plugIns.additionalPluginsFolder",
-            "scratchDisks.disks",
-            ".",
-            "..historyLog.filePath",
-        ] {
-            assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": path, "value": {}})).is_err(), "{path}");
-        }
-        assert!(
-            authorize_engine_command("prefs.set", &serde_json::json!({"values": {"interface.language": "fr", "historyLog.filePath": "/outside/log"}})).is_err()
-        );
-        assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "interface.language", "value": "fr"})).is_ok());
-    }
-
-    #[test]
-    fn registry_filesystem_path_params_are_classified() {
-        let probe = serde_json::json!({
-            "path": "/outside/photocraft-probe",
-            "file": "/outside/photocraft-probe.icc",
-            "mapPath": "/outside/photocraft-probe.png",
-            "profile": "/outside/photocraft-probe.icc",
-            "workingRgb": "/outside/photocraft-probe.icc",
-            "workingCmyk": "/outside/photocraft-probe.icc",
-            "workingGray": "/outside/photocraft-probe.icc",
-            "input": "/outside/photocraft-input",
-            "output": "/outside/photocraft-output",
-            "paths": ["/outside/photocraft-probe.psd"],
-        });
-        let preference_probe = serde_json::json!({"path": ".scriptEvents", "value": {}});
-        let unclassified: Vec<_> = photocraft_engine::command_specs()
-            .iter()
-            .filter(|spec| documents_filesystem_path_params(spec.id, spec.params))
-            .filter(|spec| {
-                let params = if spec.id == "prefs.set" { &preference_probe } else { &probe };
-                authorize_engine_command(spec.id, params).is_ok()
-            })
-            .map(|spec| spec.id)
-            .collect();
-        assert!(unclassified.is_empty(), "filesystem path parameters in the command registry need an automation policy: {unclassified:?}");
-    }
-
-    fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
-        if matches!(id, "prefs.get" | "prefs.reset") {
-            return false;
-        }
-        // These registry descriptions refer to document vector paths, not host files.
-        if matches!(
-            id,
-            "filter.blurGallery.pathBlur"
-                | "filter.render.flame"
-                | "shape.create"
-                | "shape.edit"
-                | "shape.info"
-                | "shape.presets.list"
-                | "shape.presets.new"
-                | "path.list"
-                | "path.info"
-                | "path.set"
-                | "path.transform"
-                | "path.moveAnchors"
-                | "path.moveHandle"
-                | "path.bendSegment"
-                | "path.convertPoint"
-                | "path.addAnchor"
-                | "path.deleteAnchor"
-                | "path.clippingPath.set"
-                | "path.rename"
-                | "path.stroke"
-                | "type.attachToPath"
-                | "type.detachFromPath"
-                | "select.toWorkPath"
-                | "layer.vectorMask.add"
-                | "layer.vectorMask.edit"
-                | "layer.vectorMask.info"
-                | "paint.symmetryFromPath"
-                | "edit.defineCustomShape"
-                | "layer.combineShapes.unite"
-                | "layer.combineShapes.subtractFrontShape"
-                | "layer.combineShapes.intersectShapeAreas"
-                | "layer.combineShapes.excludeOverlappingShapes"
-                | "layer.combineShapes.mergeShapeComponents"
-        ) || id.starts_with("layer.newFillLayer.")
-            || id.starts_with("layer.newAdjustmentLayer.")
-        {
-            // New fill and adjustment layers take a vector path as their vector mask (#1419).
-            return false;
-        }
-        params.to_ascii_lowercase().contains("path")
-    }
-
-    #[test]
-    fn whole_preferences_update_cannot_enable_automation_script_events() {
-        let mut headless = crate::headless::Headless::new();
-        let result = headless.command_run(
-            "prefs.set",
-            serde_json::json!({
-                "path": "",
-                "value": {
-                    "scriptEvents": {
-                        "enabled": true,
-                        "bindings": [{
-                            "event": "newDocument",
-                            "steps": [["file.saveACopy", {"path": "/outside/canary.psd"}]]
-                        }]
-                    }
-                }
-            }),
-        );
-        assert!(result.is_err());
-
-        for (id, params) in [
-            ("brush.presets.importAbr", serde_json::json!({"path": "/outside/set.abr"})),
-            ("gradient.presets.importGrd", serde_json::json!({"path": "/outside/set.grd"})),
-            ("plugin.install", serde_json::json!({"path": "/outside/plugin.wasm"})),
-            ("plugin.reload", serde_json::json!({"path": "/outside/plugins"})),
-            ("prefs.set", serde_json::json!({"path": "historyLog.filePath", "value": "/outside/log"})),
-            ("prefs.set", serde_json::json!({"values": {"interface.language": "fr", "historyLog.filePath": "/outside/log"}})),
-        ] {
-            assert!(headless.command_run(id, params).is_err(), "{id}");
-        }
-        headless.command_run("file.new", serde_json::json!({"width": 5, "height": 5})).unwrap();
-        assert!(headless.session.file_menu.event_log.is_empty());
-    }
-
-    /// #2176: an absolute path beneath the root names the same file as its relative path; every
-    /// other absolute path is refused before any file effect.
-    #[test]
-    fn absolute_paths_beneath_the_root_are_translated_and_others_refused() {
-        let (inside, outside, workspace) = roots("absolute-paths");
-        let abs = |p: &Path| p.to_string_lossy().into_owned();
-
-        workspace.write(&abs(&inside.join("a.bin")), b"one").unwrap();
-        assert_eq!(std::fs::read(inside.join("a.bin")).unwrap(), b"one");
-        assert_eq!(workspace.read(&abs(&inside.join("a.bin"))).unwrap(), b"one");
-        // Forward slashes too (on Windows the native spelling uses `\`).
-        assert_eq!(workspace.read(&abs(&inside.join("a.bin")).replace('\\', "/")).unwrap(), b"one");
-        std::fs::create_dir(inside.join("sub")).unwrap();
-        workspace.write(&abs(&inside.join("sub").join("b.bin")), b"two").unwrap();
-        assert_eq!(std::fs::read(inside.join("sub/b.bin")).unwrap(), b"two");
-        assert_eq!(workspace.read("sub/b.bin").unwrap(), b"two", "relative paths still work");
-
-        let refused = |path: String| {
-            let error = workspace.write(&path, b"x").unwrap_err().to_string();
-            assert!(error.contains("automation path rejected"), "{path}: {error}");
-        };
-        refused(abs(&outside.join("escape.bin")));
-        refused(abs(&inside.join("..").join("outside").join("traversal.bin")));
-        refused(abs(&inside));
-        refused(abs(&inside.join("CON")));
-        refused(format!("{}:hidden", abs(&inside.join("a.bin"))));
-        // A sibling whose name merely starts with the root's name is not beneath it.
-        let sibling = inside.with_file_name("inside-sibling");
-        std::fs::create_dir_all(&sibling).unwrap();
-        refused(abs(&sibling.join("lookalike.bin")));
-        refused(format!("{}-sibling/lookalike.bin", abs(&inside)));
-        // Climbing back out through a subdirectory is refused too.
-        refused(abs(&inside.join("sub").join("..").join("..").join("outside").join("climb.bin")));
-        assert!(!sibling.join("lookalike.bin").exists());
-        assert!(!outside.join("climb.bin").exists());
-        assert!(!outside.join("escape.bin").exists());
-        assert!(!outside.join("traversal.bin").exists());
-        assert_eq!(std::fs::read(inside.join("a.bin")).unwrap(), b"one");
-    }
-
-    /// Each authority is checked against its own root, and none granted refuses absolute paths.
-    #[test]
-    fn absolute_paths_are_checked_against_the_authority_s_own_root() {
-        let (inside, outside, _) = roots("absolute-authority");
-        let workspace = AuthorizedWorkspace::new(Some(&outside), Some(&inside)).unwrap();
-        let target = inside.join("written.bin");
-        workspace.write(&target.to_string_lossy(), b"w").unwrap();
-        assert!(workspace.read(&target.to_string_lossy()).is_err(), "not under the read root");
-        let none = AuthorizedWorkspace::default();
-        assert!(none.read(&target.to_string_lossy()).is_err());
-    }
-}
+mod tests;

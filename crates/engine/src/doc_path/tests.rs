@@ -157,7 +157,7 @@ fn replayed(s: &mut Session, id: LayerId, params: serde_json::Value) -> Vec<[f32
     })
     .unwrap();
     let doc = &s.active().unwrap().doc;
-    photocraft_compose::render(doc, doc.bounds()).px
+    photocraft_compose::render(doc, doc.bounds()).into_px()
 }
 
 #[test]
@@ -189,6 +189,36 @@ fn smart_filters_reread_only_followed_files() {
     assert_eq!(replayed(&mut s, id, json!({"file": "invert.cube"})), inverted, "a relative look next to the document");
     #[cfg(unix)]
     assert_eq!(replayed(&mut s, id, json!({"file": network_alias(&d.join("invert.cube"))})), unfiltered);
+}
+
+/// #7423 (review on #7799): Displace on a Smart Object keeps a `mapPath` as a path, as before
+/// (only a map from an open document is embedded). A path relative to the saved document, set
+/// through the filter's own edit, displaces as the absolute one did, and the dialog's "None"
+/// (`mapDocument: -1`) names no map instead of failing.
+#[test]
+fn smart_displace_keeps_a_relative_map_path() {
+    let d = dir("displace-relative");
+    png(&d.join("ramp.png"), |x| [(x * 8) as u8, 0, 0]);
+    png(&d.join("map.png"), |_| [255, 255, 255]);
+    let (mut s, id) = document(&d, &d.join("ramp.png"));
+    let path = d.join("map.png").to_string_lossy().into_owned();
+    let unfiltered = photocraft_compose::render(&s.active().unwrap().doc, s.active().unwrap().doc.bounds()).into_px();
+    s.execute("filter.distort.displace", json!({"layer": id.0, "mapPath": path, "horizontal": 50, "vertical": 0})).unwrap();
+    let state = |s: &Session| {
+        let doc = &s.active().unwrap().doc;
+        let Some(LayerContent::Smart(sm)) = doc.layer(id).map(|l| &l.content) else { panic!("a smart object") };
+        (sm.smart_filters[0].params.clone(), photocraft_compose::render(doc, doc.bounds()).into_px())
+    };
+    let (params, displaced) = state(&s);
+    assert_eq!(params["mapPath"], json!(path));
+    assert!(photocraft_io::smart_map::displace_embedded_map(&params).is_none(), "a path, not an embedded map");
+    assert_ne!(displaced, unfiltered, "the map moves the pixels");
+    s.execute("layer.smartFilter.setParams", json!({"layer": id.0, "index": 0, "params": {"mapPath": "map.png"}})).unwrap();
+    let (params, relative) = state(&s);
+    assert_eq!(params["mapPath"], json!("map.png"));
+    assert_eq!(relative, displaced, "a relative map next to the document");
+    s.execute("layer.smartFilter.setParams", json!({"layer": id.0, "index": 0, "params": {"mapDocument": -1}})).unwrap();
+    assert_eq!(state(&s).1, displaced, "\"None\" changes nothing");
 }
 
 #[test]
@@ -224,4 +254,97 @@ fn data_sets_and_footage_read_only_followed_files() {
     let err = footage(&mut s, REMOTE).unwrap_err();
     assert!(err.contains("is not opened: the path is on another computer"), "{err}");
     footage(&mut s, "blue.png").unwrap();
+}
+
+/// A link to a file PhotoCraft can't place (a text or settings file) is never embedded: a saved
+/// PSD would otherwise carry bytes no reader can show as the layer's contents. The layer is
+/// written as pixels; Convert to Embedded and Relink refuse.
+#[test]
+fn links_to_files_that_are_not_images_are_never_embedded() {
+    const TEXT: &[u8] = b"plain text, not an image
+photocraft-text-marker
+";
+    let d = dir("not-image");
+    std::fs::create_dir_all(d.join("notes")).unwrap();
+    std::fs::create_dir_all(d.join("Downloads")).unwrap();
+    std::fs::write(d.join("notes").join("readme"), TEXT).unwrap();
+    std::fs::write(d.join("Downloads").join(".settings"), TEXT).unwrap();
+    png(&d.join("red.png"), |_| [255, 0, 0]);
+    let (mut s, id) = document(&d, &d.join("red.png"));
+    s.active_mut().unwrap().path = Some(d.join("Downloads").join("doc.pcraft").to_string_lossy().into_owned());
+    let has_text = |bytes: &[u8]| bytes.windows(TEXT.len()).any(|w| w == TEXT);
+    for (n, path) in ["../notes/readme", ".settings"].into_iter().enumerate() {
+        relink(&mut s, id, path);
+        for ext in ["psd", "psb", "tif"] {
+            let out = d.join(format!("copy{n}.{ext}"));
+            let r = s.execute("file.saveACopy", json!({"path": out.to_string_lossy(), "tiffLayers": true})).unwrap();
+            assert!(!has_text(&std::fs::read(&out).unwrap()), "{path} embedded in the {ext}: {r}");
+            let warnings = r["warnings"].to_string();
+            assert!(warnings.contains("written as pixels"), "{path} {ext}: {warnings}");
+        }
+        assert!(s.execute("layer.smartObjects.convertToEmbedded", json!({"layer": id.0})).is_err(), "{path}");
+        let abs = d.join("notes").join("readme");
+        assert!(s.execute("layer.smartObjects.relinkToFile", json!({"layer": id.0, "path": abs.to_string_lossy()})).is_err(), "{path}");
+    }
+}
+
+/// Duplicates share their contents identity, so a linked and an embedded copy of the same bytes
+/// meet in the export's conversion cache: each keeps its own rule, whichever is written first.
+#[test]
+fn a_linked_and_an_embedded_copy_of_the_same_bytes_keep_their_own_rule() {
+    const TEXT: &[u8] = b"plain text, not an image
+photocraft-shared-marker
+";
+    let d = dir("shared-contents");
+    std::fs::write(d.join("readme"), TEXT).unwrap();
+    png(&d.join("red.png"), |_| [255, 0, 0]);
+    let (mut s, linked) = document(&d, &d.join("red.png"));
+    s.execute("layer.duplicate", json!({})).unwrap();
+    let embedded = s.active().unwrap().active_layer.unwrap();
+    assert_ne!(linked, embedded);
+    relink(&mut s, linked, "readme");
+    s.edit("Embed", |doc, _| {
+        if let Some(LayerContent::Smart(sm)) = doc.layer_mut(embedded).map(|l| &mut l.content) {
+            sm.source = SmartSource::Embedded { file_name: "readme".into(), bytes: std::sync::Arc::new(TEXT.to_vec()) };
+        }
+        Ok(())
+    })
+    .unwrap();
+    for ext in ["psd", "psb", "tif"] {
+        let out = d.join(format!("copy.{ext}"));
+        let r = s.execute("file.saveACopy", json!({"path": out.to_string_lossy(), "tiffLayers": true})).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        let copies = bytes.windows(TEXT.len()).filter(|w| *w == TEXT).count();
+        assert_eq!(copies, 1, "{ext}: only the embedded copy is kept: {r}");
+        assert!(r["warnings"].to_string().contains("written as pixels"), "{ext}: {r}");
+    }
+}
+
+/// Package copies only linked files PhotoCraft can open: a link to a text file is listed as
+/// missing and no copy of it is written into the package's Links folder.
+#[test]
+fn package_copies_only_links_to_images() {
+    const TEXT: &[u8] = b"plain text, not an image
+photocraft-package-marker
+";
+    let d = dir("package-not-image");
+    std::fs::write(d.join("readme"), TEXT).unwrap();
+    png(&d.join("red.png"), |_| [255, 0, 0]);
+    let (mut s, id) = document(&d, &d.join("red.png"));
+    relink(&mut s, id, "readme");
+    let pkg = d.join("pkg");
+    let r = s.execute("file.package", json!({"dir": pkg.to_string_lossy()}));
+    let copies: Vec<_> = walkdir(&pkg).into_iter().filter(|f| std::fs::read(f).is_ok_and(|b| b == TEXT)).collect();
+    assert!(copies.is_empty(), "copied into the package: {copies:?} ({r:?})");
+    let r = r.unwrap();
+    assert_eq!(r["missing"], json!(["readme"]), "{r}");
+}
+
+fn walkdir(d: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() { out.extend(walkdir(&p)) } else { out.push(p) }
+    }
+    out
 }

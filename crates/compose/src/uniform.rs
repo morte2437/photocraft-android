@@ -32,7 +32,8 @@ impl<'a> UniformAreas<'a> {
             return None;
         }
         let mut surfaces = Vec::new();
-        for (_, _, l) in doc.walk() {
+        // Hidden layers are not composited: one with an effect must not rule the shortcut out.
+        for l in crate::visible_layers(&doc.layers) {
             let effects = l.effects.enabled && !l.effects.items.is_empty();
             if effects || l.vector_mask.is_some() || l.video.is_some() || l.blend == BlendMode::Dissolve {
                 return None;
@@ -84,7 +85,8 @@ impl<'a> UniformAreas<'a> {
                         Some(v) => v,
                         None => {
                             let bpp = s.default_bytes().len().max(1);
-                            let mut px = t.bytes().chunks_exact(bpp);
+                            let bytes = t.bytes();
+                            let mut px = bytes.chunks_exact(bpp);
                             let v = px.next().filter(|p0| px.all(|p| p == *p0)).map(Box::from);
                             self.tile_values.lock().unwrap_or_else(PoisonError::into_inner).insert(id, v.clone());
                             v

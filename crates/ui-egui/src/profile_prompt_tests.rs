@@ -16,8 +16,8 @@ fn harness(background: bool) -> Harness<'static, PhotocraftApp> {
         PhotocraftApp::new(
             Session::new(),
             Services {
-                import: Some(Box::new(|name, bytes, depth| {
-                    photocraft_io::import_with_svg_group_depth(name, bytes, depth).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+                import: Some(Box::new(|name, bytes, opts| {
+                    photocraft_io::import_with_options(name, bytes, opts).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
                 })),
                 ..Default::default()
             },
@@ -96,7 +96,7 @@ fn an_older_prompt_raised_in_front_gives_way_to_the_live_one() {
         open_together(&mut h, 3);
         let ok = live_button(&h, "OK");
         let oldest = h.state().ui.dialogs[0].id;
-        h.ctx.memory_mut(|m| m.areas_mut().move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("dialog", oldest)))));
+        h.ctx.memory_mut(|m| m.areas_mut().move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("dialog", oldest)))));
         h.run_steps(4);
         // All three are the same size in the same place: a click there must reach the live one.
         for left in [2, 1, 0] {

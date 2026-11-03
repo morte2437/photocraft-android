@@ -1,6 +1,12 @@
 # Exact octagonal mask shifts
 
-Select and Mask applies Shift Edge as flat grayscale dilation or erosion. Previously,
+> **2026-10-30:** Shift Edge no longer uses this morphology. Measured against the reference
+> application, it is a curve on each pixel's coverage (odds times `49^(shift / 100)`), so it
+> leaves hard edges in place; see `RefineParams::shift_edge`. `matting::morph` remains for the
+> Select and Mask view and Select › Modify, and the kernel numbers below still hold. The full
+> refinement comparison further down timed the old Shift Edge and is kept as history.
+
+Select and Mask applied Shift Edge as flat grayscale dilation or erosion. Previously,
 `matting::morph` ran one full 3x3 pass for each radius step, alternating a square and a
 cross. A 64 px shift needed 64 image passes. The filter supports fractional coverage.
 

@@ -2,7 +2,7 @@
 
 use std::io::{Seek, Write};
 
-use crate::compression::{Compression, MAX_DECODED_BYTES, decode_planes, validate_planes};
+use crate::compression::{Compression, MAX_DECODED_BYTES, decode_planes, rle_widening, validate_planes};
 use crate::error::{PsdError, Result};
 use crate::header::{ColorMode, Header, Version};
 use crate::image_data::ImageData;
@@ -41,6 +41,14 @@ pub struct GlobalLayerMask {
 }
 
 impl GlobalLayerMask {
+    /// The mask Photoshop writes for a layered file that has no global mask of its own:
+    /// an RGB red overlay at 50% opacity, kind 128 (use the per-layer setting), plus the
+    /// filler byte. A zero-length `LMsk` block in a TIFF makes Photoshop give up on the
+    /// layer data (it reads this 14-byte record from the block).
+    pub fn photoshop_default() -> Self {
+        GlobalLayerMask { data: vec![0, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 50, 128, 0] }
+    }
+
     fn be16(&self, at: usize) -> Option<u16> {
         self.data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
     }
@@ -65,7 +73,8 @@ impl GlobalLayerMask {
 /// A complete PSD/PSB file.
 ///
 /// `PsdFile::from_bytes(b)?.to_bytes()? == b` for unmodified well-formed
-/// files, and `from_bytes(to_bytes(f)) == f` for any model `f`.
+/// files, and `from_bytes(to_bytes(f)) == f` for any model `f` not marked
+/// [`Self::write_as_psb`] (a marked one reads back as the PSB it was written as).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PsdFile {
@@ -88,6 +97,12 @@ pub struct PsdFile {
     pub layer_mask_trailing: Vec<u8>,
     /// Merged image data.
     pub image_data: ImageData,
+    /// Write this PSD model as PSB (set by [`Self::promote_to_psb`]). The model itself stays a
+    /// consistent PSD: its channel data keeps two-byte RLE row counts, so everything that reads
+    /// it with `header.version` decodes it as before. Only [`Self::to_bytes`] and
+    /// [`Self::encoded_len`] write version 2, long length fields and four-byte row counts.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub write_as_psb: bool,
 }
 
 impl PsdFile {
@@ -118,6 +133,17 @@ impl PsdFile {
     pub fn from_bytes_and_merged_recovering(
         data: &[u8],
         want: impl FnOnce(&PsdFile) -> bool,
+        recover: impl FnOnce(&PsdFile) -> bool,
+    ) -> Result<(Self, Option<Result<Vec<u8>>>)> {
+        Self::from_bytes_and_merged_preflight(data, |file| Ok(want(file)), recover)
+    }
+
+    /// Parses with a fallible pixel preflight after layer records are available and before
+    /// the merged image is read, validated or decoded. A preflight error is always fatal;
+    /// `recover` only handles damage encountered after an accepted preflight.
+    pub fn from_bytes_and_merged_preflight(
+        data: &[u8],
+        want: impl FnOnce(&PsdFile) -> Result<bool>,
         recover: impl FnOnce(&PsdFile) -> bool,
     ) -> Result<(Self, Option<Result<Vec<u8>>>)> {
         let mut r = Reader::new(data);
@@ -176,14 +202,37 @@ impl PsdFile {
                 layer_mask_trailing = s.peek_rest().to_vec();
             }
         }
-        let image_data = ImageData { compression: Compression::Raw, data: Vec::new() };
-        let mut file =
-            PsdFile { header, color_mode_data, resources, layer_info, layer_info_placement, global_layer_mask, global_blocks, layer_mask_trailing, image_data };
+        let image_data = ImageData::new(Compression::Raw, Vec::new());
+        let mut file = PsdFile {
+            header,
+            color_mode_data,
+            resources,
+            layer_info,
+            layer_info_placement,
+            global_layer_mask,
+            global_blocks,
+            layer_mask_trailing,
+            image_data,
+            write_as_psb: false,
+        };
+        let want = want(&file)?;
+        let merged = file.read_merged_section(&mut r, want, recover)?;
+        Ok((file, merged))
+    }
+
+    /// Reads the merged image section from `rest` (the bytes after the layer and mask section) as
+    /// [`Self::from_bytes_and_merged_recovering`] does, decoding it.
+    pub(crate) fn read_merged_recovering(&mut self, rest: &[u8], recover: impl FnOnce(&PsdFile) -> bool) -> Result<Option<Result<Vec<u8>>>> {
+        self.read_merged_section(&mut Reader::new(rest), true, recover)
+    }
+
+    fn read_merged_section(&mut self, r: &mut Reader<'_>, want: bool, recover: impl FnOnce(&PsdFile) -> bool) -> Result<Option<Result<Vec<u8>>>> {
+        let file = self;
         let mut encoded = r.clone();
-        let merged = if want(&file) {
-            file.read_merged_decoded(&mut r).map(Some)
+        let merged = if want {
+            file.read_merged_decoded(r).map(Some)
         } else {
-            ImageData::read(&mut r, &file.header).map(|image| {
+            ImageData::read(r, &file.header).map(|image| {
                 file.image_data = image;
                 None
             })
@@ -191,19 +240,19 @@ impl PsdFile {
         let merged = match merged {
             Ok(merged) => merged,
             Err(error) => {
-                if matches!(error, PsdError::LimitExceeded(_)) || !recover(&file) {
+                if matches!(error, PsdError::LimitExceeded(_) | PsdError::OutOfMemory(_)) || !recover(file) {
                     return Err(error);
                 }
                 let compression = Compression::from_u16(encoded.u16()?);
                 let source = encoded.peek_rest();
                 let mut data = Vec::new();
-                data.try_reserve_exact(source.len()).map_err(|_| PsdError::LimitExceeded("not enough memory to retain the damaged merged image"))?;
+                data.try_reserve_exact(source.len()).map_err(|_| PsdError::OutOfMemory("not enough memory to retain the damaged merged image"))?;
                 data.extend_from_slice(source);
-                file.image_data = ImageData { compression, data };
+                file.image_data = ImageData::new(compression, data);
                 Some(Err(error))
             }
         };
-        Ok((file, merged))
+        Ok(merged)
     }
 
     /// Reads the merged image into `self.image_data` and decodes it. A ZIP stream within the
@@ -223,22 +272,30 @@ impl PsdFile {
         r.u16()?;
         let data = r.peek_rest();
         let decoded = decode_planes(compression, data, &layout);
+        // An allocation failure is the open's, before the encoded image is copied under the same
+        // memory pressure.
+        if matches!(decoded, Err(PsdError::OutOfMemory(_))) {
+            return decoded.map(Ok);
+        }
         if decoded.is_err() {
             validate_planes(compression, data, &layout)?;
         }
-        self.image_data = ImageData { compression, data: data.to_vec() };
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(data.len()).map_err(|_| PsdError::OutOfMemory("not enough memory to retain the merged image"))?;
+        copy.extend_from_slice(data);
+        self.image_data = ImageData::new(compression, copy);
         r.skip(data.len())?;
         Ok(decoded)
     }
 
     /// Serializes the file.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        // Reserve the whole file up front: appending to an empty Vec reallocates and copies
-        // repeatedly, and a reserve that is a few bytes short makes the last append double the
-        // buffer, copying the whole file once more (2x the file's size, #6607).
-        let hint = self.size_bound();
+        // Reserve the whole file up front, at its exact length: appending to an empty Vec
+        // reallocates and copies repeatedly, and a reserve that is a few bytes short makes the
+        // last append double the buffer, copying the whole file once more (#6607).
+        let len = usize::try_from(self.encoded_len()?).map_err(|_| PsdError::OutOfMemory("not enough memory to serialize the file"))?;
         let mut out = Vec::new();
-        out.try_reserve(hint).map_err(|_| PsdError::LimitExceeded("not enough memory to serialize the file"))?;
+        out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory to serialize the file"))?;
         self.write_to(&mut std::io::Cursor::new(&mut out)).map_err(PsdError::from_io)?;
         Ok(out)
     }
@@ -263,10 +320,14 @@ impl PsdFile {
     }
 
     fn write_staging<W: Write + Seek + ?Sized>(&self, out: &mut Sink<'_, W>) -> std::io::Result<()> {
-        let v = self.header.version;
+        let (v, widen) = self.write_form();
         let psb = v.is_psb();
         out.small(|o| {
-            self.header.write(o);
+            if widen {
+                Header { version: v, ..self.header.clone() }.write(o);
+            } else {
+                self.header.write(o);
+            }
             o.put_len(self.color_mode_data.len() as u64, false)
         })?;
         out.put(&self.color_mode_data)?;
@@ -282,7 +343,7 @@ impl PsdFile {
         if !section_empty {
             let li = out.begin_len(psb)?;
             if let (Some(info), false) = (&self.layer_info, in_block) {
-                info.write_body_to(out, v)?;
+                info.write_body_to(out, v, widen)?;
             }
             out.end_len(li, psb)?;
             let need_mask_field = self.global_layer_mask.is_some() || !self.global_blocks.is_empty() || (in_block && self.layer_info.is_some());
@@ -302,7 +363,7 @@ impl PsdFile {
                     let long = uses_long_length(v, key);
                     let at = out.begin_len(long)?;
                     let start = out.pos();
-                    info.write_body_to(out, v)?;
+                    info.write_body_to(out, v, widen)?;
                     let len = out.pos() - start;
                     out.end_len(at, long)?;
                     match padding {
@@ -321,28 +382,119 @@ impl PsdFile {
             o.put_u16(self.image_data.compression.as_u16());
             Ok(())
         })?;
-        out.put(&self.image_data.data)?;
+        let merged = self.image_data.encoded()?;
+        match self.merged_widened_rows(widen)? {
+            0 => out.put(&merged),
+            rows => out.put_widened_rle(&merged, rows),
+        }
+    }
+
+    /// The version the file is written as, and whether its RLE count tables widen on the way
+    /// (a PSD model marked [`Self::write_as_psb`]).
+    fn write_form(&self) -> (Version, bool) {
+        let widen = self.write_as_psb && !self.header.version.is_psb();
+        (if widen { Version::Psb } else { self.header.version }, widen)
+    }
+
+    /// The version [`Self::to_bytes`] writes: PSB for a PSD model marked [`Self::write_as_psb`],
+    /// else `header.version`.
+    pub fn written_version(&self) -> Version {
+        self.write_form().0
+    }
+
+    /// Rows of the merged image's RLE count table that widen on write (0 when nothing widens).
+    fn merged_widened_rows(&self, widen: bool) -> Result<usize> {
+        if widen && self.image_data.compression == Compression::Rle { ImageData::layout(&self.header).rows() } else { Ok(0) }
+    }
+
+    /// Bytes every RLE count table of this PSD model grows by when written as PSB; an error
+    /// when a table is too short for its rows.
+    fn rle_widening(&self) -> Result<u64> {
+        let mut n = 0u64;
+        for layer in self.layers() {
+            for c in &layer.channels {
+                match layer.widened_rows(c, true)? {
+                    0 => {}
+                    rows => n = n.saturating_add(rle_widening(&c.encoded()?, rows)?),
+                }
+            }
+        }
+        match self.merged_widened_rows(true)? {
+            0 => Ok(n),
+            rows => Ok(n.saturating_add(rle_widening(&self.image_data.encoded()?, rows)?)),
+        }
+    }
+
+    /// The number of bytes [`Self::to_bytes`] writes, computed without serializing the channel
+    /// data (only the layer records, which are small, are serialized to measure them). Lets a
+    /// writer check a file against the 2 GB PSD limit before choosing the version.
+    pub fn encoded_len(&self) -> Result<u64> {
+        let (v, widen) = self.write_form();
+        let psb = v.is_psb();
+        let len_field = |long: bool| if long { 8u64 } else { 4 };
+        let blocks_len = |blocks: &[TaggedBlock]| blocks.iter().fold(0u64, |n, b| n.saturating_add(b.encoded_len_aligned(v, 4) as u64));
+        let body_len = |info: &LayerInfo| -> Result<u64> {
+            let unpadded = info.unpadded_len_as(v, widen)?;
+            let padding = info.padding.as_ref().map_or(unpadded % 2, |p| p.len() as u64);
+            Ok(unpadded.saturating_add(padding))
+        };
+        // Header, colour mode data, resources.
+        let mut n = 26u64.saturating_add(4).saturating_add(self.color_mode_data.len() as u64).saturating_add(resources::section_len(&self.resources));
+
+        let in_block = matches!(self.layer_info_placement, LayerInfoPlacement::GlobalBlock { .. });
+        let section_empty =
+            self.layer_info.is_none() && self.global_layer_mask.is_none() && self.global_blocks.is_empty() && self.layer_mask_trailing.is_empty();
+        n = n.saturating_add(len_field(psb));
+        if !section_empty {
+            n = n.saturating_add(len_field(psb));
+            if let (Some(info), false) = (&self.layer_info, in_block) {
+                n = n.saturating_add(body_len(info)?);
+            }
+            let need_mask_field = self.global_layer_mask.is_some() || !self.global_blocks.is_empty() || (in_block && self.layer_info.is_some());
+            if need_mask_field {
+                n = n.saturating_add(4).saturating_add(self.global_layer_mask.as_ref().map_or(0, |g| g.data.len() as u64));
+            }
+            n = n.saturating_add(blocks_len(&self.global_blocks));
+            if let (Some(info), LayerInfoPlacement::GlobalBlock { key, padding, .. }) = (&self.layer_info, &self.layer_info_placement) {
+                let body = body_len(info)?;
+                let pad = padding.as_ref().map_or((4 - body % 4) % 4, |p| p.len() as u64);
+                n = n.saturating_add(8).saturating_add(len_field(uses_long_length(v, key))).saturating_add(body).saturating_add(pad);
+            }
+            n = n.saturating_add(self.layer_mask_trailing.len() as u64);
+        }
+        let merged = match self.merged_widened_rows(widen)? {
+            0 => 0,
+            rows => rle_widening(&self.image_data.encoded()?, rows)?,
+        };
+        Ok(n.saturating_add(2).saturating_add(self.image_data.encoded_len()).saturating_add(merged))
+    }
+
+    /// Marks a PSD model to be written as the equivalent PSB ([`Self::write_as_psb`]) without
+    /// touching or re-encoding any pixels: the packed RLE rows are the same in both versions, so
+    /// [`Self::to_bytes`] only widens the row-count tables of the layer channels and the merged
+    /// image (two to four bytes per row) and the length fields while it copies them out. Raw and
+    /// ZIP channel data is the same in both. A PSB model is left as is.
+    ///
+    /// Every RLE count table is checked first: an error leaves the model unmarked, and the write
+    /// cannot fail on a table later. The layer info padding is kept; a writer that pads to an
+    /// alignment re-pads with [`Self::pad_layer_info_to`].
+    pub fn promote_to_psb(&mut self) -> Result<()> {
+        if self.header.version.is_psb() || self.write_as_psb {
+            return Ok(());
+        }
+        self.rle_widening()?;
+        self.write_as_psb = true;
         Ok(())
     }
 
-    /// An upper bound of [`Self::to_bytes`]'s length: the pixel data plus every variable-length
-    /// part, each with generous room for its fixed fields, lengths and padding. Saturates.
-    pub fn size_bound(&self) -> usize {
-        // Per item: signature, key or id, length fields and padding fit easily.
-        const ITEM: usize = 32;
-        let blocks = |b: &[crate::tagged::TaggedBlock]| {
-            b.iter().fold(0usize, |n, t| n.saturating_add(t.data.len()).saturating_add(t.padding.as_ref().map_or(0, Vec::len)).saturating_add(ITEM))
-        };
-        let mut n: usize = 1024; // file header and section lengths
-        n = n.saturating_add(self.color_mode_data.len());
-        n = self.resources.iter().fold(n, |n, r| n.saturating_add(r.data.len()).saturating_add(r.name.len()).saturating_add(ITEM));
-        n = n.saturating_add(self.layer_info.as_ref().map_or(0, LayerInfo::size_bound));
-        n = n.saturating_add(self.global_layer_mask.as_ref().map_or(0, |g| g.data.len()));
-        n = n.saturating_add(blocks(&self.global_blocks)).saturating_add(self.layer_mask_trailing.len());
-        if let LayerInfoPlacement::GlobalBlock { padding: Some(p), .. } = &self.layer_info_placement {
-            n = n.saturating_add(p.len()).saturating_add(ITEM);
+    /// Pads the layer info body to a multiple of `align` bytes as it will be written (see
+    /// [`LayerInfo::pad_to`]), RLE count tables widened when [`Self::write_as_psb`] is set.
+    pub fn pad_layer_info_to(&mut self, align: u64) -> Result<()> {
+        let (v, widen) = self.write_form();
+        if let Some(info) = &mut self.layer_info {
+            info.padding = Some(vec![0; info.pad_len_as(v, widen, align)?]);
         }
-        n.saturating_add(self.image_data.data.len())
+        Ok(())
     }
 
     /// Layer records in file order (bottom-most first); empty if none.
@@ -404,12 +556,12 @@ impl PsdFile {
     }
 
     /// `true` if the merged image carries a transparency channel: its first extra channel, when
-    /// the layer count was stored negative or a "Saving Merged Transparency" global block (`Mtrn`,
-    /// `Mt16`, `Mt32`) is present. Photoshop marks 32-bit documents with `Mt32` and a positive
-    /// layer count (psd-tools transparentbg.psd). Photoshop also names the merged transparency
-    /// "Transparency" and lists it first among the alpha channel names, and some of its 16-bit
-    /// PSBs carry no other mark (#4654): when the layers sit in a global `Lr16`/`Lr32` block, that
-    /// name with one name per extra channel marks it too.
+    /// the layer count was stored negative or a "Saving Merged Transparency" global block (see
+    /// [`TaggedBlock::is_merged_transparency_marker`]) is present. Photoshop marks 32-bit documents
+    /// with `Mt32` and a positive layer count (psd-tools transparentbg.psd). Photoshop also names
+    /// the merged transparency "Transparency" and lists it first among the alpha channel names,
+    /// and some of its 16-bit PSBs carry no other mark (#4654): when the layers sit in a global
+    /// `Lr16`/`Lr32` block, that name with one name per extra channel marks it too.
     pub fn merged_has_alpha(&self) -> bool {
         let Some(color) = self.header.color_mode.color_channels() else {
             return false;
@@ -417,7 +569,7 @@ impl PsdFile {
         if self.header.channels <= color {
             return false;
         }
-        let marked = self.global_blocks.iter().any(|b| matches!(&b.key, b"Mtrn" | b"Mt16" | b"Mt32"));
+        let marked = self.global_blocks.iter().any(TaggedBlock::is_merged_transparency_marker);
         match &self.layer_info {
             Some(li) => {
                 let in_block = matches!(self.layer_info_placement, LayerInfoPlacement::GlobalBlock { .. });
@@ -483,16 +635,15 @@ impl PsdFile {
 mod write_tests {
     use super::*;
     use crate::{Compression, testgen};
+    use std::io::{Seek, Write};
 
-    /// #6607: the output is allocated once. A reserve a few bytes short of the file made the last
-    /// append double the buffer, copying the whole file once more at the save's peak.
+    /// #6607: the output is allocated once, at its exact length. A reserve a few bytes short of
+    /// the file made the last append double the buffer, copying the whole file once more.
     #[test]
     fn serializing_allocates_the_output_once() {
         for case in testgen::all_cases() {
-            let bound = case.file.size_bound();
             let bytes = case.file.to_bytes().unwrap();
-            assert!(bytes.len() <= bound, "{}: {} > bound {bound}", case.name, bytes.len());
-            assert_eq!(bytes.capacity(), bound, "{}: the buffer grew past its first allocation", case.name);
+            assert_eq!(bytes.capacity(), bytes.len(), "{}: the buffer grew past its first allocation", case.name);
         }
     }
 
@@ -518,6 +669,19 @@ mod write_tests {
         }
     }
 
+    /// The bytes `file` streams with `stage`-byte staging, after a 3-byte prefix that must stay.
+    fn streamed(file: &PsdFile, stage: usize) -> Vec<u8> {
+        let mut w = std::io::Cursor::new(b"pre".to_vec());
+        w.set_position(3);
+        file.write_to_staging(&mut w, stage).unwrap();
+        let end = w.position();
+        let mut bytes = w.into_inner();
+        assert_eq!(&bytes[..3], b"pre");
+        assert_eq!(end, bytes.len() as u64, "the stream must end at the file's end");
+        bytes.drain(..3);
+        bytes
+    }
+
     /// #6607: streaming into a file writes exactly the bytes of `to_bytes`, wherever the stream
     /// starts and however little is staged, so every length field is back-patched through the
     /// stream (both placements of the layer info, PSD and PSB, every mode and depth).
@@ -526,16 +690,32 @@ mod write_tests {
         for case in testgen::all_cases() {
             let want = case.file.to_bytes().unwrap();
             for stage in [0, 1, 7, 4096] {
-                let mut w = std::io::Cursor::new(b"pre".to_vec());
-                w.set_position(3);
-                case.file.write_to_staging(&mut w, stage).unwrap();
-                assert_eq!(&w.get_ref()[..3], b"pre", "{} stage {stage}", case.name);
-                assert!(w.get_ref()[3..] == want[..], "{} stage {stage}: streamed bytes differ", case.name);
-                assert_eq!(w.position(), 3 + want.len() as u64, "{} stage {stage}: the stream must end at the file's end", case.name);
+                assert!(streamed(&case.file, stage) == want, "{} stage {stage}: streamed bytes differ", case.name);
             }
             let mut w = std::io::Cursor::new(Vec::new());
             case.file.write_to(&mut w).unwrap();
             assert!(w.into_inner() == want, "{}: write_to differs from to_bytes", case.name);
+        }
+    }
+
+    /// A PSD model written as PSB (its RLE count tables widened on the way out) and a model read
+    /// lazily from a source (its pixel data not in memory) stream the bytes `to_bytes` writes.
+    #[test]
+    fn promoted_and_source_backed_files_stream_the_same_bytes() {
+        for case in testgen::all_cases() {
+            let mut promoted = case.file.clone();
+            if promoted.header.version == Version::Psd {
+                promoted.promote_to_psb().unwrap();
+                let want = promoted.to_bytes().unwrap();
+                for stage in [0, 1, 7, 4096] {
+                    assert!(streamed(&promoted, stage) == want, "{} promoted, stage {stage}", case.name);
+                }
+            }
+            let bytes = case.file.to_bytes().unwrap();
+            let lazy = PsdFile::from_source(crate::Source::new(bytes.clone())).unwrap();
+            for stage in [0, 1, 4096] {
+                assert!(streamed(&lazy, stage) == bytes, "{} source-backed, stage {stage}", case.name);
+            }
         }
     }
 
@@ -545,9 +725,9 @@ mod write_tests {
     fn streaming_passes_channel_and_merged_data_straight_through() {
         let mut file = testgen::small(Version::Psd, Compression::Raw);
         let big = 3 * crate::io::STAGE_FOR_TESTS;
-        file.image_data.data = vec![5; big];
+        file.image_data = ImageData::new(Compression::Raw, vec![5; big]);
         let info = file.layer_info.as_mut().unwrap();
-        info.layers[0].channels[0] = crate::layer::ChannelData { id: 0, compression: Some(Compression::Raw), data: vec![6; big + 1] };
+        info.layers[0].channels[0] = crate::layer::ChannelData::new(0, Some(Compression::Raw), vec![6; big + 1]);
         let mut w = Recorder { inner: std::io::Cursor::new(Vec::new()), writes: Vec::new() };
         file.write_to(&mut w).unwrap();
         assert!(w.writes.contains(&big), "merged image data was staged: {:?}", w.writes);
@@ -570,6 +750,96 @@ mod write_tests {
         let e = file.write_to(&mut std::io::Cursor::new(Vec::new())).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(PsdError::from_io(e), want);
+        // A damaged count table of a promoted file fails the stream as it fails `to_bytes`.
+        let mut file = testgen::small(Version::Psd, Compression::Rle);
+        file.promote_to_psb().unwrap();
+        file.image_data.data.truncate(3);
+        let want = file.to_bytes().unwrap_err();
+        let e = file.write_to(&mut std::io::Cursor::new(Vec::new())).unwrap_err();
+        assert_eq!(PsdError::from_io(e), want);
+    }
+
+    /// `encoded_len` is exactly what `to_bytes` writes, for every generated file and both layer
+    /// info placements, with and without padding (#5285).
+    #[test]
+    fn encoded_len_matches_the_written_length() {
+        for case in testgen::all_cases() {
+            assert_eq!(case.file.encoded_len().unwrap(), case.file.to_bytes().unwrap().len() as u64, "{}", case.name);
+        }
+        for version in [Version::Psd, Version::Psb] {
+            for key in [*b"Lr16", *b"Layr"] {
+                for padding in [None, Some(vec![]), Some(vec![1, 2, 3])] {
+                    for body_padding in [None, Some(vec![]), Some(vec![9])] {
+                        let mut file = testgen::small(version, Compression::Rle);
+                        file.global_blocks = vec![TaggedBlock::new(*b"zz01", vec![11]), TaggedBlock::new(*b"lnk2", vec![1; 5])];
+                        file.layer_info_placement = LayerInfoPlacement::GlobalBlock { index: 1, signature: *b"8BIM", key, padding: padding.clone() };
+                        file.layer_info.as_mut().unwrap().padding = body_padding;
+                        file.layer_mask_trailing = vec![0; 3];
+                        file.resources.push(ImageResource { name: b"odd".to_vec(), ..ImageResource::new(4000, vec![1, 2, 3]) });
+                        assert_eq!(file.encoded_len().unwrap(), file.to_bytes().unwrap().len() as u64, "{version:?} {key:?}");
+                    }
+                }
+            }
+        }
+        let mut empty = testgen::small(Version::Psd, Compression::Raw);
+        empty.layer_info = None;
+        empty.global_layer_mask = None;
+        empty.global_blocks.clear();
+        assert_eq!(empty.encoded_len().unwrap(), empty.to_bytes().unwrap().len() as u64);
+    }
+
+    /// A promoted PSD writes exactly the PSB written directly from the same pixels, and reads
+    /// back as that PSB; the model itself stays a PSD that every reader decodes as before (#5285).
+    #[test]
+    fn promote_to_psb_writes_the_psb_written_directly() {
+        let cases = testgen::all_cases();
+        let (psd, psb) = cases.split_at(cases.len() / 2);
+        for (psd, psb) in psd.iter().zip(psb) {
+            assert_eq!(psd.file.header.version, Version::Psd, "{}", psd.name);
+            let mut promoted = psd.file.clone();
+            promoted.promote_to_psb().unwrap();
+            assert!(promoted.write_as_psb);
+            assert_eq!(promoted.written_version(), Version::Psb);
+            let bytes = promoted.to_bytes().unwrap();
+            assert!(bytes == psb.file.to_bytes().unwrap(), "{}", psd.name);
+            assert_eq!(promoted.encoded_len().unwrap(), bytes.len() as u64, "{}", psd.name);
+            assert_eq!(PsdFile::from_bytes(&bytes).unwrap(), psb.file, "{}", psd.name);
+            // Unchanged as a model: same header, same (two-byte) channel data.
+            assert_eq!(PsdFile { write_as_psb: false, ..promoted.clone() }, psd.file, "{}", psd.name);
+            assert_eq!(promoted.decode_merged().ok(), psd.file.decode_merged().ok(), "{}", psd.name);
+        }
+    }
+
+    /// Re-padding a promoted model pads what is written, as `pad_to` does for a PSB.
+    #[test]
+    fn pad_layer_info_to_pads_the_written_body() {
+        let mut promoted = testgen::layered(Version::Psd, ColorMode::Rgb, 8, Compression::Rle);
+        promoted.promote_to_psb().unwrap();
+        promoted.pad_layer_info_to(4).unwrap();
+        let mut direct = testgen::layered(Version::Psb, ColorMode::Rgb, 8, Compression::Rle);
+        direct.layer_info.as_mut().unwrap().pad_to(Version::Psb, 4).unwrap();
+        assert!(promoted.to_bytes().unwrap() == direct.to_bytes().unwrap());
+    }
+
+    /// A damaged RLE table is refused before anything changes: the file stays a valid PSD.
+    #[test]
+    fn promote_to_psb_is_atomic() {
+        let mut file = testgen::small(Version::Psd, Compression::Rle);
+        // The last layer with pixels ("b", two rows): its red channel loses its row-count table.
+        let layers = &mut file.layer_info.as_mut().unwrap().layers;
+        let red = layers[2].channels.iter_mut().find(|c| c.id == 0).unwrap();
+        assert_eq!(red.compression, Some(Compression::Rle));
+        red.data.truncate(1);
+        let before = file.clone();
+        assert!(file.promote_to_psb().is_err());
+        assert_eq!(file, before);
+        assert!(!file.write_as_psb);
+        // A table damaged after promotion fails the write instead of panicking.
+        let mut file = testgen::small(Version::Psd, Compression::Rle);
+        file.promote_to_psb().unwrap();
+        file.image_data.data.truncate(3);
+        assert!(file.to_bytes().is_err());
+        assert!(file.encoded_len().is_err());
     }
 
     #[test]
@@ -722,5 +992,46 @@ mod write_tests {
                 assert!(matches!(parsed.layer_info_placement, LayerInfoPlacement::GlobalBlock { key: k, .. } if k == key));
             }
         }
+    }
+
+    /// A positive layer count plus a merged-transparency marker still makes the first extra
+    /// channel the transparency, for the specification's keys and for the `MTrn` Photoshop
+    /// writes in a layered TIFF.
+    #[test]
+    fn merged_transparency_markers_mark_the_first_extra_channel() {
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        if let Some(li) = &mut file.layer_info {
+            li.merged_alpha = false;
+        }
+        assert!(!file.merged_has_alpha());
+        for key in [*b"Mtrn", *b"MTrn", *b"Mt16", *b"Mt32"] {
+            let mut marked = file.clone();
+            marked.global_blocks.push(TaggedBlock::new(key, Vec::new()));
+            assert!(marked.merged_has_alpha(), "{}", String::from_utf8_lossy(&key));
+        }
+        // Other keys, and the marker's letters in another case, do not.
+        for key in [*b"MTRN", *b"mtrn", *b"Lr16"] {
+            let mut other = file.clone();
+            other.global_blocks.push(TaggedBlock::new(key, Vec::new()));
+            assert!(!other.merged_has_alpha(), "{}", String::from_utf8_lossy(&key));
+        }
+    }
+    #[test]
+    fn preflight_refusal_precedes_merged_validation_and_cannot_be_recovered() {
+        let file = testgen::small(Version::Psd, Compression::Zip);
+        let mut bytes = file.to_bytes().unwrap();
+        bytes.truncate(bytes.len() - file.image_data.data.len() - 2);
+        let recover_called = std::cell::Cell::new(false);
+        let preflight = |_: &PsdFile| Err(PsdError::LimitExceeded("test import budget"));
+        let recover = |_: &PsdFile| {
+            recover_called.set(true);
+            true
+        };
+        assert!(matches!(PsdFile::from_bytes_and_merged_preflight(&bytes, preflight, recover), Err(PsdError::LimitExceeded("test import budget"))));
+        assert!(matches!(
+            PsdFile::from_source_and_merged_preflight(crate::Source::new(bytes), preflight, recover),
+            Err(PsdError::LimitExceeded("test import budget"))
+        ));
+        assert!(!recover_called.get());
     }
 }

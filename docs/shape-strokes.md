@@ -1,6 +1,8 @@
 # Shape stroke options
 
-Updated 2026-10-11: direct editing, compact layout, and clickable colour/style controls.
+Updated 2026-10-27: Photoshop's Fill/Stroke popover (paint types, Recently Used Colors, swatch
+folders, full Color Picker). 2026-10-15: retain stroke paint and options when width reaches zero
+(#6191).
 
 PhotoCraft's Shape tool options bar has a Stroke Options button beside the existing width
 and colour controls. It sets defaults for new Rectangle, Ellipse, Triangle, Polygon, Line
@@ -8,12 +10,24 @@ and Custom Shape layers. Pen in Shape mode uses the same style defaults; open Pe
 their existing foreground colour and minimum 1 px width. To edit an existing shape,
 use Properties → Appearance → Stroke Options.
 
-Fill and Stroke swatches are clickable and open the existing compact colour picker. Choosing
-a colour preserves its alpha; No Color removes the corresponding paint. Tool-bar fill uses
+Fill and Stroke swatches open Photoshop's paint popover (`tools/paint_picker.rs`, updated
+2026-10-27): the paint types No Color, Solid Color, Gradient and Pattern along the top, the
+Color Picker button at the top right, then Recently Used Colors (15, newest first, kept between
+sessions in `Preferences::recent_colors`) over the swatch library's folders. Gradient shows the
+Gradient tab (see Paint below); Pattern is shown but off until shapes render pattern paint. The
+Color Picker button opens the full Color Picker dialog (HSB, RGB, Lab, CMYK, hex, eyedropper),
+titled Color Picker (Fill Color) or (Stroke Color), with a live canvas preview; OK is one undo
+step and also turns No Color or a gradient into that solid colour. Choosing a colour preserves
+its alpha; No Color removes the corresponding paint. Tool-bar fill uses
 the foreground colour and stroke uses the background colour, as before. Choosing a stroke
 colour or style deliberately enables a 3 px stroke when no stroke is present. The style button
 remains available with no stroke, but opening or dismissing it alone does not enable one.
 Properties edits the selected shape; the options bar continues to set defaults for new shapes.
+
+Setting an existing shape's stroke width to 0 px hides the stroke while retaining its paint,
+opacity and geometry options. Raising the width restores the same style, including after a
+native save and reopen. No Color still removes the stroke; deliberately choosing a colour or
+style enables a zero-width stroke at 3 px. Width edits remain one undo step per numeric drag.
 
 The editor offers Solid, Dashed (4 widths on, 2 off), Dotted (zero-length dashes with round
 caps, spaced every 2 widths), and custom repeating dash/gap sequences. Dash lengths and
@@ -74,6 +88,23 @@ zero. Set tool colours with `tools.setColors`. `ui.inspect` reports `toolOptions
 `toolOptions.stroke_width`, and the transient `strokeEditor`. Keyboard focus, standard number
 fields, colour pickers, and ComboBoxes remain native egui controls.
 
+## Paint
+
+The Fill and Stroke swatches (options bar and Properties) offer No Color, Solid Color and
+Gradient, as Photoshop's shape Fill/Stroke popover does. Gradient starts from the Gradient tool's current
+gradient (linear, 90°, 100%). Its tab (`shape_gradient_ui.rs`) has a Recent row (the gradients
+the popups last closed on, `ui.recent_gradients`) above the preset library (a pick takes the
+preset's colour and opacity stops, as a Gradient Fill layer made from it does), a stops strip
+(click below the ramp to add a colour stop, above it an opacity stop; drag a stop to move it or
+off the strip to delete it; drag a midpoint), the selected stop's colour (an inline picker),
+opacity, location and Delete, and the style, angle, scale, Reverse and Align with layer. Stop
+edits use the Gradient Editor's grammar (`gradient_fill_cmds::apply_stop`). With no
+shape selected the choice is the next shape's (`toolOptions.shape_fill_gradient` /
+`shape_stroke_gradient`; a colour replaces it, No Color keeps it); with one selected it is one
+`shape.edit`. The swatches send every gradient field (`opacityStops`, `midpoints`, `offset`,
+`dither`, `align`), so changing the angle of an imported gradient keeps the rest. Pattern paint is
+not offered yet.
+
 ## Upstream and public references
 
 - [PR #2218](https://github.com/storytold/photocraft/pull/2218) introduced these controls with
@@ -82,7 +113,8 @@ fields, colour pickers, and ComboBoxes remain native egui controls.
   parity, including selected-shape editing from the options bar and additional fill types;
   those remain separate work.
 - [Issue #1053](https://github.com/storytold/photocraft/issues/1053) documents the missing
-  stroke controls and existing engine/model support. Gradient fill UI remains separate work.
+  stroke controls and existing engine/model support. The Fill and Stroke swatches now have a
+  Gradient tab (see Paint below); a pattern paint UI remains separate work.
 - [Issue #1931](https://github.com/storytold/photocraft/issues/1931) requests sharp stroke options.
 - [PR #233](https://github.com/storytold/photocraft/pull/233),
   [#397](https://github.com/storytold/photocraft/pull/397), and
@@ -96,3 +128,16 @@ fields, colour pickers, and ComboBoxes remain native egui controls.
   [cap/join reference](https://helpx.adobe.com/ca/illustrator/desktop/paint-and-fill/apply-and-edit-strokes/change-the-caps-or-joins-of-a-line.html)
   defines endpoint and corner behavior and the 1–500 miter range. Dash units reuse
   PhotoCraft's existing documented `ShapeStroke`/`vstk` convention.
+
+## Editable arrows and older PhotoCraft versions
+
+Native `.pcraft` documents store arrow geometry in the regular shape path and
+the editable arrow parameters separately in the optional `arrow_live` field.
+
+PhotoCraft versions that do not support editable arrows can open these documents
+and display the saved arrow geometry as a regular vector shape. They cannot edit
+the arrowhead parameters.
+
+Re-saving the document in an older version may discard the `arrow_live`
+metadata, permanently removing parametric arrow editability from that copy.
+Keep the original file when working across versions.

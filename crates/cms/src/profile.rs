@@ -184,6 +184,7 @@ pub struct Profile {
 impl Profile {
     /// Parses ICC profile bytes.
     pub fn parse(bytes: &[u8]) -> Result<Profile, CmsError> {
+        CURVE_SAMPLES_LEFT.with(|left| left.set(MAX_CURVE_SAMPLES));
         let mut p = parse_profile(bytes)?;
         p.bytes = Some(Arc::new(bytes.to_vec()));
         Ok(p)
@@ -211,7 +212,9 @@ impl Profile {
         self.color_space.channels()
     }
 
-    /// Hash of the profile's ICC bytes (stable within a process; used as a cache key).
+    /// Hash of the profile's ICC bytes (stable within a process; used as a cache key). It is a
+    /// fixed-key 64-bit hash, so a crafted profile can share another's: equal hashes only narrow
+    /// the search, [`Profile::same_bytes`] decides.
     pub fn content_hash(&self) -> u64 {
         *self.hash.get_or_init(|| {
             use std::hash::{Hash, Hasher};
@@ -221,6 +224,16 @@ impl Profile {
         })
     }
 
+    /// Whether `self` and `other` have the same ICC bytes.
+    pub fn same_bytes(&self, other: &Profile) -> bool {
+        if let (Some(a), Some(b)) = (&self.bytes, &other.bytes)
+            && Arc::ptr_eq(a, b)
+        {
+            return true;
+        }
+        self.content_hash() == other.content_hash() && self.to_bytes() == other.to_bytes()
+    }
+
     /// Whether `self` and `other` describe the same colours: same colour space, and every sample
     /// of a device-value grid has the same colour through both (relative colorimetric, within
     /// [`SAME_COLORS_MAX_DELTA_E`]). Different encodings of one space are the same colours: the
@@ -228,7 +241,7 @@ impl Profile {
     /// parametric curves) differ in every byte. Colours are compared rather than round-tripped
     /// because CMYK → PCS → CMYK is not an identity even through a single profile.
     pub fn same_colors(&self, other: &Profile) -> bool {
-        if self.content_hash() == other.content_hash() {
+        if self.same_bytes(other) {
             return true;
         }
         let n = self.channels();
@@ -573,6 +586,24 @@ fn parse_profile(bytes: &[u8]) -> Result<Profile, CmsError> {
     Ok(p)
 }
 
+/// Sampled-curve entries one profile may decode in all (64 MB of `f32`). Tags and curve groups can
+/// point at the same encoded bytes, and each reference decodes its own table.
+const MAX_CURVE_SAMPLES: usize = 16 << 20;
+
+thread_local! {
+    /// What is left of [`MAX_CURVE_SAMPLES`] for the profile being parsed on this thread.
+    static CURVE_SAMPLES_LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_CURVE_SAMPLES) };
+}
+
+/// Charges `n` decoded curve samples to the profile being parsed.
+fn charge_curve_samples(n: usize) -> Result<(), CmsError> {
+    CURVE_SAMPLES_LEFT.with(|left| {
+        let rest = left.get().checked_sub(n).ok_or_else(|| CmsError::Invalid("the profile's curves hold too many samples".into()))?;
+        left.set(rest);
+        Ok(())
+    })
+}
+
 /// Parses a `curv` or `para` element; returns the curve and the element's byte length
 /// (unpadded).
 fn parse_curve(d: &[u8]) -> Result<(Curve, usize), CmsError> {
@@ -590,6 +621,7 @@ fn parse_curve(d: &[u8]) -> Result<(Curve, usize), CmsError> {
                 1 => Ok((Curve::Gamma(r.u16(12)? as f64 / 256.0), len)),
                 _ => {
                     let s = r.slice(12, n * 2)?;
+                    charge_curve_samples(n)?;
                     let t = s.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]]) as f32 / 65535.0).collect();
                     Ok((Curve::Table(t), len))
                 }
@@ -818,6 +850,7 @@ fn parse_text(d: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtin::Builtin;
 
     fn be(v: u32) -> [u8; 4] {
         v.to_be_bytes()
@@ -902,5 +935,72 @@ mod tests {
         d.extend(be(u32::MAX));
         d.extend(be(u32::MAX));
         assert_eq!(parse_text(&d), "");
+    }
+
+    /// `p` with the content hash of `other`: the hash is a fixed-key 64-bit SipHash, so a
+    /// crafted profile can have another's (#8613). Setting it stands in for finding one.
+    fn with_hash_of(p: &Profile, other: &Profile) -> Profile {
+        let p = Profile { hash: std::sync::OnceLock::from(other.content_hash()), ..p.clone() };
+        assert_eq!(p.content_hash(), other.content_hash());
+        p
+    }
+
+    /// #8613: a profile that shares sRGB's hash is not taken for sRGB.
+    #[test]
+    fn a_hash_collision_is_not_the_same_colours() {
+        let srgb = Builtin::Srgb.profile();
+        let p3 = with_hash_of(Builtin::DisplayP3.profile(), srgb);
+        assert!(!p3.same_bytes(srgb));
+        assert!(!p3.same_colors(srgb));
+        // Controls: equal bytes are the same, whatever object holds them.
+        assert!(srgb.same_bytes(srgb));
+        assert!(srgb.same_bytes(&Profile::parse(&srgb.to_bytes()).unwrap()));
+        assert!(Builtin::DisplayP3.profile().same_colors(Builtin::DisplayP3.profile()));
+    }
+
+    /// #8613: the transform cache does not hand a colliding profile the other's transform.
+    #[test]
+    fn a_hash_collision_does_not_get_the_cached_transform() {
+        use crate::transform::{Transform, TransformOptions, cached};
+        let (srgb, lab) = (Builtin::Srgb.profile(), Builtin::LabD50.profile());
+        let p3 = with_hash_of(Builtin::DisplayP3.profile(), srgb);
+        let opts = TransformOptions::default();
+        let green = [0.0, 1.0, 0.0];
+        let eval = |t: &Transform| {
+            let mut out = [0f32; 3];
+            t.eval(&green, &mut out);
+            out
+        };
+        let want = eval(&Transform::with_options(Builtin::DisplayP3.profile(), lab, opts).unwrap());
+        assert_ne!(want, eval(&Transform::with_options(srgb, lab, opts).unwrap()), "P3 green is not sRGB green");
+        let sr = eval(&cached(srgb, lab, opts).unwrap());
+        assert_eq!(eval(&cached(&p3, lab, opts).unwrap()), want);
+        // Control: sRGB still gets its own transform after the colliding lookup.
+        assert_eq!(eval(&cached(srgb, lab, opts).unwrap()), sr);
+    }
+}
+
+#[cfg(test)]
+mod curve_budget_tests {
+    use super::*;
+
+    #[test]
+    fn aliased_curves_are_charged_for_each_decoded_table() {
+        // One 1M-sample `curv` element referenced seventeen times decodes 17M samples.
+        let mut element = b"curv\0\0\0\0".to_vec();
+        element.extend((1u32 << 20).to_be_bytes());
+        element.extend(std::iter::repeat_n(0u8, 2 << 20));
+        CURVE_SAMPLES_LEFT.with(|left| left.set(MAX_CURVE_SAMPLES));
+        let mut failed_at = None;
+        for i in 0..17 {
+            if parse_curve(&element).is_err() {
+                failed_at = Some(i);
+                break;
+            }
+        }
+        assert_eq!(failed_at, Some(16), "sixteen tables fit the budget, the seventeenth does not");
+        // Each profile parse starts with a fresh budget.
+        CURVE_SAMPLES_LEFT.with(|left| left.set(MAX_CURVE_SAMPLES));
+        assert!(parse_curve(&element).is_ok());
     }
 }

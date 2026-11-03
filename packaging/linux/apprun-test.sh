@@ -37,10 +37,10 @@ fail() {
 
 # 1. Launch works and passes arguments through.
 out="$("$APPDIR/AppRun" open file.png)" || fail "AppRun exited non-zero"
-[ "$out" = "stub: open file.png" ] || fail "arguments not forwarded: $out"
+[[ "$out" = "stub: open file.png" ]] || fail "arguments not forwarded: $out"
 
 DESKTOP="$XDG_DATA_HOME/applications/$APP_ID.desktop"
-[ -f "$DESKTOP" ] || fail "desktop entry not installed"
+[[ -f "$DESKTOP" ]] || fail "desktop entry not installed"
 
 # 2. Exec rewritten to the AppImage (quoted, spaces intact), TryExec dropped,
 #    everything else preserved from the packaged entry.
@@ -56,15 +56,15 @@ fi
 
 # 3. Icons landed under the name the .desktop entry references.
 for f in "16x16/apps/$APP_ID.png" "256x256/apps/$APP_ID.png" "scalable/apps/$APP_ID.svg"; do
-  [ -f "$XDG_DATA_HOME/icons/hicolor/$f" ] || fail "icon missing: $f"
+  [[ -f "$XDG_DATA_HOME/icons/hicolor/$f" ]] || fail "icon missing: $f"
 done
 
 # 4. Idempotent: a second launch must not rewrite anything (inode unchanged).
 before="$(stat -c %i "$DESKTOP")"
 out="$("$APPDIR/AppRun")" || fail "second launch exited non-zero"
-[ "$out" = "stub: " ] || fail "second launch output: $out"
+[[ "$out" = "stub: " ]] || fail "second launch output: $out"
 after="$(stat -c %i "$DESKTOP")"
-[ "$before" = "$after" ] || fail "desktop entry rewritten although unchanged"
+[[ "$before" = "$after" ]] || fail "desktop entry rewritten although unchanged"
 
 # 5. Moving the AppImage refreshes Exec.
 mv "$APPIMAGE" "$TMP/moved.AppImage"
@@ -78,9 +78,9 @@ grep -Fxq "Exec=\"$(readlink -f "$APPIMAGE")\" %F" "$DESKTOP" || fail "Exec not 
 ext_desktop="$XDG_DATA_HOME/applications/appimagekit-photocraft.desktop"
 printf '[Desktop Entry]\nType=Application\nName=PhotoCraft\nExec="%s" %%F\nIcon=%s\n' "$(readlink -f "$APPIMAGE")" "$APP_ID" >"$ext_desktop"
 "$APPDIR/AppRun" >/dev/null || fail "launch with external integrator desktop entry exited non-zero"
-[ ! -e "$DESKTOP" ] || fail "duplicate desktop entry kept alongside external integrator entry"
-[ -f "$ext_desktop" ] || fail "external integrator desktop entry removed"
-[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ] || fail "icons missing with external integrator"
+[[ ! -e "$DESKTOP" ]] || fail "duplicate desktop entry kept alongside external integrator entry"
+[[ -f "$ext_desktop" ]] || fail "external integrator desktop entry removed"
+[[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ]] || fail "icons missing with external integrator"
 rm -f "$ext_desktop"
 
 # 7. AppImageLauncher exports DESKTOPINTEGRATION even after X-AppImage-Integrate=false
@@ -88,53 +88,53 @@ rm -f "$ext_desktop"
 #    writes its own entry and a later launch must not delete it (#5534).
 rm -rf "$XDG_DATA_HOME"
 DESKTOPINTEGRATION=AppImageLauncher "$APPDIR/AppRun" >/dev/null || fail "DESKTOPINTEGRATION launch exited non-zero"
-[ -f "$DESKTOP" ] || fail "DESKTOPINTEGRATION suppressed the desktop entry (#5534)"
+[[ -f "$DESKTOP" ]] || fail "DESKTOPINTEGRATION suppressed the desktop entry (#5534)"
 grep -Fxq "Exec=\"$(readlink -f "$APPIMAGE")\" %F" "$DESKTOP" || fail "Exec missing under DESKTOPINTEGRATION"
 grep -Fxq "X-AppImage-Integrate=false" "$DESKTOP" || fail "X-AppImage-Integrate=false missing under DESKTOPINTEGRATION"
-[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ] || fail "icons not installed under DESKTOPINTEGRATION"
+[[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ]] || fail "icons not installed under DESKTOPINTEGRATION"
 before="$(stat -c %i "$DESKTOP")"
 DESKTOPINTEGRATION=AppImageLauncher "$APPDIR/AppRun" >/dev/null || fail "second DESKTOPINTEGRATION launch exited non-zero"
-[ -f "$DESKTOP" ] || fail "DESKTOPINTEGRATION removed the desktop entry on a later launch"
-[ "$before" = "$(stat -c %i "$DESKTOP")" ] || fail "desktop entry rewritten under DESKTOPINTEGRATION although unchanged"
+[[ -f "$DESKTOP" ]] || fail "DESKTOPINTEGRATION removed the desktop entry on a later launch"
+[[ "$before" = "$(stat -c %i "$DESKTOP")" ]] || fail "desktop entry rewritten under DESKTOPINTEGRATION although unchanged"
 # A real integrator entry still wins, including when DESKTOPINTEGRATION is also set (#3623).
 ext_desktop="$XDG_DATA_HOME/applications/appimagekit-photocraft.desktop"
 printf '[Desktop Entry]\nType=Application\nName=PhotoCraft\nExec="%s" %%F\nIcon=%s\n' "$(readlink -f "$APPIMAGE")" "$APP_ID" >"$ext_desktop"
 DESKTOPINTEGRATION=AppImageLauncher "$APPDIR/AppRun" >/dev/null || fail "launch with integrator entry and DESKTOPINTEGRATION exited non-zero"
-[ ! -e "$DESKTOP" ] || fail "duplicate desktop entry kept when an integrator entry exists"
-[ -f "$ext_desktop" ] || fail "external integrator desktop entry removed"
-[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ] || fail "icons missing when DESKTOPINTEGRATION and an integrator entry coexist"
+[[ ! -e "$DESKTOP" ]] || fail "duplicate desktop entry kept when an integrator entry exists"
+[[ -f "$ext_desktop" ]] || fail "external integrator desktop entry removed"
+[[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ]] || fail "icons missing when DESKTOPINTEGRATION and an integrator entry coexist"
 rm -f "$ext_desktop"
 
 # 8. Opt-out installs nothing.
 rm -rf "$XDG_DATA_HOME"
 PHOTOCRAFT_NO_DESKTOP_INTEGRATION=1 "$APPDIR/AppRun" >/dev/null || fail "opt-out launch exited non-zero"
-[ ! -e "$XDG_DATA_HOME" ] || fail "opt-out still integrated"
+[[ ! -e "$XDG_DATA_HOME" ]] || fail "opt-out still integrated"
 
 # 9. An unwritable data dir never blocks the launch.
 mkdir -p "$TMP/ro" && chmod a-w "$TMP/ro"
 out="$(XDG_DATA_HOME="$TMP/ro/data" "$APPDIR/AppRun" out.txt)" || fail "launch blocked by unwritable data dir"
-[ "$out" = "stub: out.txt" ] || fail "stub not run against unwritable data dir: $out"
+[[ "$out" = "stub: out.txt" ]] || fail "stub not run against unwritable data dir: $out"
 chmod u+w "$TMP/ro"
 
 # 10. No $APPIMAGE (extracted AppDir): launch only, nothing installed.
 rm -rf "$XDG_DATA_HOME"
 env -u APPIMAGE "$APPDIR/AppRun" >/dev/null || fail "extracted-AppDir launch exited non-zero"
-[ ! -e "$XDG_DATA_HOME" ] || fail "integrated without $APPIMAGE"
+[[ ! -e "$XDG_DATA_HOME" ]] || fail "integrated without $APPIMAGE"
 
 # 11. A path that would need Exec escaping (here a `$`): launch only, nothing installed.
 rm -rf "$XDG_DATA_HOME"
 odd="$TMP/odd\$(id).AppImage"
 : >"$odd"
 out="$(APPIMAGE="$odd" "$APPDIR/AppRun" x)" || fail "launch with an odd path exited non-zero"
-[ "$out" = "stub: x" ] || fail "odd path: $out"
-[ ! -e "$XDG_DATA_HOME" ] || fail "integrated an AppImage path that needs escaping"
+[[ "$out" = "stub: x" ]] || fail "odd path: $out"
+[[ ! -e "$XDG_DATA_HOME" ]] || fail "integrated an AppImage path that needs escaping"
 
 # 12. AM / AppMan (#6392): a photocraft-AM.desktop launcher in the user's applications
 #     dir owns the menu entry. AppRun removes its own entry left from an earlier run,
 #     writes no second one and still installs the icons.
 rm -rf "$XDG_DATA_HOME"
 "$APPDIR/AppRun" >/dev/null || fail "launch before AM install exited non-zero"
-[ -f "$DESKTOP" ] || fail "no desktop entry before AM install"
+[[ -f "$DESKTOP" ]] || fail "no desktop entry before AM install"
 am_desktop="$XDG_DATA_HOME/applications/photocraft-AM.desktop"
 printf '[Desktop Entry]
 Type=Application
@@ -143,13 +143,13 @@ Exec=photocraft %%F
 Icon=%s
 ' "$APP_ID" >"$am_desktop"
 "$APPDIR/AppRun" >/dev/null || fail "launch with AM launcher exited non-zero"
-[ ! -e "$DESKTOP" ] || fail "duplicate desktop entry kept alongside AM launcher (#6392)"
-[ -f "$am_desktop" ] || fail "AM launcher was removed"
-[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ] || fail "icons missing with AM launcher"
+[[ ! -e "$DESKTOP" ]] || fail "duplicate desktop entry kept alongside AM launcher (#6392)"
+[[ -f "$am_desktop" ]] || fail "AM launcher was removed"
+[[ -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/$APP_ID.png" ]] || fail "icons missing with AM launcher"
 
 # 13. Once AM removes its launcher, AppRun writes its own entry again.
 rm -f "$am_desktop"
 "$APPDIR/AppRun" >/dev/null || fail "launch after AM removal exited non-zero"
-[ -f "$DESKTOP" ] || fail "no desktop entry after the AM launcher was removed"
+[[ -f "$DESKTOP" ]] || fail "no desktop entry after the AM launcher was removed"
 
 echo "AppRun desktop integration ok"

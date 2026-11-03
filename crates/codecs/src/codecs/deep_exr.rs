@@ -187,7 +187,7 @@ fn decompress(compression: Compression, packed: &[u8], expected: usize, what: &s
             // `read_to_end`, whose doubling reserves past `expected`. Once `expected` bytes are
             // in, a one-byte read checks that the stream ends there.
             let malformed = || err(format!("{what}: zlib data is malformed"));
-            let mut zlib = flate2::read::ZlibDecoder::new(packed);
+            let mut zlib = flate2::bufread::ZlibDecoder::new(packed);
             let mut out = Vec::new();
             let mut filled = 0;
             while filled < expected {
@@ -341,15 +341,17 @@ pub(crate) fn decode_deep(meta: &MetaData, bytes: &[u8], limits: &Limits) -> Res
                 return Err(err(format!("chunk declares part {part}, expected {header_index}")));
             }
         }
-        // Block coordinates → the block's global pixel range and its slot.
-        let (block_pixels, slot, row_w): (Vec<usize>, usize, usize) = match &header.blocks {
+        // Block coordinates → the block's pixel bounds and its slot. The per-pixel index is
+        // built only after the chunk's declared payload sizes are validated below, so a
+        // truncated or lying chunk cannot drive a large index allocation first.
+        let (block_rows, block_cols, slot, row_w, scanline_row): (std::ops::Range<usize>, std::ops::Range<usize>, usize, usize, bool) = match &header.blocks {
             BlockDescription::ScanLines => {
                 let y = i32(&mut cur)?;
                 let row = match y.checked_sub(y0) {
                     Some(d) if d >= 0 && (d as usize) < h => d as usize,
                     _ => return Err(err(format!("scan line block y={y} is outside the data window"))),
                 };
-                ((0..w).map(|x| row * w + x).collect(), row, w)
+                (row..row + 1, 0..w, row, w, true)
             }
             BlockDescription::Tiles(_) => {
                 let (tx, ty, lx, ly) = (i32(&mut cur)?, i32(&mut cur)?, i32(&mut cur)?, i32(&mut cur)?);
@@ -362,16 +364,11 @@ pub(crate) fn decode_deep(meta: &MetaData, bytes: &[u8], limits: &Limits) -> Res
                 let (bx, by) = ((tx as usize) * tile_w, (ty as usize) * tile_h);
                 let rows = (by + tile_h).min(h);
                 let cols = (bx + tile_w).min(w);
-                let mut px = Vec::with_capacity((rows - by) * (cols - bx));
-                for yy in by..rows {
-                    for xx in bx..cols {
-                        px.push(yy.saturating_mul(w).saturating_add(xx));
-                    }
-                }
                 let slot = (ty as usize).saturating_mul(tiles_x) + tx as usize;
-                (px, slot, cols - bx)
+                (by..rows, bx..cols, slot, cols - bx, false)
             }
         };
+        let block_len = block_rows.len().saturating_mul(block_cols.len());
         if seen.get(slot).copied().unwrap_or(true) {
             return Err(err(format!("two chunks cover block {slot}")));
         }
@@ -386,6 +383,20 @@ pub(crate) fn decode_deep(meta: &MetaData, bytes: &[u8], limits: &Limits) -> Res
         if packed_table > remaining || packed_data > remaining.saturating_sub(packed_table) {
             return Err(err("deep chunk sizes point past the end of the file"));
         }
+        // The chunk's payload is present; now materialize the block's global pixel index. For
+        // scan lines this is one row; for tiles the clipped tile rectangle.
+        let block_pixels: Vec<usize> = if scanline_row {
+            let row = block_rows.start;
+            (0..w).map(|x| row * w + x).collect()
+        } else {
+            let mut px = Vec::with_capacity(block_len);
+            for yy in block_rows.clone() {
+                for xx in block_cols.clone() {
+                    px.push(yy.saturating_mul(w).saturating_add(xx));
+                }
+            }
+            px
+        };
         let what = "the sample-count table";
         let table_bytes = read_exact(&mut cur, packed_table as usize, what)?;
         let expected_table = block_pixels.len().checked_mul(4).ok_or_else(|| err("count table overflows"))?;
@@ -552,7 +563,7 @@ fn header_end(bytes: &[u8]) -> Result<u64, CodecError> {
 /// into straight alpha at the end. Without any alpha channel the front-most sample wins,
 /// opaque. Z, ZBack and other deep channels influence the flat result only through the
 /// ordering; volume samples (with ZBack) are approximated as point samples.
-pub(crate) fn flatten(deep: &DeepImage) -> Result<Image, CodecError> {
+pub(crate) fn flatten(deep: &DeepImage, limits: &Limits) -> Result<Image, CodecError> {
     let npx = deep.width as usize * deep.height as usize;
     let has = |n: &str| deep.channel(n).is_some();
     let rgb = has("R") && has("G") && has("B");
@@ -569,6 +580,10 @@ pub(crate) fn flatten(deep: &DeepImage) -> Result<Image, CodecError> {
         return Err(CodecError::unsupported(F, "no R/G/B or Y channels in the deep part"));
     };
     let nc = layout.channels();
+    // Admit the flattened output at its true size: nc f32 samples per pixel. The deep decode
+    // admitted the data window at four bytes per pixel, before the flattened channel layout
+    // was known, so re-check here with the actual layout and f32 sample size.
+    limits.check_bytes(deep.width, deep.height, nc as u64 * 4)?;
     let samples = |n: &str| -> &[f32] { deep.channel(n).map(|c| c.samples.as_slice()).unwrap_or(&[]) };
     let (r, g, b) = (samples("R"), samples("G"), samples("B"));
     let (ar, ag, ab) = (samples("AR"), samples("AG"), samples("AB"));
@@ -665,6 +680,10 @@ pub(crate) fn flatten(deep: &DeepImage) -> Result<Image, CodecError> {
     // pads to the stage at its offset, transparent elsewhere (limits validated the size).
     let mut img = match deep.stage {
         Some((sw, sh)) => {
+            // The display stage can be larger than the data window; admit it at the real f32
+            // layout size before allocating, since the earlier deep-decode check used four
+            // bytes per pixel and did not know the flattened channel count.
+            limits.check_bytes(sw, sh, nc as u64 * 4)?;
             let mut padded = vec![0f32; sw as usize * sh as usize * nc];
             let row_len = deep.width as usize * nc;
             let dx = deep.origin.0.max(0) as usize;
@@ -737,6 +756,7 @@ mod tests {
             let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
             z.write_all(&p).expect("write to a Vec");
             let zips = z.finish().expect("finish a Vec");
+            assert!(decompress(Compression::ZIP1, &zips[..zips.len() - 1], n, "the table").is_err());
             // RLE: the first byte as a literal, then runs of up to 128 copies of the next.
             let mut rle = vec![0xFF, p[0]];
             for run in p[1..].chunks(128) {

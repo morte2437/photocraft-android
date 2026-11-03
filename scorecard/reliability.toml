@@ -35,7 +35,7 @@ id = "REL-212-1"
 target = "Fallible allocation for paste/erase/fill/transform/save/import, clear out-of-memory error"
 status = "partial"
 issue = 212
-note = "Raster region/tile buffers, paste/erase/fill/transform and warp output use fallible reservations; save/import boundaries preserve existing state, but encoder/decoder internals still need a broader fallible-allocation audit"
+note = "Raster region/tile buffers, paste/erase/fill/transform and warp output use fallible reservations; filter and lens working memory is admitted before edits, and current/history tiles spill to CRC-checked scratch. Save/import boundaries preserve state; remaining encoder/decoder allocations still need broader audit."
 
 [[item]]
 id = "REL-212-2"

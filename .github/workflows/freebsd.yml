@@ -9,6 +9,8 @@ name: FreeBSD
 # or dependency change: a drifted dependency still shows up within a day. PRs that change the
 # FreeBSD packaging itself still run it.
 on:
+  push:
+    branches: [release]
   schedule:
     - cron: "17 2 * * *"
   pull_request:
@@ -30,7 +32,9 @@ jobs:
     # Intentionally tracked at @main (not SHA-pinned) so org-wide CI improvements, security fixes, and build optimizations propagate without PR churn across all craftapp repos.
     uses: storytold/craft-common-actions/.github/workflows/freebsd.yml@main
     with:
-      craft-fonts-ref: abb83316d96aa59c1cf64784289e378fe9fa5695
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
       cargo-build-extra-args: "--features heif"
-      custom-test-command: "CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-ui-egui && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --lib && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --doc && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --test '*' -- --test-threads=1"
+      # The VM's software Vulkan driver crashes (SIGSEGV) when several tests set up a device at
+      # once, so photocraft-gpu's tests run one at a time, like ui-egui's integration tests.
+      custom-test-command: "CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-ui-egui --exclude photocraft-gpu && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-gpu --locked -- --test-threads=1 && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --lib && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --doc && CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --test '*' -- --test-threads=1"
       run-package-check: true

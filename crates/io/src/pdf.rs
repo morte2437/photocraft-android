@@ -59,8 +59,10 @@ fn pdf_string(s: &str) -> String {
 }
 
 fn deflate(data: &[u8]) -> Vec<u8> {
-    // Fast: print PDFs are transient and large; level 1 is ~4× quicker than the default.
-    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    // Fast: print PDFs are transient and large. Level 3, not 1: zlib-rs level 1 writes static
+    // Huffman blocks only (13-30% bigger on photos); level 3 is the lowest that is never bigger
+    // than miniz's level 1 was, at about twice its time.
+    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(3));
     let _ = e.write_all(data);
     e.finish().unwrap_or_default()
 }

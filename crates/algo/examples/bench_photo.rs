@@ -122,6 +122,24 @@ fn main() {
         };
         wideangle::apply(&s, r, &p, Interp::Bicubic)
     });
+    // The mesh solve alone, on the dialog's 800 x 533 proxy.
+    let proxy = Rect::new(0, 0, 800, 533);
+    let solve_case = |constraints: Vec<Constraint>| {
+        let p = WideAngle { model: WideModel::Fisheye, focal_length: 12.0, constraints, ..Default::default() };
+        wideangle::solve(&p, proxy)
+    };
+    time("wide angle solve: 800x533 proxy, H + V", &only, || {
+        solve_case(vec![
+            Constraint { a: [60.0, 80.0], b: [740.0, 80.0], orientation: Orientation::Horizontal },
+            Constraint { a: [100.0, 60.0], b: [100.0, 470.0], orientation: Orientation::Vertical },
+        ])
+    });
+    time("wide angle solve: 800x533 proxy, 2 free", &only, || {
+        solve_case(vec![
+            Constraint { a: [60.0, 80.0], b: [740.0, 95.0], orientation: Orientation::Free },
+            Constraint { a: [100.0, 60.0], b: [110.0, 470.0], orientation: Orientation::Free },
+        ])
+    });
     time("hdr: merge 3 exposures + local adaptation", &only, || {
         let shots: Vec<Vec<[f32; 4]>> =
             [0.5f32, 1.0, 2.0].iter().map(|k| px.iter().map(|q| [(q[0] * k).min(1.0), (q[1] * k).min(1.0), (q[2] * k).min(1.0), 1.0]).collect()).collect();

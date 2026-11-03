@@ -1,4 +1,4 @@
-//! Unit tests on synthetic inputs; `tests/real_files.rs` covers public Affinity documents.
+//! Unit tests on synthetic inputs; `tests/it/real_files.rs` covers public Affinity documents.
 
 mod preview {
     use crate::container::header;
@@ -259,6 +259,20 @@ mod archive {
     }
 
     #[test]
+    fn a_failed_read_still_spends_the_extraction_allowance() {
+        let d = doc();
+        let file = synth::container(&[("doc.dat", &d, Method::Zstd)], None);
+        let mut broken = file.clone();
+        broken[90] ^= 0x55;
+        // Room for exactly one read: the failed attempt must use it up, so a caller that
+        // recovers from the checksum error cannot make the same entry decode again.
+        let mut a = Archive::open(&broken, Limits { max_entry: usize::MAX, max_total: d.len(), ..Limits::default() }).unwrap();
+        assert!(a.read("doc.dat").is_err());
+        assert_eq!(a.extracted(), d.len());
+        assert!(matches!(a.read("doc.dat"), Err(Error::Limit(_))));
+    }
+
+    #[test]
     fn a_declared_size_smaller_than_the_data_is_rejected_not_truncated() {
         let big = vec![7u8; 1 << 20];
         let mut file = synth::container(&[("doc.dat", &big, Method::Zlib)], None);
@@ -300,6 +314,17 @@ mod archive {
         for end in 0..d.len() {
             assert!(stream::parse(&d[..end]).is_err(), "{end}");
         }
+    }
+
+    #[test]
+    fn fixed_records_of_zero_width_are_rejected_before_any_value_is_made() {
+        // Four million records of no bytes each pass a length check that multiplies by the width.
+        let mut f = vec![0x80 | 0x2c];
+        f.extend(tag(b"Big_").0.to_le_bytes());
+        f.extend(4_000_000u32.to_le_bytes());
+        f.extend(0u16.to_le_bytes());
+        let d = synth::stream(&[(tag(b"Big_"), F::Raw(f))]);
+        assert_eq!(stream::parse(&d).unwrap_err(), Error::Malformed("array longer than its data"));
     }
 
     #[test]
@@ -396,6 +421,29 @@ mod shapes {
             Kind::Shape { path, .. } => path,
             other => panic!("expected shape, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn artistic_text_reads_its_characters_runs_and_anchor() {
+        let glyphs = F::Obj(tag(b"Glyp"), vec![(tag(b"Utf8"), F::Str("Hi".into()))]);
+        let run = F::Obj(tag(b"Item"), vec![]);
+        let attributes = F::Obj(tag(b"GAtt"), vec![(tag(b"Runs"), F::Objs(tag(b"Runs"), vec![vec![(tag(b"Indx"), F::I32(2)), (tag(b"Item"), run)]]))]);
+        let block = vec![(tag(b"Glyp"), glyphs), (tag(b"GAtt"), attributes)];
+        let text = F::Def(
+            100,
+            vec![tag(b"TxtA")],
+            vec![
+                (tag(b"TxtH"), F::Obj(tag(b"ArFr"), vec![(tag(b"FrmB"), F::F64s(vec![0.0, 0.0, 100.0, 50.0]))])),
+                (tag(b"StSt"), F::Obj(tag(b"StSt"), vec![(tag(b"Blok"), F::Objs(tag(b"Blok"), vec![block]))])),
+            ],
+        );
+        let document = read(vec![text], 100);
+        let Kind::Text(t) = &document.spreads[0].nodes[0].kind else { panic!("expected text") };
+        assert_eq!(t.runs.len(), 1);
+        assert_eq!(t.runs[0].text, "Hi");
+        assert_eq!(t.align, crate::model::Align::Left);
+        assert_eq!(t.anchor, Point { x: 0.0, y: 0.0 });
+        assert!(t.frame.is_none());
     }
 
     #[test]
@@ -707,5 +755,44 @@ mod spot_colours {
         let doc = read(vec![filled(10, spots(100, 5))]);
         assert!(fills(&doc).is_empty(), "{:?}", fills(&doc));
         assert!(warned(&doc, "spot colours nested deeper than 4 levels"), "{:?}", doc.warnings);
+    }
+}
+
+/// Object lookup and record arrays against the structures they replaced.
+mod stream_storage {
+    use crate::stream::{self, Kind, Object, Tag, Value};
+    use crate::synth::{self, F, tag};
+
+    /// The per-object map `Object::get` used before: first occurrence of each real tag.
+    fn reference(fields: &[(Tag, Value)], t: Tag) -> Option<&Value> {
+        let mut index = std::collections::HashMap::new();
+        for (i, (ft, _)) in fields.iter().enumerate() {
+            if ft.0 != 0 {
+                index.entry(*ft).or_insert(i);
+            }
+        }
+        index.get(&t).map(|&i| &fields[i].1)
+    }
+
+    #[test]
+    fn lookup_keeps_first_match_for_every_object_size() {
+        for n in 0..60u32 {
+            // Tags repeat (n % 7 distinct tags) and every fifth field is positional (tag 0).
+            let fields: Vec<(Tag, Value)> = (0..n).map(|i| (if i % 5 == 0 { Tag(0) } else { Tag(100 + i % 7) }, Value::UInt(u64::from(i)))).collect();
+            let object = Object::new(Tag(1), Kind::Inline, vec![Tag(1)], fields.clone());
+            for t in 0..120 {
+                assert_eq!(object.get(Tag(t)), reference(&fields, Tag(t)), "{n} fields, tag {t}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fixed_size_array_is_one_buffer_and_one_value_per_record() {
+        let records: Vec<u8> = (0..18 * 5).map(|i| i as u8).collect();
+        let bytes = synth::stream(&[(tag(b"Nods"), F::Records(18, records.chunks(18).map(<[u8]>::to_vec).collect()))]);
+        let s = stream::parse(&bytes).unwrap();
+        let root = s.object(s.root).unwrap();
+        assert_eq!(root.get(Tag::of(b"Nods")), Some(&Value::Records { size: 18, data: records }));
+        assert_eq!(root.get(Tag::of(b"Nods")).and_then(Value::array_len), Some(5));
     }
 }

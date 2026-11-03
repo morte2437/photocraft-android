@@ -1,12 +1,40 @@
 name: CI
 
+# Quality gates for every push to main and every pull request. The Linux gate runs through the
+# suite's shared gate workflow in craft-common-actions (`cargo xtask ci`); the Windows legs, the
+# test variant and the corpus, web and fuzz jobs are PhotoCraft's own.
 on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `labeled` so that adding `full-ci` to an open PR starts a run with Windows in it.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
+      full_sweep:
+        description: "Run every testkit sweep case (runtime comparison and integration validation)"
+        type: boolean
+        default: false
+      color_range:
+        description: "Compare cropped Color Range on 24 MP (Linux, exact outputs)"
+        type: boolean
+        default: false
+      selection_combining:
+        description: "Compare direct GRAY8 selection combining on 36 MP (Linux, exact outputs)"
+        type: boolean
+        default: false
+      brush_tip:
+        description: "Compare cached round-tip rasterization on 24 MP"
+        type: boolean
+        default: false
+      brush_tip_base:
+        description: "Baseline commit for the round-tip comparison"
+        type: string
+        default: "main"
+      selection_morphology:
+        description: "Compare selection morphology on 36 MP (Linux, exact outputs)"
+        type: boolean
+        default: false
       fuzz:
         description: "Run the fuzz job"
         type: boolean
@@ -14,59 +42,89 @@ on:
       fuzz_seconds:
         description: "Seconds per fuzz target"
         default: "600"
+      dry_mixer:
+        description: "Compare the live Mixer Brush against the origin/main merge base on 24 MP (Linux)"
+        type: boolean
+        default: false
+
+# The token is only used to check out the code: no job writes to the repository.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  PHOTOCRAFT_FULL_SWEEP: ${{ inputs.full_sweep && '1' || '0' }}
   # No test or fuzz run may print a page: the engine refuses to spool, and if something ever
   # bypasses that, lp fails loudly on a printer that does not exist.
   PHOTOCRAFT_NO_PRINT: "1"
   LPDEST: photocraft-no-such-printer
-  # Debug and test builds keep line tables (file:line in panic backtraces) but drop the rest of the
-  # debug info: faster codegen and links, and a smaller target dir (the Linux test job ran out of
-  # disk with full debug info). The Windows test legs drop debuginfo entirely (see the test job).
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
-# A newer push to a PR branch cancels its older run. Runs on main are never cancelled: a merge
-# that lands while main's run is in progress waits for it, so every main state that gets a run is
-# checked to the end. (Cancelling here left main unverified whenever merges came close together.)
+# A newer push to a PR branch cancels its older run. Every push to main gets a run of its own that
+# is never cancelled, so each state of main is checked to the end. Adding any label but `full-ci`
+# gets a group of its own, so it neither runs anything nor cancels a run.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'full-ci') && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Which OSes the test job runs on. main, manual runs and PRs labelled `full-ci` get Linux and
-  # Windows. Other PRs get Linux, plus Windows when they touch code whose behaviour differs by
-  # platform: the app shell, UI, text and fonts, GPU, pen input, build scripts or the lockfile.
-  # macOS is tested only by release.yml.
+  # Whether the Windows legs and the web build run. main, manual runs and PRs labelled `full-ci`
+  # get both. Other PRs get Windows when they touch code whose behaviour differs by platform: the
+  # app shell, UI, text and fonts, GPU, pen input, native saves, build scripts or the lockfile.
+  # Format changes must exercise the Windows-only publication barriers (#8034). macOS is tested
+  # only by release.yml.
   platforms:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
     timeout-minutes: 10
     name: select platforms
     runs-on: ubuntu-latest
     outputs:
-      legs: ${{ steps.pick.outputs.legs }}
+      windows: ${{ steps.pick.outputs.windows }}
       web: ${{ steps.pick.outputs.web }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
+      - name: Git dependencies come from storytold
+        run: |
+          set -euo pipefail
+          test -f Cargo.lock || { echo "Cargo.lock is missing"; exit 1; }
+          # Source replacement, patches and path overrides in cargo config never show up
+          # in Cargo.lock. Parsed rather than grepped: TOML has many spellings of one key.
+          # Cargo still reads the legacy .cargo/config.
+          python3 - <<'PY'
+          import os, sys, tomllib
+          for path in (".cargo/config", ".cargo/config.toml"):
+              if not os.path.exists(path):
+                  continue
+              config = tomllib.load(open(path, "rb"))
+              replaced = [name for name, source in config.get("source", {}).items()
+                          if isinstance(source, dict) and "replace-with" in source]
+              if replaced or "patch" in config or "paths" in config:
+                  print(f"{path} replaces, patches or overrides a source")
+                  sys.exit(1)
+          PY
+          # Fails when Cargo.lock is out of date with the manifests.
+          cargo metadata --locked --format-version 1 > /dev/null
+          python3 - <<'PY'
+          import sys, tomllib
+          lock = tomllib.load(open("Cargo.lock", "rb"))
+          bad = sorted({p["source"] for p in lock.get("package", [])
+                        if p.get("source", "").startswith("git+")
+                        and not p["source"].startswith("git+https://github.com/storytold/")})
+          if bad:
+              print("Git dependencies outside github.com/storytold:", *bad, sep="\n")
+              sys.exit(1)
+          PY
       - id: pick
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           FULL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
-          # No macOS on PRs or main: the org's 5 macOS slots are kept for release builds, and
-          # release.yml builds and tests macOS (a failing release is fixed and rebuilt).
-          # Windows tests run as two legs in parallel: the unit tests and the integration tests. As
-          # one job they took ~28 min on the Windows runner; the legs take ~13 and ~15. Splitting
-          # the integration tests over a third runner (nextest --partition) saved ~2 min of wall
-          # time but cost ~7 runner-minutes and one more Windows slot per PR.
-          linux='{"os":"ubuntu-latest","part":"all"}'
-          win() { printf '{"os":"windows-latest","part":"%s"}' "$1"; }
-          all="[$linux,$(win unit),$(win integration)]"
           if [ "$EVENT" != pull_request ] || [ "$FULL" = true ]; then
-            echo "legs=$all" >> "$GITHUB_OUTPUT"
+            echo "windows=true" >> "$GITHUB_OUTPUT"
             echo "web=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -78,67 +136,101 @@ jobs:
           else
             echo "web=false" >> "$GITHUB_OUTPUT"
           fi
-          if git diff --name-only "$BASE" HEAD | grep -Eq '^(apps/|crates/(ui-egui|text|gpu|tablet|heif)/|Cargo\.lock$|(.*/)?build\.rs$|\.github/workflows/ci\.yml$)'; then
-            echo "legs=$all" >> "$GITHUB_OUTPUT"
+          if git diff --name-only "$BASE" HEAD | grep -Eq '^(apps/|crates/(ui-egui|text|gpu|tablet|heif|format)/|Cargo\.lock$|(.*/)?build\.rs$|\.github/workflows/ci\.yml$)'; then
+            echo "windows=true" >> "$GITHUB_OUTPUT"
           else
-            echo "legs=[$linux]" >> "$GITHUB_OUTPUT"
+            echo "windows=false" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    timeout-minutes: 100
-    name: test (${{ matrix.os }}${{ matrix.part != 'all' && format(', {0}', matrix.part) || '' }})
+  # The Linux gate. Its rust-cache entry is the one `test (without heif)` restores.
+  gate:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      # egui/winit/rfd.
+      packages: >-
+        libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+        libgtk-3-dev
+      # The tests build with the optional craft-fonts input (crates/text/build.rs), so the
+      # Japanese font tests that skip without it run. Same commit as release.yml.
+      craft-fonts-ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+      # Cargo.toml's dev profile already keeps line tables only.
+      dev-debug: ""
+      env: |
+        PHOTOCRAFT_FULL_SWEEP=${{ inputs.full_sweep && '1' || '0' }}
+        PHOTOCRAFT_NO_PRINT=1
+        LPDEST=photocraft-no-such-printer
+      timeout-minutes: 100
+      # fmt, clippy, layers, scorecard, tests, panic_hunt, doctests and the wasm32 check, with
+      # `--locked --features heif`, then the missing-translations report (xtask/src/main.rs).
+      command: cargo xtask ci
+
+  # Windows tests run as two legs in parallel: the unit tests and the integration tests. As one job
+  # they took ~28 min on the Windows runner; the legs take ~13 and ~15. Splitting the integration
+  # tests over a third runner (nextest --partition) saved ~2 min of wall time but cost ~7
+  # runner-minutes and one more Windows slot per PR. They stay outside the shared gate for sccache,
+  # which needs its own action step.
+  windows:
     needs: platforms
-    runs-on: ${{ matrix.os }}
+    if: needs.platforms.outputs.windows == 'true'
+    timeout-minutes: 100
+    name: test (windows-latest, ${{ matrix.part }})
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.platforms.outputs.legs) }}
+        part: [unit, integration]
     env:
       # No debuginfo on Windows: writing PDBs for ~200 test binaries cost 2.2 of ~21 build minutes.
       # A panic still names its file and line; only backtrace frames lose theirs (Linux keeps
       # line-tables-only, so a backtrace with lines is one OS away).
-      CARGO_PROFILE_DEV_DEBUG: ${{ startsWith(matrix.os, 'windows') && '0' || 'line-tables-only' }}
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      # The all-language UI tests shape real Japanese, Chinese, Korean and Devanagari labels
+      # with kittest's strict `MissingGlyphPolicy::Panic`. A hosted Windows image has no
+      # guaranteed Japanese or Simplified Chinese system font, and egui 0.37 panics on a
+      # missing glyph; the app's lazy system fallback runs after layout, too late for the
+      # first headless frame. Use the same pinned central fonts as Linux and release, so every
+      # language is drawn by a real embedded face rather than skipping. Same commit as the gate
+      # above and release.yml.
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: "1"
     steps:
-      - uses: actions/checkout@v4
-
-      # Unused toolchains in the image (Android SDK, .NET, GHC, CodeQL) are deleted in the
-      # background: the space is free before the craft-fonts build needs it, and nothing waits.
-      - name: Install Linux system dependencies (egui/winit/rfd)
-        if: runner.os == 'Linux'
-        run: |
-          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL </dev/null >/dev/null 2>&1 &
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev libgtk-3-dev
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: clippy, rustfmt
+          persist-credentials: false
 
-      # Only main saves caches; PRs restore main's. Every PR used to save its own set (up to
-      # 3.8 GB), usable by that PR only, so the repo's 10 GB cache budget kept evicting main's.
+      - name: Check out craft-fonts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: craft-fonts
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy
+
+      # Only main saves caches; PRs restore main's, so the repo's 10 GB cache budget keeps main's.
       # A failing test still saves: the cache holds compiled dependencies, not test results.
-      # The Windows legs share one key (same dependencies); the integration leg saves it,
-      # because it also runs Clippy and so leaves Clippy's dependency metadata in it.
-      - uses: Swatinem/rust-cache@v2
+      # Both legs share one key (same dependencies); the integration leg saves it, because it also
+      # runs Clippy and so leaves Clippy's dependency metadata in it.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' && (matrix.part == 'all' || matrix.part == 'integration') }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.part == 'integration' }}
           cache-on-failure: true
 
       # sccache caches the workspace crates' compiled libraries, which rust-cache leaves out:
       # warm, each Windows leg built 4.5 min faster. Like rust-cache, only main writes (PRs read
       # main's entries); a full set is ~90 MB, so it barely touches the 10 GB budget (#2688).
       # Test executables can't be cached, so a PR still links its tests.
-      - name: Install sccache (Windows)
-        if: runner.os == 'Windows'
+      - name: Install sccache
         uses: Mozilla-Actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.18.0
 
-      - name: Use sccache (Windows)
-        if: runner.os == 'Windows'
+      - name: Use sccache
         env:
           MAIN: ${{ github.ref == 'refs/heads/main' }}
         run: |
@@ -147,149 +239,80 @@ jobs:
           if [ "$MAIN" != true ]; then echo "SCCACHE_GHA_RW_MODE=READ_ONLY" >> "$GITHUB_ENV"; fi
         shell: bash
 
-      - name: Format
-        if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-
-      # Keep formatting, strict Clippy, layering and scorecard checks ahead of tests.
       - name: Clippy
-        if: matrix.part == 'all' || matrix.part == 'integration'
+        if: matrix.part == 'integration'
         run: cargo clippy --workspace --all-targets --locked --features heif -- -D warnings
 
       - name: Dependency layering
-        if: matrix.part == 'all' || matrix.part == 'integration'
+        if: matrix.part == 'integration'
         run: cargo xtask layers
 
-      # docs/scorecard.md must match its sources (checklists, budgets, baseline, corpus floors,
-      # prefs audit). Static: it reads committed files only, no benchmarks run here.
-      - name: Scorecard up to date
-        if: runner.os == 'Linux'
-        run: cargo xtask scorecard --check
-
-      # nextest runs the test binaries in parallel (cargo test runs them one at a time), with the
-      # GPU tests capped by the `gpu` group in .config/nextest.toml (#2204).
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-nextest@0.9.146
+          tool: cargo-nextest@0.9.150
 
-      # `--features heif`: official builds open HEIC photos via the optional photocraft-heif crate.
-      # `--lib --bins --tests` leaves out the examples, which cargo test would build and link but
-      # never run (Clippy's `--all-targets` still checks they compile). nextest skips doctests, so
-      # they get their own step.
-      #
-      # On Windows the unit leg runs `--lib --bins` and the integration leg `--test '*'` (every
+      # The unit leg runs `--lib --bins` and the integration leg `--test '*'` (every
       # integration-test target); the feature selection stays the same, so both legs share the
-      # dependency cache. The `ci` profile fails fast and terminates hung tests
-      # (.config/nextest.toml); assertion failures are not retried.
+      # dependency cache.
       - name: Test
         env:
           PART: ${{ matrix.part }}
         run: |
           case "$PART" in
             unit) targets=(--lib --bins) ;;
-            integration) targets=(--test '*') ;;
-            *) targets=(--lib --bins --tests) ;;
+            *) targets=(--test '*') ;;
           esac
           cargo nextest run --profile ci --workspace --locked --features heif "${targets[@]}"
         shell: bash
 
-      # Every command against adversarial params must return Err, never panic or hang (AGENTS.md
-      # Rule 9). It is `#[ignore]`d (slow), so Test skips it. Same packages, features and targets as
-      # Test, so nothing rebuilds: `--test panic_hunt` would drop the other crates' dev-dependency
-      # features and recompile the whole graph. The `ci` profile terminates it if it hangs.
-      - name: Panic hunt
-        if: runner.os == 'Linux'
-        run: >-
-          cargo nextest run --profile ci --workspace --locked --features heif --lib --bins --tests
-          --run-ignored only -E 'binary_id(photocraft-engine::panic_hunt)'
-
       - name: Doctests
-        if: matrix.part == 'all' || matrix.part == 'unit'
+        if: matrix.part == 'unit'
         run: cargo test --workspace --locked --features heif --doc
 
-  # The Windows tests used to be one job named `test (windows-latest)`; they're now legs named
-  # `test (windows-latest, unit)` and `test (windows-latest, integration)`. This job keeps the old
-  # name reporting, so a required status check on it (none today) would keep working. It fails
-  # unless the whole test matrix and both Linux variants passed. `needs` reports one result
-  # for all matrix legs; when a PR runs no Windows legs it still checks every Linux result.
-  windows-gate:
-    timeout-minutes: 5
-    name: test (windows-latest)
-    needs: [platforms, test, test-variants]
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+  # The same codecs without the optional decoder: HEIC must stay a clear "not in this build" error
+  # for distributors who leave it out. Runs beside the gate and restores the gate's dependency
+  # cache without saving one: the dependencies are the same, and the 10 GB cache budget is tight
+  # (#2688).
+  test-without-heif:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
+    timeout-minutes: 60
+    name: test (without heif)
+    # The gate's runner: its cache entry is keyed on the OS.
+    runs-on: ubuntu-24.04
+    env:
+      # The gate sets these; rust-cache hashes CARGO_* and RUST* variables into its key.
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 10
     steps:
-      - env:
-          PLATFORMS: ${{ needs.platforms.result }}
-          TEST: ${{ needs.test.result }}
-          VARIANTS: ${{ needs.test-variants.result }}
-        run: |
-          echo "platforms: $PLATFORMS, test: $TEST, variants: $VARIANTS"
-          [ "$PLATFORMS" = success ] && [ "$TEST" = success ] && [ "$VARIANTS" = success ]
-
-  # The two other builds of the Linux tests, in parallel with the test job instead of after it (they
-  # added ~10 min to its critical path). Each restores the test job's cache (`shared-key: test` is
-  # that job's key) and saves none: the dependencies are the same, and the 10 GB cache budget is
-  # tight (#2688).
-  test-variants:
-    timeout-minutes: 100
-    name: test (${{ matrix.variant }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [without heif, with craft-fonts]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Linux system dependencies (egui/winit/rfd)
-        run: |
-          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL </dev/null >/dev/null 2>&1 &
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev libgtk-3-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          shared-key: test
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+            libgtk-3-dev
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      # gate.yml keys its cache `<cache-version>-rust-<hash of Cargo.toml>-gate`.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: v1-rust
+          shared-key: ${{ hashFiles('Cargo.toml') }}-gate
           save-if: false
 
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-nextest@0.9.146
+          tool: cargo-nextest@0.9.150
 
-      # The same codecs without the optional decoder: HEIC must stay a clear "not in this build"
-      # error for distributors who leave it out.
       - name: Test without heif
-        if: matrix.variant == 'without heif'
         run: cargo nextest run -p photocraft-heif -p photocraft-codecs -p photocraft-io --locked --profile ci
 
-      # The tests built with the optional craft-fonts input (crates/text/build.rs), so the Japanese
-      # font tests that skip without it run. Keep the test job's exact `--workspace --features heif
-      # --lib --bins --tests`, so the restored dependencies match and only the workspace rebuilds.
-      # Filter execution to the three crates that read the optional font input (#6127).
-      - name: Check out craft-fonts
-        if: matrix.variant == 'with craft-fonts'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: storytold/craft-fonts
-          ref: abb83316d96aa59c1cf64784289e378fe9fa5695
-          path: craft-fonts
-
-      - name: Test with craft-fonts
-        if: matrix.variant == 'with craft-fonts'
-        env:
-          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
-          CRAFT_FONTS_REQUIRED: "1"
-        run: >-
-          cargo nextest run --profile ci --workspace --locked --features heif --lib --bins --tests
-          -E 'package(photocraft-text) | package(photocraft-io) | package(photocraft-ui-egui)'
-
   corpus:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
     timeout-minutes: 30
     # Real-file corpus tests (cargo feature `corpus`), on every PR and on main. The corpora are
     # pinned in xtask/src/corpus_pins.rs and sha256-verified (xtask/*.sha256) after both a cache
@@ -305,15 +328,17 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: corpus
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Restore test corpora
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: corpus/
           key: corpus-${{ hashFiles('xtask/src/corpus_pins.rs', 'xtask/*.sha256') }}
@@ -321,23 +346,6 @@ jobs:
         run: cargo xtask corpus --all
       - name: Corpus tests
         run: cargo xtask test-corpus
-
-  wasm:
-    timeout-minutes: 30
-    name: wasm32 check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: wasm32
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
-      - name: Check wasm-safe crates
-        run: cargo xtask wasm
 
   web:
     timeout-minutes: 60
@@ -350,18 +358,20 @@ jobs:
       # Match release.yml so PR results reflect what would actually ship.
       TRUNK_VERSION: 0.21.14
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ci-web
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Install trunk
         run: |
-          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+          curl --proto '=https' -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
             | tar -xz -C "$HOME/.cargo/bin" trunk
           trunk --version
       # package.sh runs Trunk's release builds, validates relative URLs, cuts the wasm into
@@ -408,6 +418,7 @@ jobs:
           - { crate: psd, name: metadata }
           - { crate: psd, name: tagged }
           - { crate: psd, name: resources }
+          - { crate: psd, name: asl }
           - { crate: codecs, name: decode_any }
           - { crate: codecs, name: decode_png }
           - { crate: codecs, name: decode_jpeg }
@@ -418,19 +429,237 @@ jobs:
           - { crate: affinity, name: import_preview, args: "--features io" }
           - { crate: format, name: load }
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # nightly
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: crates/${{ matrix.target.crate }}/fuzz
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
       - name: Fuzz
         working-directory: crates/${{ matrix.target.crate }}
-        run: cargo fuzz run ${{ matrix.target.name }} ${{ matrix.target.args }} -- -max_total_time=${{ inputs.fuzz_seconds }}
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds }}
+        run: cargo fuzz run ${{ matrix.target.name }} ${{ matrix.target.args }} -- -max_total_time="$FUZZ_SECONDS"
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-${{ matrix.target.crate }}-${{ matrix.target.name }}
           path: crates/${{ matrix.target.crate }}/fuzz/artifacts
+
+  color-range-performance:
+    if: inputs.color_range == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+            libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: color-range-perf
+      - name: Compare exact outputs and release timings on 24 MP
+        run: |
+          set -o pipefail
+          cargo test --release -p photocraft-engine --lib color_range_release_comparison -- --ignored --nocapture | tee color-range-perf.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: color-range-performance
+          path: color-range-perf.txt
+
+  selection-morphology:
+    if: inputs.selection_morphology == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+            libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: selection-morphology-perf
+      - name: Compare exact outputs and release timings on 36 MP
+        run: |
+          set -o pipefail
+          cargo run --release -p photocraft-algo --example bench_selection_morphology | tee selection-morphology-perf.txt
+      - name: Compare cropped command reads and writeback on 36 MP
+        run: |
+          set -o pipefail
+          cargo test --release -p photocraft-engine --lib sparse_modify_release_comparison -- --ignored --nocapture | tee -a selection-morphology-perf.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: selection-morphology-performance
+          path: selection-morphology-perf.txt
+
+  selection-morphology-quick-perf:
+    if: inputs.selection_morphology == true || inputs.color_range == true || inputs.selection_combining == true || inputs.brush_tip == true || inputs.dry_mixer == true
+    name: quick performance suite
+    # Match perf-nightly.yml: Linux llvmpipe lacks the float render targets needed by
+    # bevel_bench, so its required GPU rows cannot be measured there.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: perf-release
+      - name: Quick performance suite
+        run: cargo xtask perf --quick
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: selection-morphology-quick-perf
+          path: |
+            target/perf/*.json
+            target/perf/summary.md
+
+  selection-combining:
+    if: inputs.selection_combining == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: selection-combining-perf
+      - name: Compare exact outputs and release timings on 36 MP
+        run: |
+          set -o pipefail
+          cargo test --release -p photocraft-algo --lib gray8_combining_release_comparison -- --ignored --nocapture | tee selection-combining-perf.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: selection-combining-performance
+          path: selection-combining-perf.txt
+
+  brush-tip:
+    if: inputs.brush_tip == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: after
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.brush_tip_base }}
+          path: before
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            before -> target
+            after -> target
+          key: brush-tip-release
+      - name: Build the same benchmark against both versions
+        run: |
+          cp after/crates/paint/examples/big_dab_bench.rs before/crates/paint/examples/big_dab_bench.rs
+          cargo build --release --locked --manifest-path before/Cargo.toml -p photocraft-paint --example big_dab_bench
+          cargo build --release --locked --manifest-path after/Cargo.toml -p photocraft-paint --example big_dab_bench
+      - name: Compare round and transformed tips on 24 MP
+        run: |
+          set -o pipefail
+          for size in 200 2000; do
+            for angle in 0 0.7; do
+              for version in before after; do
+                echo "$version: size=$size angle=$angle" | tee -a brush-tip.txt
+                "$version/target/release/examples/big_dab_bench" "$size" 0.37 "$angle" | tee -a brush-tip.txt
+              done
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: brush-tip-performance
+          path: brush-tip.txt
+  dry-mixer:
+    if: inputs.dry_mixer == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RAYON_NUM_THREADS: "4"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin baseline to the merge base with origin/main
+        id: baseline
+        run: |
+          git remote add upstream https://github.com/storytold/photocraft.git
+          git fetch --no-tags upstream main
+          base=$(git merge-base HEAD upstream/main)
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          git worktree add --detach "$RUNNER_TEMP/photocraft-baseline" "$base"
+          mkdir -p "$RUNNER_TEMP/photocraft-baseline/crates/engine/examples"
+          cp crates/engine/examples/bench_dry_mixer.rs "$RUNNER_TEMP/photocraft-baseline/crates/engine/examples/bench_dry_mixer.rs"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install Linux build dependencies
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+            libgtk-3-dev
+      - name: Benchmark baseline and candidate on this runner
+        run: |
+          set -o pipefail
+          echo "baseline=${{ steps.baseline.outputs.sha }}" | tee dry-mixer-perf.txt
+          echo "candidate=${GITHUB_SHA}" | tee -a dry-mixer-perf.txt
+          CARGO_TARGET_DIR="$RUNNER_TEMP/target-baseline" cargo run --release --manifest-path "$RUNNER_TEMP/photocraft-baseline/Cargo.toml" -p photocraft-engine --example bench_dry_mixer | tee baseline-mixer.txt
+          CARGO_TARGET_DIR="$RUNNER_TEMP/target-candidate" cargo run --release -p photocraft-engine --example bench_dry_mixer | tee candidate-mixer.txt
+          cat baseline-mixer.txt candidate-mixer.txt >> dry-mixer-perf.txt
+          python3 - <<'PY'
+          import re
+          def fingerprints(path):
+              rows = open(path).readlines()
+              result = {}
+              for row in rows:
+                  match = re.search(r'wet=\s*(\d+)% sample_all=\s*(\w+)\s+size=\s*(\d+).*blake3=(\w+)', row)
+                  if match:
+                      result[match.group(1, 2, 3)] = match.group(4)
+              return result
+          before, after = fingerprints('baseline-mixer.txt'), fingerprints('candidate-mixer.txt')
+          assert len(before) == 12 and before == after, 'baseline/candidate mixer output or state differs'
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: dry-mixer-performance
+          path: dry-mixer-perf.txt

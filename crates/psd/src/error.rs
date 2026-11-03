@@ -31,12 +31,19 @@ pub enum PsdError {
     /// A dimension, count or allocation exceeded the configured safety limits.
     #[error("limit exceeded: {0}")]
     LimitExceeded(&'static str),
+    /// A buffer could not be allocated: the system has no memory for it. Unlike
+    /// [`PsdError::LimitExceeded`] the data may be valid, so the caller can retry smaller.
+    #[error("out of memory: {0}")]
+    OutOfMemory(&'static str),
     /// Structurally invalid data.
     #[error("invalid data: {0}")]
     Invalid(String),
     /// A compressed stream could not be decoded.
     #[error("decompression failed: {0}")]
     Decompress(String),
+    /// Reading from a [`crate::source::ReadAt`] source failed.
+    #[error("read failed: {0}")]
+    Read(String),
     /// An operation is not supported for this data (e.g. unknown compression).
     #[error("unsupported: {0}")]
     Unsupported(String),

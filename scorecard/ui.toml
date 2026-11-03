@@ -10,7 +10,7 @@ id = "UI-217-1"
 target = "Tool options, last Export As / Save for Web / Fill settings and font recents persist"
 status = "partial"
 issue = 217
-note = "Fill (fill_ui.rs:72) and Liquify (liquify_ui.rs:64, #418) keep their settings in Preferences (prefs.dialogs); no tool_options/export fields in Preferences; export_dialog.rs:21 png/85. Each painting tool keeps its own brush (paint_mouse.rs sync_tool_brush, #218), but those live in UiState, so they are lost at quit like the other tool options"
+note = "Tool options (Preferences.toolOptions, tool_memory.rs, #2814; clamped to the options-bar ranges on restore), each painting tool's own brush (Preferences.toolBrushes + lastBrush, #6212) and the selected tool persist; Reset Tool / Reset All Tools (tool_reset.rs) clear them. Fill, Liquify, Export As (export_dialog.rs COMMAND) and Save for Web (file_ui.rs WEB_COMMAND) remember their last settings in prefs.dialogs. Missing: font recents (type.recentFonts is in the prefs audit's unused list)"
 
 [[item]]
 id = "UI-217-2"
@@ -66,7 +66,7 @@ id = "UI-217-9"
 target = "UI scale presets 100/115/125/150/200 % through zoom_factor, remembered"
 status = "done"
 issue = 217
-note = "prefs::UiScale offers Auto plus 75 to 300 percent (13 presets, more than the five this row lists); prefs_ui.rs display_scale resolves it (Auto follows the system scale, fractional and unscaled 4K included, #1072/#1278) and sync_display_scale applies it with ctx.set_zoom_factor. It is a preference, so it is remembered. The zoom_factor assert in input_tests.rs is about canvas zoom not scaling the interface, not about this setting"
+note = "prefs::UiScale offers Auto plus 75 to 300 percent (17 presets: 75 to 125 in 5 % steps since #3222, then 150 to 300; more than the five this row lists); prefs_ui.rs display_scale resolves it (Auto follows the system scale, fractional and unscaled 4K included, #1072/#1278) and sync_display_scale applies it with ctx.set_zoom_factor. It is a preference, so it is remembered. The zoom_factor assert in input_tests.rs is about canvas zoom not scaling the interface, not about this setting"
 
 [[item]]
 id = "UI-217-10"
@@ -78,9 +78,9 @@ note = "interface.enableAnimations (prefs_ui.rs sync_animations, #3273) zeroes e
 [[item]]
 id = "UI-217-11"
 target = "Soft dark and soft light themes with picker previews; outlined knobs in light themes"
-status = "partial"
+status = "done"
 issue = 217
-note = "theme.rs ThemeKind has fourteen themes: the twelve earlier ones plus Soft Dark and Soft Light (low-contrast Studio-layout palettes, text at 4.5:1, selectable in Preferences with the existing theme-card previews, ui.set {theme}, Window > Theme); outlined knobs in the light themes are still missing"
+note = "theme.rs ThemeKind has fourteen themes: the twelve earlier ones plus Soft Dark and Soft Light (low-contrast Studio-layout palettes, text at 4.5:1, selectable in Preferences with the existing theme-card previews, ui.set {theme}, Window > Theme); the light themes outline the slider knob with Tokens::knob_outline (dim text, at least 3:1 against dock, card and chrome; #7927)"
 
 [[item]]
 id = "UI-217-12"
@@ -101,7 +101,7 @@ id = "UI-217-14"
 target = "Layers panel: wheel steps blend modes, drop on New/Trash duplicates/deletes, checker behind art"
 status = "done"
 issue = 217
-note = "panels.rs: the wheel steps the blend-mode dropdown (widgets::dropdown_wheel_hovered, #1747); rows dropped on New Layer/Group/Delete duplicate/group/delete them (footer_drop, #736), effect rows dropped on Delete delete that effect or the whole style (fx_trash_drop, #3102); pixel thumbnails draw widgets::checker behind the art; Shift+Plus/Minus step the layer's or the painting tool's blend mode (blend_keys.rs, #3102)"
+note = "panels.rs: the wheel steps the blend-mode dropdown (widgets::dropdown_wheel_hovered, #1747); rows dropped on New Layer/Group/Delete duplicate/group/delete them (footer_drop, #736), effect rows dropped on Delete delete that effect or the whole style (fx_trash_drop, #3102); pixel thumbnails draw widgets::checker behind the art; Shift+Plus/Minus step the layer's or the painting tool's blend mode (blend_keys.rs, #3102), and Shift+Alt+letter picks one (Photoshop's letters; every selected layer, one undo step)"
 
 [[item]]
 id = "UI-217-15"
@@ -112,24 +112,24 @@ note = "Curves editor (adjust_editors.rs, dialog and Properties): Edit points / 
 
 [[item]]
 id = "UI-217-16"
-target = "Hue/Saturation: Saturation and Lightness sliders get hue-following colour tracks"
+target = "Hue/Saturation: Saturation slider gets a hue-following colour track, Lightness a black-grey-white track"
 status = "done"
 issue = 217
-note = "saturation_track/lightness_track (adjust_editors.rs): grey -> the hue and black -> the hue -> white, recolouring as the Hue slider moves; saturation_and_lightness_tracks_follow_the_hue"
+note = "saturation_track/lightness_track (adjust_editors.rs): grey -> the hue, recolouring as the Hue slider moves, and a fixed black -> grey -> white (#6539); saturation_track_follows_the_hue, lightness_track_is_black_grey_white_whatever_the_hue"
 
 [[item]]
 id = "UI-217-17"
 target = "Color panel: wheel plus RGB/HSB/CMYK/Lab/Gray/Web slider modes; resizes with its group"
-status = "missing"
+status = "done"
 issue = 217
-note = "panels.rs:1837 single field + hex/RGB readout"
+note = "color_panel_ui.rs: Hue/Brightness Cube, Color Wheel, Grayscale/RGB/HSB/CMYK/Lab/Web sliders, ramp; the same in every theme (#6000); color_panel_tests.rs"
 
 [[item]]
 id = "UI-217-18"
 target = "Alt+wheel zooms in gentle ~5 % steps; zoom controls uncramped"
-status = "missing"
+status = "partial"
 issue = 217
-note = "canvas.rs:1107-1125 no Alt handling"
+note = "Alt+wheel zooms around the pointer, one step per notch applied the frame it arrives (wheel_nav.rs:94; input_tests.rs:443 alt_scroll_zooms_in_steps_around_the_pointer, wheel_nav.rs:448 alt_scroll_zooms_ten_percent_per_notch), but the step is x1.1 (10 %), not the ~5 % this row asks for: #1718 changed it from x1.05 after measuring Photoshop, so the row's target is in question. Status bar zoom field and Fit button fit inside the bar in every theme (status_bar_tests.rs:39 status_bar_controls_sit_inside_the_bar_with_even_margins, #2823); the Navigator zoom controls are not checked"
 
 [[item]]
 id = "UI-217-19"

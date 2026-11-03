@@ -43,8 +43,9 @@ everything: the document keeps its file and its unsaved changes. Automation foll
 
 OpenRaster elements other than `stack` and `layer` (MyPaint's text, for example), missing
 layer images and unknown composite operations open with a warning instead of failing the file.
-Krita's W3C Soft Light (`svg:soft-light`, `krita:soft_light_svg`) and its own Hard Mix open as
-Photoshop's Soft Light and Hard Mix, which differ slightly, also with a warning.
+Krita's W3C Soft Light (`svg:soft-light`, `krita:soft_light_svg`) is Photoshop's Soft Light and
+opens as it. Krita's own Soft Light (`krita:soft_light`, `sqrt` over dark backdrops) and its own
+Hard Mix open as Photoshop's Soft Light and Hard Mix, which differ slightly, with a warning.
 
 ## Limits and safety
 
@@ -61,7 +62,7 @@ Unit tests (`crates/io/src/ora/tests.rs`) round-trip layers, groups, pass-throug
 opacity, visibility, locks and every blend mode at 8 and 16 bit, check masks, rendered layer
 kinds, the archive layout and malformed input. Synthetic 8/16-bit pixel fixtures check modern
 and legacy group-isolation defaults, explicit isolation and pass-through.
-`crates/automation/tests/openraster.rs` saves,
+`crates/automation/tests/it/openraster.rs` saves,
 reopens, edits and saves in place through the agent surface, and checks that a document with an
 adjustment layer never overwrites its `.ora`; the CLI test converts both ways.
 
@@ -71,11 +72,11 @@ Real-file checks use Krita-authored oracles from
 `mergedimage.png`:
 
 ```sh
-KRITA_TEST_DIR=/path/to/photocraft-corpus/krita cargo test -p photocraft-io --test krita_corpus -- --ignored --nocapture
+KRITA_TEST_DIR=/path/to/photocraft-corpus/krita cargo test -p photocraft-io --test it -- krita_corpus:: --ignored --nocapture
 ```
 
 2026-10-09, Krita 5.2.9: 32 of 35 `.ora` files render within 3/255 of Krita's merged image; the
-other three differ for known reasons listed in `crates/io/tests/krita_corpus.rs` (Krita's
+other three differ for known reasons listed in `crates/io/tests/it/krita_corpus.rs` (Krita's
 tie-break in Darker and Lighter Color, and Hard Mix at a channel sum of exactly 1). In the other
 direction, Krita opened every PhotoCraft re-export of the first 34 of those files and rendered 33
 of them identically to its original; the exception is Photoshop's Soft Light, which is written

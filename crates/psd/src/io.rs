@@ -266,6 +266,23 @@ impl<'w, W: Write + Seek + ?Sized> Sink<'w, W> {
         Ok(())
     }
 
+    /// Appends RLE channel data whose 2-byte row-count table widens to 4 bytes (a PSD model
+    /// written as PSB): the table is widened in staged pieces, the packed rows go straight
+    /// through: each two-byte count becomes `00 00` and the count, the packed rows are unchanged.
+    pub(crate) fn put_widened_rle(&mut self, data: &[u8], rows: usize) -> std::io::Result<()> {
+        let table_len = usize::try_from(crate::compression::rle_widening(data, rows)?).map_err(|_| PsdError::LimitExceeded("row count overflow"))?;
+        let (table, packed) = data.split_at_checked(table_len).ok_or_else(|| PsdError::invalid("RLE row-count table out of range"))?;
+        for part in table.chunks(STAGE / 2) {
+            self.small(|o| {
+                for count in part.as_chunks::<2>().0 {
+                    o.extend_from_slice(&[0, 0, count[0], count[1]]);
+                }
+                Ok(())
+            })?;
+        }
+        self.put(packed)
+    }
+
     /// `n` zero bytes (padding, at most a few).
     pub(crate) fn zeros(&mut self, n: usize) -> std::io::Result<()> {
         self.small(|b| {

@@ -12,7 +12,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -67,6 +67,8 @@ pub struct Printer {
 /// Timeouts: connecting, and each request (a Print-Job carries the whole PDF).
 const CONNECT: Duration = Duration::from_secs(3);
 const REQUEST: Duration = Duration::from_secs(60);
+/// The whole reply, however it trickles in: the timeouts above only cover each read.
+const REPLY_DEADLINE: Duration = Duration::from_secs(120);
 /// Largest reply read.
 const MAX_REPLY: usize = 16 << 20;
 /// Largest number of attributes taken from a reply.
@@ -111,12 +113,36 @@ impl Endpoint {
         .find(Endpoint::reachable)
     }
 
-    /// `server` as a socket path (starts with `/`) or `host[:port]` (port 631 by default).
+    /// `server` as a socket path (starts with `/`) or `host[:port]` (port 631 by default). An IPv6
+    /// server is `[address]` or `[address]:port`; written bare (more than one `:`) it keeps the
+    /// default port, because its last `:` cannot be told apart from a port separator. Anything else
+    /// after the bracket (`[::1]:abc`) stays the host, so a mistyped endpoint cannot resolve rather
+    /// than quietly becoming the default one.
     pub fn parse(server: &str) -> Endpoint {
         if server.starts_with('/') {
             return Endpoint::Unix(PathBuf::from(server));
         }
-        let (host, port) = server.rsplit_once(':').and_then(|(h, p)| p.parse().ok().map(|p| (h.to_string(), p))).unwrap_or((server.to_string(), 631));
+        // `[IPv6]:port` - the brackets tell the address from the port, and are not part of the host.
+        if let Some(rest) = server.strip_prefix('[')
+            && let Some((host, tail)) = rest.split_once(']')
+        {
+            // Nothing after the bracket, or a real `:port`, is understood. Anything else (`[::1]:abc`,
+            // `[::1]:70000`, `[::1]junk`) keeps the whole string as the host, so the mistyped endpoint
+            // stays unresolvable instead of quietly becoming the default one.
+            let port = if tail.is_empty() {
+                631
+            } else if let Some(port) = tail.strip_prefix(':').and_then(|p| p.parse().ok()) {
+                port
+            } else {
+                return Endpoint::Tcp(server.to_string(), 631);
+            };
+            return Endpoint::Tcp(host.to_string(), port);
+        }
+        // A bare IPv6 literal has more than one ':', so splitting on the last one would cut the
+        // address in half: it is the host, and the port stays the default. A zone id (`fe80::1%eth0`)
+        // carries no ':', so there a port can still follow the address.
+        let host_port = if server.matches(':').count() > 1 && !server.contains('%') { None } else { server.rsplit_once(':') };
+        let (host, port) = host_port.and_then(|(h, p)| p.parse().ok().map(|p| (h.to_string(), p))).unwrap_or((server.to_string(), 631));
         Endpoint::Tcp(host, port)
     }
 
@@ -142,17 +168,23 @@ impl Endpoint {
             Endpoint::Tcp(host, port) => {
                 let addr = (host.as_str(), *port).to_socket_addrs().map_err(|e| Error::Unreachable(format!("{host}:{port}: {e}")))?.next();
                 let addr = addr.ok_or_else(|| Error::Unreachable(format!("{host}:{port}: no address")))?;
-                let s = TcpStream::connect_timeout(&addr, CONNECT).map_err(|e| Error::Unreachable(format!("{host}:{port}: {e}")))?;
-                let _ = s.set_read_timeout(Some(REQUEST));
-                let _ = s.set_write_timeout(Some(REQUEST));
-                Ok(Stream::Tcp(s))
+                open_tcp(host, *port, addr, |addr| TcpStream::connect_timeout(&addr, CONNECT))
             }
         }
     }
 
+    /// The endpoint as an HTTP authority: an IPv6 host is bracketed, or its last colon reads as the
+    /// port separator and the request carries a host CUPS has never heard of. A scoped address keeps
+    /// its zone id and writes it escaped as "%25": "%" is not valid inside an authority (RFC 3986
+    /// section 3.2.2 reserves it for escaping), and the escaped form is what CUPS, curl and the
+    /// ipp:// URIs CUPS writes use for a zone. RFC 9844 (Aug 2025) obsoleted RFC 6874, which had made
+    /// that form URI syntax, so this is interop rather than a standard; dropping the zone instead
+    /// would name a different host on the wire than the socket was opened to. The socket still gets
+    /// the raw address%zone, which is the form a resolver understands.
     fn host(&self) -> String {
         match self {
             Endpoint::Unix(_) => "localhost".into(),
+            Endpoint::Tcp(host, port) if host.contains(':') => format!("[{}]:{port}", host.replace('%', "%25")),
             Endpoint::Tcp(host, port) => format!("{host}:{port}"),
         }
     }
@@ -162,9 +194,20 @@ impl std::fmt::Display for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Endpoint::Unix(p) => write!(f, "{}", p.display()),
+            Endpoint::Tcp(h, p) if h.contains(':') => write!(f, "[{h}]:{p}"),
             Endpoint::Tcp(h, p) => write!(f, "{h}:{p}"),
         }
     }
+}
+
+/// Open one address and put the request timeouts on it. The connect call is a parameter so the
+/// refusal path can be tested at all: no port is guaranteed to stay free between picking one and
+/// using it, and what a refused connect reported is what the caller is supposed to hear.
+fn open_tcp(host: &str, port: u16, addr: SocketAddr, open: impl FnOnce(SocketAddr) -> std::io::Result<TcpStream>) -> Result<Stream> {
+    let s = open(addr).map_err(|e| Error::Unreachable(format!("{host}:{port}: {e}")))?;
+    let _ = s.set_read_timeout(Some(REQUEST));
+    let _ = s.set_write_timeout(Some(REQUEST));
+    Ok(Stream::Tcp(s))
 }
 
 enum Stream {
@@ -280,56 +323,31 @@ pub struct Reply {
     pub attributes: Vec<Attribute>,
 }
 
+/// The attribute range for one group delimiter in a parsed message. Ranges are half-open and
+/// include empty groups, so repeated group tags remain distinct.
+#[derive(Debug, Clone, Copy)]
+struct GroupRange {
+    tag: u8,
+    start: usize,
+    end: usize,
+}
+
+/// Parsed message details kept private so the public flat `Reply` API stays source-compatible.
+struct ParsedMessage {
+    reply: Reply,
+    end: usize,
+    groups: Vec<GroupRange>,
+}
+
 impl Reply {
     /// Parses an IPP message (RFC 8010 §3): header, then groups of attributes until the end tag.
     pub fn parse(b: &[u8]) -> Result<Reply> {
-        Self::parse_at(b).map(|(r, _)| r)
+        parse_message(b).map(|parsed| parsed.reply)
     }
 
     /// Parses a message and returns where its attributes end (document data may follow).
     fn parse_at(b: &[u8]) -> Result<(Reply, usize)> {
-        let bad = |m: &str| Error::Protocol(m.to_string());
-        if b.len() < 9 {
-            return Err(bad("reply shorter than an IPP header"));
-        }
-        let status = u16::from_be_bytes([b[2], b[3]]);
-        let request_id = u32::from_be_bytes([b[4], b[5], b[6], b[7]]);
-        let mut pos = 8;
-        let mut group = 0u8;
-        let mut attributes: Vec<Attribute> = Vec::new();
-        loop {
-            let tag = *b.get(pos).ok_or_else(|| bad("reply ends before the end-of-attributes tag"))?;
-            pos += 1;
-            if tag == TAG_END {
-                return Ok((Reply { status, request_id, attributes }, pos));
-            }
-            if tag < 0x10 {
-                group = tag;
-                continue;
-            }
-            let name_len =
-                usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
-            pos += 2;
-            let name = b.get(pos..pos + name_len).ok_or_else(|| bad("cut attribute name"))?;
-            pos += name_len;
-            let value_len =
-                usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
-            pos += 2;
-            let value = b.get(pos..pos + value_len).ok_or_else(|| bad("cut attribute value"))?.to_vec();
-            pos += value_len;
-            if name_len == 0 {
-                // An additional value of the previous attribute.
-                match attributes.last_mut() {
-                    Some(last) if last.group == group => last.values.push(value),
-                    _ => return Err(bad("an additional value with no attribute before it")),
-                }
-            } else {
-                attributes.push(Attribute { group, tag, name: String::from_utf8_lossy(name).into_owned(), values: vec![value] });
-            }
-            if attributes.len() > MAX_ATTRIBUTES {
-                return Err(bad("too many attributes"));
-            }
-        }
+        parse_message(b).map(|parsed| (parsed.reply, parsed.end))
     }
 
     /// The server's own message for an error status, or a name for the code.
@@ -351,8 +369,72 @@ impl Reply {
     }
 }
 
-/// POSTs `body` (IPP, with any document data after it) to `path` and returns the reply.
-fn post(endpoint: &Endpoint, path: &str, body: &[u8]) -> Result<Reply> {
+/// Parses one IPP message while preserving each group instance for private consumers that need
+/// object boundaries. The public reply remains a flat list of attributes.
+fn parse_message(b: &[u8]) -> Result<ParsedMessage> {
+    let bad = |m: &str| Error::Protocol(m.to_string());
+    if b.len() < 9 {
+        return Err(bad("reply shorter than an IPP header"));
+    }
+    let status = u16::from_be_bytes([b[2], b[3]]);
+    let request_id = u32::from_be_bytes([b[4], b[5], b[6], b[7]]);
+    let mut pos = 8;
+    let mut group = 0u8;
+    let mut active_group = None;
+    let mut last_attribute_group = None;
+    let mut attributes: Vec<Attribute> = Vec::new();
+    let mut groups: Vec<GroupRange> = Vec::new();
+    loop {
+        let tag = *b.get(pos).ok_or_else(|| bad("reply ends before the end-of-attributes tag"))?;
+        pos += 1;
+        if tag == TAG_END {
+            if let Some(last) = groups.last_mut() {
+                last.end = attributes.len();
+            }
+            return Ok(ParsedMessage { reply: Reply { status, request_id, attributes }, end: pos, groups });
+        }
+        if tag < 0x10 {
+            if let Some(last) = groups.last_mut() {
+                last.end = attributes.len();
+            }
+            if groups.len() >= MAX_ATTRIBUTES {
+                return Err(bad("too many attribute groups"));
+            }
+            group = tag;
+            let group_index = groups.len();
+            groups.push(GroupRange { tag, start: attributes.len(), end: attributes.len() });
+            active_group = Some(group_index);
+            continue;
+        }
+        let name_len =
+            usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
+        pos += 2;
+        let name = b.get(pos..pos + name_len).ok_or_else(|| bad("cut attribute name"))?;
+        pos += name_len;
+        let value_len =
+            usize::from(u16::from_be_bytes([*b.get(pos).ok_or_else(|| bad("cut attribute"))?, *b.get(pos + 1).ok_or_else(|| bad("cut attribute"))?]));
+        pos += 2;
+        let value = b.get(pos..pos + value_len).ok_or_else(|| bad("cut attribute value"))?.to_vec();
+        pos += value_len;
+        if name_len == 0 {
+            // Additional values can continue an attribute only within this exact group instance.
+            match attributes.last_mut() {
+                Some(last) if last_attribute_group == active_group => last.values.push(value),
+                _ => return Err(bad("an additional value with no attribute before it")),
+            }
+        } else {
+            attributes.push(Attribute { group, tag, name: String::from_utf8_lossy(name).into_owned(), values: vec![value] });
+            last_attribute_group = active_group;
+        }
+        if attributes.len() > MAX_ATTRIBUTES {
+            return Err(bad("too many attributes"));
+        }
+    }
+}
+
+/// POSTs `body` (IPP, with any document data after it) to `path` and returns the parsed reply with
+/// its private group boundaries.
+fn post(endpoint: &Endpoint, path: &str, body: &[u8]) -> Result<ParsedMessage> {
     let mut stream = endpoint.connect()?;
     let head = format!(
         "POST {path} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/ipp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -374,9 +456,9 @@ fn post(endpoint: &Endpoint, path: &str, body: &[u8]) -> Result<Reply> {
         }));
     }
     let body = if headers.iter().any(|(k, v)| k == "transfer-encoding" && v.contains("chunked")) { dechunk(body)? } else { body.to_vec() };
-    let reply = Reply::parse(&body)?;
-    if reply.status >= 0x0400 {
-        return Err(Error::Status(reply.status, reply.status_message()));
+    let reply = parse_message(&body)?;
+    if reply.reply.status >= 0x0400 {
+        return Err(Error::Status(reply.reply.status, reply.reply.status_message()));
     }
     Ok(reply)
 }
@@ -393,7 +475,13 @@ fn read_response(stream: &mut Stream) -> Result<Vec<u8>> {
     let mut body_at = None;
     let mut expected: Option<usize> = None;
     let mut chunked = false;
+    // Where the chunk walk resumes, so each read costs its own bytes, not the whole body again.
+    let mut chunk_at = 0usize;
+    let started = std::time::Instant::now();
     loop {
+        if started.elapsed() > REPLY_DEADLINE {
+            return Err(Error::Protocol("the print server took too long to reply".into()));
+        }
         let n = stream.read(&mut buf).map_err(|e| Error::Protocol(format!("reading: {e}")))?;
         if n == 0 {
             return Ok(raw);
@@ -414,7 +502,7 @@ fn read_response(stream: &mut Stream) -> Result<Vec<u8>> {
         let body = raw.get(at..).unwrap_or_default();
         let complete = match expected {
             Some(len) if !chunked => body.len() >= len,
-            _ if chunked => chunked_complete(body),
+            _ if chunked => chunked_complete(body, &mut chunk_at),
             _ => false,
         };
         if complete {
@@ -442,8 +530,11 @@ fn http_response(raw: &[u8]) -> Result<(u16, Headers, &[u8])> {
 /// `0\r\n\r\n` inside a chunk's payload (an attribute value can hold it) does not count. A
 /// malformed or impossible size counts as complete, so [`dechunk`] reports it instead of
 /// waiting for more.
-fn chunked_complete(mut b: &[u8]) -> bool {
+fn chunked_complete(body: &[u8], resume: &mut usize) -> bool {
+    let mut b = body.get(*resume..).unwrap_or_default();
     loop {
+        // Chunks already walked are not walked again: `resume` marks the start of this one.
+        *resume = body.len() - b.len();
         let Some(line_end) = b.windows(2).position(|w| w == b"\r\n") else { return false };
         let size_str = String::from_utf8_lossy(b.get(..line_end).unwrap_or(&[]));
         let Ok(size) = usize::from_str_radix(size_str.split(';').next().unwrap_or_default().trim(), 16) else { return true };
@@ -480,8 +571,19 @@ fn dechunk(mut b: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Where `/path` lands on the server: `/printers/<name>` or `/classes/<name>`.
-fn queue_path(name: &str, is_class: bool) -> String {
-    format!("/{}/{name}", if is_class { "classes" } else { "printers" })
+fn queue_path(name: &str, is_class: bool) -> Result<String> {
+    if name.is_empty() || name.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err(Error::Protocol("printer name contains an invalid control character".into()));
+    }
+    let mut encoded = String::with_capacity(name.len());
+    for &b in name.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(b));
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Ok(format!("/{}/{encoded}", if is_class { "classes" } else { "printers" }))
 }
 
 /// The printers the server knows (CUPS-Get-Printers), then its classes (CUPS-Get-Classes, which
@@ -500,41 +602,35 @@ pub fn printers(endpoint: &Endpoint) -> Result<Vec<Printer>> {
 fn queues(endpoint: &Endpoint, op: u16, is_class: bool) -> Result<Vec<Printer>> {
     let mut r = Request::new(op, 1);
     r.attr_many(TAG_KEYWORD, "requested-attributes", &["printer-name", "printer-info", "printer-state", "printer-is-accepting-jobs"]);
-    let reply = match post(endpoint, "/", &r.end()) {
+    let parsed = match post(endpoint, "/", &r.end()) {
         Ok(reply) => reply,
         // CUPS answers "not found" ("No destinations added.") when no printer is set up.
         Err(Error::Status(0x0406, _)) => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
     let mut out = Vec::new();
-    let mut current: Option<Printer> = None;
-    for a in reply.attributes.iter().filter(|a| a.group == TAG_PRINTER_GROUP) {
-        match a.name.as_str() {
-            "printer-name" => {
-                if let Some(p) = current.take() {
-                    out.push(p);
-                }
-                current = Some(Printer { name: a.text(), info: String::new(), state: 3, accepting_jobs: true, is_default: false, is_class });
+    let attributes = &parsed.reply.attributes;
+    for group in parsed.groups.iter().filter(|group| group.tag == TAG_PRINTER_GROUP) {
+        let Some(group_attributes) = attributes.get(group.start..group.end) else {
+            return Err(Error::Protocol("invalid printer attribute group range".into()));
+        };
+        let mut name = None;
+        let mut info = String::new();
+        let mut state = 3;
+        let mut accepting_jobs = true;
+        for a in group_attributes {
+            match a.name.as_str() {
+                "printer-name" if name.is_none() => name = Some(a.text()),
+                "printer-info" => info = a.text(),
+                "printer-state" => state = a.int().unwrap_or(3).clamp(0, 5) as u32,
+                "printer-is-accepting-jobs" => accepting_jobs = a.values.first().is_none_or(|v| v.first() != Some(&0)),
+                _ => {}
             }
-            "printer-info" => {
-                if let Some(p) = &mut current {
-                    p.info = a.text();
-                }
-            }
-            "printer-state" => {
-                if let Some(p) = &mut current {
-                    p.state = a.int().unwrap_or(3).clamp(0, 5) as u32;
-                }
-            }
-            "printer-is-accepting-jobs" => {
-                if let Some(p) = &mut current {
-                    p.accepting_jobs = a.values.first().is_none_or(|v| v.first() != Some(&0));
-                }
-            }
-            _ => {}
+        }
+        if let Some(name) = name.filter(|name| !name.is_empty()) {
+            out.push(Printer { name, info, state, accepting_jobs, is_default: false, is_class });
         }
     }
-    out.extend(current);
     Ok(out)
 }
 
@@ -543,7 +639,7 @@ pub fn default_printer(endpoint: &Endpoint) -> Result<Option<String>> {
     let mut r = Request::new(OP_CUPS_GET_DEFAULT, 2);
     r.attr_many(TAG_KEYWORD, "requested-attributes", &["printer-name"]);
     match post(endpoint, "/", &r.end()) {
-        Ok(reply) => Ok(reply.attributes.iter().find(|a| a.name == "printer-name").map(Attribute::text).filter(|n| !n.is_empty())),
+        Ok(reply) => Ok(reply.reply.attributes.iter().find(|a| a.name == "printer-name").map(Attribute::text).filter(|n| !n.is_empty())),
         // CUPS answers "not found" when no default is set.
         Err(Error::Status(0x0406, _)) => Ok(None),
         Err(e) => Err(e),
@@ -568,7 +664,7 @@ pub struct Job<'a> {
 /// Submits `job` (Print-Job) and returns the job id.
 pub fn print_job(endpoint: &Endpoint, job: &Job<'_>) -> Result<u32> {
     let mut r = Request::new(OP_PRINT_JOB, 3);
-    let path = queue_path(job.printer, job.is_class);
+    let path = queue_path(job.printer, job.is_class)?;
     r.attr(TAG_URI, "printer-uri", format!("ipp://{}{path}", endpoint.host()).as_bytes());
     r.attr(TAG_NAME, "requesting-user-name", job.user.as_bytes());
     r.attr(TAG_NAME, "job-name", job.title.as_bytes());
@@ -579,7 +675,7 @@ pub fn print_job(endpoint: &Endpoint, job: &Job<'_>) -> Result<u32> {
     }
     let mut body = r.end();
     body.extend_from_slice(job.document);
-    let reply = post(endpoint, &path, &body)?;
+    let reply = post(endpoint, &path, &body)?.reply;
     reply
         .attributes
         .iter()

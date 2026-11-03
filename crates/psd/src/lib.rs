@@ -42,28 +42,36 @@
 
 pub mod abr;
 pub mod aco;
+pub mod act;
 pub mod ase;
+pub mod asl;
 pub mod atn;
 pub mod blend;
 pub mod builder;
+mod codepage;
 pub mod compression;
 pub mod descriptor;
 pub mod error;
 pub mod file;
 pub mod filter_effects;
+#[cfg(any(test, feature = "testgen"))]
+pub mod fixtures;
 pub mod grd;
 pub mod hdr;
 pub mod header;
 pub mod image_data;
 mod io;
 pub mod layer;
+mod lazy;
 pub mod metadata;
 pub mod path;
 pub mod patterns;
 pub mod pixels;
 pub mod resources;
+pub mod rows;
 pub mod shc;
 pub mod slices;
+pub mod source;
 pub mod tagged;
 #[cfg(any(test, feature = "testgen"))]
 // Test-data generator (tests and fuzz seeds only): failing loudly is the point.
@@ -83,5 +91,9 @@ pub use image_data::ImageData;
 pub use layer::{BlendingRanges, ChannelData, LayerFlags, LayerInfo, LayerMask, LayerRecord, MaskData, MaskParameters, RealMask, Rect};
 pub use pixels::{GrayImage, Layer, RgbaImage};
 pub use resources::{ImageResource, ResolutionInfo, ResourceData};
+pub use rows::RowDecoder;
+#[cfg(any(unix, windows))]
+pub use source::FileSource;
+pub use source::{ReadAt, Source, Stored};
 pub use tagged::{BlockData, SectionDivider, SectionType, TaggedBlock};
 pub use tree::LayerNode;

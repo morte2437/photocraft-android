@@ -18,6 +18,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod art_history;
 mod artistic;
 mod artistic_fx;
 mod blur;
@@ -25,6 +26,7 @@ mod blur2;
 pub mod camera_raw;
 pub mod color_to_alpha;
 pub mod content_aware;
+mod cutout;
 mod denoise;
 pub mod dff;
 pub mod direct;
@@ -71,6 +73,7 @@ pub mod seam;
 pub mod segment;
 pub mod selection;
 mod selection_blur;
+pub mod separable;
 mod shape_blur;
 mod sharpen;
 pub mod stack;
@@ -86,6 +89,7 @@ pub mod warp;
 pub mod wideangle;
 
 pub use artistic::{GALLERY_CATEGORIES, GalleryEffect, GalleryFilter, GalleryParam, GalleryParamKind};
+pub use distort::MAX_WAVE_GENERATORS;
 pub use image::{Edge, Image};
 pub use params_ext::*;
 
@@ -411,6 +415,14 @@ pub enum FilterParams {
     },
 
     // ---- Render ----
+    /// Clouds (or Difference Clouds, which subtracts them from the pixels) between two straight
+    /// sRGB RGBA colours; the cloud size follows the bounds.
+    Clouds {
+        seed: u32,
+        difference: bool,
+        foreground: [f32; 4],
+        background: [f32; 4],
+    },
     /// Variance 1–64, strength 1–64; colours straight sRGB RGBA.
     Fibers {
         variance: f32,
@@ -552,8 +564,11 @@ pub enum FilterParams {
 impl FilterParams {
     /// Pixels read outside an output tile.
     pub fn halo(&self) -> Halo {
-        let g = |sigma: f32| Halo::Radius((sigma.max(0.0) * 3.0).ceil() as i32 + 1);
+        let g = |sigma: f32| Halo::Radius(((sigma.max(0.0) * 3.0).ceil() as i32).saturating_add(1));
         match self {
+            // Small Gaussian radii use the calibrated seven-tap kernel as well: its reach is
+            // three pixels even when ceil(3 * radius) + 1 would be smaller.
+            FilterParams::GaussianBlur { radius } | FilterParams::HighPass { radius } if (0.05..1.0).contains(radius) => Halo::Radius(3),
             FilterParams::GaussianBlur { radius } | FilterParams::HighPass { radius } => g(*radius),
             FilterParams::UnsharpMask { radius, .. } => Halo::Radius(sharpen::exact::halo(*radius)),
             FilterParams::SmartSharpen { radius, .. } => g(*radius),
@@ -562,9 +577,9 @@ impl FilterParams {
             | FilterParams::Median { radius }
             | FilterParams::DustAndScratches { radius, .. }
             | FilterParams::Minimum { radius, .. }
-            | FilterParams::Maximum { radius, .. } => Halo::Radius(radius.max(0.0).ceil() as i32 + 1),
+            | FilterParams::Maximum { radius, .. } => Halo::Radius((radius.max(0.0).ceil() as i32).saturating_add(1)),
             FilterParams::MotionBlur { distance, .. } => Halo::Radius((distance.abs() / 2.0).ceil() as i32 + 2),
-            FilterParams::Mosaic { cell_size } => Halo::Radius(cell_size.max(1.0).ceil() as i32 + 1),
+            FilterParams::Mosaic { cell_size } => Halo::Radius((cell_size.max(1.0).ceil() as i32).saturating_add(1)),
             FilterParams::Emboss { height, .. } => Halo::Radius(height.abs().ceil() as i32 + 2),
             FilterParams::FindEdges => Halo::Radius(1),
             FilterParams::AddNoise { .. } | FilterParams::Solarize | FilterParams::Invert | FilterParams::Desaturate => Halo::Radius(0),
@@ -606,7 +621,13 @@ impl FilterParams {
     /// the reference bounds even where the layer is transparent, as Photoshop's does on an
     /// empty layer, while still reading no neighbourhood.
     pub fn renders_from_nothing(&self) -> bool {
-        matches!(self, FilterParams::Fibers { .. })
+        matches!(self, FilterParams::Fibers { .. } | FilterParams::Clouds { difference: false, .. })
+    }
+
+    /// Whether the filter places and sizes its pattern by the canvas even with a selection
+    /// (Clouds, Fibers): its bounds are then the canvas, and the selection only masks the result.
+    pub fn sizes_by_canvas(&self) -> bool {
+        matches!(self, FilterParams::Clouds { .. } | FilterParams::Fibers { .. })
     }
 
     /// Human-readable name.
@@ -653,6 +674,8 @@ impl FilterParams {
             FilterParams::Displace { .. } => "Displace",
             FilterParams::Shear { .. } => "Shear",
             FilterParams::ZigZag { .. } => "ZigZag",
+            FilterParams::Clouds { difference: false, .. } => "Clouds",
+            FilterParams::Clouds { difference: true, .. } => "Difference Clouds",
             FilterParams::Fibers { .. } => "Fibers",
             FilterParams::LensFlare { .. } => "Lens Flare",
             FilterParams::LightingEffects { .. } => "Lighting Effects",
@@ -681,7 +704,7 @@ impl FilterParams {
 
 /// Halos of the second filter batch.
 fn halo_ext(p: &FilterParams) -> Halo {
-    let r = |v: f32| Halo::Radius(v.max(0.0).ceil() as i32 + 1);
+    let r = |v: f32| Halo::Radius((v.max(0.0).ceil() as i32).saturating_add(1));
     match p {
         FilterParams::ColorHalftone { max_radius, .. } => r(max_radius * 3.0),
         FilterParams::Crystallize { cell_size, .. } => r(cell_size.max(1.0) * 3.0),
@@ -697,13 +720,14 @@ fn halo_ext(p: &FilterParams) -> Halo {
         FilterParams::Wind { method, .. } => r(stylize2::wind_reach(*method)),
         FilterParams::Displace { .. } | FilterParams::Shear { .. } | FilterParams::ZigZag { .. } | FilterParams::SpinBlur { .. } => Halo::Bounds,
         // Generators and per-pixel renders only need the bounds geometry (always in the context).
-        FilterParams::Fibers { .. } | FilterParams::LensFlare { .. } => Halo::Radius(0),
+        FilterParams::Fibers { .. } | FilterParams::LensFlare { .. } | FilterParams::Clouds { .. } => Halo::Radius(0),
         FilterParams::LightingEffects { .. } => r(1.0),
         FilterParams::Relight { intensity, .. } if *intensity == 0.0 => Halo::Radius(0),
         FilterParams::Relight { .. } => Halo::Radius(relight::halo_radius_max()),
         FilterParams::ReduceNoise { .. } => r(denoise::reach()),
-        FilterParams::SmartBlur { radius, .. } => r(*radius),
-        FilterParams::LensBlur { radius, .. } => r(*radius),
+        // The kernels clamp the radius to 100 px: size the source window by what they use.
+        FilterParams::SmartBlur { radius, .. } => r(radius.min(100.0)),
+        FilterParams::LensBlur { radius, .. } => r(radius.min(100.0)),
         FilterParams::ShapeBlur { radius, .. } => r(shape_blur::radius(*radius)),
         FilterParams::TiltShift { blur, .. } => r(gallery::reach(*blur)),
         FilterParams::IrisBlur { pins } => r(gallery::reach(pins.iter().map(|p| p.blur).fold(0.0, f32::max))),
@@ -711,6 +735,7 @@ fn halo_ext(p: &FilterParams) -> Halo {
         FilterParams::PathBlur { paths } => r(paths.iter().map(|p| p.speed.abs()).fold(0.0, f32::max) / 2.0 + 1.0),
         FilterParams::Custom { .. } => r(2.0),
         FilterParams::DeInterlace { .. } => r(1.0),
+        FilterParams::FilterGallery { effects } if artistic_fx::is_global(effects) => Halo::Bounds,
         FilterParams::FilterGallery { effects } => Halo::Radius(artistic_fx::reach(effects)),
         _ => Halo::Radius(0),
     }
@@ -817,6 +842,7 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
         }
         FilterParams::Shear { points, undefined } => distort2::shear(src, out, ctx, points, *undefined),
         FilterParams::ZigZag { amount, ridges, style } => distort2::zigzag(src, out, ctx, *amount, *ridges, *style),
+        FilterParams::Clouds { seed, difference, foreground, background } => render::clouds(src, out, ctx, *seed, *difference, (*foreground, *background)),
         FilterParams::Fibers { variance, strength, seed, foreground, background } => {
             render::fibers(src, out, ctx, *variance, *strength, *seed, (*foreground, *background))
         }
@@ -981,11 +1007,44 @@ pub fn apply_in_with(
 }
 
 /// Results do not depend on the tiling, so wide-halo filters use bigger tiles to keep the
-/// re-read margin (and its cost) below ~2× the tile area.
+/// re-read margin (and its cost) below ~2× the tile area. The radius is input-derived, so the
+/// halo arithmetic is done in `i64` and the result capped: an `i32::MAX` radius must not
+/// overflow in debug builds, and must not produce a tile bigger than the hard cap.
 fn auto_tile(params: &FilterParams, bounds: Rect) -> i32 {
     match params.halo_for(bounds) {
-        Halo::Radius(r) => TILE.max((2 * r + 63) / 64 * 64).min(2048),
+        // The radius is input-derived: widen to i64 before the arithmetic and cap the
+        // conversion, so an i32::MAX radius cannot overflow (debug panic) and cannot make a
+        // tile bigger than the hard cap below (131_072 = 2048 * 64, one tile row).
+        Halo::Radius(r) => {
+            let halo = ((2 * i64::from(r) + 63) / 64 * 64).min(131_072);
+            TILE.max(halo as i32).min(2048)
+        }
         Halo::Bounds => TILE,
+    }
+}
+
+/// Conservative transient allocation estimate for filter admission. Output tiles remain in
+/// the paged store; whole-image kernels must admit their float input before reading it.
+pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: usize) -> u64 {
+    if area.is_empty() {
+        return 0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = rayon::current_num_threads().max(1) as u64;
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1u64;
+    let tile = auto_tile(params, bounds).max(1) as u64;
+    let floats = (channels as u64).saturating_mul(4);
+    // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
+    let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);
+    match params.halo_for(bounds) {
+        Halo::Bounds => base.saturating_add(bounds.union(&area).size().area().saturating_mul(floats)),
+        Halo::Radius(r) => {
+            let side = tile.saturating_add((r.max(0) as u64).saturating_mul(2));
+            base.saturating_add(
+                side.saturating_mul(side).saturating_add(tile.saturating_mul(tile).saturating_mul(3)).saturating_mul(floats).saturating_mul(threads),
+            )
+        }
     }
 }
 
@@ -1078,18 +1137,28 @@ fn apply_tiled_with_impl(
         return None;
     }
     let halo = params.halo_for(bounds);
-    if matches!(params, FilterParams::UnsharpMask { .. }) {
-        let Halo::Radius(reach) = halo else { return None };
+    // Every windowed filter: a Filter Gallery stack sums its effects' reach, and a radius is
+    // caller-supplied, so a short parameter set can ask for a huge source window per tile.
+    if let Halo::Radius(reach) = halo {
         let (w, h) = (area.width().min(tile as u32) as usize, area.height().min(tile as u32) as usize);
         let read_samples = w.checked_add(2 * reach as usize)?.checked_mul(h.checked_add(2 * reach as usize)?)?.checked_mul(fmt.channels())?;
         let tile_count = u64::from(area.width()).div_ceil(tile as u64).checked_mul(u64::from(area.height()).div_ceil(tile as u64))?;
         // Reject hostile source-window sizes before Image::read allocates them.
         // Ordinary filter parameters and automatic tiles fit these bounds.
-        if read_samples > 512 * 1024 * 1024 || read_samples.checked_mul(std::mem::size_of::<f32>())? > isize::MAX as usize || tile_count > 1_048_576 {
+        let too_many_tiles = matches!(params, FilterParams::UnsharpMask { .. }) && tile_count > 1_048_576;
+        if read_samples > 512 * 1024 * 1024 || read_samples.checked_mul(std::mem::size_of::<f32>())? > isize::MAX as usize || too_many_tiles {
             return None;
         }
     }
     let shared = (halo == Halo::Bounds).then(|| Image::read(surface, bounds.union(&area)));
+    // A Filter Gallery stack with a Cutout traces the whole image once; tiles only fill it in.
+    let gallery = match (params, &shared) {
+        (FilterParams::FilterGallery { effects }, Some(src)) => artistic_fx::Prepared::new(effects, src, &ctx),
+        _ => None,
+    };
+    if ctl.cancelled() {
+        return None;
+    }
     // Shape rasterization depends only on params, not on a tile's pixels.
     let shape = match params {
         FilterParams::ShapeBlur { radius, shape } => {
@@ -1113,16 +1182,43 @@ fn apply_tiled_with_impl(
     // Tiles finished so far, for progress reported per tile (from any worker thread).
     let finished = std::sync::atomic::AtomicUsize::new(0);
     let total = tiles.len().max(1);
-    let run = |t: &Rect| -> (Rect, Vec<f32>) {
+    enum TileData {
+        Samples(Vec<f32>),
+        Encoded(Vec<u8>),
+    }
+    // Cell filters become writeback-bound once their geometry is reused. Encode
+    // on the tile workers; committing the group then only copies native bytes.
+    let finish = |data: Vec<f32>| {
+        if matches!(params, FilterParams::Crystallize { .. } | FilterParams::Pointillize { .. })
+            && let Some(bytes) = pixelate::cells::encode(fmt, &data)
+        {
+            TileData::Encoded(bytes)
+        } else {
+            TileData::Samples(data)
+        }
+    };
+    let run = |t: &Rect| -> (Rect, TileData) {
         // Cancelled: skip the remaining tiles of the group (the result is discarded).
         if ctl.cancelled() {
-            return (*t, Vec::new());
+            return (*t, TileData::Samples(Vec::new()));
         }
         let tick = || {
             let n = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             // The last few percent are the writes after each group.
             ctl.progress(0.98 * n as f32 / total as f32);
         };
+        let sparse = match *params {
+            FilterParams::Crystallize { cell_size, seed } => pixelate::cells::tile(surface, *t, &ctx, cell_size, seed, None, extent),
+            FilterParams::Pointillize { cell_size, seed, background } => pixelate::cells::tile(surface, *t, &ctx, cell_size, seed, Some(background), extent),
+            _ => None,
+        };
+        if let Some((src, mut data)) = sparse {
+            if let Some(sel) = selection {
+                mix_selection(&mut data, *t, sel, &src, fmt.alpha);
+            }
+            tick();
+            return (*t, finish(data));
+        }
         let owned;
         let src = match (&shared, halo) {
             (Some(s), _) => s,
@@ -1140,6 +1236,7 @@ fn apply_tiled_with_impl(
             }
         };
         let Some(mut data) = (match (&shape, &radial) {
+            _ if gallery.is_some() => gallery.as_ref().map(|g| g.run(src, *t, &ctx)),
             (Some(shape), _) => shape.checked_run(src, *t, &ctx),
             (None, Some(plan)) => match plan.filter(src, *t, &ctx, ctl) {
                 Some(data) => Some(data),
@@ -1151,13 +1248,13 @@ fn apply_tiled_with_impl(
                 _ => Some(kernel(params, src, *t, &ctx)),
             },
         }) else {
-            return (*t, Vec::new());
+            return (*t, TileData::Samples(Vec::new()));
         };
         if let Some(sel) = selection {
             mix_selection(&mut data, *t, sel, src, fmt.alpha);
         }
         tick();
-        (*t, data)
+        (*t, finish(data))
     };
     // Tiles are filtered in groups of about RESULT_BUDGET bytes (at least one per core) and each
     // group is written before the next starts, so a huge layer never holds all its results as
@@ -1173,24 +1270,36 @@ fn apply_tiled_with_impl(
             return None;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let results: Vec<(Rect, Vec<f32>)> = {
+        let results: Vec<(Rect, TileData)> = {
             use rayon::prelude::*;
             chunk.par_iter().map(run).collect()
         };
         #[cfg(target_arch = "wasm32")]
-        let results: Vec<(Rect, Vec<f32>)> = chunk.iter().map(run).collect();
+        let results: Vec<(Rect, TileData)> = chunk.iter().map(run).collect();
         if ctl.cancelled() {
             return None;
         }
         // Checked filters can reject malformed geometry or an allocation failure.
         // Do not hand an incomplete tile to Surface::write_region.
         if (shape.is_some() || matches!(params, FilterParams::UnsharpMask { .. }))
-            && results.iter().any(|(t, data)| data.len() != t.width() as usize * t.height() as usize * fmt.channels())
+            && results.iter().any(|(t, data)| {
+                let pixels = t.width() as usize * t.height() as usize;
+                match data {
+                    TileData::Samples(v) => v.len() != pixels * fmt.channels(),
+                    TileData::Encoded(v) => v.len() != pixels * fmt.bytes_per_pixel(),
+                }
+            })
         {
             return None;
         }
         for (t, data) in results {
-            out.write_region(t, &data);
+            match data {
+                TileData::Samples(data) => {
+                    out.write_region(t, &data);
+                    photocraft_raster::scratch::give(data);
+                }
+                TileData::Encoded(data) => out.write_interleaved(t, &data),
+            }
         }
     }
     out.prune();
@@ -1243,6 +1352,7 @@ fn apply_box_blur(
                     mix_selection(data, *t, sel, &Image::read(surface, *t), fmt.alpha);
                 }
                 s.write_region(*t, data);
+                photocraft_raster::scratch::give(std::mem::take(data));
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -1309,15 +1419,6 @@ const RESULT_BUDGET: usize = 256 << 20;
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_ext;
-
-#[cfg(test)]
-mod tests_mosaic;
-
-#[cfg(test)]
-mod tests_selection_mix;
-
 /// The current upstream sampler through the identical source/selection/tile pipeline.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]

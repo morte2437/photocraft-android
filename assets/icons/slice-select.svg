@@ -1,0 +1,16 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <!-- PhotoCraft's own Slice Select tool glyph (not from an icon set): the Slice knife with a pointer. -->
+  <path d="M10 14l4-4" />
+  <path d="M14 10l5.6-5.6a2 2 0 0 1 2.8 2.8L16.5 12.5z" />
+  <path d="M4 12v9l2.5-2.5 2 3.5 1.7-1-2-3.5H12z" />
+</svg>

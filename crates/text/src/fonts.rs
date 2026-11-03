@@ -1,6 +1,6 @@
 //! Font database: bundled fonts (always available, also on the web), the optional craft-fonts
-//! Japanese fonts ([`crate::craft_fonts`], when built with `CRAFT_FONTS_DIR`), optional system
-//! fonts found by scanning platform directories (plus Fontconfig's file list on Linux),
+//! fonts of every script ([`crate::craft_fonts`], when built with `CRAFT_FONTS_DIR`), optional
+//! system fonts found by scanning platform directories (plus Fontconfig's file list on Linux),
 //! user-registered font data, and PostScript-name lookup for PSD import.
 
 use std::collections::HashMap;
@@ -196,6 +196,9 @@ pub struct FontDb {
     /// [`Self::fallback_stack`] (#1909). Off, only the default family shapes the text.
     missing_glyph_protection: bool,
     face_cache: HashMap<String, Vec<FaceInfo>>,
+    /// Each family's [`crate::FamilyTraits`] (font menu filters), filled lazily; `None` for a
+    /// family whose fonts can't be read.
+    traits_cache: HashMap<String, Option<crate::FamilyTraits>>,
     face_aliases: HashMap<(String, usize), String>,
     /// This is the shared engine's database: registrations also move [`shared_generation`].
     shared: bool,
@@ -218,6 +221,7 @@ impl FontDb {
             fallbacks: Vec::new(),
             missing_glyph_protection: true,
             face_cache: HashMap::new(),
+            traits_cache: HashMap::new(),
             face_aliases: HashMap::new(),
             shared: false,
         };
@@ -225,12 +229,20 @@ impl FontDb {
             db.register_static_font(bytes.as_slice());
         }
         // The optional craft-fonts (empty unless built with CRAFT_FONTS_DIR; always empty on
-        // wasm32), before any system font.
-        for f in crate::craft_fonts::CRAFT_FONTS.iter().filter(|f| f.is_japanese()) {
-            db.register_static_font(f.bytes);
-        }
+        // wasm32), every script, before any system font.
+        db.register_craft_fonts(crate::craft_fonts::CRAFT_FONTS);
         db.refresh_generics();
         db
+    }
+
+    /// Registers craft-fonts manifest entries of every script. A single-face file registers under
+    /// its manifest family, whatever family its `name` table gives. Each face of a collection
+    /// (TTC/OTC) keeps the family its `name` table gives.
+    fn register_craft_fonts(&mut self, fonts: &[crate::CraftFont]) {
+        for f in fonts {
+            let family = (face_count(f.bytes) == 1).then_some(f.family);
+            self.register_blob(Blob::new(Arc::new(f.bytes)), family);
+        }
     }
 
     /// Bundled fonts plus the fonts installed on this machine (no-op on the web).
@@ -273,22 +285,28 @@ impl FontDb {
             }
             self.ps_cache.clear();
             self.face_cache.clear();
+            self.traits_cache.clear();
             self.refresh_generics();
         }
     }
 
     /// Registers font data (TTF/OTF, or every face of a TTC/OTC). Returns the family names added.
     pub fn register_font_data(&mut self, bytes: Vec<u8>) -> Vec<String> {
-        self.register_blob(Blob::new(Arc::new(bytes)))
+        self.register_blob(Blob::new(Arc::new(bytes)), None)
     }
 
     /// Registers embedded font data without copying it.
     fn register_static_font(&mut self, bytes: &'static [u8]) -> Vec<String> {
-        self.register_blob(Blob::new(Arc::new(bytes)))
+        self.register_blob(Blob::new(Arc::new(bytes)), None)
     }
 
-    fn register_blob(&mut self, blob: Blob<u8>) -> Vec<String> {
-        let added = self.fcx.collection.register_fonts(blob, None);
+    /// Registers every face in `blob`, under `family` when given, else under the family each
+    /// face's `name` table gives.
+    fn register_blob(&mut self, blob: Blob<u8>, family: Option<&str>) -> Vec<String> {
+        let Some(blob) = sanitize_font_blob(blob) else {
+            return Vec::new();
+        };
+        let added = self.fcx.collection.register_fonts(blob, family.map(|f| FontInfoOverride { family_name: Some(f), ..Default::default() }));
         let mut names = Vec::new();
         for (id, _) in added {
             if let Some(n) = self.fcx.collection.family_name(id)
@@ -303,6 +321,7 @@ impl FontDb {
         names.sort_by_key(|n| (is_hidden_family(n), n.to_lowercase()));
         self.ps_cache.clear();
         self.face_cache.clear();
+        self.traits_cache.clear();
         self.refresh_generics();
         GENERATION.fetch_add(1, Ordering::Relaxed);
         if self.shared {
@@ -462,6 +481,24 @@ impl FontDb {
         faces
     }
 
+    /// What the font menu filters and sorts a family by ([`crate::font_class`]), read from its
+    /// regular face (the upright face nearest weight 400). `None` when the family is unknown or
+    /// none of its fonts can be read.
+    pub fn family_traits(&mut self, family: &str) -> Option<crate::FamilyTraits> {
+        if let Some(t) = self.traits_cache.get(family) {
+            return t.clone();
+        }
+        let traits = (|| {
+            let info = self.fcx.collection.family_by_name(family)?;
+            let face = info.fonts().iter().min_by_key(|f| (!matches!(f.style(), FontStyle::Normal), (f.weight().value() - 400.0).abs() as u32))?.clone();
+            let blob = face.load(Some(&mut self.fcx.source_cache))?;
+            let font = skrifa::FontRef::from_index(blob.as_ref(), face.index()).ok()?;
+            Some(crate::font_class::traits_of(family, &font))
+        })();
+        self.traits_cache.insert(family.to_string(), traits.clone());
+        traits
+    }
+
     /// Resolve a menu style to its actual metadata instead of guessing from its spelling.
     pub fn named_face(&mut self, family: &str, style: &str) -> Option<FaceInfo> {
         self.faces(family).into_iter().find(|f| f.style.eq_ignore_ascii_case(style))
@@ -470,10 +507,29 @@ impl FontDb {
     /// Select an exact face for shaping. Private aliases are runtime-only: the document keeps
     /// its public family and PostScript name. CSS matching alone cannot distinguish e.g. the
     /// numeric subfamilies of Yoon fonts, all of which declare weight 400 / normal.
+    ///
+    /// A PostScript name that no face has may name an instance of a variable face
+    /// ("Bahnschrift-LightCondensed"): that face is selected and the instance's axis values are
+    /// added to the style's variations, keeping any axis the style sets itself (#8797). Faces are
+    /// tried in this order: exact PostScript name, named instance, then style, weight and italic.
     pub(crate) fn select_named_face(&mut self, style: &mut photocraft_doc::text::CharStyle) {
         let family = style.font_family.clone();
         let faces = self.faces(&family);
-        let index = style.postscript_name.as_ref().and_then(|ps| faces.iter().position(|f| f.postscript_name.as_ref() == Some(ps))).or_else(|| {
+        let index = style.postscript_name.as_ref().and_then(|ps| faces.iter().position(|f| f.postscript_name.as_ref() == Some(ps)));
+        // The named instance is tried before the style-and-weight fallback: a variable face's own
+        // style ("Regular") can match a populated `font_style` and would drop the instance's axes.
+        let instance = match (index, &style.postscript_name) {
+            (None, Some(ps)) => self.named_instance(&family, &faces, ps),
+            _ => None,
+        };
+        if let Some((_, axes)) = &instance {
+            for (axis, value) in axes {
+                if !style.variations.iter().any(|v| &v.axis == axis) {
+                    style.variations.push(photocraft_doc::text::FontVariation { axis: axis.clone(), value: *value });
+                }
+            }
+        }
+        let index = index.or(instance.map(|(i, _)| i)).or_else(|| {
             faces.iter().position(|f| {
                 !style.font_style.is_empty()
                     && f.style.eq_ignore_ascii_case(&style.font_style)
@@ -499,6 +555,44 @@ impl FontDb {
         style.font_family = alias;
         style.weight = face.weight.round() as u16;
         style.italic = face.italic;
+    }
+
+    /// The variable face of `family` (index into `faces`) with a named instance whose PostScript
+    /// name is `ps`, and that instance's axis values. An instance without a PostScript name of its
+    /// own is named as Adobe Technical Note #5902 derives it: the variations prefix (name 25, else
+    /// the family name) and the subfamily name without spaces, joined by a hyphen. Names compare
+    /// without punctuation or case, and the subfamily alone matches the part of `ps` after the
+    /// first hyphen, since the prefix a document stored can differ from the font's.
+    fn named_instance(&mut self, family: &str, faces: &[FaceInfo], ps: &str) -> Option<(usize, Vec<(String, f32)>)> {
+        let key = |s: &str| s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect::<String>();
+        let wanted = key(ps);
+        let wanted_style = ps.split_once('-').map(|(_, s)| key(s));
+        let info = self.fcx.collection.family_by_name(family)?;
+        for (index, face) in info.fonts().iter().enumerate() {
+            if faces.get(index).is_none_or(|f| f.axes.is_empty()) {
+                continue;
+            }
+            let Some(blob) = face.load(Some(&mut self.fcx.source_cache)) else { continue };
+            let Ok(font) = skrifa::FontRef::from_index(blob.as_ref(), face.index()) else { continue };
+            let name = |id: StringId| font.localized_strings(id).english_or_first().map(|s| s.to_string()).filter(|s| !s.is_empty());
+            let prefix = name(StringId::VARIATIONS_POSTSCRIPT_NAME_PREFIX)
+                .or_else(|| name(StringId::TYPOGRAPHIC_FAMILY_NAME))
+                .or_else(|| name(StringId::FAMILY_NAME))
+                .unwrap_or_default();
+            for instance in font.named_instances().iter() {
+                let subfamily = name(instance.subfamily_name_id()).unwrap_or_default();
+                let own = instance.postscript_name_id().and_then(name);
+                let matches = match own {
+                    Some(own) => key(&own) == wanted,
+                    None => key(&prefix) + &key(&subfamily) == wanted || (!subfamily.is_empty() && wanted_style.as_deref() == Some(key(&subfamily).as_str())),
+                };
+                if matches {
+                    let axes = font.axes().iter().map(|a| a.tag().to_string()).zip(instance.user_coords()).collect();
+                    return Some((index, axes));
+                }
+            }
+        }
+        None
     }
 
     /// Finds a face by PostScript name (as stored in PSD files): exact match by reading the
@@ -538,6 +632,65 @@ impl FontDb {
             }
         }
         None
+    }
+}
+
+/// Maximum faces and cumulative variation axes admitted from a single font blob.
+const MAX_COLLECTION_FACES: usize = 256;
+const MAX_COLLECTION_AXES: usize = 4096;
+
+/// Validates `blob` before handing it to `fontique`, deduplicating repeated TTC table-directory
+/// offsets and rejecting collections with excessive faces or variation axes.
+fn sanitize_font_blob(blob: Blob<u8>) -> Option<Blob<u8>> {
+    let data = blob.as_ref();
+    if data.len() > 256 * 1024 * 1024 {
+        return None;
+    }
+    match FileRef::new(data).ok()? {
+        FileRef::Font(font) => {
+            if font.axes().len() > MAX_COLLECTION_AXES {
+                return None;
+            }
+            Some(blob)
+        }
+        FileRef::Collection(collection) => {
+            let n = usize::try_from(collection.len()).ok()?;
+            if n == 0 || n > MAX_COLLECTION_FACES {
+                return None;
+            }
+            let dir_end = 12usize.checked_add(n.checked_mul(4)?)?;
+            let offsets_raw = data.get(12..dir_end)?;
+            let mut unique_offsets: Vec<u32> = Vec::with_capacity(n);
+            let mut total_axes = 0usize;
+            for (i, chunk) in offsets_raw.as_chunks::<4>().0.iter().enumerate() {
+                let off = u32::from_be_bytes(*chunk);
+                if unique_offsets.contains(&off) {
+                    continue;
+                }
+                let idx = u32::try_from(i).ok()?;
+                let Ok(font) = collection.get(idx) else {
+                    continue;
+                };
+                total_axes = total_axes.checked_add(font.axes().len())?;
+                if total_axes > MAX_COLLECTION_AXES {
+                    return None;
+                }
+                unique_offsets.push(off);
+            }
+            if unique_offsets.is_empty() {
+                return None;
+            }
+            if unique_offsets.len() == n {
+                return Some(blob);
+            }
+            let mut bytes = data.to_vec();
+            bytes.get_mut(8..12)?.copy_from_slice(&(unique_offsets.len() as u32).to_be_bytes());
+            for (slot, off) in unique_offsets.iter().enumerate() {
+                let pos = 12 + slot * 4;
+                bytes.get_mut(pos..pos + 4)?.copy_from_slice(&off.to_be_bytes());
+            }
+            Some(Blob::new(Arc::new(bytes)))
+        }
     }
 }
 
@@ -1018,5 +1171,4 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "font_names_tests.rs"]
 mod font_names_tests;

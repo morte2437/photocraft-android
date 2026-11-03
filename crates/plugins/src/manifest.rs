@@ -30,12 +30,47 @@ pub enum Area {
     Canvas,
 }
 
+/// What a `number` or `int` parameter measures (`"unit"` in the manifest).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Unit {
+    /// No unit (the default): a level, factor, count or percentage, the same at any image size.
+    #[default]
+    None,
+    /// A length in document pixels (a radius, distance, shift or size). On a reduced live preview
+    /// the host divides it by the reduction, so the preview matches what OK applies.
+    Px,
+}
+
+impl Unit {
+    fn is_none(&self) -> bool {
+        *self == Unit::None
+    }
+}
+
+/// Reads `"unit"` leniently: `"px"` is [`Unit::Px`]; anything else (an unknown string such as
+/// `"pt"`, a number, `null`, an array…) is unitless, as when the field is absent. Manifests from
+/// before `unit` existed could carry any value there (unknown fields were ignored), and they must
+/// keep installing.
+fn lenient_unit<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Unit, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::String(s) if s == "px" => Unit::Px,
+        _ => Unit::None,
+    })
+}
+
 /// One declared parameter.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ParamSpec {
     /// A real number in `min..=max` (a slider in the dialog).
-    Number { min: f64, max: f64, default: f64 },
+    Number {
+        min: f64,
+        max: f64,
+        default: f64,
+        #[serde(default, deserialize_with = "lenient_unit", skip_serializing_if = "Unit::is_none")]
+        unit: Unit,
+    },
     /// A whole number in `min..=max`.
     Int {
         #[serde(default = "int_min")]
@@ -44,6 +79,8 @@ pub enum ParamSpec {
         max: i64,
         #[serde(default)]
         default: i64,
+        #[serde(default, deserialize_with = "lenient_unit", skip_serializing_if = "Unit::is_none")]
+        unit: Unit,
     },
     /// A checkbox.
     Bool {
@@ -122,7 +159,7 @@ impl Manifest {
                 return Err(Error::Manifest(format!("invalid parameter name {k:?}")));
             }
             match spec {
-                ParamSpec::Number { min, max, default } if !(min.is_finite() && max.is_finite() && default.is_finite()) || min > max => {
+                ParamSpec::Number { min, max, default, .. } if !(min.is_finite() && max.is_finite() && default.is_finite()) || min > max => {
                     return Err(Error::Manifest(format!("parameter `{k}`: bad range")));
                 }
                 ParamSpec::Int { min, max, .. } if min > max => return Err(Error::Manifest(format!("parameter `{k}`: bad range"))),
@@ -147,7 +184,7 @@ impl Manifest {
             .params
             .iter()
             .map(|(k, spec)| match spec {
-                ParamSpec::Number { min, max, default } => format!("\"{k}\":{min}..{max}={default}"),
+                ParamSpec::Number { min, max, default, .. } => format!("\"{k}\":{min}..{max}={default}"),
                 ParamSpec::Int { default, .. } => format!("\"{k}\":int={default}"),
                 ParamSpec::Bool { default } => format!("\"{k}\":bool={default}"),
                 ParamSpec::Choice { options, default } => {
@@ -179,11 +216,11 @@ impl Manifest {
             let v = given.get(k).filter(|v| !v.is_null());
             let wrong = |what: &str| Error::Params(format!("`{k}` must be {what}"));
             let resolved = match spec {
-                ParamSpec::Number { min, max, default } => match v {
+                ParamSpec::Number { min, max, default, .. } => match v {
                     None => json!((*default).clamp(*min, *max)),
                     Some(v) => json!(v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| wrong("a number"))?.clamp(*min, *max)),
                 },
-                ParamSpec::Int { min, max, default } => match v {
+                ParamSpec::Int { min, max, default, .. } => match v {
                     None => json!((*default).clamp(*min, *max)),
                     Some(v) => {
                         let f = v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| wrong("a number"))?;
@@ -209,6 +246,61 @@ impl Manifest {
         }
         Ok(out)
     }
+
+    /// Whether parameter `key` is a length in pixels (`"unit": "px"`).
+    pub fn is_pixel_param(&self, key: &str) -> bool {
+        self.pixel_params().any(|(k, ..)| k == key)
+    }
+
+    /// `(key, min, max, default, is_int)` of each parameter declared `"unit": "px"`.
+    fn pixel_params(&self) -> impl Iterator<Item = (&str, f64, f64, f64, bool)> {
+        self.params.iter().filter_map(|(k, spec)| match spec {
+            ParamSpec::Number { min, max, default, unit: Unit::Px } => Some((k.as_str(), *min, *max, *default, false)),
+            ParamSpec::Int { min, max, default, unit: Unit::Px } => Some((k.as_str(), *min as f64, *max as f64, *default as f64, true)),
+            _ => None,
+        })
+    }
+
+    /// The value [`Manifest::resolve_params`] would use for a pixel parameter: the given number, or
+    /// the default when missing, within `min..=max`. `None` for a value of the wrong type (which
+    /// `resolve_params` rejects) or one that isn't finite.
+    fn pixel_value(params: &Map<String, Value>, key: &str, min: f64, max: f64, default: f64) -> Option<f64> {
+        let v = match params.get(key).filter(|v| !v.is_null()) {
+            None => default,
+            Some(v) => v.as_f64()?,
+        };
+        // `max`/`min` rather than `clamp`, which panics on a reversed or NaN range.
+        v.is_finite().then(|| v.max(min).min(max))
+    }
+
+    /// Proxy factor for a live preview with `params` on a document reduced `k` times: the largest
+    /// factor up to `k` at which no pixel parameter with a positive minimum, divided by it, drops
+    /// below that minimum. A clamped value would change the feature size (as for built-in filters,
+    /// #2063), so such a preview runs less reduced instead. Always at least 1.
+    pub fn preview_factor(&self, params: &Map<String, Value>, k: u32) -> u32 {
+        self.pixel_params().fold(k.max(1), |k, (key, min, max, default, _)| match Self::pixel_value(params, key, min, max, default) {
+            Some(v) if min > 0.0 => k.min((v / min).floor().max(1.0).min(f64::from(k)) as u32),
+            Some(v) if max < 0.0 => k.min((v / max).floor().max(1.0).min(f64::from(k)) as u32),
+            _ => k,
+        })
+    }
+
+    /// Rewrites the plug-in's `params` for a live preview on a copy of the document reduced `k`
+    /// times: each pixel parameter (the given value, or its default when missing) is divided by
+    /// `k`, rounded for `int`s and kept within its range, so the preview shows the same lengths in
+    /// document pixels as OK applies (#7524). Unitless parameters, unknown keys and values of the
+    /// wrong type (which [`Manifest::resolve_params`] rejects) are left as they are.
+    pub fn scale_for_preview(&self, params: &mut Map<String, Value>, k: u32) {
+        if k <= 1 {
+            return;
+        }
+        let k = f64::from(k);
+        for (key, min, max, default, int) in self.pixel_params() {
+            let Some(v) = Self::pixel_value(params, key, min, max, default) else { continue };
+            let x = (v / k).max(min).min(max);
+            params.insert(key.to_string(), if int { json!(x.round().max(min).min(max) as i64) } else { json!(x) });
+        }
+    }
 }
 
 /// Reads the `params` object keeping its key order (serde_json's `Map` would sort it).
@@ -224,10 +316,16 @@ fn ordered_params<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result
         }
         fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<Self::Value, A::Error> {
             let mut out = Vec::new();
-            while let Some((k, v)) = map.next_entry::<String, ParamSpec>()? {
+            while let Some(k) = map.next_key::<String>()? {
+                // A repeated key would give one value two dialog controls, the last spec winning.
+                // Named before its spec is read or counted, so the error is about the key.
+                if out.iter().any(|(seen, _)| *seen == k) {
+                    return Err(serde::de::Error::custom(format!("parameter {k:?} is declared twice")));
+                }
                 if out.len() >= MAX_PARAMS {
                     return Err(serde::de::Error::custom(format!("too many parameters (limit {MAX_PARAMS})")));
                 }
+                let v = map.next_value::<ParamSpec>()?;
                 out.push((k, v));
             }
             Ok(out)
@@ -306,8 +404,12 @@ fn visible(c: char) -> bool {
     !c.is_whitespace() && !c.is_control() && !in_ranges(c, FORMAT) && !in_ranges(c, BLANK)
 }
 
+/// Names the host's `plugin.run` command takes for itself: a parameter of the same name would be
+/// read as the command's routing (which layer or channel is filtered), not as the plug-in's.
+const HOST_KEYS: [&str; 4] = ["id", "layer", "target", "channel"];
+
 fn valid_key(k: &str) -> bool {
-    (1..=64).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') && !k.starts_with('_') && k != "id" && k != "layer"
+    (1..=64).contains(&k.len()) && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') && !k.starts_with('_') && !HOST_KEYS.contains(&k)
 }
 
 #[cfg(test)]
@@ -379,12 +481,137 @@ mod tests {
             r#"{"id":"a","name":"x","kind":"filter","params":{"r":{"type":"number","min":5,"max":1,"default":1}}}"#,
             r#"{"id":"a","name":"x","kind":"filter","params":{"c":{"type":"choice","options":[]}}}"#,
             r#"{"id":"a","name":"x","kind":"filter","params":{"__x":{"type":"bool"}}}"#,
+            // Names the host command routes by: a plug-in default must not steer the filter.
+            r#"{"id":"a","name":"x","kind":"filter","params":{"target":{"type":"bool","default":false}}}"#,
+            r#"{"id":"a","name":"x","kind":"filter","params":{"channel":{"type":"int","min":0,"max":3,"default":1}}}"#,
             r#"{"id":"a","name":"x","kind":"filter","params":[1]}"#,
         ] {
             assert!(Manifest::parse(bad.as_bytes()).is_err(), "{bad}");
         }
         assert!(Manifest::parse(&[0xff, 0xfe]).is_err());
         assert!(Manifest::parse(&vec![b' '; MAX_MANIFEST_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn rejects_a_parameter_declared_twice() {
+        // Both entries were kept: two dialog controls for one value, and the last spec won.
+        let twice = br#"{"id":"a","name":"x","kind":"filter",
+            "params":{"n":{"type":"bool"},"n":{"type":"number","min":0,"max":1,"default":0}}}"#;
+        assert!(matches!(Manifest::parse(twice), Err(Error::Manifest(_))));
+        // The error names the key, also when the second spec is broken or past the limit.
+        let broken = br#"{"id":"a","name":"x","kind":"filter","params":{"n":{"type":"bool"},"n":{"type":"nope"}}}"#;
+        let many: Vec<String> = (0..MAX_PARAMS).map(|i| format!(r#""p{i}":{{"type":"bool"}}"#)).collect();
+        let past = format!(r#"{{"id":"a","name":"x","kind":"filter","params":{{{},"p0":{{"type":"bool"}}}}}}"#, many.join(","));
+        for (json, key) in [(&broken[..], "n"), (past.as_bytes(), "p0")] {
+            let e = Manifest::parse(json).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(e.contains(&format!("parameter {key:?} is declared twice")), "{e}");
+        }
+        // Keys differing in case are different parameters.
+        let m = Manifest::parse(br#"{"id":"a","name":"x","kind":"filter","params":{"n":{"type":"bool"},"N":{"type":"bool"}}}"#).unwrap();
+        assert_eq!(m.params_notation(), r#"{"n":bool=false,"N":bool=false}"#);
+    }
+
+    /// Chromatic Aberration-like: a pixel shift, a pixel int, a signed pixel offset and a unitless
+    /// `size` (a name the built-in filters treat as pixels).
+    const PIXELS: &str = r#"{"id":"org.example.fringe","name":"Fringe","kind":"filter",
+        "params":{"amount":{"type":"number","min":0,"max":100,"default":12,"unit":"px"},
+                  "radius":{"type":"int","min":2,"max":50,"default":10,"unit":"px"},
+                  "shift":{"type":"number","min":-40,"max":40,"default":0,"unit":"px"},
+                  "size":{"type":"number","min":0,"max":100,"default":50},
+                  "mix":{"type":"number","min":0,"max":1,"default":1,"unit":"none"}}}"#;
+
+    #[test]
+    fn parses_units_and_keeps_old_manifests_unitless() {
+        let m = Manifest::parse(PIXELS.as_bytes()).unwrap();
+        assert!(m.is_pixel_param("amount") && m.is_pixel_param("radius") && m.is_pixel_param("shift"));
+        assert!(!m.is_pixel_param("size") && !m.is_pixel_param("mix") && !m.is_pixel_param("missing"));
+        assert!(matches!(m.params[0].1, ParamSpec::Number { unit: Unit::Px, .. }));
+        assert!(matches!(m.params[1].1, ParamSpec::Int { unit: Unit::Px, .. }));
+        // No `unit` is unitless, and unitless params serialize as before (no `unit` key).
+        let old = Manifest::parse(FULL.as_bytes()).unwrap();
+        assert!(old.params.iter().all(|(k, _)| !old.is_pixel_param(k)));
+        let schema = serde_json::to_value(&m).unwrap();
+        assert_eq!(schema["params"]["amount"]["unit"], "px");
+        assert!(schema["params"]["size"].get("unit").is_none() && schema["params"]["mix"].get("unit").is_none());
+        assert_eq!(Manifest::parse(serde_json::to_string(&m).unwrap().as_bytes()).unwrap(), m);
+        // A unit is a `number`/`int` property; the dialog notation is unchanged by it.
+        assert_eq!(m.params_notation(), r#"{"amount":0..100=12,"radius":int=10,"shift":-40..40=0,"size":0..100=50,"mix":0..1=1}"#);
+    }
+
+    #[test]
+    fn unknown_units_are_unitless() {
+        // Unknown fields were always ignored, so a manifest may already carry any `unit`: it must
+        // keep installing, unscaled, exactly as when the field is absent.
+        for unit in [r#""pt""#, r#""PX""#, r#""""#, "5", "true", "null", r#"["px"]"#, r#"{"px":1}"#] {
+            let text = format!(r#"{{"id":"a","name":"x","kind":"filter","params":{{"r":{{"type":"number","min":0,"max":9,"default":1,"unit":{unit}}}}}}}"#);
+            for text in [text.clone(), text.replace(r#""type":"number""#, r#""type":"int""#)] {
+                let m = Manifest::parse(text.as_bytes()).unwrap_or_else(|e| panic!("{text}: {e}"));
+                assert!(!m.is_pixel_param("r"), "{text}");
+                let mut p = json!({"r": 8}).as_object().unwrap().clone();
+                m.scale_for_preview(&mut p, 4);
+                assert_eq!(Value::Object(p), json!({"r": 8}), "{text}");
+                assert!(serde_json::to_value(&m).unwrap()["params"]["r"].get("unit").is_none(), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn preview_scales_pixel_params_only() {
+        // #7524: at a reduction of 4, a 12 px shift must be 3 proxy pixels (12 document pixels).
+        let m = Manifest::parse(PIXELS.as_bytes()).unwrap();
+        let given = json!({"id": "org.example.fringe", "amount": 12, "radius": 10, "shift": -20, "size": 40, "mix": 0.5});
+        let mut p = given.as_object().unwrap().clone();
+        m.scale_for_preview(&mut p, 4);
+        assert_eq!(
+            Value::Object(p.clone()),
+            json!({"id": "org.example.fringe", "amount": 3.0, "radius": 3, "shift": -5.0, "size": 40, "mix": 0.5}),
+            "px params divided (ints rounded, signs kept); unitless and other keys untouched"
+        );
+        // The scaled values are what the plug-in receives.
+        assert_eq!(m.resolve_params(&Value::Object(p)).unwrap()["amount"], json!(3.0));
+        // Missing px params get their scaled default, so the default isn't previewed unscaled.
+        let mut p = Map::new();
+        m.scale_for_preview(&mut p, 2);
+        assert_eq!(Value::Object(p), json!({"amount": 6.0, "radius": 5, "shift": 0.0}));
+        // Never below the minimum, and values are clamped into range first, as `resolve_params` does.
+        let mut p = json!({"radius": 3, "amount": 1000}).as_object().unwrap().clone();
+        m.scale_for_preview(&mut p, 4);
+        assert_eq!(Value::Object(p), json!({"radius": 2, "amount": 25.0, "shift": 0.0}));
+        // A full-resolution preview changes nothing.
+        for k in [0, 1] {
+            let mut p = given.as_object().unwrap().clone();
+            m.scale_for_preview(&mut p, k);
+            assert_eq!(Value::Object(p), given);
+        }
+        // Wrong types and non-numbers are left for `resolve_params` to reject, never a panic.
+        let mut p = json!({"amount": "lots", "radius": true, "shift": [1]}).as_object().unwrap().clone();
+        m.scale_for_preview(&mut p, 4);
+        assert_eq!(Value::Object(p.clone()), json!({"amount": "lots", "radius": true, "shift": [1]}));
+        assert!(m.resolve_params(&Value::Object(p)).is_err());
+        // A plug-in without px params is never touched, even with built-in pixel names.
+        let old = Manifest::parse(br#"{"id":"a","name":"x","kind":"filter","params":{"radius":{"type":"number","min":0,"max":9,"default":4}}}"#).unwrap();
+        let mut p = json!({"radius": 8}).as_object().unwrap().clone();
+        old.scale_for_preview(&mut p, 4);
+        assert_eq!(Value::Object(p), json!({"radius": 8}));
+    }
+
+    #[test]
+    fn preview_factor_keeps_pixel_params_above_their_minimum() {
+        let m = Manifest::parse(PIXELS.as_bytes()).unwrap();
+        let p = |v: Value| v.as_object().unwrap().clone();
+        // radius min 2: 10 px allows 4, 5 px allows 2, 3 px only full resolution.
+        assert_eq!(m.preview_factor(&p(json!({"radius": 10})), 4), 4);
+        assert_eq!(m.preview_factor(&p(json!({"radius": 5})), 4), 2);
+        assert_eq!(m.preview_factor(&p(json!({"radius": 3})), 4), 1);
+        // Missing: the default (10). Params with a zero or negative minimum don't limit it.
+        assert_eq!(m.preview_factor(&Map::new(), 8), 5);
+        assert_eq!(m.preview_factor(&p(json!({"radius": 50, "amount": 0, "shift": -40})), 8), 8);
+        // Never more than the document's factor, never 0; bad values don't limit it.
+        assert_eq!(m.preview_factor(&p(json!({"radius": 50})), 2), 2);
+        assert_eq!(m.preview_factor(&p(json!({"radius": 50})), 0), 1);
+        assert_eq!(m.preview_factor(&p(json!({"radius": "x"})), 4), 4);
+        let unitless = Manifest::parse(FULL.as_bytes()).unwrap();
+        assert_eq!(unitless.preview_factor(&p(json!({"amount": 0.01})), 4), 4);
     }
 
     fn with_name(name: &str) -> Result<Manifest> {

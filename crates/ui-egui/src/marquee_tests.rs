@@ -2,7 +2,7 @@
 //! ⌥ draws from the centre (both together work too), a "W × H px" readout follows the cursor, and
 //! modifiers held before the drag still pick add/subtract (#188) instead of constraining.
 
-use egui::{Modifiers, PointerButton, Pos2, pos2, vec2};
+use egui::{Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use photocraft_geom::Rect;
@@ -13,12 +13,16 @@ use crate::canvas::ViewXform;
 use crate::state::Tool;
 
 fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
+    harness_with_step_dt(tool, 0.25)
+}
+
+fn harness_with_step_dt(tool: Tool, step_dt: f32) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
     app.sync_views();
     app.ui.extras.rulers = false;
     app.ui.tool = tool;
-    let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).build_ui_state(
+    let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).with_step_dt(step_dt).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
             let ctx = ui.ctx().clone();
             if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
@@ -147,6 +151,57 @@ fn shift_during_the_drag_draws_a_square_and_the_readout_follows() {
     assert!(h.query_by_label("W:").is_none() && h.query_by_label_contains(" px").is_none(), "the readout goes away with the drag");
 }
 
+#[test]
+fn object_selection_keeps_the_mode_from_the_mouse_press() {
+    for dragged in [false, true] {
+        for held in [false, true] {
+            for at_press in [Modifiers::SHIFT, Modifiers::ALT] {
+                let mut h = harness_with_step_dt(Tool::ObjectSelection, 1.0 / 60.0);
+                h.state_mut().ui.extras.snap = false;
+                h.state_mut().run("paint.pencil", json!({"points": [[220, 150]], "size": 60, "color": "#ff0000"})).unwrap();
+                let st = h.state().session.active().unwrap();
+                let doc = st.doc.clone();
+                let target = st.active_layer;
+                let region = photocraft_engine::smartselect_cmds::find_object(&doc, target, false, 220.0, 150.0).expect("the red disc is detectable");
+                h.state_mut().session.object_finder.insert(&doc, target, std::sync::Arc::new(region));
+                if at_press.alt {
+                    h.state_mut().run("select.all", json!({})).unwrap();
+                } else {
+                    h.state_mut().run("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+                }
+                let start_doc = if dragged { [180.0, 110.0] } else { [220.0, 150.0] };
+                mods(&mut h, at_press);
+                move_to(&mut h, start_doc[0], start_doc[1]);
+                let start = screen(&h, start_doc[0], start_doc[1]);
+                button(&mut h, start, true, at_press);
+                assert!(h.state().drag.is_none(), "the press is still below egui's drag threshold");
+                let during = if held { at_press } else { Modifiers::NONE };
+                mods(&mut h, during);
+                let end_doc = if dragged { [260.0, 190.0] } else { start_doc };
+                release_at(&mut h, end_doc[0], end_doc[1], during);
+                let app = h.state();
+                assert!(!app.ui.status_error, "{}", app.ui.status);
+                let (command, params) = app.session.journal.last().expect("the gesture dispatched a command");
+                assert_eq!(command, "select.object", "the canvas dispatched Object Selection");
+                let expected = if at_press.alt { "subtract" } else { "add" };
+                assert_eq!(params["mode"], expected, "dragged={dragged}, held={held}");
+                let sel = app.session.active().unwrap().doc.selection.as_ref().expect("the old selection survives outside the object");
+                assert!(sel.sample_channel(20, 20, 0) > 0.99, "the gesture must preserve selection outside the object");
+                assert_eq!(sel.sample_channel(220, 150, 0) > 0.5, !at_press.alt, "the disc follows the requested mode");
+                mods(&mut h, Modifiers::NONE);
+                move_to(&mut h, 220.0, 150.0);
+                let next = screen(&h, 220.0, 150.0);
+                button(&mut h, next, true, Modifiers::NONE);
+                release_at(&mut h, 220.0, 150.0, Modifiers::NONE);
+                let (_, params) = h.state().session.journal.last().unwrap();
+                assert_eq!(params["mode"], "replace", "the next unmodified click must not reuse the previous mode");
+                let sel = h.state().session.active().unwrap().doc.selection.as_ref().unwrap();
+                assert!(sel.sample_channel(20, 20, 0) < 0.01 && sel.sample_channel(220, 150, 0) > 0.99);
+            }
+        }
+    }
+}
+
 /// #5472: a ⇧ square pressed between pixels read 101 × 102 and selected that, because each axis
 /// snapped to the pixel grid on its own. The readout and the selection are square, and the
 /// Elliptical Marquee's circle too.
@@ -161,6 +216,107 @@ fn shift_square_pressed_between_pixels_has_equal_sides() {
         release_at(&mut h, 150.8, 90.0, Modifiers::SHIFT);
         mods(&mut h, Modifiers::NONE);
         assert_eq!(selection(&h), Rect::new(50, 50, 152, 152), "{tool:?}");
+    }
+}
+
+/// #6015: Fixed Size pressed between pixels selected one pixel more on each side (10 × 10 became
+/// 11 × 11, 1 × 1 became 2 × 2). The readout and the selection are the entered size, and a click
+/// without a drag places it too, as in Photoshop.
+#[test]
+fn fixed_size_selects_exactly_the_entered_size() {
+    for tool in [Tool::RectMarquee, Tool::EllipseMarquee] {
+        for (w, ht) in [(10, 10), (1, 1), (64, 32)] {
+            let mut h = harness(tool);
+            let o = &mut h.state_mut().ui.tool_options;
+            o.marquee_style = "fixedSize".into();
+            (o.marquee_width, o.marquee_height) = (w as f32, ht as f32);
+            press_at(&mut h, 50.4, 60.6, Modifiers::NONE);
+            assert!(readout(&h, w, ht), "{tool:?} {w} × {ht}: the readout shows the entered size");
+            release_at(&mut h, 90.0, 90.0, Modifiers::NONE);
+            assert_eq!(selection(&h), Rect::new(90, 90, 90 + w, 90 + ht), "{tool:?} {w} × {ht}: dragged to the release point");
+
+            // A click: the button goes down and up at one point.
+            h.state_mut().run("select.deselect", json!({})).unwrap();
+            let p = screen(&h, 120.6, 100.4);
+            h.event(egui::Event::PointerMoved(p));
+            h.run_steps(1);
+            button(&mut h, p, true, Modifiers::NONE);
+            button(&mut h, p, false, Modifiers::NONE);
+            h.run_steps(2);
+            assert_eq!(selection(&h), Rect::new(121, 100, 121 + w, 100 + ht), "{tool:?} {w} × {ht}: clicked");
+        }
+    }
+}
+
+/// Fixed Size places a box rather than sizing it: the pointer positions it in every direction,
+/// including crossing the press point, without flipping by the full width or height.
+#[test]
+fn fixed_size_drag_positions_the_box_in_every_direction() {
+    for tool in [Tool::RectMarquee, Tool::EllipseMarquee] {
+        for zoom in [1.0, 16.0] {
+            let mut h = harness(tool);
+            h.state_mut().ui.extras.snap = false;
+            let o = &mut h.state_mut().ui.tool_options;
+            o.marquee_style = "fixedSize".into();
+            (o.marquee_width, o.marquee_height) = (11.0, 11.0);
+            h.state_mut().ui.views[0].zoom = zoom;
+            h.state_mut().ui.views[0].center = [60.0, 70.0];
+            h.run_steps(2);
+            press_at(&mut h, 50.4, 60.6, Modifiers::NONE);
+            for (x, y) in [(58.4, 66.6), (49.4, 59.6), (49.4, 66.6), (58.4, 59.6), (59.4, 60.6)] {
+                move_to(&mut h, x, y);
+                let app = h.state();
+                let r = crate::canvas::marquee_preview_px(&app.ui.tool_options, app.drag.as_ref().unwrap(), zoom).unwrap();
+                let (x, y) = (f64::from(x).round(), f64::from(y).round());
+                assert_eq!(r, [x, y, x + 11.0, y + 11.0], "{tool:?} at zoom {zoom}: follows the pointer");
+                assert!(readout(&h, 11, 11), "the live dimensions stay 11 × 11");
+            }
+            // Commit the release position even if there was no move frame at this point.
+            let p = screen(&h, 60.4, 61.6);
+            button(&mut h, p, false, Modifiers::NONE);
+            h.run_steps(2);
+            assert_eq!(selection(&h), Rect::new(60, 62, 71, 73), "{tool:?}: release commits the final position");
+        }
+    }
+}
+
+#[test]
+fn fixed_size_drag_inside_a_completed_box_still_moves_its_outline() {
+    for snap in [false, true] {
+        for zoom in [1.0, 26.730814] {
+            let mut h = harness(Tool::RectMarquee);
+            h.state_mut().ui.extras.snap = snap;
+            let o = &mut h.state_mut().ui.tool_options;
+            o.marquee_style = "fixedSize".into();
+            (o.marquee_width, o.marquee_height) = (11.0, 11.0);
+            h.state_mut().ui.views[0].zoom = zoom;
+            h.state_mut().ui.views[0].center = [112.0, 110.0];
+            h.run_steps(2);
+            press_at(&mut h, 100.4, 100.6, Modifiers::NONE);
+            release_at(&mut h, 108.4, 106.6, Modifiers::NONE);
+            let r = selection(&h);
+            let (x, y) = ((r.x0 + r.x1) as f32 / 2.0, (r.y0 + r.y1) as f32 / 2.0);
+            press_at(&mut h, x, y, Modifiers::NONE);
+            release_at(&mut h, x + 2.0, y + 1.0, Modifiers::NONE);
+            assert_eq!(selection(&h), r.translate(2, 1), "zoom {zoom}, snap {snap}");
+        }
+    }
+}
+
+#[test]
+fn fixed_size_alt_centers_the_box_at_the_current_pointer() {
+    for tool in [Tool::RectMarquee, Tool::EllipseMarquee] {
+        let mut h = harness(tool);
+        h.state_mut().ui.extras.snap = false;
+        let o = &mut h.state_mut().ui.tool_options;
+        o.marquee_style = "fixedSize".into();
+        (o.marquee_width, o.marquee_height) = (11.0, 11.0);
+        press_at(&mut h, 50.4, 60.6, Modifiers::NONE);
+        mods(&mut h, Modifiers::ALT);
+        move_to(&mut h, 100.4, 100.6);
+        assert!(readout(&h, 11, 11));
+        release_at(&mut h, 110.4, 90.6, Modifiers::ALT);
+        assert_eq!(selection(&h), Rect::new(105, 85, 116, 96), "{tool:?}: Alt centres the moving box");
     }
 }
 
@@ -282,8 +438,7 @@ fn the_live_outline_matches_the_committed_selection_in_a_rotated_view() {
         if tool == Tool::RectMarquee {
             // Each corner is a corner of the dragged rectangle, mapped: an axis-aligned box
             // through the two diagonal corners puts all four elsewhere.
-            let snap = |p: Pos2| pos2(p.x.round() + 0.5, p.y.round() + 0.5);
-            let want = [[live[0], live[1]], [live[2], live[1]], [live[2], live[3]], [live[0], live[3]]].map(|[x, y]| snap(xf.to_screen(x as f32, y as f32)));
+            let want = [[live[0], live[1]], [live[2], live[1]], [live[2], live[3]], [live[0], live[3]]].map(|[x, y]| xf.to_screen(x as f32, y as f32));
             for (i, (p, w)) in pts.iter().zip(want).enumerate() {
                 assert!((p.x - w.x).abs() < 0.01 && (p.y - w.y).abs() < 0.01, "{tool:?}: corner {i} at {p:?}, the dragged rectangle's corner is at {w:?}");
             }
@@ -498,6 +653,44 @@ fn drag_inside_the_selection_moves_the_outline() {
     assert_eq!(sel(&app), Some(Rect::new(20, 15, 60, 50)));
     drag(&mut app, [30.0, 20.0], [30.0, 20.0], Modifiers::NONE);
     assert_eq!(sel(&app), None);
+}
+
+/// #6231: ⇧ held during a selection-tool drag of the selection locks the move to multiples of
+/// 45° (⇧ at the press still means add-to-selection, so the lock only applies mid-drag).
+#[test]
+fn shift_constrains_a_selection_drag_to_an_axis() {
+    use crate::canvas::{ToolEvent, tool_event};
+    let (mut app, _layer) = painted();
+    let sel = |app: &PhotocraftApp| app.session.active().unwrap().doc.selection.as_ref().map(|s| s.content_bounds());
+    let drag_shift = |app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2]| {
+        tool_event(app, ToolEvent::Down { x: from[0], y: from[1], pressure: 1.0 }, Modifiers::NONE);
+        tool_event(app, ToolEvent::Move { x: to[0], y: to[1], pressure: 1.0 }, Modifiers::SHIFT);
+        tool_event(app, ToolEvent::Up { x: to[0], y: to[1] }, Modifiers::SHIFT);
+    };
+    drag_shift(&mut app, [20.0, 20.0], [40.0, 26.0]);
+    assert_eq!(sel(&app), Some(Rect::new(30, 10, 50, 30)), "near-horizontal drag moves x only");
+    drag_shift(&mut app, [40.0, 20.0], [44.0, 36.0]);
+    assert_eq!(sel(&app), Some(Rect::new(30, 26, 50, 46)), "near-vertical drag moves y only");
+    // Without ⇧ the drag is free (the outline already sits at (30,26,50,46)).
+    drag(&mut app, [40.0, 30.0], [50.0, 20.0], Modifiers::NONE);
+    assert_eq!(sel(&app), Some(Rect::new(40, 16, 60, 36)), "plain drag moves both axes");
+    // A near-diagonal ⇧-drag locks to 45°, as in Photoshop: (13,11) projects onto (12,12).
+    drag_shift(&mut app, [50.0, 26.0], [63.0, 37.0]);
+    assert_eq!(sel(&app), Some(Rect::new(52, 28, 72, 48)), "diagonal drag locks to 45°");
+}
+
+/// #6231: ⇧ also locks a ⌘-drag of the selected pixels to multiples of 45°.
+#[test]
+fn shift_constrains_a_floating_selection_drag() {
+    use crate::canvas::{ToolEvent, tool_event};
+    let (mut app, _layer) = painted();
+    let offset = |app: &PhotocraftApp| photocraft_engine::float_cmds::floating(app.session.active().unwrap()).map(|f| f.offset);
+    let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+    tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, Modifiers::COMMAND);
+    tool_event(&mut app, ToolEvent::Move { x: 34.0, y: 22.0, pressure: 1.0 }, cmd_shift);
+    tool_event(&mut app, ToolEvent::Up { x: 34.0, y: 22.0 }, cmd_shift);
+    assert_eq!(offset(&app), Some((14, 0)), "locked to the horizontal axis");
+    app.run("select.drop", json!({})).unwrap();
 }
 
 /// ⌘-drag cuts the selected pixels into a floating piece (`select.float`): shown at the pointer

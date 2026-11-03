@@ -8,7 +8,8 @@ use std::sync::{Mutex, OnceLock};
 
 use photocraft_color::{PixelFormat, SampleType};
 use photocraft_doc::vector::ShapeLayer;
-use photocraft_geom::Rect;
+use photocraft_doc::{Layer, LayerContent};
+use photocraft_geom::{Rect, TileCoord};
 use photocraft_raster::Surface;
 
 /// (fill, stroke), last use, and the shape's pixels the stroke was fitted to (kept alive so
@@ -18,6 +19,10 @@ type Entry = ((Surface, Surface), u64, Option<Surface>);
 fn cache() -> &'static Mutex<(HashMap<u64, Entry>, u64)> {
     static C: OnceLock<Mutex<(HashMap<u64, Entry>, u64)>> = OnceLock::new();
     C.get_or_init(|| Mutex::new((HashMap::new(), 0)))
+}
+
+pub(crate) fn purge() {
+    cache().lock().unwrap_or_else(|e| e.into_inner()).0.clear();
 }
 
 const CAPACITY: usize = 32;
@@ -31,7 +36,7 @@ const BUDGET: usize = 8 << 20;
 
 /// Pixel bytes of one entry's (fill, stroke) parts (the pinned shape pixels are the document's).
 fn entry_bytes(parts: &(Surface, Surface)) -> usize {
-    [&parts.0, &parts.1].iter().map(|s| s.tiles().map(|(_, t)| t.bytes().len()).sum::<usize>()).sum()
+    [&parts.0, &parts.1].iter().map(|s| s.tiles().map(|(_, t)| t.len()).sum::<usize>()).sum()
 }
 
 /// Drop every cached split (Edit › Purge › All), returning the parts' pixel bytes. Callers may
@@ -48,11 +53,13 @@ pub fn purge_cache() -> usize {
 /// (Photoshop's rendering, `sh.cache`) reach past our fill, the part the fill doesn't explain is
 /// stroke: the stroke follows Photoshop's coverage (psd-tools double-stroke-effects).
 pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surface, Surface)> {
+    let generation = photocraft_raster::spill::read_error_generation();
     sh.stroke.as_ref()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (canvas.x0, canvas.y0, canvas.x1, canvas.y1).hash(&mut h);
     depth.hash(&mut h);
     format!("{:?}{:?}{:?}{:?}", sh.path, sh.fill, sh.stroke, sh.live).hash(&mut h);
+    (sh.density.to_bits(), sh.feather.to_bits()).hash(&mut h);
     if let Some(c) = &sh.cache {
         format!("{:?}{:?}", c.format(), c.default_pixel()).hash(&mut h);
         for (k, t) in c.tiles() {
@@ -76,6 +83,9 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
     if let Some(cache) = &sh.cache {
         fit_stroke(&parts.0, &mut parts.1, cache, canvas);
     }
+    if photocraft_raster::spill::check_since(generation).is_err() || sh.cache.as_ref().is_some_and(|c| c.scratch_health().is_err()) {
+        return Some(parts);
+    }
     let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
     // Least recently used first, until the new entry fits both the count and the byte budget.
     let new_bytes = entry_bytes(&parts);
@@ -94,6 +104,22 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
     let tick = c.1;
     c.0.insert(key, (parts.clone(), tick, sh.cache.clone()));
     Some(parts)
+}
+
+/// The stroke-only shape a Photoshop Frame's stroke draws: `Group::frame_stroke` along the
+/// group's enabled vector mask (the frame outline). `None` for other layers and for a frame
+/// without a visible stroke or a vector mask.
+pub fn frame_shape(layer: &Layer) -> Option<ShapeLayer> {
+    let LayerContent::Group(g) = &layer.content else { return None };
+    let stroke = g.frame_stroke.as_ref().filter(|s| s.width.is_finite() && s.width > 0.0 && s.opacity > 0.0)?;
+    let vm = layer.vector_mask.as_ref().filter(|m| m.enabled && !m.path.is_empty())?;
+    Some(ShapeLayer { path: vm.path.clone(), fill: None, stroke: Some(stroke.clone()), ..ShapeLayer::default() })
+}
+
+/// A Photoshop Frame's stroke ([`frame_shape`]) rendered over `canvas` in RGBA at `depth`, from
+/// the same cache as the shape strokes. It goes above the frame's (masked) content.
+pub fn frame_stroke(layer: &Layer, canvas: Rect, depth: SampleType) -> Option<Surface> {
+    split(&frame_shape(layer)?, canvas, depth).map(|(_, stroke)| stroke)
 }
 
 /// Fits the stroke part to the shape's own pixels: where they reach past the fill, the stroke
@@ -117,13 +143,42 @@ fn fit_stroke(fill: &Surface, stroke: &mut Surface, cache: &Surface, canvas: Rec
     if r.is_empty() {
         return;
     }
+    let float = stroke.format().sample == SampleType::F32;
+    // Tiles none of the three reaches read as the defaults; with transparent defaults the fit
+    // leaves the stroke's default pixel there, so those tiles are exact skips and we can scan
+    // just the union of the three surfaces' allocated tiles instead of every canvas tile (two
+    // sparse regions on a 300k×300k document would otherwise walk ~1.4M empty tiles). A
+    // non-transparent default is everywhere, so the scan falls back to the full rectangle.
+    let whole = r;
+    let bare_transparent = [fill, &*stroke, cache].iter().all(|s| s.default_pixel().iter().all(|v| *v == 0.0));
+    if bare_transparent {
+        let mut coords: Vec<TileCoord> = fill.tiles().map(|(c, _)| *c).chain(stroke.tiles().map(|(c, _)| *c)).chain(cache.tiles().map(|(c, _)| *c)).collect();
+        coords.sort_unstable();
+        coords.dedup();
+        for c in coords {
+            let r = c.rect().intersect(&whole);
+            if !r.is_empty() {
+                fit_stroke_rect(fill, stroke, cache, r, float);
+            }
+        }
+    } else {
+        for t in whole.tiles() {
+            let r = t.rect().intersect(&whole);
+            if !r.is_empty() {
+                fit_stroke_rect(fill, stroke, cache, r, float);
+            }
+        }
+    }
+}
+
+/// [`fit_stroke`] over one rectangle.
+fn fit_stroke_rect(fill: &Surface, stroke: &mut Surface, cache: &Surface, r: Rect, float: bool) {
     let n = r.width() as usize * r.height() as usize;
     let (mut f, mut s, mut c) = (vec![[0.0f32; 4]; n], vec![[0.0f32; 4]; n], vec![[0.0f32; 4]; n]);
     fill.read_rgba_into(r, &mut f);
     stroke.read_rgba_into(r, &mut s);
     cache.read_rgba_into(r, &mut c);
     let mut out = Vec::with_capacity(n * 4);
-    let float = stroke.format().sample == SampleType::F32;
     for ((fp, sp), cp) in f.iter().zip(&s).zip(&c) {
         let mut p = *sp;
         if fp[3] < 1.0 - 1e-3 {
@@ -163,6 +218,7 @@ mod tests {
             live: None,
             cache: None,
             psd_raw: None,
+            ..ShapeLayer::default()
         }
     }
 

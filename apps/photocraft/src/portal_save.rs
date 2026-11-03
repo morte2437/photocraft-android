@@ -156,6 +156,18 @@ fn file_uri_path(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
 }
 
+/// Which file type's extensions belong on the name the dialog returned: the one it reported, or,
+/// when the dialog offered only one type, that one. It reports no pick then, and the name it was
+/// given is the stem (`services::dialog_file_name`), so a bare `Swatches` has to come back as
+/// `Swatches.aco`. `None` when the answer names no type this dialog offered.
+fn chosen_type(filters: &[Filter], picked: Option<usize>) -> Option<usize> {
+    match picked {
+        Some(i) if i < filters.len() => Some(i),
+        None if filters.len() == 1 => Some(0),
+        _ => None,
+    }
+}
+
 /// Save As on Linux: the portal's dialog, with the name given the extension of the file type
 /// picked. When that changes the name to one that already exists, the dialog opens again under
 /// the new name, so the portal asks before replacing it (it asked only about the typed name).
@@ -163,10 +175,10 @@ pub fn save_as(conn: &zbus::blocking::Connection, mut req: SaveRequest) -> Resul
     loop {
         let Some(saved) = save_file(conn, &req)? else { return Ok(None) };
         let picked = saved.filter.as_deref().and_then(|label| req.filters.iter().position(|(l, _)| l == label));
-        // With one type offered there is nothing to pick, and a typed extension is the user's.
-        let exts: &[String] = match picked {
-            Some(i) if req.filters.len() > 1 => &req.filters[i].1,
-            _ => &[],
+        // A typed extension is the user's own: `with_chosen_type` keeps one it recognises.
+        let exts: &[String] = match chosen_type(&req.filters, picked) {
+            Some(i) => &req.filters[i].1,
+            None => &[],
         };
         let path = crate::services::with_chosen_type(&saved.path, req.suggested.as_deref(), exts);
         if path == saved.path || !path.exists() {

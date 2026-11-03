@@ -64,11 +64,28 @@ pub struct Decoded {
     pub data: Vec<u8>,
     /// The primary image's ICC profile.
     pub icc: Option<Vec<u8>>,
+    /// The primary image's `nclx` colour description (inherited from its tiles like [`Self::icc`]).
+    /// The decoder has already applied its matrix and range; its primaries and transfer
+    /// characteristics describe the RGB samples returned.
+    pub nclx: Option<Nclx>,
     /// EXIF as a TIFF structure (without HEIF's offset header). Its Orientation tag only mirrors
     /// what the container says; it is returned verbatim.
     pub exif: Option<Vec<u8>>,
     /// The XMP packet.
     pub xmp: Option<String>,
+}
+
+/// A `colr` box of type `nclx`: ITU-T H.273 code points (CICP), as written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Nclx {
+    /// Colour primaries: 1 BT.709, 9 BT.2020, 12 P3-D65…
+    pub primaries: u16,
+    /// Transfer characteristics: 13 sRGB, 1/6/14/15 BT.709, 16 PQ, 18 HLG…
+    pub transfer: u16,
+    /// Matrix coefficients (already applied by the decoder).
+    pub matrix: u16,
+    /// Full-range samples (already applied by the decoder).
+    pub full_range: bool,
 }
 
 /// Why a file could not be decoded.
@@ -155,24 +172,37 @@ fn decode_unguarded(bytes: &[u8], options: &Options) -> Result<Decoded, Error> {
         .with_transforms(options.apply_transforms)
         .with_alpha(info.has_alpha);
     let decoded = heic_rs::decode(bytes, &raw).map_err(err)?;
-    let (icc, exif, xmp) = metadata(bytes);
-    Ok(Decoded { width: decoded.width, height: decoded.height, has_alpha: info.has_alpha, sixteen_bit: info.sixteen_bit, data: decoded.data, icc, exif, xmp })
+    let (icc, nclx, exif, xmp) = metadata(bytes);
+    Ok(Decoded {
+        width: decoded.width,
+        height: decoded.height,
+        has_alpha: info.has_alpha,
+        sixteen_bit: info.sixteen_bit,
+        data: decoded.data,
+        icc,
+        nclx,
+        exif,
+        xmp,
+    })
 }
 
-/// The primary image's ICC profile, EXIF (TIFF structure) and XMP packet. Metadata is a
+type Metadata = (Option<Vec<u8>>, Option<Nclx>, Option<Vec<u8>>, Option<String>);
+
+/// The primary image's ICC profile, `nclx`, EXIF (TIFF structure) and XMP packet. Metadata is a
 /// courtesy: a broken metadata item never fails a decode whose pixels came out fine.
-fn metadata(bytes: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<String>) {
+fn metadata(bytes: &[u8]) -> Metadata {
     let Ok(ctx) = heic_rs::context::Context::open(bytes) else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let id = ctx.meta.primary;
     let icc = icc_for_item(&ctx, id);
+    let nclx = nclx_for_item(&ctx, id);
     let exif = ctx.exif(id).ok().flatten().map(<[u8]>::to_vec);
     let xmp = ctx.xmp_item(id).and_then(|x| ctx.item_data(x).ok()).and_then(|d| match d {
         Cow::Borrowed(b) => String::from_utf8(b.to_vec()).ok(),
         Cow::Owned(b) => String::from_utf8(b).ok(),
     });
-    (icc, exif, xmp.map(|x| x.trim_end_matches('\0').to_string()))
+    (icc, nclx, exif, xmp.map(|x| x.trim_end_matches('\0').to_string()))
 }
 
 /// The ICC profile describing `item`, inherited from the coded tiles when the item itself carries
@@ -188,13 +218,26 @@ fn metadata(bytes: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>, Option<String>) 
 /// (tbraun96/heic-rs#6). The sample range cannot be recovered here as well: `DecodeOptions` has no
 /// override for it, so that half has to be fixed upstream.
 fn icc_for_item(ctx: &heic_rs::context::Context<'_>, item: u32) -> Option<Vec<u8>> {
-    let own = ctx.props(item).ok().and_then(|p| ctx.icc(&p).map(<[u8]>::to_vec));
+    inherited(ctx, item, |p| ctx.icc(p).map(<[u8]>::to_vec))
+}
+
+/// The `nclx` colour description of `item`, inherited from its tiles as [`icc_for_item`] does.
+/// A 10-bit HDR HEIC declares its BT.2020 primaries and HLG or PQ transfer only here (#6752).
+fn nclx_for_item(ctx: &heic_rs::context::Context<'_>, item: u32) -> Option<Nclx> {
+    inherited(ctx, item, |p| {
+        p.nclx.map(|n| Nclx { primaries: n.primaries, transfer: n.transfer, matrix: n.matrix_code, full_range: n.range == heic_rs::Range::Full })
+    })
+}
+
+/// `get` of `item`'s properties, or of the first of its grid tiles that has it.
+fn inherited<T>(ctx: &heic_rs::context::Context<'_>, item: u32, get: impl Fn(&heic_rs::props::ItemProps<'_>) -> Option<T>) -> Option<T> {
+    let own = ctx.props(item).ok().and_then(|p| get(&p));
     if own.is_some() {
         return own;
     }
     // `Ok(None)` is a coded picture rather than a derivation: no tiles to inherit from.
     let (_, tiles) = ctx.grid(item).ok()??;
-    tiles.iter().find_map(|&t| ctx.props(t).ok().and_then(|p| ctx.icc(&p).map(<[u8]>::to_vec)))
+    tiles.iter().find_map(|&t| ctx.props(t).ok().and_then(|p| get(&p)))
 }
 
 #[cfg(test)]
@@ -297,6 +340,17 @@ mod tests {
         bx(b"colr", &p)
     }
 
+    /// A `colr` box of type `nclx`, laid out as ISO/IEC 23008-12 says: three big-endian `u16`
+    /// code points, then the full-range flag in the top bit of a byte.
+    fn colr_nclx(primaries: u16, transfer: u16, matrix: u16, full_range: bool) -> Vec<u8> {
+        let mut p = b"nclx".to_vec();
+        for v in [primaries, transfer, matrix] {
+            p.extend_from_slice(&v.to_be_bytes());
+        }
+        p.push(if full_range { 0x80 } else { 0 });
+        bx(b"colr", &p)
+    }
+
     fn ispe(w: u32, h: u32) -> Vec<u8> {
         let mut p = w.to_be_bytes().to_vec();
         p.extend_from_slice(&h.to_be_bytes());
@@ -340,16 +394,21 @@ mod tests {
     /// `ipco` children are numbered from 1 in file order; an association byte's top bit marks the
     /// property essential, as macOS writes it.
     fn grid_file(grid_icc: Option<&[u8]>, tile_icc: Option<&[u8]>) -> Vec<u8> {
+        grid_file_colr(grid_icc.map(colr_prof), tile_icc.map(colr_prof))
+    }
+
+    /// [`grid_file`] with whole `colr` boxes.
+    fn grid_file_colr(grid_colr: Option<Vec<u8>>, tile_colr: Option<Vec<u8>>) -> Vec<u8> {
         let mut ipco = ispe(64, 64);
         let (mut grid_assoc, mut tile_assoc, mut index) = (vec![0x81], vec![0x81], 1u8);
-        if let Some(icc) = grid_icc {
+        if let Some(colr) = grid_colr {
             index += 1;
-            ipco.extend_from_slice(&colr_prof(icc));
+            ipco.extend_from_slice(&colr);
             grid_assoc.push(0x80 | index);
         }
-        if let Some(icc) = tile_icc {
+        if let Some(colr) = tile_colr {
             index += 1;
-            ipco.extend_from_slice(&colr_prof(icc));
+            ipco.extend_from_slice(&colr);
             tile_assoc.push(0x80 | index);
         }
         let mut iprp = bx(b"ipco", &ipco);
@@ -374,10 +433,15 @@ mod tests {
 
     /// One coded picture rather than a derivation, with `icc` on the item itself.
     fn picture_file(icc: Option<&[u8]>) -> Vec<u8> {
+        picture_file_colr(icc.map(colr_prof))
+    }
+
+    /// [`picture_file`] with a whole `colr` box.
+    fn picture_file_colr(colr: Option<Vec<u8>>) -> Vec<u8> {
         let mut ipco = ispe(64, 64);
         let mut assoc = vec![0x81];
-        if let Some(icc) = icc {
-            ipco.extend_from_slice(&colr_prof(icc));
+        if let Some(colr) = colr {
+            ipco.extend_from_slice(&colr);
             assoc.push(0x82);
         }
         let mut iprp = bx(b"ipco", &ipco);
@@ -435,5 +499,31 @@ mod tests {
         let bare = picture_file(None);
         let ctx = ctx_of(&bare);
         assert_eq!(icc_for_item(&ctx, ctx.meta.primary), None);
+    }
+    /// An iPhone 10-bit HDR HEIC's description (#6752): BT.2020 primaries, ARIB STD-B67 (HLG)
+    /// transfer, BT.2020 non-constant-luminance matrix, full range.
+    const HLG: Nclx = Nclx { primaries: 9, transfer: 18, matrix: 9, full_range: true };
+
+    #[test]
+    fn a_coded_pictures_nclx_is_read() {
+        let bytes = picture_file_colr(Some(colr_nclx(9, 18, 9, true)));
+        let ctx = ctx_of(&bytes);
+        assert_eq!(nclx_for_item(&ctx, ctx.meta.primary), Some(HLG));
+
+        let sdr = picture_file_colr(Some(colr_nclx(1, 13, 6, false)));
+        let ctx = ctx_of(&sdr);
+        assert_eq!(nclx_for_item(&ctx, ctx.meta.primary), Some(Nclx { primaries: 1, transfer: 13, matrix: 6, full_range: false }));
+
+        let bare = picture_file(Some(TILE_ICC));
+        let ctx = ctx_of(&bare);
+        assert_eq!(nclx_for_item(&ctx, ctx.meta.primary), None, "an ICC profile is not an nclx");
+    }
+
+    #[test]
+    fn a_grid_inherits_its_tiles_nclx() {
+        let bytes = grid_file_colr(None, Some(colr_nclx(9, 18, 9, true)));
+        let ctx = ctx_of(&bytes);
+        assert!(ctx.props(ctx.meta.primary).unwrap().nclx.is_none(), "the grid item carries no colr of its own");
+        assert_eq!(nclx_for_item(&ctx, ctx.meta.primary), Some(HLG));
     }
 }

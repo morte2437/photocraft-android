@@ -16,16 +16,11 @@ use photocraft_ui_egui::ControlRequest;
 use photocraft_ui_egui::control::REPLY_DEADLINE;
 use serde_json::{Value, json};
 
-pub fn start(port: u16, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
+/// Start serving a listener already bound during startup, before a window is opened.
+pub fn start(listener: TcpListener, token: String, ctx: egui::Context) -> Receiver<ControlRequest> {
     let (tx, rx) = channel::<ControlRequest>();
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("photocraft: control server failed to bind 127.0.0.1:{port}: {e}");
-            return rx;
-        }
-    };
-    eprintln!("photocraft: control server listening on 127.0.0.1:{port}");
+    let port = listener.local_addr().map_or(0, |a| a.port());
+    eprintln!("photocraft: control server listening on {}", listening_addr(&listener, port));
     std::thread::spawn(move || {
         let limiter = ConnectionLimiter::new(MAX_CONNECTIONS);
         let token = Arc::new(token);
@@ -45,6 +40,16 @@ pub fn start(port: u16, token: String, ctx: egui::Context) -> Receiver<ControlRe
         }
     });
     rx
+}
+
+/// The address `listener` is bound to: with `--control 0` the OS picks the port, and a client
+/// needs that one, not the requested 0 (#6427). Falls back to the requested port if the OS
+/// can't report it.
+fn listening_addr(listener: &TcpListener, requested_port: u16) -> String {
+    match listener.local_addr() {
+        Ok(addr) => addr.to_string(),
+        Err(_) => format!("127.0.0.1:{requested_port}"),
+    }
 }
 
 fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::Context) {
@@ -130,6 +135,41 @@ fn serve_with_auth_deadline(stream: TcpStream, token: &str, tx: Sender<ControlRe
 mod tests {
     use super::*;
     use std::io::BufRead;
+
+    /// #6427: with port 0 the log names the port the OS bound, which a client can connect to.
+    #[test]
+    fn port_zero_logs_the_bound_port() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound = listener.local_addr().unwrap();
+        assert_ne!(bound.port(), 0);
+        let logged = listening_addr(&listener, 0);
+        assert_eq!(logged, format!("127.0.0.1:{}", bound.port()));
+        TcpStream::connect(&logged).unwrap();
+    }
+
+    #[test]
+    fn a_prebound_listener_authenticates_and_dispatches_requests() {
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = start(listener, TOKEN.into(), egui::Context::default());
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut replies = BufReader::new(stream.try_clone().unwrap());
+        writeln!(stream, "{}", json!({"id": 1, "method": "auth", "params": {"token": TOKEN}})).unwrap();
+        let mut line = String::new();
+        replies.read_line(&mut line).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["result"]["authenticated"], true);
+        writeln!(stream, "{}", json!({"id": 2, "method": "test.bound"})).unwrap();
+        let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(request.method, "test.bound");
+        request.reply.send(json!({"ok": true, "result": "served"})).unwrap();
+        line.clear();
+        replies.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], 2);
+        assert_eq!(reply["result"], "served");
+    }
 
     /// #4965: a connection that keeps sending without authenticating is closed at the deadline
     /// (releasing its connection permit), and nothing it sent is dispatched.

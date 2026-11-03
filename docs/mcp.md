@@ -57,6 +57,27 @@ Paths are relative to the corresponding root, or absolute paths beneath it; with
 filesystem authority is absent. Bridge mode uses `--bridge` and `--control-token-file` as
 described in [development.md](development.md). UI tools require a running desktop app.
 
+A client has the full rights of the roots it is given: it can read any file below the read
+root, and `doc_save`, `doc_export` and the export tools can create files anywhere below the
+write root. `doc_save` and `doc_export` replace an existing file only when its extension is an
+image or document format PhotoCraft writes (PNG, JPEG, TIFF, PSD, PSB, .pcraft, OpenRaster,
+PDF, …) or its bytes are an image; anything else (`src/main.rs`, `.env`) is refused and left
+untouched. The multi-file exports (layers, data sets) never replace a file. An agent reads
+text from documents (layer names, metadata) that may try to steer it, so prefer a dedicated
+output folder as the write root over a whole project.
+
+Use absolute root paths in MCP client configurations, since a relative root is resolved from
+the client's launch directory. In bridge mode, configure roots on the **desktop app**; root
+flags on `photocraft-cli mcp --bridge` are rejected. Explicit `--control-token` and
+`--control-token-file` flags require `--bridge` (or `PHOTOCRAFT_CONTROL_PORT`) and are mutually
+exclusive. Bridge credentials can also come from `PHOTOCRAFT_CONTROL_TOKEN` or `PHOTOCRAFT_CONTROL_TOKEN_FILE`.
+
+MCP and `serve` launch options (all but `--help`/`-h`) take one non-empty value each and cannot
+be repeated. Missing values, stray positional arguments and options for the wrong mode are
+usage errors (exit 2), reported on stderr before the server starts; stdout stays available for
+protocol messages. For `serve`, explicit credential flags require `--port` (or
+`PHOTOCRAFT_CONTROL_PORT`); stdio needs no control token.
+
 ## Tools and resources
 
 - `command_list`: discover engine ids, parameter docs and current enabled state; accepts
@@ -77,7 +98,7 @@ described in [development.md](development.md). UI tools require a running deskto
 Existing document/session/job/UI tools remain listed, including the documented
 `doc_render_preview` spelling. There are no hidden legacy aliases. Every tool has a title
 and all four annotation hints. Generic command/control tools conservatively advertise writes;
-file saves may replace existing targets. Hints do not grant permission.
+file saves may replace existing image and document files. Hints do not grant permission.
 
 After a failed batch, `completed` and per-step `results` report successful steps, not a
 rolled-back transaction. Inspect the document and its history with `doc_inspect`; commands

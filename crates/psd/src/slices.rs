@@ -10,6 +10,8 @@
 //! version reads. Unknown fields are not kept here; callers that need a byte-exact round trip
 //! keep the raw resource while the slices are unchanged.
 
+use std::collections::HashMap;
+
 use crate::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
 use crate::error::{PsdError, Result};
 use crate::io::{Reader, WriteExt};
@@ -274,13 +276,22 @@ impl SlicesResource {
             && let Ok(vd) = VersionedDescriptor::read(r)
             && let Some(Value::List(items)) = vd.descriptor.get("slices")
         {
+            // Index each slice ID to its first occurrence once, so matching trailing
+            // descriptors against slices is linear rather than quadratic. Both the slice
+            // count and the descriptor-ID list are file-controlled, so a plain
+            // `find()` per descriptor is O(n*m) and lets a crafted resource burn CPU.
+            // `or_insert` preserves the original first-match behavior for duplicate IDs.
+            let mut id_to_index: HashMap<u32, usize> = HashMap::with_capacity(slices.len());
+            for (i, s) in slices.iter().enumerate() {
+                id_to_index.entry(s.id).or_insert(i);
+            }
             for v in items {
                 let Value::Descriptor(d) = v else { continue };
                 // An entry without a usable id belongs to no slice (not to slice 0).
                 let Some(id) = d_u32(d, "sliceID") else { continue };
                 let extra = slice_from_descriptor(d);
-                if let Some(s) = slices.iter_mut().find(|s| s.id == id) {
-                    s.outsets = extra.outsets;
+                if let Some(&i) = id_to_index.get(&id) {
+                    slices[i].outsets = extra.outsets;
                 }
             }
         }
@@ -492,5 +503,29 @@ mod tests {
         huge.extend(u32::MAX.to_be_bytes());
         assert!(SlicesResource::from_bytes(&huge).is_err());
         assert!(SlicesResource::from_bytes(&9u32.to_be_bytes()).is_err());
+    }
+
+    #[test]
+    fn trailing_descriptor_applies_outsets_to_first_matching_slice() {
+        // Two slices share id 1; the trailing descriptor must update the first one only,
+        // matching the pre-index behavior of `iter_mut().find()`.
+        let mut plain = SlicesResource {
+            version: 6,
+            bounds: [0, 0, 80, 100],
+            group_name: "site".into(),
+            slices: vec![
+                SliceRecord { id: 1, origin: 0, kind: 1, rect: [0, 0, 10, 10], ..Default::default() },
+                SliceRecord { id: 1, origin: 0, kind: 1, rect: [10, 10, 20, 20], ..Default::default() },
+            ],
+        };
+        for s in &mut plain.slices {
+            s.outsets = [0; 4];
+        }
+        let mut bytes = plain.to_bytes();
+        let extra = Descriptor::new("slice").with("sliceID", Value::Integer(1)).with("topOutset", Value::Integer(7));
+        VersionedDescriptor::new(Descriptor::new("null").with("slices", Value::List(vec![Value::Descriptor(extra)]))).write(&mut bytes);
+        let back = SlicesResource::from_bytes(&bytes).unwrap();
+        assert_eq!(back.slices[0].outsets, [7, 0, 0, 0], "first slice receives the outset");
+        assert_eq!(back.slices[1].outsets, [0, 0, 0, 0], "later duplicate is untouched");
     }
 }

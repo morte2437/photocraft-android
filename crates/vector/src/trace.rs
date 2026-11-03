@@ -37,14 +37,26 @@ pub fn trace_mask(values: &[f32], rect: Rect, outside: f32, tolerance: f64) -> P
 
 /// Closed iso-contours at 0.5 through pixel centres.
 pub fn contours(values: &[f32], rect: Rect, outside: f32) -> Vec<Vec<P>> {
+    if rect.is_empty() {
+        return Vec::new();
+    }
     let w = rect.width() as i64;
     let h = rect.height() as i64;
-    let get = |x: i64, y: i64| -> f32 { if x < 0 || y < 0 || x >= w || y >= h { outside } else { values[(y * w + x) as usize] } };
+    let Some(need) = (w as usize).checked_mul(h as usize) else {
+        return Vec::new();
+    };
+    if values.len() < need {
+        return Vec::new();
+    }
+    let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
+    let outside = clean(outside);
+    let get = |x: i64, y: i64| -> f32 { if x < 0 || y < 0 || x >= w || y >= h { outside } else { clean(values[(y * w + x) as usize]) } };
     // Edge ids: horizontal edge between (x,y)-(x+1,y) = (x, y, 0); vertical (x,y)-(x,y+1) = (x, y, 1).
     let lvl = 0.5f32;
     let point = |a: (i64, i64), b: (i64, i64)| -> P {
         let (va, vb) = (get(a.0, a.1), get(b.0, b.1));
-        let t = if (vb - va).abs() > 1e-9 { f64::from((lvl - va) / (vb - va)).clamp(0.0, 1.0) } else { 0.5 };
+        let raw_t = if (vb - va).abs() > 1e-9 { f64::from((lvl - va) / (vb - va)) } else { 0.5 };
+        let t = if raw_t.is_finite() { raw_t.clamp(0.0, 1.0) } else { 0.5 };
         let (ax, ay) = (a.0 as f64 + 0.5, a.1 as f64 + 0.5);
         let (bx, by) = (b.0 as f64 + 0.5, b.1 as f64 + 0.5);
         (f64::from(rect.x0) + ax + (bx - ax) * t, f64::from(rect.y0) + ay + (by - ay) * t)
@@ -156,14 +168,18 @@ fn norm(a: P) -> P {
 /// an open polyline, where the walk stops at the ends.
 fn walk(lp: &[P], i: usize, window: f64, fwd: bool, closed: bool) -> P {
     let n = lp.len();
+    let max_steps = n.min(256);
     let mut acc = 0.0;
     let mut cur = i;
-    for _ in 0..n {
+    for _ in 0..max_steps {
         if !closed && (if fwd { cur + 1 >= n } else { cur == 0 }) {
             break;
         }
         let nx = if fwd { (cur + 1) % n } else { (cur + n - 1) % n };
         let d = len(sub(lp[nx], lp[cur]));
+        if !d.is_finite() || !window.is_finite() {
+            break;
+        }
         if acc + d >= window {
             let t = (window - acc) / d.max(1e-12);
             return add(lp[cur], mul(sub(lp[nx], lp[cur]), t));
@@ -178,6 +194,9 @@ fn walk(lp: &[P], i: usize, window: f64, fwd: bool, closed: bool) -> P {
 /// ends of an open polyline are never corners.
 fn corners(lp: &[P], window: f64, closed: bool) -> Vec<usize> {
     let n = lp.len();
+    if n < 3 || !window.is_finite() || lp.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return Vec::new();
+    }
     let cos_thresh = (60f64).to_radians().cos();
     let turn: Vec<f64> = (0..n)
         .map(|i| {
@@ -190,21 +209,33 @@ fn corners(lp: &[P], window: f64, closed: bool) -> Vec<usize> {
         })
         .collect();
     let mut out = Vec::new();
+    let max_neighbor_steps = n.min(256);
+    let mut work_budget = n.saturating_mul(64).max(1024);
     for i in 0..n {
         if turn[i] >= cos_thresh {
             continue;
+        }
+        if work_budget == 0 {
+            break;
         }
         // Local minimum of the cosine within ±window (ties: first index).
         let mut is_min = true;
         let mut acc = 0.0;
         let mut j = i;
-        while acc < window {
+        let mut steps = 0usize;
+        while acc < window && steps < max_neighbor_steps && work_budget > 0 {
             if !closed && j + 1 >= n {
                 break;
             }
             let nx = (j + 1) % n;
-            acc += len(sub(lp[nx], lp[j]));
+            let d = len(sub(lp[nx], lp[j]));
+            if !d.is_finite() {
+                break;
+            }
+            acc += d;
             j = nx;
+            steps += 1;
+            work_budget -= 1;
             if j == i {
                 break;
             }
@@ -215,13 +246,20 @@ fn corners(lp: &[P], window: f64, closed: bool) -> Vec<usize> {
         }
         acc = 0.0;
         j = i;
-        while is_min && acc < window {
+        steps = 0;
+        while is_min && acc < window && steps < max_neighbor_steps && work_budget > 0 {
             if !closed && j == 0 {
                 break;
             }
             let pv = (j + n - 1) % n;
-            acc += len(sub(lp[j], lp[pv]));
+            let d = len(sub(lp[j], lp[pv]));
+            if !d.is_finite() {
+                break;
+            }
+            acc += d;
             j = pv;
+            steps += 1;
+            work_budget -= 1;
             if j == i {
                 break;
             }
@@ -239,6 +277,9 @@ fn corners(lp: &[P], window: f64, closed: bool) -> Vec<usize> {
 /// Fits a closed loop with cubic Béziers; `window` is the corner detection window.
 fn fit_closed(lp: &[P], tol: f64, window: f64) -> Subpath {
     let n = lp.len();
+    if n < 3 || lp.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+        return Subpath { closed: true, knots: Vec::new(), op: PathOp::Combine };
+    }
     let cs = corners(lp, window, true);
     let mut segs: Vec<[P; 4]> = Vec::new();
     let mut corner_at_start: Vec<bool> = Vec::new();
@@ -616,5 +657,40 @@ mod tests {
         let long: Vec<[f64; 2]> = (0..200_000).map(|i| [i as f64 * 0.01, ((i as f64) * 0.001).sin() * 40.0]).collect();
         let sp = fit_trace(&long, -5.0, false).unwrap();
         assert!(sp.knots.len() >= 2 && sp.knots.iter().all(|k| k.anchor.x.is_finite() && k.out_ctrl.y.is_finite()));
+    }
+
+    #[test]
+    fn corners_have_bounded_work_for_many_tiny_segments() {
+        let points: Vec<P> = (0..20_000).map(|i| (i as f64 * 0.01, if i % 2 == 0 { 0.0 } else { 1e-5 })).collect();
+        let selected = corners(&points, 100.0, false);
+        assert!(selected.len() <= points.len());
+    }
+
+    #[test]
+    fn contours_reject_empty_rect_and_clean_non_finite_values() {
+        assert!(contours(&[], Rect::new(0, 0, 0, 1_000_000_000), 0.0).is_empty());
+        assert!(contours(&[], Rect::new(0, 0, 1_000_000_000, 0), 0.0).is_empty());
+        assert!(contours(&[1.0], Rect::new(0, 0, 10, 10), 0.0).is_empty());
+
+        let (w, h) = (6, 6);
+        let mut v = vec![0.0f32; w * h];
+        for y in 1..5 {
+            for x in 1..5 {
+                v[y * w + x] = f32::INFINITY;
+            }
+        }
+        v[2 * w + 2] = f32::NAN;
+        v[w + 1] = 1.0;
+        v[w + 2] = 1.0;
+        v[2 * w + 1] = 1.0;
+        let path = trace_mask(&v, Rect::new(0, 0, w as i32, h as i32), f32::NAN, 1.0);
+        assert!(path.subpaths.iter().any(|sp| !sp.knots.is_empty()));
+        for sp in &path.subpaths {
+            for k in &sp.knots {
+                assert!(k.anchor.x.is_finite() && k.anchor.y.is_finite());
+                assert!(k.in_ctrl.x.is_finite() && k.in_ctrl.y.is_finite());
+                assert!(k.out_ctrl.x.is_finite() && k.out_ctrl.y.is_finite());
+            }
+        }
     }
 }

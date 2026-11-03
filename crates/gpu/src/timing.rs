@@ -95,8 +95,9 @@ pub struct GpuTimer {
     /// A recording was abandoned after it had already submitted timestamps. Writing a query
     /// again resets that slot (wgpu-core resets per write), and resetting one an in-flight
     /// submission is still writing is undefined, with no way to learn when it has drained.
-    /// That only happens when a refresh fails after a flush, which on this path means the
-    /// device faulted and the canvas is about to drop to the CPU compositor anyway, so
+    /// That only happens when a refresh fails after a flush that nothing waited for (a refresh
+    /// whose page retry waited for the GPU calls [`Self::drained`] first), which is rare: usually
+    /// the device faulted and the canvas is about to drop to the CPU compositor anyway. So
     /// measuring simply stops: no number, which is the contract everywhere else here.
     stopped: bool,
     /// Timestamps and pixels of the measurement being read back, and its readback flag.
@@ -233,6 +234,12 @@ impl GpuTimer {
         self.stopped |= self.flushed;
         self.written = 0;
         self.overflowed = false;
+        self.flushed = false;
+    }
+
+    /// The caller waited until the GPU finished everything submitted so far: no timestamp of
+    /// this recording is still in flight, so [`Self::cancel`] can reuse its slots safely.
+    pub fn drained(&mut self) {
         self.flushed = false;
     }
 

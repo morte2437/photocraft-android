@@ -189,7 +189,10 @@ impl<'a> InkStack<'a> {
             match item {
                 Item::Layer(surf, opacity, mask) => {
                     let opacity = *opacity;
-                    if opacity <= 0.0 || (surf.content_bounds().intersect(&rect).is_empty() && surf.default_pixel().iter().all(|v| *v == 0.0)) {
+                    // Nothing to draw only where the surface is transparent: without an alpha
+                    // channel its default pixel is opaque (no ink is blank paper, not nothing).
+                    let clear = surf.format().alpha && surf.default_pixel().last().is_some_and(|a| *a <= 0.0);
+                    if opacity <= 0.0 || (clear && surf.content_bounds().intersect(&rect).is_empty()) {
                         continue;
                     }
                     let sf = surf.format();
@@ -211,7 +214,13 @@ impl<'a> InkStack<'a> {
                     }
                 }
                 Item::Adjust(op, opacity, mask) => {
+                    // The result is rounded to the document's levels, as the compositor and the
+                    // export path do after every adjustment layer, at any opacity (#9033).
+                    let quantum = crate::adjustment_quantum(self.depth);
                     if *opacity <= 0.0 {
+                        if let Some(q) = quantum {
+                            crate::cmyk::quantize_inks(acc, q);
+                        }
                         continue;
                     }
                     masked(*mask, mv);
@@ -224,6 +233,9 @@ impl<'a> InkStack<'a> {
                         for (c, v) in ink.iter().enumerate() {
                             d[c] += (v - d[c]) * mix;
                         }
+                    }
+                    if let Some(q) = quantum {
+                        crate::cmyk::quantize_inks(acc, q);
                     }
                 }
             }

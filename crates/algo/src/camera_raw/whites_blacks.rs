@@ -24,7 +24,7 @@ use super::Encoding;
 use crate::photo_util::par_rows;
 
 /// Grey levels the curves are sampled at: 0, 1/32, …, 1 (sRGB-encoded).
-const STEPS: usize = 33;
+pub(crate) const STEPS: usize = 33;
 /// The first row's internal amount; rows are 10 apart.
 const WHITES_FROM: f32 = -100.0;
 const BLACKS_FROM: f32 = -100.0;
@@ -313,6 +313,25 @@ fn curve(rows: &[[f32; STEPS]], from: f32, x: f32, v: f32) -> f32 {
         row[j] + (row[j + 1] - row[j]) * s
     };
     at(&rows[i]) * (1.0 - t) + at(&rows[i + 1]) * t
+}
+
+/// The curve at a fractional internal amount `x` as one row: `curve(rows, from, x, v)` is this
+/// row interpolated at `v`, because both interpolations are linear.
+fn row_at(rows: &[[f32; STEPS]], from: f32, x: f32) -> [f32; STEPS] {
+    let r = ((x - from) / 10.0).clamp(0.0, (rows.len() - 1) as f32);
+    let i = (r as usize).min(rows.len() - 2);
+    let t = r - i as f32;
+    std::array::from_fn(|j| rows[i][j] * (1.0 - t) + rows[i + 1][j] * t)
+}
+
+/// The Whites curve at internal amount `x` as a row over grey levels 0, 1/32, …, 1.
+pub(crate) fn whites_row(x: f32) -> [f32; STEPS] {
+    row_at(&WHITES, WHITES_FROM, x)
+}
+
+/// The Blacks curve at internal amount `x` as a row over grey levels 0, 1/32, …, 1.
+pub(crate) fn blacks_row(x: f32) -> [f32; STEPS] {
+    row_at(&BLACKS, BLACKS_FROM, x)
 }
 
 /// Whites at internal amount `x` (−100 … 270) of grey level `v`.

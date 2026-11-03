@@ -246,6 +246,16 @@ pub(crate) fn read_section(r: &mut Reader<'_>) -> Result<Vec<ImageResource>> {
     Ok(v)
 }
 
+/// Serialized size of the resource section [`write_section`] writes, its length field included.
+pub(crate) fn section_len(res: &[ImageResource]) -> u64 {
+    res.iter().fold(4u64, |n, r| {
+        let name = 1 + r.name.len().min(255);
+        let name = name + name % 2;
+        let data = r.data.len().saturating_add(r.data.len() % 2);
+        n.saturating_add((4 + 2 + name + 4) as u64).saturating_add(data as u64)
+    })
+}
+
 pub(crate) fn write_section(out: &mut Vec<u8>, res: &[ImageResource]) -> Result<()> {
     let at = out.begin_len(false);
     for r in res {

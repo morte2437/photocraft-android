@@ -138,6 +138,161 @@ fn printers_are_listed_with_state_and_default() {
 }
 
 #[test]
+fn printer_attributes_before_name_are_preserved() {
+    let state = 5u32.to_be_bytes();
+    let base: [Attr<'_>; 4] = [
+        (TAG_TEXT, "printer-info", &[b"Studio Printer"]),
+        (TAG_ENUM, "printer-state", &[&state]),
+        (TAG_BOOLEAN, "printer-is-accepting-jobs", &[b"\0"]),
+        (TAG_NAME, "printer-name", &[b"studio"]),
+    ];
+    let body = ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &base)]);
+    for chunked in [false, true] {
+        let (ep, _) = fake(body.clone(), chunked, 200);
+        let list = printers(&ep).unwrap();
+        assert_eq!(list.len(), 1, "chunked {chunked}");
+        assert_eq!((list[0].name.as_str(), list[0].info.as_str(), list[0].state, list[0].accepting_jobs), ("studio", "Studio Printer", 5, false));
+        assert!(!list[0].is_class);
+    }
+}
+
+#[test]
+fn printer_groups_do_not_share_metadata() {
+    let state_a = 4u32.to_be_bytes();
+    let state_b = 5u32.to_be_bytes();
+    let body = ipp(
+        0,
+        &[
+            ok_header(),
+            (
+                TAG_PRINTER_GROUP,
+                &[(TAG_NAME, "printer-name", &[b"first"]), (TAG_TEXT, "printer-info", &[b"First printer"]), (TAG_ENUM, "printer-state", &[&state_a])],
+            ),
+            (
+                TAG_PRINTER_GROUP,
+                &[(TAG_TEXT, "printer-info", &[b"Second printer"]), (TAG_ENUM, "printer-state", &[&state_b]), (TAG_NAME, "printer-name", &[b"second"])],
+            ),
+        ],
+    );
+    let (ep, _) = fake(body, false, 200);
+    let list = queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!((list[0].name.as_str(), list[0].info.as_str(), list[0].state), ("first", "First printer", 4));
+    assert_eq!((list[1].name.as_str(), list[1].info.as_str(), list[1].state), ("second", "Second printer", 5));
+}
+
+#[test]
+fn printer_attribute_order_does_not_change_results() {
+    let state = 5u32.to_be_bytes();
+    let fields: [Attr<'_>; 4] = [
+        (TAG_TEXT, "printer-info", &[b"Studio Printer"]),
+        (TAG_ENUM, "printer-state", &[&state]),
+        (TAG_BOOLEAN, "printer-is-accepting-jobs", &[b"\0"]),
+        (TAG_NAME, "printer-name", &[b"studio"]),
+    ];
+    let expected = Printer { name: "studio".into(), info: "Studio Printer".into(), state: 5, accepting_jobs: false, is_default: false, is_class: false };
+    let mut permutations = 0;
+    for first in 0..4 {
+        for second in 0..4 {
+            for third in 0..4 {
+                for fourth in 0..4 {
+                    let order = [first, second, third, fourth];
+                    if order[0] == order[1]
+                        || order[0] == order[2]
+                        || order[0] == order[3]
+                        || order[1] == order[2]
+                        || order[1] == order[3]
+                        || order[2] == order[3]
+                    {
+                        continue;
+                    }
+                    permutations += 1;
+                    let ordered = order.iter().map(|index| fields[*index]).collect::<Vec<_>>();
+                    let body = ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &ordered)]);
+                    let (ep, _) = fake(body, false, 200);
+                    assert_eq!(queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap(), vec![expected.clone()], "order {order:?}");
+                }
+            }
+        }
+    }
+    assert_eq!(permutations, 24);
+}
+
+#[test]
+fn class_attributes_before_name_are_preserved() {
+    let state = 5u32.to_be_bytes();
+    let body = ipp(
+        0,
+        &[
+            ok_header(),
+            (
+                TAG_PRINTER_GROUP,
+                &[
+                    (TAG_BOOLEAN, "printer-is-accepting-jobs", &[b"\0"]),
+                    (TAG_TEXT, "printer-info", &[b"Shared studio"]),
+                    (TAG_ENUM, "printer-state", &[&state]),
+                    (TAG_NAME, "printer-name", &[b"studio-class"]),
+                ],
+            ),
+        ],
+    );
+    let (ep, rx) = fake(body, true, 200);
+    let classes = queues(&ep, OP_CUPS_GET_CLASSES, true).unwrap();
+    assert_eq!(rx.recv().unwrap().0, OP_CUPS_GET_CLASSES);
+    assert_eq!(classes.len(), 1);
+    assert_eq!(
+        (classes[0].name.as_str(), classes[0].info.as_str(), classes[0].state, classes[0].accepting_jobs, classes[0].is_class),
+        ("studio-class", "Shared studio", 5, false, true)
+    );
+}
+
+#[test]
+fn empty_or_unnamed_groups_do_not_leak_metadata() {
+    let body = ipp(
+        0,
+        &[
+            ok_header(),
+            (TAG_PRINTER_GROUP, &[(TAG_NAME, "printer-name", &[b"named"])]),
+            (TAG_PRINTER_GROUP, &[]),
+            (TAG_PRINTER_GROUP, &[(TAG_TEXT, "printer-info", &[b"orphan metadata"])]),
+            (TAG_PRINTER_GROUP, &[(TAG_NAME, "printer-name", &[b"next"]), (TAG_ENUM, "printer-state", &[&3u32.to_be_bytes()])]),
+        ],
+    );
+    let (ep, _) = fake(body, false, 200);
+    let list = queues(&ep, OP_CUPS_GET_PRINTERS, false).unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!((list[0].name.as_str(), list[0].info.as_str()), ("named", ""));
+    assert_eq!((list[1].name.as_str(), list[1].info.as_str()), ("next", ""));
+}
+
+#[test]
+fn additional_values_do_not_cross_group_boundaries() {
+    let valid = ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &[(TAG_KEYWORD, "supported", &[b"one", b"two"])])]);
+    let reply = Reply::parse(&valid).unwrap();
+    assert_eq!(reply.attributes.iter().find(|a| a.name == "supported").map(|a| a.values.as_slice()), Some(&[b"one".to_vec(), b"two".to_vec()][..]));
+
+    let mut body = vec![2, 0, 0, 0, 0, 0, 0, 1, TAG_PRINTER_GROUP];
+    body.extend_from_slice(&[TAG_NAME, 0, 12]);
+    body.extend_from_slice(b"printer-name");
+    body.extend_from_slice(&[0, 5]);
+    body.extend_from_slice(b"first");
+    body.extend_from_slice(&[TAG_TEXT, 0, 12]);
+    body.extend_from_slice(b"printer-info");
+    body.extend_from_slice(&[0, 6]);
+    body.extend_from_slice(b"before");
+    body.push(TAG_PRINTER_GROUP);
+    body.extend_from_slice(&[TAG_TEXT, 0, 0, 0, 5]);
+    body.extend_from_slice(b"after");
+    body.extend_from_slice(&[TAG_NAME, 0, 12]);
+    body.extend_from_slice(b"printer-name");
+    body.extend_from_slice(&[0, 6]);
+    body.extend_from_slice(b"second");
+    body.push(TAG_END);
+    let (ep, _) = fake(body, true, 200);
+    assert!(matches!(queues(&ep, OP_CUPS_GET_PRINTERS, false), Err(Error::Protocol(_))));
+}
+
+#[test]
 fn default_printer_is_read_and_absence_is_not_an_error() {
     let (ep, rx) = fake(ipp(0, &[ok_header(), (TAG_PRINTER_GROUP, &[(TAG_NAME, "printer-name", &[b"Office"])])]), false, 200);
     assert_eq!(default_printer(&ep).unwrap(), Some("Office".into()));
@@ -158,7 +313,10 @@ fn a_print_job_carries_the_document_and_returns_its_id() {
     assert_eq!(op, OP_PRINT_JOB);
     assert_eq!(doc, pdf);
     let get = |n: &str| attrs.iter().find(|a| a.name == n).cloned().unwrap_or_else(|| panic!("{n}"));
-    assert_eq!(get("printer-uri").values[0], format!("ipp://{}/printers/Office", ep.host()).as_bytes());
+    let uri = String::from_utf8(get("printer-uri").values[0].clone()).unwrap();
+    // Spelled out here rather than echoed back from host(), so the printer-uri the server receives is
+    // pinned down even when the authority is an IP literal.
+    assert!(uri.starts_with("ipp://127.0.0.1:") && uri.ends_with("/printers/Office"), "{uri}");
     assert_eq!(get("job-name").values[0], b"photo.psd");
     assert_eq!(get("requesting-user-name").values[0], b"diego");
     assert_eq!(get("document-format").values[0], b"application/pdf");
@@ -186,9 +344,36 @@ fn error_statuses_and_broken_replies_are_errors() {
     assert!(matches!(printers(&ep), Err(Error::Protocol(_))));
     let (ep, _rx) = fake(b"not ipp at all".to_vec(), false, 200);
     assert!(matches!(printers(&ep), Err(Error::Protocol(_))));
-    // Nobody listening.
-    let e = printers(&Endpoint::Tcp("127.0.0.1".into(), 1)).unwrap_err();
+    // Nobody reachable. A port is never guaranteed to be free, let alone to stay free: that is what
+    // made the old port-1 case fail on a FreeBSD CI VM. A name that can never resolve (RFC 2606)
+    // reaches the same exit without owning or releasing anything.
+    let e = printers(&Endpoint::Tcp("printer.invalid".into(), 631)).unwrap_err();
     assert!(matches!(e, Error::Unreachable(_)), "{e}");
+    assert!(e.to_string().contains("printer.invalid"), "{e} does not name the server it tried");
+}
+
+#[test]
+fn a_refused_connection_is_unreachable_and_keeps_why() {
+    // The refused-connect path, with the machine no longer deciding what is closed: the connect call
+    // is a parameter, so this test cannot race for an ephemeral port with anything.
+    let addr: SocketAddr = "192.0.2.9:631".parse().unwrap();
+    let asked_for = std::cell::RefCell::new(None);
+    let open = |seen: SocketAddr| -> std::io::Result<TcpStream> {
+        *asked_for.borrow_mut() = Some(seen);
+        Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "nobody is listening on this port"))
+    };
+    let e = match open_tcp("printserver", 631, addr, open) {
+        Ok(_) => panic!("nothing opens {addr}"),
+        Err(e) => e,
+    };
+    assert_eq!(*asked_for.borrow(), Some(addr), "the connector is handed the resolved address");
+    match &e {
+        Error::Unreachable(m) => {
+            assert!(m.contains("printserver:631"), "{e} does not name the endpoint");
+            assert!(m.contains("nobody is listening on this port"), "{e} loses why the connect failed");
+        }
+        other => panic!("expected Unreachable, got {other}"),
+    }
 }
 
 #[test]
@@ -230,6 +415,54 @@ fn the_unix_socket_endpoint_works_and_detect_honours_cups_server() {
     assert!(!Endpoint::Unix(dir.join("missing.sock")).reachable());
     assert_eq!(ep.to_string(), sock.display().to_string());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An IPv6 print server is not a `host:port` split: a bare address has more than one ':', and the
+/// brackets of `[address]:port` must not end up inside the host, where no resolver can read them.
+#[test]
+fn an_ipv6_print_server_is_parsed_as_a_host_not_as_host_port() {
+    assert_eq!(Endpoint::parse("::1"), Endpoint::Tcp("::1".into(), 631));
+    assert_eq!(Endpoint::parse("fe80::1"), Endpoint::Tcp("fe80::1".into(), 631));
+    assert_eq!(Endpoint::parse("2001:db8::1"), Endpoint::Tcp("2001:db8::1".into(), 631));
+    assert_eq!(Endpoint::parse("[::1]"), Endpoint::Tcp("::1".into(), 631));
+    assert_eq!(Endpoint::parse("[::1]:631"), Endpoint::Tcp("::1".into(), 631));
+    assert_eq!(Endpoint::parse("[fe80::1]:6310"), Endpoint::Tcp("fe80::1".into(), 6310));
+    // A zone id carries no ':', so a port can still follow it without brackets.
+    assert_eq!(Endpoint::parse("fe80::1%eth0:631"), Endpoint::Tcp("fe80::1%eth0".into(), 631));
+    // What already worked is unchanged.
+    assert_eq!(Endpoint::parse("cups.example"), Endpoint::Tcp("cups.example".into(), 631));
+    assert_eq!(Endpoint::parse("cups.example:6310"), Endpoint::Tcp("cups.example".into(), 6310));
+    assert_eq!(Endpoint::parse("127.0.0.1:6310"), Endpoint::Tcp("127.0.0.1".into(), 6310));
+    assert_eq!(Endpoint::parse("/var/run/cups/cups.sock"), Endpoint::Unix("/var/run/cups/cups.sock".into()));
+    // A mistyped bracketed endpoint is not quietly the default one: the whole string stays the host,
+    // so nothing can resolve it and detect() reports the endpoint unreachable.
+    assert_eq!(Endpoint::parse("[::1]:abc"), Endpoint::Tcp("[::1]:abc".into(), 631));
+    assert_eq!(Endpoint::parse("[::1]:70000"), Endpoint::Tcp("[::1]:70000".into(), 631));
+    assert_eq!(Endpoint::parse("[::1]junk"), Endpoint::Tcp("[::1]junk".into(), 631));
+    assert!(!Endpoint::parse("[::1]:abc").reachable());
+}
+
+/// The authority a request carries (the `Host:` header and the `ipp://` printer-uri) has to bracket an
+/// IPv6 host, or its last colon reads as the port separator and CUPS sees a nonsense host.
+#[test]
+fn an_ipv6_endpoint_writes_its_authority_in_brackets() {
+    assert_eq!(Endpoint::parse("::1").host(), "[::1]:631");
+    assert_eq!(Endpoint::parse("[::1]:631").host(), "[::1]:631");
+    assert_eq!(Endpoint::parse("[fe80::1]:6310").host(), "[fe80::1]:6310");
+    assert_eq!(Endpoint::parse("cups.example").host(), "cups.example:631");
+    assert_eq!(Endpoint::parse("cups.example:6310").host(), "cups.example:6310");
+    assert_eq!(Endpoint::parse("127.0.0.1:6310").host(), "127.0.0.1:6310");
+    // A scoped address keeps its zone id, but the authority writes it "%25"-escaped: a bare "%" is
+    // not valid inside an authority, and the escaped form is what CUPS and curl-style ipp:// URIs
+    // use. The host itself stays raw, because that is what the resolver gets.
+    assert_eq!(Endpoint::parse("fe80::1%3:631").host(), "[fe80::1%253]:631");
+    assert_eq!(Endpoint::parse("[fe80::1%3]:6310").host(), "[fe80::1%253]:6310");
+    assert_eq!(Endpoint::parse("fe80::1%eth0:631").host(), "[fe80::1%25eth0]:631");
+    assert_eq!(Endpoint::parse("fe80::1%3:631"), Endpoint::Tcp("fe80::1%3".into(), 631));
+    // What the user is shown is written the same way, with the zone exactly as it was typed.
+    assert_eq!(Endpoint::parse("::1").to_string(), "[::1]:631");
+    assert_eq!(Endpoint::parse("cups.example:6310").to_string(), "cups.example:6310");
+    assert_eq!(Endpoint::parse("fe80::1%3:631").to_string(), "[fe80::1%3]:631");
 }
 
 #[test]
@@ -351,10 +584,29 @@ fn a_last_chunk_pattern_inside_a_value_does_not_end_the_reply() {
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].name, "Of\r\n0\r\n\r\nfice");
     // The boundary walk itself: complete only at a zero-size chunk, never on payload bytes.
-    assert!(!chunked_complete(b"5\r\nab\r\n0"));
-    assert!(!chunked_complete(b"7\r\n\r\n0\r\n\r\nx\r\n"));
-    assert!(chunked_complete(b"7\r\n\r\n0\r\n\r\nx\r\n0\r\n\r\n"));
-    assert!(chunked_complete(b"zz\r\n") && dechunk(b"zz\r\n").is_err());
+    assert!(!complete(b"5\r\nab\r\n0"));
+    assert!(!complete(b"7\r\n\r\n0\r\n\r\nx\r\n"));
+    assert!(complete(b"7\r\n\r\n0\r\n\r\nx\r\n0\r\n\r\n"));
+    assert!(complete(b"zz\r\n") && dechunk(b"zz\r\n").is_err());
+}
+
+/// [`chunked_complete`] on a whole body at once.
+fn complete(body: &[u8]) -> bool {
+    chunked_complete(body, &mut 0)
+}
+
+/// Fed a byte at a time, as a server dripping the reply would, the walk resumes where it stopped
+/// and agrees with the one-shot answer at every length.
+#[test]
+fn the_chunk_walk_resumes_instead_of_starting_over() {
+    let body = b"3\r\nabc\r\n10\r\n0123456789abcdef\r\n0\r\n\r\n";
+    let mut at = 0;
+    for len in 0..=body.len() {
+        let prefix = &body[..len];
+        assert_eq!(chunked_complete(prefix, &mut at), complete(prefix), "{len}");
+        assert!(at <= len);
+    }
+    assert!(at > 0, "it moved past the chunks already walked");
 }
 
 /// A chunk size that cannot be satisfied (`usize::MAX`, `usize::MAX - 1`, anything past the
@@ -362,7 +614,7 @@ fn a_last_chunk_pattern_inside_a_value_does_not_end_the_reply() {
 #[test]
 fn an_impossible_chunk_size_is_a_protocol_error_not_a_panic() {
     for size_line in ["ffffffffffffffff", "fffffffffffffffe", "1000001"] {
-        assert!(chunked_complete(format!("{size_line}\r\n").as_bytes()));
+        assert!(complete(format!("{size_line}\r\n").as_bytes()));
         assert!(dechunk(format!("{size_line}\r\nab\r\n").as_bytes()).is_err());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -392,4 +644,10 @@ fn an_impossible_chunk_size_is_a_protocol_error_not_a_panic() {
             other => panic!("{size_line}: expected a protocol error, got {other:?}"),
         }
     }
+}
+
+#[test]
+fn printer_names_are_encoded_as_one_request_target_segment() {
+    assert_eq!(queue_path("office printer/1", false).unwrap(), "/printers/office%20printer%2F1");
+    assert!(queue_path("printer\r\nX-Injected: yes", false).is_err());
 }
