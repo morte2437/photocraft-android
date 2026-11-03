@@ -479,6 +479,7 @@ fn edit_tiles(
                 None => {}
             }
             let Some(src) = current.map(|t| &**t).or(blank.as_ref()) else { return Ok(None) };
+            let source = src.try_bytes().map_err(|e| crate::EngineError::Other(format!("could not read pixels while {purpose}: {e}")))?;
             let mut out: Option<Tile> = None;
             let (mut px, mut enc) = ([0.0f32; 8], [0u8; 32]);
             let (Some(px), Some(enc)) = (px.get_mut(..n), enc.get_mut(..bpp)) else { return Ok(None) };
@@ -486,7 +487,7 @@ fn edit_tiles(
                 let row = (y - tc.ty * TILE_SIZE) as usize * TILE_SIZE as usize;
                 for x in tr.x0..tr.x1 {
                     let i = (row + (x - tc.tx * TILE_SIZE) as usize) * bpp;
-                    let Some(old) = src.bytes().get(i..i + bpp) else { continue };
+                    let Some(old) = source.get(i..i + bpp) else { continue };
                     for (c, v) in px.iter_mut().enumerate() {
                         *v = photocraft_color::read_sample(old, fmt.sample, c);
                     }
@@ -498,10 +499,15 @@ fn edit_tiles(
                         continue;
                     }
                     if out.is_none() {
-                        out = Some(src.try_clone().map_err(oom)?);
+                        let mut tile = surf.try_default_tile().map_err(oom)?;
+                        tile.bytes_mut().copy_from_slice(&source);
+                        out = Some(tile);
                     }
-                    if let Some(dst) = out.as_mut().and_then(|t| t.bytes_mut().get_mut(i..i + bpp)) {
-                        dst.copy_from_slice(enc);
+                    if let Some(tile) = out.as_mut() {
+                        let mut bytes = tile.bytes_mut();
+                        if let Some(dst) = bytes.get_mut(i..i + bpp) {
+                            dst.copy_from_slice(enc);
+                        }
                     }
                 }
             }

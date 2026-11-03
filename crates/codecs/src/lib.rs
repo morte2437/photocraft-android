@@ -7,8 +7,9 @@
 //!   metadata (EXIF, XMP, DPI, text) are preserved where the format allows.
 //! * [`caps`] declares per-format capabilities and [`fidelity_warnings`]
 //!   tells the UI exactly what an export will lose.
-//! * The API is I/O free (`&[u8]` in, `Vec<u8>` out) and builds for
-//!   `wasm32-unknown-unknown`. Decoders enforce [`Limits`] before allocating.
+//! * APIs use bytes or caller-provided readers, with no ambient filesystem access,
+//!   and build for `wasm32-unknown-unknown`. Byte decoders enforce [`Limits`];
+//!   [`exr_stream`] instead bounds metadata and one decoded compression block.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -17,6 +18,7 @@ pub mod cicp;
 mod codecs;
 mod error;
 pub mod exif_color;
+pub mod exr_stream;
 mod fidelity;
 mod format;
 mod image;
@@ -273,6 +275,7 @@ pub fn decode_exr_channels(bytes: &[u8], part: usize, names: &[&str], opts: &Dec
 /// [`decode_as_with`] instead flattens a deep file into a normal [`Image`] with a
 /// [`DecodeWarning::DeepFlattened`]. `Err(Unsupported)` when the file has no deep part.
 pub fn decode_deep_exr(bytes: &[u8], limits: &Limits) -> Result<DeepImage, CodecError> {
+    codecs::exr::check_previews(bytes)?;
     let mut cur = std::io::Cursor::new(bytes);
     let meta = ::exr::meta::MetaData::read_from_buffered(&mut cur, false).map_err(|e| CodecError::malformed(Format::OpenExr, e))?;
     codecs::deep_exr::decode_deep(&meta, bytes, limits)

@@ -3473,6 +3473,9 @@ curves	Smooth	매끄럽게
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n}개 단계에는 아직 PhotoCraft에 해당하는 기능이 없습니다
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{file}에 액션 {n}개를 저장했습니다
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop에 해당하는 기능이 없는 {n}개 단계를 제외했습니다
+@plural	{n} action file loaded|{n} action files loaded	액션 파일 {n}개를 불러왔습니다
+	{set} from {file} replaced the one from {earlier}	{file}의 세트 {set}이(가) {earlier}의 세트를 대체했습니다
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	파일 {n}개를 불러오지 못했습니다: {errors}
 	File Naming	파일 이름 지정
 	Starting serial	시작 일련번호
 	Insert Stop…	정지 삽입…
@@ -3493,6 +3496,7 @@ curves	Smooth	매끄럽게
 	Sent to {printer}	{printer}(으)로 전송됨
 	set in Print Settings…	인쇄 설정에서 지정…
 	ICO is limited to 256 × 256 pixels	ICO는 256 × 256픽셀로 제한됩니다
+	Memory usage percent	메모리 사용 비율(%)
 	Show Favorite Fonts	즐겨찾는 글꼴 표시
 	No favorite fonts yet: click the star beside a font to add it.	아직 즐겨찾는 글꼴이 없습니다. 글꼴 옆의 별을 클릭하여 추가하세요.
 	Favorite fonts	즐겨찾는 글꼴
@@ -3555,6 +3559,7 @@ curves	Smooth	매끄럽게
 	Chisel Soft	부드럽게 조각
 	Open color-less EXR as ACEScg	색 공간 정보 없는 EXR을 ACEScg로 열기
 	Do not append "copy" to filename when saving a copy	사본 저장 시 파일 이름에 "copy"를 붙이지 않음
+	Save Full-Size Composite in .pcraft Files	.pcraft 파일에 전체 크기 합성 이미지 저장
 	Color Profile	색상 프로필
 	EXIF	EXIF
 	Edit Selected Guides	선택한 안내선 편집
@@ -3611,6 +3616,7 @@ curves	Smooth	매끄럽게
 	This document's layers: {needed} of {budget} for layers	이 문서의 레이어: 레이어용 {budget} 중 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	이 문서의 레이어에 {needed}가 필요하지만 {budget}만 사용할 수 있습니다: 문서 전체 다시 그리기는 CPU를 사용합니다
 	GPU Memory (MB, 0 = Automatic)	GPU 메모리(MB, 0 = 자동)
+	Scratch Size Limit (MB, 0 = No Limit)	임시 디스크 크기 제한(MB, 0 = 제한 없음)
 	{path}: the path is not valid Unicode; save under another name.	{path}: 경로가 올바른 유니코드가 아닙니다. 다른 이름으로 저장하세요.
 	Replace	대치
 	{name} was changed by another app after it was opened or saved here.	{name}이(가) 여기서 열거나 저장한 뒤 다른 앱에서 변경되었습니다.

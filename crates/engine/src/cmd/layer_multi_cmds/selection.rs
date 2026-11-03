@@ -159,6 +159,29 @@ pub(crate) fn recorded_step(s: &Session, id: &str, p: Value, pre_selected: Optio
         }
         return p;
     }
+    if id == "select.loadSelection" {
+        return recorded_source_layer(s, p, layer_id);
+    }
+    p
+}
+
+/// ⌘-clicking another layer's thumbnail loads that layer's transparency. The step refers to the
+/// layer the way the reference application records it, by name (or as the Background), so it
+/// replays in another document and saves to `.atn`. A layer that the name would not find (a
+/// same-named layer above it) keeps its id.
+fn recorded_source_layer(s: &Session, mut p: Value, id: LayerId) -> Value {
+    let Some(doc) = s.active().map(|st| &st.doc) else { return p };
+    let Some(layer) = doc.layer(id) else { return p };
+    let reference = if doc.background().is_some_and(|b| b.id == id) {
+        json!({"background": true})
+    } else if doc.walk().into_iter().rev().find(|(_, _, l)| l.name == layer.name).is_some_and(|(_, _, l)| l.id == id) {
+        json!({"name": layer.name})
+    } else {
+        return p;
+    };
+    if let Some(fields) = p.as_object_mut() {
+        fields.insert("layer".into(), reference);
+    }
     p
 }
 
@@ -222,6 +245,20 @@ fn range_order(layers: &[Layer], include_collapsed: bool, out: &mut Vec<LayerId>
 
 /// `layer.select`: `{"layer": id, "mode": "replace|toggle|range|add|remove"}`.
 pub fn select(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(selector @ Value::Object(fields)) = p.get("layer")
+        && (fields.contains_key("index") || fields.contains_key("ordinal"))
+        && crate::commands::recorded_layer(s, selector)?.is_none()
+    {
+        if p.get("name").is_some() || p.get("occurrence").is_some() {
+            return Err(bad("layer.select", "a layer reference cannot be combined with name or occurrence"));
+        }
+        let mode = p.get("mode").and_then(Value::as_str).unwrap_or("replace");
+        if !matches!(mode, "replace" | "toggle" | "range" | "add" | "remove") {
+            return Err(bad("layer.select", format!("unknown mode `{mode}`")));
+        }
+        // A group-end index leaves the active layer, anchor and full selection unchanged.
+        return Ok(json!({"selected": selected(s).iter().map(|id| id.0).collect::<Vec<_>>()}));
+    }
     let id = selection_target(s, p)?;
     let mode = p.get("mode").and_then(Value::as_str).unwrap_or("replace");
     let st = s.active().ok_or(EngineError::NoDocument)?;

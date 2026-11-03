@@ -92,6 +92,9 @@ pub struct ExportSettings {
     /// PSD/PSB: write the real merged image (Preferences › File Handling › Maximize PSD and PSB
     /// File Compatibility; see [`PhotocraftApp::save_settings`]).
     pub psd_maximize_compatibility: bool,
+    /// `.pcraft`: also write the full-size composite (Preferences › File Handling › Save Full-Size
+    /// Composite in .pcraft Files; see [`PhotocraftApp::save_settings`]). Off by default.
+    pub pcraft_full_composite: bool,
     /// Embed the document's ICC profile when the format supports it. On for Save As and, unless
     /// Export As turns it off, for export.
     pub embed_icc: bool,
@@ -121,6 +124,7 @@ impl Default for ExportSettings {
             dds: photocraft_io::DdsOptions::default(),
             image_previews: true,
             psd_maximize_compatibility: true,
+            pcraft_full_composite: false,
             embed_icc: true,
             embed_metadata: true,
             document_path: None,
@@ -151,6 +155,7 @@ impl ExportSettings {
         opts.encode.dds = self.dds;
         opts.image_previews = self.image_previews;
         opts.psd_maximize_compatibility = self.psd_maximize_compatibility;
+        opts.pcraft_full_composite = self.pcraft_full_composite;
         opts.document_path = self.document_path.clone();
         opts.pcraft_cache = self.pcraft_cache.clone();
         opts.read_linked_files = self.read_linked_files;
@@ -246,6 +251,9 @@ pub type ClipboardSetFn = Box<dyn FnMut(u32, u32, &[u8]) -> Result<(), String>>;
 /// Read an RGBA8 image from the OS clipboard. `Ok(None)` means no image is available;
 /// `Err` means the contents could not be read and must not invalidate the internal copy.
 pub type ClipboardGetFn = Box<dyn FnMut() -> Result<Option<(u32, u32, Vec<u8>)>, String>>;
+
+/// Read original SVG markup for an explicit Paste As. A read error preserves the internal copy.
+pub type ClipboardGetSvgFn = Box<dyn FnMut() -> Result<Option<Vec<u8>>, String>>;
 
 /// Whether the last clipboard read found no way to reach the OS clipboard at all.
 pub type ClipboardUnreadableFn = Box<dyn Fn() -> bool>;
@@ -433,6 +441,9 @@ pub struct Services {
     /// OS clipboard images: copies go out, screenshots and images from other apps come in.
     pub clipboard_set_image: Option<ClipboardSetFn>,
     pub clipboard_get_image: Option<ClipboardGetFn>,
+    /// SVG text copied by another app: imported only by an explicit pixels/path/shape paste,
+    /// and read after an ordinary paste too, only to remember which SVG came with that image.
+    pub clipboard_get_svg: Option<ClipboardGetSvgFn>,
     /// True when the last `clipboard_get_image` read had no clipboard to read, as in a Flatpak on
     /// Wayland (#5031), rather than a clipboard that holds no image. `None` where that can't happen.
     pub clipboard_unreadable: Option<ClipboardUnreadableFn>,

@@ -543,6 +543,38 @@ fn open_runs_as_a_job_and_cancel_adds_nothing() {
     assert!(matches!(wait_event(&mut s, id).outcome, JobOutcome::Failed(_)));
 }
 
+/// A flat scanline EXR opened from a path goes through the band decoder in the open job and
+/// arrives as the same 32-bit document the whole-file decoder makes; cancelling adds nothing.
+#[cfg(any(unix, windows))]
+#[test]
+fn an_exr_path_open_decodes_in_bands_and_cancels_cleanly() {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, ExrCompression, Format, Image, SampleType};
+    let values: Vec<f32> = (0..64 * 48 * 3).map(|i| [0.25, 3.0, -0.5][i % 3]).collect();
+    let image = Image::from_f32(64, 48, ChannelLayout::Rgb, &values).unwrap().convert(ChannelLayout::Rgb, SampleType::F16);
+    let bytes = photocraft_codecs::encode(&image, Format::OpenExr, &EncodeOptions { exr_compression: ExrCompression::Zip16, ..Default::default() }).unwrap();
+    let path = std::env::temp_dir().join(format!("photocraft-open-job-{}.exr", std::process::id()));
+    std::fs::write(&path, &bytes).unwrap();
+    let reference = photocraft_io::import("band.exr", &bytes).unwrap().document;
+    let mut s = Session::new();
+    let id = job(s.start_open("band.exr", OpenSource::Path(path.to_string_lossy().into_owned())).unwrap());
+    let e = wait_event(&mut s, id);
+    assert!(matches!(e.outcome, JobOutcome::Done(_)), "{e:?}");
+    let doc = &s.documents()[0].doc;
+    assert_eq!((doc.size, doc.mode, doc.depth), (reference.size, reference.mode, reference.depth));
+    use photocraft_doc::LayerContent;
+    let (LayerContent::Raster(a), LayerContent::Raster(r)) = (&doc.layers[0].content, &reference.layers[0].content) else { panic!("raster background") };
+    assert_eq!(a.to_interleaved(reference.bounds()), r.to_interleaved(reference.bounds()));
+
+    let id = job(s.start_open("again.exr", OpenSource::Path(path.to_string_lossy().into_owned())).unwrap());
+    s.cancel_job(id);
+    let outcome = wait_event(&mut s, id).outcome;
+    assert!(matches!(outcome, JobOutcome::Cancelled | JobOutcome::Done(_)), "{outcome:?}");
+    if outcome == JobOutcome::Cancelled {
+        assert_eq!(s.documents().len(), 1, "a cancelled open adds no document");
+    }
+    std::fs::remove_file(path).unwrap();
+}
+
 /// Ask When Opening: a file whose profile doesn't match is decoded but not added; the shell takes
 /// it once the prompt is answered. Without Ask it opens as usual.
 #[test]
@@ -781,4 +813,208 @@ fn every_job_terminal_path_drops_a_live_commit_stroke() {
         }
         assert!(s.live_commit.is_none(), "terminal path {outcome} retained the preview");
     }
+}
+
+#[cfg(unix)]
+fn tmp_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("photocraft-engine-jobs-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// A tiny real PSD fixture, so an admission test never allocates anything near a threshold.
+fn tiny_psd() -> Vec<u8> {
+    super::psd_open_fixture::make_psd(false)
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn approved_open_forwards_the_flag_and_the_bound_estimate() {
+    let gb = 1u64 << 30;
+    let bytes = Arc::new(tiny_psd());
+    // Known 8 GiB: S = 4 GiB, H = 6 GiB. The test charge puts the estimate just over S.
+    let snapshot = photocraft_io::memory::MemorySnapshot { available_ram: Some(8 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snapshot, || {
+        photocraft_io::psd_budget::with_test_estimate_charge(4 * gb + 1, || {
+            let mut s = Session::new();
+            let started = s.start_open_for_user_with_background("tiny.psd", OpenSource::Bytes(Arc::clone(&bytes)), false).unwrap();
+            let v = match started {
+                Started::Done(v) => v,
+                Started::Job(id) => s.wait_job(id).unwrap(),
+            };
+            let id = v["pendingPreflight"].as_u64().unwrap_or_else(|| panic!("expected a memory preflight: {v}"));
+            assert!(v["estimated"].as_u64().unwrap() > 4 * gb, "the seam's charge is part of the estimate: {v}");
+            assert!(s.documents().is_empty());
+            // Approving forwards the one-shot flag and estimate through the real import path.
+            let r = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false})).unwrap();
+            assert_eq!(r["approved"], json!(true), "{r}");
+            assert!(r["result"].get("document").is_some(), "the approved import opened the document: {r}");
+            assert_eq!(s.documents().len(), 1);
+            assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "approval releases the held source bytes");
+        });
+    });
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn approval_is_bound_to_the_approved_estimate() {
+    let gb = 1u64 << 30;
+    let bytes = Arc::new(tiny_psd());
+    let snapshot = photocraft_io::memory::MemorySnapshot { available_ram: Some(8 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snapshot, || {
+        photocraft_io::psd_budget::with_test_estimate_charge(4 * gb + 1, || {
+            let mut s = Session::new();
+            let source = OpenSource::Bytes(Arc::clone(&bytes));
+            let fingerprint = SourceFingerprint::of(&source).unwrap();
+            // Consent given for a much smaller estimate does not cover this file.
+            let err = s
+                .start_open_approved_with_background("tiny.psd", source, false, Some(1 << 20), Some(fingerprint), false)
+                .expect_err("a larger estimate needs fresh consent");
+            assert!(matches!(&err, EngineError::PsdApprovalRequired { .. }), "got {err:?}");
+            assert!(s.documents().is_empty());
+        });
+    });
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn unknown_capacity_metadata_never_invents_available_ram() {
+    let gb = 1u64 << 30;
+    let bytes = Arc::new(tiny_psd());
+    let snapshot = photocraft_io::memory::MemorySnapshot { available_ram: None, swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snapshot, || {
+        // Above both the 2 GiB unknown-capacity allowance and the 8 GiB warning threshold.
+        photocraft_io::psd_budget::with_test_estimate_charge(8 * gb + 1, || {
+            let mut s = Session::new();
+            let started = s.start_open_for_user_with_background("unknown.psd", OpenSource::Bytes(Arc::clone(&bytes)), false).unwrap();
+            let v = match started {
+                Started::Done(v) => v,
+                Started::Job(id) => s.wait_job(id).unwrap(),
+            };
+            assert!(v["availableRam"].is_null(), "no number is invented for an unmeasured capacity: {v}");
+            assert_eq!(v["capacityUnknown"], json!(true), "{v}");
+            assert_eq!(v["uncertainCapacityWarning"], json!(true), "{v}");
+            let id = v["pendingPreflight"].as_u64().unwrap();
+            assert!(s.take_pending_preflight(id).is_some());
+        });
+    });
+}
+
+#[test]
+fn an_open_reports_a_typed_hard_budget_refusal() {
+    let gb = 1u64 << 30;
+    let bytes = Arc::new(tiny_psd());
+    // A measured 4 GiB gives a finite hard limit; a charge over it is refused.
+    let snapshot = photocraft_io::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    let hard = photocraft_io::memory::resolve_budget(snapshot, None).hard_limit;
+    assert!(hard < u64::MAX, "the test needs a finite hard limit");
+    photocraft_io::memory::with_mock_memory(snapshot, || {
+        photocraft_io::psd_budget::with_test_estimate_charge(hard + 1, || {
+            let mut s = Session::new();
+            let err = s.start_open_for_user_with_background("over.psd", OpenSource::Bytes(Arc::clone(&bytes)), false).unwrap_err();
+            match &err {
+                EngineError::PsdHardBudget { required, limit, .. } => assert!(*required > hard && *limit == hard),
+                other => panic!("the job must keep the hard-budget fields, got {other:?}"),
+            }
+            assert!(s.documents().is_empty());
+        });
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_failed_job_keeps_its_typed_error_for_wait_and_events() {
+    let mut s = Session::new();
+    let started = s
+        .start_job(
+            "test.hardBudget",
+            json!({}),
+            "Test hard budget",
+            false,
+            |_ctx| -> Result<()> { Err(EngineError::PsdHardBudget { name: "too-big.psd".into(), required: 9000, limit: 4000 }) },
+            |_, _| Ok(Value::Null),
+        )
+        .unwrap();
+    let id = job(started);
+    let err = s.wait_job(id).expect_err("the job fails");
+    assert!(
+        matches!(&err, EngineError::PsdHardBudget { name, required, limit } if name == "too-big.psd" && *required == 9000 && *limit == 4000),
+        "wait_job must not flatten the typed refusal: {err:?}"
+    );
+    let event = s.poll_jobs().into_iter().find(|e| e.id == id).expect("the job event");
+    assert!(
+        matches!(&event.error, Some(EngineError::PsdHardBudget { required, limit, .. }) if *required == 9000 && *limit == 4000),
+        "the event carries the typed refusal: {event:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_replaced_path_is_refused_with_the_source_identity_reason() {
+    let dir = tmp_dir("replaced");
+    let path = dir.join("source.psd");
+    let bytes = tiny_psd();
+    std::fs::write(&path, &bytes).unwrap();
+    let source = OpenSource::Path(path.to_string_lossy().into_owned());
+    let fingerprint = SourceFingerprint::of(&source).unwrap();
+    // A different inode with identical content and length: only the identity differs.
+    let replacement = dir.join("replacement.psd");
+    std::fs::write(&replacement, &bytes).unwrap();
+    std::fs::rename(&replacement, &path).unwrap();
+    let mut s = Session::new();
+    let err = s
+        .start_open_approved_with_background("source.psd", source.clone(), false, Some(1024), Some(fingerprint.clone()), false)
+        .expect_err("the handle is not the approved file");
+    assert!(matches!(&err, EngineError::SourceChanged { .. }), "the inline refusal must name the identity, not a parser failure: {err:?}");
+    assert!(s.documents().is_empty());
+    // The same check on the worker path: the job fails with the identity reason, not a decode error.
+    let started = s.start_open_approved_with_background("source.psd", source, false, Some(1024), Some(fingerprint), true).unwrap();
+    let Started::Job(id) = started else { panic!("expected a background job") };
+    let err = s.wait_job(id).expect_err("the worker's handle is not the approved file");
+    assert!(matches!(&err, EngineError::SourceChanged { .. }), "the background refusal must name the identity: {err:?}");
+    assert!(s.documents().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_same_size_rewrite_with_a_restored_mtime_is_refused_with_the_identity_reason() {
+    let dir = tmp_dir("rewrite");
+    let path = dir.join("source.psd");
+    let bytes = tiny_psd();
+    std::fs::write(&path, &bytes).unwrap();
+    let source = OpenSource::Path(path.to_string_lossy().into_owned());
+    let fingerprint = SourceFingerprint::of(&source).unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+    // Same inode, same length, same bytes, restored modification time: only ctime differs.
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+    let mut s = Session::new();
+    let err = s
+        .start_open_approved_with_background("source.psd", source, false, Some(1024), Some(fingerprint), false)
+        .expect_err("the rewrite is not the file whose estimate was approved");
+    assert!(matches!(&err, EngineError::SourceChanged { .. }), "a restored mtime must not hide the rewrite: {err:?}");
+    assert!(s.documents().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_fingerprint_detects_a_same_size_rewrite_with_a_restored_mtime() {
+    let dir = tmp_dir("ctime");
+    let path = dir.join("source.psd");
+    std::fs::write(&path, b"AAAAAAAAAA").unwrap();
+    let before = SourceFingerprint::of(&OpenSource::Path(path.to_string_lossy().into_owned())).unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+    std::fs::write(&path, b"BBBBBBBBBB").unwrap();
+    std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
+    let after = SourceFingerprint::of(&OpenSource::Path(path.to_string_lossy().into_owned())).unwrap();
+    let (b, a) = (before.file_identity().unwrap(), after.file_identity().unwrap());
+    assert_eq!((b.len, b.modified, b.ino), (a.len, a.modified, a.ino), "same length, modification time and inode");
+    assert_ne!((b.ctime_secs, b.ctime_nanos), (a.ctime_secs, a.ctime_nanos), "the Unix identity carries ctime, so a restored mtime cannot hide a rewrite");
+    assert_ne!(before, after, "a same-size rewrite with a restored mtime is a different source");
+    let _ = std::fs::remove_dir_all(&dir);
 }

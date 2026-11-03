@@ -9,6 +9,7 @@ mod camera_raw_scope;
 mod camera_raw_zoom;
 mod canvas_16f;
 mod checker_canvas;
+mod clipboard_svg;
 mod color_managed_canvas;
 mod crop_beyond_canvas;
 mod crop_default_mode;

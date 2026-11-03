@@ -2,6 +2,9 @@ const DIFFUSE_MODE: &[(&str, &str)] = &[("Nrml", "normal"), ("DrkO", "darkenOnly
 use super::adjustments::{adjustment_by_class, adjustment_steps, levels_from, levels_to, shadows_highlights_from, shadows_highlights_to};
 use super::descriptors::{desc, get_bool, get_ref, jbool, layer_ref, layer_target, ref_class};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
+
+use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
+use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, wave_from, wave_to};
 use super::steps_doc::{
     align_from, align_to, canvas_size_from, canvas_size_to, close_from, close_to, conditional_from, conditional_to, convert_mode_from, convert_mode_to,
     crop_from, crop_to, export_from, export_to, image_size_from, image_size_to, merge_visible_from, merge_visible_to, open_from, open_to, paste_from, paste_to,
@@ -9,13 +12,16 @@ use super::steps_doc::{
 };
 use super::steps_image::{
     GALLERY_IDS, REFINE_EDGE, RIPPLE_SIZE, SMART_BRUSH, apply_image_from, apply_image_to, camera_raw_from, camera_raw_to, color_range_from, color_range_to,
-    gallery_from, gallery_to, has_refine_strokes, radial_blur_from, radial_blur_to, refine_edge_to, transform_from, transform_to,
+    empty_from, empty_to, gallery_from, gallery_to, has_refine_strokes, oil_paint_from, oil_paint_to, radial_blur_from, radial_blur_to, refine_edge_to,
+    select_sky_from, select_sky_to, smart_sharpen_from, smart_sharpen_to, transform_from, transform_to,
 };
 use super::steps_layer::{
     STROKE, apply_comp_from, apply_comp_to, clear_from, clear_to, delete_from, delete_to, duplicate_from, duplicate_to, fill_from, fill_to, flip_from, flip_to,
-    move_from, move_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from, visibility_to,
+    move_from, move_to, paste_effects_from, paste_effects_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from,
+    visibility_to,
 };
 use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
+use super::steps_other::{DE_INTERLACE, HSB_HSL, bare_from, bare_to, custom_from, custom_to, enums_from, enums_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
 use super::{AtnEvent, D, Descriptor, STOP_MESSAGE, Value, json};
 
@@ -49,6 +55,12 @@ macro_rules! ev {
             },
             to: |_, p| if pixel_target(p) && !($skip)(p) && holds_its_settings($id, p) { fields_to(p, $fields, desc("null")) } else { None },
         }
+    };
+}
+
+macro_rules! stylize_event {
+    ($code:literal, $name:literal, $label:literal, $id:literal) => {
+        Event { code: $code, name: $name, label: $label, ids: &[$id], from: |d| super::steps_stylize::from($id, d), to: super::steps_stylize::to }
     };
 }
 
@@ -182,9 +194,131 @@ macro_rules! clipping_event {
     };
 }
 
+/// Group F routes every event through `steps_selection::from`; the outer header (name, class) is not checked.
+macro_rules! selection_event {
+    ($code:literal, $name:literal, $label:literal, $ids:expr, $from:expr, $to:expr) => {
+        Event { code: $code, name: $name, label: $label, ids: $ids, from: |d| super::steps_selection::from(d, $from), to: $to }
+    };
+}
+
 /// Every Photoshop event PhotoCraft maps. The order matters only for the panel label.
 pub(super) const EVENTS: &[Event] = &[
+    selection_event!("AddT", "addTo", "Add to Selection", &["select.rect"], |d| super::steps_selection::selection_from(d, "add"), |_, p| {
+        super::steps_selection::selection_to(p, "add")
+    }),
+    selection_event!("SbtF", "subtractFrom", "Subtract from Selection", &["select.rect"], |d| super::steps_selection::selection_from(d, "subtract"), |_, p| {
+        super::steps_selection::selection_to(p, "subtract")
+    }),
+    selection_event!(
+        "IntW",
+        "intersectWith",
+        "Intersect with Selection",
+        &["select.rect"],
+        |d| super::steps_selection::selection_from(d, "intersect"),
+        |_, p| super::steps_selection::selection_to(p, "intersect")
+    ),
+    selection_event!(
+        "PstI",
+        "pasteInto",
+        "Paste Into",
+        &["edit.pasteSpecial.pasteInto"],
+        |d| super::steps_selection::paste_from(d, "edit.pasteSpecial.pasteInto"),
+        super::steps_selection::paste_to
+    ),
+    selection_event!(
+        "PstO",
+        "pasteOutside",
+        "Paste Outside",
+        &["edit.pasteSpecial.pasteOutside"],
+        |d| super::steps_selection::paste_from(d, "edit.pasteSpecial.pasteOutside"),
+        super::steps_selection::paste_to
+    ),
+    selection_event!("Fade", "fade", "Fade", &["edit.fade"], super::steps_selection::fade_from, super::steps_selection::fade_to),
+    selection_event!("", "linkSelectedLayers", "Link Layers", &["layer.linkLayers"], super::steps_selection::link_from, super::steps_selection::link_to),
+    selection_event!(
+        "Dstr",
+        "distribute",
+        "Distribute",
+        &[
+            "layer.distribute.leftEdges",
+            "layer.distribute.horizontalCenters",
+            "layer.distribute.rightEdges",
+            "layer.distribute.topEdges",
+            "layer.distribute.verticalCenters",
+            "layer.distribute.bottomEdges",
+        ],
+        super::steps_selection::distribute_from,
+        super::steps_selection::distribute_to
+    ),
+    selection_event!(
+        "RmvL",
+        "removeLayerMask",
+        "Remove Layer Mask",
+        &["layer.layerMask.delete"],
+        |d| super::steps_selection::empty_from(d, "layer.layerMask.delete", Some("RmvL")),
+        super::steps_selection::empty_to
+    ),
+    selection_event!(
+        "DfnP",
+        "definePattern",
+        "Define Pattern",
+        &["edit.definePattern"],
+        |d| super::steps_selection::empty_from(d, "edit.definePattern", None),
+        super::steps_selection::empty_to
+    ),
+    selection_event!(
+        "MrgL",
+        "mergeLayers",
+        "Merge Layers",
+        &["layer.mergeLayers"],
+        |d| super::steps_selection::empty_from(d, "layer.mergeLayers", Some("MrgL")),
+        super::steps_selection::empty_to
+    ),
     // Filters.
+    Event {
+        code: "Clds",
+        name: "clouds",
+        label: "Clouds",
+        ids: &["filter.render.clouds"],
+        from: |d| super::steps_render::clouds_from("filter.render.clouds", d),
+        to: super::steps_render::clouds_to,
+    },
+    Event {
+        code: "DfrC",
+        name: "differenceClouds",
+        label: "Difference Clouds",
+        ids: &["filter.render.differenceClouds"],
+        from: |d| super::steps_render::clouds_from("filter.render.differenceClouds", d),
+        to: super::steps_render::clouds_to,
+    },
+    Event {
+        code: "Fbrs",
+        name: "",
+        label: "Fibers",
+        ids: &["filter.render.fibers"],
+        from: super::steps_render::fibers_from,
+        to: super::steps_render::fibers_to,
+    },
+    Event {
+        code: "LnsF",
+        name: "lensFlare",
+        label: "Lens Flare",
+        ids: &["filter.render.lensFlare"],
+        from: super::steps_render::flare_from,
+        to: super::steps_render::flare_to,
+    },
+    stylize_event!("FndE", "findEdges", "Find Edges", "filter.stylize.findEdges"),
+    stylize_event!("Slrz", "solarize", "Solarize", "filter.stylize.solarize"),
+    stylize_event!("Fct ", "facet", "Facet", "filter.pixelate.facet"),
+    stylize_event!("Frgm", "fragment", "Fragment", "filter.pixelate.fragment"),
+    stylize_event!("Extr", "extrude", "Extrude", "filter.stylize.extrude"),
+    stylize_event!("TrcC", "traceContour", "Trace Contour", "filter.stylize.traceContour"),
+    stylize_event!("Wnd ", "wind", "Wind", "filter.stylize.wind"),
+    stylize_event!("Tls ", "tiles", "Tiles", "filter.stylize.tiles"),
+    stylize_event!("ClrH", "colorHalftone", "Color Halftone", "filter.pixelate.colorHalftone"),
+    stylize_event!("Mztn", "mezzotint", "Mezzotint", "filter.pixelate.mezzotint"),
+    stylize_event!("Msc ", "mosaic", "Mosaic", "filter.pixelate.mosaic"),
+    stylize_event!("Pntl", "pointillize", "Pointillize", "filter.pixelate.pointillize"),
     ev!("GsnB", "gaussianBlur", "Gaussian Blur", "filter.blur.gaussianBlur", &[F("Rds ", "radius", Kind::Px)]),
     ev!(
         "UnsM",
@@ -247,6 +381,48 @@ pub(super) const EVENTS: &[Event] = &[
         "filter.other.offset",
         &[F("Hrzn", "horizontal", Kind::Long), F("Vrtc", "vertical", Kind::Long), F("Fl  ", "undefinedAreas", Kind::Enum("FlMd", OFFSET_FILL))]
     ),
+    // Distort (#10605): every key in recorded order, Photoshop's limits and defaults.
+    Event {
+        code: "Pnch",
+        name: "pinch",
+        label: "Pinch",
+        ids: &["filter.distort.pinch"],
+        from: |d| keys_from(d, "filter.distort.pinch", PINCH),
+        to: |_, p| keys_to(p, PINCH, &[("amount", json!(50))], &[]),
+    },
+    Event {
+        code: "Plr ",
+        name: "polar",
+        label: "Polar Coordinates",
+        ids: &["filter.distort.polarCoordinates"],
+        from: |d| keys_from(d, "filter.distort.polarCoordinates", POLAR),
+        to: |_, p| keys_to(p, POLAR, &[("mode", json!("rectangularToPolar"))], &[]),
+    },
+    Event {
+        code: "Sphr",
+        name: "spherize",
+        label: "Spherize",
+        ids: &["filter.distort.spherize"],
+        from: |d| keys_from(d, "filter.distort.spherize", SPHERIZE),
+        to: |_, p| keys_to(p, SPHERIZE, &[("amount", json!(100)), ("mode", json!("normal"))], &[]),
+    },
+    Event {
+        code: "Twrl",
+        name: "twirl",
+        label: "Twirl",
+        ids: &["filter.distort.twirl"],
+        from: |d| keys_from(d, "filter.distort.twirl", TWIRL),
+        to: |_, p| keys_to(p, TWIRL, &[("angle", json!(50))], &[]),
+    },
+    Event { code: "Wave", name: "wave", label: "Wave", ids: &["filter.distort.wave"], from: wave_from, to: wave_to },
+    Event {
+        code: "ZgZg",
+        name: "zigZag",
+        label: "ZigZag",
+        ids: &["filter.distort.zigZag"],
+        from: |d| keys_from(d, "filter.distort.zigZag", ZIGZAG),
+        to: |_, p| keys_to(p, ZIGZAG, &[("amount", json!(10)), ("ridges", json!(5)), ("style", json!("pondRipples"))], &[]),
+    },
     ev!("Rple", "ripple", "Ripple", "filter.distort.ripple", &[F("Amnt", "amount", Kind::ExactLong), F("RplS", "size", Kind::Enum("RplS", RIPPLE_SIZE))]),
     ev!("Crst", "crystallize", "Crystallize", "filter.pixelate.crystallize", &[F("ClSz", "cellSize", Kind::ExactLong)]),
     ev!("Dfs ", "diffuse", "Diffuse", "filter.stylize.diffuse", &[F("Md  ", "mode", Kind::Enum("DfsM", DIFFUSE_MODE)), F("FlRs", "seed", Kind::Long)]),
@@ -254,6 +430,62 @@ pub(super) const EVENTS: &[Event] = &[
     // What Photoshop needs in a written step (process version, the full settings set) is
     // unverified, so only an imported step saves back, as its recorded descriptor while unedited.
     Event { code: "", name: "Adobe Camera Raw Filter", label: "Camera Raw Filter", ids: &[crate::lens_cmds::RAW], from: camera_raw_from, to: camera_raw_to },
+    // Video, Other, Average and matting (#10607).
+    Event {
+        code: "Dntr",
+        name: "deInterlace",
+        label: "De-Interlace",
+        ids: &["filter.video.deInterlace"],
+        from: |d| enums_from(d, "filter.video.deInterlace", DE_INTERLACE),
+        to: |_, p| enums_to(p, DE_INTERLACE),
+    },
+    Event {
+        code: "NTSC",
+        name: "NTSC",
+        label: "NTSC Colors",
+        ids: &["filter.video.ntscColors"],
+        from: |d| bare_from(d, "filter.video.ntscColors"),
+        to: bare_to,
+    },
+    Event {
+        code: "HsbP",
+        name: "HsbP",
+        label: "HSB/HSL",
+        ids: &["filter.other.hsbHsl"],
+        from: |d| enums_from(d, "filter.other.hsbHsl", HSB_HSL),
+        to: |_, p| enums_to(p, HSB_HSL),
+    },
+    Event { code: "Cstm", name: "custom", label: "Custom", ids: &["filter.other.custom"], from: custom_from, to: custom_to },
+    Event { code: "Avrg", name: "Avrg", label: "Average", ids: &["filter.blur.average"], from: |d| bare_from(d, "filter.blur.average"), to: bare_to },
+    Event {
+        code: "RmvB",
+        name: "removeBlackMatte",
+        label: "Remove Black Matte",
+        ids: &["layer.matting.removeBlackMatte"],
+        from: |d| bare_from(d, "layer.matting.removeBlackMatte"),
+        to: bare_to,
+    },
+    Event {
+        code: "RmvW",
+        name: "removeWhiteMatte",
+        label: "Remove White Matte",
+        ids: &["layer.matting.removeWhiteMatte"],
+        from: |d| bare_from(d, "layer.matting.removeWhiteMatte"),
+        to: bare_to,
+    },
+    // Newer features (#10610): Photoshop records these by string ID only.
+    Event { code: "", name: "oilPaint", label: "Oil Paint", ids: &["filter.stylize.oilPaint"], from: oil_paint_from, to: oil_paint_to },
+    Event { code: "", name: "smartSharpen", label: "Smart Sharpen", ids: &["filter.sharpen.smartSharpen"], from: smart_sharpen_from, to: smart_sharpen_to },
+    Event { code: "", name: "focusMask", label: "Focus Area", ids: &["select.focusArea"], from: |d| empty_from(d, "select.focusArea"), to: empty_to },
+    Event { code: "", name: "selectSky", label: "Sky", ids: &["select.sky"], from: select_sky_from, to: select_sky_to },
+    Event {
+        code: "",
+        name: "removeBackground",
+        label: "Remove Background",
+        ids: &["layer.removeBackground"],
+        from: |d| empty_from(d, "layer.removeBackground"),
+        to: empty_to,
+    },
     // Adjustments (Image › Adjustments).
     Event {
         code: "",
@@ -278,17 +510,24 @@ pub(super) const EVENTS: &[Event] = &[
     adjustment_event!("Pstr", "Pstr", "posterize", "Posterize"),
     adjustment_event!("Invr", "Invr", "invert", "Invert"),
     adjustment_event!("ClrB", "ClrB", "colorBalance", "Color Balance"),
-    adjustment_event!("Vbrn", "vibrance", "vibrance", "Vibrance"),
+    // Written as the string event the reference application runs, with the `vibrance` class it
+    // records; the old `Vbrn` code still loads through LEGACY_CODES.
+    adjustment_event!("", "vibrance", "vibrance", "Vibrance"),
     adjustment_event!("Exps", "Exps", "exposure", "Exposure"),
     // Photoshop runs Photo Filter by name only: `PhtF` is the class, not an event (#8301).
     adjustment_event!("", "PhtF", "photoFilter", "Photo Filter"),
     adjustment_event!("", "BanW", "blackAndWhite", "Black & White", "image.adjustments.blackWhite"),
     adjustment_event!("ChnM", "ChnM", "channelMixer", "Channel Mixer"),
-    adjustment_event!("GdMp", "GdMp", "gradientMapEvent", "Gradient Map", "image.adjustments.gradientMap"),
+    adjustment_event!("", "GdMp", "gradientMapEvent", "Gradient Map", "image.adjustments.gradientMap"),
     adjustment_event!("SlcC", "SlcC", "selectiveColor", "Selective Color"),
+    Event { code: "", name: "matchColor", label: "Match Color", ids: &["image.adjustments.matchColor"], from: match_color_from, to: match_color_to },
     ev!("Dstt", "desaturate", "Desaturate", "image.adjustments.desaturate", &[]),
     ev!("Eqlz", "equalize", "Equalize", "image.adjustments.equalize", &[]),
     ev!("", "autoColor", "Auto Color", "image.autoColor", &[]),
+    // Channels and Trap (#10609).
+    Event { code: "SplC", name: "splitChannels", label: "Split Channels", ids: &["channel.split"], from: split_from, to: split_to },
+    Event { code: "MSpt", name: "mergeSpotChannel", label: "Merge Spot Channel", ids: &["channel.mergeSpot"], from: merge_spot_from, to: merge_spot_to },
+    Event { code: "Trap", name: "trap", label: "Trap", ids: &["image.trap"], from: trap_from, to: trap_to },
     // Image.
     Event { code: "ImgS", name: "imageSize", label: "Image Size", ids: &["image.imageSize"], from: image_size_from, to: image_size_to },
     Event { code: "CnvS", name: "canvasSize", label: "Canvas Size", ids: &["image.canvasSize"], from: canvas_size_from, to: canvas_size_to },
@@ -476,12 +715,26 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("", "placedLayerEditContents", "Edit Contents", "layer.smartObjects.editContents", &[]),
     ev!("", "updatePlacedLayer", "Update Smart Objects", "layer.smartObjects.updateModifiedContent", &[]),
     Event { code: "Hd  ", name: "hide", label: "Hide", ids: &["layer.hideLayers"], from: |d| visibility_from(d, "layer.hideLayers"), to: visibility_to },
-    Event { code: "Shw ", name: "show", label: "Show", ids: &["layer.showLayers"], from: |d| visibility_from(d, "layer.showLayers"), to: visibility_to },
+    Event {
+        code: "Shw ",
+        name: "show",
+        label: "Show",
+        ids: &["layer.showLayers", "layer.showOnly"],
+        from: |d| visibility_from(d, "layer.showLayers"),
+        to: visibility_to,
+    },
     Event {
         code: "move",
         name: "move",
         label: "Move",
-        ids: &["layer.translate", "layer.arrange.bringToFront", "layer.arrange.sendToBack", "layer.arrange.bringForward", "layer.arrange.sendBackward"],
+        ids: &[
+            "layer.translate",
+            "layer.moveTo",
+            "layer.arrange.bringToFront",
+            "layer.arrange.sendToBack",
+            "layer.arrange.bringForward",
+            "layer.arrange.sendBackward",
+        ],
         from: move_from,
         to: move_to,
     },
@@ -504,7 +757,14 @@ pub(super) const EVENTS: &[Event] = &[
     clipping_event!("GrpL", "groupEvent", "Create Clipping Mask", "layer.createClippingMask"),
     ev!("", "ungroupLayersEvent", "Ungroup Layers", "layer.ungroupLayers", &[]),
     ev!("", "copyEffects", "Copy Layer Style", "layer.layerStyle.copyLayerStyle", &[]),
-    ev!("", "pasteEffects", "Paste Layer Style", "layer.layerStyle.pasteLayerStyle", &[]),
+    Event {
+        code: "",
+        name: "pasteEffects",
+        label: "Paste Layer Style",
+        ids: &["layer.layerStyle.pasteLayerStyle"],
+        from: paste_effects_from,
+        to: paste_effects_to,
+    },
     Event {
         code: "",
         name: "collapseAllGroupsEvent",
@@ -615,20 +875,53 @@ pub(super) const EVENTS: &[Event] = &[
 /// these codes fails ("the command is not currently available"), and `Fltn` is the
 /// `flatness` property, not the flatten event. Import keeps accepting them so actions saved
 /// before still load; export never writes them.
-const LEGACY_CODES: &[(&str, &str)] =
-    &[("BoxB", "boxblur"), ("SrfB", "surfaceBlur"), ("Fltn", "flattenImage"), ("BlnW", "blackAndWhite"), ("PhtF", "photoFilter")];
+const LEGACY_CODES: &[(&str, &str)] = &[
+    ("BoxB", "boxblur"),
+    ("SrfB", "surfaceBlur"),
+    ("Fltn", "flattenImage"),
+    ("BlnW", "blackAndWhite"),
+    ("PhtF", "photoFilter"),
+    ("Vbrn", "vibrance"),
+    ("GdMp", "gradientMapEvent"),
+];
+
+/// Older string names a step can carry for an event that is listed under another name: the
+/// reference application reports `IntW` and `Dstr` as `interfaceWhite` and `distort` at run time.
+const NAME_ALIASES: &[(&str, &str)] = &[("interfaceWhite", "intersectWith"), ("distort", "distribute")];
 
 pub(super) fn event_for(item: &AtnEvent) -> Option<&'static Event> {
     let id = item.id();
-    let find = |id: &str| EVENTS.iter().find(|e| (!e.code.is_empty() && e.code.trim_end() == id.trim_end()) || e.name == id);
-    find(&id).or_else(|| match item {
-        AtnEvent::Code(_) => LEGACY_CODES.iter().find(|(code, _)| *code == id).and_then(|(_, name)| find(name)),
-        AtnEvent::Name(_) => None,
+    let by_name = |name: &str| EVENTS.iter().find(|e| !e.name.is_empty() && e.name == name);
+    let found = match item {
+        AtnEvent::Code(_) => EVENTS.iter().find(|e| !e.code.is_empty() && e.code.trim_end() == id.trim_end()),
+        AtnEvent::Name(_) => by_name(&id),
+    };
+    found.or_else(|| match item {
+        // An effect run from its own menu item records its id as the event (#10592).
+        // By 4-char code or, as newer versions record it, by string ID (`cutout`).
+        _ if super::steps_gallery::is_effect(item) => by_name("filterGallery"),
+        AtnEvent::Code(_) => LEGACY_CODES.iter().find(|(code, _)| *code == id).and_then(|(_, name)| by_name(name)),
+        AtnEvent::Name(_) => NAME_ALIASES.iter().find(|(old, _)| *old == id).and_then(|(_, name)| by_name(name)),
     })
 }
 
 /// The event `id` exports as: the first event listing it whose converter accepts the params
 /// (Quick Mask on is a `set`, off a `clearEvent`).
 pub(super) fn event_and_descriptor(id: &str, params: &Value) -> Option<(&'static Event, Descriptor)> {
+    if params.get("_atnBounds").is_some()
+        && (id != "select.rect" || !matches!(params.get("mode").and_then(Value::as_str), Some("add" | "subtract" | "intersect")))
+    {
+        return None;
+    }
+    // A string names the recorded event of a mask or merge step; an object is a Filter Gallery
+    // effect's own event, which `export_item` checks (`steps_gallery::recorded_event`).
+    let gallery_event = id.starts_with("filter.gallery.") && params.get("_atnEvent").is_some_and(Value::is_object);
+    if let Some(origin) = params.get("_atnEvent").filter(|_| !gallery_event) {
+        let origin = origin.as_str()?;
+        if !matches!((id, origin), ("layer.layerMask.delete", "RmvL") | ("layer.mergeLayers", "MrgL")) {
+            return None;
+        }
+        return EVENTS.iter().find(|e| e.code == origin).and_then(|e| (e.to)(id, params).map(|d| (e, d)));
+    }
     EVENTS.iter().filter(|e| e.ids.contains(&id)).find_map(|e| (e.to)(id, params).map(|d| (e, d)))
 }

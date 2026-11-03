@@ -4,7 +4,8 @@ use super::{BlendMode, Document, EngineError, Layer, LayerId, LayerMask, Result,
 /// The layer a command's `"layer"` param names: an id, or a name (the topmost layer of that
 /// name, as Photoshop's "select layer by name" action step finds it, so a loaded action replays
 /// in another document; a name that matches no layer exactly matches regardless of case, so
-/// `"background"` finds the Background). `None` when the param is absent.
+/// `"background"` finds that name). `{"background":true}` targets the actual Background,
+/// independently of its name. `None` when the param is absent.
 pub(crate) fn explicit_layer(s: &Session, p: &Value) -> Result<Option<LayerId>> {
     match p.get("layer") {
         Some(Value::Number(n)) => {
@@ -21,8 +22,16 @@ pub(crate) fn explicit_layer(s: &Session, p: &Value) -> Result<Option<LayerId>> 
                 .map(|(_, _, l)| Some(l.id))
                 .ok_or_else(|| EngineError::Other(format!("no layer named \"{name}\"; {}", layer_listing(&d.doc))))
         }
+        // A group end is no layer: fail rather than fall back to the selection.
+        Some(v @ Value::Object(fields)) if fields.contains_key("index") || fields.contains_key("ordinal") => {
+            super::recorded_layer(s, v)?.map(Some).ok_or_else(|| EngineError::Other("a group end is not a layer".into()))
+        }
+        Some(Value::Object(selector)) if selector.len() == 1 && selector.get("background") == Some(&Value::Bool(true)) => {
+            let d = s.active().ok_or(EngineError::NoDocument)?;
+            d.doc.background().map(|l| Some(l.id)).ok_or_else(|| EngineError::Other("the document has no Background layer".into()))
+        }
         Some(Value::Null) | None => Ok(None),
-        Some(other) => Err(EngineError::Other(format!("`layer` must be an id or a name, not {other}"))),
+        Some(other) => Err(EngineError::Other(format!("`layer` must be an id, a name or {{\"background\":true}}, not {other}"))),
     }
 }
 

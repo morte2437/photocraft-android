@@ -23,6 +23,18 @@ fn a_unit_after_a_range_bound_does_not_reset_the_range_to_its_fallback() {
 }
 
 #[test]
+fn lens_flare_dialog_centre_is_a_slider_from_0_to_1_defaulting_to_the_middle() {
+    // `"centerX":number=0.5` read as an integer field defaulting to 0: the menu's Lens Flare
+    // landed in the top-left corner and an imported 0.4 centre rounded to 0.
+    let spec = photocraft_engine::commands::find("filter.render.lensFlare").expect("filter.render.lensFlare is registered");
+    let params = parse_spec(spec.params);
+    for key in ["centerX", "centerY"] {
+        let kind = params.iter().find(|p| p.key == key).map(|p| p.kind.clone());
+        assert_eq!(kind, Some(Kind::Range { min: 0.0, max: 1.0, default: 0.5 }), "{key}");
+    }
+}
+
+#[test]
 fn color_settings_working_spaces_list_installed_profiles_of_their_space() {
     // #6323: a press condition installed in the system can be the CMYK working space, as in
     // Photoshop's Color Settings; each working-space menu lists only profiles of its space.

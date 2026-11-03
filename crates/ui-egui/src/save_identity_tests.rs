@@ -248,6 +248,29 @@ fn maximize_compatibility_preference_reaches_the_exporter() {
     }
 }
 
+/// Preferences › File Handling › Save Full-Size Composite in .pcraft Files reaches the exporter
+/// of Save As, Save and automation saves, and is off by default.
+#[test]
+fn full_composite_preference_reaches_the_exporter() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut app = app();
+    assert!(!app.save_settings().pcraft_full_composite, "off by default");
+    let log = seen.clone();
+    app.services.export = Some(Box::new(move |_, _, settings: &ExportSettings| {
+        log.borrow_mut().push(settings.io_options().pcraft_full_composite);
+        Ok((b"out".to_vec(), Vec::new()))
+    }));
+    let ctx = egui::Context::default();
+    for value in [true, false] {
+        app.run("prefs.set", json!({"path": "fileHandling.pcraftFullComposite", "value": value})).unwrap();
+        seen.borrow_mut().clear();
+        menus::invoke(&mut app, &ctx, "file.saveAs", json!({"path": format!("{value}.pcraft")})).unwrap();
+        menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
+        app.save_automation(Some(format!("{value} agent.pcraft"))).unwrap();
+        assert_eq!(*seen.borrow(), [value; 3], "{value}");
+    }
+}
+
 /// #2399: Save and Save As start at the opened file's own encoding: a JPEG's estimated quality,
 /// a WebP lossy (at its quality) or lossless; a new document keeps the codec defaults.
 #[test]

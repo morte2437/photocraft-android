@@ -58,6 +58,19 @@ impl PhotocraftApp {
     /// [`Self::open_bytes`] for a file read from `path` (File › Save writes back there; it goes
     /// to Open Recent), when known.
     pub(crate) fn open_bytes_from(&mut self, name: &str, bytes: &[u8], path: Option<&str>) -> Result<Vec<String>, String> {
+        self.open_bytes_placed(name, bytes, path, None, None)
+    }
+
+    /// [`Self::open_bytes_from`] for a file dropped on a tab slot (`slot`) or opened as one of a
+    /// set (`order`): both survive the inline decode, a memory prompt and the final placement.
+    pub(crate) fn open_bytes_placed(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        path: Option<&str>,
+        slot: Option<usize>,
+        order: Option<crate::jobs_ui::OpenOrder>,
+    ) -> Result<Vec<String>, String> {
         if let Some(r) = preset_files_ui::open(self, name, bytes) {
             return r.map(|()| Vec::new());
         }
@@ -65,15 +78,28 @@ impl PhotocraftApp {
         // Decoded on a worker: a tab with progress appears now, the document when it's ready
         // (warnings are shown then).
         if self.background_jobs {
-            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes))?;
+            jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), slot, order)?;
             return Ok(Vec::new());
         }
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
         let opts = photocraft_engine::jobs::import_options(self.session.prefs());
-        let (mut doc, warnings, damaged) = if photocraft_io::is_psd(bytes) {
+        // A PSD and a magic-detected TIFF both go through the typed IO path: only it carries
+        // `PsdApprovalRequired` (and, for a PSD, the structured damaged flag), so a layered
+        // TIFF's high-memory decision can raise its prompt instead of becoming a terminal
+        // string. Every other format keeps the shell's import service.
+        let typed_open = photocraft_io::is_psd(bytes) || photocraft_codecs::detect(bytes) == Some(photocraft_codecs::Format::Tiff);
+        let (mut doc, warnings, damaged) = if typed_open {
             // Read PSD damage as structured information in the same decode, not by
-            // retrying an error or matching the text of a compatibility warning.
-            let (r, damaged) = photocraft_io::import_for_open(name, bytes, &opts).map_err(|e| e.to_string())?;
+            // retrying an error or matching the text of a compatibility warning. A TIFF never
+            // sets it: its layered import has no damaged-content confirmation.
+            let (r, damaged) = match photocraft_io::import_for_open(name, bytes, &opts) {
+                Ok(result) => result,
+                Err(photocraft_io::IoError::PsdApprovalRequired { .. }) => {
+                    jobs_ui::start_open(self, name, path.map(str::to_string), jobs_ui::bytes(bytes), slot, order)?;
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.to_string()),
+            };
             (r.document, r.warnings, damaged)
         } else {
             let (doc, warnings) = import(name, bytes, &opts)?;
@@ -99,7 +125,8 @@ impl PhotocraftApp {
                 path: path.map(str::to_string),
                 warnings: warnings.clone(),
                 bytes: (wants_raw && path.is_none()).then(|| std::sync::Arc::new(bytes.to_vec())),
-                slot: None,
+                slot,
+                order,
                 question,
                 policy_applied: false,
             },
@@ -112,13 +139,18 @@ impl PhotocraftApp {
     /// Returns the import warnings (also shown to the user). Brush and gradient
     /// files go to the preset libraries, as for interactive opens.
     pub fn open_automation_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+        self.open_automation_bytes_with_approval(name, bytes, false)
+    }
+
+    /// [`Self::open_automation_bytes`] with the caller's high-memory approval for the imported bytes.
+    pub fn open_automation_bytes_with_approval(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let events_enabled = self.session.prefs().script_events.enabled;
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = false);
         }
         let result = match preset_files_ui::open(self, name, bytes) {
             Some(r) => r.map(|()| Vec::new()),
-            None => self.import_automation_document(name, bytes),
+            None => self.import_automation_document(name, bytes, approved),
         };
         if events_enabled {
             self.session.edit_prefs(|prefs| prefs.script_events.enabled = true);
@@ -128,9 +160,10 @@ impl PhotocraftApp {
 
     /// The document half of [`open_automation_bytes`](Self::open_automation_bytes): no script
     /// events and no Color Settings policy (which may read user-configured profile paths).
-    fn import_automation_document(&mut self, name: &str, bytes: &[u8]) -> Result<Vec<String>, String> {
+    fn import_automation_document(&mut self, name: &str, bytes: &[u8], approved: bool) -> Result<Vec<String>, String> {
         let import = self.services.import.as_ref().ok_or("no importer configured")?;
-        let opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        let mut opts = photocraft_engine::jobs::import_options(self.session.prefs());
+        opts.psd_high_memory_approved = approved;
         let (mut doc, warnings) = import(name, bytes, &opts)?;
         photocraft_engine::file_cmds::raw_defaults(&self.session, &warnings, &mut doc);
         // The caller records the path it read from.
@@ -355,14 +388,20 @@ impl PhotocraftApp {
     /// What a save writes by default under the preferences: File Handling › Image Previews
     /// decides whether a PSD/PSB gets its thumbnail, and Maximize PSD and PSB File Compatibility
     /// whether it gets its real merged image. Ask When Saving has no dialog here yet, so it saves
-    /// both, as Photoshop's checkboxes start on. A JPEG or WebP is written the way the active
+    /// both, as Photoshop's checkboxes start on. Save Full-Size Composite in .pcraft Files decides
+    /// whether a `.pcraft` save also writes `composite/full.png`. A JPEG or WebP is written the way the active
     /// document's file was (its JPEG quality, a WebP lossy at its quality or lossless), as
     /// Photoshop's Save and Save As options start there.
     pub(crate) fn save_settings(&self) -> ExportSettings {
         let file_handling = &self.session.prefs().file_handling;
         let previews = file_handling.image_previews != photocraft_engine::prefs::Ask::Never;
         let maximize = file_handling.maximize_psd_compatibility != photocraft_engine::prefs::Ask::Never;
-        let mut settings = ExportSettings { image_previews: previews, psd_maximize_compatibility: maximize, ..ExportSettings::default() };
+        let mut settings = ExportSettings {
+            image_previews: previews,
+            psd_maximize_compatibility: maximize,
+            pcraft_full_composite: file_handling.pcraft_full_composite,
+            ..ExportSettings::default()
+        };
         if let Some(st) = self.session.active() {
             let e = &st.doc.file_encoding;
             settings.jpeg_quality = e.jpeg_quality.map(|q| q.clamp(1, 100));

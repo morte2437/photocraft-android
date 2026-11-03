@@ -1023,6 +1023,31 @@ fn auto_tile(params: &FilterParams, bounds: Rect) -> i32 {
     }
 }
 
+/// Conservative transient allocation estimate for filter admission. Output tiles remain in
+/// the paged store; whole-image kernels must admit their float input before reading it.
+pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: usize) -> u64 {
+    if area.is_empty() {
+        return 0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = rayon::current_num_threads().max(1) as u64;
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1u64;
+    let tile = auto_tile(params, bounds).max(1) as u64;
+    let floats = (channels as u64).saturating_mul(4);
+    // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
+    let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);
+    match params.halo_for(bounds) {
+        Halo::Bounds => base.saturating_add(bounds.union(&area).size().area().saturating_mul(floats)),
+        Halo::Radius(r) => {
+            let side = tile.saturating_add((r.max(0) as u64).saturating_mul(2));
+            base.saturating_add(
+                side.saturating_mul(side).saturating_add(tile.saturating_mul(tile).saturating_mul(3)).saturating_mul(floats).saturating_mul(threads),
+            )
+        }
+    }
+}
+
 /// [`apply`] / [`apply_in`] with an explicit tile size (tests use it to check tile independence).
 /// Nonpositive tile sizes are treated as one pixel.
 pub fn apply_tiled(
