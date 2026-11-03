@@ -470,7 +470,8 @@ impl CropSet {
         let overlay = crop_overlay_param(p)?;
         let overlay_show = crop_overlay_show_param(p)?;
         let orientation = crop_orientation_param(p)?;
-        // The Crop tool's Fill (#3823): "background" (Background (Default)) or "contentAware".
+        // The Crop tool's Fill (#3823): "background" (Background (default), or Transparent
+        // (default) with Delete Cropped Pixels off) or "contentAware".
         let content_aware = crop_fill_param(p)?;
         // The Crop tool's gear menu: Show Cropped Area and the shield (#1919).
         let shield = merged_object(&app.ui.tool_options.crop_shield, p.get("cropShield"), "cropShield")?;

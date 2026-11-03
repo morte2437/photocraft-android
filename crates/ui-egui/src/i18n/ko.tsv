@@ -3488,6 +3488,7 @@ curves	Smooth	매끄럽게
 	Step {step} is waiting for its dialog	{step}단계가 대화 상자를 기다리고 있습니다
 @plural	{n} action|{n} actions	액션 {n}개
 	Background (Default)	배경(기본값)
+	Background (default)	배경(기본값)
 	Include All Subfolders	모든 하위 폴더 포함
 	Auto Add/Delete	자동 추가/삭제
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	인쇄 설정에서도 이미지 반전을 켜지 마세요. 두 번 반전하면 원래대로 돌아갑니다.

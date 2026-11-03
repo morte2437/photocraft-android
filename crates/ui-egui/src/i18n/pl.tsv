@@ -3898,6 +3898,7 @@ curves	Smooth	Wygładź
 	Step {step} is waiting for its dialog	Krok {step} czeka na swoje okno dialogowe
 @plural	{n} action|{n} actions	{n} operacja|{n} operacje|{n} operacji
 	Background (Default)	Tło (domyślne)
+	Background (default)	Tło (domyślne)
 	Include All Subfolders	Uwzględnij wszystkie podfoldery
 	Auto Add/Delete	Automatyczne dodawanie/usuwanie
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nie włączaj też odbicia lustrzanego w ustawieniach druku: oba odbicia wzajemnie się znoszą.

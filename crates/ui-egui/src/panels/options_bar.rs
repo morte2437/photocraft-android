@@ -508,14 +508,17 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
             let pick_shield_color = crate::crop_shield::options_button(&mut o.crop_shield, ui);
             widgets::checkbox(ui, &mut o.crop_delete, tl!("Delete Cropped Pixels"));
             // Fill: what a turned or extending crop puts where the image doesn't reach
-            // (#3823). Generative Expand is not offered.
+            // (#3823). Generative Expand is not offered. The first entry names the outcome as in
+            // Photoshop: the background colour, or transparency with Delete Cropped Pixels off
+            // (#10872); both store `crop_content_aware: false`.
             ui.label(tl!("Fill:"));
+            let delete_cropped_pixels = o.crop_delete;
             widgets::dropdown(
                 ui,
                 "crop-fill",
                 tl!("Fill:"),
                 &mut o.crop_content_aware,
-                &[(false, tl!("Background (Default)")), (true, tl!("Content-Aware Fill"))],
+                &[(false, crate::crop_ui::fill_label(delete_cropped_pixels)), (true, tl!("Content-Aware Fill"))],
                 150.0,
             );
             if crate::crop_ui::preset_ratio(app) != before_ratio {

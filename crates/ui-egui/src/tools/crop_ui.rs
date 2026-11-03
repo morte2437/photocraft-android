@@ -49,6 +49,9 @@ pub struct CropState {
     /// `UiState::crop_rect` is the untouched default frame ([`ensure_frame`]): a drag inside it
     /// draws a new frame (as in Photoshop) instead of moving it, and committing it does nothing.
     pub default_frame: bool,
+    /// That untouched default frame came from a selection's bounds (not the whole canvas): the
+    /// preset dropdown names it "Selection" until the frame is edited (#10872).
+    pub frame_from_selection: bool,
     /// The document (index and size) the default frame was made for.
     frame_for: Option<(usize, u32, u32)>,
     /// The frame is being edited (pressed since it was made): the canvas shows what lies past it.
@@ -339,6 +342,14 @@ pub fn set_space(app: &mut PhotocraftApp, down: bool) {
     app.crop.space = down;
 }
 
+/// The options bar's Fill entry (#10872): what a turned or extending crop puts where the image
+/// doesn't reach. With Delete Cropped Pixels on that is the background colour; with it off it is
+/// transparency, as in Photoshop. Both are the stored `false` of `crop_content_aware`; only the
+/// label changes.
+pub fn fill_label(delete_cropped_pixels: bool) -> &'static str {
+    if delete_cropped_pixels { tl!("Background (default)") } else { tl!("Transparent (default)") }
+}
+
 /// As in Photoshop, the Crop tool always shows a frame: on picking the tool, and after a crop is
 /// cancelled or committed, it frames the selection's bounds, or the whole canvas. In default mode
 /// the view then follows the frame being edited (`crop_mode::sync`).
@@ -356,6 +367,7 @@ fn frame(app: &mut PhotocraftApp) {
         if app.crop.default_frame {
             app.ui.crop_rect = None;
             app.crop.default_frame = false;
+            app.crop.frame_from_selection = false;
         }
         if app.ui.crop_rect.is_some() && !keeps_pending(app) {
             commit_on_leave(app);
@@ -380,12 +392,15 @@ fn frame(app: &mut PhotocraftApp) {
     let Some(st) = app.session.active() else { return };
     let canvas = st.doc.bounds();
     // Computed once per new frame, not per frame drawn.
-    let r = st.doc.selection.as_ref().map(|s| s.content_bounds().intersect(&canvas)).filter(|b| !b.is_empty()).unwrap_or(canvas);
+    let selection = st.doc.selection.as_ref().map(|s| s.content_bounds().intersect(&canvas)).filter(|b| !b.is_empty());
+    let from_selection = selection.is_some();
+    let r = selection.unwrap_or(canvas);
     if r.is_empty() {
         return;
     }
     app.ui.crop_rect = Some([f64::from(r.x0), f64::from(r.y0), f64::from(r.x1), f64::from(r.y1)]);
     app.crop.default_frame = true;
+    app.crop.frame_from_selection = from_selection;
     app.crop.frame_for = key;
     app.crop.editing = false;
     app.crop.undo.clear();

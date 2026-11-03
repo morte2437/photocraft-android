@@ -3200,6 +3200,7 @@ curves	Smooth	Tasoita
 	Step {step} is waiting for its dialog	Vaihe {step} odottaa valintaikkunaansa
 @plural	{n} action|{n} actions	{n} toiminto|{n} toimintoa
 	Background (Default)	Tausta (oletus)
+	Background (default)	Tausta (oletus)
 	Content-Aware Fill	Sisältötietoinen täyttö
 # Batch / Image Processor
 	Include All Subfolders	Sisällytä kaikki alikansiot

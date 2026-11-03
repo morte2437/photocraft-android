@@ -3197,6 +3197,7 @@ curves	Smooth	Jämna ut
 	Step {step} is waiting for its dialog	Steg {step} väntar på sin dialogruta
 @plural	{n} action|{n} actions	{n} åtgärd|{n} åtgärder
 	Background (Default)	Bakgrund (standard)
+	Background (default)	Bakgrund (standard)
 	Content-Aware Fill	Innehållsmedveten fyllning
 # Batch / Image Processor
 	Include All Subfolders	Ta med alla undermappar

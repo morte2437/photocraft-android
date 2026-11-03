@@ -3281,6 +3281,7 @@ curves	Smooth	تنعيم
 	Step {step} is waiting for its dialog	الخطوة {step} بانتظار مربع الحوار الخاص بها
 @plural	{n} action|{n} actions	{n} إجراء|{n} إجراء|{n} إجراءان|{n} إجراءات|{n} إجراءً|{n} إجراء
 	Background (Default)	الخلفية (الافتراضية)
+	Background (default)	الخلفية (الافتراضية)
 	Content-Aware Fill	تعبئة مراعية للمحتوى
 # Batch / Image Processor
 	Include All Subfolders	تضمين كل المجلدات الفرعية

@@ -3199,6 +3199,7 @@ curves	Smooth	Udjævn
 	Step {step} is waiting for its dialog	Trin {step} venter på sin dialog
 @plural	{n} action|{n} actions	{n} handling|{n} handlinger
 	Background (Default)	Baggrund (standard)
+	Background (default)	Baggrund (standard)
 	Content-Aware Fill	Indholdsbevidst udfyldning
 # Batch / Image Processor
 	Include All Subfolders	Medtag alle undermapper
