@@ -614,6 +614,21 @@ fn grouping_preserves_nonlinear_history_and_a_one_state_limit() {
     }
 }
 
+/// Check both removed ids and the labels attached to every surviving older row.
+fn assert_delete_rows(s: &Session, originals: &[(u64, String, std::sync::Arc<photocraft_doc::Document>)], removed: &[usize], case: &str, single_state: bool) {
+    for (i, (id, label, _)) in originals.iter().enumerate() {
+        let row = s.active().unwrap().history.row_of(*id);
+        if removed.contains(&i) {
+            assert!(row.is_none(), "{case}, singleState={single_state}: deleted row {id} returned");
+        } else {
+            let row = row.unwrap_or_else(|| panic!("{case}: surviving row {id} disappeared"));
+            let st = s.active().unwrap();
+            let labels: Vec<_> = st.history.entries().into_iter().chain(st.history.redo_labels().map(str::to_owned)).collect();
+            assert_eq!(&labels[row], label);
+        }
+    }
+}
+
 /// Play the real Delete State command, retaining identities of the older rows it did not delete.
 fn recorded_delete_case(case: &str) {
     for single_state in [false, true] {
@@ -671,17 +686,7 @@ fn recorded_delete_case(case: &str) {
                 "nonlinear-redo" => vec![4],
                 _ => Vec::new(),
             };
-            for (i, (id, label, _)) in originals.iter().enumerate() {
-                let row = s.active().unwrap().history.row_of(*id);
-                if removed.contains(&i) {
-                    assert!(row.is_none(), "{case}, singleState={single_state}: deleted row {id} returned");
-                } else {
-                    let row = row.unwrap_or_else(|| panic!("{case}: surviving row {id} disappeared"));
-                    let st = s.active().unwrap();
-                    let labels: Vec<_> = st.history.entries().into_iter().chain(st.history.redo_labels().map(str::to_owned)).collect();
-                    assert_eq!(&labels[row], label);
-                }
-            }
+            assert_delete_rows(&s, &originals, &removed, case, single_state);
             let count = if single_state { 1 } else { 2 };
             if single_state {
                 assert_eq!(s.active().unwrap().history.past_len(), originals.len() - removed.len());
