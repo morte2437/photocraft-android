@@ -155,66 +155,6 @@ pub fn atomic_write_progress(path: &Path, bytes: &[u8], progress: &dyn Fn(f32)) 
     atomic_write_with_progress(&RealFs, RenameRetry::platform(), path, bytes, progress)
 }
 
-/// Stream into a new seekable temporary file and publish it only after successful encoding
-/// and fsync. A failed encoder, cancellation or full disk leaves the destination intact.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn atomic_write_stream(path: &Path, encode: impl FnOnce(&mut std::fs::File) -> io::Result<()>) -> io::Result<()> {
-    atomic_write_stream_with_commit(path, encode, || Ok(()))
-}
-
-/// Like [`atomic_write_stream`], with a final approval immediately before replacement.
-/// The encoder and flush remain cancellable; after `commit` succeeds publication runs to
-/// completion. A rejected commit or an unwinding callback removes the temporary file.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn atomic_write_stream_with_commit(
-    path: &Path,
-    encode: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
-    commit: impl FnOnce() -> io::Result<()>,
-) -> io::Result<()> {
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let target = resolve_symlink(path);
-    let name = target.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file path"))?;
-    let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir).map_err(|e| write_error(e, path, dir))?;
-    let mut temp = None;
-    for _ in 0..8 {
-        let candidate = dir.join(temp_name(&name.to_string_lossy()));
-        match std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&candidate) {
-            Ok(file) => {
-                temp = Some((candidate, file));
-                break;
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(write_error(e, path, dir)),
-        }
-    }
-    let (tmp, file) = temp.ok_or_else(|| io::Error::new(io::ErrorKind::AlreadyExists, "cannot create a save temporary"))?;
-    let _cleanup = Cleanup(tmp.clone());
-    // Close the handle before cleanup runs during unwinding, including on Windows.
-    let mut file = file;
-    let result = encode(&mut file).and_then(|()| sync_file(&file));
-    drop(file);
-    if let Err(e) = result {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(write_error(e, path, dir));
-    }
-    if target.exists() {
-        let _ = RealFs.copy_permissions(&target, &tmp);
-    }
-    commit()?;
-    if let Err(e) = retry_rename(RenameRetry::platform(), || RealFs.rename(&tmp, &target)) {
-        let _ = RealFs.remove(&tmp);
-        return Err(rename_error(e, path));
-    }
-    let _ = RealFs.sync_dir(dir);
-    Ok(())
-}
-
 /// [`atomic_write`] through an explicit file system and retry policy (the failure-injection seam).
 pub fn atomic_write_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, bytes: &[u8]) -> io::Result<()> {
     atomic_write_with_progress(fs, retry, path, bytes, &|_| {})

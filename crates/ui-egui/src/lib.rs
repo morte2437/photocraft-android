@@ -325,8 +325,6 @@ pub(crate) enum SaveKind {
     /// Automation: flat formats stay copies (#2579) and hooks never fire.
     Automation,
 }
-/// Decode a document through handles beneath the desktop control session's authorized root.
-pub type AutomationImportPathFn = std::sync::Arc<dyn Fn(&str, &photocraft_raster::Interrupt<'_>) -> Result<photocraft_io::ImportResult, String> + Send + Sync>;
 /// Read bytes through the desktop control session's authorized read root.
 pub type AutomationReadFn = Box<dyn FnMut(&str) -> Result<(String, Vec<u8>), String>>;
 /// Write bytes through the desktop control session's authorized write root.
@@ -417,7 +415,6 @@ pub struct Services {
     /// File access used only by control/MCP requests. Interactive dialogs keep
     /// using `file_dialog` and `write` with the user's authority.
     pub automation_read: Option<AutomationReadFn>,
-    pub automation_import_path: Option<AutomationImportPathFn>,
     pub automation_write: Option<AutomationWriteFn>,
     pub automation_open_pcraft: Option<AutomationOpenPcraftFn>,
     pub automation_command: Option<AutomationCommandFn>,

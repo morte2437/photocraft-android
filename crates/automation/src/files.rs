@@ -31,17 +31,9 @@ pub fn open(path: &Path) -> Result<Opened, AutomationError> {
     if path.is_dir() {
         return Ok(Opened { document: photocraft_format::load_path(path)?, warnings: Vec::new(), source_read_only: false });
     }
+    let bytes = photocraft_format::read_file(path).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let r = photocraft_io::import_path_with(&name, path, &photocraft_raster::Interrupt::NONE)?;
-        Ok(Opened { document: r.document, warnings: r.warnings, source_read_only: r.source_read_only })
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let bytes = photocraft_format::read_file(path).map_err(|e| AutomationError::Io(format!("{}: {e}", path.display())))?;
-        open_bytes(&name, &bytes)
-    }
+    open_bytes(&name, &bytes)
 }
 
 /// Previews for a `.pcraft` bundle.
@@ -80,16 +72,6 @@ pub fn save(
         let w = writer.unwrap_or(&mut local);
         w.save_path(&named, path, &previews(&named))?;
         return Ok(Vec::new());
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    if ext == "psb" || ext == "psd" && (opts.force_psb || doc.size.width > 30_000 || doc.size.height > 30_000) {
-        let mut warnings = Vec::new();
-        photocraft_format::atomic::atomic_write_stream(path, |file| {
-            warnings = photocraft_io::export_psb_into(doc, file, &photocraft_raster::Interrupt::NONE).map_err(|e| std::io::Error::other(e.to_string()))?;
-            Ok(())
-        })
-        .map_err(|e| AutomationError::Io(e.to_string()))?;
-        return Ok(warnings);
     }
     let r = photocraft_io::export(doc, &ext, opts)?;
     // Crash-safe: a failed write never destroys the previous file.

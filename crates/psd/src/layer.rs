@@ -544,7 +544,7 @@ impl LayerRecord {
         ch.decode(w, h, depth, version)
     }
 
-    pub(crate) fn read(r: &mut Reader<'_>, version: Version) -> Result<(Self, Vec<u64>)> {
+    fn read(r: &mut Reader<'_>, version: Version) -> Result<(Self, Vec<u64>)> {
         let rect = Rect::read(r)?;
         let nch = r.u16()?;
         if nch > MAX_LAYER_CHANNELS {
@@ -586,7 +586,7 @@ impl LayerRecord {
         Ok((LayerRecord { rect, channels, blend_mode, opacity, clipping, flags, filler, mask, blending_ranges, name, blocks, extra_trailing }, lens))
     }
 
-    pub(crate) fn write(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
+    fn write(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
         self.rect.write(out);
         let nch = u16::try_from(self.channels.len()).map_err(|_| PsdError::LimitExceeded("too many channels"))?;
         out.put_u16(nch);

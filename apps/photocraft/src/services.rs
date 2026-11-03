@@ -406,11 +406,6 @@ fn shell_word(s: &str) -> String {
 
 pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
     let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
-    let automation_import_path = automation.clone().map(|workspace| {
-        std::sync::Arc::new(move |path: &str, ctl: &photocraft_raster::Interrupt<'_>| {
-            crate::crash_guard::guard("Open", || workspace.read_document(path, ctl).map_err(|e| e.to_string()))
-        }) as photocraft_ui_egui::AutomationImportPathFn
-    });
     let automation_read = automation.clone().map(|workspace| {
         Box::new(move |path: &str| {
             let bytes = workspace.read(path).map_err(|error| error.to_string())?;
@@ -454,7 +449,6 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         file_dialog: Some(Box::new(show_file_dialog)),
         write: Some(Box::new(|path: &str, bytes: &[u8]| write_atomic(Path::new(path), bytes))),
         automation_read,
-        automation_import_path,
         automation_write,
         automation_open_pcraft,
         automation_save,

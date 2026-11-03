@@ -31,74 +31,6 @@ fn assert_no_temp(dir: &Path) {
 
 const ORIGINAL: &[u8] = b"the user's precious original document";
 
-#[test]
-fn streaming_commit_runs_after_encoding_and_before_replacement() {
-    let dir = TempDir::new("stream-commit");
-    let path = dir.0.join("document.psb");
-    std::fs::write(&path, ORIGINAL).unwrap();
-    let encoded = Cell::new(false);
-    let result = atomic_write_stream_with_commit(
-        &path,
-        |file| {
-            file.write_all(b"complete")?;
-            encoded.set(true);
-            Ok(())
-        },
-        || {
-            assert!(encoded.get());
-            assert_eq!(std::fs::read(&path).unwrap(), ORIGINAL);
-            Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled before commit"))
-        },
-    );
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
-    assert_eq!(std::fs::read(&path).unwrap(), ORIGINAL);
-    assert_no_temp(&dir.0);
-
-    atomic_write_stream_with_commit(&path, |file| file.write_all(b"complete"), || Ok(())).unwrap();
-    assert_eq!(std::fs::read(&path).unwrap(), b"complete");
-    assert_no_temp(&dir.0);
-}
-
-#[test]
-fn streaming_commit_unwind_removes_temporary_and_keeps_original() {
-    let dir = TempDir::new("stream-commit-unwind");
-    let path = dir.0.join("document.psb");
-    std::fs::write(&path, ORIGINAL).unwrap();
-    let result = std::panic::catch_unwind(|| atomic_write_stream_with_commit(&path, |file| file.write_all(b"complete"), || panic!("injected commit panic")));
-    assert!(result.is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), ORIGINAL);
-    assert_no_temp(&dir.0);
-}
-
-#[test]
-fn seekable_encoder_failure_keeps_original_and_cleans_temp() {
-    use std::io::{Seek, SeekFrom};
-    let dir = TempDir::new("stream");
-    let path = dir.0.join("document.psb");
-    std::fs::write(&path, ORIGINAL).unwrap();
-    for kind in [io::ErrorKind::StorageFull, io::ErrorKind::Interrupted] {
-        assert!(
-            atomic_write_stream(&path, |file| {
-                file.write_all(b"partial")?;
-                file.seek(SeekFrom::Start(0))?;
-                file.write_all(b"PATCH")?;
-                Err(io::Error::new(kind, "injected encoder failure"))
-            })
-            .is_err()
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), ORIGINAL);
-        assert_no_temp(&dir.0);
-    }
-    atomic_write_stream(&path, |file| {
-        file.write_all(b"0000payload")?;
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(b"0007")
-    })
-    .unwrap();
-    assert_eq!(std::fs::read(&path).unwrap(), b"0007payload");
-    assert_no_temp(&dir.0);
-}
-
 /// Real file system with failures injected at chosen steps.
 #[derive(Default)]
 struct Faulty {
@@ -332,20 +264,4 @@ fn sync_file_flushes_a_local_file() {
     // Opened for writing, as the saves do: Windows can't flush a read-only handle.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
     sync_file(&file).unwrap();
-}
-
-#[test]
-fn streaming_encoder_unwind_closes_and_removes_temporary_file() {
-    let d = TempDir::new("stream-unwind");
-    let p = d.0.join("doc.psb");
-    std::fs::write(&p, ORIGINAL).unwrap();
-    let result = std::panic::catch_unwind(|| {
-        let _ = atomic_write_stream(&p, |file| {
-            file.write_all(b"partial output")?;
-            panic!("injected encoder unwind");
-        });
-    });
-    assert!(result.is_err());
-    assert_eq!(std::fs::read(&p).unwrap(), ORIGINAL);
-    assert_no_temp(&d.0);
 }

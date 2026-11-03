@@ -357,25 +357,9 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
 }
 
 pub(crate) fn save_doc(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> Result<Vec<String>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let save = save.into();
-        let mut opts = photocraft_io::ExportOptions { tiff_layers: save.tiff_layers, ..Default::default() };
-        if let Some(q) = save.quality {
-            let q = (q.clamp(0.0, 12.0) / 12.0 * 99.0 + 1.0).round() as u8;
-            opts.encode.jpeg_quality = q;
-            opts.encode.webp_quality = q;
-            opts.encode.webp_lossless = false;
-        }
-        photocraft_io::export_path_with(doc, std::path::Path::new(path), &opts, &photocraft_raster::Interrupt::NONE)
-            .map_err(|e| EngineError::Other(format!("{path}: {e}")))
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let (bytes, warnings) = encode(doc, path, save)?;
-        write_file(path, &bytes)?;
-        Ok(warnings)
-    }
+    let (bytes, warnings) = encode(doc, path, save)?;
+    write_file(path, &bytes)?;
+    Ok(warnings)
 }
 
 pub(crate) fn str_param<'a>(p: &'a Value, key: &str, cmd: &str) -> Result<&'a str> {
@@ -442,12 +426,8 @@ fn close_others(s: &mut Session, p: &Value) -> Result<Value> {
 /// "Revert" history state); the document is clean afterwards.
 fn revert(s: &mut Session) -> Result<Value> {
     let path = s.active().and_then(|d| d.path.clone()).ok_or(EngineError::Other("the document has never been saved".into()))?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let fresh = photocraft_io::import_path_with(&file_name(&path), std::path::Path::new(&path), &photocraft_raster::Interrupt::NONE)
-        .map_err(|e| EngineError::Other(e.to_string()))?
-        .document;
-    #[cfg(target_arch = "wasm32")]
-    let fresh = import(&file_name(&path), &read_file(&path)?)?;
+    let bytes = read_file(&path)?;
+    let fresh = import(&file_name(&path), &bytes)?;
     s.edit("Revert", |doc, active| {
         let (id, name) = (doc.id, doc.name.clone());
         *doc = fresh;

@@ -258,6 +258,17 @@ fn independent_of_document(id: &str) -> bool {
     PREFIXES.iter().any(|p| id.starts_with(p)) || IDS.contains(&id)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn read_path(path: &str) -> Result<Vec<u8>> {
+    // Bounded reads, and a clear error for a file larger than memory (#375).
+    photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_path(path: &str) -> Result<Vec<u8>> {
+    Err(EngineError::Other(format!("cannot open paths on the web: {path}")))
+}
+
 /// Run a job-capable command's heavy part. `work` runs on a worker thread when the command was
 /// started with [`Session::start`] (inline otherwise, and always on wasm); `apply` then runs on
 /// the calling thread with its output and returns the command's result. With `lock_document`,
@@ -425,19 +436,17 @@ impl Session {
             false,
             move |ctx| {
                 ctx.progress(0.0, "Reading");
+                let bytes = match source {
+                    OpenSource::Bytes(b) => b,
+                    OpenSource::Path(p) => Arc::new(read_path(&p)?),
+                };
                 ctx.check()?;
                 ctx.progress(0.02, "Decoding");
-                ctx.stage(0.02, 1.0, "Decoding", |ctl| match source {
-                    OpenSource::Bytes(b) => photocraft_io::import_with_svg_group_depth_and_interrupt(&name_w, &b, max_svg_group_depth, ctl),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    OpenSource::Path(p) => photocraft_io::import_path_with_svg_group_depth(&name_w, std::path::Path::new(&p), max_svg_group_depth, ctl),
-                    #[cfg(target_arch = "wasm32")]
-                    OpenSource::Path(_) => Err(photocraft_io::IoError::Unsupported("paths cannot be opened on the web".into())),
-                })
-                .map_err(|e| match e {
-                    photocraft_io::IoError::Cancelled => EngineError::Cancelled,
-                    e => EngineError::Other(e.to_string()),
-                })
+                ctx.stage(0.02, 1.0, "Decoding", |ctl| photocraft_io::import_with_svg_group_depth_and_interrupt(&name_w, &bytes, max_svg_group_depth, ctl))
+                    .map_err(|e| match e {
+                        photocraft_io::IoError::Cancelled => EngineError::Cancelled,
+                        e => EngineError::Other(e.to_string()),
+                    })
             },
             move |s, r: photocraft_io::ImportResult| {
                 // Ask When Opening: held back until the prompt is answered (`take_held_open`). A

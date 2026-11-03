@@ -64,7 +64,6 @@ pub mod pixels;
 pub mod resources;
 pub mod shc;
 pub mod slices;
-pub mod stream;
 pub mod tagged;
 #[cfg(any(test, feature = "testgen"))]
 // Test-data generator (tests and fuzz seeds only): failing loudly is the point.
