@@ -1,0 +1,39 @@
+[
+  [
+    "engine.execute",
+    {
+      "command": "image.imageSize",
+      "params": {
+        "width": 1000,
+        "resample": "bicubic"
+      }
+    }
+  ],
+  [
+    "engine.execute",
+    {
+      "command": "channel.target",
+      "params": {
+        "colors": [
+          0,
+          2
+        ]
+      }
+    }
+  ],
+  [
+    "ui.set",
+    {
+      "dockTabs": {
+        "layers": 1
+      },
+      "fit": true
+    }
+  ],
+  [
+    "ui.menu.invoke",
+    {
+      "id": "image.adjustments.curves"
+    }
+  ]
+]

@@ -27,7 +27,7 @@ Implemented only from public specifications, papers and observation of files:
 * Publicly documented maker-note / private tags (ExifTool's tag tables): Canon ModelID (0x0010),
   SensorInfo (0x00E0) and ColorData (0x4001), Nikon WB_RBLevels (0x000C), ColorSpace (0x001E) and BlackLevel (0x003D), Sony
   BlackLevel (0x7310), WB_RGGBLevels (0x7313), SonyRawFileType (0x7000) and SonyToneCurve
-  (0x7010), the PanasonicRaw IFD0 tags, Olympus ImageProcessing (0x2040) and CameraSettings
+  (0x7010), SR2Private Offset / Length / Key (0x7200 / 0x7201 / 0x7221), the PanasonicRaw IFD0 tags, Olympus ImageProcessing (0x2040) and CameraSettings
   (0x2020) preview tags, the Fujifilm RAF header and metadata records (RawImageCropTopLeft /
   RawImageCroppedSize, FujiLayout, XTransLayout, WB_GRGBLevels, RawExposureBias) and FujiIFD
   (RawImageFullWidth / Height, BitsPerSample, StripOffsets / ByteCounts, BlackLevel,
@@ -41,6 +41,8 @@ Implemented only from public specifications, papers and observation of files:
 * Sony cRAW (ARW 2): H. Dietz, "Sony ARW2 Compression: Artifacts And Credible Repair"
   (Electronic Imaging 2016) and the RawDigger / diglloyd write-ups of the 11 + 7-bit scheme;
   the exact bit layout and tone-curve scale were established by observation of sample files.
+  Encrypted SR2SubIFD metadata with key bytes `11 22 33 44` was measured independently against
+  ExifTool's metadata dumps; see [Sony metadata evidence](../../docs/sony-arw-metadata.md).
 * Panasonic RW2 RawFormat 5, uncompressed Olympus ORF and uncompressed Fujifilm RAF: established
   by observation of sample files (bit packing, page layout, sample justification; for RAF the
   three sample storages and the reversed order of the X-Trans / Bayer layout records, each
@@ -73,7 +75,7 @@ camera colour tables were copied.
 | CR2 sRAW / mRAW | Unsupported |
 | NEF / NRW, ARW, PEF and other TIFF/EP raws | Uncompressed and lossless-JPEG (incl. Sony lossless ARW) CFA data |
 | Nikon compressed NEF (compression 34713): lossless and lossy type 1 / 2, 12 and 14 bit | Decoded: fixed Huffman tables + maker-note `0x0096` seeds and curve (see `src/nefc.rs`). BlackLevel `0x003d` is read in 14-bit units. "Lossy after split" files are unsupported (preview fallback) |
-| Sony compressed ARW ("cRAW", SonyRawFileType 2) | Decoded: 11-bit min/max + 7-bit delta blocks, SonyToneCurve to 14 bits, the curve's 512 black level when no BlackLevel tag is written (the first-generation bodies, e.g. the ILCE-7) |
+| Sony compressed ARW ("cRAW", SonyRawFileType 2) | Decoded: 11-bit min/max + 7-bit delta blocks, SonyToneCurve to 14 bits; applied WB and black from plain tags or encrypted SR2SubIFD with the measured common key. If metadata is unreadable, black falls back to 512 and WB to grey-world. Measured ILCE-7 / ILCE-6000 image area; camera colour calibration remains incomplete |
 | Panasonic / Leica RW2, RawFormat 5 (12- and 14-bit packed) | Decoded, with PanasonicRaw black / white / WB / sensor borders |
 | Panasonic / Leica RW2, RawFormat 3 and 4 (vendor-compressed, 12-bit) | Decoded; the black level is read 15 counts above the recorded tag; PanasonicRaw white / WB / sensor borders |
 | Olympus ORF, uncompressed 16-bit (E-1, E-400…) | Decoded, with ImageProcessing black / WB / ValidBits / crop |

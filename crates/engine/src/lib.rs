@@ -13,6 +13,7 @@ pub mod build_info;
 mod canvas_geom;
 mod channel_clip;
 mod clip_group;
+pub mod color_channels;
 mod crop_fill;
 pub mod display_color;
 pub mod doc_path;
@@ -28,6 +29,7 @@ pub mod kys;
 pub mod layer_place;
 pub mod layer_style;
 pub mod link_watch;
+pub mod malloc_tuning;
 pub mod new_layer;
 mod param_check;
 mod pixels;
@@ -138,6 +140,7 @@ pub use cmd::select_extra_cmds;
 pub use cmd::selection_cmds;
 pub use cmd::slice_cmds;
 pub use cmd::smart_cmds;
+pub use cmd::smart_svg_cmds;
 pub use cmd::smartselect_cmds;
 pub use cmd::solid_fill_cmds;
 pub use cmd::stamp_cmds;
@@ -184,6 +187,8 @@ pub(crate) fn active_layer_of(s: &Session) -> std::result::Result<&photocraft_do
 #[derive(Default)]
 pub struct Session {
     docs: Vec<DocState>,
+    /// Admitted document identities in opening order, independent of visual-tab reordering.
+    open_document_order: Vec<photocraft_doc::DocId>,
     active: Option<usize>,
     /// Monotonic counter, bumped whenever a different document becomes active (including a
     /// switch away and back inside one pass). UI work that must not cross documents (control
@@ -213,7 +218,7 @@ pub struct Session {
     /// Quick Mask Options (colour, opacity, colour indicates) used when entering Quick Mask.
     pub quick_mask_options: channel_cmds::QuickMaskOptions,
     /// Colour channel the running command may change (a single colour channel is targeted).
-    color_restrict: Option<usize>,
+    color_restrict: Option<color_channels::Restriction>,
     /// Smart object whose filter mask the running command edits (`"target":"filterMask"`): each
     /// edit re-renders it, in the same history step.
     filter_mask_layer: Option<LayerId>,
@@ -297,3 +302,5 @@ mod tests;
 
 #[cfg(test)]
 mod fx_mode_tests;
+
+pub mod command_hints;

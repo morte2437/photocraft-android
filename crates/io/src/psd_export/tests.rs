@@ -196,6 +196,21 @@ fn layer_block_follows_a_kept_merged_transparency_marker() {
     assert!(matches!(saved.layer_info_placement, LayerInfoPlacement::GlobalBlock { index: 0, .. }));
 }
 
+/// #9563: a `Txt2` kept from the opened file is dropped once no type layer is left (Photoshop
+/// drops it too); with a type layer the block is still written.
+#[test]
+fn a_kept_txt2_goes_with_the_last_type_layer() {
+    let mut doc = Document::new("t", photocraft_geom::Size::new(8, 6), ColorMode::Rgb, SampleType::U8);
+    doc.layers.push(Layer::new("Layer 1", LayerContent::Raster(Surface::new(doc.pixel_format()))));
+    doc.metadata.psd_global_blocks = vec![(*b"8BIM", *b"Txt2", std::sync::Arc::new(b"<< /0 << /1 (stale) >> >>".to_vec()))];
+    let file = document_to_psd(&doc);
+    assert!(!file.global_blocks.iter().any(|b| b.key == *b"Txt2"), "no type layers: no Txt2");
+
+    doc.layers.push(Layer::new("T", LayerContent::Text(photocraft_doc::TextLayer::default())));
+    let file = document_to_psd(&doc);
+    assert!(file.global_blocks.iter().any(|b| b.key == *b"Txt2"), "a type layer keeps its Txt2");
+}
+
 /// A merged-transparency marker kept from the opened file describes that file's composite.
 /// Saved with an opaque composite, it would make the first alpha channel read back as the
 /// merged transparency, and the channel would be gone: the save drops it.
@@ -567,4 +582,40 @@ fn alpha_names_count_the_merged_transparency() {
     assert_eq!(back.channels.len(), 1);
     assert_eq!(back.channels[0].name, "Alpha 1");
     assert!((back.channels[0].opacity - 0.5).abs() < 1e-6);
+}
+
+/// A linked smart object whose path names a FIFO is not read (#8601): opening a FIFO for
+/// reading blocks until a writer appears, and a device such as `/dev/zero` never ends, so the
+/// export would hang or run out of memory. The export finishes and writes the layer as pixels,
+/// saying why. The export runs on its own thread so that a regression fails here instead of
+/// hanging the test run.
+#[cfg(unix)]
+#[test]
+fn a_linked_fifo_is_not_read() {
+    let dir = std::env::temp_dir().join(format!("photocraft-linked-fifo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("link.png");
+    let _ = std::fs::remove_file(&fifo);
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success(), "mkfifo failed");
+    let mut doc = document(8, 6);
+    let smart = photocraft_doc::SmartObject {
+        contents_id: SmartContentsId::fresh(),
+        source: photocraft_doc::SmartSource::Linked { path: fifo.to_string_lossy().into_owned() },
+        transform: photocraft_geom::Affine::IDENTITY,
+        smart_filters: vec![],
+        cache: Some(Surface::new(doc.pixel_format())),
+        psd_raw: None,
+        filters_enabled: true,
+        filter_mask: None,
+        warp: None,
+        stack_mode: None,
+        perspective: None,
+        vector_preview: None,
+    };
+    doc.layers.push(Layer::new("Linked", LayerContent::Smart(smart)));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(document_to_psd_with(&doc, &PsdExportOptions::default()).1));
+    let warnings = rx.recv_timeout(std::time::Duration::from_secs(30)).expect("the export blocked reading the FIFO");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(warnings.iter().any(|w| w.contains("smart object written as pixels") && w.contains("not a regular file")), "{warnings:?}");
 }

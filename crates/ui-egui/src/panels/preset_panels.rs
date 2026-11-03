@@ -383,6 +383,7 @@ fn draw_group_header(ui: &mut egui::Ui, group: &GroupView, context: GroupHeaderC
     if response.hovered() || response.dragged() {
         ui.painter().rect_filled(rect, 2.0, tokens.hover.gamma_multiply(0.5));
     }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), open, &group.name));
     let triangle = Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(12.0, 12.0));
     crate::icons::paint(ui, triangle, if open { "chevron-down" } else { "chevron-right" }, 10.0, tokens.text_dim);
     let folder = Rect::from_center_size(pos2(rect.left() + 25.0, rect.center().y), vec2(14.0, 14.0));
@@ -598,7 +599,7 @@ pub(crate) fn browser(
             ev.push(Ev::Drop(key, pos));
         }
     }
-    // Footer: thumbnail size | New Group, New, Delete.
+    // Footer: thumbnail size | New Group, New, Delete (same glyphs and size as the Layers footer).
     let footer_top = ui.min_rect().bottom();
     ui.add_space(4.0);
     ui.horizontal(|ui| {
@@ -611,15 +612,15 @@ pub(crate) fn browser(
             st.sizes.insert(panel.to_string(), s);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if crate::icons::button(ui, "trash", 24.0, false, tl!("Delete")).clicked()
+            if crate::icons::button(ui, crate::icons::FOOTER_DELETE, crate::icons::FOOTER_SIZE, false, tl!("Delete")).clicked()
                 && let Some(k) = selected.clone()
             {
                 ev.push(Ev::Delete(k));
             }
-            if crate::icons::button(ui, "plus", 24.0, false, new_tip).clicked() {
+            if crate::icons::button(ui, crate::icons::FOOTER_NEW, crate::icons::FOOTER_SIZE, false, new_tip).clicked() {
                 ev.push(Ev::New);
             }
-            if crate::icons::button(ui, "folder-plus", 24.0, false, tl!("Create new group")).clicked() {
+            if crate::icons::button(ui, crate::icons::FOOTER_NEW_GROUP, crate::icons::FOOTER_SIZE, false, tl!("Create new group")).clicked() {
                 ev.push(Ev::NewGroup);
             }
         });

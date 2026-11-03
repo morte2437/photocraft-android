@@ -180,7 +180,7 @@ fn overlapping_stamp_preview_matches_commit_across_batches() {
         s.strokes[0].points.extend_from_slice(&points[2..]);
         assert!(s.paint_preview(|| 2));
         let (shown, _) = s.shown().unwrap();
-        let expected = photocraft_compose::flatten(&shown).px;
+        let expected = photocraft_compose::flatten(&shown).into_px();
         assert_ne!(expected, photocraft_compose::flatten(&app.session.active().unwrap().doc).px);
         commit(&mut app).unwrap();
         assert_eq!(photocraft_compose::flatten(&app.session.active().unwrap().doc).px, expected, "newLayer={new_layer}");
@@ -217,7 +217,7 @@ fn stamp_preview_paints_over_the_paste_like_ok() {
         let s = app.distort.vanishing.as_ref().unwrap();
         assert!(s.preview_has_paste(), "the preview shows the paste, so the overlay isn't drawn over the strokes");
         let (shown, _) = s.shown().unwrap();
-        let expected = photocraft_compose::flatten(&shown).px;
+        let expected = photocraft_compose::flatten(&shown).into_px();
         commit(&mut app).unwrap();
         assert_eq!(photocraft_compose::flatten(&app.session.active().unwrap().doc).px, expected, "newLayer={new_layer}");
     }
@@ -349,7 +349,7 @@ fn ok_paints_the_layer_the_mode_was_opened_on() {
         app.session.execute("layer.new.layer", json!({"name": "other"})).unwrap();
         let other = app.session.active().unwrap().active_layer.unwrap();
         sync_preview(&mut app);
-        let expected = photocraft_compose::flatten(&crate::distort_ui::display_doc(&app, 0).unwrap().0).px;
+        let expected = photocraft_compose::flatten(&crate::distort_ui::display_doc(&app, 0).unwrap().0).into_px();
         commit(&mut app).unwrap();
         let d = &app.session.active().unwrap().doc;
         assert!(d.layer(other).unwrap().surface().unwrap().content_bounds().is_empty(), "newLayer={new_layer}");
@@ -389,7 +389,7 @@ fn an_edit_under_the_mode_shows_on_the_canvas() {
     let px = shown.layer(layer).unwrap().surface().unwrap();
     assert!(px.rgba(210, 30)[1] > 0.9, "the edit shows: {:?}", px.rgba(210, 30));
     assert!(px.rgba(120, 80) != st.doc.layer(layer).unwrap().surface().unwrap().rgba(120, 80), "and so does the stroke");
-    let expected = photocraft_compose::flatten(&shown).px;
+    let expected = photocraft_compose::flatten(&shown).into_px();
     commit(&mut app).unwrap();
     assert_eq!(photocraft_compose::flatten(&app.session.active().unwrap().doc).px, expected);
 }

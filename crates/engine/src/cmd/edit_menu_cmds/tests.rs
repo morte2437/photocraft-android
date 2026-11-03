@@ -143,6 +143,36 @@ fn fade_follows_the_target_the_command_ran_on() {
     assert_eq!(s.active().unwrap().doc.channels[0].surface.pixel(5, 5)[0], 0.0, "the channel is left alone");
 }
 
+/// Edit › Stroke and the Magic Eraser follow the Channels panel's target but still edit the layer,
+/// so with an alpha channel targeted Fade fades the layer they changed, not the untouched channel.
+#[test]
+fn fade_after_a_routed_command_that_edited_the_layer_fades_the_layer() {
+    for depth in [8, 16, 32] {
+        for command in ["edit.stroke", "paint.magicEraser"] {
+            let mut s = session(depth);
+            s.execute("layer.new.layer", json!({})).unwrap();
+            s.execute("edit.fill", json!({"color": "#ffffff"})).unwrap();
+            s.execute("channel.new", json!({"fill": "black"})).unwrap();
+            s.execute("channel.target", json!({"channel": 0})).unwrap();
+            let (x, y) = if command == "edit.stroke" {
+                s.execute("select.rect", json!({"x": 10, "y": 10, "width": 10, "height": 10})).unwrap();
+                s.execute(command, json!({"width": 2, "color": "#000000", "location": "inside"})).unwrap();
+                assert_eq!(px(&s, 10, 15)[0], 0.0, "{depth} {command}: the layer was stroked");
+                (10, 15)
+            } else {
+                s.execute(command, json!({"x": 5, "y": 5, "antiAlias": false})).unwrap();
+                assert_eq!(px(&s, 5, 5)[3], 0.0, "{depth} {command}: the layer was erased");
+                (5, 5)
+            };
+            assert!(matches!(s.edit_state.fade.as_ref().map(|f| f.target), Some(FadeTarget::Pixels(_))), "{depth} {command}");
+            s.execute("edit.fade", json!({"opacity": 50})).unwrap();
+            let k = if command == "edit.stroke" { 0 } else { 3 };
+            assert!((px(&s, x, y)[k] - 0.5).abs() < 0.01, "{depth} {command}: the layer faded {:?}", px(&s, x, y));
+            assert_eq!(s.active().unwrap().doc.channels[0].surface.pixel(x, y)[0], 0.0, "{depth} {command}: the channel is left alone");
+        }
+    }
+}
+
 /// A command that only edits layers (Auto Tone) fades the layer, even given a channel `target`.
 #[test]
 fn fade_ignores_a_target_the_command_doesnt_take() {

@@ -358,6 +358,8 @@ impl Headless {
         if let Some(d) = self.session.close(i) {
             self.writers.remove(&d.doc.id.0);
         }
+        // The closed document's buffers went to the scratch pool: hand them back to the OS.
+        photocraft_raster::scratch::release();
         Ok(self.session_list())
     }
 

@@ -1160,6 +1160,61 @@ fn layers_to_files_writes_each_visible_layer() {
 }
 
 #[test]
+fn layers_to_files_can_trim_transparent_margins_without_changing_the_document() {
+    let dir = tmp("layers-trim");
+    for depth in [8, 16, 32] {
+        let mut s = session(12, 11, depth);
+        s.execute("layer.new.layer", json!({"name": "Ink"})).unwrap();
+        s.execute("select.rect", json!({"x": 3, "y": 2, "width": 4, "height": 5})).unwrap();
+        s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        s.execute("select.deselect", json!({})).unwrap();
+
+        let before = doc(&s).clone();
+        let regular = s.execute("file.export.layersToFiles", json!({"dir": dir, "prefix": format!("full-{depth}"), "format": "png"})).unwrap();
+        let full = std::fs::read(regular["files"][0].as_str().unwrap()).unwrap();
+        let full = photocraft_io::import("full.png", &full).unwrap().document;
+        assert_eq!((full.size.width, full.size.height), (12, 11), "default is unchanged");
+
+        let trimmed = s.execute("file.export.layersToFiles", json!({"dir": dir, "prefix": format!("trim-{depth}"), "format": "png", "trim": true})).unwrap();
+        let image = std::fs::read(trimmed["files"][0].as_str().unwrap()).unwrap();
+        let cropped = photocraft_io::import("trim.png", &image).unwrap().document;
+        assert_eq!((cropped.size.width, cropped.size.height), (4, 5), "depth {depth}");
+        let px = photocraft_compose::render(&cropped, Rect::new(0, 0, 1, 1)).px[0];
+        assert!(px[0] > 0.95 && px[1] < 0.05 && px[2] < 0.05, "depth {depth}: {px:?}");
+        assert_eq!(*doc(&s), before, "export must not crop the original document");
+    }
+}
+
+#[test]
+fn streamed_layer_export_respects_trim() {
+    let mut s = session(12, 11, 8);
+    s.execute("layer.new.layer", json!({"name": "Ink"})).unwrap();
+    s.execute("select.rect", json!({"x": 3, "y": 2, "width": 4, "height": 5})).unwrap();
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let mut encoded = Vec::new();
+    let names = super::export_layers_with(&s, &json!({"trim": true, "format": "png"}), |name, bytes| {
+        encoded.push((name.to_string(), bytes.to_vec()));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(names.len(), encoded.len());
+    let cropped = photocraft_io::import(&encoded[0].0, &encoded[0].1).unwrap().document;
+    assert_eq!((cropped.size.width, cropped.size.height), (4, 5));
+}
+
+#[test]
+fn trimming_an_empty_layer_keeps_a_valid_nonzero_canvas() {
+    let dir = tmp("layers-trim-empty");
+    let mut s = session(6, 7, 8);
+    s.execute("layer.new.layer", json!({"name": "Empty"})).unwrap();
+    let result = s.execute("file.export.layersToFiles", json!({"dir": dir, "format": "png", "trim": true})).unwrap();
+    let bytes = std::fs::read(result["files"][0].as_str().unwrap()).unwrap();
+    let back = photocraft_io::import("empty.png", &bytes).unwrap().document;
+    assert_eq!((back.size.width, back.size.height), (6, 7));
+}
+
+#[test]
 fn load_files_into_stack_and_image_processor_and_batch() {
     let dir = tmp("batch");
     let input = join(&dir, "in");
@@ -1771,6 +1826,28 @@ fn batch_saves_at_the_recorded_save_so_a_close_after_it_keeps_the_result() {
     let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": [["file.close", {}]]})).unwrap();
     assert_eq!(r["files"], json!([]), "{r}");
     assert!(r["errors"][0]["error"].as_str().unwrap().contains("no active document"), "{r}");
+}
+
+/// "…; Save As; Close" with the Close recorded on a clean document (no `Svng`, `"save":"ask"`):
+/// Batch performs the Save As, so the document is saved when the Close asks, and every file is
+/// written. The Close used to refuse the still-changed scratch document and fail each file.
+#[test]
+fn batch_save_as_then_close_that_asks_processes_every_file() {
+    let dir = tmp("batch-save-close-ask");
+    let input = vec![png(&dir, "red.png", 8, 8, "#ff0000"), png(&dir, "blue.png", 8, 8, "#0000ff")];
+    let out = join(&dir, "out");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveAs", {}], ["file.close", {"save": "ask"}]]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": input, "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
+    let red = photocraft_io::import("red.png", &std::fs::read(join(&out, "red.png")).unwrap()).unwrap().document;
+    assert_eq!(photocraft_compose::render(&red, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0], "the inverted red");
+    // A Save a Copy doesn't save the document itself: the Close that asks still refuses it.
+    let out = join(&dir, "copy");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveACopy", {}], ["file.close", {"save": "ask"}]]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": input, "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["files"], json!([]), "{r}");
+    assert_eq!(r["errors"].as_array().unwrap().len(), 2, "{r}");
 }
 
 /// The document a recorded save marked is the result, not the one left active after it closed.

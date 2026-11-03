@@ -55,7 +55,7 @@ pub(crate) fn read(r: &mut Reader, id: ObjId, world: Affine) -> Option<Text> {
         _ => bounds.x0,
     };
     if !artistic {
-        if s.objs(frame, b"ColW").len() > 1 || matches!(s.field(frame, b"ColW"), Some(Value::Array(a)) if a.len() > 1) {
+        if s.objs(frame, b"ColW").len() > 1 || s.array_len(frame, b"ColW").is_some_and(|n| n > 1) {
             r.warn("text frames with several columns (imported as one column)");
         }
         if s.class(id) == Some(crate::stream::Tag::of(b"TxtC")) {

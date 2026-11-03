@@ -1,0 +1,93 @@
+{
+  "base": "5f9b4391874aabc9deb2fcb905267613e4d93ec8",
+  "selected": [
+    {
+      "number": 8472,
+      "head": "f5dfe82a5379ecda8a6094e8a6d9bcdf7d994f41",
+      "title": "PNG export: documents over 256 MiB of pixels are encoded a band of rows at a time (#8456)"
+    },
+    {
+      "number": 8488,
+      "head": "34af1d8e66089bb1f4f6245560397761286e6fbc",
+      "title": "fix(engine): convert Image \u203a Mode \u203a Bitmap in bands so huge images don't abort (#8477)"
+    },
+    {
+      "number": 9461,
+      "head": "2f68e85f9575f7d51712154e0defa0ea9add08dd",
+      "title": "Make font names directly editable and preserve mixed-font edits"
+    },
+    {
+      "number": 9793,
+      "head": "d843f4c34bd48bb2d5646539c2d953e3eaa8e083",
+      "title": "Select Inverse: invert shared tiles without full-canvas buffers"
+    },
+    {
+      "number": 9809,
+      "head": "eccc20d1b215391d5fbf9d3ea04be322188452ba",
+      "title": "Smooth and Feather: crop to the selection, up to 395\u00d7 faster on small selections"
+    },
+    {
+      "number": 9813,
+      "head": "f4742dd8aa540c19b5d07c2bd1452f3d811ab44e",
+      "title": "perf(selection): use sparse combination for marquee Add and Subtract"
+    },
+    {
+      "number": 9814,
+      "head": "32e166b720b7a04df55cb4475c8a4628ab1827eb",
+      "title": "perf(selection): crop Color Range sampling to the active selection"
+    },
+    {
+      "number": 9822,
+      "head": "9722d16909ae5afc257d8543f93ca78569ec70ca",
+      "title": "perf(selection): combine GRAY8 masks directly in tiles"
+    },
+    {
+      "number": 9826,
+      "head": "6daf9731f1fa4ed9f0aa4a81ce9ead17637a1743",
+      "title": "perf(curves): sample graphs directly and cache channel polylines"
+    },
+    {
+      "number": 9847,
+      "head": "325421a28bd6f38d841359e4b7b79435a3b33e30",
+      "title": "perf(paint): keep circular tips on the fast path with angle jitter"
+    },
+    {
+      "number": 9850,
+      "head": "47df5dedeab1cadf6dac34d20a9201bd9cd1dfe7",
+      "title": "perf(paint): cache round-tip geometry per dab"
+    },
+    {
+      "number": 9852,
+      "head": "cc6837355bc1801b0ec71b0e747ac93e7c7f72a8",
+      "title": "perf(paint): accumulate serial dabs in place with packed tile keys"
+    },
+    {
+      "number": 9921,
+      "head": "aae87d353a9d3fe81b476562e9adf1223e8b0a3f",
+      "title": "perf(algo): solve Adaptive Wide Angle's mesh with a factor-once direct solve"
+    },
+    {
+      "number": 9924,
+      "head": "fe6b95f172e1f2cf185546c590f1bfa1c4c5c477",
+      "title": "Mixer Brush: dry strokes up to 2\u00d7 faster with identical output"
+    },
+    {
+      "number": 9961,
+      "head": "706186384a5e49592f73004a7a1a93194c3b2508",
+      "title": "perf(segment): solve GrabCut and the band re-cut with Boykov-Kolmogorov"
+    },
+    {
+      "number": 10080,
+      "head": "e2cd2a335a9d6d7e6cd17b2e7c729a043d94e0f9",
+      "title": "Smart objects: re-render without full-size float buffers, and bound the caches that held decoded sources"
+    }
+  ],
+  "excluded": [
+    8536,
+    9825,
+    9969,
+    10129
+  ],
+  "validation": "Combined CI pending. Individual PR checks were reviewed; no combined tests or manual tests are claimed.",
+  "conflict_resolution": "Combined CI workflow inputs, benchmark jobs and quick-performance conditions; all checks retained."
+}

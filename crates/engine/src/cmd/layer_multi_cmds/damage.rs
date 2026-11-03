@@ -1,3 +1,5 @@
+use photocraft_color::{PixelFormat, SampleType};
+
 use super::{Document, Layer, LayerContent, Rect, Session, VideoData};
 
 /// Calls `f` with the rect of every tile that differs between two surfaces of the same format and
@@ -580,12 +582,78 @@ pub(crate) fn note_insert(s: &mut Session, before: &Document) {
     st.last_damage = step_damage(before, &st.doc);
 }
 
-/// Content bounds used by Align/Distribute: the layer's pixels (type and shape layers use their
-/// rendered pixels), or the union of a group's children. Fill and adjustment layers have none.
+/// Content bounds of a layer's pixels as stored (type and shape layers: their cached render), or
+/// the union of a group's children. Fill and adjustment layers have none. Cheap: Layers list,
+/// artboards, copy and slices call it for every layer.
 pub fn layer_bounds(l: &Layer) -> Option<Rect> {
     let r = match &l.content {
         LayerContent::Group(g) => g.children.iter().filter_map(layer_bounds).fold(Rect::EMPTY, |a, b| a.union(&b)),
         _ => l.surface().map(|s| s.content_bounds()).unwrap_or(Rect::EMPTY),
     };
     (!r.is_empty()).then_some(r)
+}
+
+/// The bounds Align and Distribute move by, in a document of bounds `canvas`: [`layer_bounds`],
+/// except that a shape layer is measured over everything it draws, beyond the canvas too (its
+/// cache is clipped to the canvas, #8660), by rendering it again. Only those commands pay for that
+/// render, once per click; `canvas` is the frame a shape's gradients are laid out in, so an opacity
+/// stop measures as it renders, and `sample` is the document's sample type (see
+/// [`shape_pixel_bounds`]).
+pub(crate) fn align_bounds(l: &Layer, canvas: Rect, sample: SampleType) -> Option<Rect> {
+    let r = match &l.content {
+        LayerContent::Group(g) => g.children.iter().filter_map(|c| align_bounds(c, canvas, sample)).fold(Rect::EMPTY, |a, b| a.union(&b)),
+        LayerContent::Shape(sh) => shape_pixel_bounds(sh, canvas, sample).unwrap_or_else(|| {
+            let cached = l.surface().map(|s| s.content_bounds()).unwrap_or(Rect::EMPTY);
+            // A fill that shows everywhere covers the canvas, rendered yet or not.
+            if cached.is_empty() && unbounded_fill(sh) { canvas } else { cached }
+        }),
+        _ => return layer_bounds(l),
+    };
+    (!r.is_empty()).then_some(r)
+}
+
+/// Whether the shape's fill shows everywhere (an inverted path, or below 100 % density), so it has
+/// no extent of its own.
+fn unbounded_fill(sh: &photocraft_doc::ShapeLayer) -> bool {
+    sh.fill.is_some() && (sh.path.inverted || (sh.density.is_finite() && sh.density < 1.0))
+}
+
+/// Largest area [`shape_pixel_bounds`] renders to find a shape's extent; beyond it the path and
+/// stroke bounds stand in.
+const SHAPE_BOUNDS_MAX_PX: u64 = 64 << 20;
+
+/// Pixels [`shape_pixel_bounds`] renders at a time.
+const SHAPE_BOUNDS_BAND_PX: u64 = 1 << 20;
+
+/// The pixels a shape layer draws, wherever they fall. Its cache is rendered clipped to the
+/// canvas, so a shape partly off the canvas measured from it looked smaller and Align moved it
+/// by the wrong amount, a little more on each click (#8660). The shape is rendered again over
+/// everything it can draw (its path, stroke and feather), unclipped, and measured from that. A fill
+/// that shows everywhere (an inverted path, or below 100 % density) has no extent of its own and
+/// keeps the canvas-clipped measure (`None`).
+pub(super) fn shape_pixel_bounds(sh: &photocraft_doc::ShapeLayer, canvas: Rect, sample: SampleType) -> Option<Rect> {
+    if unbounded_fill(sh) {
+        return None;
+    }
+    let reach = photocraft_compose::shape_bounds(sh)?.inflate(1);
+    if u64::from(reach.width()) * u64::from(reach.height()) > SHAPE_BOUNDS_MAX_PX {
+        return photocraft_compose::hard_shape_bounds(sh);
+    }
+    // Gradients lay out in the document's frame (as the cached render does); the feather and the
+    // clip cover the shape's whole reach, beyond the canvas too.
+    let shape = photocraft_vector::CompiledShape::with_frames(sh, photocraft_vector::DEFAULT_TOLERANCE, reach, canvas);
+    // Alpha at the document's own precision, as the document stores it: an 8-bit render drops the
+    // faint stroke of a 16-bit or float document (the opaque body then aligns by a different
+    // extent than the document draws), and a float one would find alpha an 8-bit document never
+    // stores. A band of rows at a time keeps the working copy a few MB however large the shape.
+    let format = PixelFormat::new(photocraft_color::ColorMode::Grayscale, sample, true);
+    let band_rows = i32::try_from((SHAPE_BOUNDS_BAND_PX / u64::from(reach.width().max(1))).max(1)).unwrap_or(i32::MAX);
+    let mut bounds = Rect::EMPTY;
+    let mut top = reach.y0;
+    while top < reach.y1 {
+        let bottom = top.saturating_add(band_rows).min(reach.y1);
+        bounds = bounds.union(&shape.render(format, Rect::new(reach.x0, top, reach.x1, bottom)).content_bounds());
+        top = bottom;
+    }
+    (!bounds.is_empty()).then_some(bounds)
 }

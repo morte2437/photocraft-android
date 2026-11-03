@@ -22,7 +22,7 @@
 //! - the target is not a plain pixel layer (smart object, type, shape, group: the command edits
 //!   a smart object's filters or refuses), or is itself clipped (a clipped adjustment would act on
 //!   the whole clipping group, not just the target);
-//! - the target uses Blend If (its "This Layer" ranges test the layer's adjusted colour);
+//! - the target uses Blend If (its "Current Layer" ranges test the layer's adjusted colour);
 //! - the target's untouched area is visible (a surface without alpha whose content doesn't cover
 //!   the canvas: the command only edits content);
 //! - the command targets an alpha channel, the Quick Mask or a single colour channel;
@@ -225,9 +225,13 @@ fn update(app: &mut PhotocraftApp, idx: usize) -> Option<&AdjustPreview> {
     let (doc_id, revision, target) = (st.doc.id, st.revision, st.active_layer?);
     // Commands that target a channel (Channels panel / Quick Mask) or a layer mask keep the proxy
     // preview.
-    let channel_target = st.channel_view.target != photocraft_engine::channel_cmds::ChannelTarget::Composite
-        || st.doc.quick_mask.is_some()
-        || !app.with_mask_target(&format!("image.adjustments.{kind}"), Value::Null).is_null();
+    let channel_target = if let Some(target) = params.get("target") {
+        target.as_str() != Some("pixels")
+    } else {
+        st.channel_view.target != photocraft_engine::channel_cmds::ChannelTarget::Composite
+            || st.doc.quick_mask.is_some()
+            || !app.with_mask_target(&format!("image.adjustments.{kind}"), Value::Null).is_null()
+    };
     let session = hash(&[&doc_id.0.to_le_bytes(), &revision.to_le_bytes(), &target.0.to_le_bytes(), &[u8::from(channel_target)]]);
     let h = hash(&[kind.as_bytes(), params.to_string().as_bytes(), &[u8::from(preview)]]);
     if let Some(p) = &app.adjust_preview

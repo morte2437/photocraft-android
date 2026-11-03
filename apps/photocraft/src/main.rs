@@ -49,6 +49,8 @@ mod mac_menu;
 #[cfg(target_os = "macos")]
 mod mac_window;
 // Pure logic is tested on every platform; only Linux runs the check.
+#[cfg(not(target_arch = "wasm32"))]
+mod external_svg;
 #[cfg(any(target_os = "linux", test))]
 mod linux_libs;
 mod logging;
@@ -66,6 +68,7 @@ mod services;
 // macOS gets one instance from LaunchServices (open-documents Apple events).
 #[cfg(any(not(target_os = "macos"), test))]
 mod single_instance;
+mod startup_report;
 // Tablet support (macOS AppKit monitor, Linux X11/Wayland, Windows barrel button).
 mod tablet;
 mod ui_state;
@@ -75,12 +78,11 @@ mod window_frame;
 use photocraft_engine::Session;
 use photocraft_ui_egui::PhotocraftApp;
 
-/// Matches the `.desktop` file and hicolor icon name, so Wayland docks pick up the icon.
-const APP_ID: &str = "ai.storyteller.photocraft";
+use photocraft_ui_egui::os_window::APP_ID;
 
-/// Windows and Linux: no OS title bar; the app's top bar is the title bar, with its own caption
-/// buttons and edge resizing (`photocraft_ui_egui::titlebar`), as Photoshop does on Windows. macOS
-/// keeps its traffic lights over the integrated title strip.
+/// Windows and Linux can use the app's title bar, with its own caption buttons and edge resizing
+/// (`photocraft_ui_egui::titlebar`); the preference below selects the mode. macOS always keeps its
+/// system traffic lights over the integrated title strip.
 const CUSTOM_TITLEBAR: bool = !cfg!(target_os = "macos");
 
 /// Whether this start draws its own title bar: Windows and Linux do, unless Preferences ›
@@ -285,12 +287,19 @@ fn control_setup(
     cli_port: Option<u16>,
     auth: photocraft_automation::args::ControlArgs,
     automation: &photocraft_automation::args::AutomationArgs,
-) -> Option<(u16, String, photocraft_automation::workspace::AuthorizedWorkspace)> {
+) -> Option<(std::net::TcpListener, String, photocraft_automation::workspace::AuthorizedWorkspace)> {
     let (port, warning) = control_port_for(cli_port, &integrations(services::prefs_file().as_deref()));
     if let Some(warning) = &warning {
         eprint!("{warning}");
     }
     let port = port?;
+    let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("photocraft: control server failed to bind 127.0.0.1:{port}: {error}");
+            std::process::exit(2);
+        }
+    };
     let (supplied, token_file) = (auth.control_token, auth.control_token_file);
     let token = match photocraft_automation::security::server_token(supplied.as_deref(), token_file.as_deref()) {
         Ok(token) => token,
@@ -313,7 +322,7 @@ fn control_setup(
             std::process::exit(2);
         }
     };
-    Some((port, token, workspace))
+    Some((listener, token, workspace))
 }
 
 /// Record this start's backend in the GPU startup marker, if the marker is locked.
@@ -331,11 +340,14 @@ fn write_start_marker(sentinel: &gpu_startup::SharedSentinel, plan: &gpu_startup
 }
 
 fn main() -> eframe::Result {
-    // First, so the panic hook and every start-up warning are recorded (`logging`).
+    // Before anything starts a thread: may re-execute this process with glibc tuned to return
+    // the memory of closed documents (#8743).
+    photocraft_engine::malloc_tuning::apply();
+    // Then, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     crash_guard::install_hook();
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(done) = craft_update::self_update::finish(&craft_update::suite::PHOTOCRAFT, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    if let Some(done) = craft_update::self_update::finish(&photocraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
         if let Err(e) = done {
             eprintln!("PhotoCraft update helper failed: {e}");
             std::process::exit(1);
@@ -385,12 +397,14 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
     let _ = (new_instance, &launch_options);
 
+    // Bind and authenticate the authorized control listener before display/GPU initialization.
+    let control = control_setup(control_port, auth, &automation);
+
     #[cfg(target_os = "linux")]
     let native_session = linux_libs::session_from_env(|name| std::env::var(name).ok());
     #[cfg(target_os = "linux")]
     let session = linux_display_session();
 
-    let control = control_setup(control_port, auth, &automation);
     // Finder / Dock / Open With deliver files as Apple events, not arguments; catch the one that
     // launched us as well as later ones. Lives until the event loop returns.
     #[cfg(target_os = "macos")]
@@ -473,6 +487,10 @@ fn main() -> eframe::Result {
     log::info!("GPU startup: {:?} ({sentinel_ms:.2} ms)", plan);
     let retry_cpu = !safe_gpu && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu;
     let keep_marker = gpu_startup::keep_marker_after_error(&plan, os);
+    // For the failure dialog below: the plan itself moves into the window closure. With
+    // `WGPU_BACKEND` set (`plan.env`) wgpu picks the backend, so name that rather than `auto`.
+    let started_renderer = plan.env.clone().unwrap_or_else(|| plan.backend.name().to_string());
+    let started_note = plan.reason.clone();
     let app_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let created_in_callback = app_created.clone();
     let started_sentinel = sentinel.clone();
@@ -599,8 +617,8 @@ fn main() -> eframe::Result {
                     log::warn!("couldn't remember GPU backend {}: {e}", b.name());
                 }
             });
-            if let Some((port, token, _)) = control {
-                let rx = control_server::start(port, token, cc.egui_ctx.clone());
+            if let Some((listener, token, _)) = control {
+                let rx = control_server::start(listener, token, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
             #[cfg(target_os = "macos")]
@@ -632,7 +650,14 @@ fn main() -> eframe::Result {
             // Caps Lock state (X11/Windows/macOS; `None` on native Wayland): the canvas shows the
             // precise crosshair for painting tools while it is toggled on (#1758).
             app.services.caps_lock = caps_lock::service(cc);
-            app.services.screen_pick = screen_color::service(cc, app.services.is_wayland);
+            // Pick through the portal on a Wayland desktop even when the window went through
+            // Xwayland (a pen, or the X11 display-server preference): Xwayland's root window has
+            // no desktop pixels to read (#8977).
+            #[cfg(target_os = "linux")]
+            let portal = screen_color::uses_portal(native_session);
+            #[cfg(not(target_os = "linux"))]
+            let portal = false;
+            app.services.screen_pick = screen_color::service(cc, portal);
             // Tablet pressure/tilt/eraser (winit drops them): the macOS monitor and the X11 reader
             // write into the stylus feed. The monitor goes in here, not before the event loop:
             // AppKit's shared application only exists once winit created it (#759).
@@ -708,6 +733,16 @@ fn main() -> eframe::Result {
                 Ok(_) => return Ok(()),
                 Err(error) => log::error!("could not start CPU compatibility mode: {error}"),
             }
+        }
+    }
+    // A launch that fails before a window exists leaves nothing on screen, and a desktop launch
+    // has no console for the `Err` above: log it, then say why in a native dialog with the log
+    // file to attach (#7643). A terminal or automation launch can read standard error or the
+    // exit status instead, so it keeps the silent exit.
+    if let Err(error) = &result {
+        log::error!("PhotoCraft could not start: {error}");
+        if startup_report::needs_dialog(control_port.is_some()) {
+            startup_report::show(&error.to_string(), &started_renderer, started_note.as_deref(), logger.and_then(logging::AppLogger::path).as_deref());
         }
     }
     result
@@ -911,9 +946,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pc-titlebar-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("prefs.json");
-        assert_eq!(super::custom_titlebar(None), super::CUSTOM_TITLEBAR, "no preferences file: the default");
+        let default_custom = super::CUSTOM_TITLEBAR;
+        assert_eq!(super::custom_titlebar(None), default_custom, "no preferences file: the platform default");
         std::fs::write(&file, "not json").unwrap();
-        assert_eq!(super::custom_titlebar(Some(&file)), super::CUSTOM_TITLEBAR, "an unreadable file: the default");
+        assert_eq!(super::custom_titlebar(Some(&file)), default_custom, "an unreadable file: the platform default");
+        std::fs::write(&file, r#"{"interface":{}}"#).unwrap();
+        assert_eq!(super::custom_titlebar(Some(&file)), default_custom, "an older preference file: the platform default");
         std::fs::write(&file, r#"{"interface":{"systemTitleBar":true}}"#).unwrap();
         assert!(!super::custom_titlebar(Some(&file)));
         assert_eq!(super::native_options(false).viewport.decorations, Some(true));

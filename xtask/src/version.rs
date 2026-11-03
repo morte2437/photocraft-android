@@ -49,7 +49,11 @@ pub fn validate(v: &str) -> Result<(), String> {
         return bad();
     }
     if let Some(p) = pre
-        && (p.is_empty() || p.split('.').any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')))
+        && p.split('.').any(|id| {
+            id.is_empty()
+                || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                || (id.len() > 1 && id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit()))
+        })
     {
         return bad();
     }
@@ -142,6 +146,18 @@ mod tests {
             assert!(validate(bad).is_err(), "{bad}");
         }
         assert!(replace(MANIFEST, "nope").is_err());
+    }
+
+    #[test]
+    fn rejects_numeric_prerelease_identifiers_with_leading_zeroes() {
+        for version in ["1.0.0-01", "1.0.0-rc.01", "1.0.0-00.1"] {
+            assert!(validate(version).is_err(), "validator accepted invalid version {version}");
+            assert!(replace(MANIFEST, version).is_err(), "accepted invalid version {version}");
+        }
+        for version in ["1.0.0-0", "1.0.0-rc.0", "1.0.0-01a", "1.0.0-01-2"] {
+            let updated = replace(MANIFEST, version).expect("valid prerelease");
+            assert_eq!(read(&updated).unwrap(), version);
+        }
     }
 
     #[test]

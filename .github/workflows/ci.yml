@@ -11,6 +11,26 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
+      full_sweep:
+        description: "Run every testkit sweep case (runtime comparison and integration validation)"
+        type: boolean
+        default: false
+      color_range:
+        description: "Compare cropped Color Range on 24 MP (Linux, exact outputs)"
+        type: boolean
+        default: false
+      selection_combining:
+        description: "Compare direct GRAY8 selection combining on 36 MP (Linux, exact outputs)"
+        type: boolean
+        default: false
+      brush_tip:
+        description: "Compare cached round-tip rasterization on 24 MP"
+        type: boolean
+        default: false
+      brush_tip_base:
+        description: "Baseline commit for the round-tip comparison"
+        type: string
+        default: "main"
       selection_morphology:
         description: "Compare selection morphology on 36 MP (Linux, exact outputs)"
         type: boolean
@@ -22,6 +42,10 @@ on:
       fuzz_seconds:
         description: "Seconds per fuzz target"
         default: "600"
+      dry_mixer:
+        description: "Compare the live Mixer Brush against the origin/main merge base on 24 MP (Linux)"
+        type: boolean
+        default: false
 
 # The token is only used to check out the code: no job writes to the repository.
 permissions:
@@ -30,6 +54,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  PHOTOCRAFT_FULL_SWEEP: ${{ inputs.full_sweep && '1' || '0' }}
   # No test or fuzz run may print a page: the engine refuses to spool, and if something ever
   # bypasses that, lp fails loudly on a printer that does not exist.
   PHOTOCRAFT_NO_PRINT: "1"
@@ -133,6 +158,7 @@ jobs:
       # Cargo.toml's dev profile already keeps line tables only.
       dev-debug: ""
       env: |
+        PHOTOCRAFT_FULL_SWEEP=${{ inputs.full_sweep && '1' || '0' }}
         PHOTOCRAFT_NO_PRINT=1
         LPDEST=photocraft-no-such-printer
       timeout-minutes: 100
@@ -424,6 +450,36 @@ jobs:
           name: fuzz-${{ matrix.target.crate }}-${{ matrix.target.name }}
           path: crates/${{ matrix.target.crate }}/fuzz/artifacts
 
+  color-range-performance:
+    if: inputs.color_range == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+            libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: color-range-perf
+      - name: Compare exact outputs and release timings on 24 MP
+        run: |
+          set -o pipefail
+          cargo test --release -p photocraft-engine --lib color_range_release_comparison -- --ignored --nocapture | tee color-range-perf.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: color-range-performance
+          path: color-range-perf.txt
+
   selection-morphology:
     if: inputs.selection_morphology == true
     runs-on: ubuntu-latest
@@ -459,7 +515,8 @@ jobs:
           path: selection-morphology-perf.txt
 
   selection-morphology-quick-perf:
-    if: inputs.selection_morphology == true
+    if: inputs.selection_morphology == true || inputs.color_range == true || inputs.selection_combining == true || inputs.brush_tip == true || inputs.dry_mixer == true
+    name: quick performance suite
     # Match perf-nightly.yml: Linux llvmpipe lacks the float render targets needed by
     # bevel_bench, so its required GPU rows cannot be measured there.
     runs-on: macos-15
@@ -481,3 +538,128 @@ jobs:
           path: |
             target/perf/*.json
             target/perf/summary.md
+
+  selection-combining:
+    if: inputs.selection_combining == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: selection-combining-perf
+      - name: Compare exact outputs and release timings on 36 MP
+        run: |
+          set -o pipefail
+          cargo test --release -p photocraft-algo --lib gray8_combining_release_comparison -- --ignored --nocapture | tee selection-combining-perf.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: selection-combining-performance
+          path: selection-combining-perf.txt
+
+  brush-tip:
+    if: inputs.brush_tip == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RAYON_NUM_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: after
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.brush_tip_base }}
+          path: before
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            before -> target
+            after -> target
+          key: brush-tip-release
+      - name: Build the same benchmark against both versions
+        run: |
+          cp after/crates/paint/examples/big_dab_bench.rs before/crates/paint/examples/big_dab_bench.rs
+          cargo build --release --locked --manifest-path before/Cargo.toml -p photocraft-paint --example big_dab_bench
+          cargo build --release --locked --manifest-path after/Cargo.toml -p photocraft-paint --example big_dab_bench
+      - name: Compare round and transformed tips on 24 MP
+        run: |
+          set -o pipefail
+          for size in 200 2000; do
+            for angle in 0 0.7; do
+              for version in before after; do
+                echo "$version: size=$size angle=$angle" | tee -a brush-tip.txt
+                "$version/target/release/examples/big_dab_bench" "$size" 0.37 "$angle" | tee -a brush-tip.txt
+              done
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: brush-tip-performance
+          path: brush-tip.txt
+  dry-mixer:
+    if: inputs.dry_mixer == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RAYON_NUM_THREADS: "4"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin baseline to the merge base with origin/main
+        id: baseline
+        run: |
+          git remote add upstream https://github.com/storytold/photocraft.git
+          git fetch --no-tags upstream main
+          base=$(git merge-base HEAD upstream/main)
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+          git worktree add --detach "$RUNNER_TEMP/photocraft-baseline" "$base"
+          mkdir -p "$RUNNER_TEMP/photocraft-baseline/crates/engine/examples"
+          cp crates/engine/examples/bench_dry_mixer.rs "$RUNNER_TEMP/photocraft-baseline/crates/engine/examples/bench_dry_mixer.rs"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Install Linux build dependencies
+        uses: storytold/craft-common-actions/actions/install-apt-packages@main
+        with:
+          packages: >-
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+            libgtk-3-dev
+      - name: Benchmark baseline and candidate on this runner
+        run: |
+          set -o pipefail
+          echo "baseline=${{ steps.baseline.outputs.sha }}" | tee dry-mixer-perf.txt
+          echo "candidate=${GITHUB_SHA}" | tee -a dry-mixer-perf.txt
+          CARGO_TARGET_DIR="$RUNNER_TEMP/target-baseline" cargo run --release --manifest-path "$RUNNER_TEMP/photocraft-baseline/Cargo.toml" -p photocraft-engine --example bench_dry_mixer | tee baseline-mixer.txt
+          CARGO_TARGET_DIR="$RUNNER_TEMP/target-candidate" cargo run --release -p photocraft-engine --example bench_dry_mixer | tee candidate-mixer.txt
+          cat baseline-mixer.txt candidate-mixer.txt >> dry-mixer-perf.txt
+          python3 - <<'PY'
+          import re
+          def fingerprints(path):
+              rows = open(path).readlines()
+              result = {}
+              for row in rows:
+                  match = re.search(r'wet=\s*(\d+)% sample_all=\s*(\w+)\s+size=\s*(\d+).*blake3=(\w+)', row)
+                  if match:
+                      result[match.group(1, 2, 3)] = match.group(4)
+              return result
+          before, after = fingerprints('baseline-mixer.txt'), fingerprints('candidate-mixer.txt')
+          assert len(before) == 12 and before == after, 'baseline/candidate mixer output or state differs'
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: dry-mixer-performance
+          path: dry-mixer-perf.txt

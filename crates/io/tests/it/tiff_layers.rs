@@ -87,8 +87,8 @@ fn tiff_and_psd_open_as_the_same_document() {
         )
         .unwrap()
         .document;
-        let a = photocraft_compose::flatten(&d).px;
-        let b = photocraft_compose::flatten(&flat).px;
+        let a = photocraft_compose::flatten(&d).into_px();
+        let b = photocraft_compose::flatten(&flat).into_px();
         assert!(max_diff(&a, &b) <= 2.0 / 255.0, "{mode:?} {depth:?}: composite differs by {}", max_diff(&a, &b));
     }
 }
@@ -357,8 +357,7 @@ fn advanced_blending_survives_layered_tiff_in_both_byte_orders() {
     }
 }
 
-#[test]
-fn damaged_layer_data_opens_flattened() {
+fn damaged_layer_data_opens_flattened_part(part: u64) {
     let d = gen_doc(ColorMode::Rgb, SampleType::U8, Features::PIXELS);
     let r = tiff(&d, true);
     let (_, layers) = tags(&r.bytes);
@@ -376,9 +375,15 @@ fn damaged_layer_data_opens_flattened() {
     // them, a different quarter each day.
     let sweep = photocraft_testkit::Sweep::new(4);
     let mut case = 0;
+    let mut selected = 0;
     let mut runs = || {
         case += 1;
-        sweep.includes(case)
+        if !sweep.includes(case) {
+            return false;
+        }
+        let belongs = selected % 4 == part;
+        selected += 1;
+        belongs
     };
     for cut in (0..r.bytes.len()).step_by(11).filter(|_| runs()) {
         let _ = import("x.tif", &r.bytes[..cut]);
@@ -1138,4 +1143,24 @@ fn channels_past_sixteen_leave_no_resources_behind() {
     let want: Vec<String> = (1..=16).map(|i| format!("Alpha {i}")).collect();
     assert_eq!(names, want.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(back.quick_mask.is_none());
+}
+
+#[test]
+fn damaged_layer_data_opens_flattened_part_0() {
+    damaged_layer_data_opens_flattened_part(0);
+}
+
+#[test]
+fn damaged_layer_data_opens_flattened_part_1() {
+    damaged_layer_data_opens_flattened_part(1);
+}
+
+#[test]
+fn damaged_layer_data_opens_flattened_part_2() {
+    damaged_layer_data_opens_flattened_part(2);
+}
+
+#[test]
+fn damaged_layer_data_opens_flattened_part_3() {
+    damaged_layer_data_opens_flattened_part(3);
 }

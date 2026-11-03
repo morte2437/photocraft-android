@@ -66,6 +66,9 @@ pub(super) fn overlay(gradient: &mut Gradient, interpolation: &mut Option<Gradie
     if let Some(smoothness) = f_of(params, "smoothness").filter(|n| n.is_finite()) {
         source.smoothness = smoothness.clamp(0.0, 100.0);
     }
+    if let Ok(Some(stops)) = super::stops_param(params, "layer.layerStyle.gradientOverlay") {
+        source.stops = stops;
+    }
     edit_endpoint(source.stops.first_mut(), params, "from");
     edit_endpoint(source.stops.last_mut(), params, "to");
     if previous.as_ref() != Some(source)
@@ -77,7 +80,7 @@ pub(super) fn overlay(gradient: &mut Gradient, interpolation: &mut Option<Gradie
     // Geometry edits must not replace just the ends of the baked curve.
     let mut geometry = params.clone();
     if let Some(object) = geometry.as_object_mut() {
-        for key in ["method", "smoothness", "from", "to"] {
+        for key in ["method", "smoothness", "from", "to", "stops"] {
             object.remove(key);
         }
     }
@@ -242,5 +245,25 @@ mod tests {
         overlay(&mut gradient, &mut source, &super::super::effect_defaults("gradientOverlay"));
         assert!(source.is_none());
         assert_eq!(gradient, Gradient::default());
+    }
+}
+
+#[cfg(test)]
+mod integration_stop_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn arbitrary_source_edits_rebake_and_preserve_opacity() {
+        let mut gradient = Gradient::default();
+        let mut source = None;
+        overlay(
+            &mut gradient,
+            &mut source,
+            &json!({"method":"smooth","stops":[[0.0,"#ff0000"],[0.3,"#00ff00"],[1.0,"#0000ff"]],"opacityStops":[[0.0,20.0],[1.0,80.0]]}),
+        );
+        let stops = source.as_ref().unwrap().stops.clone();
+        assert_eq!(stops.len(), 3);
+        assert_eq!(gradient.stops, photocraft_io::bake_gradient(stops, &[], 1.0, photocraft_io::GradientMethod::Smooth));
+        assert_eq!(gradient.opacity_stops, vec![(0.0, 0.2), (1.0, 0.8)]);
     }
 }

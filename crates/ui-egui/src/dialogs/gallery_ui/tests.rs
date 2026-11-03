@@ -184,6 +184,33 @@ fn preview_and_thumbnails_render() {
     assert!(worst < 2e-3, "preview differs from the result by {worst}");
 }
 
+#[test]
+fn native_component_gallery_previews_match_commit_and_capture_the_target() {
+    for mode in ["rgb", "cmyk", "lab"] {
+        for depth in [8, 16, 32] {
+            for alpha in [true, false] {
+                let fixture = crate::distort_ui::component_tests::app(mode, depth);
+                let mut app = if alpha { fixture } else { crate::distort_ui::component_tests::without_alpha(fixture) };
+                open(&mut app).unwrap();
+                let d = app.distort.gallery.as_mut().unwrap();
+                d.effects = vec![EffectLayer::new(GalleryFilter::Cutout)];
+                let params = d.params();
+                let before = d.src.clone();
+                let bounds = d.canvas;
+                let layer = d.layer;
+                let preview = preview_pixels(&before, bounds, &params, bounds, 1, &Interrupt::NONE).unwrap();
+                crate::distort_ui::component_tests::protected(&before, &preview, bounds);
+                let thumbnail = render(&before, &params);
+                crate::distort_ui::component_tests::protected(&before, &thumbnail, bounds);
+                app.run("channel.target", json!({"channel":{"color":1}})).unwrap();
+                commit(&mut app).unwrap();
+                let after = app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap();
+                assert_eq!(after.read_region(bounds), preview.read_region(bounds));
+            }
+        }
+    }
+}
+
 /// A 240×160 layer with gradients, edges and fine detail, so every gallery filter has
 /// something to draw.
 fn photo_app() -> PhotocraftApp {

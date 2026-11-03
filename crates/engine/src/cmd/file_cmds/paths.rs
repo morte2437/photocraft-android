@@ -212,7 +212,7 @@ pub(crate) fn sanitize(name: &str) -> String {
 
 /// `name` with a `_` before its first dot when it is a Windows device name (`nul` → `nul_`,
 /// `com1.v2` → `com1_.v2`); a `_` at the end would leave the device stem in place.
-pub(crate) fn portable_device_name(name: String) -> String {
+pub fn portable_device_name(name: String) -> String {
     if !is_windows_device_name(&name) {
         return name;
     }

@@ -1,7 +1,7 @@
 //! Capability-based filesystem policy for untrusted automation paths.
 
 use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Components, Path, PathBuf, Prefix};
 use std::sync::Arc;
 
 use cap_std::ambient_authority;
@@ -16,16 +16,18 @@ const DENIED: &str = "automation filesystem access is not granted";
 #[derive(Clone)]
 struct RootCapability {
     dir: Arc<Dir>,
-    /// The root as an absolute path (trusted launch configuration), to recognise absolute request
+    /// The canonical root path (trusted launch configuration), to recognise absolute request
     /// paths that name a file beneath it.
     path: PathBuf,
+    /// The trusted launch spelling also names the same held capability, even through a link.
+    configured_path: PathBuf,
 }
 
 /// Separate directory capabilities for automation reads and writes.
 ///
 /// Root paths are trusted launch-time configuration. Request paths are always
 /// untrusted, forward-slash relative paths resolved by `cap-std` beneath the
-/// held directory handle, or absolute paths whose text lies beneath the root
+/// held directory handle, or absolute paths beneath the canonical or configured root spelling
 /// (translated to relative ones, see [`request_path`]). Parent traversal,
 /// alternate separators, Windows prefixes and empty components are rejected
 /// before I/O.
@@ -117,7 +119,10 @@ impl AuthorizedWorkspace {
                 // Best effort, and only when there is a file being replaced: a save still
                 // succeeds for a document whose Finder tag could not come along.
                 if let Ok(old) = root.dir.open(&relative) {
+                    let old = old.into_std();
                     let _ = photocraft_format::atomic::meta::copy_xattrs(old.as_fd(), file.as_fd());
+                    // The creation time too (#9388), through the same handles.
+                    let _ = photocraft_format::atomic::meta::copy_created_file(&old, &file);
                 }
             }
             // Falls back to a plain fsync on shares that refuse a full flush (#1336).
@@ -190,35 +195,60 @@ fn open_root(path: Option<&Path>, authority: &str) -> Result<Option<RootCapabili
     if path.as_os_str().is_empty() {
         return Err(AutomationError::BadRequest(format!("automation {authority} root is empty")));
     }
-    let dir = Dir::open_ambient_dir(path, ambient_authority())
-        .map_err(|e| AutomationError::Io(format!("cannot open automation {authority} root `{}`: {e}", path.display())))?;
-    // Textual (no link resolution), like the request paths it is compared with.
+    // Windows absolute() removes parent components. Keep an absolute launch spelling intact:
+    // only that trusted prefix is exempt from request traversal checks, never its suffix.
+    let configured_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::path::absolute(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?
+    };
+    // Resolve trusted configuration once, before opening that exact directory as a capability.
     let absolute =
-        std::path::absolute(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?;
-    Ok(Some(RootCapability { dir: Arc::new(dir), path: absolute }))
+        std::fs::canonicalize(path).map_err(|e| AutomationError::Io(format!("cannot resolve automation {authority} root `{}`: {e}", path.display())))?;
+    let dir = Dir::open_ambient_dir(&absolute, ambient_authority())
+        .map_err(|e| AutomationError::Io(format!("cannot open automation {authority} root `{}`: {e}", path.display())))?;
+    Ok(Some(RootCapability { dir: Arc::new(dir), path: absolute, configured_path }))
 }
 
-/// A request path as the relative path the root's capability resolves. An absolute path is
-/// accepted only when its text names a file beneath `root`: the root's components are
-/// stripped (the drive letter compared without case) and the rest must pass
-/// [`relative_path`], so `..`, prefixes and device names are refused as before. Nothing is
-/// resolved on the filesystem; the held directory handle still does all the opening, so
-/// links cannot escape the root.
+/// Both root spellings refer to the capability opened at startup. Do not resolve an untrusted
+/// absolute request using ambient filesystem access: strip a known root first and let cap-std
+/// resolve the remaining name. New targets and nested export directories need not exist yet.
 fn request_path(raw: &str, root: Option<&RootCapability>) -> Result<PathBuf, AutomationError> {
-    let Some(root) = root.filter(|_| Path::new(raw).is_absolute()) else { return relative_path(raw) };
-    let mut request = Path::new(raw).components();
-    for want in root.path.components() {
-        let same = match (request.next(), want) {
-            (Some(Component::Prefix(a)), Component::Prefix(b)) => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
-            (Some(got), want) => got == want,
-            (None, _) => false,
+    let path = Path::new(raw);
+    let Some(root) = root.filter(|_| path.is_absolute()) else { return relative_path(raw) };
+    // Prefer the trusted launch spelling: it can itself contain `..`. Only that
+    // exact granted prefix is exempt; traversal in the remaining request still fails below.
+    let request = path_beneath_root(path, &root.configured_path)
+        .or_else(|| path_beneath_root(path, &root.path))
+        .ok_or_else(|| path_error(raw, "absolute paths must be inside the automation root"))?;
+    let rest = request.map(|c| c.as_os_str().to_str().ok_or_else(|| path_error(raw, "path is not UTF-8"))).collect::<Result<Vec<_>, _>>()?;
+    relative_path(&rest.join("/"))
+}
+
+/// Strip a granted root prefix without resolving the client path with ambient authority.
+/// Windows ASCII case variants name the same grant; the unstripped suffix keeps its case.
+fn path_beneath_root<'a>(path: &'a Path, root: &Path) -> Option<Components<'a>> {
+    let mut request = path.components();
+    for want in root.components() {
+        let same = match (request.next()?, want) {
+            (Component::Prefix(a), Component::Prefix(b)) => match (a.kind(), b.kind()) {
+                // std::fs::canonicalize uses verbatim paths on Windows. Accept their ordinary
+                // drive/UNC spelling too, without treating a device prefix as a disk prefix.
+                (Prefix::Disk(a) | Prefix::VerbatimDisk(a), Prefix::Disk(b) | Prefix::VerbatimDisk(b)) => a.eq_ignore_ascii_case(&b),
+                (Prefix::UNC(a, b) | Prefix::VerbatimUNC(a, b), Prefix::UNC(c, d) | Prefix::VerbatimUNC(c, d)) => {
+                    a.eq_ignore_ascii_case(c) && b.eq_ignore_ascii_case(d)
+                }
+                _ => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
+            },
+            #[cfg(windows)]
+            (Component::Normal(a), Component::Normal(b)) => a.eq_ignore_ascii_case(b),
+            (got, want) => got == want,
         };
         if !same {
-            return Err(path_error(raw, "absolute paths must be inside the automation root"));
+            return None;
         }
     }
-    let rest: Vec<&str> = request.map(|c| c.as_os_str().to_str().unwrap_or("\u{FFFD}")).collect();
-    relative_path(&rest.join("/"))
+    Some(request)
 }
 
 fn relative_path(raw: &str) -> Result<PathBuf, AutomationError> {
@@ -322,6 +352,8 @@ pub fn authorize_engine_command(id: &str, params: &Value) -> Result<(), Automati
             | "layer.smartObjects.editContents"
             | "layer.smartObjects.convertToLayers"
             | "layer.smartObjects.saveContents"
+            | "layer.smartObjects.exportSvg"
+            | "layer.smartObjects.updateSvg"
     );
     if (id.starts_with("layer.smartObjects.") && !in_memory_smart_command)
         || matches!(
@@ -371,9 +403,13 @@ fn params_contain_ambient_path(id: &str, params: &Value) -> bool {
     let keys: &[&str] = match id {
         "image.adjustments.colorLookup" | "layer.newAdjustmentLayer.colorLookup" | "layer.setAdjustment" => &["file"],
         "filter.distort.displace" => &["mapPath"],
-        "layer.quickExportAsPng" | "layer.exportAs" | "image.applyDataSet" | "layer.smartObjects.editContents" | "layer.smartObjects.convertToLayers" => {
-            &["path"]
-        }
+        "layer.quickExportAsPng"
+        | "layer.exportAs"
+        | "image.applyDataSet"
+        | "layer.smartObjects.editContents"
+        | "layer.smartObjects.convertToLayers"
+        | "layer.smartObjects.exportSvg"
+        | "layer.smartObjects.updateSvg" => &["path"],
         "image.mode.rgb" | "image.mode.grayscale" | "image.mode.cmyk" | "image.mode.lab" => &["profile"],
         "edit.assignProfile" | "edit.convertToProfile" | "edit.profileInfo" | "view.proofSetup" | "view.gamutWarning" => &["profile"],
         // New Document's Color Profile (#321) can name an .icc file.

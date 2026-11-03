@@ -77,11 +77,11 @@ pub(crate) fn offset_at(app: &mut PhotocraftApp, id: LayerId, x: f64, y: f64) ->
     let (tx, ty) = to_text(&aff, x, y);
     // Type on a path: the point's place along the path is the position in the (single) line.
     let shape = app.session.active().and_then(|s| text_layer(&s.doc, id).map(|t| t.shape.clone()));
-    let (tx, ty) = match shape {
-        Some(photocraft_doc::text::TextShape::Path { path, start, flip }) => {
-            photocraft_text::warp::arc_length_at(&path, flip, f64::from(tx), f64::from(ty)).map_or((tx, ty), |s| ((s - f64::from(start)) as f32, -1.0))
-        }
-        _ => (tx, ty),
-    };
+    let text_start = l.bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    let (tx, ty) = shape
+        .as_ref()
+        .and_then(|shape| photocraft_text::warp::Warp::on_path_with_text_start(shape, text_start))
+        .and_then(|warp| warp.path_text_x_near_text(f64::from(tx), f64::from(ty), l.bounds().map_or(0.0, |bounds| f64::from(bounds[2]))))
+        .map_or((tx, ty), |offset| (offset as f32, -1.0));
     photocraft_text::hit_char(&l, &text, tx, ty).0
 }

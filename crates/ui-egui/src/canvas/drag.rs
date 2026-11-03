@@ -31,6 +31,9 @@ pub struct Drag {
     /// keeps the locked direction stable between events. The Move tool's own drags use `move_mods`.
     pub sel_axis: Option<[f64; 2]>,
     pub lasso: Option<crate::lasso_ui::Lasso>,
+    /// Freeform Pen and Path Selection gestures belong to their source document and target.
+    pub(super) vector_owner: Option<VectorGestureOwner>,
+    pub(super) pen_owner: Option<crate::vector_ui::PenOwner>,
 }
 
 impl Drag {
@@ -49,6 +52,19 @@ impl Drag {
             sel_move: None,
             sel_axis: None,
             lasso: None,
+            vector_owner: None,
+            pen_owner: None,
+        }
+    }
+
+    /// Vector drags capture their owner at the press, the Freeform Pen also its destination, before
+    /// later ⌥-clicks or a temporary Direct Selection can finish them.
+    pub(crate) fn capture_vector_owners(&mut self, app: &PhotocraftApp) {
+        if matches!(self.tool, Tool::FreeformPen | Tool::PathSelection) {
+            self.vector_owner = VectorGestureOwner::capture(app);
+        }
+        if self.tool == Tool::FreeformPen {
+            self.pen_owner = crate::vector_ui::capture_pen_owner(app);
         }
     }
 
@@ -326,3 +342,58 @@ pub(crate) fn draw_readout<const N: usize>(ctx: &egui::Context, id: &str, cursor
         },
     );
 }
+
+/// The document, revision and target a vector drag started on.
+#[derive(Clone, Debug)]
+pub(super) struct VectorGestureOwner {
+    doc: photocraft_doc::DocId,
+    document: std::sync::Weak<Document>,
+    revision: u64,
+    layer: Option<photocraft_doc::LayerId>,
+    selected_path: Option<String>,
+    vector_mask: bool,
+    mode: String,
+    tool: Tool,
+}
+
+/// Cancel a vector drag before it can preview or finish on another document or target; the rest of
+/// its pointer events go nowhere. True when one was cancelled.
+pub(crate) fn cancel_stale_vector_drag(app: &mut PhotocraftApp) -> bool {
+    let stale = app.drag.as_ref().and_then(|d| d.vector_owner.as_ref()).is_some_and(|owner| !owner.valid(app));
+    if stale {
+        app.drag = None;
+        app.cancelled_vector_drag = true;
+    }
+    stale
+}
+
+impl VectorGestureOwner {
+    fn capture(app: &PhotocraftApp) -> Option<Self> {
+        let st = app.session.active()?;
+        Some(Self {
+            doc: st.doc.id,
+            document: std::sync::Arc::downgrade(&st.doc),
+            revision: st.revision,
+            layer: st.active_layer,
+            selected_path: app.ui.selected_path.clone(),
+            vector_mask: app.ui.vector_mask_target,
+            mode: app.ui.tool_options.vector_mode.clone(),
+            tool: app.active_tool(),
+        })
+    }
+
+    pub(super) fn valid(&self, app: &PhotocraftApp) -> bool {
+        Self::capture(app).is_some_and(|now| {
+            self.doc == now.doc
+                && self.document.ptr_eq(&now.document)
+                && self.revision == now.revision
+                && self.layer == now.layer
+                && self.selected_path == now.selected_path
+                && self.vector_mask == now.vector_mask
+                && self.mode == now.mode
+                && self.tool == now.tool
+        })
+    }
+}
+
+use photocraft_doc::Document;

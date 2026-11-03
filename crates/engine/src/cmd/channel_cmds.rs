@@ -15,7 +15,7 @@
 use photocraft_algo::selection::{self as sel, SelectionMode};
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, blend::blend_channel};
 use photocraft_doc::{AlphaChannel, ColorIndicates, Document, Layer, LayerContent, LayerId};
-use photocraft_geom::{Rect, TileCoord};
+use photocraft_geom::Rect;
 use photocraft_raster::{Surface, from_rgba, to_rgba};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -46,7 +46,13 @@ fn has_spot(s: &Session) -> std::result::Result<(), String> {
 }
 fn can_split(s: &Session) -> std::result::Result<(), String> {
     let d = s.active().ok_or("no document open")?;
-    if color_count(&d.doc) + d.doc.channels.len() < 2 { Err("only one channel to split".into()) } else { Ok(()) }
+    if !is_flat(&d.doc) {
+        Err(spot::NOT_FLAT.into())
+    } else if color_count(&d.doc) + d.doc.channels.len() < 2 {
+        Err("only one channel to split".into())
+    } else {
+        Ok(())
+    }
 }
 fn can_merge(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
@@ -83,6 +89,7 @@ pub fn channels_json(st: &DocState) -> Value {
         })).collect::<Vec<_>>(),
         "quickMask": doc.quick_mask.as_ref().map(|q| json!({ "visible": !v.quick_mask_hidden, "color": q.color.to_rgb(), "opacity": q.opacity, "indicates": q.indicates })),
         "target": v.target,
+        "selectedColors": v.color_selection(colors).map(|c| c.indices().collect::<Vec<_>>()),
         "compositeVisible": v.visible_colors(colors) == colors,
         "layerMaskView": crate::mask_view_cmds::view_json(st),
     })
@@ -115,20 +122,19 @@ use manage::{delete_channel, duplicate_channel, move_channel, new_channel, new_s
 use planes::edit_mode;
 pub(crate) use planes::tone;
 pub use planes::{
-    GraySurface, IsolatedCurveChannel, channel_format, color_count, filter_mask_curve_channel, isolated_curve_channel, isolated_curve_channel_for,
-    next_alpha_name,
+    GraySurface, IsolatedCurveChannel, channel_format, color_count, curve_channel_for_colors, filter_mask_curve_channel, isolated_curve_channel,
+    isolated_curve_channel_for, layer_mask_curve_channel, next_alpha_name,
 };
 pub(crate) use refs::source_spec;
 pub use refs::{Blending, ChanRef, parse_ref};
 use selection::{load_selection, quick_mask, save_selection};
-use spot::{merge, merge_spot, mergeable, split};
+use spot::{is_flat, merge, merge_spot, mergeable, split};
 use targeting::{SLOT_KEY, target_cmd, target_slot};
 pub(crate) use targeting::{
     Target, channel_surface_for_filter, clear_channel, clear_color_channel, color_restriction, edits_channel, filter_mask_layer, inject_target, invert_region,
-    is_channel_target, is_spot_target, mask_target_enabled, read_target_surface, restrict_to_color, routed, target_of, target_surface, targeted_channel,
-    targeted_color,
+    is_channel_target, is_spot_target, mask_target_enabled, restrict_to_color, routed, target_of, target_surface, targeted_channel,
 };
-pub use targeting::{follows_filter_mask, follows_target};
+pub use targeting::{follows_filter_mask, follows_target, read_target_surface};
 pub(crate) use view::fix_view;
 pub use view::{ChannelTarget, ChannelView, QuickMaskOptions, color_names, composite_name};
 
@@ -148,7 +154,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Load Selection…",
             ["Select"],
             None,
-            r##"{"channel":index|name|"composite"|"red|green|blue|…"|"transparency"|"mask"|"vectorMask"|"quickMask"|"selection"|"targeted" (the Channels panel's target),"layer":id?,"document":index?,"invert":bool=false,"operation":"new|add|subtract|intersect"="new"}"##,
+            r##"{"channel":index|name|"composite"|"red|green|blue|…"|"transparency"|"mask"|"vectorMask"|"quickMask"|"selection"|"targeted" (the Channels panel's target),"layer":id|name|{"name":str}|{"background":true}?,"document":index?,"invert":bool=false,"operation":"new|add|subtract|intersect"="new"}"##,
             has_doc,
             load_selection
         ),
@@ -158,7 +164,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Apply Image…",
             ["Image"],
             None,
-            r##"{"source":{"document":index?,"layer":id|name|"merged"="merged","channel":"composite"|"red|…"|index|"selection"|"transparency"|"mask"="composite","invert":bool=false},"blending":"normal|multiply|screen|overlay|softLight|hardLight|colorDodge|colorBurn|darken|lighten|difference|exclusion|linearBurn|linearDodge|add|subtract|…"="multiply","opacity":0..100=100,"scale":1..2=1,"offset":-255..255=0,"preserveTransparency":bool=false,"mask":{"document","layer","channel","invert"}?,"sourceChannel|sourceDocument|sourceLayer|sourceInvert|maskChannel|…":flat form of source/mask?}"##,
+            r##"{"source":{"document":index?,"layer":id|name|{"name":str}|{"background":true}|"merged"="merged","channel":"composite"|"red|…"|index|"selection"|"transparency"|"mask"="composite","invert":bool=false},"blending":"normal|multiply|screen|overlay|softLight|hardLight|colorDodge|colorBurn|darken|lighten|difference|exclusion|linearBurn|linearDodge|add|subtract|…"="multiply","opacity":0..100=100,"scale":1..2=1,"offset":-255..255=0,"preserveTransparency":bool=false,"mask":{"document","layer","channel","invert"}?,"sourceChannel|sourceDocument|sourceLayer|sourceInvert|maskChannel|…":flat form of source/mask?}"##,
             has_apply_target,
             apply_image
         ),
@@ -206,7 +212,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Target Channel",
             [],
             None,
-            r##"{"channel":"composite"|"mask"|"vectorMask"|"red|green|blue|…"|index|name="composite"}"##,
+            r##"{"channel":"composite"|"mask"|"vectorMask"|"red|green|blue|…"|index|name|{"color":index|name}|{"alpha":index}="composite","colors":[index,…]?,"extend":bool=false} (a color object selects only a native component, never a named alpha channel; colors selects native colour components only; extend toggles one colour channel, as Shift-click; all components select the composite)"##,
             has_doc,
             target_cmd
         ),

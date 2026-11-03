@@ -87,6 +87,35 @@ fn a_shown_filter_mask_takes_the_paint() {
 }
 
 #[test]
+fn a_shown_filter_mask_wins_over_color_selection_for_cut_and_clear() {
+    for depth in DEPTHS {
+        for cmd in ["edit.cut", "edit.clear"] {
+            let mut s = session(depth);
+            paint(&mut s);
+            convert(&mut s);
+            s.execute("filter.blur.gaussianBlur", json!({"radius":3})).unwrap();
+            stroke(&mut s, Some("filterMask")).unwrap();
+            s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+            let layer = s.active().unwrap().active_layer.unwrap();
+            let layer_mask = s.active().unwrap().doc.layer(layer).unwrap().mask.clone();
+            let before = active_smart(&s).filter_mask.unwrap();
+            s.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+            s.execute("view.layerMask", json!({"mode":"gray","mask":"filter"})).unwrap();
+            s.tools.background = [0.25, 0.25, 0.25, 1.0];
+            let result = s.execute(cmd, json!({})).unwrap();
+            if cmd == "edit.cut" {
+                assert_eq!(result["target"], "filterMask");
+                assert_eq!(s.clipboard.as_ref().unwrap().surface.pixel(8, 20)[0], 0.0);
+            }
+            assert!((active_smart(&s).filter_mask.unwrap().value(8, 20) - 0.25).abs() < 0.005);
+            assert_eq!(s.active().unwrap().doc.layer(layer).unwrap().mask, layer_mask, "{cmd} leaves the layer mask alone");
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(active_smart(&s).filter_mask.unwrap(), before, "undo {cmd} {depth}");
+        }
+    }
+}
+
+#[test]
 fn copying_the_filter_mask_never_copies_the_layer_mask() {
     for depth in DEPTHS {
         let mut s = session(depth);

@@ -281,7 +281,8 @@ fn glyph_center(layout: &TextLayout, g: &PlacedGlyph, font: &skrifa::FontRef, si
 /// The deformation of a type layer: the path it runs along, or its Warp Text settings (None
 /// when neither applies).
 pub fn layout_deform(layout: &TextLayout, layer: &photocraft_doc::TextLayer) -> Option<Warp> {
-    Warp::on_path(&layer.shape).or_else(|| layout_warp(layout, layer.warp.as_ref()))
+    let text_start = layout.bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    Warp::on_path_with_text_start(&layer.shape, text_start).or_else(|| layout_warp(layout, layer.warp.as_ref()))
 }
 
 /// The warp to apply to `layout` (None when `warp` is absent, `warpNone` or flat).

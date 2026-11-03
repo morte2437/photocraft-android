@@ -154,6 +154,19 @@ fn halftone_pattern_unknown_nested_class_stays_verbatim() {
     }
 }
 
+/// Keeps a Gallery stack opaque when its own descriptor holds a setting beside the effect list,
+/// which a save would otherwise drop.
+#[test]
+fn halftone_pattern_unknown_outer_setting_stays_verbatim() {
+    let valid = native_effect("ScrD", 2, 5);
+    let gallery = Descriptor::new(GALLERY_CLASS).with("GEfs", Value::List(vec![Value::Descriptor(valid)])).with("futureSetting", Value::Integer(7));
+    let item = native_item(gallery);
+    let parsed = Descriptor::from_bytes(&item.to_bytes()).unwrap();
+    let filter = filter_from_item(&parsed);
+    assert_eq!(filter.command, UNSUPPORTED_FILTER);
+    assert_eq!(item_for_filter(&filter).unwrap().to_bytes(), item.to_bytes());
+}
+
 /// Rejects unsupported export values instead of silently changing their meaning.
 #[test]
 fn halftone_pattern_invalid_export_settings_are_reported() {

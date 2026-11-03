@@ -77,7 +77,8 @@ fn escape_dismisses_stroke_child_then_parent_without_deselecting_the_document() 
 #[test]
 fn enter_selects_a_stroke_style_and_escape_closes_its_popups_without_committing_pen() {
     let mut app = app(Tool::Pen);
-    app.ui.pen = Some(crate::vector_ui::PenPath { knots: vec![[[12.0, 12.0]; 3], [[60.0, 40.0]; 3]], ..Default::default() });
+    let owner = crate::vector_ui::capture_pen_owner(&app);
+    app.ui.pen = Some(crate::vector_ui::PenPath { knots: vec![[[12.0, 12.0]; 3], [[60.0, 40.0]; 3]], owner, ..Default::default() });
     let pen = app.ui.pen.clone();
     let original = app.session.active().unwrap().doc.clone();
     let history = app.session.active().unwrap().history.past_len();

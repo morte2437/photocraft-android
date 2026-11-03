@@ -197,6 +197,53 @@ fn clear_states_resets_the_brush_source_until_undo() {
     assert_eq!((h.brush_source(), h.row_doc(1, &cur).unwrap().name.as_str()), (Some(1), "a"));
 }
 
+/// The byte budget keeps the source set before Clear History among the cleared states, so
+/// Undo Clear History brings it back as the History Brush's source.
+#[test]
+fn byte_budget_keeps_the_brush_source_of_the_cleared_states() {
+    let mut h = History::new(50);
+    let mut cur = Arc::new(base());
+    for i in 0..5 {
+        edit(&mut h, &mut cur, &format!("paint {i}"), |d| {
+            let id = d.layers[0].id;
+            d.layer_mut(id).unwrap().surface_mut().unwrap().write_pixel(1, 1, &[i as f32 / 8.0, 0.0, 0.0, 1.0]);
+        });
+    }
+    assert!(h.set_brush_source(1));
+    let source = h.state(1).unwrap();
+    assert!(h.clear_states());
+    h.max_bytes = 1;
+    assert_eq!(h.trim(&cur), 3);
+    assert_counter(&h, &cur);
+    assert!(h.is_cleared() && h.past_len() == 0, "the list stays cleared");
+    cur = h.undo(cur).unwrap().0;
+    assert_eq!(h.entries(), ["paint 0", "paint 3", "paint 4"], "the source is kept with the last step");
+    assert_eq!(h.brush_source(), Some(0));
+    assert!(Arc::ptr_eq(&h.row_doc(0, &cur).unwrap(), &source), "the History Brush paints from the same state");
+}
+
+/// When the History Brush's source is the newest past state, it is the state the byte budget
+/// always keeps, and no older state is kept beside it.
+#[test]
+fn byte_budget_counts_a_newest_brush_source_as_the_kept_state() {
+    let mut h = History::new(50);
+    let mut cur = Arc::new(base());
+    for i in 0..5 {
+        edit(&mut h, &mut cur, &format!("paint {i}"), |d| {
+            let id = d.layers[0].id;
+            d.layer_mut(id).unwrap().surface_mut().unwrap().write_pixel(1, 1, &[i as f32 / 8.0, 0.0, 0.0, 1.0]);
+        });
+    }
+    assert!(h.set_brush_source(4));
+    let source = h.state(4).unwrap();
+    h.max_bytes = 1;
+    assert_eq!(h.trim(&cur), 4);
+    assert_counter(&h, &cur);
+    assert_eq!(h.past_len(), 1);
+    assert_eq!(h.brush_source(), Some(0));
+    assert!(Arc::ptr_eq(&h.row_doc(0, &cur).unwrap(), &source));
+}
+
 #[test]
 fn new_edit_clears_redo() {
     let mut h = History::default();
@@ -652,6 +699,110 @@ fn fill_caches_and_smart_filter_masks_count_toward_history_bytes() {
     h.max_bytes = 2 * tile;
     assert_eq!(h.trim(&cur), 1, "the copied fill cache tile pushes history over budget");
     assert_eq!(h.pixel_bytes(&cur), 3 * tile, "the most recent undo state is always kept");
+    assert_counter(&h, &cur);
+}
+
+const TILE: usize = 256 * 256 * 4;
+const SOURCE: usize = 1_000_000;
+
+fn embedded(len: usize) -> photocraft_doc::SmartSource {
+    photocraft_doc::SmartSource::Embedded { file_name: "source.pcraft".into(), bytes: Arc::new(vec![7; len]) }
+}
+
+/// `base()` with one smart object holding `source`; returns the document and the layer's id.
+fn smart_document(source: photocraft_doc::SmartSource) -> (Document, photocraft_doc::LayerId) {
+    use photocraft_doc::{Affine, LayerContent, SmartObject};
+    let mut doc = base();
+    let layer = Layer::new("Smart", LayerContent::Smart(SmartObject::new(source, Affine::IDENTITY, None)));
+    let id = layer.id;
+    doc.insert_above(None, layer);
+    (doc, id)
+}
+
+fn replace_source(doc: &mut Document, id: photocraft_doc::LayerId, source: photocraft_doc::SmartSource) {
+    if let Some(photocraft_doc::LayerContent::Smart(sm)) = doc.layer_mut(id).map(|l| &mut l.content) {
+        sm.source = source;
+    }
+}
+
+#[test]
+fn embedded_smart_object_contents_count_toward_history_bytes() {
+    let (with, _) = smart_document(embedded(SOURCE));
+    let without = base();
+    let mut h = History::default();
+    assert_eq!(h.pixel_bytes(&with), h.pixel_bytes(&without) + SOURCE, "uncounted history walks the document");
+    assert_eq!(h.pixel_bytes(&without), TILE);
+    // With a budget the counter keeps the figure incrementally.
+    let mut cur = Arc::new(with.clone());
+    h.max_bytes = usize::MAX;
+    edit(&mut h, &mut cur, "Rename", |d| d.name = "renamed".into());
+    edit(&mut h, &mut cur, "Rename again", |d| d.name = "renamed again".into());
+    h.trim(&cur);
+    assert_eq!(h.pixel_bytes(&cur), TILE + SOURCE);
+    assert_counter(&h, &cur);
+    // A linked source holds no bytes of its own.
+    let (linked, _) = smart_document(photocraft_doc::SmartSource::Linked { path: "a.png".into() });
+    assert_eq!(History::default().pixel_bytes(&linked), TILE);
+}
+
+#[test]
+fn states_sharing_one_embedded_source_count_it_once() {
+    let (doc, _) = smart_document(embedded(SOURCE));
+    let mut cur = Arc::new(doc);
+    let mut h = History { max_bytes: usize::MAX, ..History::default() };
+    for i in 0..10 {
+        edit(&mut h, &mut cur, &format!("Rename {i}"), |d| d.name = format!("renamed {i}"));
+    }
+    h.trim(&cur);
+    assert_eq!(h.past_len(), 10);
+    assert_eq!(h.pixel_bytes(&cur), TILE + SOURCE);
+    assert_eq!(h.unique_bytes(&cur), 0);
+    assert_counter(&h, &cur);
+    // A duplicated layer shares the same bytes too.
+    edit(&mut h, &mut cur, "Duplicate", |d| {
+        if let Some(copy) = d.layers.last().cloned() {
+            d.insert_above(None, copy);
+        }
+    });
+    h.trim(&cur);
+    assert_eq!(h.pixel_bytes(&cur), TILE + SOURCE);
+    assert_counter(&h, &cur);
+}
+
+#[test]
+fn a_replaced_embedded_source_counts_until_the_state_holding_it_is_trimmed() {
+    const REPLACED: usize = 400_000;
+    let (doc, id) = smart_document(embedded(SOURCE));
+    let mut cur = Arc::new(doc);
+    let mut h = History { max_bytes: usize::MAX, ..History::default() };
+    edit(&mut h, &mut cur, "Replace Contents", |d| replace_source(d, id, embedded(REPLACED)));
+    assert_eq!(h.pixel_bytes(&cur), TILE + SOURCE + REPLACED, "the state before still holds the old contents");
+    assert_eq!(h.unique_bytes(&cur), SOURCE);
+    edit(&mut h, &mut cur, "Rename", |d| d.name = "renamed".into());
+    h.trim(&cur);
+    assert_counter(&h, &cur);
+    h.max_bytes = TILE + REPLACED;
+    assert_eq!(h.trim(&cur), 1, "dropping the oldest state releases the old contents");
+    assert_eq!(h.pixel_bytes(&cur), TILE + REPLACED);
+    assert_counter(&h, &cur);
+}
+
+#[test]
+fn embedded_contents_push_old_states_out_of_the_budget() {
+    let (doc, id) = smart_document(embedded(SOURCE));
+    let mut cur = Arc::new(doc);
+    let mut h = History::new(50);
+    for i in 0..5 {
+        // Each step swaps in contents of its own; only the tile is shared between states.
+        edit(&mut h, &mut cur, &format!("Replace {i}"), |d| replace_source(d, id, embedded(SOURCE)));
+    }
+    assert_eq!(h.trim(&cur), 0, "unlimited by default");
+    assert_eq!(h.pixel_bytes(&cur), TILE + 6 * SOURCE);
+    // The current contents and the two newest states fit.
+    h.max_bytes = TILE + 3 * SOURCE;
+    assert_eq!(h.trim(&cur), 3);
+    assert_eq!(h.past_len(), 2);
+    assert_eq!(h.pixel_bytes(&cur), TILE + 3 * SOURCE);
     assert_counter(&h, &cur);
 }
 

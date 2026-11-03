@@ -1,7 +1,7 @@
 //! Preferences › Performance › Low Resolution Previews: on (the default) live previews of a large
 //! document render on a reduced copy, off they render at full resolution.
 //!
-//! A 3000 × 2000 document of 1 px black and white columns: the reduced copy (every 2nd pixel at
+//! A 2502 × 2000 document of 1 px black and white columns: the reduced copy (every 2nd pixel at
 //! this size) is all black, so its preview shows a flat colour where the full-size one shows the
 //! columns at 100 % (and their mipmapped grey zoomed out). Drives the real app offscreen on wgpu;
 //! skips when no GPU adapter exists (like `drag_preview_canvas.rs`).
@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 
 type Harness = egui_kittest::Harness<'static, PhotocraftApp>;
 
-const W: i32 = 3000;
+// Just above the 5 MP proxy threshold; keep the same factor-two reduction.
+const W: i32 = 2502;
 const H: i32 = 2000;
 
 fn harness() -> Option<Harness> {
@@ -47,9 +48,17 @@ fn control(h: &mut Harness, method: &str, params: Value) {
 
 fn columns_document() -> Document {
     let mut doc = Document::with_background("columns", Size::new(W as u32, H as u32), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    assert_eq!(photocraft_ui_egui::proxy::factor(&doc), 2, "the fixture must exercise a reduced preview");
     let s = doc.layers[0].surface_mut().expect("background pixels");
-    for x in (0..W).step_by(2) {
-        s.fill_rect(Rect::new(x, 0, x + 1, H), &[0.0, 0.0, 0.0, 1.0]);
+    let row: Vec<f32> = (0..W)
+        .flat_map(|x| {
+            let v = if x % 2 == 0 { 0.0 } else { 1.0 };
+            [v, v, v, 1.0]
+        })
+        .collect();
+    for y in (0..H).step_by(64) {
+        let end = (y + 64).min(H);
+        s.write_region(Rect::new(0, y, W, end), &row.repeat((end - y) as usize));
     }
     doc
 }
@@ -88,7 +97,7 @@ fn row(h: &mut Harness) -> Vec<i32> {
         photocraft_ui_egui::rulers::content_rect(app, app.last_canvas_rect)
     };
     // egui_kittest waits 10 s for the GPU. Windows CI renders on WARP, a software rasterizer,
-    // where the first full-resolution composite of this 6 MP document can take longer; the
+    // where the first full-resolution composite of this 5 MP document can take longer; the
     // submitted work still finishes, so wait for it again instead of failing.
     let img = (0..3).find_map(|_| h.render().ok()).expect("render");
     let (x0, y) = (canvas.min.x as u32 + 20, canvas.min.y as u32 + 40);

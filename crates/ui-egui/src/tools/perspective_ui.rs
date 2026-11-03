@@ -120,6 +120,9 @@ impl PerspSession {
 }
 
 pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context, command: &str) -> Result<(), String> {
+    if let Some(why) = app.session.disabled_reason(command) {
+        return Err(why);
+    }
     if app.ui.transform.is_some() {
         return Err("finish Free Transform first".into());
     }

@@ -199,14 +199,22 @@ type Reopened = (String, Option<i32>, Vec<String>);
 /// `TextIndex`, bottom first), with a type layer "Hi" made the way the Type tool makes one
 /// (`build_tysh`, no index of its own) inserted at `at`, saved and reopened: each layer's
 /// index and font features (but `calt`, on by default and written on as Photoshop does), and
-/// "Hi"'s style run in the saved `Txt2`.
+/// "Hi"'s style run in the saved `Txt2`. The kept layers are styled as their objects are (font
+/// and size too), so their objects are saved unchanged, which this checks.
 fn add_type_layer(objects: &[(&str, &str)], kept: &[(&str, i32)], at: usize) -> (Vec<Reopened>, E) {
     let mut doc = Document::new("k", photocraft_geom::Size::new(64, 32), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
     for (text, index) in kept {
         let mut t = layer(text, &[(text.len(), Kerning::Metrics, 0.0)]);
+        // `photoshop_txt2` writes MyriadPro-Regular at 12 pt (the document is at 72 dpi).
+        t.runs[0].style.size_pt = 12.0;
+        t.runs[0].style.postscript_name = Some("MyriadPro-Regular".into());
+        t.sync_summary();
         photocraft_text::TextEngine::new().render_layer(&mut t, doc.resolution_dpi, doc.pixel_format());
-        let raw = photocraft_text::psd::build_tysh(&t, doc.resolution_dpi, None);
-        t.psd_raw = Some(std::sync::Arc::new(photocraft_text::psd::set_text_index(&raw, *index).unwrap()));
+        let raw = photocraft_text::psd::set_text_index(&photocraft_text::psd::build_tysh(&t, doc.resolution_dpi, None), *index).unwrap();
+        // As opening the file does: a kept layer's style holds what its `Txt2` object says (#8415:
+        // a layer whose style disagrees with its object is saved as a style edit).
+        photocraft_text::psd::apply_txt2(&mut t, &raw, &photocraft_text::psd::parse_txt2(&photoshop_txt2(objects)).unwrap());
+        t.psd_raw = Some(std::sync::Arc::new(raw));
         doc.layers.push(Layer::new(*text, LayerContent::Text(t)));
     }
     doc.metadata.psd_global_blocks = vec![(*b"8BIM", *b"Txt2", std::sync::Arc::new(photoshop_txt2(objects)))];
@@ -228,6 +236,11 @@ fn add_type_layer(objects: &[(&str, &str)], kept: &[(&str, i32)], at: usize) -> 
             (l.name.clone(), index, t.char_runs().iter().flat_map(|r| r.style.features.iter().filter(|f| f.tag != "calt").map(|f| f.tag.clone())).collect())
         })
         .collect();
+    let source = photocraft_text::psd::parse_txt2(&photoshop_txt2(objects)).unwrap();
+    let object = |txt2: &E, i: i32| txt2.path(&["1", "1"]).and_then(E::as_array).and_then(|a| a.get(usize::try_from(i).ok()?)).cloned();
+    for (text, index) in kept {
+        assert_eq!(object(&txt2, *index), object(&source, *index), "{text}: the kept layer's object is saved unchanged");
+    }
     let hi = usize::try_from(layers.iter().find(|l| l.0 == "Hi").and_then(|l| l.1).unwrap()).unwrap();
     let run = txt2.path(&["1", "1"]).and_then(E::as_array).unwrap()[hi].path(&["0", "6", "0"]).and_then(E::as_array).unwrap()[0].clone();
     (layers, run)

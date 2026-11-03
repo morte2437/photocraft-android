@@ -51,6 +51,80 @@ pub(crate) fn float_selected(app: &mut PhotocraftApp, copy: bool, dx: f64, dy: f
     }
 }
 
+/// Most pixel memory the layers of a live Move drag may hold. Every frame of the drag shifts
+/// copies of them by a pixel offset that is rarely a whole tile, so a multi-gigabyte layer would
+/// copy gigabytes per pointer event on the UI thread and could run the machine out of memory
+/// (#6114, #6163). Past it the drag shows the outline and arrow, as with Preferences › Interface ›
+/// Show bounding box when dragging layer, and the release moves the layers once.
+const LIVE_LIMIT: u64 = 512 << 20;
+
+/// Pixel memory a shift of `s` by a pixel offset that isn't a whole tile writes, as
+/// `Surface::translated` builds it: each target tile reads a 2 × 2 block of source tiles (one for
+/// every block holding a stored tile, so isolated tiles each straddle four), and a block inside the
+/// content whose four tiles are all stored is built once per distinct set of tiles. The inside of
+/// a solid fill (one shared tile, `fill_rect`, PSD import) therefore costs one tile however large
+/// it is; only its edge is written. Counts tile identities, never pixels: cheap at drag start.
+fn shift_bytes(s: &photocraft_raster::Surface) -> u64 {
+    let b = photocraft_compose::bounds::content_bounds(s);
+    if b.is_empty() {
+        return 0;
+    }
+    let stored: std::collections::HashMap<(i32, i32), usize> =
+        s.tiles().filter(|(c, _)| !c.rect().intersect(&b).is_empty()).map(|(c, t)| ((c.tx, c.ty), Arc::as_ptr(t) as usize)).collect();
+    let blocks: std::collections::HashSet<(i32, i32)> =
+        stored.keys().flat_map(|&(x, y)| [(x.saturating_sub(1), y.saturating_sub(1)), (x, y.saturating_sub(1)), (x.saturating_sub(1), y), (x, y)]).collect();
+    let mut built = std::collections::HashSet::new();
+    let mut written = 0u64;
+    for (x, y) in blocks {
+        let (x1, y1) = (x.saturating_add(1), y.saturating_add(1));
+        let corners = [(x, y), (x1, y), (x, y1), (x1, y1)].map(|c| stored.get(&c).copied());
+        let inside = b.contains_rect(&photocraft_geom::TileCoord::new(x, y).rect().union(&photocraft_geom::TileCoord::new(x1, y1).rect()));
+        let shared = match corners {
+            [Some(p0), Some(p1), Some(p2), Some(p3)] if inside => !built.insert([p0, p1, p2, p3]),
+            _ => false,
+        };
+        if !shared {
+            written += 1;
+        }
+    }
+    // Blocks are not trimmed to the moved content; the targets `translated` builds are, so they
+    // never exceed the tiles the content can reach either.
+    let t = photocraft_geom::TILE_SIZE as u64;
+    let reach = (u64::from(b.width()).div_ceil(t) + 1).saturating_mul(u64::from(b.height()).div_ceil(t) + 1);
+    written.min(reach).saturating_mul(t * t).saturating_mul(s.format().bytes_per_pixel() as u64)
+}
+
+/// Whether the pixel memory a live drag frame writes for the move targets `ids` of `doc` exceeds
+/// `limit`, counting what `moved_target` shifts: a target whose unlinked mask is dragged alone
+/// (`mask_target`) copies that mask only and its descendants stay put; any other target shifts its
+/// content and linked mask (and a smart object's filter mask), and every layer inside it likewise (a group's contents move whole).
+fn exceeds(doc: &Document, ids: &[LayerId], limit: u64, mask_target: bool) -> bool {
+    let mut total = 0u64;
+    for id in ids {
+        let Some(root) = doc.layer(*id) else { continue };
+        let moving = if mask_target && photocraft_engine::layer_multi_cmds::moves_mask_alone(root) {
+            total = total.saturating_add(root.mask.as_ref().map_or(0, |m| shift_bytes(&m.surface)));
+            Vec::new()
+        } else {
+            with_descendants(doc, &[*id])
+        };
+        for l in moving.iter().filter_map(|d| doc.layer(*d)) {
+            let content = l.surface().map_or(0, shift_bytes);
+            let mask = l.mask.as_ref().filter(|m| m.linked).map_or(0, |m| shift_bytes(&m.surface));
+            // `shift_smart` shifts a smart object's filter mask too, linked or not.
+            let filter_mask = match &l.content {
+                photocraft_doc::LayerContent::Smart(sm) => sm.filter_mask.as_ref().map_or(0, |m| shift_bytes(&m.surface)),
+                _ => 0,
+            };
+            total = total.saturating_add(content).saturating_add(mask).saturating_add(filter_mask);
+        }
+        if total > limit {
+            return true;
+        }
+    }
+    false
+}
+
 /// Preview keys of move drags: `BASE + n`, one per offset shown (see `canvas::display_doc`).
 const BASE: u64 = 1 << 39;
 
@@ -71,6 +145,9 @@ pub(crate) struct MovePreview {
     shown: Option<Arc<Document>>,
     /// Shows a floating selection (`select.float`): offsets are the piece's, from where it was cut.
     floating: bool,
+    /// The moving layers hold more pixels than [`LIVE_LIMIT`]: they aren't copied for every frame
+    /// of the drag, which shows its outline and arrow alone (#6114, #6163).
+    too_big: bool,
 }
 
 impl MovePreview {
@@ -139,10 +216,14 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
         let bounds = ids.iter().try_fold(Rect::EMPTY, |acc, id| Some(acc.union(&photocraft_compose::change_bounds(doc.layer(*id)?, all)?)));
         let canvas = doc.bounds();
         let moving = with_descendants(&doc, &ids);
+        let too_big = exceeds(&doc, &ids, LIVE_LIMIT, mask_target);
         let bounds = bounds.map(|b| moving.iter().filter_map(|id| shape_reach(doc.layer(*id)?, canvas)).fold(b, |acc, r| acc.union(&r)));
-        app.move_preview = Some(MovePreview { doc: doc_id, revision, ids, moving, bounds, canvas, offsets: Vec::new(), shown: None, floating: false });
+        app.move_preview = Some(MovePreview { doc: doc_id, revision, ids, moving, bounds, canvas, offsets: Vec::new(), shown: None, floating: false, too_big });
     }
     let p = app.move_preview.as_mut()?;
+    if p.too_big {
+        return None;
+    }
     if offset == (0, 0) && p.offsets.is_empty() {
         return None;
     }
@@ -223,6 +304,7 @@ fn floating_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Document>, u
             offsets: Vec::new(),
             shown: None,
             floating: true,
+            too_big: false,
         });
     }
     if offset == (0, 0) && app.move_preview.as_ref().is_none_or(|p| p.offsets.is_empty()) {

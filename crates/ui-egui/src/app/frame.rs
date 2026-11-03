@@ -1,9 +1,9 @@
 use super::{
     PhotocraftApp, analysis_ui, brush_panel, brush_picker, camera_raw_ui, canvas, dds_options_ui, dialogs, discard_ui, distort_ui, field_wheel, file_open,
     gpu_canvas, gpu_status, gradient_ui, i18n, jobs_ui, jpeg_options_ui, kys_import, last_brush, layers_panel_ui, monitor_status, native_menu, notices,
-    paint_mouse, palette, panels, prefs_ui, preset_panels, rasterize_prompt, screen_picker, shape_stroke_ui, shortcuts, targa_options_ui, text_field_menu,
-    theme, tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, updates_ui, vector_ui, view_cmds,
-    wide_angle_ui, work_area, workspace_ui,
+    paint_mouse, palette, panels, prefs_ui, preset_panels, rasterize_prompt, screen_picker, shape_stroke_ui, shortcuts, smart_svg_ui, targa_options_ui,
+    text_field_menu, theme, tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, updates_ui, vector_ui,
+    view_cmds, wide_angle_ui, work_area, workspace_ui,
 };
 
 impl PhotocraftApp {
@@ -54,15 +54,14 @@ impl PhotocraftApp {
         self.drain_captures(ctx);
         self.drain_control(ctx);
         native_menu::run(self, ctx);
+        view_cmds::leave_full_screen_without_document(self, ctx);
         // Switching tools commits, also between the Type and Type Mask tools.
         if self.ui.text_edit.as_ref().is_some_and(|ed| !self.ui.tool.is_type() || ed.mask != self.ui.tool.is_type_mask()) {
             type_tool::commit(self);
         }
         // So does selecting another layer or document by any route (#6483).
         type_tool::end_if_left(self);
-        if self.ui.pen.as_ref().is_some_and(|p| !p.drawn_with(self.ui.tool)) {
-            vector_ui::pen_commit(self, false);
-        }
+        vector_ui::finish_pen_if_left(self);
         transform_tool::end_if_left(self);
         shape_stroke_ui::sync_editor(self, ctx);
         prefs_ui::tick(self, ctx);
@@ -75,6 +74,10 @@ impl PhotocraftApp {
         // maximize it into the work area once (#315).
         work_area::fit_window(ctx);
         discard_ui::guard_window_close(self, ctx);
+        // A zoom field being typed in: plays its alert, and notes a click on the pasteboard.
+        crate::zoom_field::tick(self, ctx);
+        // A colour swatch's Color Picker OK hands its colour back to the swatch widget.
+        crate::color_picker_ui::widget_tick(self, ctx);
         // Background jobs: apply finished ones, keep frames coming, Esc cancels (before the
         // shortcuts see Esc).
         if !screen_picker::tick(self, ctx) {
@@ -314,6 +317,8 @@ impl PhotocraftApp {
         targa_options_ui::show(self, &ctx);
         jpeg_options_ui::show(self, &ctx);
         dds_options_ui::show(self, &ctx);
+        smart_svg_ui::poll(self, &ctx);
+        smart_svg_ui::show(self, &ctx);
         distort_ui::show(self, &ctx);
         camera_raw_ui::show(self, &ctx);
         wide_angle_ui::show(self, &ctx);

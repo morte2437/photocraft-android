@@ -14,24 +14,11 @@ use photocraft_doc::{
 use photocraft_geom::{Affine, Size};
 use serde::{Deserialize, Serialize};
 
-/// Current manifest version written by this build.
-pub const FORMAT_VERSION: u32 = 1;
+pub use craft_pcraft_format::{FORMAT_VERSION, Hash, TileRef};
 
-/// Hex-encoded BLAKE3 hash (64 chars).
-pub type Hash = String;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub format_version: u32,
-    /// Free-form writer identification, e.g. `photocraft-format 0.1.0`.
-    pub generator: String,
-    pub document: DocM,
-    /// Optional previews present in the bundle.
-    #[serde(default)]
-    pub thumbnail: Option<String>,
-    #[serde(default)]
-    pub composite: Option<String>,
-}
+/// The manifest: craft-pcraft-format's envelope (`format_version`, `generator`, the optional
+/// `thumbnail` and `composite` previews) around the document [`DocM`].
+pub type Manifest = craft_pcraft_format::Manifest<DocM>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocM {
@@ -152,13 +139,6 @@ pub struct NamedPathM {
     pub path: Path,
     #[serde(default)]
     pub psd_raw: Option<Hash>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TileRef {
-    pub tx: i32,
-    pub ty: i32,
-    pub hash: Hash,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -300,6 +280,10 @@ pub enum ContentM {
         stroke: Option<ShapeStroke>,
         #[serde(default)]
         live: Option<LiveShape>,
+        /// Arrow parameters stored separately for backward compatibility.
+        /// Older PhotoCraft versions ignore this optional field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arrow_live: Option<LiveShape>,
         /// The path's density as the fill's mask; older files have none (100 %).
         #[serde(default = "full_density")]
         density: f32,
@@ -312,6 +296,8 @@ pub enum ContentM {
         #[serde(default)]
         contents_id: Option<u64>,
         source: SmartSourceM,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vector_preview: Option<VectorPreviewM>,
         transform: Affine,
         smart_filters: Vec<SmartFilter>,
         cache: Option<SurfaceM>,
@@ -328,6 +314,13 @@ pub enum ContentM {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         perspective: Option<[f64; 9]>,
     },
+}
+
+/// The native source remains separate from this optional display-only SVG blob.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VectorPreviewM {
+    pub source_hash: [u8; 32],
+    pub svg: Hash,
 }
 
 fn full_density() -> f32 {

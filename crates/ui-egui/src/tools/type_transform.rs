@@ -129,7 +129,7 @@ pub(crate) fn frame(app: &mut PhotocraftApp) -> Option<TransformSession> {
         rect,
         quad,
         pivot,
-        interpolation: "bicubic".into(),
+        interpolation: crate::transform_tool::default_interpolation(app).into(),
         warp: None,
         selection: false,
         target: None,
@@ -138,6 +138,7 @@ pub(crate) fn frame(app: &mut PhotocraftApp) -> Option<TransformSession> {
         mode: Default::default(),
         content_aware: None,
         skew_v: 0.0,
+        layers: Vec::new(),
     })
 }
 

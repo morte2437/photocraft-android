@@ -1,4 +1,4 @@
-use super::damage::layer_bounds;
+use super::damage::align_bounds;
 use super::moves::{move_layers, with_links};
 use super::selection::{selected, top_level};
 use super::{Document, EngineError, LayerId, Rect, Result, Session, Value, bad, json};
@@ -44,7 +44,7 @@ impl Edge {
 
 /// Selected top-level layers that have content bounds, bottom-to-top.
 fn bounded_selection(doc: &Document, sel: &[LayerId]) -> Vec<(LayerId, Rect)> {
-    top_level(doc, sel).into_iter().filter_map(|id| Some((id, layer_bounds(doc.layer(id)?)?))).collect()
+    top_level(doc, sel).into_iter().filter_map(|id| Some((id, align_bounds(doc.layer(id)?, doc.bounds(), doc.pixel_format().sample)?))).collect()
 }
 
 pub(super) fn align(s: &mut Session, p: &Value, kind: &str) -> Result<Value> {
