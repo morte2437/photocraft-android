@@ -15,7 +15,8 @@
 //! 3. A tie is broken by the script of a hint (text the file stores as UTF-16, so it decodes
 //!    fine): kana → Shift_JIS; Hangul → EUC-KR; Cyrillic → windows-1251; Han → GBK, then
 //!    Big5, then Shift_JIS; Latin letters → windows-1252, then Mac Roman.
-//! 4. Still tied: windows-1252, flagged [`Guess::uncertain`].
+//! 4. Still tied: windows-1252 if it is among them, otherwise the first highest-scoring candidate,
+//!    flagged [`Guess::uncertain`].
 //! 5. Mac Roman must also beat windows-1252 when the Latin-1 symbols that are no letter in
 //!    Mac Roman (© ° « ± …) count as common text (1252 "Größe »" is Mac Roman "Grˆﬂe ª").
 //!    Otherwise the names are windows-1252, with step 3's hint and step 4's warning.
@@ -39,7 +40,7 @@ pub(crate) const KNOWN_PAIRS: usize = 256;
 pub(crate) struct Guess {
     /// The encoding to decode every legacy name with.
     pub(crate) encoding: &'static Encoding,
-    /// Nothing told the candidates apart; `encoding` is the windows-1252 fallback.
+    /// Nothing settled the highest-scoring candidates' tie; `encoding` is a fallback among them.
     pub(crate) uncertain: bool,
 }
 
@@ -97,7 +98,11 @@ pub(crate) fn guess(legacy: &[&[u8]], hint: &str) -> Guess {
         [only] => Guess { encoding: only, uncertain: false },
         tied => match hinted(hint).iter().find(|enc| tied.contains(enc)) {
             Some(enc) => Guess { encoding: enc, uncertain: false },
-            None => Guess { encoding: WINDOWS_1252, uncertain: true },
+            // A fallback must not discard the scores and choose a lower-scoring page.
+            None => {
+                let encoding = if tied.contains(&WINDOWS_1252) { WINDOWS_1252 } else { tied.first().copied().unwrap_or(WINDOWS_1252) };
+                Guess { encoding, uncertain: true }
+            }
         },
     };
     if picked.encoding != MACINTOSH {
@@ -377,7 +382,7 @@ mod tests {
         assert_eq!(g.encoding, GBK);
         assert!(!g.uncertain);
         assert_eq!(decode(names[0], g.encoding), "保存");
-        assert_eq!(guess(names, "Set 1"), Guess { encoding: WINDOWS_1252, uncertain: true });
+        assert_eq!(guess(names, "Set 1"), Guess { encoding: GBK, uncertain: true });
     }
 
     #[test]
@@ -499,12 +504,25 @@ mod tests {
     fn bytes_no_cjk_page_accepts_still_decode() {
         // 0xFF is invalid in every double-byte candidate; windows-1251 (Ђ я Ђ) and Mac Roman
         // (Ä ˇ Ä) read all three bytes as letters, windows-1252 only one (€ ÿ €). With nothing to
-        // break the tie, the fallback still decodes them.
+        // break the tie, the first highest-scoring candidate still decodes them.
         let names: &[&[u8]] = &[b"\x80\xff\x80"];
         let g = guess(names, "");
-        assert_eq!(g, Guess { encoding: WINDOWS_1252, uncertain: true });
-        assert_eq!(decode(names[0], g.encoding), "€ÿ€");
+        assert_eq!(g, Guess { encoding: WINDOWS_1251, uncertain: true });
+        assert_eq!(decode(names[0], g.encoding), "ЂяЂ");
         assert_eq!(guess(names, "Набор").encoding, WINDOWS_1251);
+    }
+
+    #[test]
+    fn uncertain_fallback_stays_among_the_highest_scoring_candidates() {
+        // Mac Roman "Ändern": Mac Roman and windows-1251 both score every non-ASCII byte
+        // as a letter. Windows-1252 reads "€ndern", so it must not win their unresolved tie.
+        let names: &[&[u8]] = &[b"\x80ndern"];
+        for hint in ["Set 1", "保存"] {
+            let g = guess(names, hint);
+            assert!([MACINTOSH, WINDOWS_1251].contains(&g.encoding), "{hint}: {g:?}");
+            assert!(g.uncertain, "{hint}: {g:?}");
+            assert_eq!(score(g.encoding, names[0]), (1, 1));
+        }
     }
 
     #[test]

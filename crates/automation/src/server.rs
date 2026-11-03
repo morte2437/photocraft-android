@@ -183,6 +183,17 @@ pub struct SaveParams {
     /// TIFF: keep the layers (Photoshop layer data). Off by default: a flat TIFF.
     #[serde(default, rename = "tiffLayers")]
     pub tiff_layers: bool,
+    /// TIFF: image compression, "none" (the default), "lzw" or "zip".
+    #[serde(default, rename = "tiffCompression")]
+    pub tiff_compression: Option<String>,
+    /// TIFF: Save Transparency. On keeps the transparency, ahead of any alpha or spot channels;
+    /// off composites the image over white. Unset: kept unless the document has alpha or spot
+    /// channels.
+    #[serde(default, rename = "tiffTransparency")]
+    pub tiff_transparency: Option<bool>,
+    /// TIFF: Save Image Pyramid, half-size copies after the full image.
+    #[serde(default, rename = "tiffPyramid")]
+    pub tiff_pyramid: bool,
     /// TGA: 24 or 32 bits per pixel. 32 writes the alpha channel (or else the transparency) as the
     /// alpha, 24 none. Unset: 32 with an alpha channel or transparency, else 24.
     #[serde(default, rename = "tgaBits")]
@@ -358,13 +369,15 @@ pub struct UiSetParams {
     /// dashes, dashOffset and opacity; null disables the stroke). Shape stroke fields use
     /// `shape.edit` names and units; colour comes from `tools.setColors`. camTransformOnDrop (bool,
     /// the Content-Aware Move tool's Transform On Drop). tileGrid (bool, a developer overlay of the
-    /// active layer's storage tiles). layerFilter (an object patching by ("kind", "name", "effect"
-    /// or "mode"), kinds (a list of layer kinds), name (matches part of the layer name), mode (a
-    /// blend mode name) and effect ("bevelEmboss", "stroke", "innerShadow", "innerGlow", "satin",
-    /// "overlay", "outerGlow" or "dropShadow") for the Layers panel filter). strokeTrace (true,
-    /// false, "stderr" or "off": the stroke latency trace at runtime; a CSV file is set at launch
-    /// with --stroke-trace, not over this channel). updatesOpen (bool, the Help › Check for Updates
-    /// window).
+    /// active layer's storage tiles). layerFilter (an object patching by ("kind", "name", "effect",
+    /// "mode", "color", "smartObject" or "artboard", which lists the artboards that hold the
+    /// selected layers), kinds (a list of layer kinds), name (matches part of the layer name),
+    /// effect ("bevelEmboss", "stroke", "innerShadow", "innerGlow", "satin", "overlay",
+    /// "outerGlow" or "dropShadow"), mode (a blend mode name), color (a layer colour label, or
+    /// "none") and smart (a list of "linked", "missing" and "embedded") for the Layers panel
+    /// filter). strokeTrace (true, false, "stderr" or "off": the stroke latency trace at runtime; a
+    /// CSV file is set at launch with --stroke-trace, not over this channel). updatesOpen (bool,
+    /// the Help › Check for Updates window).
     /// histogramPanel (an object patching view ("compact", "expanded" or "allChannels"), channel
     /// ("composite", "red", "green", "blue", "cyan", "magenta", "yellow", "black", "a", "b",
     /// "luminosity" or "colors"), showChannelsInColor, showStatistics and source ("entireImage",
@@ -1124,6 +1137,10 @@ impl PhotocraftMcp {
             Some((_, Some(bits))) => Some(bits),
             Some((b, None)) => return Ok(fail(format!("`dpxBits` must be 8, 10, 12 or 16, got {b}"))),
         };
+        let tiff_compression = match photocraft_engine::file_cmds::tiff_compression_param(&json!({"tiffCompression": p.tiff_compression}), "save") {
+            Ok(c) => c,
+            Err(e) => return Ok(fail(e.to_string())),
+        };
         if let Some(q) = p.quality.filter(|q| !(1..=100).contains(q)) {
             return Ok(fail(format!("`quality` must be a whole number from 1 to 100, got {q}")));
         }
@@ -1135,8 +1152,9 @@ impl PhotocraftMcp {
         if let Some(b) = self.bridge_client() {
             // The bridge forwards to the running app's `app.save`, which takes only an optional
             // path (without one it writes back to the document's own layered file, as headless
-            // does), the Targa bits and the DDS options, so the other options are headless-only. Saying so beats
-            // saving with defaults while the caller believes their quality or format was applied.
+            // does), the Targa bits, the DDS options and the TIFF compression, transparency and
+            // pyramid, so the other options are headless-only. Saying so beats saving with
+            // defaults while the caller believes their quality or format was applied.
             let unsupported: Vec<&str> = [
                 p.format.is_some().then_some("format"),
                 p.quality.is_some().then_some("quality"),
@@ -1164,17 +1182,32 @@ impl PhotocraftMcp {
             if p.dds_mipmaps {
                 params["ddsMipmaps"] = json!(true);
             }
+            // The app's TIFF Options answer, as its Save As takes it.
+            if let Some(c) = &p.tiff_compression {
+                params["tiffCompression"] = json!(c);
+            }
+            if let Some(t) = p.tiff_transparency {
+                params["tiffTransparency"] = json!(t);
+            }
+            if p.tiff_pyramid {
+                params["tiffPyramid"] = json!(true);
+            }
             return to_result(b.call("app.save", params).await);
         }
         let Some(r) = self
             .headless_op(move |h| {
                 let mut opts = photocraft_io::ExportOptions {
                     tiff_layers: p.tiff_layers,
+                    tiff_transparency: p.tiff_transparency,
                     tga_bits,
                     pcraft_full_composite: p.pcraft_full_composite.unwrap_or(false),
                     ..Default::default()
                 };
                 opts.encode.dpx_bits = dpx_bits;
+                if let Some(c) = tiff_compression {
+                    opts.encode.tiff_compression = c;
+                }
+                opts.encode.tiff_pyramid = p.tiff_pyramid;
                 opts.encode.dds = photocraft_io::DdsOptions { compression: dds_compression.unwrap_or_default(), mipmaps: p.dds_mipmaps };
                 if let Some(q) = p.quality {
                     opts.encode.jpeg_quality = q;

@@ -482,6 +482,7 @@ fn settings_at_the_value_the_event_plays_still_export() {
 
 /// Every exported command has a canonical import, including recorded full-stack navigation.
 #[test]
+/// Each mapped command retains its parameters through its corresponding ATN descriptor.
 fn every_mapped_command_exports_and_imports_back() {
     let cases: Vec<(&str, Value)> = vec![
         ("filter.render.clouds", json!({})),
@@ -616,8 +617,31 @@ fn every_mapped_command_exports_and_imports_back() {
         ("layer.duplicate", json!({"layer": "Shadow", "document": "new", "documentName": "Doc"})),
         ("image.duplicate", json!({"mergedOnly": true})),
         ("layer.new.layer", json!({"name": "Ink", "opacity": 0.5, "mode": "Multiply"})),
+        ("type.convertToShape", json!({})),
+        ("filter.blur.shapeBlur", json!({})),
+        ("filter.blur.shapeBlur", json!({"radius": 10})),
         ("layer.new.group", json!({"name": "G"})),
         ("layer.groupLayers", json!({})),
+        ("layer.linkLayers", json!({"linked": false})),
+        ("layer.linkLayers", json!({"linked": false, "_atnNoTarget": true})),
+        ("layer.arrange.reverse", json!({})),
+        ("layer.arrange.reverse", json!({"_atnNoTarget": true})),
+        ("layer.selectLinkedLayers", json!({})),
+        ("layer.layerStyle.clear", json!({})),
+        ("layer.rasterize.allLayers", json!({})),
+        ("layer.videoLayers.newBlankVideoLayer", json!({})),
+        ("select.isolateLayers", json!({})),
+        ("type.loadDefaultTypeStyles", json!({})),
+        ("type.saveDefaultTypeStyles", json!({})),
+        ("image.analysis.recordMeasurements", json!({})),
+        ("file.automate.cropAndStraightenPhotos", json!({})),
+        ("file.automate.cropAndStraightenPhotos", json!({"_atnNoTarget": true})),
+        ("layer.new.artboardFromGroup", json!({})),
+        ("layer.new.artboardFromGroup", json!({"background":"white","color":[1,1,1],"preset":"","guideIDs":[],"changeBackground":1})),
+        (
+            "layer.artboard.set",
+            json!({"background":"custom","color":[0.25,0.5,0.75],"recordedPreset":"","guideIDs":[],"recordedRect":[2,2,6,6],"changeSizes":8,"changeBackground":1}),
+        ),
         ("layer.new.layerViaCopy", json!({})),
         ("layer.newFillLayer.solidColor", json!({"color": "#336699"})),
         ("layer.newAdjustmentLayer.hueSaturation", json!({})),
@@ -665,6 +689,8 @@ fn every_mapped_command_exports_and_imports_back() {
         ("edit.pasteSpecial.pasteInPlace", json!({})),
         ("edit.paste", json!({})),
         ("edit.purge.histories", json!({})),
+        ("edit.checkSpelling", json!({"allLayers": true})),
+        ("edit.checkSpelling", json!({"allLayers": false})),
         ("tools.defaultColors", json!({})),
         (
             "edit.convertToProfile",
@@ -691,13 +717,27 @@ fn every_mapped_command_exports_and_imports_back() {
         ),
         (
             "file.export.saveForWebLegacy",
+            json!({"folder": "/tmp/out", "format": "png24", "interlaced": false, "transparency": true, "embedIcc": false, "progressive": false, "optimized": true, "matte": "#ffffff"}),
+        ),
+        (
+            "file.export.saveForWebLegacy",
             json!({"path": "C:\\shots\\a.jpg", "format": "jpeg", "interlaced": false, "transparency": false, "embedIcc": true, "progressive": true, "optimized": true, "quality": 80, "matte": "none"}),
         ),
         ("image.adjustments.gradientMap", json!({"stops": [[0, "#000000"], [0.5, "#ff8000"], [1, "#ffffff"]], "reverse": true, "dither": false})),
+        ("image.adjustments.gradientMap", json!({"stops": [[0,[0.5,0,0]],[1,[0,1,0]]], "__atnGrMp":{"name":"Recorded","colors":[[127.5,0,0],[0,255,0]]}})),
+        ("image.adjustments.replaceColor", json!({"labMinimum":[40,30,40],"labMaximum":[60,35,45],"fuzziness":40,"hue":30,"saturation":0,"lightness":0})),
         ("layer.newAdjustmentLayer.gradientMap", json!({"stops": [[0, "#102030"], [1, "#f0e0d0"]], "reverse": false, "dither": true})),
         ("layer.smartObjects.convertToSmartObject", json!({})),
         ("layer.smartObjects.editContents", json!({})),
         ("layer.smartObjects.updateModifiedContent", json!({})),
+        ("layer.smartObjects.newSmartObjectViaCopy", json!({})),
+        ("layer.smartObjects.convertToLayers", json!({})),
+        ("layer.smartObjects.convertToEmbedded", json!({})),
+        ("layer.smartObjects.updateAllModifiedContent", json!({})),
+        ("layer.smartObjects.exportContents", json!({"path": "/tmp/contents.png"})),
+        ("layer.smartObjects.convertToLinked", json!({"path": "/tmp/linked.png"})),
+        ("layer.smartObjects.relinkToFile", json!({"path": "/tmp/relinked.png"})),
+        ("layer.smartObjects.replaceContents", json!({"path": "/tmp/replacement.png"})),
         ("paint.bucket", json!({"x": 10, "y": 20, "tolerance": 32, "antiAlias": true, "contiguous": false, "opacity": 100})),
         ("image.imageSize", json!({"percent": 200, "resample": "bicubicAutomatic", "scaleStyles": true})),
         ("file.placeEmbedded", json!({"path": "/tmp/logo.png", "scale": 50})),
@@ -850,6 +890,13 @@ fn every_mapped_command_exports_and_imports_back() {
             }
             Mapped::Unsupported { .. } => panic!("{id} does not import back"),
         }
+    }
+    // Partial native backgrounds need no recorded preset, guide IDs or last-used color.
+    for (background, imported_background) in [("white", "white"), ("black", "black"), ("transparent", "transparent"), ("custom", "white")] {
+        let item = export_item("layer.new.artboardFromGroup", &json!({"background":background}), "S").unwrap();
+        let Mapped::Steps(steps) = (event_for(&item.event).unwrap().from)(item.descriptor.as_ref().unwrap()) else { panic!("Artboard did not import") };
+        assert_eq!(steps, [("layer.new.artboardFromGroup".into(), json!({"background":imported_background,"color":[1.0,1.0,1.0],"preset":"","guideIDs":[]}))]);
+        assert_eq!(export_item(&steps[0].0, &steps[0].1, "S").unwrap().descriptor, item.descriptor);
     }
     // Every command the table claims to export has a case above.
     let covered: std::collections::BTreeSet<&str> = cases.iter().map(|(id, _)| *id).collect();
@@ -3629,7 +3676,9 @@ fn save_as_that_cannot_be_mapped_stops_playback_instead_of_saving_over_the_file(
     // action was played on.
     let file = one_action(vec![
         item("save", "Save", Some(save_as("PNGF", "/out/folder"))),
-        item("save", "Save", Some(save_as("PNGF", "/out/v1.png").with("DIDr", D::Boolean(true)))),
+        // Save a Copy into a folder under the document's own name has no PhotoCraft step.
+        item("save", "Save", Some(save_as("PNGF", "/out").with("DIDr", D::Boolean(true)).with("Cpy ", D::Boolean(true)))),
+        item("save", "Save", Some(save_as("Not a format", "/out").with("DIDr", D::Boolean(true)))),
         item("save", "Save", Some(save_as("PNGF", "/out/result.webp"))),
         item("save", "Save", Some(save_as("GIFf", "/out/result.gif"))),
         item("save", "Save", Some(desc("null").with("As  ", D::Descriptor(desc("PNGF"))))),
@@ -3641,7 +3690,7 @@ fn save_as_that_cannot_be_mapped_stops_playback_instead_of_saving_over_the_file(
     ]);
     let imp = import(&atn::write(&file).unwrap()).unwrap();
     let ids: Vec<&str> = imp.actions[0].steps.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, [PHOTOSHOP_STEP; 8]);
+    assert_eq!(ids, [PHOTOSHOP_STEP; 9]);
     assert!(imp.actions[0].disabled.is_empty(), "kept saves stay on, so playback stops on them");
     // The kept steps are written back byte for byte.
     let a = &imp.actions[0];
@@ -3651,6 +3700,39 @@ fn save_as_that_cannot_be_mapped_stops_playback_instead_of_saving_over_the_file(
     for (out, orig) in back.actions[0].items.iter().zip(&file.actions[0].items) {
         assert_eq!(out.descriptor, orig.descriptor);
     }
+}
+
+#[test]
+fn save_as_into_a_folder_imports_as_a_folder_step_and_saves_back() {
+    // #5305: "save in directory" (`DIDr`), recorded when Photoshop's suggested name is kept:
+    // `In` is the folder, and each played document saves under its own name there.
+    let file = one_action(vec![
+        item("save", "Save", Some(save_as("PNGF", "/out/web").with("DIDr", D::Boolean(true)))),
+        item("save", "Save", Some(save_as("JPEG", "C:\\shots").with("DIDr", D::Boolean(true)))),
+    ]);
+    let imp = import(&atn::write(&file).unwrap()).unwrap();
+    let steps = vec![
+        ("file.saveAs".to_string(), json!({"folder": "/out/web", "extension": "png"})),
+        ("file.saveAs".to_string(), json!({"folder": "C:\\shots", "extension": "jpg"})),
+    ];
+    assert_eq!(imp.actions[0].steps, steps);
+    assert!(imp.unsupported.is_empty());
+    // Saved back as the same "save in directory" steps.
+    let (bytes, skipped) = export("Saves", &[&imp.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let back = atn::parse(&bytes).unwrap();
+    for (out, orig) in back.actions[0].items.iter().zip(&file.actions[0].items) {
+        let (out, orig) = (out.descriptor.as_ref().unwrap(), orig.descriptor.as_ref().unwrap());
+        for key in ["As  ", "In  ", "DIDr"] {
+            assert_eq!(out.get(key), orig.get(key), "{key}");
+        }
+    }
+    assert_eq!(import(&bytes).unwrap().actions[0].steps, steps);
+    // A folder step without its extension, or as a copy, has no Photoshop event.
+    let odd = Action::new("B", vec![("file.saveAs".to_string(), json!({"folder": "/out"}))]);
+    assert!(export("Saves", &[&odd], &[], false).is_err());
+    let copy = Action::new("C", vec![("file.saveACopy".to_string(), json!({"folder": "/out", "extension": "png"}))]);
+    assert!(export("Saves", &[&copy], &[], false).is_err());
 }
 
 #[test]
@@ -5814,6 +5896,86 @@ fn load_rejects_bad_encodings() {
         assert!(s.execute("actions.load", json!({"data": b64(&gbk_set()), "encoding": bad})).is_err(), "{bad}");
     }
     assert!(s.actions.list.is_empty(), "nothing is loaded when the encoding is bad");
+}
+
+/// Edit › Check Spelling in its recorded form: `spellCheck`, `null` = the `spellCheck` property of
+/// all text layers, `Usng` = `checkAll`, with the step's dialog on.
+fn spell_check(all: bool) -> Descriptor {
+    desc("null")
+        .with(
+            "null",
+            D::Reference(vec![
+                ReferenceItem::Property { class: class("Prpr"), key: Id::new("spellCheck") },
+                ReferenceItem::Enumerated { class: class("TxLr"), type_id: code("Ordn"), value: code("Al") },
+            ]),
+        )
+        .with("Usng", D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(all))))
+}
+
+#[test]
+fn check_spelling_loads_and_saves_as_the_spell_check_event() {
+    for all in [true, false] {
+        let mut step = item("spellCheck", "Check Spelling", Some(spell_check(all)));
+        step.with_dialog = true;
+        let file = AtnFile {
+            name: UnicodeString::new_nul("S"),
+            actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items: vec![step], ..Default::default() }],
+            ..Default::default()
+        };
+        let imported = import(&atn::write(&file).unwrap()).unwrap();
+        assert!(imported.unsupported.is_empty(), "{:?}", imported.unsupported);
+        let action = &imported.actions[0];
+        assert_eq!(action.steps, [("edit.checkSpelling".to_string(), json!({"allLayers": all}))]);
+        assert_eq!(action.dialogs.iter().copied().collect::<Vec<_>>(), [0]);
+        let (bytes, skipped) = export("S", &[action], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let saved = atn::parse(&bytes).unwrap();
+        let saved = &saved.actions[0].items[0];
+        assert_eq!(saved.event.id(), "spellCheck");
+        assert!(saved.with_dialog);
+        assert_eq!(saved.descriptor.as_ref().unwrap().to_bytes(), spell_check(all).to_bytes(), "checkAll {all}");
+    }
+}
+
+#[test]
+fn other_check_spelling_forms_stay_kept_steps_and_corrections_are_not_saved() {
+    let event = event_for(&AtnEvent::name("spellCheck")).unwrap();
+    let mut extra = spell_check(true);
+    extra.items.push((Id::new("Fwd "), D::Boolean(true)));
+    let mut other_target = spell_check(true);
+    other_target.items[0].1 = D::Reference(vec![ReferenceItem::Property { class: class("Prpr"), key: Id::new("spellCheck") }]);
+    let mut other_class = spell_check(true);
+    other_class.items[1].1 = D::Descriptor(desc("findReplace").with("checkAll", D::Boolean(true)));
+    let mut more_using = spell_check(true);
+    more_using.items[1].1 = D::Descriptor(desc("spellCheck").with("checkAll", D::Boolean(true)).with("Fwd ", D::Boolean(true)));
+    let mut twice = spell_check(true);
+    twice.items[1] = twice.items[0].clone();
+    for d in [extra, other_target, other_class, more_using, twice, desc("null")] {
+        assert!(matches!((event.from)(&d), Mapped::Unsupported { harmless: false }), "{d:?}");
+    }
+    for params in [
+        json!({"action": "change", "start": 0, "end": 3, "replace": "The"}),
+        json!({"action": "changeAll", "word": "teh", "replace": "the"}),
+        json!({"allLayers": true, "layer": "Title"}),
+        json!({"allLayers": "yes"}),
+    ] {
+        assert!(export_item("edit.checkSpelling", &params, "S").is_none(), "{params}");
+    }
+}
+
+/// Check Spelling's `null` and `Usng` are read by name: a step that holds them in the other
+/// order loads as the same step.
+#[test]
+fn check_spelling_reads_its_keys_in_either_order() {
+    let event = event_for(&AtnEvent::name("spellCheck")).unwrap();
+    for all in [true, false] {
+        let mut reversed = spell_check(all);
+        reversed.items.reverse();
+        match (event.from)(&reversed) {
+            Mapped::Steps(steps) => assert_eq!(steps, [("edit.checkSpelling".to_string(), json!({"allLayers": all}))]),
+            Mapped::Unsupported { .. } => panic!("Usng before null was kept: {reversed:?}"),
+        }
+    }
 }
 
 /// A setting recorded twice (`Wdth`, `Fade`, `Scl `, a gallery key) would play one value and

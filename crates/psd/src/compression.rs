@@ -228,11 +228,18 @@ pub fn decode_planes(compression: Compression, data: &[u8], layout: &PlaneLayout
 /// Bytes a PSD RLE stream (two-byte row counts) of `rows` rows grows by when written as PSB
 /// (four-byte row counts); an error when `data` is too short to hold the count table.
 pub(crate) fn rle_widening(data: &[u8], rows: usize) -> Result<u64> {
-    let table = rows.checked_mul(2).ok_or(PsdError::LimitExceeded("row count overflow"))?;
-    if data.len() < table {
-        return Err(PsdError::UnexpectedEof { offset: data.len(), needed: table - data.len() });
+    rle_widening_len(data.len() as u64, rows)
+}
+
+/// [`rle_widening`] from the stream's length alone, so data still in its source (or staged on
+/// the scratch disk) is not read to measure it.
+pub(crate) fn rle_widening_len(len: u64, rows: usize) -> Result<u64> {
+    let table = rows.checked_mul(2).ok_or(PsdError::LimitExceeded("row count overflow"))? as u64;
+    if len < table {
+        let offset = usize::try_from(len).unwrap_or(usize::MAX);
+        return Err(PsdError::UnexpectedEof { offset, needed: usize::try_from(table - len).unwrap_or(usize::MAX) });
     }
-    Ok(table as u64)
+    Ok(table)
 }
 
 /// Encodes planar data (excluding the 2-byte compression field).

@@ -387,13 +387,14 @@ fn handles_resize_with_shift_and_alt() {
     // Bottom-right corner, free.
     drag(&mut app, &[[120.0, 60.0], [140.0, 70.0]], NONE);
     assert_eq!(app.ui.crop_rect, Some([20.0, 20.0, 140.0, 70.0]));
-    // ⇧ keeps 120:50 from the top-left corner: the larger relative extent wins.
+    // ⇧ keeps 120:50 from the top-left corner: the corner follows the frame's diagonal, so the
+    // drag (−10, −20) projected onto (−120, −50) grows the frame by 2200 / 16900 (#10871).
     app.ui.crop_rect = Some([20.0, 20.0, 140.0, 70.0]);
     drag(&mut app, &[[20.0, 20.0], [10.0, 0.0]], SHIFT);
     let r = app.ui.crop_rect.unwrap();
     assert_eq!((r[2], r[3]), (140.0, 70.0), "opposite corner fixed");
     assert!(((r[2] - r[0]) / (r[3] - r[1]) - 120.0 / 50.0).abs() < 1e-9, "{r:?}");
-    assert_eq!(r[3] - r[1], 70.0);
+    assert!((r[3] - r[1] - 50.0 * (1.0 + 2200.0 / 16900.0)).abs() < 1e-9, "{r:?}");
     // ⌥ resizes about the centre.
     app.ui.crop_rect = Some([40.0, 20.0, 80.0, 60.0]);
     drag(&mut app, &[[80.0, 40.0], [90.0, 40.0]], Modifiers::ALT);
@@ -403,6 +404,26 @@ fn handles_resize_with_shift_and_alt() {
     app.ui.crop_rect = Some([40.0, 20.0, 80.0, 60.0]);
     drag(&mut app, &[[80.0, 40.0], [100.0, 40.0]], NONE);
     assert_eq!(app.ui.crop_rect, Some([40.0, 10.0, 100.0, 70.0]));
+}
+
+/// The top-right and bottom-left corners follow the other diagonal, (120, −50) and (−120, 50):
+/// the drag projected onto it grows the frame by 2200 / 16900, as on the top-left corner. Along
+/// the top-left / bottom-right diagonal the top-right x1 would move to about 141.4.
+#[test]
+fn shift_resize_follows_the_diagonal_of_the_top_right_and_bottom_left_corners() {
+    let mut app = app(SampleType::U8);
+    app.ui.crop_rect = Some([20.0, 20.0, 140.0, 70.0]);
+    drag(&mut app, &[[140.0, 20.0], [150.0, 0.0]], SHIFT);
+    let r = app.ui.crop_rect.unwrap();
+    assert_eq!((r[0], r[3]), (20.0, 70.0), "top-right: opposite corner fixed");
+    assert!((r[2] - (140.0 + 2640.0 / 169.0)).abs() < 1e-9, "top-right: {r:?}");
+    assert!((r[1] - (20.0 - 1100.0 / 169.0)).abs() < 1e-9, "top-right: {r:?}");
+    app.ui.crop_rect = Some([20.0, 20.0, 140.0, 70.0]);
+    drag(&mut app, &[[20.0, 70.0], [10.0, 90.0]], SHIFT);
+    let r = app.ui.crop_rect.unwrap();
+    assert_eq!((r[2], r[1]), (140.0, 20.0), "bottom-left: opposite corner fixed");
+    assert!((r[0] - (20.0 - 2640.0 / 169.0)).abs() < 1e-9, "bottom-left: {r:?}");
+    assert!((r[3] - (70.0 + 1100.0 / 169.0)).abs() < 1e-9, "bottom-left: {r:?}");
 }
 
 #[test]

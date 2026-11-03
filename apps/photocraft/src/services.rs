@@ -685,7 +685,7 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
     });
     let automation_save = automation.clone().map(|workspace| {
         std::sync::Arc::new(move |doc: &Document, path: &str, settings: &photocraft_ui_egui::ExportSettings, ctl: &photocraft_ui_egui::jobs_ui::SaveCtl| {
-            save_through(doc, path, settings, ctl, |p, encoded, _| workspace.write(p, &encoded.bytes().map_err(|e| e.to_string())?).map_err(|e| e.to_string()))
+            save_through(doc, path, settings, ctl, |p, encoded, _| workspace.write_stream(p, &mut |w| encoded.write_to(w)).map_err(|e| e.to_string()))
         }) as photocraft_ui_egui::SaveFileFn
     });
     let step: fn(&str, &serde_json::Value) -> photocraft_engine::Result<()> = photocraft_automation::workspace::authorize_desktop_engine_step;
