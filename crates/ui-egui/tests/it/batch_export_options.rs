@@ -290,7 +290,7 @@ fn batch_naming_controls_export_the_requested_names_and_reset_on_cancel() {
     edit_path(&mut h, "Output", &output);
     h.get_by_role_and_label(egui::accesskit::Role::TextInput, "File Naming").click();
     h.run_steps(2);
-    replace_text(&mut h, "{serial}_{name}");
+    replace_text(&mut h, "{serial}_{name}.{ext}");
     h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Starting serial").click();
     h.run_steps(2);
     h.event(egui::Event::Text("7".into()));

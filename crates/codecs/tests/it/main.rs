@@ -31,6 +31,7 @@ mod tiff_exif;
 mod tiff_lab;
 mod tiff_pages;
 mod tiff_photoshop;
+mod tiff_pyramid;
 mod tiff_regressions;
 mod tiff_ycbcr;
 mod webp_frames;

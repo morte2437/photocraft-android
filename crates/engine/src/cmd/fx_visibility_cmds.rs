@@ -2,7 +2,6 @@
 //! hides every effect of that layer; the eye on one effect's row shows or hides that effect. The
 //! effects keep their settings either way, and each toggle is one history step.
 
-use photocraft_doc::LayerId;
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -32,10 +31,7 @@ fn set_visible(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(v.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| bad("`index` must be an effect position (0, 1, …)"))?),
     };
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let id = match p.get("layer") {
-        None | Some(Value::Null) => st.active_layer.ok_or_else(|| bad("no layer given and no active layer"))?,
-        Some(v) => LayerId(v.as_u64().ok_or_else(|| bad("`layer` must be a layer id"))?),
-    };
+    let id = crate::commands::explicit_layer(s, p)?.or(st.active_layer).ok_or_else(|| bad("no layer given and no active layer"))?;
     let l = st.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     if l.effects.items.is_empty() {
         return Err(bad(format!("layer {} has no effects", id.0)));
@@ -78,6 +74,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use photocraft_doc::LayerId;
 
     /// A red layer with a drop shadow and a blue colour overlay, and the background (no effects).
     fn session() -> (Session, u64, u64) {
@@ -96,6 +93,23 @@ mod tests {
         let d = s.active().unwrap();
         let fx = &d.doc.layer(LayerId(id)).unwrap().effects;
         (fx.enabled, fx.items.iter().map(|e| e.enabled()).collect())
+    }
+
+    #[test]
+    fn named_nonactive_effects_layer_can_be_replayed() {
+        let (mut s, a, _) = session();
+        s.execute("layer.new.layer", json!({"name": "top"})).unwrap();
+        let replay = s.active().unwrap().doc.as_ref().clone();
+        s.execute("actions.record", json!({"name": "Hide effects"})).unwrap();
+        s.execute("layer.setEffectsVisible", json!({"layer": a, "visible": false})).unwrap();
+        s.execute("actions.stop", json!({})).unwrap();
+        assert!(!state(&s, a).0);
+        let steps = s.execute("actions.get", json!({"action": "Hide effects"})).unwrap()["steps"].clone();
+        assert_eq!(steps[0][1]["layer"], "a");
+        s.add_document(replay, None);
+        let played = s.execute("actions.play", json!({"action": "Hide effects"})).unwrap();
+        assert!(played.get("failed").is_none(), "{played}");
+        assert!(!state(&s, a).0, "the recorded name targeted the nonactive layer on replay");
     }
 
     fn steps(s: &Session) -> usize {

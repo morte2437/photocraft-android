@@ -604,6 +604,95 @@ fn a_save_that_has_started_writing_cannot_be_cancelled() {
     assert!(!h.state().session.active().unwrap().is_dirty(), "the written save is recorded");
 }
 
+/// A `save_file` service held by `gates` that really replaces the file: it encodes until
+/// `encode` opens, commits, then writes `new` once `write` opens.
+fn file_save(gates: &Gates) -> crate::SaveFileFn {
+    let g = gates.clone();
+    Arc::new(move |_, path, _, ctl| {
+        ctl.progress(0.0, "Encoding");
+        while !g.encode.load(Ordering::Relaxed) {
+            ctl.check()?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        ctl.commit()?;
+        ctl.progress(0.0, "Writing");
+        while !g.write.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::fs::write(path, b"new").map_err(|e| e.to_string())?;
+        Ok(Vec::new())
+    })
+}
+
+/// A file holding `old`, in a fresh directory named for the test.
+fn old_file(test: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("photocraft-jobs-ui-{}-{test}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("w.psd");
+    std::fs::write(&path, b"old").unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn control(h: &mut Harness<'static, PhotocraftApp>, method: &str, params: Value) -> Value {
+    let (req, _rx) = crate::ControlRequest::new(method, params);
+    let ctx = h.ctx.clone();
+    let crate::control::Outcome::Done(v) = crate::control::handle(h.state_mut(), &ctx, &req) else { panic!("{method} replies at once") };
+    v
+}
+
+#[test]
+fn jobs_cancel_before_a_save_writes_stops_it_and_leaves_the_target_untouched() {
+    let mut h = app_harness();
+    let path = old_file("cancel-before-write");
+    let gates = Gates::default();
+    h.state_mut().services.save_file = Some(file_save(&gates));
+    h.state_mut().save_as(Some(path.clone())).unwrap();
+    h.run_steps(2);
+    let job = h.state().jobs.saves[0].job;
+    let v = control(&mut h, "jobs.cancel", json!({"job": job.0}));
+    assert_eq!(v["result"], json!({"cancelled": 1}), "{v}");
+    // The worker reaches its commit point only now, and must give up there.
+    gates.encode.store(true, Ordering::Relaxed);
+    gates.write.store(true, Ordering::Relaxed);
+    step_until(&mut h, |a| !a.saving());
+    assert_eq!(std::fs::read(&path).unwrap(), b"old", "target untouched");
+    let st = h.state().session.active().unwrap();
+    assert!(st.is_dirty() && st.path.is_none(), "the document is not marked saved");
+    assert_eq!(h.state().ui.status, "Cancelled Saving w.psd");
+}
+
+#[test]
+fn jobs_cancel_during_the_write_reports_the_save_as_not_cancelled_and_it_finishes() {
+    let mut h = app_harness();
+    let path = old_file("cancel-during-write");
+    let gates = Gates { encode: Arc::new(AtomicBool::new(true)), ..Gates::default() };
+    h.state_mut().services.save_file = Some(file_save(&gates));
+    h.state_mut().save_as(Some(path.clone())).unwrap();
+    let saved_doc = h.state().session.active().unwrap().doc.id;
+    until_writing(&mut h);
+    let save = h.state().jobs.saves[0].job;
+    // A second document with a job that can still be cancelled.
+    h.state_mut().session.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+    let slow = slow_job(h.state_mut(), &Arc::new(AtomicBool::new(false)));
+
+    let refused = json!([{"job": save.0, "reason": "committing"}]);
+    let v = control(&mut h, "jobs.cancel", json!({"job": save.0}));
+    assert_eq!(v["result"], json!({"cancelled": 0, "notCancelled": refused}), "{v}");
+    assert_eq!(h.state().ui.status, "Saving w.psd is writing the file and can no longer be cancelled");
+    // Cancel everything: the other job stops, the save is reported as left running.
+    let v = control(&mut h, "jobs.cancel", json!({}));
+    assert_eq!(v["result"], json!({"cancelled": 1, "notCancelled": refused}), "{v}");
+    assert!(h.state().session.job(slow).is_none());
+    assert!(h.state().session.job(save).is_some(), "the save still runs and keeps its document locked");
+
+    gates.write.store(true, Ordering::Relaxed);
+    step_until(&mut h, |a| !a.saving());
+    assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    let st = h.state().session.documents().iter().find(|st| st.doc.id == saved_doc).unwrap();
+    assert!(!st.is_dirty() && st.path.as_deref() == Some(path.as_str()), "the save that happened is recorded");
+}
+
 /// #3389: like Photoshop, a running save reads "Saving 45%" in the status bar and appends
 /// " - Saving 45%" to its document's tab title, in both tab strips; both go when it ends.
 #[test]
@@ -746,6 +835,104 @@ fn a_finished_job_beeps_when_the_preference_is_on() {
     let _ = slow_job(h.state_mut(), &gate);
     frames_for(&mut h, 800);
     assert_eq!(BEEPS.load(Ordering::Relaxed), 1, "one beep for the finished job");
+}
+
+#[test]
+fn cancelled_batch_with_partial_results_reports_cancellation_without_beeping() {
+    static BEEPS: AtomicUsize = AtomicUsize::new(0);
+    fn count_beep() {
+        BEEPS.fetch_add(1, Ordering::Relaxed);
+    }
+    BEEPS.store(0, Ordering::Relaxed);
+    let mut h = app_harness_with(crate::Services { beep: Some(count_beep), ..Default::default() });
+    h.state_mut().run("prefs.set", json!({"path": "general.beepWhenDone", "value": true})).unwrap();
+    let Started::Job(id) = h
+        .state_mut()
+        .session
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            |ctx| {
+                while !ctx.cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(json!({"files": ["done.png"], "cancelled": true}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap()
+    else {
+        panic!("batch did not start as a job")
+    };
+    assert!(h.state_mut().session.cancel_job(id));
+    let started = Instant::now();
+    let event = loop {
+        if let Some(event) = h.state_mut().session.poll_jobs().into_iter().find(|event| event.id == id) {
+            break event;
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "batch did not finish");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let ctx = h.ctx.clone();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    h.state_mut().jobs.waiters.push((id, reply_tx));
+    crate::jobs_ui::on_event(h.state_mut(), &ctx, event);
+    assert!(h.state().ui.status.contains("Cancelled"), "{}", h.state().ui.status);
+    assert_eq!(BEEPS.load(Ordering::Relaxed), 0);
+    let reply = reply_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error"], "cancelled");
+    assert_eq!(reply["result"]["files"], json!(["done.png"]));
+}
+
+#[test]
+fn interactive_batch_shows_its_read_only_input_and_asks_after_escape() {
+    let mut h = app_harness();
+    let original = h.state().session.active().unwrap().doc.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let Started::Job(id) = h
+        .state_mut()
+        .session
+        .start_job(
+            "file.automate.batch",
+            json!({}),
+            "Batch",
+            false,
+            move |ctx| {
+                let mut scratch = photocraft_engine::Session::new();
+                scratch.execute("file.new", json!({"name": "input.png", "width": 16, "height": 12, "background": "#00ff00"}))?;
+                ctx.publish_batch_preview("/source/input.png", scratch.active().map(|state| state.doc.clone()));
+                let _ = ready_tx.send(());
+                while !ctx.batch_take_interrupt() {
+                    ctx.check()?;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let continued = ctx.batch_wait_for_decision();
+                ctx.publish_batch_preview("/source/input.png", None);
+                Ok(json!({"continued": continued, "files": []}))
+            },
+            |_, result| Ok(result),
+        )
+        .unwrap()
+    else {
+        panic!("batch did not start as a job")
+    };
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    frames_until(&mut h, 1, |h| h.query_by_label("Batch preview").is_some());
+    assert!(h.query_by_label("input.png").is_some(), "the current input appears in the canvas");
+    assert!(h.query_by_label("Batch").is_none(), "the Batch progress readout is hidden while its input is visible");
+    assert!(Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc), "preview cannot replace the editable document");
+    h.key_press(egui::Key::Escape);
+    frames_until(&mut h, 1, |h| h.query_by_label("Continue").is_some());
+    assert!(h.state().session.batch_interrupt_waiting(id));
+    h.get_by_label("Continue").click();
+    frames_until(&mut h, 1, |h| h.state().session.job(id).is_none());
+    let result = h.state().session.jobs_with_recent().into_iter().find(|job| job.id == id).and_then(|job| job.result).unwrap();
+    assert_eq!(result["continued"], true);
+    assert!(h.query_by_label("Batch preview").is_none(), "the input closes after the decision");
+    assert!(Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc));
 }
 
 #[test]

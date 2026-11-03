@@ -71,9 +71,13 @@ impl Span {
     }
 }
 
-/// Clamp one axis of the view centre with Overscroll off, as Photoshop 25.4 does: an image larger
-/// than the view can't leave its edges, and one smaller than the view stays inside it, where
-/// zooming put it (zooming out around the pointer doesn't re-centre it; Fit on Screen does).
+/// Clamp one axis of the view centre with Overscroll off: an image larger than the view can't
+/// leave its edges, and one smaller than the view is centred in it, so zooming out around the
+/// pointer keeps it in the middle (#10488, #4799).
+///
+/// #1718 measured Photoshop 25.4 leaving a smaller image where zooming put it. Two reports of
+/// Photoshop itself say it stays centred with Overscroll off, which is what turning Overscroll off
+/// is asked for, so PhotoCraft centres it; Overscroll on keeps the free view.
 pub fn clamp_axis(center: f32, len: f32, size: f32, zoom: f32) -> f32 {
     if !(zoom.is_finite() && zoom > 0.0 && len.is_finite() && len > 0.0 && size.is_finite() && size > 0.0) {
         return center;
@@ -82,9 +86,11 @@ pub fn clamp_axis(center: f32, len: f32, size: f32, zoom: f32) -> f32 {
         return len / 2.0;
     }
     let half = size / zoom / 2.0;
-    // Larger: the view stays within the image. Smaller: the image stays within the view.
-    let (a, b) = (half, len - half);
-    center.clamp(a.min(b), a.max(b))
+    // Smaller than the view (or exactly its size): centred. Larger: the view stays within it.
+    if 2.0 * half >= len {
+        return len / 2.0;
+    }
+    center.clamp(half, len - half)
 }
 
 /// Apply Preferences › Tools › Overscroll (off) to `view` for a canvas of `size` points on a
@@ -112,7 +118,7 @@ pub fn clamp_view_with_aspect(view: &mut View, size: egui::Vec2, ppp: f32, aspec
             if view.center[0].is_finite() { view.center[0] } else { w as f32 / 2.0 },
             if view.center[1].is_finite() { view.center[1] } else { h as f32 / 2.0 },
         ];
-        let xf = crate::canvas::ViewXform { rect: egui::Rect::from_min_size(Pos2::ZERO, size), zoom, center, flip: false, rotation: view.rotation, aspect };
+        let xf = crate::canvas::ViewXform { rect: Rect::from_min_size(Pos2::ZERO, size), zoom, center, flip: false, rotation: view.rotation, aspect };
         let image = xf.image_bounds(view.doc_size);
         if !image.is_finite() {
             return false;
@@ -309,12 +315,13 @@ mod tests {
         assert_eq!(clamp_axis(-400.0, 1000.0, 500.0, 1.0), 250.0);
         assert_eq!(clamp_axis(4000.0, 1000.0, 500.0, 1.0), 750.0);
         assert_eq!(clamp_axis(600.0, 1000.0, 500.0, 1.0), 600.0);
-        // Smaller than the view (2500 doc px of view for 1000 of image): it stays where it is
-        // while it is inside the view, and is pushed back in at the edges.
-        assert_eq!(clamp_axis(-90.0, 1000.0, 500.0, 0.2), -90.0);
-        assert_eq!(clamp_axis(-400.0, 1000.0, 500.0, 0.2), -250.0, "the image's right edge on the view's");
-        assert_eq!(clamp_axis(1400.0, 1000.0, 500.0, 0.2), 1250.0, "its left edge on the view's");
+        // Smaller than the view (2500 doc px of view for 1000 of image): centred, wherever zooming
+        // around the pointer left it (#10488).
+        for center in [-90.0, -400.0, 300.0, 1400.0] {
+            assert_eq!(clamp_axis(center, 1000.0, 500.0, 0.2), 500.0, "{center}");
+        }
         assert_eq!(clamp_axis(500.0, 1000.0, 1000.0, 1.0), 500.0, "exactly the view's size: centred");
+        assert_eq!(clamp_axis(10.0, 1000.0, 1000.0, 1.0), 500.0);
         let mut v = View {
             zoom: 1.0,
             center: [-500.0, 20.0],
@@ -330,6 +337,20 @@ mod tests {
         assert!(clamp_view(&mut v, vec2(500.0, 400.0), 1.0));
         assert_eq!(v.center, [250.0, 200.0]);
         assert!(!clamp_view(&mut v, vec2(500.0, 400.0), 1.0), "stable: no repaint loop");
+    }
+
+    #[test]
+    fn overscroll_off_centres_a_fitting_rotated_image() {
+        // 600 px at 45 degrees is about 849 points across, so it fits a 900-point view both ways.
+        // Started off centre, the clamp centres its screen-space bounds in the view (#10488).
+        let mut v = View { zoom: 1.0, center: [100.0, 450.0], doc_size: [600, 600], rotation: 45.0, ..Default::default() };
+        let size = vec2(900.0, 900.0);
+        assert!(clamp_view_with_aspect(&mut v, size, 1.0, 1.0));
+        let rect = Rect::from_min_size(Pos2::ZERO, size);
+        let xf = crate::canvas::ViewXform { rect, zoom: 1.0, center: v.center, flip: false, rotation: v.rotation, aspect: 1.0 };
+        let c = xf.image_bounds(v.doc_size).center();
+        assert!((c - xf.rect.center()).length() < 1e-2, "centred: {c:?}");
+        assert!(!clamp_view_with_aspect(&mut v, size, 1.0, 1.0), "stable: no repaint loop");
     }
 
     #[test]
@@ -516,16 +537,13 @@ mod tests {
                 } else {
                     assert!((x - w / 2.0).abs() < 1e-3, "clamped to the left edge: {x}");
                 }
-                // Zoomed out below fit (Photoshop): the image is not re-centred, it stays where it
-                // is while it fits in the view, and is pushed back in at the view's edge.
+                // Zoomed out below fit: the image is centred in the view on both axes, wherever
+                // the zoom left it (#10488).
                 set_view(&mut h, 0.1, [-50.0, 9000.0]);
                 if !overscroll {
-                    let r = h.state().last_canvas_rect;
-                    let (hw, hh) = (r.width() / 0.1 / 2.0, r.height() / 0.1 / 2.0);
-                    let c = view(&h).center;
-                    assert_eq!(c[0], -50.0, "inside the view: left alone");
-                    assert!((c[1] - hh).abs() < 1e-2, "pushed back in: the image's top on the view's: {c:?}");
-                    assert!(c[0] - hw <= 0.0 && c[0] + hw >= 2000.0 && c[1] - hh <= 0.0 && c[1] + hh >= 1500.0, "{c:?}");
+                    assert_eq!(view(&h).center, [1000.0, 750.0], "centred");
+                } else {
+                    assert_eq!(view(&h).center, [-50.0, 9000.0], "overscroll on: the view is free");
                 }
             }
         }

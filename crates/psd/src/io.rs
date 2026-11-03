@@ -213,6 +213,8 @@ impl WriteExt for Vec<u8> {
 
 /// Staged bytes [`Sink`] collects before writing them out in one call.
 const STAGE: usize = 64 << 10;
+/// Bytes of stored channel data read per piece by [`Sink::put_encoded`].
+const COPY_CHUNK: u64 = if cfg!(test) { 7 } else { 8 << 20 };
 #[cfg(test)]
 pub(crate) const STAGE_FOR_TESTS: usize = STAGE;
 
@@ -273,14 +275,56 @@ impl<'w, W: Write + Seek + ?Sized> Sink<'w, W> {
         let table_len = usize::try_from(crate::compression::rle_widening(data, rows)?).map_err(|_| PsdError::LimitExceeded("row count overflow"))?;
         let (table, packed) = data.split_at_checked(table_len).ok_or_else(|| PsdError::invalid("RLE row-count table out of range"))?;
         for part in table.chunks(STAGE / 2) {
-            self.small(|o| {
-                for count in part.as_chunks::<2>().0 {
-                    o.extend_from_slice(&[0, 0, count[0], count[1]]);
-                }
-                Ok(())
-            })?;
+            self.widen_counts(part)?;
         }
         self.put(packed)
+    }
+
+    /// [`Self::put_widened_rle`] for data held in memory (`data`) or, when `stored`, still in its
+    /// source: the count table and then the packed rows are read in [`COPY_CHUNK`]-sized parts
+    /// (#5333), so a staged merged image or channel is never read back whole to widen it.
+    pub(crate) fn put_widened_encoded(&mut self, data: &[u8], stored: Option<&crate::source::Stored>, rows: usize) -> std::io::Result<()> {
+        let Some(s) = stored else { return self.put_widened_rle(data, rows) };
+        let table_len = crate::compression::rle_widening_len(s.len, rows)?;
+        // Whole counts per part; the parts follow each other, so a staged range is read in one pass.
+        let table_part = (COPY_CHUNK / 2).max(1) * 2;
+        let mut at = 0u64;
+        while at < s.len {
+            let n = if at < table_len { (table_len - at).min(table_part) } else { (s.len - at).min(COPY_CHUNK) };
+            let part = s.read_part(at, n)?;
+            if at < table_len {
+                self.widen_counts(&part)?
+            } else {
+                self.put(&part)?
+            }
+            at += n;
+        }
+        Ok(())
+    }
+
+    /// Two-byte RLE row counts as four-byte ones (`00 00` and the count), staged.
+    fn widen_counts(&mut self, counts: &[u8]) -> std::io::Result<()> {
+        self.small(|o| {
+            for count in counts.as_chunks::<2>().0 {
+                o.extend_from_slice(&[0, 0, count[0], count[1]]);
+            }
+            Ok(())
+        })
+    }
+
+    /// Appends encoded bytes held in memory (`data`) or, when `stored`, still in their source:
+    /// those are copied through in [`COPY_CHUNK`] pieces, so a channel or merged image kept on
+    /// disk (an imported file's, or one an exporter spilled to scratch) is never read whole.
+    pub(crate) fn put_encoded(&mut self, data: &[u8], stored: Option<&crate::source::Stored>) -> std::io::Result<()> {
+        let Some(s) = stored else { return self.put(data) };
+        let mut at = 0u64;
+        while at < s.len {
+            let n = (s.len - at).min(COPY_CHUNK);
+            let part = s.read_part(at, n)?;
+            self.put(&part)?;
+            at += n;
+        }
+        Ok(())
     }
 
     /// `n` zero bytes (padding, at most a few).

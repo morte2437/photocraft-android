@@ -174,6 +174,12 @@ impl Headless {
                 };
                 opts.encode.dpx_bits = photocraft_engine::file_cmds::dpx_bits_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?;
                 opts.encode.dds = photocraft_engine::file_cmds::dds_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?.unwrap_or_default();
+                if let Some(c) = photocraft_engine::file_cmds::tiff_compression_param(&p, "doc.save").map_err(|e| bad(e.to_string()))? {
+                    opts.encode.tiff_compression = c;
+                }
+                let tiff_bool = |key| photocraft_engine::file_cmds::tiff_bool_param(&p, key, "doc.save").map_err(|e| bad(e.to_string()));
+                opts.tiff_transparency = tiff_bool("tiffTransparency")?;
+                opts.encode.tiff_pyramid = tiff_bool("tiffPyramid")?.unwrap_or(false);
                 match p.get("quality") {
                     None | Some(Value::Null) => {}
                     Some(v) => {

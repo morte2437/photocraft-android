@@ -110,7 +110,7 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
         let mut v = app.run("actions.play", json!({"action": i}))?;
         ran = ran.saturating_add(v.get("ran").and_then(Value::as_u64).unwrap_or(0));
         let failed = v.get("failed").is_some_and(Value::is_object);
-        let paused = v.get("paused").filter(|p| p.is_object()).and_then(|p| p.get("dialog")).and_then(Value::as_u64);
+        let paused = v.get("paused").filter(|p| p.is_object()).and_then(waiting_dialog).cloned();
         if let Some(o) = v.as_object_mut() {
             o.insert("ran".into(), json!(ran));
         }
@@ -120,7 +120,7 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
             // (`actions.move`), and one deleted and made again under its name isn't the same action.
             let list = &app.session.actions.list;
             let rest: Vec<Action> = targets.get(n + 1..).unwrap_or_default().iter().filter_map(|i| list.get(*i).cloned()).collect();
-            let token = app.ui.dialog_mut(dialog).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64);
+            let token = paused_token(app, &dialog);
             if let Some(entry) = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t))
                 && name.as_ref() == Some(&entry.action)
             {
@@ -134,6 +134,19 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
         }
     }
     Ok(last)
+}
+
+/// The dialog a paused playback waits at: a step dialog by id, or Check Spelling.
+fn waiting_dialog(paused: &Value) -> Option<&Value> {
+    paused.get("dialog").filter(|d| d.is_u64() || d.as_str() == Some(crate::type_panels_ui::SPELLING))
+}
+
+/// The token of the paused playback waiting at `dialog` (see [`waiting_dialog`]).
+fn paused_token(app: &mut PhotocraftApp, dialog: &Value) -> Option<u64> {
+    match dialog.as_u64() {
+        Some(id) => app.ui.dialog_mut(id).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64),
+        None => app.ui.type_panels.spell.as_ref().and_then(|d| d.resume),
+    }
 }
 
 /// Index of the playback target. Photoshop's Play button uses the first action when
@@ -240,6 +253,30 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             paused = Some(json!({"step": i, "id": id, "dialog": dialog}));
             break;
         }
+        // Check Spelling's dialog opens with Check All Layers as recorded; Done continues the action.
+        // While the dialog is open (for another action or by hand), this step fails and the open
+        // one keeps its place and ignored words.
+        // A correction (`action` set) opens no dialog and runs below.
+        if action.dialogs.contains(&i) && !app.automation_input && id == "edit.checkSpelling" && p.get("action").is_none() {
+            if let Some(open) = app.ui.type_panels.spell.as_ref() {
+                let error = if open.resume.is_some() { "Check Spelling is already open for another action" } else { "Check Spelling is already open" };
+                failed = Some(json!({"step": i, "id": id, "error": error}));
+                break;
+            }
+            if let Err(error) = crate::type_panels_ui::open_spelling(app, p.get("allLayers").and_then(Value::as_bool).unwrap_or(true)) {
+                failed = Some(json!({"step": i, "id": id, "error": error}));
+                break;
+            }
+            let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
+            if let Some(entry) = app.paused_playbacks.paused.get_mut(&token) {
+                entry.doc = app.session.active().map(|d| d.doc.id);
+            }
+            if let Some(d) = app.ui.type_panels.spell.as_mut() {
+                d.resume = Some(token);
+            }
+            paused = Some(json!({"step": i, "id": id, "dialog": crate::type_panels_ui::SPELLING}));
+            break;
+        }
         let target = app.session.active().map(|d| d.doc.id);
         let result = if id == "actions.play" {
             play(app, p)
@@ -281,10 +318,11 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         }
     }
     actions_cmds::finish_playback(&mut app.session, None, &action, from);
-    match paused.as_ref().and_then(|p| p.get("dialog")).and_then(Value::as_u64).and_then(|d| app.ui.dialog_mut(d)) {
+    match paused.as_ref().and_then(waiting_dialog).cloned() {
         // Paused for a dialog: the call goes on after it, so recording stays suspended.
-        Some(d) if failed.is_none() => {
-            let entry = d.fields.get(RESUME).and_then(Value::as_u64).and_then(|t| app.paused_playbacks.paused.get_mut(&t));
+        Some(dialog) if failed.is_none() => {
+            let token = paused_token(app, &dialog);
+            let entry = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t));
             match (owner, entry) {
                 (Some(owner), Some(p)) => p.record = Some(owner),
                 // No continuation to carry the recording: the call ends here.
@@ -791,6 +829,9 @@ pub(crate) struct PausedPlayback {
     /// The steps that Play ran before this pause (earlier actions of the set, and this one's
     /// steps before the dialog), so the final count covers the whole Play.
     ran: u64,
+    /// The document a pause at Check Spelling was playing on. That dialog doesn't block the
+    /// document tabs, so Done ([`resume_spelling`]) continues only on this document.
+    doc: Option<photocraft_doc::DocId>,
 }
 
 /// The paused playbacks, by the token their dialog carries. The dialog's fields hold only the
@@ -804,13 +845,30 @@ pub(crate) struct PausedPlaybacks {
 impl PausedPlaybacks {
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0 });
+        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0, doc: None });
         self.last
     }
 
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }
+}
+
+/// Check Spelling's Done for the action paused at its step: the action continues when the document
+/// it was playing on is still the active one, and otherwise ends there with the reason in the
+/// status bar. Returns `Ok` when nothing failed.
+pub(crate) fn resume_spelling(app: &mut PhotocraftApp, token: u64) -> Result<(), String> {
+    let fields = serde_json::Map::from_iter([(RESUME.to_string(), json!(token))]);
+    let Some((from, doc)) = app.paused_playbacks.paused.get(&token).map(|p| (p.from, p.doc)) else {
+        return resume(app, &fields);
+    };
+    if doc.is_none() || doc == app.session.active().map(|d| d.doc.id) {
+        return resume(app, &fields);
+    }
+    abandoned(app, &fields);
+    let error = "the active document changed while Check Spelling was open";
+    report_play(app, &json!({"failed": {"step": from.saturating_sub(1), "id": "edit.checkSpelling", "error": error}}));
+    Err(error.into())
 }
 
 /// A step dialog confirmed: continue the action after it (`dialogs::confirm` calls this).
@@ -841,8 +899,8 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
     // Paused again at a later dialog of the same action (not of one it calls, which resumes
     // alone): that dialog carries the rest of the set.
     if let Ok(v) = &played
-        && let Some(dialog) = v.get("paused").and_then(|p| p.get("dialog")).and_then(Value::as_u64)
-        && let Some(token) = app.ui.dialog_mut(dialog).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64)
+        && let Some(dialog) = v.get("paused").and_then(waiting_dialog)
+        && let Some(token) = paused_token(app, dialog)
         && let Some(entry) = app.paused_playbacks.paused.get_mut(&token)
         && entry.action == paused.action
     {

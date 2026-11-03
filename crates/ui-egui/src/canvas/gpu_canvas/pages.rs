@@ -2,7 +2,7 @@
 //! `canvas::viewport_pages`): independent single-level textures at their own reduction, drawn
 //! by the same tile pipeline. They live under their own key, never next to a texture set.
 
-use super::doc_textures::{init_buffer, tile_uniform};
+use super::doc_textures::{catch_gpu_errors, init_buffer, tile_uniform};
 use super::resources::{DocTextures, Resources, Tile, f32_bytes};
 use super::texels::{texel_bytes, texels};
 use super::{GpuCanvas, Ordering, wgpu};
@@ -108,34 +108,49 @@ impl GpuCanvas {
         if held.saturating_add(bytes) > budget {
             return false;
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("pc_viewport_page"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
+        // Room among the other documents: those no window shows give theirs up first.
+        res.make_room(key, held + bytes);
         let rect = [x, y, dw, dh];
-        let uniform =
-            init_buffer(device, "pc_viewport_page", &f32_bytes(&tile_uniform(rect, Some([core.x0, core.y0, core.x1, core.y1]))), wgpu::BufferUsages::UNIFORM);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pc_viewport_page"),
-            layout: &res.tile_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
-            ],
+        // A page the GPU refuses (out of memory) fails alone: it falls back to the CPU canvas
+        // instead of the uncaptured error disabling the GPU canvas for the session.
+        let ((texture, view, uniform, bind_group), error) = catch_gpu_errors(device, || {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("pc_viewport_page"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let uniform = init_buffer(
+                device,
+                "pc_viewport_page",
+                &f32_bytes(&tile_uniform(rect, Some([core.x0, core.y0, core.x1, core.y1]))),
+                wgpu::BufferUsages::UNIFORM,
+            );
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("pc_viewport_page"),
+                layout: &res.tile_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
+                ],
+            });
+            queue.write_texture(
+                texture.as_image_copy(),
+                &texels(format, &buf.px),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * texel_bytes(format) as u32), rows_per_image: Some(h) },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            (texture, view, uniform, bind_group)
         });
-        queue.write_texture(
-            texture.as_image_copy(),
-            &texels(format, &buf.px),
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * texel_bytes(format) as u32), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
+        if let Some(e) = error {
+            log::warn!("a {w}×{h} viewport page couldn't be stored on the GPU: {e}");
+            return false;
+        }
         let Some(d) = res.docs.get_mut(&key) else { return false };
         if let Some(i) = replaced {
             d.tiles.remove(i);
@@ -176,7 +191,8 @@ impl GpuCanvas {
         (d.tiles.iter().filter_map(|t| t.page.map(|(id, _)| id)).collect(), d.page_bytes())
     }
 
-    /// The per-document display texture budget ([`super::canvas_budget`]) pages are held to.
+    /// The display texture budget all documents share ([`super::canvas_budget`]); a document's
+    /// pages are held to its share ([`GpuCanvas::canvas_fit`]).
     pub fn canvas_budget(&self) -> u64 {
         self.canvas_budget.load(Ordering::Relaxed)
     }
