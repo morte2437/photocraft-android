@@ -33,6 +33,7 @@ pub mod proxy;
 pub mod psblend;
 pub mod shape_split;
 mod uniform;
+pub mod viewport;
 
 use photocraft_color::blend::BlendMode;
 use photocraft_doc::{Document, Fill, Layer, LayerContent, Pattern};
