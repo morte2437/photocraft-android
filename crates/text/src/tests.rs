@@ -1732,6 +1732,26 @@ fn psd_round_trips_antialias_opentype_and_warp() {
     }
 }
 
+/// EngineData only maps Photoshop's `OldStyle` bool to `onum`. Other Numerals tags (`lnum` /
+/// `pnum` / `tnum`) stay in `.pcraft` until a Photoshop-authored PSD oracle exists — we do not
+/// invent EngineData keys or copy figure-style tables from GPL editors (AGENTS.md clean-room).
+#[test]
+fn psd_engine_data_keeps_only_oldstyle_among_numeral_tags() {
+    let style = CharStyle {
+        font_family: "Inter".into(),
+        size_pt: 20.0,
+        features: ["lnum", "onum", "pnum", "tnum"].iter().map(|t| FontFeature { tag: (*t).into(), value: 1 }).collect(),
+        ..Default::default()
+    };
+    let t = styled("0123456789", style);
+    let bytes = crate::psd::build_tysh(&t, 72.0, None);
+    let back = crate::psd::text_layer_from_tysh(&bytes, 72.0).expect("tysh");
+    let runs = back.char_runs();
+    let mut got: Vec<&str> = runs[0].style.features.iter().map(|f| f.tag.as_str()).collect();
+    got.sort_unstable();
+    assert_eq!(got, ["onum"]);
+}
+
 /// A legacy-signature `TySh` (#1469): zero PointBase, `bounds` (the layout box) and `boundingBox`
 /// (the ink box, as Photoshop writes it) both around `anchor` in a remote local space, and a
 /// `transform` that cancels the remote origin.

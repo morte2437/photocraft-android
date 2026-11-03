@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use crate::blend::BlendMode;
-use crate::compression::{Compression, PlaneLayout, decode_planes, encode_planes, rle_widening};
+use crate::compression::{Compression, PlaneLayout, decode_planes, encode_planes, rle_widening_len};
 use crate::error::{PsdError, Result};
 use crate::header::{MAX_DIMENSION, Version};
 use crate::io::{Reader, Sink, WriteExt, append_with, decode_legacy_name, read_pascal, write_pascal};
@@ -692,7 +692,7 @@ impl LayerRecord {
         for c in &self.channels {
             out.put_i16(c.id);
             let rows = self.widened_rows(c, widen)?;
-            let grown = if rows == 0 { 0 } else { rle_widening(&c.encoded()?, rows)? };
+            let grown = if rows == 0 { 0 } else { rle_widening_len(c.encoded_len(), rows)? };
             out.put_len(c.stored_len().saturating_add(grown), version.is_psb())?;
         }
         out.put(b"8BIM");
@@ -783,7 +783,7 @@ impl LayerInfo {
         for l in &self.layers {
             for c in l.channels.iter().filter(|c| c.compression.is_some()) {
                 let rows = l.widened_rows(c, widen)?;
-                let grown = if rows == 0 { 0 } else { rle_widening(&c.encoded()?, rows)? };
+                let grown = if rows == 0 { 0 } else { rle_widening_len(c.encoded_len(), rows)? };
                 n = n.saturating_add(2).saturating_add(c.encoded_len()).saturating_add(grown);
             }
         }
@@ -858,10 +858,9 @@ impl LayerInfo {
                         o.put_u16(comp.as_u16());
                         Ok(())
                     })?;
-                    let data = c.encoded()?;
                     match l.widened_rows(c, widen)? {
-                        0 => out.put(&data)?,
-                        rows => out.put_widened_rle(&data, rows)?,
+                        0 => out.put_encoded(&c.data, c.stored.as_ref())?,
+                        rows => out.put_widened_encoded(&c.data, c.stored.as_ref(), rows)?,
                     }
                 }
             }

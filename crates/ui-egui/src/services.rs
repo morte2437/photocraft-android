@@ -1,20 +1,22 @@
 use super::{
     CaptionStyle, Document, FileDialogFn, OsEvent, Value, dds_options_ui, jobs_ui, jpeg_options_ui, monitor_status, native_menu, screen_picker,
-    targa_options_ui,
+    targa_options_ui, tiff_options_ui,
 };
 
 /// The error a save gets while another save waits on its format prompt.
 pub(crate) const SAVE_OPTIONS_OPEN: &str = "Answer the TIFF, Targa, DDS or JPEG Options before starting another save";
 
 /// The format answers a save takes instead of asking: the Targa bits per pixel (`"tgaBits"`),
-/// the DDS options (`"ddsCompression"`, `"ddsMipmaps"`) and JPEG Options (`"quality"` 0–12,
-/// `"jpegFormat"`). `None` asks in Save As and takes the default in automation saves, which never
+/// the DDS options (`"ddsCompression"`, `"ddsMipmaps"`), JPEG Options (`"quality"` 0–12,
+/// `"jpegFormat"`) and TIFF Options (`"tiffCompression"`, `"tiffTransparency"`, `"tiffPyramid"`,
+/// `"tiffLayers"`). `None` asks in Save As and takes the default in automation saves, which never
 /// prompt.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FormatChoices {
     pub tga_bits: Option<photocraft_io::TgaBits>,
     pub dds: Option<photocraft_io::DdsOptions>,
     pub jpeg: Option<jpeg_options_ui::JpegChoice>,
+    pub tiff: Option<tiff_options_ui::TiffChoice>,
 }
 
 impl FormatChoices {
@@ -24,6 +26,7 @@ impl FormatChoices {
             tga_bits: targa_options_ui::bits_param(params, cmd)?,
             dds: dds_options_ui::options_param(params, cmd)?,
             jpeg: jpeg_options_ui::choice_param(params, cmd)?,
+            tiff: tiff_options_ui::choice_param(params, cmd)?,
         })
     }
 
@@ -34,12 +37,17 @@ impl FormatChoices {
             tga_bits: targa_options_ui::bits_param(params, cmd)?,
             dds: dds_options_ui::options_param(params, cmd)?,
             jpeg: jpeg_options_ui::recorded_choice(params, cmd)?,
+            tiff: tiff_options_ui::choice_param(params, cmd)?,
         })
     }
 
     /// The export settings with these answers applied.
     pub fn apply(self, settings: ExportSettings) -> ExportSettings {
         let settings = ExportSettings { tga_bits: self.tga_bits.or(settings.tga_bits), dds: self.dds.unwrap_or(settings.dds), ..settings };
+        let settings = match self.tiff {
+            Some(t) => t.apply(settings),
+            None => settings,
+        };
         match self.jpeg {
             Some(j) => j.apply(settings),
             None => settings,
@@ -56,6 +64,9 @@ impl FormatChoices {
         }
         if let Some(j) = self.jpeg {
             j.record(step);
+        }
+        if let Some(t) = self.tiff {
+            t.record(step);
         }
     }
 }
@@ -76,6 +87,13 @@ pub struct ExportSettings {
     pub webp_quality: Option<u8>,
     /// TIFF: keep the layers (Photoshop layer data); `false` is "Discard Layers and Save a Copy".
     pub tiff_layers: bool,
+    /// TIFF Options › Image Compression.
+    pub tiff_compression: photocraft_codecs::TiffCompression,
+    /// TIFF Options › Save Transparency (`None`: kept unless the document has alpha or spot
+    /// channels; see [`photocraft_io::ExportOptions::tiff_transparency`]).
+    pub tiff_transparency: Option<bool>,
+    /// TIFF Options › Save Image Pyramid.
+    pub tiff_pyramid: bool,
     /// Embed the document's whole XMP packet. `true` by default (Save As keeps the metadata);
     /// Export As starts at Metadata: None, since the packet can carry the text of every type
     /// layer and one id per placed document (#647).
@@ -119,6 +137,9 @@ impl Default for ExportSettings {
             webp_lossless: true,
             webp_quality: None,
             tiff_layers: true,
+            tiff_compression: photocraft_codecs::TiffCompression::None,
+            tiff_transparency: None,
+            tiff_pyramid: false,
             xmp_all: true,
             tga_bits: None,
             dds: photocraft_io::DdsOptions::default(),
@@ -150,6 +171,9 @@ impl ExportSettings {
         opts.encode.embed_icc = self.embed_icc;
         opts.encode.embed_metadata = self.embed_metadata;
         opts.tiff_layers = self.tiff_layers;
+        opts.tiff_transparency = self.tiff_transparency;
+        opts.encode.tiff_compression = self.tiff_compression;
+        opts.encode.tiff_pyramid = self.tiff_pyramid;
         opts.xmp = if self.xmp_all { photocraft_io::XmpEmbed::All } else { photocraft_io::XmpEmbed::None };
         opts.tga_bits = self.tga_bits;
         opts.encode.dds = self.dds;

@@ -466,6 +466,53 @@ async fn headless_doc_save_writes_dds_options() {
     cleanup(&dir);
 }
 
+/// TIFF Options (#8827) reach the app's `app.save` through the bridge; a bad compression is
+/// refused before anything is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_doc_save_forwards_tiff_options() {
+    let (addr, app) = fake_app().await;
+    let client = connect(PhotocraftMcp::bridge(&addr, CONTROL_TOKEN).unwrap()).await;
+    let saved = json_of(&call(&client, "doc_save", json!({"path": "out.tif", "tiffCompression": "lzw", "tiffTransparency": false, "tiffPyramid": true})).await);
+    assert_eq!(saved, json!({"saved": {"path": "out.tif", "tiffCompression": "lzw", "tiffTransparency": false, "tiffPyramid": true}}));
+    for bad in [json!({"path": "out.tif", "tiffCompression": "jpeg"}), json!({"path": "out.tif", "tiffPyramid": "yes"})] {
+        let r = call(&client, "doc_save", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}: {}", text(&r));
+    }
+    client.cancel().await.unwrap();
+    app.abort();
+}
+
+/// Headless `doc_save`/`doc_export` write the TIFF Options asked for (#8827): compression,
+/// Save Transparency and Save Image Pyramid.
+#[tokio::test(flavor = "multi_thread")]
+async fn headless_doc_save_writes_tiff_options() {
+    let dir = tmp("tiff-options");
+    let client = connect(headless_in(&dir)).await;
+    call(&client, "doc_new", json!({"width": 200, "height": 100, "background": "transparent"})).await;
+    // (params, compression tag, alpha, directories)
+    for (tool, params, compression, alpha, dirs) in [
+        ("doc_export", json!({"path": "plain.tif"}), 1, true, 1),
+        ("doc_export", json!({"path": "lzw.tif", "tiffCompression": "lzw"}), 5, true, 1),
+        ("doc_save", json!({"path": "zip.tif", "tiffCompression": "zip", "tiffTransparency": false}), 8, false, 1),
+        ("doc_save", json!({"path": "pyr.tif", "tiffPyramid": true, "tiffTransparency": true}), 1, true, 3),
+    ] {
+        let r = call(&client, tool, params.clone()).await;
+        assert_ne!(r.is_error, Some(true), "{params}: {}", text(&r));
+        let bytes = std::fs::read(dir.join(params["path"].as_str().unwrap())).unwrap();
+        let info = photocraft_codecs::tiff_info(&bytes).unwrap();
+        assert!(info.pages.iter().all(|p| p.compression == compression), "{params}: {:?}", info.pages);
+        assert_eq!(info.pages.len(), dirs, "{params}");
+        assert_eq!(photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha(), alpha, "{params}");
+    }
+    for bad in [json!({"path": "bad.tif", "tiffCompression": "jpeg"}), json!({"path": "bad.tif", "tiffTransparency": "off"})] {
+        let r = call(&client, "doc_export", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}: {}", text(&r));
+    }
+    assert!(!dir.join("bad.tif").exists());
+    client.cancel().await.unwrap();
+    cleanup(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn bridge_response_budget_drops_connection_without_retrying_the_operation() {
     use photocraft_automation::{BridgeClient, budgets::MAX_RESPONSE_BYTES};

@@ -209,6 +209,10 @@ pub(crate) struct Stream {
     /// The page ids last given to the GPU canvas, to tell it only of changes.
     synced: Vec<u64>,
     health: (u64, u64),
+    /// Each window showing the document (New Window for Document): the clock of its last frame
+    /// and the pages it wanted, so one window's frame doesn't cancel, drop or evict the pages
+    /// another window still shows.
+    views: HashMap<u64, (u64, Vec<PageId>)>,
     pub stats: Stats,
 }
 
@@ -227,6 +231,7 @@ impl Default for Stream {
             clock: 0,
             synced: Vec::new(),
             health: (0, 0),
+            views: HashMap::new(),
             stats: Stats::default(),
         }
     }
@@ -317,13 +322,28 @@ impl Stream {
         }
     }
 
+    /// Window `view` is about to show `wanted` (call before [`Self::update`] in its frame).
+    pub fn view(&mut self, view: u64, wanted: &[PageId]) {
+        self.views.insert(view, (self.clock + 1, wanted.to_vec()));
+    }
+
+    /// Whether a window other than the one updating shows `page`: one whose frame was at most
+    /// [`VIEW_TTL`] updates ago (a closed window's pages are released after that).
+    fn shown_elsewhere(&self, page: &PageId) -> bool {
+        self.views.values().any(|(at, pages)| *at != self.clock && *at + VIEW_TTL >= self.clock && pages.contains(page))
+    }
+
     /// Take finished work, cancel work for pages not `wanted`, and start work for wanted pages
     /// that are missing, dirty or still a quick preview (`faithful`: the document has a quick
     /// preview at reductions), as `spawn(page, epoch, exact, cancel, region)` allows: `region`, the
     /// part of a held page to render again ([`Page::partial`]), or the whole page.
     pub fn update(&mut self, wanted: &[PageId], faithful: bool, mut spawn: impl FnMut(PageId, u64, bool, Arc<AtomicBool>, Option<DRect>) -> bool) {
         self.clock += 1;
-        let want: HashSet<PageId> = wanted.iter().copied().collect();
+        let clock = self.clock;
+        self.views.retain(|_, (at, _)| *at + VIEW_TTL >= clock);
+        // What any window shows: work and results for another window's pages are kept.
+        let want: HashSet<PageId> =
+            wanted.iter().copied().chain(self.views.values().filter(|(at, _)| *at != clock).flat_map(|(_, pages)| pages.iter().copied())).collect();
         while let Ok(d) = self.rx.try_recv() {
             let Some(i) = self.jobs.iter().position(|j| j.page == d.page && j.epoch == d.epoch) else { continue };
             // Cancelled work ends in an interruption, not a failure: the page is asked for again.
@@ -396,10 +416,11 @@ impl Stream {
         }
     }
 
-    /// Whether a wanted page can't be shown: its render or upload failed and nothing older of it
-    /// is held, so the view would have a hole (the CPU canvas draws instead).
+    /// Whether a wanted page can't be shown: its render or upload failed and nothing current of
+    /// it is held, so the view would have a hole, or keep showing the page from before an edit
+    /// (the CPU canvas draws instead).
     pub fn stuck(&self, wanted: &[PageId]) -> bool {
-        wanted.iter().any(|p| !self.pages.contains_key(p) && self.failed.contains(&(*p, self.epoch(*p))))
+        wanted.iter().any(|p| self.pages.get(p).is_none_or(|q| q.dirty) && self.failed.contains(&(*p, self.epoch(*p))))
     }
 
     /// Whether work is outstanding (the view repaints until it is done).
@@ -426,12 +447,18 @@ impl Stream {
     }
 
     /// Make room for `bytes` more under `limit` by evicting the least recently wanted pages not
-    /// in `wanted`: whether any was evicted, or `None` when the wanted pages leave no room.
+    /// in `wanted` (another window's last: they are only shown there): whether any was evicted,
+    /// or `None` when the wanted pages leave no room.
     pub fn make_room(&mut self, page: PageId, bytes: u64, limit: u64, wanted: &[PageId]) -> Option<bool> {
         let held = |s: &Self| s.pages.iter().filter(|(p, _)| **p != page).map(|(_, q)| q.bytes).sum::<u64>();
         let mut evicted = false;
         while held(self) + bytes > limit {
-            let cold = self.pages.iter().filter(|(p, _)| **p != page && !wanted.contains(p)).min_by_key(|(_, q)| q.touched).map(|(p, _)| *p)?;
+            let cold = self
+                .pages
+                .iter()
+                .filter(|(p, _)| **p != page && !wanted.contains(p))
+                .min_by_key(|(p, q)| (self.shown_elsewhere(p), q.touched))
+                .map(|(p, _)| *p)?;
             self.drop_page(cold);
             self.stats.evicted += 1;
             evicted = true;
@@ -482,7 +509,8 @@ impl Stream {
     pub fn prune(&mut self, wanted: &[PageId]) -> Option<Vec<u64>> {
         let all_current = wanted.iter().all(|p| self.pages.get(p).is_some_and(|q| !q.dirty));
         if all_current && let Some(f) = wanted.first().map(|p| p.factor) {
-            let drop: Vec<PageId> = self.pages.iter().filter(|(p, q)| !wanted.contains(p) && (q.dirty || p.factor < f)).map(|(p, _)| *p).collect();
+            let drop: Vec<PageId> =
+                self.pages.iter().filter(|(p, q)| !wanted.contains(p) && !self.shown_elsewhere(p) && (q.dirty || p.factor < f)).map(|(p, _)| *p).collect();
             for p in drop {
                 self.drop_page(p);
             }
@@ -505,6 +533,9 @@ impl Stream {
         self.pages.len()
     }
 }
+
+/// How many stream updates a window's pages stay protected after its last frame.
+const VIEW_TTL: u64 = 64;
 
 /// Render `page` of `doc` on a worker, if one of the [`MAX_JOBS`] is free.
 fn spawn(
@@ -596,6 +627,21 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
         }
         return false;
     }
+    let key = stream_key(id.0);
+    // Half the document's share of the canvas budget: the rest is headroom for what the
+    // compositor needs.
+    let limit = gpu.canvas_fit(&doc).map_or(0, |(_, share)| share) / 2;
+    let page_bytes = gpu.page_texture_bytes(doc.depth, size, PAGE_SIDE + 2, PAGE_SIDE + 2).max(1);
+    let max_pages = usize::try_from(limit / page_bytes).unwrap_or(usize::MAX);
+    // No room for a single page: the CPU canvas draws the document, as main does for every
+    // document over the budget, and the pages and work held for it are freed.
+    if max_pages == 0 {
+        if let Some(s) = app.streams.remove(&id) {
+            drop(s);
+            gpu.retain_pages(key, &[]);
+        }
+        return false;
+    }
     let (display, _) = canvas_display(app, &doc, None);
     let display_key = texture_key(display.as_deref());
     let now = Identity { revision, preview: raw_key, display: display_key, size };
@@ -606,11 +652,6 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
             .and_then(|s| damage_since(app, idx, (s.revision, s.preview ^ display_key), (revision, raw_key), display_key, last_damage));
         app.streams.entry(id).or_default().invalidate(now, damage);
     }
-    let key = stream_key(id.0);
-    // Half the per-document canvas budget: the rest is headroom for what the compositor needs.
-    let limit = gpu.canvas_budget() / 2;
-    let page_bytes = gpu.page_texture_bytes(doc.depth, size, PAGE_SIDE + 2, PAGE_SIDE + 2).max(1);
-    let max_pages = usize::try_from(limit / page_bytes).unwrap_or(usize::MAX);
     let wanted = pages(size, visible_doc_rect(xf), zoom, max_pages);
     if gpu.texture_info(id.0).is_some() {
         // Switching from the texture set: free it, the pages are budgeted against that memory.
@@ -618,9 +659,8 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     }
     let stream = app.streams.entry(id).or_default();
     stream.retry_after((photocraft_raster::spill::read_error_generation(), photocraft_raster::memory::configuration_generation()));
-    // No room for a single page, or a page that failed: the CPU canvas draws the document, as
-    // main does for every document over the budget.
-    if max_pages == 0 || stream.stuck(&wanted) {
+    // A page that failed: the CPU canvas draws the document until it is retried.
+    if stream.stuck(&wanted) {
         return false;
     }
     let faithful = photocraft_compose::proxy::proxy_faithful(&doc);
@@ -637,6 +677,7 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     app.navigator_gpu.remove(&id);
     crate::render_path::note(app, id.0, crate::render_path::Path::Gpu { full: true });
     let stream = app.streams.entry(id).or_default();
+    stream.view(ctx.viewport_id().0.value(), &wanted);
     let tx = stream.tx.clone();
     stream.update(&wanted, faithful, |page, epoch, exact, cancel, region| {
         spawn(ctx, tx.clone(), doc.clone(), display.clone(), (page, epoch, exact, region), cancel)
@@ -924,6 +965,71 @@ mod tests {
         assert!(!s.stuck(&view), "a new memory configuration retries");
         s.invalidate(id(2), None);
         assert!(!s.stuck(&view));
+    }
+
+    /// An edited page whose new render fails isn't left showing its old content (#5332 review).
+    #[test]
+    fn a_dirty_page_whose_render_failed_falls_back() {
+        let view = [page(1, 0, 0)];
+        let mut s = holding(&view);
+        s.invalidate(id(2), None);
+        assert!(s.pages[&view[0]].dirty && !s.stuck(&view), "the old page shows while it renders");
+        let mut log = Vec::new();
+        s.update(&view, true, recorder(&mut log));
+        s.tx.send(Done { page: view[0], epoch: log[0].1, exact: true, region: None, result: Err("out of memory".into()) }).unwrap();
+        s.update(&view, true, |_, _, _, _, _| panic!("no retry while failed"));
+        assert!(s.stuck(&view), "a stale page is not drawn in place of the failed one");
+        s.retry_after((7, 7));
+        assert!(!s.stuck(&view));
+    }
+
+    /// #5332 review: two windows showing one document (New Window for Document) share its
+    /// stream. One window's frame doesn't cancel the other's work, drop its results, evict its
+    /// pages or prune them as finer than its own view; a window gone for a while releases them.
+    #[test]
+    fn windows_on_one_document_keep_each_others_pages() {
+        let (a, b) = ([page(1, 0, 0)], [page(4, 0, 0)]);
+        let mut s = holding(&[]);
+        let (mut log_a, mut log_b) = (Vec::new(), Vec::new());
+        s.view(1, &a);
+        s.update(&a, true, recorder(&mut log_a));
+        s.view(2, &b);
+        s.update(&b, false, recorder(&mut log_b));
+        assert!(!log_a[0].3.load(Ordering::Relaxed), "window 2's frame keeps window 1's work");
+        // Window 1's page finishes during window 2's frame: it is kept for upload.
+        s.tx.send(done(a[0], log_a[0].1, true, 4)).unwrap();
+        s.view(2, &b);
+        s.update(&b, false, |_, _, _, _, _| true);
+        assert!(s.ready.iter().any(|d| d.page == a[0]), "window 1's result is kept");
+        for d in s.take_uploads(&b, 16) {
+            s.uploaded(&d, 100, true);
+        }
+        s.tx.send(done(b[0], log_b[0].1, true, 4)).unwrap();
+        s.view(2, &b);
+        s.update(&b, false, |_, _, _, _, _| true);
+        for d in s.take_uploads(&b, 16) {
+            s.uploaded(&d, 100, true);
+        }
+        assert_eq!(s.resident(), 2);
+        // Window 2's view is current: window 1's finer page isn't pruned, nor evicted first.
+        s.prune(&b);
+        assert!(s.pages.contains_key(&a[0]), "not pruned while window 1 shows it");
+        s.pages.insert(page(4, 1, 0), Page { dirty: false, exact: true, partial: None, epoch: 0, touched: s.clock, bytes: 100 });
+        assert_eq!(s.make_room(page(4, 2, 0), 100, 300, &b), Some(true));
+        assert!(s.pages.contains_key(&a[0]) && !s.pages.contains_key(&page(4, 1, 0)), "a page no window shows goes first");
+        // Window 1 closed: once its pages are past the grace period, window 2 prunes them.
+        for _ in 0..=VIEW_TTL {
+            s.view(2, &b);
+            s.update(&b, false, |_, _, _, _, _| true);
+        }
+        s.prune(&b);
+        assert!(!s.pages.contains_key(&a[0]), "released after the closed window's grace period");
+        // Without a recorded window (one view), nothing changes: other pages are cancelled.
+        let mut s = holding(&[]);
+        let mut log = Vec::new();
+        s.update(&a, true, recorder(&mut log));
+        s.update(&b, true, |_, _, _, _, _| true);
+        assert!(log[0].3.load(Ordering::Relaxed));
     }
 
     #[test]

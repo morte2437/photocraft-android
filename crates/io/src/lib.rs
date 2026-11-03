@@ -370,6 +370,13 @@ pub struct ExportOptions {
     /// Save As sets it from its Layers option, which keeps them as Photoshop does. `false` is
     /// Photoshop's "Discard Layers and Save a Copy".
     pub tiff_layers: bool,
+    /// TIFF: Photoshop's "Save Transparency" for the composite (the merged image other readers
+    /// see; each layer of a layered TIFF keeps its own transparency either way). `Some(true)`
+    /// stores the transparency as the first extra sample (unassociated alpha), ahead of any
+    /// alpha and spot channels; `Some(false)` composites the image over white and stores no
+    /// transparency. `None`, the default, keeps it unless the document has alpha or spot
+    /// channels, which are then written as with it off.
+    pub tiff_transparency: Option<bool>,
     /// Which part of the document's XMP packet and free-form text a flat export embeds.
     /// PSD/PSB always keep XMP; `.pcraft` keeps both. Everything by default, as Save As does;
     /// Export As offers None.
@@ -405,6 +412,7 @@ impl Default for ExportOptions {
             encode: EncodeOptions::default(),
             force_psb: false,
             tiff_layers: false,
+            tiff_transparency: None,
             xmp: XmpEmbed::All,
             tga_bits: None,
             image_previews: true,
@@ -1002,6 +1010,7 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
             maximize_compatibility: opts.psd_maximize_compatibility,
             document_path: opts.document_path.clone(),
             read_linked_files: opts.read_linked_files,
+            stage_on_scratch_from: Some(psd_export::STAGE_DOCUMENTS_FROM),
             ..Default::default()
         };
         // The preview is rendered first, while only the document is in memory: its full-size
