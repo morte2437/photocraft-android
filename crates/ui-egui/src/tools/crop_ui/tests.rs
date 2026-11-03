@@ -1282,7 +1282,8 @@ fn info_size_is_shown_in_the_ruler_unit() {
 
 /// #3145 review: after the crop is cancelled or committed, or the tool is left, W and H are the
 /// selection's again. With the Crop tool still picked, the new default frame is the selection's
-/// bounds (or the canvas), as in Photoshop, so the panel shows the same size.
+/// bounds (or the canvas), as in Photoshop, so the panel shows the same size. After a commit that
+/// frame waits for the next press or re-picking the tool.
 #[test]
 fn info_size_returns_to_the_selection_after_cancel_or_commit() {
     let mut app = app(SampleType::U8);
@@ -1303,6 +1304,9 @@ fn info_size_returns_to_the_selection_after_cancel_or_commit() {
     crate::canvas::commit_crop(&mut app);
     assert_eq!(app.session.active().unwrap().doc.size, Size::new(40, 30));
     assert_eq!(info_size(&app), None, "committed: no frame");
+    ensure_frame(&mut app);
+    assert_eq!(info_size(&app), None, "committed: the frame stays hidden");
+    crate::tool_memory::select(&mut app, Tool::Crop);
     ensure_frame(&mut app);
     assert_eq!(info_size(&app), Some([40.0, 30.0]), "the new frame is the cropped canvas");
     // Leaving the tool: the panel shows the selection, whatever the frame.

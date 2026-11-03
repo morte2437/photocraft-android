@@ -579,8 +579,9 @@ fn p_toggles_classic_mode_while_a_crop_is_in_progress() {
     assert!(!classic(&app));
 }
 
-/// After a commit the tool shows its untouched default frame again: H and P are the Hand and Pen
-/// keys there, as when the tool is picked, not Show Cropped Area and Classic Mode (#9731, #6536).
+/// After a commit the tool shows no frame until the next press or re-picking the tool, which
+/// brings its untouched default frame back: H and P are the Hand and Pen keys there, as when the
+/// tool is picked, not Show Cropped Area and Classic Mode (#9731, #6536).
 #[test]
 fn h_and_p_pick_their_tools_over_the_default_frame_after_a_commit() {
     for (k, tool) in [(egui::Key::H, Tool::Hand), (egui::Key::P, Tool::Pen)] {
@@ -589,7 +590,10 @@ fn h_and_p_pick_their_tools_over_the_default_frame_after_a_commit() {
         key(&mut app, egui::Key::Enter, NONE);
         assert_eq!(app.session.active().map(|st| st.doc.size), Some(Size::new(60, 40)), "the crop committed");
         crate::crop_ui::ensure_frame(&mut app);
-        assert!(app.ui.crop_rect.is_some() && app.crop.default_frame, "the default frame is back");
+        assert!(app.ui.crop_rect.is_none(), "the commit hides the frame");
+        crate::tool_memory::select(&mut app, Tool::Crop);
+        crate::crop_ui::ensure_frame(&mut app);
+        assert!(app.ui.crop_rect.is_some() && app.crop.default_frame, "re-picking the tool brings the default frame back");
         key(&mut app, k, NONE);
         assert_eq!(app.ui.tool, tool, "{k:?}");
         let s = &app.ui.tool_options.crop_shield;
