@@ -212,3 +212,31 @@ fn a_shift_corner_drag_on_a_turned_frame_snaps_along_its_diagonal() {
         }
     }
 }
+
+/// Turned 31° the other way, the 8 : 5 frame's bottom-right diagonal runs 1° off horizontal, so it
+/// crosses a horizontal guide 3 px from the handle about 170 px further along. That crossing is
+/// well outside the 8 px snap tolerance: the guide doesn't catch the handle and the frame follows
+/// the drag, as with no guide. Sliding to the crossing grew the frame by about 40 %.
+#[test]
+fn a_turned_shift_corner_ignores_a_guide_its_diagonal_meets_far_away() {
+    let drag = crop_ui::turn([-50.0, -25.0], [0.0, 0.0], -31.0);
+    for classic in [true, false] {
+        let what = format!("Classic Mode {classic}");
+        // Off the document's centre lines, which snap too.
+        let setup = || {
+            let mut app = crop_app(Setup { classic, snap: true, ..Setup::default() });
+            app.ui.crop_rect = Some([100.0, 60.0, 500.0, 310.0]);
+            app.ui.crop_angle = -31.0;
+            photocraft_ui_egui::crop_mode::sync_frame(&mut app);
+            app
+        };
+        let mut free = setup();
+        drag_corner(&mut free, drag, json!({"shift": true}));
+        let (want, at) = (free.ui.crop_rect.expect("a frame"), corner(&free));
+        let mut app = setup();
+        app.run("view.newGuide", json!({"orientation": "horizontal", "position": at[1] + 3.0})).expect("guide");
+        drag_corner(&mut app, drag, json!({"shift": true}));
+        let r = app.ui.crop_rect.expect("a frame");
+        assert!(r.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{what}: {r:?}, want {want:?} as with no guide");
+    }
+}

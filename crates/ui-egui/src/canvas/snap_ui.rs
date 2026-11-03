@@ -438,12 +438,16 @@ fn crop_handle(app: &PhotocraftApp, p: [f64; 2], mods: egui::Modifiers, targets:
             // the line instead, the ratio (a ⇧ corner's diagonal) put it back off the line.
             let along = [f64::from(hx) * k, f64::from(hy)];
             let v = crate::crop_ui::turn(along, [0.0, 0.0], deg);
+            // A diagonal nearly parallel to the line meets it far along: snap only to a crossing
+            // inside the tolerance box `snap_point` read the handle in (|s·v| ≤ tol on each axis).
+            let reach = tol / v[0].abs().max(v[1].abs());
             let slide = lines
                 .iter()
                 .filter_map(|line| {
                     let (gap, step) = if line.vertical { (line.pos - handle[0], v[0]) } else { (line.pos - handle[1], v[1]) };
                     (step.abs() > 1e-9).then(|| gap / step)
                 })
+                .filter(|s| s.abs() <= reach)
                 .min_by(|a, b| a.abs().total_cmp(&b.abs()));
             let Some(s) = slide else { return Some((p, Vec::new())) };
             local = [(travel[0] + s * along[0]) / scale, (travel[1] + s * along[1]) / scale];
