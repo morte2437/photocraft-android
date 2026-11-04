@@ -72,6 +72,24 @@ fn a_click_on_the_pasteboard_commits_one_free_transform_step() {
     }
 }
 
+/// The press decides where a click lands: one on the image that jitters past the canvas edge
+/// before the release keeps the box open, one on the pasteboard that jitters onto the image commits.
+#[test]
+fn a_click_counts_where_it_was_pressed() {
+    let mut app = app();
+    let (before, quad) = (steps(&app), app.ui.transform.as_ref().unwrap().quad);
+    tool_event(&mut app, ToolEvent::Down { x: 199.5, y: 150.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 200.5, y: 150.0 }, Modifiers::NONE);
+    assert!(app.ui.transform.is_some(), "pressed on the image: the box stays open");
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, quad);
+    assert_eq!(steps(&app), before);
+
+    tool_event(&mut app, ToolEvent::Down { x: 200.5, y: 150.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 199.5, y: 150.0 }, Modifiers::NONE);
+    assert!(app.ui.transform.is_none(), "pressed on the pasteboard: committed");
+    assert_eq!(steps(&app), before + 1);
+}
+
 #[test]
 fn a_drag_outside_the_box_still_rotates() {
     let mut app = app();

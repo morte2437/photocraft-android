@@ -35,7 +35,11 @@ fn hit_with(t: &TransformSession, p: [f64; 2], tol: f64, pivot: bool) -> Hit {
         let (a, b) = (t.quad[i], t.quad[(i + 1) % 4]);
         [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
     };
-    let handles = (0..4).map(|i| (t.quad[i], Hit::Corner(i))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain(pivot.then_some((t.pivot, Hit::Pivot)));
+    // With the reference point hidden, the box centre is a move target in its place, so a press
+    // at the centre of a box smaller than two grab areas moves it instead of grabbing an edge.
+    let centre = [t.quad.iter().map(|q| q[0]).sum::<f64>() / 4.0, t.quad.iter().map(|q| q[1]).sum::<f64>() / 4.0];
+    let middle = if pivot { (t.pivot, Hit::Pivot) } else { (centre, Hit::Inside) };
+    let handles = (0..4).map(|i| (t.quad[i], Hit::Corner(i))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain(std::iter::once(middle));
     let nearest = handles.map(|(q, h)| (d(q), h)).filter(|(dist, _)| *dist < tol).min_by(|a, b| a.0.total_cmp(&b.0));
     match nearest {
         Some((_, h)) => h,
@@ -114,10 +118,15 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             // Clicking the pasteboard (outside the document) commits; a click outside the box on the
             // image does nothing and the box stays open (#11100). Dragging the rotation zone and
             // Option-clicking to move the pivot keep their existing behavior.
-            if matches!(ev, ToolEvent::Up { .. }) && g.is_some_and(|g| accepts_outside_click(g, [x, y], tol)) {
-                if on_pasteboard(app, [x, y]) {
+            // The press decides: a click that starts on the image and jitters past the edge
+            // before the release is still a click on the image.
+            if matches!(ev, ToolEvent::Up { .. })
+                && let Some(g) = g
+                && accepts_outside_click(g, [x, y], tol)
+            {
+                if on_pasteboard(app, g.start) {
                     commit(app);
-                } else if let (Some(g), Some(s)) = (g, app.ui.transform.as_mut()) {
+                } else if let Some(s) = app.ui.transform.as_mut() {
                     // Jitter before the release may have turned the box a little: put it back.
                     s.quad = g.quad0;
                     s.pivot = g.pivot0;
