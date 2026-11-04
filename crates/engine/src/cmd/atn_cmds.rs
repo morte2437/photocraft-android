@@ -40,6 +40,7 @@ mod steps_direct_adjustments;
 mod steps_distort;
 mod steps_doc;
 mod steps_gallery;
+mod steps_gradient;
 mod steps_image;
 mod steps_layer;
 mod steps_layer_style;

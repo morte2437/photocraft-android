@@ -84,6 +84,7 @@ the reference application.
 | `Flip` | flip | Flip | `image.imageRotation.flipCanvasHorizontal`, `image.imageRotation.flipCanvasVertical`, `edit.transform.flipHorizontal`, `edit.transform.flipVertical` |
 | (string ID only) | focusMask | Focus Area | `select.focusArea` |
 | `GsnB` | gaussianBlur | Gaussian Blur | `filter.blur.gaussianBlur` |
+| `Grdn` | gradientClassEvent | Classic Gradient (custom RGB, centred midpoints) | `paint.gradient` |
 | (string ID only) | gradientMapEvent | Gradient Map | `image.adjustments.gradientMap` |
 | `GrMp` | (code only) | Gradient Map (recorded classic form) | `image.adjustments.gradientMap` |
 | `RplC` | replaceColor | Replace Color (Lab sample box) | `image.adjustments.replaceColor` |
@@ -486,6 +487,32 @@ differences that do not change what a step does.
 - Colours are kept as 8-bit values (51.0031 becomes 51); gradient names become "Custom".
 - Levels and Curves write the composite as `Chnl.Cmps` (the application skips `Ordn.Trgt`, #8543).
 
+### Classic Gradient recordings
+
+`Grdn` / `gradientClassEvent` maps to `paint.gradient` for custom RGB gradients
+with byte-valued colours and centred colour/transparency midpoints. The five
+measured styles are Linear, Radial, Angle, Reflected and Diamond. Pixel endpoints,
+opacity, blend mode, reverse, dither and the transparency switch are explicit;
+an omitted `Dthr` is off, rather than the native command's on default. The
+recorded interpolation method maps to the existing Classic, Perceptual, Linear
+or Smooth implementation, and `Intr` supplies smoothness.
+
+Unchanged recordings retain their complete descriptor bytes, key order, ID
+encoding and explicit defaults. A supported edit writes the recorded key order:
+`From`, `T   `, non-default `Opct` and `Md  `, `Type`, non-default `Rvrs`, enabled
+`Dthr` and `UsMs`, `gradientsInterpolationMethod`, then required `Grad`. Source
+data is never replayed in place of edited executable settings. Native export
+requires explicit stops, transparency (an empty list means opaque) and method;
+it does not resolve a named or current gradient preset at save time.
+
+Unknown/duplicate keys, absent interpolation methods, non-centred midpoints,
+fractional RGB colours, noise gradients and dynamic foreground/background stops
+remain kept steps. The current preset model does not represent those forms
+faithfully. Invalid units/enums or missing `Grad` also stay kept, rather than
+using a different gradient. The default Make/Set gradient fill-layer recordings
+are separate work. Synthetic fixtures follow the measured reference below;
+no new Photoshop recording or pixel-equivalence measurement is claimed.
+
 ## Reference forms
 
 How the reference application resolves a layer or document a step names, measured on 2026-11-01 by
@@ -686,7 +713,6 @@ the recorded steps back from the saved Actions panel. Ranges come from the dialo
 | Convert Mode, several layers, "Don't Flatten" | `T   ` as a **class** (`Grys`), `Fltt` false, `Rstr` false | With `Fltt` and `Rstr` the step plays without the flatten question. |
 | New Group with a colour | `Usng` (`Clr ` label), `layerSectionStart`, `layerSectionEnd`, top-level `Nm  ` | |
 | Shear (`Shr `) | `ShrP` list of `Pnt ` (`Hrzn`, `Vrtc` doubles), `UndA` (`WrpA` wrap around, `RptE` repeat edge pixels), `ShrS` long, `ShrE` long | The dialog writes whole numbers: `Hrzn` -64..63 (dragging past the grid clamps), `Vrtc` 1..128 with the first point at 1 and the last at 128; dragging a point out of the grid deletes it. `ShrS` is 0 and `ShrE` the last point's index (count - 1). Script runs take any value unclamped and crashed on far-off `ShrE`/`ShrS` or a first `Vrtc` below 1. |
-| Gradient tool, classic (`Grdn` / `gradientClassEvent`) | `From`, `T   ` points in pixels; `Opct` percent, `Md  ` blend mode, `Type` (`GrdT`: `Lnr `, `Rdl `, `Angl`, `Rflc`, `Dmnd`), `Rvrs` bool, `Dthr` bool, `UsMs` bool (transparency), `gradientsInterpolationMethod` (`Perc` perceptual, …), `Grad` gradient object (as in Gradient Map) | Recorded in that order. `Opct`, `Md  ` and `Rvrs` appear only when they differ from 100 %, Normal and off; `Dthr` and `UsMs` only when on. The five types are the only accepted values. A step without `Grad` fails. |
 | Gradient tool, default mode | two steps: Make (`null` = class `contentLayer`, `Usng` = `Type` gradient layer object) then Set (`null` = `contentLayer` target, `T   ` = the same object plus `Algn` false) | The object: `Dthr`, `gradientsInterpolationMethod`, `Angl` angle, `Type`, `Scl ` percent, `Ofst` (`Hrzn`, `Vrtc` percent), `Grad`. The new tool makes a gradient fill layer; Make holds the first click, Set the finished drag. |
 | Perspective Warp (`perspectiveWarpTransform`) | `null` = layer target, `Md  ` (`perspectiveWarpMode`: `warp`), `referenceRect` rectangle in pixels, `vertices` list of points in pixels (the layout quad), `warpedVertices` (the same points after warping), `quads` list of `indices` (4 vertex indexes each) | Layout and warp are one step. |
 | Print (`print`) then Print One Copy (`printOneCopy`) | `print`: `null` = reference `printOutput` property of the target document; `printOutput` (`PstS`, `Inte`, `printSixteenBit`, `printerName` text, `printProofSetup`), `printViewProofSetup`, `printOutputOptions` (caption, marks, `Bckg` colour, `BrdT`, `Bld `, `Rslt`, `vectorData`, `PgPs`, `Left`, `Top `, `Scl `, crop rectangle), `osSpecificPrintInfo` raw data, `Cptn` text. `printOneCopy` has no keys. | Pressing Print in the dialog records both steps. |
