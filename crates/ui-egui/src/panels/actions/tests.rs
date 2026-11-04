@@ -2351,7 +2351,9 @@ fn paused_spelling_checks_the_live_gate_before_resuming_history() {
         let before = app.session.active().unwrap().doc.clone();
         let rows = app.session.active().unwrap().history.entries();
         let token = app.ui.type_panels.spell.as_ref().unwrap().resume.unwrap();
-        app.session.authorize = None;
+        if service != 1 {
+            app.session.authorize = None;
+        }
         match service {
             0 => app.session.authorize = Some(deny_correction),
             1 => {
@@ -2465,6 +2467,9 @@ fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
             app.run("layer.layerMask.revealAll", json!({})).unwrap();
             app.run("edit.fill", json!({"color":"#808080","target":"mask"})).unwrap();
             let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap());
+            // Native mask eligibility checks the active layer, so keep both receivers eligible.
+            // The assertions below still require the explicitly named A mask alone to change.
+            app.run("layer.layerMask.revealAll", json!({})).unwrap();
             app.session.select_layer(a).unwrap();
             let mut params = json!({"brightness":40});
             if mask {

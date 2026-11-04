@@ -913,11 +913,8 @@ pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<
     }
     let captured = paused.gate;
     let saved = app.session.authorize;
-    let live = saved.or(if app.automation_input { app.services.automation_authorize } else { None });
-    if let Some(authorize) = captured {
-        authorize(command, &params).map_err(|e| e.to_string())?;
-    }
-    if let Some(authorize) = live {
+    let service = if app.automation_input { app.services.automation_authorize } else { None };
+    for authorize in [captured, saved, service].into_iter().flatten() {
         authorize(command, &params).map_err(|e| e.to_string())?;
     }
     if app.automation_input
@@ -925,7 +922,7 @@ pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<
     {
         authorize(command, &params)?;
     }
-    let gate = continuation_gate(captured, live)?;
+    let gate = continuation_gate(captured, continuation_gate(saved, service)?)?;
     prepare_history(app, fields)?;
     app.session.authorize = gate;
     let result = app.run(command, params);
@@ -1030,7 +1027,7 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         return Err(e.to_string());
     }
     let saved = app.session.authorize;
-    let live = saved.or(if app.automation_input { app.services.automation_authorize } else { None });
+    let service = if app.automation_input { app.services.automation_authorize } else { None };
     let remaining = !paused.then.is_empty()
         || app
             .session
@@ -1039,7 +1036,8 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
             .iter()
             .find(|action| action.name == paused.action)
             .is_some_and(|action| action.enabled_steps().any(|(i, _)| i >= paused.from));
-    let gate = if remaining { continuation_gate(paused.gate, live) } else { Ok(live.or(paused.gate)) };
+    let gate =
+        if remaining { continuation_gate(saved, service).and_then(|live| continuation_gate(paused.gate, live)) } else { Ok(saved.or(service).or(paused.gate)) };
     let gate = match gate {
         Ok(gate) => gate,
         Err(error) => {
