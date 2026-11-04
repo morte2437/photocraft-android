@@ -221,7 +221,8 @@ fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::B
         // word (Mac "Höhe" is 1251 "Hшhe"), unless the name's letters are mostly Cyrillic
         // ("CMYKканал", Ukrainian "Копiя") or the letter is in a Cyrillic word of its own ("Layer
         // Слой"); a lone one right after a digit (Mac "90°" alone is 1251 "90Ў") never counts.
-        let chars: Vec<char> = decode(name, enc).chars().collect();
+        let decoded = Name::new(&decode(name, enc));
+        let chars = &decoded.chars;
         let cyrillic_name = chars.iter().filter(|c| is_cyrillic(**c)).count() >= chars.iter().filter(|c| c.is_ascii_alphabetic()).count();
         let (mut common, mut high) = (0u64, 0u64);
         for (i, &ch) in chars.iter().enumerate() {
@@ -229,7 +230,7 @@ fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::B
                 continue;
             }
             high += 1;
-            let (after_ascii, letters_after) = position(&chars, i);
+            let (after_ascii, letters_after) = position(&decoded, i);
             let counts = if enc == WINDOWS_1252 && RARE_1252_LETTERS.contains(&ch) {
                 // Opening a word, capital or not ("Škoda", "šuma"), before an ASCII letter of
                 // either case: Mac Roman's lowercase ä before a capital ("äKODA") is no word
@@ -241,9 +242,9 @@ fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::B
                 let mac = name.get(i..=i).map(|b| decode(b, MACINTOSH)).and_then(|s| s.chars().next());
                 word_initial && !(mac.is_some_and(|m| m.is_alphabetic() && written(m)) && !written(ch))
             } else if enc == WINDOWS_1251 && is_cyrillic(ch) {
-                (cyrillic_name && !lone_after_digit(&chars, i)) || cyrillic_word(&chars, i)
+                (cyrillic_name && !lone_after_digit(&decoded, i)) || cyrillic_word(&decoded, i)
             } else {
-                ch.is_alphabetic() || TYPOGRAPHIC.contains(&ch) || ch == '°' || (ch == '¡' && opens_exclamation(&chars, i))
+                ch.is_alphabetic() || TYPOGRAPHIC.contains(&ch) || ch == '°' || (ch == '¡' && opens_exclamation(&decoded, i))
             };
             common += u64::from(counts);
         }
@@ -286,30 +287,75 @@ fn score(enc: &'static Encoding, name: &[u8], hint_letters: &std::collections::B
 /// name like "Fläche m²" or "Preis £5" would score higher as windows-1251 ("Flдche mІ", "Preis
 /// Ј5"); [`score`] counts a Cyrillic letter only in a name whose letters are mostly Cyrillic,
 /// which keeps ordinary Russian names such as "CMYKканал" or Ukrainian "Копiя" (Latin i).
-fn single_byte_score(enc: &'static Encoding, name: &[u8], common: impl Fn(&[char], usize) -> bool) -> (u64, u64) {
-    let chars: Vec<char> = decode(name, enc).chars().collect();
-    (0..chars.len())
-        .filter(|i| chars.get(*i).is_some_and(|c| !c.is_ascii()))
-        .fold((0, 0), |(c, h), i| (c.saturating_add(u64::from(common(&chars, i))), h.saturating_add(1)))
+fn single_byte_score(enc: &'static Encoding, name: &[u8], common: impl Fn(&Name, usize) -> bool) -> (u64, u64) {
+    let name = Name::new(&decode(name, enc));
+    (0..name.chars.len())
+        .filter(|i| name.chars.get(*i).is_some_and(|c| !c.is_ascii()))
+        .fold((0, 0), |(c, h), i| (c.saturating_add(u64::from(common(&name, i))), h.saturating_add(1)))
+}
+
+/// A decoded name with what the position checks of [`score`] need, each found in one pass, so a
+/// long name (a hostile file's 64 KiB of one letter) costs linear time rather than a rescan of
+/// the rest of the name from every character.
+struct Name {
+    chars: Vec<char>,
+    /// `letters_from[k]`: how many letters run from `k` on (0 one past the end).
+    letters_from: Vec<usize>,
+    /// Where the last "!" is.
+    last_bang: Option<usize>,
+    /// For each Cyrillic letter, the run of Cyrillic letters around it (`start..end`); `i..i + 1`
+    /// for any other character.
+    cyrillic_runs: Vec<(usize, usize)>,
+}
+
+impl Name {
+    fn new(text: &str) -> Self {
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        let mut letters_from = vec![0usize; n + 1];
+        let mut run = 0usize;
+        for (slot, c) in letters_from.iter_mut().zip(&chars).rev() {
+            run = if c.is_alphabetic() { run.saturating_add(1) } else { 0 };
+            *slot = run;
+        }
+        let last_bang = chars.iter().rposition(|c| *c == '!');
+        let mut cyrillic_runs: Vec<(usize, usize)> = (0..n).map(|i| (i, i + 1)).collect();
+        let mut start = 0;
+        while start < n {
+            if !chars.get(start).is_some_and(|c| is_cyrillic(*c)) {
+                start += 1;
+                continue;
+            }
+            let mut end = start + 1;
+            while chars.get(end).is_some_and(|c| is_cyrillic(*c)) {
+                end += 1;
+            }
+            for slot in cyrillic_runs.get_mut(start..end).into_iter().flatten() {
+                *slot = (start, end);
+            }
+            start = end;
+        }
+        Self { chars, letters_from, last_bang, cyrillic_runs }
+    }
 }
 
 /// Whether the character at `i` of `chars` is common in Western names, for weighing windows-1252
 /// against Mac Roman: letters (but not those windows-1252 has only at 0x80–0x9F, where Mac Roman
 /// keeps its accented lowercase: Mac "Größe" is 1252 "Grš§e"), typographic punctuation,
 /// [`LATIN_SYMBOLS`], and ¡ opening an exclamation ("¡Hola!"), as in [`score`].
-fn is_latin_common(chars: &[char], i: usize) -> bool {
-    let Some(&ch) = chars.get(i) else { return false };
+fn is_latin_common(name: &Name, i: usize) -> bool {
+    let Some(&ch) = name.chars.get(i) else { return false };
     (ch.is_alphabetic() && !RARE_1252_LETTERS.contains(&ch) && ch != 'Œ' && ch != 'œ')
         || TYPOGRAPHIC.contains(&ch)
         || LATIN_SYMBOLS.contains(&ch)
-        || (ch == '¡' && opens_exclamation(chars, i))
+        || (ch == '¡' && opens_exclamation(name, i))
 }
 
-/// Where the character at `i` of `chars` sits: right after an ASCII letter or digit (inside a word
+/// Where the character at `i` of `name` sits: right after an ASCII letter or digit (inside a word
 /// or a number), and how many letters (accented ones too: "¡Ánimo!") follow it directly.
-fn position(chars: &[char], i: usize) -> (bool, usize) {
-    let after_ascii = i.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
-    let letters_after = chars.get(i + 1..).map_or(0, |rest| rest.iter().take_while(|c| c.is_alphabetic()).count());
+fn position(name: &Name, i: usize) -> (bool, usize) {
+    let after_ascii = i.checked_sub(1).and_then(|k| name.chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
+    let letters_after = name.letters_from.get(i.saturating_add(1)).copied().unwrap_or(0);
     (after_ascii, letters_after)
 }
 
@@ -317,9 +363,9 @@ fn position(chars: &[char], i: usize) -> (bool, usize) {
 /// or digit right before it, two letters or more after it, and the closing "!" later in the name.
 /// Mac Roman's degree sign on the same byte follows a number ("Rotation 90°") or stands before a
 /// unit ("20 °C", "20 °Celsius"), with no "!" to close.
-fn opens_exclamation(chars: &[char], i: usize) -> bool {
-    let (after_ascii, letters_after) = position(chars, i);
-    !after_ascii && letters_after >= 2 && chars.get(i + 1..).is_some_and(|rest| rest.contains(&'!'))
+fn opens_exclamation(name: &Name, i: usize) -> bool {
+    let (after_ascii, letters_after) = position(name, i);
+    !after_ascii && letters_after >= 2 && name.last_bang.is_some_and(|bang| bang > i)
 }
 
 /// The letters windows-1252 has at 0x80–0x9F and Mac Roman doesn't: there Mac Roman keeps its
@@ -337,32 +383,24 @@ fn is_cyrillic(ch: char) -> bool {
 /// not glued to an ASCII letter, and not right after a digit ("Слой" beside "Layer", "Слой1";
 /// not "OpacitЋ", nor "90ЎЋ", which is Mac Roman "90°é": a digit ends a number, not a word, so
 /// what follows it without a space is its unit or suffix).
-fn cyrillic_word(chars: &[char], i: usize) -> bool {
-    let (start, end) = cyrillic_run(chars, i);
-    let glued_before = start.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
-    let glued_after = chars.get(end).is_some_and(|c| c.is_ascii_alphabetic());
-    end - start >= 2 && !glued_before && !glued_after
+fn cyrillic_word(name: &Name, i: usize) -> bool {
+    let (start, end) = cyrillic_run(name, i);
+    let glued_before = start.checked_sub(1).and_then(|k| name.chars.get(k)).is_some_and(|c| c.is_ascii_alphanumeric());
+    let glued_after = name.chars.get(end).is_some_and(|c| c.is_ascii_alphabetic());
+    end.saturating_sub(start) >= 2 && !glued_before && !glued_after
 }
 
-/// The run of Cyrillic letters around `i` (`start..end`).
-fn cyrillic_run(chars: &[char], i: usize) -> (usize, usize) {
-    let mut start = i;
-    while start > 0 && chars.get(start - 1).is_some_and(|c| is_cyrillic(*c)) {
-        start -= 1;
-    }
-    let mut end = i + 1;
-    while chars.get(end).is_some_and(|c| is_cyrillic(*c)) {
-        end += 1;
-    }
-    (start, end)
+/// The run of Cyrillic letters around the Cyrillic letter at `i` (`start..end`).
+fn cyrillic_run(name: &Name, i: usize) -> (usize, usize) {
+    name.cyrillic_runs.get(i).copied().unwrap_or((i, i.saturating_add(1)))
 }
 
 /// Whether the Cyrillic letter at `i` stands alone right after a digit: a unit or a symbol misread
 /// (Mac Roman "90°" is windows-1251 "90Ў"), whatever the rest of the name; a run after a digit is
 /// a Russian unit ("5шт") and still counts.
-fn lone_after_digit(chars: &[char], i: usize) -> bool {
-    let (start, end) = cyrillic_run(chars, i);
-    end - start == 1 && start.checked_sub(1).and_then(|k| chars.get(k)).is_some_and(|c| c.is_ascii_digit())
+fn lone_after_digit(name: &Name, i: usize) -> bool {
+    let (start, end) = cyrillic_run(name, i);
+    end.saturating_sub(start) == 1 && start.checked_sub(1).and_then(|k| name.chars.get(k)).is_some_and(|c| c.is_ascii_digit())
 }
 
 /// Latin-1 symbols people type in names (windows-1252 0xA2–0xB7) whose byte is not a letter in
@@ -820,5 +858,17 @@ mod tests {
         assert_eq!(resolve_label("Shift_JIS").ok(), Some(SHIFT_JIS));
         assert_eq!(resolve_label(" gbk ").ok(), Some(GBK));
         assert_eq!(resolve_label("gb2312").ok(), Some(GBK));
+    }
+    #[test]
+    fn a_name_of_one_long_letter_run_is_scored_in_linear_time() {
+        // 64 KiB of one letter (é in windows-1252, й in windows-1251, Mac Roman's È), of
+        // alternating Cyrillic letters, and of "¡ab" with no "!": every character used to rescan
+        // the rest of the name, which took minutes.
+        for unit in [&[0xe9u8][..], &[0xe9, 0xea][..], &[0xa1, b'a', b'b'][..]] {
+            let name = unit.repeat(GUESS_SAMPLE / unit.len());
+            let started = std::time::Instant::now();
+            let _ = guess(&[&name], "");
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?} took {:?}", unit, started.elapsed());
+        }
     }
 }
