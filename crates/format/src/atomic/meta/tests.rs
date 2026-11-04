@@ -384,7 +384,8 @@ fn a_vanished_backup_is_reported_as_gone_rather_than_as_a_recovery_copy() {
         Path::new("/docs/.report.psd.9.pcsave.tmp"),
     );
     let msg = e.to_string();
-    assert!(msg.contains("no longer exists") && msg.contains("no file under that name"), "{msg}");
+    assert!(msg.contains(".report.psd.9.pcsave.tmp") && msg.contains("no longer exists"), "the vanished backup is named: {msg}");
+    assert!(msg.contains("no file under that name"), "{msg}");
     assert!(!msg.contains("survives at"), "no recovery promise for a vanished backup: {msg}");
     assert!(!msg.contains("the original file was not changed"), "{msg}");
 }

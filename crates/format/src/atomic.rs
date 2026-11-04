@@ -511,9 +511,10 @@ pub(crate) fn unresolved_recovery_error(dest: &Path, completion: &io::Error, res
     let msg = if restoration.kind() == io::ErrorKind::NotFound {
         format!(
             "cannot save {}: the previous version moved to its backup name but {RECOVERY_UNRESOLVED} from it \
-             (completing the save failed: {completion}; the backup no longer exists: {restoration}), \
-             so the destination currently holds no file under that name",
-            dest.display()
+             (completing the save failed: {completion}; the backup {} no longer exists: {restoration}), \
+             so the destination currently holds no file under that name — check whether it was moved",
+            dest.display(),
+            recovery.display()
         )
     } else {
         format!(
