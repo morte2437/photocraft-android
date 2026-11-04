@@ -4,8 +4,10 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use photocraft_color::SampleType;
 use photocraft_doc::{AdvancedBlending, DocId, Layer, LayerContent, LayerId};
 use photocraft_raster::Surface;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{PhotocraftApp, widgets};
@@ -151,9 +153,18 @@ fn has_visible_pixels(s: &Surface) -> bool {
     if !fmt.alpha || s.default_pixel().last().is_none_or(|a| *a > 0.0) {
         return true;
     }
-    let (n, bpp) = (fmt.channels(), fmt.bytes_per_pixel());
-    let Some(alpha) = n.checked_sub(1).filter(|_| bpp > 0) else { return false };
-    s.tiles().any(|(_, t)| t.bytes().chunks_exact(bpp).any(|px| photocraft_color::read_sample(px, fmt.sample, alpha) > 0.0))
+    let (n, bpp, size) = (fmt.channels(), fmt.bytes_per_pixel(), fmt.sample.bytes());
+    let Some(at) = n.checked_sub(1).and_then(|i| i.checked_mul(size)).filter(|_| bpp > 0) else { return false };
+    // Integer alpha is above 0 where any of its bytes is, so a block of pixels is OR-ed together
+    // (which vectorises) before looking for one; only float alpha needs decoding.
+    let visible = |block: &[u8]| match fmt.sample {
+        SampleType::F32 => block.chunks_exact(bpp).any(|px| px.get(at..at + size).is_some_and(|a| a.try_into().is_ok_and(|b| f32::from_ne_bytes(b) > 0.0))),
+        SampleType::U8 | SampleType::U16 => {
+            block.chunks_exact(bpp).fold(0u8, |acc, px| px.get(at..at + size).map_or(acc, |a| a.iter().fold(acc, |acc, b| acc | b))) != 0
+        }
+    };
+    let tiles: Vec<_> = s.tiles().map(|(_, t)| t).collect();
+    tiles.par_iter().any(|t| t.bytes().chunks(bpp.saturating_mul(1024)).any(visible))
 }
 
 /// The document, revision and document allocation [`empty_layers`] was found for.
