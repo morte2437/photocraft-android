@@ -90,7 +90,8 @@ fn zoom_and_hidpi_do_not_change_screen_point_spacing() {
     ctx.set_pixels_per_point(2.0);
     control(&mut app, &ctx, "ui.set", json!({"zoom":2.0}));
     let p = turning(&mut app, &ctx);
-    let lines = crop_overlay::current_guides(&app, 711.0, 519.0);
+    let q = [egui::pos2(0.0, 0.0), egui::pos2(711.0, 0.0), egui::pos2(711.0, 519.0), egui::pos2(0.0, 519.0)];
+    let lines = crop_overlay::current_guides_for_frame(&app, q, egui::Rect::from_min_max(q[0], q[2]));
     let xs = positions(&lines, true, 711.0);
     assert_eq!(xs.len(), 15);
     for pair in xs.windows(2) {
@@ -146,7 +147,10 @@ fn a_zoomed_panned_view_is_covered_without_visiting_the_whole_frame() {
     let (u, v) = (q[1] - q[0], q[3] - q[0]);
     assert!(u.y.abs() < 0.1 && v.x.abs() < 0.1, "the default-mode frame stays upright");
     assert!(u.length() > 4608.0 && v.length() > 4608.0, "exercise a frame beyond the old centre cap");
-    let lines = crop_overlay::current_guides(&app, u.length(), v.length());
+    // Model navigation's local camera being newer than the stored one: guides
+    // must use the same quad/clip as paint, not reconstruct the stored camera.
+    app.ui.views[0].center = [206.0, 150.5];
+    let lines = crop_overlay::current_guides_for_frame(&app, q, xf.rect);
     assert!(!lines.is_empty() && lines.len() < 50, "work is bounded by the visible viewport: {}", lines.len());
     for (vertical, lo, hi) in [(true, xf.rect.left(), xf.rect.right()), (false, xf.rect.top(), xf.rect.bottom())] {
         let mut positions: Vec<f32> = lines
@@ -163,5 +167,60 @@ fn a_zoomed_panned_view_is_covered_without_visiting_the_whole_frame() {
         assert!(first >= lo - 0.1 && first - lo < 48.1 && last <= hi + 0.1 && hi - last < 48.1, "{positions:?}, viewport {lo}..{hi}");
         assert!(positions.windows(2).all(|p| (p[1] - p[0] - 48.0).abs() < 0.1), "{positions:?}");
     }
+    release(&mut app, &ctx, p);
+}
+
+#[test]
+fn rotated_and_flipped_viewports_keep_frame_axis_spacing() {
+    let (mut app, ctx) = app(false, OverlayShow::Always);
+    let p = turning(&mut app, &ctx);
+    let clip = egui::Rect::from_min_max(egui::pos2(100.0, 150.0), egui::pos2(260.0, 350.0));
+    for flipped in [false, true] {
+        // The measured329x240 frame turned90deg; reflecting its horizontal
+        // direction exercises the inverse basis's negative determinant too.
+        let (x, side) = if flipped { (60.0, 300.0) } else { (300.0, 60.0) };
+        let q = [egui::pos2(x, 100.0), egui::pos2(x, 429.0), egui::pos2(side, 429.0), egui::pos2(side, 100.0)];
+        let lines = crop_overlay::current_guides_for_frame(&app, q, clip);
+        near(&positions(&lines, true, 329.0), &[68.5, 116.5, 164.5, 212.5]);
+        near(&positions(&lines, false, 240.0), &[72.0, 120.0, 168.0]);
+        for line in lines {
+            let at = |t: [f32; 2]| q[0] + (q[1] - q[0]) * t[0] + (q[3] - q[0]) * t[1];
+            let delta = at(line[1]) - at(line[0]);
+            if line[0][0] == line[1][0] {
+                assert!(delta.y.abs() < 0.001 && (delta.x.abs() - 240.0).abs() < 0.001);
+            } else {
+                assert!(delta.x.abs() < 0.001 && (delta.y.abs() - 329.0).abs() < 0.001);
+            }
+        }
+    }
+    // A non-cardinal view turn: the square viewport projects to centre +/-
+    // 96*sqrt(2), so five48-point lines per frame axis intersect it.
+    let reach = 240.0 * std::f32::consts::SQRT_2;
+    let q = [egui::pos2(500.0, 500.0 - reach), egui::pos2(500.0 + reach, 500.0), egui::pos2(500.0, 500.0 + reach), egui::pos2(500.0 - reach, 500.0)];
+    let clip = egui::Rect::from_min_max(egui::pos2(404.0, 404.0), egui::pos2(596.0, 596.0));
+    let lines = crop_overlay::current_guides_for_frame(&app, q, clip);
+    near(&positions(&lines, true, 480.0), &[144.0, 192.0, 240.0, 288.0, 336.0]);
+    near(&positions(&lines, false, 480.0), &[144.0, 192.0, 240.0, 288.0, 336.0]);
+    release(&mut app, &ctx, p);
+    assert_eq!(crop_overlay::current_guides_for_frame(&app, q, clip), crop_overlay::guides(CropOverlay::Triangle, 1, 480.0, 480.0));
+    app.ui.tool = Tool::Brush;
+    assert!(crop_overlay::current_guides_for_frame(&app, q, clip).is_empty());
+}
+
+#[test]
+fn empty_clips_and_degenerate_frame_bases_have_no_guides() {
+    let (mut app, ctx) = app(false, OverlayShow::Always);
+    let p = turning(&mut app, &ctx);
+    let frame = [egui::pos2(0.0, 0.0), egui::pos2(329.0, 0.0), egui::pos2(329.0, 240.0), egui::pos2(0.0, 240.0)];
+    assert!(crop_overlay::current_guides_for_frame(&app, frame, egui::Rect::NOTHING).is_empty());
+    let clip = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(329.0, 240.0));
+    assert!(crop_overlay::current_guides_for_frame(&app, [egui::Pos2::ZERO; 4], clip).is_empty());
+    let collinear = [egui::Pos2::ZERO, egui::pos2(329.0, 0.0), egui::pos2(569.0, 0.0), egui::pos2(240.0, 0.0)];
+    assert!(crop_overlay::current_guides_for_frame(&app, collinear, clip).is_empty());
+    let mut nonfinite = frame;
+    nonfinite[1].x = f32::NAN;
+    assert!(crop_overlay::current_guides_for_frame(&app, nonfinite, clip).is_empty());
+    let offscreen = egui::Rect::from_min_max(egui::pos2(400.0, 400.0), egui::pos2(600.0, 600.0));
+    assert!(crop_overlay::current_guides_for_frame(&app, frame, offscreen).is_empty());
     release(&mut app, &ctx, p);
 }

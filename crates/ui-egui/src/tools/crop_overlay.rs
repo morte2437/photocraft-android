@@ -247,8 +247,21 @@ fn golden_spiral() -> Polyline {
     pts.into_iter().map(|[x, y]| [(x / PHI).clamp(0.0, 1.0), y.clamp(0.0, 1.0)]).collect()
 }
 
-/// The guides the pending crop box shows now: none when the options say not to.
+/// Full-frame guides, or none when the options say not to. Canvas painting uses
+/// [`current_guides_for_frame`] to restrict the turning grid to its viewport.
 pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
+    current_guides_visible(app, w, h, Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)))
+}
+
+/// Guides for the frame actually being painted. Use the caller's quad and clip:
+/// canvas navigation may not have written its local camera back to UI state yet.
+pub fn current_guides_for_frame(app: &PhotocraftApp, q: [egui::Pos2; 4], clip: Rect) -> Vec<Polyline> {
+    let (w, h) = (q[0].distance(q[1]), q[0].distance(q[3]));
+    let Some(visible) = visible_frame(q, clip, w, h) else { return Vec::new() };
+    current_guides_visible(app, w, h, visible)
+}
+
+fn current_guides_visible(app: &PhotocraftApp, w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
     let o = &app.ui.tool_options;
     if app.ui.tool != Tool::Crop || !o.crop_overlay_show.shows(app.crop.drag.is_some()) {
         return Vec::new();
@@ -256,7 +269,6 @@ pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
     // Classic Mode and Straighten were not measured: only the default mode's turn
     // replaces the chosen composition overlay (#10931).
     if !o.crop_shield.classic_mode && crate::crop_ui::turning(app).is_some() {
-        let visible = visible_frame(app, w, h).unwrap_or_else(|| Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)));
         return turn_grid(w, h, visible);
     }
     guides(o.crop_overlay, o.crop_overlay_orientation, w, h)
@@ -264,22 +276,20 @@ pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
 
 /// The canvas's visible extent in the crop frame's own screen-point axes. The
 /// inverse basis also handles a flipped/rotated view and pixel aspect correction.
-fn visible_frame(app: &PhotocraftApp, w: f32, h: f32) -> Option<Rect> {
+fn visible_frame(q: [egui::Pos2; 4], clip: Rect, w: f32, h: f32) -> Option<Rect> {
     if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
         return None;
     }
-    let xf = crate::canvas::ViewXform::active(app)?;
-    if !xf.rect.is_finite() || !xf.rect.is_positive() {
+    if !clip.is_finite() || !clip.is_positive() {
         return None;
     }
-    let q = crate::crop_ui::corners(app.ui.crop_rect?, crate::crop_ui::angle(app)).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
     let (u, v) = (q[1] - q[0], q[3] - q[0]);
     let det = f64::from(u.x) * f64::from(v.y) - f64::from(u.y) * f64::from(v.x);
     if !det.is_finite() || det.abs() < f64::EPSILON {
         return None;
     }
     let mut visible = Rect::NOTHING;
-    for p in [xf.rect.left_top(), xf.rect.right_top(), xf.rect.right_bottom(), xf.rect.left_bottom()] {
+    for p in [clip.left_top(), clip.right_top(), clip.right_bottom(), clip.left_bottom()] {
         let d = p - q[0];
         let x = (f64::from(d.x) * f64::from(v.y) - f64::from(d.y) * f64::from(v.x)) / det * f64::from(w);
         let y = (f64::from(u.x) * f64::from(d.y) - f64::from(u.y) * f64::from(d.x)) / det * f64::from(h);
