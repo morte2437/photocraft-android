@@ -477,6 +477,8 @@ fn read_response(stream: &mut Stream) -> Result<Vec<u8>> {
     let mut chunked = false;
     // Where the chunk walk resumes, so each read costs its own bytes, not the whole body again.
     let mut chunk_at = 0usize;
+    // Where the header-end search resumes (three bytes back, for a marker split across reads).
+    let mut head_at = 0usize;
     let started = std::time::Instant::now();
     loop {
         if started.elapsed() > REPLY_DEADLINE {
@@ -491,14 +493,17 @@ fn read_response(stream: &mut Stream) -> Result<Vec<u8>> {
             return Err(Error::Protocol("the reply is larger than 16 MiB".into()));
         }
         if body_at.is_none()
-            && let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n")
+            && let Some(end) = raw.get(head_at..).and_then(|r| r.windows(4).position(|w| w == b"\r\n\r\n")).map(|p| head_at + p)
         {
             body_at = Some(end + 4);
             let (_, headers, _) = http_response(&raw)?;
             expected = headers.iter().find(|(k, _)| k == "content-length").and_then(|(_, v)| v.parse().ok());
             chunked = headers.iter().any(|(k, v)| k == "transfer-encoding" && v.contains("chunked"));
         }
-        let Some(at) = body_at else { continue };
+        let Some(at) = body_at else {
+            head_at = raw.len().saturating_sub(3);
+            continue;
+        };
         let body = raw.get(at..).unwrap_or_default();
         let complete = match expected {
             Some(len) if !chunked => body.len() >= len,
