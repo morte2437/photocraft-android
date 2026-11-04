@@ -4,7 +4,7 @@ use photocraft_psd::{
     atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
     descriptor::{Descriptor, Id, UnicodeString, Value as D},
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn enm(ty: &str, value: &str) -> D {
     D::Enumerated { type_id: Id::new(ty), value: Id::new(value) }
