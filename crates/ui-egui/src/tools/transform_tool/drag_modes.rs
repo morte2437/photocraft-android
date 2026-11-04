@@ -255,10 +255,10 @@ pub(crate) fn apply_drag(s: &mut TransformSession, g: Gesture, p: [f64; 2], mods
             let a1 = (p[1] - g.pivot0[1]).atan2(p[0] - g.pivot0[0]);
             let mut da = a1 - a0;
             if mods.shift {
-                // Snap the resulting angle to 15° steps.
-                let base = (g.quad0[1][1] - g.quad0[0][1]).atan2(g.quad0[1][0] - g.quad0[0][0]);
+                // Snap the turn made by this drag to 15° steps; the angle the box started at is
+                // kept (#11099).
                 let step = 15f64.to_radians();
-                da = ((base + da) / step).round() * step - base;
+                da = (da / step).round() * step;
             }
             let (sn, cs) = da.sin_cos();
             let c = g.pivot0;

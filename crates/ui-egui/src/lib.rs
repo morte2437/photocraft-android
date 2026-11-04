@@ -795,6 +795,9 @@ mod transform_switch_tests;
 mod transform_undo_tests;
 
 #[cfg(test)]
+mod transform_rotate_snap_tests;
+
+#[cfg(test)]
 mod transform_type_tests;
 
 #[cfg(test)]
