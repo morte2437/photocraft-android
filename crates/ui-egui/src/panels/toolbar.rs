@@ -44,6 +44,13 @@ fn slot_tool(ui: &egui::Ui, current: Tool, slot: &[Tool], key: egui::Id) -> Tool
     ui.data(|d| d.get_temp::<Tool>(key)).filter(|t| slot.contains(t)).unwrap_or(slot[0])
 }
 
+/// Next tool in a toolbar flyout slot after `from`, wrapping (Photoshop Alt/Option-click). An
+/// empty slot returns `from` unchanged rather than dividing by zero.
+pub(super) fn next_slot_tool(slot: &[Tool], from: Tool) -> Tool {
+    let i = slot.iter().position(|&t| t == from).unwrap_or(0);
+    i.checked_add(1).and_then(|n| n.checked_rem(slot.len())).and_then(|n| slot.get(n)).copied().unwrap_or(from)
+}
+
 /// [`TOOL_SECTIONS`] without the tools hidden in Edit › Toolbar (`hidden` holds tool names: the
 /// dialog writes `Tool` debug names, `edit.toolbar` takes any name `Tool::from_name` reads). A
 /// slot keeps only its visible tools, so its flyout lists just those; a slot with none left is
@@ -167,18 +174,58 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                     if slot.len() > 1 {
                                         paint_toolbar_flyout_indicator(ui, &t, &resp);
                                     }
-                                    if resp.clicked() && ui.data(|d| d.get_temp::<egui::Id>(held_id)) != Some(key) {
-                                        crate::tool_memory::select(app, tool);
+                                    // Plain click selects the shown tool; Alt/Option-click cycles the
+                                    // flyout slot to the next tool, as Shift+letter does for the key group.
+                                    // Prefer the primary-release event's modifiers (Alt may already be
+                                    // up), and only a release on this slot — the frame's event list is
+                                    // shared with every other widget.
+                                    let click_mods =
+                                        ui.input(|i| {
+                                            i.events
+                                                .iter()
+                                                .rev()
+                                                .find_map(|e| match e {
+                                                    egui::Event::PointerButton {
+                                                        pos, button: egui::PointerButton::Primary, pressed: false, modifiers, ..
+                                                    } if resp.rect.contains(*pos) => Some(*modifiers),
+                                                    _ => None,
+                                                })
+                                                .unwrap_or(i.modifiers)
+                                        });
+                                    let alt = click_mods.alt;
+                                    let modified = click_mods.alt || click_mods.shift || click_mods.ctrl || click_mods.command;
+                                    // egui's double-click ignores modifiers: a plain click after a
+                                    // modified click within max_double_click_delay still reports
+                                    // double_clicked(). Remember the previous click so Hand fit /
+                                    // Zoom 100% only run for two plain clicks.
+                                    let prev_mod_id = key.with("click-mod");
+                                    let prev_modified = ui.data(|d| d.get_temp::<bool>(prev_mod_id)).unwrap_or(false);
+                                    let slot_click = resp.clicked() && ui.data(|d| d.get_temp::<egui::Id>(held_id)) != Some(key);
+                                    if slot_click {
+                                        let pick = if slot.len() > 1 && alt {
+                                            let from = if slot.contains(&app.ui.tool) { app.ui.tool } else { tool };
+                                            next_slot_tool(slot, from)
+                                        } else {
+                                            tool
+                                        };
+                                        crate::tool_memory::select(app, pick);
                                     }
                                     // Double-clicking the Hand tool fits the image on screen (Photoshop).
-                                    if resp.double_clicked() && tool == Tool::Hand {
+                                    // Modified clicks only cycle / select: a second rapid Alt-click, or a
+                                    // plain click that egui pairs with a prior modified click, must not
+                                    // count as Hand/Zoom double-click after cycling onto those tools.
+                                    let plain_double = resp.double_clicked() && !modified && !prev_modified;
+                                    if plain_double && tool == Tool::Hand {
                                         crate::tool_memory::select(app, tool);
                                         // With no document open there is nothing to fit.
                                         let _ = app.run("view.fitOnScreen", json!({}));
                                     }
-                                    if resp.double_clicked() && tool == Tool::Zoom {
+                                    if plain_double && tool == Tool::Zoom {
                                         crate::tool_memory::select(app, tool);
                                         let _ = app.run("view.actualPixels", json!({}));
+                                    }
+                                    if slot_click {
+                                        ui.data_mut(|d| d.insert_temp(prev_mod_id, modified));
                                     }
                                     // Right-click, long-press, or press-drag away opens the flyout (Photoshop).
                                     let held_for =
