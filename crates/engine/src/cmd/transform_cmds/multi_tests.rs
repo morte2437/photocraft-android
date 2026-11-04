@@ -380,6 +380,50 @@ fn a_locked_linked_layer_refuses_the_transform_of_its_link_group() {
     assert!(st.doc == before && st.revision == revision);
 }
 
+/// The Background (white, 200 x 200) linked to "A", a red block at x 10..30, y 10..30; A is
+/// selected, and active.
+fn background_linked_to_a_layer() -> (Session, LayerId, LayerId) {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 200, "background": "white"})).unwrap();
+    let bg = s.active().unwrap().doc.layers[0].id;
+    let a = LayerId(s.execute("layer.new.layer", json!({"name": "A"})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(a).unwrap().surface_mut().unwrap().fill_rect(Rect::new(10, 10, 30, 30), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.select", json!({"layer": bg.0})).unwrap();
+    s.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
+    assert_eq!(s.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    (s, bg, a)
+}
+
+#[test]
+fn a_linked_background_stays_out_of_a_transform_of_its_partner() {
+    // #11217 review: the link group widening must not pull in a Background the transform didn't
+    // target, any more than a selection of several does.
+    let (mut s, bg, a) = background_linked_to_a_layer();
+    for p in [json!({"matrix": [1, 0, 0, 1, 5, 0]}), json!({"layer": a.0, "matrix": [1, 0, 0, 1, 5, 0]})] {
+        let r = s.execute("edit.transform", p.clone()).unwrap();
+        assert_eq!(moved_layers(&r), [a.0], "{p}");
+        let st = s.active().unwrap();
+        assert!(st.doc.is_background(bg), "{p}: still the Background");
+        assert_eq!(st.doc.layer(bg).unwrap().surface().unwrap().content_bounds(), Rect::new(0, 0, 200, 200), "{p}: and where it was");
+    }
+    assert_eq!(bounds(&s, a), Rect::new(20, 10, 40, 30), "A moved both times");
+}
+
+#[test]
+fn a_transform_of_a_linked_background_still_transforms_it() {
+    let (mut s, bg, a) = background_linked_to_a_layer();
+    let r = s.execute("edit.transform", json!({"layer": bg.0, "matrix": [1, 0, 0, 1, 5, 0]})).unwrap();
+    assert!(moved_layers(&r).contains(&bg.0), "the targeted Background moves: {r}");
+    let st = s.active().unwrap();
+    assert!(!st.doc.is_background(bg), "turned into a normal layer first, as in Photoshop");
+    assert_eq!(bounds(&s, a), Rect::new(15, 10, 35, 30), "with the layer linked to it");
+}
+
 #[test]
 fn a_recorded_transform_of_other_layers_than_the_selection_keeps_their_ids() {
     let (mut s, paint, _) = two_layers();

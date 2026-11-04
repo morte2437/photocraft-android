@@ -575,6 +575,8 @@ fn build() -> Vec<CommandSpec> {
                         dup.name.clone_from(name);
                     }
                     let nid = doc.insert_above(Some(id), dup);
+                    // The copy starts unlinked from its original, as in Photoshop (#11217).
+                    crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
                     if !in_place {
                         crate::artboard_cmds::place_copy(doc, nid)?;
                     }

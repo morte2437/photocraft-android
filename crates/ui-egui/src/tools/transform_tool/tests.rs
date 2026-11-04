@@ -1999,6 +1999,11 @@ fn free_transform_of_a_linked_layer_boxes_its_link_group() {
     assert_eq!(t.rect, [8.0, 8.0, 56.0, 24.0], "framing A and B together");
     let pv = app.transform_preview.as_ref().unwrap();
     assert!(pv.several.as_ref().is_some_and(|sv| sv.ids == [a, b]), "the preview moves both");
+    // The moving pixels hold B's blue block where B is, beside A's red one: B moves with the box
+    // on the canvas, not only at the commit.
+    assert_eq!(moving_texel(&app, [48, 16]).0, Some(Color32::BLUE), "the linked layer's pixels are in the preview");
+    assert_eq!(moving_texel(&app, [16, 16]).0, Some(Color32::RED), "and the active layer's");
+    assert_eq!(moving_texel(&app, [16, 48]).0, None, "the unlinked layer is outside the moving pixels");
     let t = app.ui.transform.as_mut().unwrap();
     t.quad = t.quad.map(|[x, y]| [x + 4.0, y]);
     commit(&mut app);
@@ -2020,6 +2025,26 @@ fn free_transform_of_an_unlinked_layer_boxes_that_layer_alone() {
     assert_eq!((t.layer, t.rect), (c.0, [8.0, 40.0, 24.0, 56.0]));
     assert!(t.layers.is_empty(), "a one-layer session");
     assert!(app.transform_preview.as_ref().unwrap().several.is_none());
+}
+
+/// #11217 review: a layer linked to the Background opens the one-layer box: the link doesn't pull
+/// the Background into the box, as the selection doesn't either (#6501).
+#[test]
+fn free_transform_of_a_layer_linked_to_the_background_boxes_that_layer_alone() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let bg = app.session.active().unwrap().doc.layers[0].id;
+    app.session.execute("layer.select", json!({"layer": bg.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!((t.layer, t.rect), (a.0, [8.0, 8.0, 24.0, 24.0]), "the box frames A, not the canvas-sized Background");
+    assert!(t.layers.is_empty(), "a one-layer session");
+    let pv = app.transform_preview.as_ref().unwrap();
+    assert!(pv.several.is_none());
+    assert!(pv.doc.layer(bg).unwrap().visible, "the Background stays under the box");
 }
 
 /// #11217: a locked layer in the link group refuses the box before it opens, as a locked layer

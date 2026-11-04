@@ -30,8 +30,9 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     // Several layers selected: one box moves them all, as in Photoshop (#6501).
     let targets = photocraft_engine::transform_cmds::selection_targets(st);
     // The selection takes its linked layers along, as `edit.transform` does: in Photoshop the box
-    // over one linked layer frames and moves the whole link group (#11217). Unlinked, unchanged.
-    let targets = photocraft_engine::layer_multi_cmds::move_targets(&doc, &targets);
+    // over one linked layer frames and moves the whole link group (#11217), but not a linked
+    // Background (`box_targets`). Unlinked, unchanged.
+    let targets = photocraft_engine::transform_cmds::box_targets(&doc, &targets);
     if targets != [id] {
         return begin_several(app, ctx, doc, revision, id, targets);
     }
