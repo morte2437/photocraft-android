@@ -388,7 +388,9 @@ fn run_continues_after_batch_file_errors_and_keeps_partial_results() {
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["command"], "file.automate.batch");
     let result = &rows[0]["result"];
-    assert_eq!(result["files"], json!([batch_out.join("good.pcraft")]));
+    let files = result["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(Path::new(files[0].as_str().unwrap()).canonicalize().unwrap(), batch_out.join("good.pcraft").canonicalize().unwrap());
     assert_eq!(result["errors"].as_array().unwrap().len(), 1);
     assert_eq!(result["errors"][0]["file"], json!(bad));
     assert!(result["errors"][0]["error"].as_str().is_some_and(|message| !message.is_empty()));
