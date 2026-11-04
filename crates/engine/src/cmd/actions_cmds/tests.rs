@@ -1334,6 +1334,33 @@ fn scoped_source_slots_do_not_bind_previously_missing_references() {
     }
     let bad = called.iter().find(|a| a.name == "Bad").unwrap();
     assert!(resolve(&called, &bad.steps[0].1, "actions.play").is_err());
+    // A scoped source runs its raw references in the embedded namespace. An index beyond
+    // the caller's library can therefore be valid there, even after capture adds a source copy.
+    let list =
+        vec![Action::new("Source", vec![("actions.play".into(), json!({"action": 3}))]), Action::new("Other", Vec::new()), Action::new("Last", Vec::new())];
+    let embedded = vec![
+        Action::new("Gap0", Vec::new()),
+        Action::new("Gap1", Vec::new()),
+        Action::new("Gap2", Vec::new()),
+        Action::new("Child", vec![("layer.new.layer".into(), json!({"name": "embedded child"}))]),
+    ];
+    let mut steps = vec![
+        ("actions.play".into(), json!({"action": 0})),
+        ("actions.play".into(), json!({"action": 1})),
+        ("actions.play".into(), json!({"action": 2})),
+        ("file.automate.batch".into(), json!({"source": "open", "action": "Source", "calledActions": embedded})),
+    ];
+    let called = called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 4);
+    assert_eq!(called.last(), list.first(), "the scoped source keeps its embedded index");
+    assert!(resolve(&called, &called[0].steps[0].1, "actions.play").is_err(), "the ordinary source still has a missing target");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    session.actions.list = called;
+    let (id, params) = steps.last().unwrap();
+    let result = session.execute(id, params.clone()).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(session.active().unwrap().doc.layers.iter().any(|layer| layer.name == "embedded child"));
 }
 
 /// #10459 review: recording into an existing set keeps that set's exact name, even one with
