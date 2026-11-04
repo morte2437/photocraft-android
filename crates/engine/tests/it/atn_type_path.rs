@@ -74,10 +74,11 @@ fn playback_matches_native_path_and_preserves_text_with_undo_redo() {
         for depth in [8, 16, 32] {
             let mut recorded = Session::new();
             recorded.execute("file.new", json!({"width":160,"height":100,"depth":depth})).unwrap();
-            let other = recorded.execute("type.create", json!({"x":8,"y":35,"text":"o","size":24})).unwrap();
-            let other = LayerId(other["layer"].as_u64().unwrap());
             let text = recorded.execute("type.create", json!({"x":90,"y":80,"text":"ill","size":30})).unwrap();
             let text = LayerId(text["layer"].as_u64().unwrap());
+            let other = recorded.execute("type.create", json!({"x":8,"y":35,"text":"o","size":24})).unwrap();
+            let other = LayerId(other["layer"].as_u64().unwrap());
+            assert_eq!(recorded.active().unwrap().active_layer, Some(other));
             recorded.select_layer(text).unwrap();
             let before = recorded.active().unwrap().doc.clone();
             let glyphs = before.layer(text).unwrap().surface().unwrap().content_bounds();
