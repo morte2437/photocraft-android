@@ -253,7 +253,32 @@ pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
     if app.ui.tool != Tool::Crop || !o.crop_overlay_show.shows(app.crop.drag.is_some()) {
         return Vec::new();
     }
+    // Classic Mode and Straighten were not measured: only the default mode's turn
+    // replaces the chosen composition overlay (#10931).
+    if !o.crop_shield.classic_mode && crate::crop_ui::turning(app).is_some() {
+        return turn_grid(w, h);
+    }
     guides(o.crop_overlay, o.crop_overlay_orientation, w, h)
+}
+
+/// The temporary turning grid: 48 logical screen points between lines, centred
+/// on the frame. Unit-square coordinates retain the frame/view's orientation in
+/// both canvas paint paths. As with the other Grid, bound work for huge frames.
+pub fn turn_grid(w: f32, h: f32) -> Vec<Polyline> {
+    const SPACING: f32 = 48.0;
+    if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
+        return Vec::new();
+    }
+    let axis = |len: f32, vertical: bool| {
+        // Keep the centre line and equal numbers on each side, excluding lines
+        // coincident with the outline. Cap before constructing the iterator.
+        let half = ((len / (2.0 * SPACING)).ceil() as usize).saturating_sub(1).min((GRID_MAX - 1) / 2);
+        (0..=2 * half).map(move |i| {
+            let f = 0.5 + (i as f32 - half as f32) * SPACING / len;
+            if vertical { vec![[f, 0.0], [f, 1.0]] } else { vec![[0.0, f], [1.0, f]] }
+        })
+    };
+    axis(w, true).chain(axis(h, false)).collect()
 }
 
 /// O: the next overlay (the orientation starts over).
