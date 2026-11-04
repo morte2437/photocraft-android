@@ -273,6 +273,113 @@ fn a_recorded_transform_of_the_selected_layers_replays_on_the_selection_in_anoth
     assert_eq!(bounds(&s, spare), spare0, "the unselected layer stayed");
 }
 
+/// A 200 x 200 document with three 20 x 20 blocks, "A" (x 10..30), "B" (x 60..80) and "C"
+/// (x 120..140), all at y 10..30. A and B are linked; C isn't. Only A is selected, and active.
+fn linked_layers() -> (Session, LayerId, LayerId, LayerId) {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 200, "background": "white"})).unwrap();
+    let mut ids = Vec::new();
+    for (name, x) in [("A", 10), ("B", 60), ("C", 120)] {
+        let id = LayerId(s.execute("layer.new.layer", json!({"name": name})).unwrap()["layer"].as_u64().unwrap());
+        s.edit("paint", |doc, _| {
+            doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(Rect::new(x, 10, x + 20, 30), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        ids.push(id);
+    }
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    s.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    assert_eq!(s.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    (s, a, b, c)
+}
+
+fn moved_layers(r: &Value) -> Vec<u64> {
+    let mut ids: Vec<u64> = serde_json::from_value(r["layers"].clone()).unwrap();
+    ids.sort_unstable();
+    ids
+}
+
+/// `got` is `want` give or take a pixel of resampling on each edge.
+fn assert_near(got: Rect, want: Rect) {
+    let close = [(got.x0, want.x0), (got.y0, want.y0), (got.x1, want.x1), (got.y1, want.y1)].iter().all(|(g, w)| (g - w).abs() <= 1);
+    assert!(close, "{got:?} is not {want:?}");
+}
+
+/// A 200 % scale of A and B about the centre (45, 20) of their joined frame.
+fn scaled_pair(s: &Session, a: LayerId, b: LayerId) {
+    assert_near(bounds(s, a), Rect::new(-25, 0, 15, 40));
+    assert_near(bounds(s, b), Rect::new(75, 0, 115, 40));
+}
+
+#[test]
+fn transforming_one_linked_layer_transforms_its_link_group() {
+    // Before #11217 only A scaled; Photoshop scales every layer linked to it, by the same box.
+    let (mut s, a, b, c) = linked_layers();
+    let c0 = bounds(&s, c);
+    let r = s.execute("edit.transform", json!({"layer": a.0, "scaleX": 200, "scaleY": 200, "interpolation": "nearest"})).unwrap();
+    assert_eq!(moved_layers(&r), [a.0, b.0]);
+    let rect: Vec<f64> = serde_json::from_value(r["rect"].clone()).unwrap();
+    assert_eq!(rect, [10.0, 10.0, 80.0, 30.0], "the frame covers the link group");
+    scaled_pair(&s, a, b);
+    assert_eq!(bounds(&s, c), c0, "an unlinked layer stays put");
+    s.undo();
+    assert_eq!((bounds(&s, a), bounds(&s, b)), (Rect::new(10, 10, 30, 30), Rect::new(60, 10, 80, 30)), "one Undo takes both back");
+}
+
+#[test]
+fn transforming_the_selected_linked_layer_transforms_its_link_group() {
+    let (mut s, a, b, c) = linked_layers();
+    let c0 = bounds(&s, c);
+    // No `layer`: the layer selection (A alone) is the target.
+    let r = s.execute("edit.transform", json!({"scaleX": 200, "scaleY": 200, "interpolation": "nearest"})).unwrap();
+    assert_eq!(moved_layers(&r), [a.0, b.0]);
+    scaled_pair(&s, a, b);
+    assert_eq!(bounds(&s, c), c0);
+}
+
+#[test]
+fn listed_layers_do_not_pull_in_their_linked_layers() {
+    let (mut s, a, b, _) = linked_layers();
+    let r = s.execute("edit.transform", json!({"layers": [a.0], "matrix": [1, 0, 0, 1, 5, 0]})).unwrap();
+    assert_eq!(moved_layers(&r), [a.0]);
+    assert_eq!(bounds(&s, a), Rect::new(15, 10, 35, 30));
+    assert_eq!(bounds(&s, b), Rect::new(60, 10, 80, 30), "listed layers are exactly the ones moved");
+}
+
+#[test]
+fn moving_a_linked_layer_by_free_transform_moves_each_linked_layer_once() {
+    let (mut s, a, b, c) = linked_layers();
+    let c0 = bounds(&s, c);
+    // A and B both selected, and linked: each moves by the offset once, not once per link.
+    s.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    let r = s.execute("edit.transform", json!({"matrix": [1, 0, 0, 1, 30, 40]})).unwrap();
+    assert_eq!(moved_layers(&r), [a.0, b.0]);
+    assert_eq!(bounds(&s, a), Rect::new(40, 50, 60, 70));
+    assert_eq!(bounds(&s, b), Rect::new(90, 50, 110, 70));
+    assert_eq!(bounds(&s, c), c0);
+    // And from A alone, through the active layer.
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    s.execute("edit.transform", json!({"dx": -30, "dy": -40})).unwrap();
+    assert_eq!((bounds(&s, a), bounds(&s, b)), (Rect::new(10, 10, 30, 30), Rect::new(60, 10, 80, 30)));
+}
+
+#[test]
+fn a_locked_linked_layer_refuses_the_transform_of_its_link_group() {
+    // As with several selected layers: one that can't move leaves every layer as it was.
+    let (mut s, a, b, _) = linked_layers();
+    s.execute("layer.setProps", json!({"layer": b.0, "locks": {"position": true}})).unwrap();
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    let st = s.active().unwrap();
+    let (before, revision) = (st.doc.clone(), st.revision);
+    let err = s.execute("edit.transform", json!({"matrix": [1, 0, 0, 1, 5, 0]})).unwrap_err().to_string();
+    assert!(err.contains("locked"), "{err}");
+    let st = s.active().unwrap();
+    assert!(st.doc == before && st.revision == revision);
+}
+
 #[test]
 fn a_recorded_transform_of_other_layers_than_the_selection_keeps_their_ids() {
     let (mut s, paint, _) = two_layers();

@@ -816,8 +816,9 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         (None, false) if many.is_some() => None,
         (None, false) => return Err(EngineError::Other("no active layer".into())),
     };
+    let listed = many.is_some();
     // The layers the box moves: those listed, the one named, or else the layer selection (#6501).
-    let ids: Vec<LayerId> = match (many, explicit) {
+    let mut ids: Vec<LayerId> = match (many, explicit) {
         (Some(ids), _) => ids,
         _ if lone.is_some() => Vec::new(),
         (None, Some(id)) => vec![id],
@@ -825,6 +826,12 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if let Some(missing) = ids.iter().find(|id| st.doc.layer(**id).is_none()) {
         return Err(EngineError::NoLayer(*missing));
+    }
+    // The named layer or the selection takes its linked layers along, as the Move tool does: in
+    // Photoshop transforming one linked layer transforms the whole link group (#11217). A caller
+    // listing `layers` gets exactly those.
+    if !listed {
+        ids = crate::layer_multi_cmds::move_targets(&st.doc, &ids);
     }
     let rect = match p.get("rect").and_then(Value::as_array) {
         Some(r) if r.len() == 4 => {
