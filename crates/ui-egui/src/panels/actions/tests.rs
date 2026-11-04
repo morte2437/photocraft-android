@@ -2375,29 +2375,122 @@ fn paused_spelling_checks_the_live_gate_before_resuming_history() {
 }
 
 #[test]
+fn a_changed_live_gate_cannot_be_replaced_for_the_remaining_action() {
+    fn deny_tail(id: &str, _: &Value) -> photocraft_engine::Result<()> {
+        if id == "layer.renameLayer" { Err(photocraft_engine::EngineError::Other("live tail denied".into())) } else { Ok(()) }
+    }
+    for service in [false, true] {
+        for nested in [false, true] {
+            let (mut app, before, past) = paused_history_spelling(true, Some(deny_wide_blur));
+            if nested {
+                app.session.actions.list.push(Action::new("Nested tail", vec![("layer.renameLayer".into(), json!({"name":"Forbidden tail"}))]));
+                app.session.actions.list[0].steps[2] = ("actions.play".into(), json!({"action":"Nested tail"}));
+            }
+            spelling_change(&mut app, json!({"action":"change","start":0,"end":3,"word":"Teh","replace":"The"})).unwrap();
+            let corrected = app.session.active().unwrap().doc.clone();
+            if service {
+                app.automation_input = true;
+                app.services.automation_authorize = Some(deny_tail);
+            } else {
+                app.session.authorize = Some(deny_tail);
+            }
+            crate::type_panels_ui::close_spelling(&mut app);
+            assert!(app.ui.status_error && app.ui.status.contains("authorization context changed"), "{}", app.ui.status);
+            assert_eq!(app.session.active().unwrap().doc.as_ref(), corrected.as_ref(), "the admitted prefix remains, with no tail edit");
+            assert_eq!(app.session.active().unwrap().history.past_len(), past + 1);
+            assert!(app.session.undo());
+            assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+            assert!(app.paused_playbacks.paused.is_empty());
+            assert_eq!(app.session.actions.playing, 0);
+        }
+    }
+}
+
+#[test]
+fn a_changed_context_is_rejected_before_dialog_or_worker_admission() {
+    fn allow_all(_: &str, _: &Value) -> photocraft_engine::Result<()> {
+        Ok(())
+    }
+    for background in [false, true] {
+        let mut app = gated_blur_fixture(true, background);
+        let dialog = pause_gated_blur(&mut app, Some(deny_wide_blur));
+        let before = app.session.active().unwrap().doc.clone();
+        let rows = app.session.active().unwrap().history.entries();
+        app.session.authorize = Some(allow_all);
+        assert!(crate::dialogs::confirm(&mut app, dialog).is_err_and(|e| e.contains("authorization context changed")));
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+        assert_eq!(app.session.active().unwrap().history.entries(), rows);
+        assert!(app.session.job_on(before.id).is_none());
+    }
+}
+
+#[test]
+fn unchanged_and_released_gates_allow_the_action_tail() {
+    for scenario in ["released", "same", "new"] {
+        let mut app = gated_blur_fixture(true, false);
+        app.session.actions.list[0].steps.push(("layer.renameLayer".into(), json!({"name":"Allowed tail"})));
+        let dialog = pause_gated_blur(&mut app, (scenario != "new").then_some(deny_wide_blur as Gate));
+        match scenario {
+            "same" | "new" => app.session.authorize = Some(deny_wide_blur),
+            _ => {}
+        }
+        crate::dialogs::confirm(&mut app, dialog).unwrap();
+        let state = app.session.active().unwrap();
+        assert_eq!(state.doc.layer(state.active_layer.unwrap()).unwrap().name, "Allowed tail");
+    }
+}
+
+#[test]
+fn a_changed_gate_after_the_last_spelling_step_keeps_completed_edits() {
+    let (mut app, before, past) = paused_history_spelling(true, Some(deny_wide_blur));
+    app.session.actions.list[0].steps.truncate(2);
+    spelling_change(&mut app, json!({"action":"change","start":0,"end":3,"word":"Teh","replace":"The"})).unwrap();
+    let corrected = app.session.active().unwrap().doc.clone();
+    app.session.authorize = Some(|_, _| Ok(()));
+    crate::type_panels_ui::close_spelling(&mut app);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    assert_eq!(app.session.active().unwrap().doc.as_ref(), corrected.as_ref());
+    assert_eq!(app.session.active().unwrap().history.past_len(), past + 1);
+    assert!(app.session.undo());
+    assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+}
+
+#[test]
 fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
-    for explicit in [false, true] {
+    for targeting in ["implicit", "null", "explicit"] {
         for mask in [false, true] {
             let mut app = gated_blur_fixture(true, false);
             let a = app.session.active().unwrap().active_layer.unwrap();
+            app.run("edit.fill", json!({"color":"#808080"})).unwrap();
             app.run("layer.layerMask.revealAll", json!({})).unwrap();
+            app.run("edit.fill", json!({"color":"#808080","target":"mask"})).unwrap();
             let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap());
             app.session.select_layer(a).unwrap();
             let mut params = json!({"brightness":40});
             if mask {
                 params["target"] = json!("mask");
             }
-            if explicit {
+            if targeting == "explicit" {
                 params["layer"] = json!(a.0);
+            } else if targeting == "null" {
+                params["layer"] = Value::Null;
             }
             app.session.actions.list[0].steps[0] = ("image.adjustments.brightnessContrast".into(), params);
             let dialog = pause_gated_blur(&mut app, None);
             app.session.select_layer(b).unwrap();
             let before = app.session.active().unwrap().doc.clone();
             let result = crate::dialogs::confirm(&mut app, dialog);
-            if explicit {
+            if targeting == "explicit" {
                 result.unwrap();
-                assert_eq!(app.session.active().unwrap().doc.layer(b).unwrap(), before.layer(b).unwrap());
+                let after = &app.session.active().unwrap().doc;
+                assert_eq!(after.layer(b).unwrap(), before.layer(b).unwrap());
+                if mask {
+                    assert_ne!(after.layer(a).unwrap().mask, before.layer(a).unwrap().mask);
+                    assert_eq!(after.layer(a).unwrap().surface(), before.layer(a).unwrap().surface());
+                } else {
+                    assert_ne!(after.layer(a).unwrap().surface(), before.layer(a).unwrap().surface());
+                    assert_eq!(after.layer(a).unwrap().mask, before.layer(a).unwrap().mask);
+                }
             } else {
                 assert!(result.is_err_and(|e| e.contains("receiver changed")));
                 assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
@@ -2412,6 +2505,7 @@ fn a_document_channel_adjustment_survives_an_active_layer_change() {
     let a = app.session.active().unwrap().active_layer.unwrap();
     let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap());
     app.run("channel.new", json!({"name":"Alpha","fill":"black"})).unwrap();
+    app.run("edit.fill", json!({"color":"#808080","target":{"channel":0}})).unwrap();
     app.session.select_layer(a).unwrap();
     app.session.actions.list[0].steps[0] = ("image.adjustments.brightnessContrast".into(), json!({"brightness":40,"target":{"channel":0}}));
     let dialog = pause_gated_blur(&mut app, None);

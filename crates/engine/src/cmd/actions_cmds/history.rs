@@ -346,6 +346,37 @@ mod tests {
     }
 
     #[test]
+    fn generic_preference_updates_cannot_change_a_paused_history_policy() {
+        for single in [false, true] {
+            let mut s = Session::new();
+            s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+            begin_document_history(&mut s, "Paused");
+            let continuation = ActionHistoryContinuation::capture(&mut s);
+            for params in [
+                json!({"path":"actions.createSingleHistoryState","value":!single}),
+                json!({"path":"actions","value":{"createSingleHistoryState":!single}}),
+                json!({"path":"","value":{"actions":{"createSingleHistoryState":!single}}}),
+                json!({"path":"colorSettings.intent","value":"perceptual","values":{"actions.createSingleHistoryState":!single}}),
+            ] {
+                let before = s.prefs().clone();
+                let color = s.color.settings.clone();
+                assert!(s.execute("prefs.set", params).is_err());
+                assert_eq!(s.prefs(), &before);
+                assert_eq!(s.color.settings, color);
+            }
+            for params in [json!({"path":"actions.createSingleHistoryState"}), json!({"path":"actions"}), json!({})] {
+                assert_eq!(s.execute("prefs.reset", params).is_err(), !single);
+                assert_eq!(s.prefs().actions.create_single_history_state, single);
+            }
+            s.execute("prefs.set", json!({"path":"actions.createSingleHistoryState","value":single})).unwrap();
+            s.execute("prefs.set", json!({"path":"performance.historyStates","value":17})).unwrap();
+            s.execute("prefs.reset", json!({"path":"cursors"})).unwrap();
+            drop(continuation);
+            s.execute("prefs.set", json!({"path":"actions.createSingleHistoryState","value":!single})).unwrap();
+        }
+    }
+
+    #[test]
     fn idle_dialog_rebind_keeps_first_edit_and_clear_boundaries() {
         for single in [false, true] {
             for clear in [false, true] {

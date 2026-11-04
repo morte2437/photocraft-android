@@ -1540,6 +1540,9 @@ impl Session {
         } else {
             next.set(path, value)?;
         }
+        if next.actions.create_single_history_state != self.prefs().actions.create_single_history_state && crate::actions_cmds::history_policy_in_use(self) {
+            return Err("cannot change action history settings during playback".into());
+        }
         // Old `prefs.set interface.theme` clients (by path or inside a section object) still
         // select a visible theme.
         if path == "interface.theme" || next.interface.theme != self.prefs().interface.theme {

@@ -837,10 +837,15 @@ fn set_color(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"action": name, "color": color}))
 }
 
+/// Active playback and retained dialog continuations keep their chosen history policy.
+pub(crate) fn history_policy_in_use(s: &Session) -> bool {
+    s.actions.playing != 0 || s.action_history.is_some() || s.paused_action_history.iter().any(|lease| lease.strong_count() != 0)
+}
+
 /// Kept separate from Playback Options' performance modes until #5212 provides that dialog.
 fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
     not_playing(s, "actions.setHistory")?;
-    if s.action_history.is_some() || s.paused_action_history.iter().any(|lease| lease.strong_count() != 0) {
+    if history_policy_in_use(s) {
         return Err(bad("actions.setHistory", "cannot change action history settings during playback"));
     }
     let enabled = p.get("singleState").and_then(Value::as_bool).ok_or_else(|| bad("actions.setHistory", "singleState must be a boolean"))?;

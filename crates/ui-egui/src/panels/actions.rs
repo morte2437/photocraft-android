@@ -840,6 +840,15 @@ pub fn abandoned(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value
 /// The automation gate a session installs ([`photocraft_engine::Session::authorize`]).
 type Gate = fn(&str, &Value) -> photocraft_engine::Result<()>;
 
+/// A function-pointer dispatch gate cannot carry two different policies into nested jobs.
+/// A changed policy ends this continuation rather than choosing which policy to discard.
+fn continuation_gate(captured: Option<Gate>, live: Option<Gate>) -> Result<Option<Gate>, String> {
+    if captured.zip(live).is_some_and(|(before, now)| !std::ptr::fn_addr_eq(before, now)) {
+        return Err("the authorization context changed while the action was paused".into());
+    }
+    Ok(live.or(captured))
+}
+
 /// A playback paused at a step dialog: the action and step it continues from, and the gate it
 /// was playing under (`None` for one a person started).
 #[derive(Clone, Debug)]
@@ -916,8 +925,9 @@ pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<
     {
         authorize(command, &params)?;
     }
+    let gate = continuation_gate(captured, live)?;
     prepare_history(app, fields)?;
-    app.session.authorize = live.or(captured);
+    app.session.authorize = gate;
     let result = app.run(command, params);
     app.session.authorize = saved;
     result
@@ -1019,9 +1029,30 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         app.ui.status_error = true;
         return Err(e.to_string());
     }
-    let params = json!({"action": paused.action, "from": paused.from});
     let saved = app.session.authorize;
-    app.session.authorize = paused.gate.or(saved);
+    let live = saved.or(if app.automation_input { app.services.automation_authorize } else { None });
+    let remaining = !paused.then.is_empty()
+        || app
+            .session
+            .actions
+            .list
+            .iter()
+            .find(|action| action.name == paused.action)
+            .is_some_and(|action| action.enabled_steps().any(|(i, _)| i >= paused.from));
+    let gate = if remaining { continuation_gate(paused.gate, live) } else { Ok(live.or(paused.gate)) };
+    let gate = match gate {
+        Ok(gate) => gate,
+        Err(error) => {
+            // The admitted dialog edit has completed; preserve it while rejecting the tail.
+            actions_cmds::finish_pending_history(&mut app.session);
+            restore_recording(app, owner.as_ref());
+            app.ui.status = error.clone();
+            app.ui.status_error = true;
+            return Err(error);
+        }
+    };
+    let params = json!({"action": paused.action, "from": paused.from});
+    app.session.authorize = gate;
     let mut played = play_owned(app, &params, owner);
     // Paused again at a later dialog of the same action (not of one it calls, which resumes
     // alone): that dialog carries the rest of the set.
