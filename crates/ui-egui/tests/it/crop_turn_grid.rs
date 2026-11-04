@@ -142,11 +142,13 @@ fn canvas_paints_48_point_cells_at_zoom_two_and_hidpi() {
         let xf = photocraft_ui_egui::canvas::ViewXform { rect, zoom: 1.0, center: view.center, flip: false, rotation: view.rotation, aspect: 1.0 };
         let q = crop_ui::corners(app.ui.crop_rect.unwrap(), crop_ui::angle(&app)).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0))), ..Default::default() };
-        let output = ctx.run_ui(input, |ui| {
+        let mut output = ctx.run_ui(input, |ui| {
             ui.set_clip_rect(clip);
             let painted_view = photocraft_ui_egui::canvas::canvas_view(&mut app, ui, 0, rect, view.clone(), true);
             assert_eq!(painted_view.zoom, 2.0);
         });
+        // Shape-only CPU inspection has no renderer to consume texture updates.
+        output.textures_delta.clear();
         assert_eq!(output.pixels_per_point, 2.0);
         assert_eq!(app.canvas_ppp(), 2.0);
         assert!(crop_ui::turning(&app).is_some());
