@@ -3305,3 +3305,87 @@ fn open_as_and_place_keep_the_typed_hard_budget_fields() {
         });
     });
 }
+
+/// Named live-document playback restores recording and cycle context on success and error.
+#[test]
+fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn gate(id: &str, _: &Value) -> Result<()> {
+        if id == "file.automate.batch" && CALLS.fetch_add(1, Ordering::SeqCst) >= 4 {
+            return Err(EngineError::Other("bounded Batch recursion sentinel".into()));
+        }
+        Ok(())
+    }
+    for mutual in [false, true] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":8,"height":8})).unwrap();
+        let nested = |name| ("file.automate.batch".into(), json!({"source":"open","action":name}));
+        s.actions.list = vec![
+            crate::actions_cmds::Action::new("Recorder", vec![]),
+            crate::actions_cmds::Action::new("Loop A", vec![nested(if mutual { "Loop B" } else { "Loop A" })]),
+            crate::actions_cmds::Action::new("Loop B", vec![nested("Loop A")]),
+            crate::actions_cmds::Action::new("Leaf", vec![("actions.play".into(), json!({"action":0}))]),
+        ];
+        let definitions = s.actions.list[1..].to_vec();
+        s.actions.playback_stack = vec!["Enclosing".into()];
+        s.actions.recording = Some((s.journal.len(), 0));
+        let take = s.actions.take;
+        s.authorize = Some(gate);
+        CALLS.store(0, Ordering::SeqCst);
+        let result = batch(&mut s, &json!({"source":"open","action":"Loop A"})).unwrap();
+        assert!(result["errors"][0]["error"].as_str().unwrap().contains("recursive action"), "{result}");
+        assert!(CALLS.load(Ordering::SeqCst) <= 2, "the cycle check must beat the finite sentinel");
+        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
+        assert_eq!(s.actions.take, take);
+        assert_eq!(&s.actions.list[1..], definitions.as_slice());
+        let before = doc(&s).walk().len();
+        let embedded = vec![crate::actions_cmds::Action::new("Embedded", vec![("layer.new.layer".into(), json!({"name":"visited"}))])];
+        let result = batch(&mut s, &json!({"source":"open","action":"Leaf","calledActions":embedded})).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(doc(&s).walk().len(), before + 1);
+        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
+        assert_eq!(s.actions.take, take);
+        assert_eq!(&s.actions.list[1..], definitions.as_slice());
+    }
+}
+
+/// Named live-document replay uses recorded layer targets and effective percentage coordinates.
+#[test]
+fn named_open_document_batch_uses_effective_recorded_parameters() {
+    fn gate(id: &str, p: &Value) -> Result<()> {
+        if id == "type.create" && (p.get("xPercent").is_some() || p["x"] != json!(50.0) || p["y"] != json!(40.0)) {
+            return Err(EngineError::Other("type position was not normalized before authorization".into()));
+        }
+        if id == "layer.setProps" && p.get("_actionLayer").is_some() {
+            return Err(EngineError::Other("recorded visibility target leaked to execution".into()));
+        }
+        Ok(())
+    }
+    for through_batch in [false, true] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":200,"height":100})).unwrap();
+        let a = s.execute("layer.new.layer", json!({"name":"A"})).unwrap()["layer"].as_u64().unwrap();
+        let b = s.execute("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap();
+        s.actions.list.push(crate::actions_cmds::Action::new(
+            "Recorded",
+            vec![
+                ("layer.setProps".into(), json!({"visible":false,"_actionLayer":{"name":"A","ordinal":0}})),
+                ("type.create".into(), json!({"text":"x","size":12,"xPercent":25.0,"yPercent":40.0})),
+            ],
+        ));
+        if through_batch {
+            s.authorize = Some(gate);
+            let result = s.execute("file.automate.batch", json!({"source":"open","action":"Recorded"})).unwrap();
+            assert_eq!(result["errors"], json!([]), "{result}");
+        } else {
+            let result = s.execute("actions.play", json!({"action":"Recorded"})).unwrap();
+            assert_eq!(result["ran"], 2, "{result}");
+        }
+        assert!(!doc(&s).layer(photocraft_doc::LayerId(a)).unwrap().visible);
+        assert!(doc(&s).layer(photocraft_doc::LayerId(b)).unwrap().visible);
+        assert_eq!(doc(&s).walk().iter().filter(|(_, _, layer)| matches!(layer.content, photocraft_doc::LayerContent::Text(_))).count(), 1);
+    }
+}

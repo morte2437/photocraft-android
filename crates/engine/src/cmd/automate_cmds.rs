@@ -124,11 +124,6 @@ fn check_known(steps: &[(String, Value)], cmd: &str) -> Result<()> {
 const MAX_SCRIPT_DEPTH: u8 = 16;
 pub(crate) const MAX_SCRIPT_STEPS: u64 = crate::actions_cmds::MAX_PLAYBACK_STEPS;
 
-/// A script run from a script reports its own failure inside an `Ok`; it stops the caller too.
-fn nested_script_failure(id: &str, r: &Value) -> Option<String> {
-    (id == "file.scripts.browse" && r.get("ok") == Some(&Value::Bool(false))).then(|| "a script it runs failed".to_string())
-}
-
 /// Direct Batch file errors remain results; failed called actions or scripts stop the caller.
 fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
     let mut results = Vec::new();
@@ -140,7 +135,7 @@ fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
         }
         match s.execute(id, params.clone()) {
             // A called action reports a failed step inside an `Ok`; it stops the script too.
-            Ok(r) => match crate::actions_cmds::nested_failure(id, &r).filter(|_| id != "file.automate.batch").or_else(|| nested_script_failure(id, &r)) {
+            Ok(r) => match crate::actions_cmds::nested_failure(id, &r).filter(|_| id != "file.automate.batch") {
                 Some(error) => {
                     results.push(json!({"command": id, "result": r, "error": error}));
                     break;

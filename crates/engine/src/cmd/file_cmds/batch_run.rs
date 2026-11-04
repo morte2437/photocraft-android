@@ -390,6 +390,7 @@ pub(super) fn process_batch_outputs(
     process_batch_outputs_with_results(raw_ppi, outputs, format, save, policy, ctx, &|scratch, out| f(scratch, out).map_err(FileFailure::from))
 }
 
+/// Retain child payloads through the existing progress, interrupt and write checkpoints.
 fn process_batch_outputs_with_results(
     raw_ppi: f64,
     outputs: Vec<(String, String)>,
@@ -524,13 +525,29 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
+/// Resolve a named set reference or an ordinary action name/index.
+pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
+    const CMD: &str = "file.automate.batch";
+    if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
+        let set = set.as_str().ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "set must be a string".into() })?;
+        let name =
+            p.get("action").and_then(Value::as_str).ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "a set needs a named action".into() })?;
+        return list
+            .iter()
+            .position(|a| a.name == name && a.set.as_deref() == Some(set))
+            .ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: format!("no action named `{name}` in set `{set}`") });
+    }
+    crate::actions_cmds::resolve(list, p, CMD)
+}
+
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
     let (mut steps, action) = match p.get("steps").or_else(|| p.get("action").filter(|value| value.is_array())) {
         Some(steps) => (parse_steps(steps)?, None),
         None => {
             // Select from the caller before using an embedded library for internal calls.
-            let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": p.get("action")}))?;
+            let index = batch_action(&s.actions.list, p)?;
+            let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": index}))?;
             (action.enabled_steps().map(|(_, step)| step.clone()).collect(), Some(action.name))
         }
     };
@@ -576,8 +593,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // hands the count on, so nested batches cannot multiply past the limit. A top-level named
     // action starts fresh; standalone explicit steps retain their existing behavior.
     let input_count = if source == "open" { s.documents().len() } else { inputs.len() };
+    let named = action.is_some();
     let mut playback_steps = 0;
-    if s.actions.playing > 0 || action.is_some() {
+    if s.actions.playing > 0 || named {
         let spent = if s.actions.playing > 0 { s.actions.playback_steps } else { 0 };
         playback_steps = spent.saturating_add((steps.len().max(1) as u64).saturating_mul(input_count as u64));
         if playback_steps > crate::actions_cmds::MAX_PLAYBACK_STEPS {
@@ -602,6 +620,14 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if source == "open" {
         let save = SaveOpts::from_params(s, p, cmd)?;
+        // A caller's recording index belongs to its original library, not an embedded namespace.
+        // As in ordinary named playback, suspend it while executing and restore the Batch owner.
+        let previous_recording = if named {
+            crate::actions_cmds::flush_recording(s)?;
+            s.actions.recording.take()
+        } else {
+            None
+        };
         // Change only playback context, retaining the live recorder and script counters.
         let previous_playing = std::mem::replace(&mut s.actions.playing, actions.playing);
         let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
@@ -615,6 +641,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         s.actions.playback_stack = previous_stack;
         if previous_playing == 0 {
             s.actions.playback_steps = previous_steps;
+        }
+        if named {
+            s.actions.recording = previous_recording;
         }
         return result;
     }
@@ -673,7 +702,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             }
                             continue;
                         }
-                        let result = scratch.execute(id, params.clone())?;
+                        let params = crate::actions_cmds::playback_params(scratch, id, params)?;
+                        let result = scratch.execute(id, params)?;
                         ctx.publish_batch_preview(&source, scratch.active().map(|state| state.doc.clone()));
                         if let Some(error) = crate::actions_cmds::nested_failure(id, &result) {
                             return Err(FileFailure { error: EngineError::Other(error), result: Some(result) });
@@ -779,7 +809,7 @@ fn batch_open_documents(
                     }
                     continue;
                 }
-                let params = crate::actions_cmds::playback_params(s, command, params);
+                let params = crate::actions_cmds::playback_params(s, command, params)?;
                 let response = s.execute(command, params)?;
                 if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
                     return Err(FileFailure { error: EngineError::Other(error), result: Some(response) });

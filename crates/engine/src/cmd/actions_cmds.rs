@@ -271,6 +271,10 @@ pub fn playback_plan(s: &Session, p: &Value) -> Result<(Action, usize)> {
 /// after the ordinary copies. Inline embedded bodies retain their own references. Missing
 /// targets remain deferred failures, as before.
 pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Action> {
+    /// Resolve in the current namespace before capture rewrites the reference.
+    fn target(list: &[Action], params: &Value, id: &str) -> Result<usize> {
+        if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, id) }
+    }
     /// Visit calls in the current namespace, leaving embedded inline Batch scopes untouched.
     fn visit_calls(steps: &mut [(String, Value)], f: &mut impl FnMut(&str, &mut Value, bool)) {
         let mut pending: Vec<_> = steps.iter_mut().rev().map(|(id, params)| (id.clone(), params)).collect();
@@ -314,7 +318,7 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
         }
         visit_calls(steps, &mut |id, params, own_actions| match id {
             "actions.play" | "file.automate.batch" => {
-                let Ok(i) = resolve(list, params, id) else { return };
+                let Ok(i) = target(list, params, id) else { return };
                 if own_actions {
                     scoped.insert(i);
                 } else {
@@ -365,10 +369,14 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
             return;
         }
         if scoped
-            && let Ok(i) = resolve(list, params, id)
+            && let Ok(i) = target(list, params, id)
             && let Some(slot) = slots.get(&i)
         {
             params["action"] = json!(slot);
+            // The pinned source slot identifies its set; a numeric Batch choice cannot carry a named set.
+            if let Some(object) = params.as_object_mut() {
+                object.remove("set");
+            }
             return;
         }
         // Appended source copies must not make an originally missing numeric target valid.
@@ -677,11 +685,19 @@ pub fn restore_recording(s: &mut Session, idx: usize, action: &str, from: usize)
 /// Promote it to the caller's failed step so no later parent steps run after a child fails.
 /// Batch text summarizes counts and the first failure; its full result retains every file outcome.
 pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
+    if id == "file.scripts.browse" && value.get("ok") == Some(&Value::Bool(false)) {
+        let error = value
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|results| results.iter().find_map(|result| result.get("error").and_then(Value::as_str)))
+            .unwrap_or("unknown error");
+        return Some(format!("script failed: {error}"));
+    }
     if id == "file.automate.batch" {
         let errors = value.get("errors")?.as_array()?;
         let first = errors.first()?;
         let error = first.get("error")?.as_str()?;
-        let file = first.get("file").and_then(Value::as_str).unwrap_or("unknown input");
+        let file = first.get("file").or_else(|| first.get("document")).and_then(Value::as_str).unwrap_or("unknown input");
         let saved = value.get("files").and_then(Value::as_array).map_or(0, Vec::len);
         return Some(format!("Batch: {} file(s) failed, {saved} saved; first failure `{file}`: {error}", errors.len()));
     }

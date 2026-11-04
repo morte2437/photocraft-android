@@ -430,7 +430,7 @@ fn droplets_preserve_batch_action_namespaces() {
     use crate::actions_cmds::Action;
     let dir = tmp("droplet-scopes");
     let input = images(&dir, 1, 40, 20).remove(0);
-    for kind in ["inline", "named", "mixed", "mixed-two", "caller-null"] {
+    for kind in ["inline", "named", "named-set", "mixed", "mixed-two", "caller-null"] {
         let mut maker = Session::new();
         let mut source = Action::new("Source", vec![("actions.play".into(), json!({"action": 1})), ("file.close".into(), json!({}))]);
         source.disabled.insert(1);
@@ -448,6 +448,9 @@ fn droplets_preserve_batch_action_namespaces() {
             batch["steps"] = json!([["actions.play", {"action": 1}]]);
         } else {
             batch["action"] = json!("Source");
+            if kind == "named-set" {
+                batch["set"] = json!("Captured");
+            }
         }
         if kind == "caller-null" {
             maker.actions.list[1].steps.push(("image.imageRotation.90cw".into(), json!({})));
