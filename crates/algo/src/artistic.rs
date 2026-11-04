@@ -236,6 +236,19 @@ impl GalleryEffect {
         }
     }
 
+    /// A copy whose stored numeric values are held to their declared ranges (a non-finite value
+    /// becomes the default). A project file stores `values` as plain numbers, so unlike
+    /// [`Self::set`] nothing has clamped them; geometry sized from them (reach) needs it.
+    pub(crate) fn clamped(&self) -> GalleryEffect {
+        let mut out = self.clone();
+        for p in self.filter.params() {
+            if let (GalleryParamKind::Range { min, max, default }, Some(v)) = (&p.kind, out.values.get_mut(p.key)) {
+                *v = if v.is_finite() { v.clamp(*min, *max) } else { *default };
+            }
+        }
+        out
+    }
+
     /// A bool value.
     pub fn flag(&self, key: &str) -> bool {
         self.get(key) != 0.0

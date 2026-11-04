@@ -50,6 +50,13 @@ pub static ICONS: &[(&str, &[u8])] = &[
     ("convert-point", include_bytes!("../../../assets/icons/convert-point.svg")),
     ("copy", include_bytes!("../../../assets/icons/copy.svg")),
     ("crop", include_bytes!("../../../assets/icons/crop.svg")),
+    // Original: the Crop tool's overlay glyphs (#10889), on the Lucide grid and stroke.
+    ("crop-overlay-diagonal", include_bytes!("../../../assets/icons/crop-overlay-diagonal.svg")),
+    ("crop-overlay-golden-ratio", include_bytes!("../../../assets/icons/crop-overlay-golden-ratio.svg")),
+    ("crop-overlay-golden-spiral", include_bytes!("../../../assets/icons/crop-overlay-golden-spiral.svg")),
+    ("crop-overlay-grid", include_bytes!("../../../assets/icons/crop-overlay-grid.svg")),
+    ("crop-overlay-thirds", include_bytes!("../../../assets/icons/crop-overlay-thirds.svg")),
+    ("crop-overlay-triangle", include_bytes!("../../../assets/icons/crop-overlay-triangle.svg")),
     ("diamond", include_bytes!("../../../assets/icons/diamond.svg")),
     ("direct-select", include_bytes!("../../../assets/icons/direct-select.svg")),
     ("droplet", include_bytes!("../../../assets/icons/droplet.svg")),

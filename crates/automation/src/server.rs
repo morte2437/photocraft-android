@@ -369,13 +369,15 @@ pub struct UiSetParams {
     /// dashes, dashOffset and opacity; null disables the stroke). Shape stroke fields use
     /// `shape.edit` names and units; colour comes from `tools.setColors`. camTransformOnDrop (bool,
     /// the Content-Aware Move tool's Transform On Drop). tileGrid (bool, a developer overlay of the
-    /// active layer's storage tiles). layerFilter (an object patching by ("kind", "name", "mode",
-    /// "color", "smartObject" or "artboard", which lists the artboards that hold the selected
-    /// layers), kinds (a list of layer kinds), name (matches part of the layer name), mode (a blend
-    /// mode name), color (a layer colour label, or "none") and smart (a list of "linked", "missing"
-    /// and "embedded") for the Layers panel filter). strokeTrace (true, false, "stderr" or "off":
-    /// the stroke latency trace at runtime; a CSV file is set at launch with --stroke-trace, not
-    /// over this channel). updatesOpen (bool, the Help › Check for Updates window).
+    /// active layer's storage tiles). layerFilter (an object patching by ("kind", "name", "effect",
+    /// "mode", "color", "smartObject" or "artboard", which lists the artboards that hold the
+    /// selected layers), kinds (a list of layer kinds), name (matches part of the layer name),
+    /// effect ("bevelEmboss", "stroke", "innerShadow", "innerGlow", "satin", "overlay",
+    /// "outerGlow" or "dropShadow"), mode (a blend mode name), color (a layer colour label, or
+    /// "none") and smart (a list of "linked", "missing" and "embedded") for the Layers panel
+    /// filter). strokeTrace (true, false, "stderr" or "off": the stroke latency trace at runtime; a
+    /// CSV file is set at launch with --stroke-trace, not over this channel). updatesOpen (bool,
+    /// the Help › Check for Updates window).
     /// histogramPanel (an object patching view ("compact", "expanded" or "allChannels"), channel
     /// ("composite", "red", "green", "blue", "cyan", "magenta", "yellow", "black", "a", "b",
     /// "luminosity" or "colors"), showChannelsInColor, showStatistics and source ("entireImage",

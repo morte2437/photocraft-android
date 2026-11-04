@@ -55,6 +55,19 @@ impl CropOverlay {
         }
     }
 
+    /// The icon the overlay menus and the options-bar button show (#10889), drawn in the house
+    /// icon style with the frame's crop marks around the guide it names.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Thirds => "crop-overlay-thirds",
+            Self::Grid => "crop-overlay-grid",
+            Self::Diagonal => "crop-overlay-diagonal",
+            Self::Triangle => "crop-overlay-triangle",
+            Self::GoldenRatio => "crop-overlay-golden-ratio",
+            Self::GoldenSpiral => "crop-overlay-golden-spiral",
+        }
+    }
+
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.id() == id)
     }
@@ -283,32 +296,44 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 /// The options bar's overlay button and its menu (Photoshop's "Set the overlay options for the
 /// Crop tool").
 pub fn options_button(o: &mut ToolOptions, ui: &mut egui::Ui) {
-    let r =
-        crate::icons::button(ui, "grid-3x3", 24.0, false, &format!("{}  ({})", tl!("Set the overlay options for the Crop tool"), tl!(o.crop_overlay.label())));
+    let r = crate::icons::button(
+        ui,
+        o.crop_overlay.icon(),
+        24.0,
+        false,
+        &format!("{}  ({})", tl!("Set the overlay options for the Crop tool"), tl!(o.crop_overlay.label())),
+    );
     egui::Popup::menu(&r).show(|ui| {
         ui.set_min_width(220.0);
-        let item = |ui: &mut egui::Ui, on: bool, label: &str, key: Option<&str>| {
-            let mut b = egui::Button::new(format!("{} {}", if on { "✔" } else { "  " }, label));
+        // Check mark, then the entry's icon (the overlays have one, #10889), then the label.
+        let item = |ui: &mut egui::Ui, on: bool, icon: Option<&str>, label: &str, key: Option<&str>| {
+            let mut atoms = egui::Atoms::default();
+            atoms.push_right(format!("{} ", if on { "✔" } else { "  " }));
+            if let Some(name) = icon {
+                atoms.push_right(crate::icons::image(name, 14.0, crate::theme::Tokens::get(ui.ctx()).icon));
+            }
+            atoms.push_right(label.to_owned());
+            let mut b = egui::Button::new(atoms);
             if let Some(k) = key {
                 b = b.shortcut_text(crate::shortcuts::pretty(k));
             }
             ui.add(b).clicked()
         };
         for k in CropOverlay::ALL {
-            if item(ui, o.crop_overlay == k, tl!(k.label()), None) {
+            if item(ui, o.crop_overlay == k, Some(k.icon()), tl!(k.label()), None) {
                 set_overlay(o, k);
                 ui.close();
             }
         }
         ui.separator();
         for s in OverlayShow::ALL {
-            if item(ui, o.crop_overlay_show == s, tl!(s.label()), None) {
+            if item(ui, o.crop_overlay_show == s, None, tl!(s.label()), None) {
                 o.crop_overlay_show = s;
                 ui.close();
             }
         }
         ui.separator();
-        if item(ui, false, tl!("Cycle Overlay"), Some("O")) {
+        if item(ui, false, None, tl!("Cycle Overlay"), Some("O")) {
             cycle(o);
             ui.close();
         }
