@@ -565,6 +565,36 @@ fn an_rle_bmp_ending_early_still_decodes() {
 }
 
 #[test]
+fn an_rle_bmp_canvas_past_the_unbacked_allowance_needs_data() {
+    // 30000x30000 RLE8 with only the end-of-bitmap escape: 2.7 GB of RGB from about 1 KB.
+    let data = 14 + 40 + 1024;
+    let mut b = b"BM".to_vec();
+    for v in [data + 2, 0, data, 40, 30000, 30000] {
+        b.extend_from_slice(&(v as u32).to_le_bytes());
+    }
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&8u16.to_le_bytes());
+    for v in [1, 2, 0, 0, 0, 0] {
+        b.extend_from_slice(&(v as u32).to_le_bytes());
+    }
+    b.resize(data, 0);
+    b.extend_from_slice(&[0, 1]);
+    refused_as_implausible(Format::Bmp, &b);
+}
+
+#[test]
+fn animated_gif_frames_need_a_plausible_file_size_too() {
+    let frames = |b: &[u8]| decode_gif_frames(b, &DecodeOptions::default());
+    assert_eq!(frames(&tiny_gif((4000, 4000), (1, 1))).unwrap().len(), 1);
+    for gif in [tiny_gif((30000, 30000), (1, 1)), tiny_gif((100, 100), (40000, 40000))] {
+        match frames(&gif) {
+            Err(CodecError::LimitExceeded(m)) => assert!(m.contains("cannot hold"), "{m}"),
+            other => panic!("expected an implausible-size refusal, got {:?}", other.map(|f| f.len())),
+        }
+    }
+}
+
+#[test]
 fn pcx_header_declaring_gigabytes_needs_a_plausible_file_size() {
     // 24-bit (three 8-bit planes) 65535 x 16384, with one row of data.
     let mut b = vec![0u8; 128];
