@@ -3182,6 +3182,9 @@ curves	Smooth	Udjævn
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} trin har ingen PhotoCraft-ækvivalent endnu|{n} trin har ingen PhotoCraft-ækvivalent endnu
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Gemte {n} handling i {file}|Gemte {n} handlinger i {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} trin uden Photoshop-ækvivalent udeladt|{n} trin uden Photoshop-ækvivalent udeladt
+@plural	{n} action file loaded|{n} action files loaded	{n} handlingsfil indlæst|{n} handlingsfiler indlæst
+	{set} from {file} replaced the one from {earlier}	Sættet {set} fra {file} erstattede det fra {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunne ikke indlæses: {errors}|{n} filer kunne ikke indlæses: {errors}
 
 	File Naming	Filnavngivning
 	Starting serial	Startserienummer
@@ -3358,6 +3361,7 @@ curves	Smooth	Udjævn
 	This document's layers: {needed} of {budget} for layers	Dette dokuments lag: {needed} af {budget} til lag
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Dette dokuments lag kræver {needed}, men kan rumme {budget}: gentegninger af hele dokumentet bruger CPU'en
 	GPU Memory (MB, 0 = Automatic)	GPU-hukommelse (MB, 0 = automatisk)
+	Scratch Size Limit (MB, 0 = No Limit)	Størrelsesgrænse for arbejdsdisk (MB, 0 = ingen grænse)
 	{path}: the path is not valid Unicode; save under another name.	{path}: stien er ikke gyldig Unicode; gem under et andet navn.
 	Replace	Erstat
 	{name} was changed by another app after it was opened or saved here.	{name} blev ændret af et andet program, efter at den blev åbnet eller gemt her.

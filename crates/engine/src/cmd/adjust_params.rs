@@ -3,11 +3,20 @@ use super::layer_params::{layer_param, mask_new_layer};
 use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
 
 /// Add an adjustment layer above the active one; it takes the mask `mask_new_layer` builds from `p` (a path, the selection, or the default white mask).
+/// Optional opacity is a 0..1 fraction, validated before the creation edit.
 pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &str) -> Result<Value> {
+    let opacity = match p.get("opacity") {
+        None => 1.0,
+        Some(value) => value
+            .as_f64()
+            .filter(|o| o.is_finite() && (0.0..=1.0).contains(o))
+            .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "opacity must be a number in 0..1".into() })? as f32,
+    };
     let label = format!("New {} Layer", adj.label());
     let name = adj.label().to_string();
     let id = s.edit(&label, |doc, active| {
         let mut l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
+        l.opacity = opacity;
         mask_new_layer(doc, &mut l, p, cmd, true)?;
         let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
         *active = Some(id);

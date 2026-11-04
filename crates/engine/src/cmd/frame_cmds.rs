@@ -124,10 +124,7 @@ fn new_frame(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Some("ellipse")) => true,
         Some(_) => return Err(bad("`shape` must be \"rectangle\" or \"ellipse\"".into())),
     };
-    let content = match p.get("layer") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(LayerId(v.as_u64().ok_or_else(|| bad(format!("`layer` = {v} is not a layer id")))?)),
-    };
+    let content = crate::commands::explicit_layer(s, p)?;
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
     let gid = s.edit("New Frame", |doc, active| {
         let mask =

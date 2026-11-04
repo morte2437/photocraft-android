@@ -48,7 +48,7 @@ pub(crate) use draw::draw_handle_cursor;
 use draw::scale_values;
 #[cfg(test)]
 pub(crate) use draw::{Readout, live_readout, styled_frame};
-pub(crate) use draw::{carries_selection_of, draw_selection};
+pub(crate) use draw::{carries_selection_of, selection_ants};
 pub use draw::{draw_content, draw_overlay};
 #[cfg(test)]
 use draw::{front_vertices, handle_anchor};

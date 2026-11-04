@@ -357,13 +357,51 @@ pub(super) fn live_from_params(cmd: &str, kind: &str, p: &Value, prev: Option<&L
         }
         "line" => {
             let (pf, pto, pw) = match prev {
-                Some(LiveShape::Line { from, to, weight }) => (Some(*from), Some(*to), *weight),
+                Some(LiveShape::Line { from, to, weight }) | Some(LiveShape::ArrowLine { from, to, weight, .. }) => (Some(*from), Some(*to), *weight),
                 _ => (None, None, 1.0),
             };
-            LiveShape::Line {
-                from: nums::<2>(p, "from").or(pf).ok_or_else(|| bad(cmd, "`from`: [x, y] is required"))?,
-                to: nums::<2>(p, "to").or(pto).ok_or_else(|| bad(cmd, "`to`: [x, y] is required"))?,
-                weight: f64p(p, "weight").unwrap_or(pw).max(0.0),
+            let from = nums::<2>(p, "from").or(pf).ok_or_else(|| bad(cmd, "`from`: [x, y] is required"))?;
+            let to = nums::<2>(p, "to").or(pto).ok_or_else(|| bad(cmd, "`to`: [x, y] is required"))?;
+            let weight = f64p(p, "weight").unwrap_or(pw).max(0.0);
+            let arrow_fields = ["arrowStart", "arrowEnd", "arrowWidth", "arrowLength", "arrowConcavity"];
+            let is_arrow = matches!(prev, Some(LiveShape::ArrowLine { .. })) || arrow_fields.iter().any(|k| p.get(*k).is_some());
+            if is_arrow {
+                let (ps, pe, pwidth, plen, pc) = match prev {
+                    Some(LiveShape::ArrowLine { start, end, width, length, concavity, .. }) => (*start, *end, *width, *length, *concavity),
+                    _ => (false, false, 52.0, 50.0, 0.0),
+                };
+                let dim = |key: &str, fallback: f64, min: f64, max: f64| -> Result<f64> {
+                    let value = match p.get(key) {
+                        Some(v) => v.as_f64().ok_or_else(|| bad(cmd, format!("`{key}` must be numeric")))?,
+                        None => fallback,
+                    };
+                    // Preserve scaled arrowhead dimensions when editing other properties.
+                    let preserved_scaled_size = p.get(key).is_none() && matches!(key, "arrowWidth" | "arrowLength") && value.is_finite();
+                    let value = if preserved_scaled_size { value.max(min) } else { value };
+                    if !value.is_finite() || (!preserved_scaled_size && !(min..=max).contains(&value)) {
+                        return Err(bad(cmd, format!("`{key}` must be within {min}..={max}")));
+                    }
+                    Ok(value)
+                };
+                // Reject invalid flag types rather than silently using defaults.
+                let flag = |key: &str, fallback: bool| -> Result<bool> {
+                    match p.get(key) {
+                        Some(v) => v.as_bool().ok_or_else(|| bad(cmd, format!("`{key}` must be a boolean"))),
+                        None => Ok(fallback),
+                    }
+                };
+                LiveShape::ArrowLine {
+                    from,
+                    to,
+                    weight,
+                    start: flag("arrowStart", ps)?,
+                    end: flag("arrowEnd", pe)?,
+                    width: dim("arrowWidth", pwidth, 1.0, 4096.0)?,
+                    length: dim("arrowLength", plen, 1.0, 4096.0)?,
+                    concavity: dim("arrowConcavity", pc, 0.0, 100.0)?,
+                }
+            } else {
+                LiveShape::Line { from, to, weight }
             }
         }
         o => return Err(bad(cmd, format!("unknown kind `{o}`"))),

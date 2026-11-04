@@ -16,7 +16,7 @@ use photocraft_raster::Surface;
 
 use crate::adjust_map::{self, ADJUSTMENT_KEYS};
 use crate::blocks;
-use crate::pixels::{interleave, max_sample, sample_for_depth, zero_sample};
+use crate::pixels::{max_sample, sample_for_depth, try_interleave, zero_sample};
 
 /// Resources that are mapped to document fields or regenerated on export.
 pub(crate) const MAPPED_RESOURCES: [u16; 19] = [
@@ -56,8 +56,8 @@ pub(crate) struct Ctx<'a> {
     pub warnings: Vec<String>,
     /// Decoding encountered damaged PSD data; interactive opens ask whether to continue.
     pub damaged: bool,
-    /// Failure to read source channel data, which must fail the open.
-    pub read_error: Option<String>,
+    /// Source reads and pixel allocation failures must fail the open.
+    pub fatal_error: Option<crate::IoError>,
     /// Document resolution (type sizes are converted to points with it).
     pub dpi: f32,
     /// The parsed `Txt2` block (type settings EngineData lacks, e.g. optical kerning).
@@ -96,6 +96,12 @@ const BAND_BYTES: usize = 32 << 20;
 fn band_rows(top: i32, h: usize, row_bytes: usize) -> Vec<(usize, usize)> {
     let tile = TILE_SIZE as usize;
     let rows = (BAND_BYTES / row_bytes.max(1)).max(tile) / tile * tile;
+    row_bands(top, h, rows)
+}
+
+// `rows` is a positive multiple of TILE_SIZE. Mask decoding uses one tile row at a
+// time so a narrow but tall mask never needs a whole-plane conversion buffer.
+fn row_bands(top: i32, h: usize, rows: usize) -> Vec<(usize, usize)> {
     // The first band ends at the first tile boundary at least `rows` rows in.
     let into_tile = usize::try_from(top.rem_euclid(TILE_SIZE)).unwrap_or(0);
     let mut out = Vec::new();
@@ -190,6 +196,12 @@ struct Placement {
 }
 
 impl Ctx<'_> {
+    fn allocation_failed(&mut self, error: impl std::fmt::Display) {
+        let message = format!("PSD pixel allocation failed: {error}");
+        self.warn(message.clone());
+        self.fatal_error.get_or_insert(crate::IoError::OutOfMemory(message));
+    }
+
     fn warn(&mut self, s: impl Into<String>) {
         self.warnings.push(s.into());
     }
@@ -205,7 +217,11 @@ impl Ctx<'_> {
     /// (`true`); damaged data is warned about, its layer left empty (`false`).
     fn channel_failed(&mut self, name: &str, id: i16, e: &photocraft_psd::PsdError) -> bool {
         if let photocraft_psd::PsdError::Read(msg) = e {
-            self.read_error.get_or_insert_with(|| format!("layer \"{name}\": {msg}"));
+            self.fatal_error.get_or_insert_with(|| crate::IoError::Read(format!("layer \"{name}\": {msg}")));
+            return true;
+        }
+        if let photocraft_psd::PsdError::OutOfMemory(_) = e {
+            self.allocation_failed(format!("layer \"{name}\" channel {id}: {e}"));
             return true;
         }
         self.warn_unreadable_data(format!("layer \"{name}\": channel {id} could not be decoded ({e}); treated as empty"));
@@ -242,27 +258,12 @@ impl Ctx<'_> {
         Placement { id, transform, perspective, warp }
     }
 
-    /// Decodes a PSD layer channel, marking the document damaged if its data is unreadable.
-    fn channel_plane(&mut self, rec: &LayerRecord, id: i16, name: &str) -> Option<Vec<u8>> {
-        rec.channel(id)?;
-        if self.read_error.is_some() {
-            return None;
-        }
-        match rec.decode_channel(id, self.file.header.depth, self.file.header.version) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                self.channel_failed(name, id, &e);
-                None
-            }
-        }
-    }
-
     /// Builds a raster surface from the layer channels, leaving the surface empty if
     /// any present channel fails to decode rather than inventing replacement pixels.
     fn record_surface(&mut self, rec: &LayerRecord, name: &str) -> Surface {
         let r = rec.rect;
         // Once the file couldn't be read the open fails: nothing more is decoded.
-        if r.is_empty() || r.size().is_err() || self.read_error.is_some() {
+        if r.is_empty() || r.size().is_err() || self.fatal_error.is_some() {
             return Surface::new(self.fmt);
         }
         let (w, h) = r.size().unwrap_or((0, 0));
@@ -313,11 +314,26 @@ impl Ctx<'_> {
                     None => refs.push(None),
                 }
             }
-            let mut bytes = interleave(&refs, &fill, w * (b1 - b0), s, &invert);
+            let mut bytes = match try_interleave(&refs, &fill, w * (b1 - b0), s, &invert) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.allocation_failed(format!("layer \"{name}\": {error}"));
+                    return Surface::new(self.fmt);
+                }
+            };
             if self.fmt.mode == ColorMode::Lab && s == SampleType::U16 {
                 crate::pixels::lab16_chroma(&mut bytes, self.cc + 1, true);
             }
-            surf.write_interleaved(Rect::new(r.left, r.top + b0 as i32, r.right, r.top + b1 as i32), &bytes);
+            if let Err(error) = surf.try_write_interleaved(Rect::new(r.left, r.top + b0 as i32, r.right, r.top + b1 as i32), &bytes) {
+                self.allocation_failed(format!("layer \"{name}\": {error}"));
+                return Surface::new(self.fmt);
+            }
+            // The interleaved band goes back to the scratch pool for the next band (and the next
+            // import): it is a fresh page-faulted mmap otherwise. The decoded planes don't: the
+            // decoder allocates its own, so pooled ones would only sit there.
+            drop(refs);
+            photocraft_raster::scratch::give(bytes);
+            drop(planes);
         }
         surf.prune();
         // A white background, a solid fill's cache: one tile per value, shared across layers.
@@ -338,14 +354,42 @@ impl Ctx<'_> {
         };
         let mut surface = Surface::with_default(self.mask_fmt, &[f32::from(default) / 255.0]);
         if !rect.is_empty()
+            && self.fatal_error.is_none()
             && let Ok((w, h)) = rect.size()
-            && let Some(plane) = self.channel_plane(rec, id, name)
         {
-            let s = self.mask_fmt.sample;
-            let bytes = interleave(&[Some(&plane)], &[zero_sample(s)], w * h, s, &[false]);
-            surface.write_interleaved(Rect::new(rect.left, rect.top, rect.right, rect.bottom), &bytes);
-            surface.prune();
-            surface.share_uniform_tiles(&mut self.uniform);
+            let decoder = rec.channel(id)?.row_decoder(w, h, self.file.header.depth, self.file.header.version);
+            match decoder {
+                Err(error) => {
+                    self.channel_failed(name, id, &error);
+                }
+                Ok(decoder) => {
+                    for (b0, b1) in row_bands(rect.top, h, TILE_SIZE as usize) {
+                        let mut bytes = match decoder.rows(b0, b1) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                self.channel_failed(name, id, &error);
+                                // Discard bands already written: damaged mask data must not
+                                // leave a plausible but incomplete mask on the layer.
+                                surface = Surface::with_default(self.mask_fmt, &[f32::from(default) / 255.0]);
+                                break;
+                            }
+                        };
+                        // A mask is one channel: convert its big-endian samples in place.
+                        // Preserve float bits, including NaN payloads, without a float round trip.
+                        #[cfg(target_endian = "little")]
+                        for sample in bytes.chunks_exact_mut(self.mask_fmt.sample.bytes()) {
+                            sample.reverse();
+                        }
+                        let band = Rect::new(rect.left, rect.top + b0 as i32, rect.right, rect.top + b1 as i32);
+                        if let Err(error) = surface.try_write_interleaved(band, &bytes) {
+                            self.allocation_failed(format!("layer \"{name}\" mask: {error}"));
+                            return None;
+                        }
+                    }
+                    surface.prune();
+                    surface.share_uniform_tiles(&mut self.uniform);
+                }
+            }
         }
         let params = m.parameters;
         Some(LayerMask {
@@ -549,7 +593,8 @@ impl Ctx<'_> {
             // shape's stored pixels hold the shape alone, without the fill its density and feather
             // show beyond the path: render it too.
             let soft = sh.has_soft_mask() && sh.fill.is_some();
-            if soft || ((rec.rect.is_empty() || rec.rect.size().is_err()) && (!sh.path.subpaths.is_empty() || sh.path.inverted)) {
+            if self.fatal_error.is_none() && (soft || ((rec.rect.is_empty() || rec.rect.size().is_err()) && (!sh.path.subpaths.is_empty() || sh.path.inverted)))
+            {
                 let canvas = Rect::new(0, 0, self.file.header.width as i32, self.file.header.height as i32);
                 sh.cache = Some(photocraft_vector::render_shape(&sh, self.fmt, canvas));
             }
@@ -816,8 +861,8 @@ fn preserved_blocks(rec: &LayerRecord) -> Vec<([u8; 4], Arc<Vec<u8>>)> {
     rec.blocks.iter().filter(|b| !REGENERATED.contains(&&b.key)).map(|b| (b.key, Arc::new(b.data.clone()))).collect()
 }
 
-fn be_to_ne_plane(plane: &[u8], s: SampleType, n: usize) -> Vec<u8> {
-    interleave(&[Some(plane)], &[zero_sample(s)], n, s, &[false])
+fn be_to_ne_plane(plane: &[u8], s: SampleType, n: usize) -> photocraft_psd::Result<Vec<u8>> {
+    crate::pixels::try_interleave(&[Some(plane)], &[zero_sample(s)], n, s, &[false])
 }
 
 pub(crate) fn unicode_names(data: &[u8]) -> Vec<String> {
@@ -854,7 +899,7 @@ fn flat_composite(
     match file.composite_rgba8() {
         Ok(img) => return Ok(img),
         // Over the output budget: the fallback below would make the same allocation.
-        Err(e @ PsdError::LimitExceeded(_)) => return Err(e),
+        Err(e @ (PsdError::LimitExceeded(_) | PsdError::OutOfMemory(_))) => return Err(e),
         Err(_) => {}
     }
     let all = match merged {
@@ -871,7 +916,7 @@ fn flat_composite(
         .ok_or(PsdError::LimitExceeded("RGBA output exceeds MAX_DECODED_BYTES"))?;
     let plane = h.row_bytes().checked_mul(hh).ok_or(PsdError::LimitExceeded("plane size overflow"))?;
     let mut data = Vec::new();
-    data.try_reserve_exact(len).map_err(|_| PsdError::LimitExceeded("not enough memory for RGBA output"))?;
+    data.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory for RGBA output"))?;
     data.resize(len, 255u8);
     for c in 0..3.min(usize::from(h.channels)) {
         let bytes = merged_plane(all, c, plane).ok_or_else(|| PsdError::Invalid("channel size mismatch".into()))?;
@@ -885,22 +930,24 @@ fn flat_composite(
 
 /// Writes RGBA8 `data` covering `canvas` into `s`, a band of tile rows at a time (no full-size
 /// float copy of the image).
-fn write_rgba8(s: &mut Surface, canvas: Rect, data: &[u8]) {
+fn write_rgba8(s: &mut Surface, canvas: Rect, data: &[u8]) -> Result<(), String> {
     let fmt = s.format();
     let row = (canvas.width() as usize).saturating_mul(4);
-    let mut vals = Vec::new();
+    let mut vals: Vec<f32> = Vec::new();
     let mut y = canvas.y0;
     while y < canvas.y1 {
         let band = Rect::new(canvas.x0, y, canvas.x1, y.saturating_add(TILE_SIZE).min(canvas.y1));
         let start = ((y - canvas.y0) as usize).saturating_mul(row);
         let Some(rows) = data.get(start..start.saturating_add((band.height() as usize).saturating_mul(row))) else { break };
         vals.clear();
+        vals.try_reserve(rows.len().saturating_mul(fmt.channels()) / 4).map_err(|e| e.to_string())?;
         for p in rows.as_chunks::<4>().0 {
             vals.extend(photocraft_raster::from_rgba(&fmt, p.map(|x| f32::from(x) / 255.0)));
         }
-        s.write_region(band, &vals);
+        s.try_write_region(band, &vals).map_err(|e| e.to_string())?;
         y = band.y1;
     }
+    Ok(())
 }
 
 pub(crate) fn parse_guides(data: &[u8], doc: &mut Document) {
@@ -981,7 +1028,7 @@ pub(crate) fn psd_to_document_owned(
     mut file: PsdFile,
     ctl: &photocraft_raster::Interrupt,
     decoded: Option<photocraft_psd::Result<Vec<u8>>>,
-) -> Option<(Document, Vec<String>, bool, Option<String>)> {
+) -> Option<(Document, Vec<String>, bool, Option<crate::IoError>)> {
     let global = file
         .global_blocks
         .iter_mut()
@@ -991,7 +1038,7 @@ pub(crate) fn psd_to_document_owned(
             (b.signature, b.key, Arc::new(data))
         })
         .collect();
-    psd_to_document_global(&file, ctl, decoded, global)
+    psd_to_document_global(&file, ctl, decoded, global, true)
 }
 
 /// Whether `file` stores spot planes the way earlier PhotoCraft versions (releases 0.1.0 to
@@ -1068,12 +1115,23 @@ pub(crate) fn merged_needed(file: &PsdFile) -> bool {
 }
 
 /// A damaged merged preview need not prevent opening independently stored layers (#6152).
-/// Other modes are imported flattened, so their merged image cannot be discarded.
+/// Other modes are imported flattened, so their merged image cannot be discarded. This is also
+/// the decision the memory budget makes about layer pixels, so it follows [`import_format`]
+/// (an unknown mode imports as RGB) rather than listing modes a second time.
 pub(crate) fn can_recover_layers(file: &PsdFile) -> bool {
-    matches!(file.header.color_mode, PsdMode::Grayscale | PsdMode::Rgb | PsdMode::Cmyk | PsdMode::Lab) && file.header.depth != 1 && !file.layers().is_empty()
+    import_format(file).1 && !file.layers().is_empty()
 }
 
-fn read_initial_metadata(file: &PsdFile, global: &[PsdGlobalBlock], doc: &mut Document, layered: bool, multichannel: bool, warnings: &mut Vec<String>) -> bool {
+/// Reads the document-level metadata; the second value is the allocation failure that stopped a
+/// pattern from being read, which fails the open.
+fn read_initial_metadata(
+    file: &PsdFile,
+    global: &[PsdGlobalBlock],
+    doc: &mut Document,
+    layered: bool,
+    multichannel: bool,
+    warnings: &mut Vec<String>,
+) -> (bool, Option<String>) {
     let header = &file.header;
     for resource in &file.resources {
         match resource.id {
@@ -1131,7 +1189,11 @@ fn read_initial_metadata(file: &PsdFile, global: &[PsdGlobalBlock], doc: &mut Do
             block.key_str()
         ));
     }
-    doc.patterns = crate::pattern_map::from_global_blocks(doc);
+    let mut alloc_error = None;
+    match crate::pattern_map::try_from_global_blocks(doc) {
+        Ok(patterns) => doc.patterns = patterns,
+        Err(error) => alloc_error = Some(format!("patterns: {error}")),
+    }
     warnings.extend(crate::pattern_map::unpaintable_warnings(&doc.patterns));
     doc.notes = crate::annotations_map::notes_from_blocks(doc);
     if crate::annotations_map::anno_unreadable(doc) {
@@ -1141,7 +1203,7 @@ fn read_initial_metadata(file: &PsdFile, global: &[PsdGlobalBlock], doc: &mut Do
         doc.measurement.scale = scale;
     }
     let _ = layered;
-    damaged
+    (damaged, alloc_error)
 }
 
 /// [`psd_to_document_with`] with the merged image already decoded (by
@@ -1163,7 +1225,31 @@ pub(crate) fn psd_to_document_decoded_integrity(
     decoded: Option<photocraft_psd::Result<Vec<u8>>>,
 ) -> Option<(Document, Vec<String>, bool)> {
     let global = file.global_blocks.iter().map(|b| (b.signature, b.key, Arc::new(b.data.clone()))).collect();
-    psd_to_document_global(file, ctl, decoded, global).map(|(doc, warnings, damaged, _)| (doc, warnings, damaged))
+    psd_to_document_global(file, ctl, decoded, global, false).map(|(doc, warnings, damaged, _)| (doc, warnings, damaged))
+}
+
+/// Admission for a legacy conversion.
+///
+/// A nested conversion spends the enclosing attempt's remaining allowance and never resets it.
+/// A standalone conversion refuses an ineligible file before waiting for the decode gate and
+/// rechecks the fresh measurement once admitted, so a refused file never waits behind an active
+/// decode and a memory drop during the wait is seen before any pixel is decoded.
+fn legacy_admission(est: &crate::psd_budget::PsdMemoryEstimate, ctl: &photocraft_raster::Interrupt) -> Result<crate::psd_gate::AdmissionGuard, crate::IoError> {
+    if crate::psd_gate::is_holding_admission() {
+        // Cancellation is checked before the charge and admission is reentrant here, so a
+        // cancelled or refused nested conversion never spends its parent's allowance.
+        ctl.check().map_err(|_| crate::IoError::Cancelled)?;
+        let guard = crate::psd_gate::acquire_decode_admission(ctl)?;
+        crate::psd_gate::consume_attempt_allowance(est.total_bytes)?;
+        return Ok(guard);
+    }
+    let snapshot = || crate::memory::MemorySnapshot::current();
+    // Legacy standalone is unconfirmed: it cannot silently auto allow an estimate above S.
+    crate::memory::evaluate_psd_admission(est.total_bytes, est.tile_bytes, 0, false, None, snapshot())?;
+    let guard = crate::psd_gate::acquire_decode_admission(ctl)?;
+    let outcome = crate::memory::evaluate_psd_admission(est.total_bytes, est.tile_bytes, 0, false, None, snapshot())?;
+    crate::psd_gate::set_active_attempt_budget(outcome.authorized_total.saturating_sub(est.total_bytes));
+    Ok(guard)
 }
 
 fn psd_to_document_global(
@@ -1171,7 +1257,31 @@ fn psd_to_document_global(
     ctl: &photocraft_raster::Interrupt,
     decoded: Option<photocraft_psd::Result<Vec<u8>>>,
     global: Vec<PsdGlobalBlock>,
-) -> Option<(Document, Vec<String>, bool, Option<String>)> {
+    preflighted: bool,
+) -> Option<(Document, Vec<String>, bool, Option<crate::IoError>)> {
+    // Legacy conversion APIs return warnings rather than Result. Reject before metadata or
+    // pixels are decoded, and retain the fatal error for the ordinary import path. An import
+    // that checked the file against its own limit first (`preflighted`) does not estimate twice.
+    let _guard = if !preflighted || !crate::psd_gate::is_holding_admission() {
+        let est = match crate::psd_budget::estimate(file) {
+            Ok(e) => e,
+            Err(error) => {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+        };
+        match legacy_admission(&est, ctl) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                let message = error.to_string();
+                let doc = Document::new("Untitled", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
+                return Some((doc, vec![message], true, Some(error)));
+            }
+        }
+    } else {
+        None
+    };
     let (mode, layered, multichannel, depth) = import_format(file);
     let h = &file.header;
     let mut warnings = Vec::new();
@@ -1179,7 +1289,7 @@ fn psd_to_document_global(
         warnings.push(format!("unknown color mode {}; importing as RGB", h.color_mode.as_u16()));
     }
     let mut doc = Document::new("Untitled", Size::new(h.width, h.height), mode, depth);
-    let damaged = read_initial_metadata(file, &global, &mut doc, layered, multichannel, &mut warnings);
+    let (damaged, pattern_error) = read_initial_metadata(file, &global, &mut doc, layered, multichannel, &mut warnings);
 
     let fmt = doc.pixel_format();
     let cc = fmt.mode.color_channels();
@@ -1192,7 +1302,7 @@ fn psd_to_document_global(
         cmyk: fmt.mode == ColorMode::Cmyk,
         warnings,
         damaged,
-        read_error: None,
+        fatal_error: None,
         dpi: doc.resolution_dpi,
         txt2: global.iter().find(|(_, k, _)| k == b"Txt2").and_then(|(_, _, d)| photocraft_text::psd::parse_txt2(d)),
         filter_effects: Vec::new(),
@@ -1207,6 +1317,9 @@ fn psd_to_document_global(
         uniform: Default::default(),
         total: file.layers().len(),
     };
+    if let Some(error) = pattern_error {
+        cx.allocation_failed(error);
+    }
     for (_, key, data) in cx.global.clone().iter().filter(|(_, key, _)| matches!(key, b"FEid" | b"FXid")) {
         // Smart-filter caches can be large: a cancelled open stops between blocks.
         if ctl.cancelled() {
@@ -1231,7 +1344,7 @@ fn psd_to_document_global(
     finish_import(doc, cx, ctl)
 }
 
-fn finish_import(mut doc: Document, mut cx: Ctx<'_>, ctl: &photocraft_raster::Interrupt) -> Option<(Document, Vec<String>, bool, Option<String>)> {
+fn finish_import(mut doc: Document, mut cx: Ctx<'_>, ctl: &photocraft_raster::Interrupt) -> Option<(Document, Vec<String>, bool, Option<crate::IoError>)> {
     let raw_comps = doc.metadata.psd_resources.iter().find(|(id, _, _)| *id == crate::comps_map::LAYER_COMPS).map(|(_, _, data)| data.clone());
     let (comps, applied, state, warnings) = crate::comps_map::decode_comps(raw_comps.as_deref().map(Vec::as_slice), &doc);
     (doc.layer_comps, doc.last_applied_comp, doc.last_document_state) = (comps, applied, state);
@@ -1242,7 +1355,7 @@ fn finish_import(mut doc: Document, mut cx: Ctx<'_>, ctl: &photocraft_raster::In
         return None;
     }
     ctl.progress(1.0);
-    Some((doc, cx.warnings, cx.damaged, cx.read_error))
+    Some((doc, cx.warnings, cx.damaged, cx.fatal_error))
 }
 
 fn decode_merged(
@@ -1258,6 +1371,9 @@ fn decode_merged(
         }
         ctl.progress(0.1);
         if let Err(error) = &merged {
+            if matches!(error, photocraft_psd::PsdError::OutOfMemory(_)) {
+                cx.allocation_failed(format!("merged image: {error}"));
+            }
             cx.warn_unreadable_data(format!("merged image could not be decoded: {error}"));
             if can_recover_layers(file) {
                 cx.warn_unreadable_data("extra alpha/spot channels in the merged image could not be recovered");
@@ -1273,6 +1389,9 @@ fn decode_merged(
 }
 
 fn import_decoded_content(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_>) {
+    if cx.fatal_error.is_some() {
+        return;
+    }
     if import.multichannel {
         import_multichannel(import.file, import.merged, doc, cx);
     } else if import.layered {
@@ -1280,13 +1399,19 @@ fn import_decoded_content(import: DecodedImport<'_>, doc: &mut Document, cx: &mu
     } else {
         import_flattened(import.file, import.merged, import.sizes, import.canvas, import.fmt, doc, cx);
     }
-    import_extra_channels(import, doc, cx);
+    // A layer allocation that failed above makes the whole import fail: more full-size
+    // planes here would only risk the abort the failure was reported to avoid.
+    if cx.fatal_error.is_none() {
+        import_extra_channels(import, doc, cx);
+    }
 }
 
 fn import_multichannel(file: &PsdFile, merged: &Option<photocraft_psd::Result<Vec<u8>>>, doc: &mut Document, cx: &mut Ctx<'_>) {
     if let Some(Ok(all)) = merged {
         let names = file.resource(1045).map(|r| unicode_names(&r.data)).unwrap_or_default();
-        crate::multichannel_map::import(file, all, doc, &names, &mut cx.warnings);
+        if let Err(error) = crate::multichannel_map::import(file, all, doc, &names, &mut cx.warnings) {
+            cx.fatal_error.get_or_insert(error);
+        }
     }
     if !file.layers().is_empty() {
         cx.warn(format!("Multichannel documents have no layers: {} layer records were not imported", file.layers().len()));
@@ -1317,11 +1442,18 @@ fn import_layered(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_
     fill.push(max_sample(depth));
     let mut inv = vec![cx.cmyk; cc];
     inv.push(false);
-    let mut bytes = interleave(&planes, &fill, n, depth, &inv);
+    let mut bytes = match crate::pixels::try_interleave(&planes, &fill, n, depth, &inv) {
+        Ok(bytes) => bytes,
+        Err(error) => return cx.allocation_failed(format!("merged image: {error}")),
+    };
     if fmt.mode == ColorMode::Lab && depth == SampleType::U16 {
         crate::pixels::lab16_chroma(&mut bytes, cc + 1, true);
     }
-    let mut surface = Surface::from_interleaved(fmt, canvas, &bytes);
+    let mut surface = Surface::new(fmt);
+    if let Err(error) = surface.try_write_interleaved(canvas, &bytes) {
+        return cx.allocation_failed(format!("merged image: {error}"));
+    }
+    photocraft_raster::scratch::give(bytes);
     if alpha_idx.is_some() {
         let white = photocraft_raster::from_rgba(&fmt, [1.0, 1.0, 1.0, 1.0]);
         let mut vals = Vec::new();
@@ -1335,7 +1467,9 @@ fn import_layered(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_
                     px[c] = if a <= 0.0 { 0.0 } else { crate::pixels::unmatte(px[c], a, white[c]) };
                 }
             }
-            surface.write_region(band, &vals);
+            if let Err(error) = surface.try_write_region(band, &vals) {
+                return cx.allocation_failed(format!("merged image: {error}"));
+            }
             y = band.y1;
         }
     }
@@ -1396,10 +1530,21 @@ fn import_flattened(
                 }
             }
             let mut surface = Surface::new(fmt);
-            write_rgba8(&mut surface, canvas, &img.data);
+            let written = write_rgba8(&mut surface, canvas, &img.data);
             drop(img);
-            surface.prune();
-            doc.layers.push(flat_background(surface));
+            match written {
+                Ok(()) => {
+                    surface.prune();
+                    doc.layers.push(flat_background(surface));
+                }
+                Err(error) => cx.allocation_failed(format!("flattened image: {error}")),
+            }
+        }
+        Err(error @ photocraft_psd::PsdError::OutOfMemory(_)) => cx.allocation_failed(format!("flattened image: {error}")),
+        // A flattened file has nothing but its merged image: a failed source read fails the open
+        // rather than opening it without the image.
+        Err(photocraft_psd::PsdError::Read(message)) => {
+            cx.fatal_error.get_or_insert(crate::IoError::Read(message));
         }
         Err(_) if matches!(merged, Some(Err(_))) => {}
         Err(error) => cx.warn_unreadable_data(format!("the image could not be read: {error}")),
@@ -1437,12 +1582,18 @@ fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut
             cx.warn_unreadable_data(format!("merged extra channel {idx} is incomplete and was not imported"));
             break;
         };
-        let mut raw = be_to_ne_plane(p, depth, n);
+        let mut raw = match be_to_ne_plane(p, depth, n) {
+            Ok(raw) => raw,
+            Err(error) => return cx.allocation_failed(format!("extra channel {idx}: {error}")),
+        };
         if k < straight_from && photoshop_spots.get(k).copied().unwrap_or(false) {
             crate::channel_map::photoshop_spot_plane(&mut raw, depth);
         }
         let mut s = Surface::new(cx.mask_fmt);
-        s.write_interleaved(canvas, &raw);
+        if let Err(error) = s.try_write_interleaved(canvas, &raw) {
+            return cx.allocation_failed(format!("extra channel {idx}: {error}"));
+        }
+        photocraft_raster::scratch::give(raw);
         s.prune();
         let name = names.get(k).cloned().unwrap_or_else(|| format!("Alpha {}", k + 1));
         doc.channels.push(AlphaChannel::new(name, s));

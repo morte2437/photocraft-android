@@ -1,4 +1,6 @@
-use super::descriptors::{color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, jbool, jnum, jstr, long, num, pct, text};
+use super::descriptors::{
+    color_desc, color_hex, desc, enm, get_bool, get_enum, get_list, get_num, get_obj, jbool, jnum, jstr, lab_color_hex, long, num, pct, text,
+};
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, step};
 use super::tables::{CHANNELS, channel_key, channel_ref, lookup, lookup_back};
 use super::{D, Descriptor, Map, Value, json};
@@ -64,6 +66,20 @@ fn levels_entry(chan: Option<&str>, p: &Value) -> Descriptor {
         e = e.with("Otpt", D::List(vec![long(jnum(p, "outBlack").unwrap_or(0.0)), long(jnum(p, "outWhite").unwrap_or(255.0))]));
     }
     e
+}
+
+/// Whether the Levels settings in `p` (the master curve and every channel object) name both ends
+/// of each range they touch, or neither. `levels_entry` writes a whole `Inpt` or `Otpt` pair and
+/// fills the end a partial edit left out with 0 or 255, so replaying `inBlack: 31` alone would
+/// also reset a retained Input White (#8530). A value given in a shape the writer can't read (a
+/// text endpoint, a channel that isn't an object) would be left out, so it isn't complete either.
+pub(super) fn levels_complete(p: &Value) -> bool {
+    let shaped =
+        |v: &Value| ["inBlack", "inWhite", "gamma", "outBlack", "outWhite"].iter().all(|k| v.get(*k).is_none_or(|x| x.is_null() || jnum(v, k).is_some()));
+    let pairs_whole =
+        |v: &Value| [("inBlack", "inWhite"), ("outBlack", "outWhite")].iter().all(|(low, high)| jnum(v, low).is_some() == jnum(v, high).is_some());
+    let whole = |v: &Value| shaped(v) && pairs_whole(v);
+    whole(p) && CHANNELS.iter().filter_map(|(_, k)| p.get(*k).filter(|v| !v.is_null())).all(|v| v.is_object() && whole(v))
 }
 
 pub(super) fn levels_to(p: &Value) -> Option<Descriptor> {
@@ -343,7 +359,13 @@ fn gradient_map_from(d: &Descriptor) -> Option<Value> {
     Some(out)
 }
 
+/// Write the legacy gradient form without absorbing settings owned by a direct recorded event.
 fn gradient_map_to(p: &Value) -> Option<Descriptor> {
+    // A recorded GrMp has its own strict converter. Never fall back to the older
+    // event if its origin/settings were changed into an unrepresentable form.
+    if p.get(super::steps_direct_adjustments::GRADIENT_ORIGIN).is_some() {
+        return None;
+    }
     let stops: Option<Vec<D>> = p
         .get("stops")?
         .as_array()?
@@ -359,16 +381,7 @@ fn gradient_map_to(p: &Value) -> Option<Descriptor> {
             ))
         })
         .collect();
-    let transparency = D::List(vec![
-        D::Descriptor(desc("TrnS").with("Opct", pct(100.0)).with("Lctn", long(0.0)).with("Mdpn", long(50.0))),
-        D::Descriptor(desc("TrnS").with("Opct", pct(100.0)).with("Lctn", long(4096.0)).with("Mdpn", long(50.0))),
-    ]);
-    let grad = desc("Grdn")
-        .with("Nm  ", text("Custom"))
-        .with("GrdF", enm("GrdF", "CstS"))
-        .with("Intr", D::Double(4096.0))
-        .with("Clrs", D::List(stops?))
-        .with("Trns", transparency);
+    let grad = gradient_descriptor(stops?, "Custom");
     let mut d = desc("GdMp").with("Grad", D::Descriptor(grad));
     if let Some(r) = jbool(p, "reverse") {
         d = d.with("Rvrs", D::Boolean(r));
@@ -377,6 +390,20 @@ fn gradient_map_to(p: &Value) -> Option<Descriptor> {
         d = d.with("Dthr", D::Boolean(dd));
     }
     Some(d)
+}
+
+/// The classic, opaque gradient shared by direct and adjustment-layer mappings.
+pub(super) fn gradient_descriptor(stops: Vec<D>, name: &str) -> Descriptor {
+    let transparency = D::List(vec![
+        D::Descriptor(desc("TrnS").with("Opct", pct(100.0)).with("Lctn", long(0.0)).with("Mdpn", long(50.0))),
+        D::Descriptor(desc("TrnS").with("Opct", pct(100.0)).with("Lctn", long(4096.0)).with("Mdpn", long(50.0))),
+    ]);
+    desc("Grdn")
+        .with("Nm  ", text(name))
+        .with("GrdF", enm("GrdF", "CstS"))
+        .with("Intr", D::Double(4096.0))
+        .with("Clrs", D::List(stops))
+        .with("Trns", transparency)
 }
 
 /// An adjustment: its Photoshop class (usually also the direct event's code; Black & White and
@@ -395,6 +422,18 @@ macro_rules! adj_fields {
     };
 }
 
+const VIBRANCE: &[F] = &[F("vibrance", "vibrance", Kind::Long), F("Strt", "saturation", Kind::Long)];
+
+/// Vibrance. Photoshop's recording also carries `temperature` and `tint`, which our Vibrance has
+/// no params for: with either one non-zero the step stays a kept Photoshop step (saved back
+/// unchanged) instead of playing and saving without them.
+fn vibrance_from(d: &Descriptor) -> Option<Value> {
+    if ["temperature", "tint"].iter().any(|k| get_num(d, k).is_some_and(|v| v != 0.0)) {
+        return None;
+    }
+    fields_from(d, VIBRANCE).map(Value::Object)
+}
+
 const ADJUSTMENTS: &[Adjustment] = &[
     Adjustment { class: "Lvls", suffix: "levels", from: levels_from, to: levels_to },
     Adjustment { class: "Crvs", suffix: "curves", from: curves_from, to: curves_to },
@@ -404,9 +443,9 @@ const ADJUSTMENTS: &[Adjustment] = &[
     adj_fields!("Pstr", "posterize", &[F("Lvls", "levels", Kind::Long)]),
     adj_fields!("Invr", "invert", &[]),
     Adjustment { class: "ClrB", suffix: "colorBalance", from: color_balance_from, to: color_balance_to },
-    adj_fields!("Vbrn", "vibrance", &[F("vibrance", "vibrance", Kind::Long), F("Strt", "saturation", Kind::Long)]),
+    Adjustment { class: "vibrance", suffix: "vibrance", from: vibrance_from, to: |p| fields_to(p, VIBRANCE, desc("vibrance")) },
     adj_fields!("Exps", "exposure", &[F("Exps", "exposure", Kind::Dbl), F("Ofst", "offset", Kind::Dbl), F("gammaCorrection", "gamma", Kind::Dbl)]),
-    Adjustment { class: "PhtF", suffix: "photoFilter", from: |d| fields_from(d, PHOTO_FILTER_FIELDS).map(Value::Object), to: photo_filter_to },
+    Adjustment { class: "PhtF", suffix: "photoFilter", from: photo_filter_from, to: photo_filter_to },
     adj_fields!("BanW", "blackWhite", BW),
     Adjustment { class: "ChnM", suffix: "channelMixer", from: channel_mixer_from, to: channel_mixer_to },
     Adjustment { class: "SlcC", suffix: "selectiveColor", from: selective_from, to: selective_to },
@@ -417,7 +456,9 @@ const ADJUSTMENTS: &[Adjustment] = &[
 /// Photoshop (#8481): a Make whose Black & White type is `BlnW` fails ("the command Make is not
 /// currently available"), `BanW` runs. Import keeps accepting them so actions saved before still
 /// load; export never writes them.
-const LEGACY_CLASSES: &[(&str, &str)] = &[("BlnW", "BanW")];
+/// `Vbrn` is a code PhotoCraft invented for Vibrance: Photoshop records the class by its string id
+/// `vibrance` (#8534), and refuses the `Vbrn` code (#8383).
+const LEGACY_CLASSES: &[(&str, &str)] = &[("BlnW", "BanW"), ("Vbrn", "vibrance")];
 
 /// The adjustment with Photoshop class `c`, or the one an old PhotoCraft class stands for.
 pub(super) fn adjustment_by_class(c: &str) -> Option<&'static Adjustment> {
@@ -427,6 +468,15 @@ pub(super) fn adjustment_by_class(c: &str) -> Option<&'static Adjustment> {
 }
 
 const PHOTO_FILTER_FIELDS: &[F] = &[F("Clr ", "color", Kind::Color), F("Dnst", "density", Kind::Long), F("PrsL", "preserveLuminosity", Kind::Bool)];
+
+/// Photo Filter records its default colour in Lab; other colour events retain their mappings.
+fn photo_filter_from(d: &Descriptor) -> Option<Value> {
+    let mut p = fields_from(d, &PHOTO_FILTER_FIELDS[1..])?;
+    if let Some(c) = get_obj(d, "Clr ") {
+        p.insert("color".into(), color_hex(c).or_else(|| lab_color_hex(c))?.into());
+    }
+    Some(Value::Object(p))
+}
 
 /// A `PhtF` step whose params carry a `filter` preset without an explicit `color`: the descriptor
 /// form is colour-only (Photoshop stores no preset key — the `phfl` notes in `crates/io` conclude

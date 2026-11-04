@@ -1,6 +1,6 @@
-use super::content::{channel_weights, empty_in, recycle_buffer, render_content, restore_channels, scratch_buffer, surface_to_buffer};
+use super::content::{channel_weights, empty_in, render_content, restore_channels, surface_to_buffer};
 use super::ctx::Ctx;
-use super::extents::{effects_frame, mask_k, mask_vals, shapeless_stroke_bounds};
+use super::extents::{effects_frame, mask_k, mask_vals, recycle_mask, shapeless_stroke_bounds};
 use super::fx_cache::effect_maps;
 use super::{BlendMode, Buffer, Fill, Layer, LayerContent, Rect, Surface, advanced, blend, effects, psblend, shape_split};
 
@@ -339,6 +339,7 @@ pub(crate) fn composite_pixel_layer(layer: &Layer, surf: &Surface, backdrop: &mu
         }
         blend_span_fill(dst, &row, rect.x0, y, layer.blend, layer.opacity, layer.fill_opacity, gamma);
     }
+    recycle_mask(mv);
 }
 
 pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer, cx: &Ctx, scope: advanced::Scope) {
@@ -389,6 +390,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
                     [0.0; 4]
                 };
             }
+            recycle_mask(mv);
         }
         // A Frame's stroke over the frame's content, at the group's opacity.
         if let Some(stroke) = shape_split::frame_stroke(layer, cx.canvas, cx.depth) {
@@ -425,9 +427,10 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
     if let LayerContent::Adjustment(adj) = &layer.content {
         let mv = mask_vals(layer, rect, cx);
         if mv.as_ref().is_some_and(|values| values.iter().all(|&value| opacity * value <= 0.0)) {
+            recycle_mask(mv);
             return;
         }
-        let mut adjusted = scratch_buffer(rect);
+        let mut adjusted = Buffer::transparent(rect);
         adjusted.px.copy_from_slice(&backdrop.px);
         cx.apply_adjustment(adj, &mut adjusted);
         // Clipped layers onto an adjustment are uncommon; they composite atop the adjusted result.
@@ -455,7 +458,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
                 None => blend_back(&mut backdrop.px, &adjusted.px, std::iter::repeat(k), layer.blend, fill),
             }
         }
-        recycle_buffer(adjusted);
+        recycle_mask(mv);
         return;
     }
 
@@ -469,6 +472,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
         if let (Some(m), Some(b)) = (&hide, &before) {
             advanced::apply_hiding_mask(backdrop, b, m);
         }
+        recycle_mask(hide);
         return;
     }
     if let Some((mut content, stroke, mask)) = shape_parts(layer, clipped, rect, cx) {
@@ -478,6 +482,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
             p[3] *= mask_k(&mask, i);
         }
         blend_layer_into(backdrop, &content, layer, cx, 1.0);
+        recycle_mask(mask);
         return;
     }
     if !matches!(layer.content, LayerContent::Group(_) | LayerContent::Fill(_) | LayerContent::Adjustment(_))
@@ -512,7 +517,6 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
     let Some(mut content) = render_content(layer, rect, cx) else { return };
     advanced::composite_clipped(clipped, &mut content, cx);
     blend_layer_into(backdrop, &content, layer, cx, text_gamma(layer));
-    recycle_buffer(content);
 }
 
 /// A layer with effects (and its clipping group) onto `backdrop`.
@@ -521,7 +525,7 @@ fn composite_layer_effects(layer: &Layer, clipped: &[Layer], backdrop: &mut Buff
     // Neighbourhoods are already captured by the full-region effect maps;
     // content and effect application only need the output rectangle.
     // A stroked shape's vector stroke stays above its clipped layers and interior effects.
-    let (mut content, vstroke) = match split_parts(layer, rect, cx) {
+    let (mut content, parts) = match split_parts(layer, rect, cx) {
         Some((fill, stroke, mask)) => (fill, Some((stroke, mask))),
         None => {
             let Some(content) = render_content(layer, rect, cx) else { return };
@@ -529,9 +533,12 @@ fn composite_layer_effects(layer: &Layer, clipped: &[Layer], backdrop: &mut Buff
         }
     };
     advanced::composite_clipped(clipped, &mut content, cx);
-    let vstroke = vstroke.as_ref().map(|(s, m)| effects::VectorStroke { stroke: s, mask: m.as_deref() });
+    let vstroke = parts.as_ref().map(|(s, m)| effects::VectorStroke { stroke: s, mask: m.as_deref() });
     let maps = effect_maps(layer, rect, cx);
     effects::composite_with_effects_prepared(layer, &content, backdrop, &maps, effects_frame(layer, cx.canvas), cx.patterns, vstroke);
+    if let Some((_, mask)) = parts {
+        recycle_mask(mask);
+    }
 }
 
 /// The coverage-mixing gamma of a layer: the text blending gamma
@@ -605,6 +612,7 @@ fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
                 p[c] += (bl[c] - p[c]) * k;
             }
         }
+        recycle_mask(mv);
         return;
     }
     if effects::has_effects(layer) {
@@ -615,21 +623,28 @@ fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
         let hide = advanced::hiding_mask(layer, rect, cx);
         let src = advanced::effects_source(layer);
         let layer = src.as_ref();
-        let (content, vstroke) = match split_parts(layer, rect, cx) {
+        let (content, parts) = match split_parts(layer, rect, cx) {
             Some((fill, stroke, mask)) => (fill, Some((stroke, mask))),
             None => {
-                let Some(content) = render_content(layer, rect, cx) else { return };
+                let Some(content) = render_content(layer, rect, cx) else {
+                    recycle_mask(hide);
+                    return;
+                };
                 (content, None)
             }
         };
-        let vstroke = vstroke.as_ref().map(|(s, m)| effects::VectorStroke { stroke: s, mask: m.as_deref() });
+        let vstroke = parts.as_ref().map(|(s, m)| effects::VectorStroke { stroke: s, mask: m.as_deref() });
         let mut opaque = Buffer { rect, px: base.px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect() };
         let maps = effect_maps(layer, rect, cx);
         effects::composite_with_effects_prepared(layer, &content, &mut opaque, &maps, effects_frame(layer, cx.canvas), cx.patterns, vstroke);
+        if let Some((_, mask)) = parts {
+            recycle_mask(mask);
+        }
         if let Some(m) = &hide {
             let plain = Buffer { rect, px: base.px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect() };
             advanced::apply_hiding_mask(&mut opaque, &plain, m);
         }
+        recycle_mask(hide);
         for (p, o) in base.px.iter_mut().zip(&opaque.px) {
             if p[3] > 0.0 {
                 *p = [o[0], o[1], o[2], p[3]];
@@ -689,6 +704,7 @@ fn blend_layer_into(backdrop: &mut Buffer, src: &Buffer, layer: &Layer, cx: &Ctx
         let alpha = (s[3] / m).clamp(0.0, 1.0);
         *b = psblend::composite_fill(mode, *b, [s[0], s[1], s[2], m], opacity, fill * alpha, gamma);
     }
+    recycle_mask(mv);
 }
 
 /// [`blend_into_g`] for a layer's own `opacity` and `fill`: Fill is part of the blend for

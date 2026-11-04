@@ -158,7 +158,7 @@ pub fn save_for_web_with_writer(s: &mut Session, p: &Value, write: &mut dyn FnMu
 fn remember_web_settings(s: &mut Session, cmd: &str, settings: &Value) {
     let mut m = settings.clone();
     if let Some(o) = m.as_object_mut() {
-        for k in ["path", "dir", "trustedSliceHtml"] {
+        for k in ["path", "dir", "folder", "trustedSliceHtml"] {
             o.remove(k);
         }
     }
@@ -203,6 +203,10 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
         .collect();
     let single = p.get("path").and_then(Value::as_str).filter(|v| !v.is_empty());
     let dir = p.get("dir").and_then(Value::as_str).filter(|v| !v.is_empty());
+    // `folder` (with no `path` or `dir`): the whole image into that folder under the document's
+    // own name, so an action recorded with the suggested name saves each document it is played
+    // on under that document's name, as in Photoshop (#5305).
+    let folder = p.get("folder").and_then(Value::as_str).filter(|_| single.is_none() && dir.is_none());
     let mut last_web = p.clone();
     // A trusted-markup decision applies to this export only, never to another document opened
     // with the dialog's remembered settings.
@@ -210,11 +214,21 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
         last.remove("trustedSliceHtml");
     }
     // Estimate only (the dialog's annotations): the whole image, or each chosen slice.
-    if single.is_none() && dir.is_none() {
+    if single.is_none() && dir.is_none() && folder.is_none() {
         let o = optimize(&buf.px, bw, wdoc.bounds(), &st, icc, exif, xmp.as_deref(), dpi, false)?;
         return Ok(
             json!({"format": o.ext, "bytes": o.bytes.len(), "width": o.width, "height": o.height, "colors": o.colors, "colorTable": o.color_table.iter().map(|c| rgb_hex(*c)).collect::<Vec<_>>(), "transparentIndex": o.transparent_index}),
         );
+    }
+    if let Some(folder) = folder {
+        let o = optimize(&buf.px, bw, wdoc.bounds(), &st, icc, exif, xmp.as_deref(), dpi, false)?;
+        let name = format!("{}.{}", portable_generated_stem(slices::base_name(&doc)), o.ext);
+        write(&web_derived_path(folder, &name, native_paths)?, &o.bytes)?;
+        remember_web_settings(s, cmd, &last_web);
+        s.file_menu.last_web = Some(last_web);
+        crate::automate_cmds::fire_event(s, "export");
+        let path = join(folder, &name);
+        return Ok(json!({"files": [path], "bytes": o.bytes.len(), "width": o.width, "height": o.height, "colors": o.colors, "warnings": warnings}));
     }
     if let Some(path) = single.filter(|_| dir.is_none() && (all.len() == 1 || p.get("slices").is_none())) {
         let o = optimize(&buf.px, bw, wdoc.bounds(), &st, icc, exif, xmp.as_deref(), dpi, false)?;

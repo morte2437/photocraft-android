@@ -37,7 +37,7 @@ fn edited(s: &Session, base: &Fill, p: &Value) -> Result<(Fill, Option<Pattern>)
     let (mut scale, mut angle, mut link, mut phase, mut pat) = (*scale, *angle, *link, *phase, None);
     if let Some(v) = p.get("pattern").filter(|v| !v.is_null()) {
         let key = v.as_str().filter(|k| !k.is_empty()).ok_or_else(|| bad("`pattern` is a pattern id or name"))?;
-        pat = Some(crate::pattern_cmds::resolve(s, key).ok_or_else(|| bad(format!("no pattern \"{key}\" (see pattern.list)")))?);
+        pat = Some(crate::pattern_cmds::resolve_or_named(s, key, p).map_err(bad)?);
     }
     if let Some(v) = num("scale", SCALE_RANGE)? {
         scale = v / 100.0;
@@ -67,8 +67,8 @@ fn edited(s: &Session, base: &Fill, p: &Value) -> Result<(Fill, Option<Pattern>)
 
 /// The target layer and the fill `p` gives it, checked against the active document.
 fn target(s: &Session, p: &Value) -> Result<(photocraft_doc::LayerId, Fill, Fill, Option<Pattern>)> {
-    if !p.is_object() || p.get("layer").is_some_and(|v| v.as_u64().is_none()) {
-        return Err(bad("params must be an object and layer an unsigned id"));
+    if !p.is_object() {
+        return Err(bad("params must be an object"));
     }
     let st = s.active().ok_or(EngineError::NoDocument)?;
     if let Some(document) = p.get("document")
@@ -139,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Pattern Fill…",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (default active; a Pattern Fill layer),"document":id? (reject a stale dialog),"pattern":id|name?,"scale":1..1000?,"angle":-180..180?,"link":bool?,"phase":[x,y]? (Snap to Origin: [0,0])}; omitted values keep the layer's"##,
+        params: r##"{"layer":id|name? (default active; a Pattern Fill layer),"document":id? (reject a stale dialog),"pattern":id|name?,"patternName":name? (then `pattern` is an id; the name is used when no pattern has that id),"scale":1..1000?,"angle":-180..180?,"link":bool?,"phase":[x,y]? (Snap to Origin: [0,0])}; omitted values keep the layer's"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: set,
         journal: true,
@@ -163,6 +163,14 @@ mod tests {
     fn fill(s: &Session, id: LayerId) -> Fill {
         let LayerContent::Fill(f) = &s.active().unwrap().doc.layer(id).unwrap().content else { panic!("not a fill") };
         f.clone()
+    }
+
+    #[test]
+    fn named_nonactive_pattern_fill_can_be_edited() {
+        let (mut s, id) = session(8);
+        let name = s.active().unwrap().doc.layer(id).unwrap().name.clone();
+        s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
+        assert_eq!(s.execute(SET, json!({"layer": name, "scale": 125})).unwrap()["layer"], id.0);
     }
 
     #[test]

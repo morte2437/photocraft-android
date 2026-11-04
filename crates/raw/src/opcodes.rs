@@ -249,6 +249,11 @@ pub(crate) struct Opcodes {
 /// Those past the cap are named as not applied.
 const MAX_POLYNOMIALS: usize = 64;
 
+/// The most GainMap opcodes kept from one list, for the same reason: development applies every
+/// map to every pixel it covers, so the map count multiplies the whole image's work. Real files
+/// carry one per CFA plane (four).
+const MAX_GAIN_MAPS: usize = 64;
+
 /// Parses an opcode list.
 pub(crate) fn parse(list: &[u8]) -> Opcodes {
     let mut out = Opcodes::default();
@@ -259,7 +264,7 @@ pub(crate) fn parse(list: &[u8]) -> Opcodes {
         let start = at.saturating_add(16);
         let Some(params) = list.get(start..start.saturating_add(size as usize)) else { break };
         let applied = match id {
-            9 => gain_map(params).map(|m| out.gain_maps.push(m)).is_some(),
+            9 if out.gain_maps.len() < MAX_GAIN_MAPS => gain_map(params).map(|m| out.gain_maps.push(m)).is_some(),
             8 if out.polynomials.len() < MAX_POLYNOMIALS => map_polynomial(params).map(|p| out.polynomials.push(p)).is_some(),
             _ => false,
         };
@@ -321,6 +326,15 @@ mod tests {
         assert!((m.at(&m.row(1.0, 0), 1.0) - 4.0).abs() < 1e-6);
         // Outside the grid clamps.
         assert!((m.at(&m.row(-3.0, 0), 9.0) - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gain_maps_past_the_cap_are_named_not_applied() {
+        let map = gain_map_params([0, 0, 10, 10], 1, &[[1.0, 2.0], [3.0, 4.0]]);
+        let b = list(&vec![(9, map); MAX_GAIN_MAPS + 1]);
+        let Opcodes { gain_maps, skipped, .. } = parse(&b);
+        assert_eq!(gain_maps.len(), MAX_GAIN_MAPS);
+        assert_eq!(skipped, vec!["GainMap".to_string()]);
     }
 
     #[test]

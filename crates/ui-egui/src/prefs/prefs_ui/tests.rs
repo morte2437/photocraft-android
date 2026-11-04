@@ -1444,8 +1444,8 @@ fn unimplemented_preferences_are_hidden_from_the_dialog() {
     let values = prefs::Preferences::default().to_json();
     assert!(has_visible_fields(&values, "general"));
     assert!(has_visible_fields(&values, "fileHandling"));
-    // Every setting of this section is still unimplemented.
-    assert!(!has_visible_fields(&values, "scratchDisks"), "scratchDisks");
+    assert!(has_visible_fields(&values, "scratchDisks"));
+    assert!(!prefs::is_hidden("scratchDisks.disks"));
     // Allow Agent Control and Control Port are read at launch (apps/photocraft main.rs).
     assert!(has_visible_fields(&values, "integrations"));
     assert!(!prefs::is_hidden("integrations.allowAgentControl"));

@@ -59,7 +59,10 @@ pub(super) fn shape_geometry(o: &ToolOptions, tool: Tool, start: [f64; 2], end: 
         if dx.hypot(dy) < 1.0 {
             return None;
         }
-        json!({"kind": "line", "from": start, "to": [start[0] + dx, start[1] + dy], "weight": o.line_weight.max(1.0)})
+        json!({"kind": "line", "from": start, "to": [start[0] + dx, start[1] + dy], "weight": o.line_weight.max(1.0),
+            "arrowStart": o.arrow_start, "arrowEnd": o.arrow_end,
+            "arrowWidth": o.arrow_width, "arrowLength": o.arrow_length,
+            "arrowConcavity": o.arrow_concavity})
     } else {
         let (mut w, mut h) = (end[0] - start[0], end[1] - start[1]);
         if mods.shift {

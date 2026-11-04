@@ -31,6 +31,10 @@ pub enum PsdError {
     /// A dimension, count or allocation exceeded the configured safety limits.
     #[error("limit exceeded: {0}")]
     LimitExceeded(&'static str),
+    /// A buffer could not be allocated: the system has no memory for it. Unlike
+    /// [`PsdError::LimitExceeded`] the data may be valid, so the caller can retry smaller.
+    #[error("out of memory: {0}")]
+    OutOfMemory(&'static str),
     /// Structurally invalid data.
     #[error("invalid data: {0}")]
     Invalid(String),
@@ -48,6 +52,23 @@ pub enum PsdError {
 impl PsdError {
     pub(crate) fn invalid(msg: impl Into<String>) -> Self {
         PsdError::Invalid(msg.into())
+    }
+
+    /// The error a streaming write ([`crate::PsdFile::write_to`]) failed with: the serializer's
+    /// own error when it was one, otherwise the I/O error's text.
+    pub(crate) fn from_io(e: std::io::Error) -> Self {
+        let text = e.to_string();
+        match e.into_inner().map(|inner| inner.downcast::<PsdError>()) {
+            Some(Ok(e)) => *e,
+            _ => PsdError::Invalid(format!("write failed: {text}")),
+        }
+    }
+}
+
+/// A serializer error inside a streaming write ([`crate::PsdFile::write_to`]), as `InvalidData`.
+impl From<PsdError> for std::io::Error {
+    fn from(e: PsdError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
     }
 }
 

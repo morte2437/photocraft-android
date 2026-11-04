@@ -95,5 +95,5 @@ pub fn purge() -> usize {
 pub(super) fn surface_bytes(s: &Surface) -> usize {
     // Tiles shared with the document (or another stage) are charged anyway: the cache is what
     // keeps them alive once the document moves on.
-    s.tiles().fold(s.default_bytes().len(), |n, (_, t)| n.saturating_add(t.bytes().len()))
+    s.tiles().fold(s.default_bytes().len(), |n, (_, t)| n.saturating_add(t.len()))
 }

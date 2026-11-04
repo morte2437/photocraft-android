@@ -3,10 +3,10 @@
 use std::borrow::Cow;
 
 use crate::blend::BlendMode;
-use crate::compression::{Compression, PlaneLayout, decode_planes, encode_planes, put_widened_rle, rle_widening};
+use crate::compression::{Compression, PlaneLayout, decode_planes, encode_planes, rle_widening_len};
 use crate::error::{PsdError, Result};
 use crate::header::{MAX_DIMENSION, Version};
-use crate::io::{Reader, WriteExt, decode_legacy_name, read_pascal, write_pascal};
+use crate::io::{Reader, Sink, WriteExt, append_with, decode_legacy_name, read_pascal, write_pascal};
 use crate::source::Stored;
 use crate::tagged::{BlockData, SectionDivider, SectionType, TaggedBlock, read_blocks, uses_long_length, write_blocks};
 
@@ -692,7 +692,7 @@ impl LayerRecord {
         for c in &self.channels {
             out.put_i16(c.id);
             let rows = self.widened_rows(c, widen)?;
-            let grown = if rows == 0 { 0 } else { rle_widening(&c.encoded()?, rows)? };
+            let grown = if rows == 0 { 0 } else { rle_widening_len(c.encoded_len(), rows)? };
             out.put_len(c.stored_len().saturating_add(grown), version.is_psb())?;
         }
         out.put(b"8BIM");
@@ -783,7 +783,7 @@ impl LayerInfo {
         for l in &self.layers {
             for c in l.channels.iter().filter(|c| c.compression.is_some()) {
                 let rows = l.widened_rows(c, widen)?;
-                let grown = if rows == 0 { 0 } else { rle_widening(&c.encoded()?, rows)? };
+                let grown = if rows == 0 { 0 } else { rle_widening_len(c.encoded_len(), rows)? };
                 n = n.saturating_add(2).saturating_add(c.encoded_len()).saturating_add(grown);
             }
         }
@@ -813,6 +813,8 @@ impl LayerInfo {
 
     /// Bytes of channel data and their compression fields: the part of the body worth reserving up
     /// front (the records are small next to the pixels). Saturates instead of overflowing.
+    /// (Saves reserve their exact length now, #6607; the tests still check it as a lower bound.)
+    #[cfg(test)]
     pub(crate) fn channel_data_len(&self) -> usize {
         self.layers
             .iter()
@@ -823,24 +825,42 @@ impl LayerInfo {
 
     /// Serializes the body without any trailing padding (the padding field is ignored).
     pub(crate) fn write_unpadded(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
-        self.write_unpadded_as(out, version, false)
+        append_with(out, |s| self.write_unpadded_to(s, version, false))
     }
 
-    /// [`Self::write_unpadded`], widening the RLE count tables of a PSD model written as PSB
-    /// (`widen`) on the way out.
-    fn write_unpadded_as(&self, out: &mut Vec<u8>, version: Version, widen: bool) -> Result<()> {
+    /// Serializes the body (without a length field).
+    #[cfg(test)]
+    pub(crate) fn write_body(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
+        append_with(out, |s| self.write_body_to(s, version, false))
+    }
+
+    /// [`Self::write_unpadded`] to a streaming [`Sink`], widening the RLE count tables of a PSD
+    /// model written as PSB (`widen`) on the way out: the records are staged, the channel data
+    /// goes straight through (#6607).
+    pub(crate) fn write_unpadded_to<W: std::io::Write + std::io::Seek + ?Sized>(
+        &self,
+        out: &mut Sink<'_, W>,
+        version: Version,
+        widen: bool,
+    ) -> std::io::Result<()> {
         let n = i16::try_from(self.layers.len()).map_err(|_| PsdError::LimitExceeded("more than 32767 layers"))?;
-        out.put_i16(if self.merged_alpha { -n } else { n });
+        out.small(|o| {
+            o.put_i16(if self.merged_alpha { -n } else { n });
+            Ok(())
+        })?;
         for l in &self.layers {
-            l.write(out, version, widen)?;
+            out.small(|o| l.write(o, version, widen))?;
         }
         for l in &self.layers {
             for c in &l.channels {
                 if let Some(comp) = c.compression {
-                    out.put_u16(comp.as_u16());
+                    out.small(|o| {
+                        o.put_u16(comp.as_u16());
+                        Ok(())
+                    })?;
                     match l.widened_rows(c, widen)? {
-                        0 => out.put(&c.encoded()?),
-                        rows => put_widened_rle(out, &c.encoded()?, rows)?,
+                        0 => out.put_encoded(&c.data, c.stored.as_ref())?,
+                        rows => out.put_widened_encoded(&c.data, c.stored.as_ref(), rows)?,
                     }
                 }
             }
@@ -848,25 +868,20 @@ impl LayerInfo {
         Ok(())
     }
 
-    /// Serializes the body (without a length field).
-    #[cfg(test)]
-    pub(crate) fn write_body(&self, out: &mut Vec<u8>, version: Version) -> Result<()> {
-        self.write_body_as(out, version, false)
-    }
-
-    /// [`Self::write_body`], widening RLE count tables when `widen` (see [`Self::write_unpadded_as`]).
-    pub(crate) fn write_body_as(&self, out: &mut Vec<u8>, version: Version, widen: bool) -> Result<()> {
-        let start = out.len();
-        self.write_unpadded_as(out, version, widen)?;
+    /// The body (without a length field) to a streaming [`Sink`], widening RLE count tables when
+    /// `widen` (see [`Self::write_unpadded_to`]).
+    pub(crate) fn write_body_to<W: std::io::Write + std::io::Seek + ?Sized>(
+        &self,
+        out: &mut Sink<'_, W>,
+        version: Version,
+        widen: bool,
+    ) -> std::io::Result<()> {
+        let start = out.pos();
+        self.write_unpadded_to(out, version, widen)?;
         match &self.padding {
             Some(p) => out.put(p),
-            None => {
-                if (out.len() - start) % 2 == 1 {
-                    out.put_u8(0);
-                }
-            }
+            None => out.zeros(((out.pos() - start) % 2) as usize),
         }
-        Ok(())
     }
 }
 
