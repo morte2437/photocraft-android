@@ -70,20 +70,23 @@ fn obj<'a>(d: &'a mut Descriptor, key: &str) -> &'a mut Descriptor {
 }
 
 #[test]
-fn both_event_ids_and_all_shapes_keep_complete_unchanged_descriptors() {
-    for style in ["Lnr ", "Rdl ", "Angl", "Rflc", "Dmnd"] {
-        for method in ["Gcls", "Perc", "Lnr ", "Smoo"] {
-            for changed in [false, true] {
-                for event in [AtnEvent::Code(*b"Grdn"), AtnEvent::name("gradientClassEvent")] {
-                    let d = fixture(style, method, changed);
-                    let loaded = atn_cmds::import(&recording(event, d.clone())).unwrap();
-                    assert!(loaded.unsupported.is_empty(), "{style} {method}");
-                    let action = &loaded.actions[0];
-                    assert_eq!(action.steps[0].0, "paint.gradient");
-                    assert_eq!(saved(action).descriptor.unwrap().to_bytes(), d.to_bytes());
-                    assert_eq!(action.steps[0].1["dither"], false, "omitted Dthr is off, unlike native default");
-                    assert_eq!(action.steps[0].1["opacity"], if changed { json!(54.5) } else { json!(100) });
-                    assert_eq!(action.steps[0].1["transparency"], if changed { json!([[0, 20], [1, 80]]) } else { json!([]) });
+fn both_event_ids_and_top_level_classes_keep_complete_unchanged_descriptors() {
+    for class in ["null", "Grdn"] {
+        for style in ["Lnr ", "Rdl ", "Angl", "Rflc", "Dmnd"] {
+            for method in ["Gcls", "Perc", "Lnr ", "Smoo"] {
+                for changed in [false, true] {
+                    for event in [AtnEvent::Code(*b"Grdn"), AtnEvent::name("gradientClassEvent")] {
+                        let mut d = fixture(style, method, changed);
+                        d.class_id = Id::new(class);
+                        let loaded = atn_cmds::import(&recording(event, d.clone())).unwrap();
+                        assert!(loaded.unsupported.is_empty(), "{style} {method}");
+                        let action = &loaded.actions[0];
+                        assert_eq!(action.steps[0].0, "paint.gradient");
+                        assert_eq!(saved(action).descriptor.unwrap().to_bytes(), d.to_bytes());
+                        assert_eq!(action.steps[0].1["dither"], false, "omitted Dthr is off, unlike native default");
+                        assert_eq!(action.steps[0].1["opacity"], if changed { json!(54.5) } else { json!(100) });
+                        assert_eq!(action.steps[0].1["transparency"], if changed { json!([[0, 20], [1, 80]]) } else { json!([]) });
+                    }
                 }
             }
         }
@@ -135,6 +138,9 @@ fn malformed_unknown_and_unrepresentable_descriptors_stay_whole() {
     let base = fixture("Lnr ", "Gcls", true);
     let mut bad = Vec::new();
     let mut d = base.clone();
+    d.class_id = Id::new("UnknownGradient");
+    bad.push(d);
+    let mut d = base.clone();
     d.items.retain(|(k, _)| !k.is("Grad"));
     bad.push(d);
     let mut d = base.clone();
@@ -164,6 +170,9 @@ fn malformed_unknown_and_unrepresentable_descriptors_stay_whole() {
     let mut d = base.clone();
     replace(obj(&mut d, "From"), "Hrzn", D::UnitFloat { unit: *b"#Pxl", value: f64::NAN });
     bad.push(d);
+    let mut d = base.clone();
+    replace(obj(&mut d, "From"), "Hrzn", pct(1.0));
+    bad.push(d);
     for (key, value) in [("Mdpn", D::Integer(25)), ("Type", enm("Clry", "FrgC")), ("Lctn", D::Integer(-1))] {
         let mut d = base.clone();
         let D::List(stops) = &mut obj(&mut d, "Grad").items.iter_mut().find(|(k, _)| k.is("Clrs")).unwrap().1 else { panic!() };
@@ -192,8 +201,13 @@ fn unsupported_native_targets_and_damaged_origins_are_refused() {
         ("target", json!("mask")),
         ("gradient", json!("current preset")),
         ("method", json!("unknown")),
+        ("style", json!("unknown")),
+        ("style", json!(42)),
         ("__atnClassicGradient", json!("not base64")),
+        ("__atnClassicGradient", json!("A".repeat(128 * 1024 + 1))),
         ("stops", json!([[0, "foreground"], [1, "background"]])),
+        ("stops", json!([[0, "#000000"]])),
+        ("stops", json!([[0.1, "#000000"], [1, "#ffffff"]])),
     ] {
         let mut action = loaded.actions[0].clone();
         action.steps[0].1[key] = value;
@@ -204,37 +218,99 @@ fn unsupported_native_targets_and_damaged_origins_are_refused() {
 }
 
 #[test]
-fn recorded_gradients_match_native_pixels_and_undo_at_each_depth() {
+fn colour_and_transparency_stop_counts_have_supported_and_refused_boundaries() {
+    for key in ["Clrs", "Trns"] {
+        for count in [1, 2, 64, 65] {
+            let mut d = fixture("Lnr ", "Gcls", true);
+            let stops = (0..count)
+                .map(|i| {
+                    let t = i * 4096 / (count - 1).max(1);
+                    if key == "Clrs" { color(t, [32.0, 96.0, 224.0]) } else { opacity(t, 50.0) }
+                })
+                .collect();
+            replace(obj(&mut d, "Grad"), key, D::List(stops));
+            let bytes = d.to_bytes();
+            let loaded = imported(d);
+            assert_eq!(loaded.unsupported.is_empty(), (2..=64).contains(&count), "{key} {count}");
+            assert_eq!(saved(&loaded.actions[0]).descriptor.unwrap().to_bytes(), bytes);
+        }
+    }
+}
+
+#[test]
+fn omitted_transparency_and_dither_use_recorded_defaults_during_playback() {
     for depth in [8, 16, 32] {
-        for (style, native_style) in [("Lnr ", "linear"), ("Rdl ", "radial"), ("Angl", "angle"), ("Rflc", "reflected"), ("Dmnd", "diamond")] {
-            for (method, native_method) in [("Gcls", "classic"), ("Perc", "perceptual"), ("Lnr ", "linear"), ("Smoo", "smooth")] {
-                let loaded = imported(fixture(style, method, true));
-                assert!(loaded.unsupported.is_empty());
-                let mut actual = Session::new();
-                let mut control = Session::new();
-                for s in [&mut actual, &mut control] {
-                    s.execute("file.new", json!({"width":8,"height":4,"depth":depth,"background":"#204060"})).unwrap();
+        for dither in [false, true] {
+            let mut d = fixture("Lnr ", "Gcls", false);
+            d.class_id = Id::new("Grdn");
+            if dither {
+                d.items.push((Id::new("Dthr"), D::Boolean(true)));
+            }
+            let loaded = imported(d);
+            assert!(loaded.unsupported.is_empty());
+            let mut actual = Session::new();
+            let mut control = Session::new();
+            for s in [&mut actual, &mut control] {
+                s.execute("file.new", json!({"width":8,"height":4,"depth":depth,"background":"#204060"})).unwrap();
+            }
+            actual.actions.list = loaded.actions;
+            actual.execute("actions.play", json!({"action":0})).unwrap();
+            // The descriptor contains non-opaque Trns, but omitted UsMs disables them.
+            // Dthr=false is explicit, overriding the native command's true default.
+            control
+                .execute(
+                    "paint.gradient",
+                    json!({"from":[1,1],"to":[6,2],"style":"linear","method":"classic","smoothness":100,
+                "stops":[[0,"#0020ff"],[1,"#ffe000"]],"transparency":[],"opacity":100,"mode":"Normal","reverse":false,"dither":dither}),
+                )
+                .unwrap();
+            let a = actual.active().unwrap().doc.layers[0].surface().unwrap();
+            let b = control.active().unwrap().doc.layers[0].surface().unwrap();
+            for y in 0..4 {
+                for x in 0..8 {
+                    assert_eq!(a.pixel(x, y), b.pixel(x, y), "{depth} dither={dither}");
                 }
-                let before = actual.active().unwrap().doc.clone();
-                actual.actions.list = loaded.actions;
-                actual.execute("actions.play", json!({"action":0})).unwrap();
-                control
-                    .execute(
-                        "paint.gradient",
-                        json!({"from":[1,1],"to":[6,2],"style":native_style,"method":native_method,"smoothness":100,
-                    "stops":[[0,"#0020ff"],[1,"#ffe000"]],"transparency":[[0,20],[1,80]],"opacity":54.5,"mode":"Multiply","reverse":true,"dither":false}),
-                    )
-                    .unwrap();
-                let pixels = |s: &Session| s.active().unwrap().doc.layers[0].surface().unwrap().clone();
-                let (a, b) = (pixels(&actual), pixels(&control));
-                for y in 0..4 {
-                    for x in 0..8 {
-                        assert_eq!(a.pixel(x, y), b.pixel(x, y), "{depth} {style} {method} ({x},{y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn recorded_gradients_match_native_pixels_and_undo_at_each_depth() {
+    for class in ["null", "Grdn"] {
+        for depth in [8, 16, 32] {
+            for (style, native_style) in [("Lnr ", "linear"), ("Rdl ", "radial"), ("Angl", "angle"), ("Rflc", "reflected"), ("Dmnd", "diamond")] {
+                for (method, native_method) in [("Gcls", "classic"), ("Perc", "perceptual"), ("Lnr ", "linear"), ("Smoo", "smooth")] {
+                    let mut descriptor = fixture(style, method, true);
+                    descriptor.class_id = Id::new(class);
+                    let loaded = imported(descriptor);
+                    assert!(loaded.unsupported.is_empty());
+                    let mut actual = Session::new();
+                    let mut control = Session::new();
+                    for s in [&mut actual, &mut control] {
+                        s.execute("file.new", json!({"width":8,"height":4,"depth":depth,"background":"#204060"})).unwrap();
                     }
+                    let before = actual.active().unwrap().doc.clone();
+                    actual.actions.list = loaded.actions;
+                    actual.execute("actions.play", json!({"action":0})).unwrap();
+                    control
+                        .execute(
+                            "paint.gradient",
+                            json!({"from":[1,1],"to":[6,2],"style":native_style,"method":native_method,"smoothness":100,
+                    "stops":[[0,"#0020ff"],[1,"#ffe000"]],"transparency":[[0,20],[1,80]],"opacity":54.5,"mode":"Multiply","reverse":true,"dither":false}),
+                        )
+                        .unwrap();
+                    let pixels = |s: &Session| s.active().unwrap().doc.layers[0].surface().unwrap().clone();
+                    let (a, b) = (pixels(&actual), pixels(&control));
+                    for y in 0..4 {
+                        for x in 0..8 {
+                            assert_eq!(a.pixel(x, y), b.pixel(x, y), "{depth} {style} {method} ({x},{y})");
+                        }
+                    }
+                    assert_ne!(a.pixel(3, 1), before.layers[0].surface().unwrap().pixel(3, 1), "non-vacuous paint");
+                    assert!(actual.undo());
+                    assert_eq!(actual.active().unwrap().doc, before);
                 }
-                assert_ne!(a.pixel(3, 1), before.layers[0].surface().unwrap().pixel(3, 1), "non-vacuous paint");
-                assert!(actual.undo());
-                assert_eq!(actual.active().unwrap().doc, before);
             }
         }
     }

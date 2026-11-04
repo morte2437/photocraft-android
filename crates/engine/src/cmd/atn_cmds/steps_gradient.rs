@@ -87,7 +87,9 @@ fn location(d: &Descriptor, previous: &mut f64) -> Option<f64> {
 
 /// Decode every accepted setting; no source metadata is ever executed.
 fn params(d: &Descriptor) -> Option<Value> {
-    shape(d, "null", &["From", "T   ", "Opct", "Md  ", "Type", "Rvrs", "Dthr", "UsMs", "gradientsInterpolationMethod", "Grad"])?;
+    // Recordings use the event class; PhotoCraft's canonical exports use null.
+    let class = if d.class_id.is("Grdn") { "Grdn" } else { "null" };
+    shape(d, class, &["From", "T   ", "Opct", "Md  ", "Type", "Rvrs", "Dthr", "UsMs", "gradientsInterpolationMethod", "Grad"])?;
     let style = enumeration(d.get("Type")?, "GrdT")?;
     let style = STYLES.iter().find(|(ps, _)| style.is(ps))?.1;
     // No omitted-method default was established by the recorded-tools reference.
