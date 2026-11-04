@@ -120,19 +120,48 @@ fn the_preset_dropdown_lists_selection_while_the_frame_is_the_selections() {
     assert!(selection.rect().top() < presets.rect().top(), "Selection sits above the Ratio presets");
     assert_eq!(selection.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "Selection is checked");
 
-    // Picking it is a label, not a preset: the frame and the ratio stay as they are (#10872).
-    let before = (h.state().ui.crop_rect, h.state().ui.tool_options.crop_ratio.clone());
-    h.get_by_label("Selection").click();
-    h.run();
-    assert_eq!((h.state().ui.crop_rect, h.state().ui.tool_options.crop_ratio.clone()), before, "choosing Selection changes neither the frame nor the ratio");
-
-    // The pick closes the list; reopen it, so the edited-frame check below looks at a drawn list.
-    h.get_by_role(Role::ComboBox).click();
-    h.run();
-    assert!(drawn(&h).iter().any(|t| t == "Selection"), "reopened list: {:?}", drawn(&h));
+    // The frame being edited takes the entry away.
     h.state_mut().crop.default_frame = false;
     h.run();
     assert!(!drawn(&h).iter().any(|t| t == "Selection"), "edited frame: {:?}", drawn(&h));
+}
+
+/// Choosing "Selection" (measured in the reference application, #10872): the frame stays, the
+/// crop becomes live with free Ratio, and the entry is gone.
+#[test]
+fn choosing_selection_makes_the_frame_a_live_crop() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+
+    let mut selected = app();
+    selected.run("select.rect", json!({"x": 50, "y": 20, "width": 100, "height": 60})).expect("select");
+    crop_ui::ensure_frame(&mut selected);
+    let frame = selected.ui.crop_rect;
+    assert_eq!(frame, Some([50.0, 20.0, 150.0, 80.0]));
+    let mut h = dropdown_harness(selected);
+    h.run();
+    h.get_by_role(Role::ComboBox).click();
+    h.run();
+    h.get_by_label("Selection").click();
+    h.run();
+    let app = h.state();
+    assert_eq!(app.ui.crop_rect, frame, "the frame stays");
+    assert!(app.ui.tool_options.crop_ratio.is_empty(), "free Ratio");
+    assert!(!app.crop.default_frame && app.crop.editing, "a live crop");
+    assert!(!crop_presets::shows_selection(app), "the entry is gone");
+}
+
+/// A ratio picked on the untouched selection frame replaces it with the largest centred frame of
+/// that ratio on the canvas, not one fitted into the selection (measured, #10872).
+#[test]
+fn a_ratio_picked_on_the_selection_frame_fits_the_canvas() {
+    let mut selected = app();
+    selected.run("select.rect", json!({"x": 10, "y": 10, "width": 60, "height": 40})).expect("select");
+    crop_ui::ensure_frame(&mut selected);
+    selected.ui.tool_options.crop_ratio = "1:1".into();
+    crop_ui::apply_ratio(&mut selected);
+    assert_eq!(selected.ui.crop_rect, Some([50.0, 0.0, 150.0, 100.0]));
+    assert!(!crop_presets::shows_selection(&selected));
 }
 
 /// A picked ratio takes the check mark instead of the temporary entry.

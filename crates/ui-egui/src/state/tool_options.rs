@@ -170,7 +170,7 @@ pub struct ToolOptions {
     pub crop_custom_ratio_height: f32,
     #[serde(default = "yes")]
     pub crop_delete: bool,
-    /// Crop options bar › Fill: false = Background (Default), true = Content-Aware Fill (the area a
+    /// Crop options bar › Fill: false = Background (default), true = Content-Aware Fill (the area a
     /// rotated or extending crop uncovers is filled from its surroundings, #3823).
     #[serde(default)]
     pub crop_content_aware: bool,

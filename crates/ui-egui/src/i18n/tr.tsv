@@ -3375,6 +3375,7 @@ cameraRaw	Color	Renk
 	Conditional Mode Change	Koşullu Mod Değişikliği
 	Background (Default)	Arka plan (varsayılan)
 	Background (default)	Arka plan (varsayılan)
+	Transparent (default)	Saydam (varsayılan)
 	Content-Aware Fill	İçeriğe Duyarlı Dolgu
 	Convert Frames > Video Layers	Kareleri Dönüştür > Video Katmanları
 	Convert to Linked	Bağlantılıya Dönüştür

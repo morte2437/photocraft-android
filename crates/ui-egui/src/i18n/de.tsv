@@ -3298,6 +3298,7 @@ curves	Smooth	Glätten
 @plural	{n} action|{n} actions	{n} Aktion|{n} Aktionen
 	Background (Default)	Hintergrund (Standard)
 	Background (default)	Hintergrund (Standard)
+	Transparent (default)	Transparent (Standard)
 	Content-Aware Fill	Inhaltsbasiert füllen
 	Include All Subfolders	Alle Unterordner einschließen
 	Auto Add/Delete	Autom. hinzuf./löschen

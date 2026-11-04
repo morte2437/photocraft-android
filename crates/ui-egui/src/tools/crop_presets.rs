@@ -195,8 +195,13 @@ pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 /// What picking a dropdown entry does; the Crop tool's canvas menu picks through it too.
 pub(crate) fn apply_choice(app: &mut PhotocraftApp, choice: Choice) {
     match choice {
-        // The frame is already the selection's: the entry is a label, not a preset (#10872).
-        Choice::Selection => {}
+        // Measured in the reference application (#10872): choosing it keeps the frame but makes
+        // it a live crop with free Ratio, as an edit does, so the entry goes away.
+        Choice::Selection => {
+            app.ui.tool_options.crop_ratio.clear();
+            crop_size::select_custom_ratio(&mut app.ui.tool_options);
+            crate::crop_ui::take_selection_frame(app);
+        }
         Choice::Builtin(k) => {
             app.ui.tool_options.crop_ratio = k;
             // A size preset or Front Image fills W x H x Resolution (#2443).

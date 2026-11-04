@@ -2900,6 +2900,7 @@ curves	Smooth	平滑
 @plural	{n} action|{n} actions	{n} 個動作
 	Background (Default)	背景（預設）
 	Background (default)	背景（預設）
+	Transparent (default)	透明（預設）
 	Content-Aware Fill	內容感知填滿
 	Include All Subfolders	包含所有子資料夾
 	Auto Add/Delete	自動增加/刪除

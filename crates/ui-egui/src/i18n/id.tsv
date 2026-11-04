@@ -3294,6 +3294,7 @@ curves	Smooth	Haluskan
 @plural	{n} action|{n} actions	{n} tindakan
 	Background (Default)	Background (Default)
 	Background (default)	Background (Default)
+	Transparent (default)	Transparan (bawaan)
 	Content-Aware Fill	Isi Content-Aware
 	Include All Subfolders	Sertakan semua subfolder
 	Auto Add/Delete	Tambah/Hapus Otomatis

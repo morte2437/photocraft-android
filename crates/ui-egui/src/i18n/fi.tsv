@@ -3201,6 +3201,7 @@ curves	Smooth	Tasoita
 @plural	{n} action|{n} actions	{n} toiminto|{n} toimintoa
 	Background (Default)	Tausta (oletus)
 	Background (default)	Tausta (oletus)
+	Transparent (default)	Läpinäkyvä (oletus)
 	Content-Aware Fill	Sisältötietoinen täyttö
 # Batch / Image Processor
 	Include All Subfolders	Sisällytä kaikki alikansiot

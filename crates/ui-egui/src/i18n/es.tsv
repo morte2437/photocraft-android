@@ -4196,6 +4196,7 @@ navigator	Zoom	Zoom
 @plural	{n} action|{n} actions	{n} acción|{n} acciones
 	Background (Default)	Fondo (predeterminado)
 	Background (default)	Fondo (predeterminado)
+	Transparent (default)	Transparente (predeterminado)
 	Include All Subfolders	Incluir todas las subcarpetas
 	Auto Add/Delete	Añadir/eliminar automáticamente
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	No actives también Imagen especular en Ajustes de impresión: las dos inversiones se anulan.

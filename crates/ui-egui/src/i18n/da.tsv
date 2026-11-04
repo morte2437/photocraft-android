@@ -3200,6 +3200,7 @@ curves	Smooth	Udjævn
 @plural	{n} action|{n} actions	{n} handling|{n} handlinger
 	Background (Default)	Baggrund (standard)
 	Background (default)	Baggrund (standard)
+	Transparent (default)	Gennemsigtig (standard)
 	Content-Aware Fill	Indholdsbevidst udfyldning
 # Batch / Image Processor
 	Include All Subfolders	Medtag alle undermapper

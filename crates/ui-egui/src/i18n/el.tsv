@@ -3983,6 +3983,7 @@ curves	Smooth	Εξομάλυνση
 @plural	{n} action|{n} actions	{n} ενέργεια|{n} ενέργειες
 	Background (Default)	Φόντο (προεπιλογή)
 	Background (default)	Φόντο (προεπιλογή)
+	Transparent (default)	Διαφανές (προεπιλογή)
 	Include All Subfolders	Συμπερίληψη όλων των υποφακέλων
 	Auto Add/Delete	Αυτόματη προσθήκη/διαγραφή
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Μην ενεργοποιείτε επίσης τον κατοπτρισμό στις ρυθμίσεις εκτύπωσης: οι δύο αναστροφές αλληλοαναιρούνται.

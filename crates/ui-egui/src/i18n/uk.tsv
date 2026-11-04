@@ -3985,6 +3985,7 @@ curves	Smooth	Згладити
 @plural	{n} action|{n} actions	{n} операція|{n} операції|{n} операцій
 	Background (Default)	Фон (типовий)
 	Background (default)	Фон (типовий)
+	Transparent (default)	Прозорий (типовий)
 	Include All Subfolders	Включити всі вкладені папки
 	Auto Add/Delete	Автододавання/видалення
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Не вмикайте також дзеркальне відображення в параметрах друку: два відображення скасовують одне одного.

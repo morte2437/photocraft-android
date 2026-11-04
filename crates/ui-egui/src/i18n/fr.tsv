@@ -3289,6 +3289,7 @@ curves	Smooth	Lisser
 @plural	{n} action|{n} actions	{n} action|{n} actions
 	Background (Default)	Arrière-plan (par défaut)
 	Background (default)	Arrière-plan (par défaut)
+	Transparent (default)	Transparent (par défaut)
 	Content-Aware Fill	Remplissage d'après le contenu
 	Include All Subfolders	Inclure tous les sous-dossiers
 	Auto Add/Delete	Ajout/suppr. auto

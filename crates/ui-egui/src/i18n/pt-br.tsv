@@ -4082,6 +4082,7 @@ layerLabel	No Color	Sem cor
 @plural	{n} action|{n} actions	{n} ação|{n} ações
 	Background (Default)	Plano de fundo (padrão)
 	Background (default)	Plano de fundo (padrão)
+	Transparent (default)	Transparente (padrão)
 	Include All Subfolders	Incluir todas as subpastas
 	Auto Add/Delete	Adicionar/excluir automaticamente
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Não ative também a imagem espelhada nas configurações de impressão: as duas inversões se anulam.

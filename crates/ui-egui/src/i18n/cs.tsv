@@ -3900,6 +3900,7 @@ navigator	Zoom	Zvětšení
 @plural	{n} action|{n} actions	{n} akce|{n} akce|{n} akcí
 	Background (Default)	Pozadí (výchozí)
 	Background (default)	Pozadí (výchozí)
+	Transparent (default)	Průhledné (výchozí)
 	Include All Subfolders	Zahrnout všechny podsložky
 	Auto Add/Delete	Automaticky přidat/odstranit
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nezapínejte současně zrcadlení v nastavení tisku: obě převrácení se navzájem zruší.

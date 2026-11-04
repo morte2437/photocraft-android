@@ -4042,6 +4042,7 @@ curves	Smooth	Vloeiend maken
 @plural	{n} action|{n} actions	{n} handeling|{n} handelingen
 	Background (Default)	Achtergrond (standaard)
 	Background (default)	Achtergrond (standaard)
+	Transparent (default)	Transparant (standaard)
 	Include All Subfolders	Alle submappen opnemen
 	Auto Add/Delete	Automatisch toevoegen/verwijderen
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Schakel niet ook Spiegelbeeld in bij de afdrukinstellingen: de twee spiegelingen heffen elkaar op.

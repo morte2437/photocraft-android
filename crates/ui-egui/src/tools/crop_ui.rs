@@ -279,6 +279,17 @@ pub(crate) fn apply_ratio(app: &mut PhotocraftApp) {
     // A ratio or size chosen after a commit fits a frame, not nothing.
     show_frame(app);
     frame(app);
+    // On the untouched frame of a selection's bounds, a picked ratio drops it for the largest
+    // centred frame of that ratio on the canvas, as measured in the reference application (#10872).
+    if app.crop.default_frame
+        && app.crop.frame_from_selection
+        && preset_ratio(app).is_some()
+        && let Some(b) = app.session.active().map(|st| st.doc.bounds())
+        && !b.is_empty()
+    {
+        app.ui.crop_rect = Some([f64::from(b.x0), f64::from(b.y0), f64::from(b.x1), f64::from(b.y1)]);
+        app.crop.frame_from_selection = false;
+    }
     fit_frame(app);
     crate::crop_mode::sync_frame(app);
 }
@@ -769,6 +780,14 @@ pub fn takes_keys(app: &PhotocraftApp) -> bool {
 }
 
 /// The frame now set by the keys: a real frame (no longer the default), being edited.
+/// The dropdown's temporary "Selection" entry chosen (#10872): the untouched frame on the
+/// selection's bounds becomes a live crop, unchanged.
+pub(crate) fn take_selection_frame(app: &mut PhotocraftApp) {
+    if let Some(r) = app.ui.crop_rect.filter(|_| app.crop.default_frame && app.crop.frame_from_selection) {
+        keyed(app, r);
+    }
+}
+
 fn keyed(app: &mut PhotocraftApp, r: [f64; 4]) {
     if r.iter().all(|v| v.is_finite()) {
         app.ui.crop_rect = Some(r);

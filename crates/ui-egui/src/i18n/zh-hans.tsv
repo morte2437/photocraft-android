@@ -2939,6 +2939,7 @@ curves	Smooth	平滑
 @plural	{n} action|{n} actions	{n} 个动作
 	Background (Default)	背景（默认）
 	Background (default)	背景（默认）
+	Transparent (default)	透明（默认）
 	Content-Aware Fill	内容识别填充
 	Include All Subfolders	包含所有子文件夹
 	Auto Add/Delete	自动添加/删除
