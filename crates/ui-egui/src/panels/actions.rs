@@ -841,10 +841,11 @@ pub fn abandoned(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value
 type Gate = fn(&str, &Value) -> photocraft_engine::Result<()>;
 
 /// A function-pointer dispatch gate cannot carry two different policies into nested jobs.
-/// A changed policy ends this continuation rather than choosing which policy to discard.
+/// Changed gates and distinct simultaneous Session/service gates both end this continuation;
+/// hosts that need both policies must supply one composed gate at both boundaries.
 fn continuation_gate(captured: Option<Gate>, live: Option<Gate>) -> Result<Option<Gate>, String> {
     if captured.zip(live).is_some_and(|(before, now)| !std::ptr::fn_addr_eq(before, now)) {
-        return Err("the authorization context changed while the action was paused".into());
+        return Err("the authorization context changed or uses policies that cannot be combined for this paused action".into());
     }
     Ok(live.or(captured))
 }

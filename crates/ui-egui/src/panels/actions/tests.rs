@@ -2443,6 +2443,48 @@ fn unchanged_and_released_gates_allow_the_action_tail() {
 }
 
 #[test]
+fn distinct_configured_gates_require_one_composed_policy_for_automated_resume() {
+    fn deny_file_open(id: &str, _: &Value) -> photocraft_engine::Result<()> {
+        if id == "file.open" { Err(photocraft_engine::EngineError::Other("file open denied".into())) } else { Ok(()) }
+    }
+    assert!(!std::ptr::fn_addr_eq(deny_wide_blur as Gate, deny_file_open as Gate));
+    for automated in [false, true] {
+        let mut app = gated_blur_fixture(true, false);
+        app.session.actions.list[0].steps.push(("layer.renameLayer".into(), json!({"name":"Allowed tail"})));
+        app.session.authorize = Some(deny_wide_blur);
+        app.services.automation_authorize = Some(deny_file_open);
+        // The service is configured before the real local pause, but becomes effective only
+        // for the automated OK. Both callbacks allow this edit and its remaining command.
+        for gate in [deny_wide_blur as Gate, deny_file_open as Gate] {
+            gate("filter.blur.gaussianBlur", &json!({"radius":1})).unwrap();
+            gate("layer.renameLayer", &json!({"name":"Allowed tail"})).unwrap();
+        }
+        let dialog = play(&mut app, &json!({"action":"Gated blur"})).unwrap()["paused"]["dialog"].as_u64().unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        let rows = app.session.active().unwrap().history.past_len();
+        app.automation_input = automated;
+        let result = crate::dialogs::confirm(&mut app, dialog);
+        let state = app.session.active().unwrap();
+        if automated {
+            assert!(result.is_err_and(|error| error.contains("policies that cannot be combined")));
+            assert_eq!(state.doc.as_ref(), before.as_ref());
+            assert_eq!(state.history.past_len(), rows);
+            assert!(app.session.job_on(before.id).is_none());
+        } else {
+            result.unwrap();
+            assert_eq!(state.doc.layer(state.active_layer.unwrap()).unwrap().name, "Allowed tail");
+            assert_eq!(state.history.past_len(), rows + 1);
+            assert!(app.session.undo());
+            assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+        }
+        assert!(std::ptr::fn_addr_eq(app.session.authorize.unwrap(), deny_wide_blur as Gate));
+        assert!(std::ptr::fn_addr_eq(app.services.automation_authorize.unwrap(), deny_file_open as Gate));
+        assert!(app.paused_playbacks.paused.is_empty());
+        assert_eq!(app.session.actions.playing, 0);
+    }
+}
+
+#[test]
 fn a_changed_gate_after_the_last_spelling_step_keeps_completed_edits() {
     let (mut app, before, past) = paused_history_spelling(true, Some(deny_wide_blur));
     app.session.actions.list[0].steps.truncate(2);
