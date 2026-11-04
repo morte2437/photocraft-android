@@ -53,7 +53,8 @@ fn enter(app: &mut PhotocraftApp, ctx: &egui::Context) {
     assert!(matches!(crate::control::handle(app, ctx, &request), Outcome::AfterInput));
     let events = app.take_synthetic_step();
     assert!(!events.is_empty());
-    let _ = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| crate::shortcuts::handle(app, ui.ctx()));
+    let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| crate::shortcuts::handle(app, ui.ctx()));
+    output.textures_delta.clear(); // This CPU-only helper deliberately has no texture uploader.
 }
 
 fn assert_one_transform(app: &PhotocraftApp, steps: usize) {
