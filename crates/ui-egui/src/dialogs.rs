@@ -769,6 +769,10 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
     }
     ctx.data_mut(|m| m.insert_temp(egui::Id::unique(RECTS), shown));
+    // A colour picked this frame shows in its target dialog on the next one.
+    if crate::color_picker_ui::live_preview::sync(app) {
+        ctx.request_repaint();
+    }
 }
 
 /// The About window's tabs, as stored in its `tab` field.
@@ -969,7 +973,7 @@ fn confirm_generic_command(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, 
 
 /// The checks before a dialog is confirmed: no open child picker, the automation gate for a handler
 /// that touches files itself, and a valid guide layout.
-fn confirm_preflight(app: &mut PhotocraftApp, id: u64) -> Result<(), String> {
+pub(crate) fn confirm_preflight(app: &mut PhotocraftApp, id: u64) -> Result<(), String> {
     if crate::layer_style::color_picker::has_child(app, id) {
         return Err("confirm or cancel the Layer Style color picker first".into());
     }
@@ -982,10 +986,15 @@ fn confirm_preflight(app: &mut PhotocraftApp, id: u64) -> Result<(), String> {
     {
         authorize(command, &Value::Object(d.fields.clone()))?;
     }
+    // A colour field shows the open picker's colour before its OK (`live_preview`): the dialog
+    // would otherwise commit a colour the picker may still cancel.
+    // The live preview's own record of the parent counts too: automation may rewrite `__dialog`.
+    if app.ui.dialogs.iter().any(|child| crate::color_picker_ui::owns(&child.fields) && child.fields.get("__dialog").and_then(Value::as_u64) == Some(id))
+        || crate::color_picker_ui::live_preview::previewed_dialogs(app).contains(&id)
+    {
+        return Err("confirm or cancel the color picker first".into());
+    }
     if let Some(d) = app.ui.dialogs.iter().find(|d| d.id == id).filter(|d| crate::guide_layout_ui::owns(&d.fields)) {
-        if app.ui.dialogs.iter().any(|child| crate::color_picker_ui::owns(&child.fields) && child.fields.get("__dialog").and_then(Value::as_u64) == Some(id)) {
-            return Err("confirm or cancel the guide color picker first".into());
-        }
         crate::guide_layout_ui::validate(app, &d.fields)?;
     }
     Ok(())
@@ -1031,7 +1040,11 @@ fn confirm_command_more(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, Str
     match d.kind {
         _ if crate::file_ui::owns(&d.fields) => crate::file_ui::confirm(app, &d.fields),
         _ if crate::new_guide_ui::owns(&d.fields) => crate::new_guide_ui::confirm(app, &d.fields),
-        _ if crate::color_picker_ui::owns(&d.fields) => crate::color_picker_ui::confirm(app, &d.fields),
+        _ if crate::color_picker_ui::owns(&d.fields) => {
+            // OK sets the target as it was before the live preview showed the colour in it.
+            crate::color_picker_ui::live_preview::end(app, d.id);
+            crate::color_picker_ui::confirm(app, &d.fields)
+        }
         _ if crate::color_range_ui::owns(&d.fields) => crate::color_range_ui::confirm(app, &d.fields),
         _ if crate::prefs_ui::owns(&d.fields) => crate::prefs_ui::confirm(app, &d.fields),
         _ if d.fields.contains_key("__export") => crate::export_dialog::confirm(app, &d.fields),
@@ -1064,6 +1077,24 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
 /// Cancel a dialog and its dependent Layer Style picker, without applying edits.
 pub fn cancel(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
     let closed = app.ui.close_dialog(id).ok_or_else(|| format!("no dialog {id}"))?;
+    // A Color Picker puts back what its live preview showed in its target.
+    crate::color_picker_ui::live_preview::end(app, id);
+    // A field Color Picker of this dialog has no target left: it closes with the dialog.
+    // A picker with a live target goes by the parent recorded when it opened; `__dialog` only
+    // names the parent of one without (e.g. its parent was closed before it could preview).
+    let mut pickers = crate::color_picker_ui::live_preview::pickers_of(app, id);
+    pickers.extend(
+        app.ui
+            .dialogs
+            .iter()
+            .filter(|d| crate::color_picker_ui::owns(&d.fields) && d.fields.get("__dialog").and_then(Value::as_u64) == Some(id))
+            .filter(|d| !crate::color_picker_ui::live_preview::previews(app, d.id))
+            .map(|d| d.id),
+    );
+    for picker in &pickers {
+        crate::color_picker_ui::live_preview::end(app, *picker);
+    }
+    app.ui.dialogs.retain(|d| !pickers.contains(&d.id));
     crate::actions::stopped(app, &closed.fields);
     if crate::guide_layout_ui::owns(&closed.fields) {
         app.ui.dialogs.retain(|child| child.fields.get("__dialog").and_then(Value::as_u64) != Some(id));

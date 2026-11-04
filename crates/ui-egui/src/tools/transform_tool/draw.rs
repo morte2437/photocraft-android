@@ -21,6 +21,12 @@ pub(crate) fn draw_handle_cursor(app: &PhotocraftApp, ctx: &egui::Context, xf: &
                 draw_distort_cursor(ctx, at, scr(*q) - scr(t.pivot));
             }
         }
+        // Distort mode's side handles (#10085): the same pointer, out through the edge's middle.
+        (Hit::Edge(i), Some(HandleIndicator::Distort)) => {
+            if let (Some(a), Some(b)) = (t.quad.get(i), t.quad.get((i + 1) % 4)) {
+                draw_distort_cursor(ctx, at, scr(*a).lerp(scr(*b), 0.5) - scr(t.pivot));
+            }
+        }
         (Hit::Edge(i), Some(HandleIndicator::Skew)) => {
             if let (Some(a), Some(b)) = (t.quad.get(i), t.quad.get((i + 1) % 4)) {
                 draw_skew_cursor(ctx, at, scr(*b) - scr(*a));

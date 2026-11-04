@@ -84,7 +84,7 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                 s.pivot = [x, y];
                 h = Hit::Pivot;
             }
-            // Distort only moves corners (and the whole box from inside): no rotating, no edges.
+            // Distort moves corners and edges (and the whole box from inside), but doesn't rotate.
             // Even in Distort mode, remember an outside press so a plain click can
             // accept the transform. A drag outside remains inert in that mode, in Skew, and in
             // Content-Aware Scale, which only scales and moves.

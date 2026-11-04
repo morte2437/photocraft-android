@@ -1062,12 +1062,12 @@ fn build_txt2_round_trips_kerning_modes() {
     assert_eq!(modes, vec![(1, Kerning::Off), (1, Kerning::Metrics)]);
 }
 
-/// #3514: the document `Txt2` is only needed for a non-Metrics (`Optical`) auto-kern mode. A fresh
-/// document of ordinary Metrics (or EngineData-carried Off) text must not write Photoshop's empty
-/// stub, which some readers (Photopea) reject.
+/// #3514 / #10308: the document `Txt2` is needed for Optical kerning and for OpenType settings
+/// EngineData can't carry (stylistic sets, swashes, …). A fresh document of ordinary Metrics text
+/// must not write Photoshop's empty stub, which some readers (Photopea) reject.
 #[test]
-fn needs_txt2_only_for_optical() {
-    use photocraft_doc::text::Kerning;
+fn needs_txt2_for_optical_and_txt2_only_opentype() {
+    use photocraft_doc::text::{FontFeature, Kerning};
     let style = |kerning: Kerning| CharStyle { kerning, ..Default::default() };
     let metrics = runs_of("AV", &[(2, style(Kerning::Metrics))]);
     assert!(!crate::psd::needs_txt2(&[(0, &metrics)]));
@@ -1076,6 +1076,57 @@ fn needs_txt2_only_for_optical() {
     let optical = runs_of("AV", &[(1, style(Kerning::Optical)), (1, CharStyle::default())]);
     assert!(crate::psd::needs_txt2(&[(0, &optical)]));
     assert!(!crate::psd::needs_txt2(&[]));
+    let with_ss = |tag: &str, value: u16| {
+        let mut s = style(Kerning::Metrics);
+        s.features = vec![FontFeature { tag: tag.into(), value }];
+        runs_of("AV", &[(2, s)])
+    };
+    assert!(crate::psd::needs_txt2(&[(0, &with_ss("ss01", 1))]), "stylistic set 1 lives only in Txt2");
+    assert!(crate::psd::needs_txt2(&[(0, &with_ss("ss05", 1))]), "stylistic set 5 lives only in Txt2");
+    assert!(!crate::psd::needs_txt2(&[(0, &with_ss("ss01", 0))]), "an off set is the default");
+    assert!(crate::psd::needs_txt2(&[(0, &with_ss("swsh", 1))]), "swash lives only in Txt2");
+    assert!(crate::psd::needs_txt2(&[(0, &with_ss("calt", 0))]), "calt off is Txt2-only");
+    assert!(!crate::psd::needs_txt2(&[(0, &with_ss("calt", 1))]), "calt on is the default");
+}
+
+/// #10308: the fresh objects, minimal style runs, seeded font list and frame list are only for a
+/// PhotoCraft-native block. A file's own block — here the older Photoshop's, with an empty
+/// numbered `/0` or none at all — gets no `/0` key, frame list or font list it didn't have, and
+/// a layer without a template object gets the stub it always got.
+#[test]
+fn photoshop_blocks_get_no_native_txt2_scaffolding() {
+    use crate::engine_data::Value as E;
+    use photocraft_doc::text::FontFeature;
+    let style = CharStyle { font_family: "Inter".into(), features: vec![FontFeature { tag: "ss01".into(), value: 1 }], ..Default::default() };
+    let t = styled("Hi", style);
+    let with_doc = photoshop_era_txt2(&["Line 1"]);
+    let without_doc = crate::engine_data::write_bare(&[
+        ("98".into(), E::Dict(vec![("0".into(), E::Int(14))])),
+        ("DocumentObjects".into(), photoshop_era_objects(&["Line 1"])),
+    ]);
+    for (label, prev, doc) in [("empty /0", with_doc, Some(E::dict())), ("no /0", without_doc, None)] {
+        let out = crate::psd::parse_txt2(&crate::psd::build_txt2(&[(0, &t)], Some(&prev))).unwrap();
+        assert_eq!(out.get("0").cloned(), doc, "{label}: the file's /0 is left as it was");
+        let object = out.path(&["1", "1"]).and_then(E::as_array).and_then(|a| a.first()).expect("the numbered object");
+        assert!(object.get("1").is_none(), "{label}: no fresh view naming a frame the file has no list for");
+        assert!(object.path(&["0", "5"]).is_none(), "{label}: no fresh paragraph runs");
+    }
+}
+
+/// #10308: a fresh native object has one paragraph run per paragraph, each its UTF-16 length.
+#[test]
+fn fresh_native_txt2_object_has_a_paragraph_run_per_paragraph() {
+    use crate::engine_data::Value as E;
+    use photocraft_doc::text::FontFeature;
+    let style = CharStyle { features: vec![FontFeature { tag: "ss02".into(), value: 1 }], ..Default::default() };
+    let t = styled("Hi\nBy\u{e9}e", style);
+    let out = crate::psd::parse_txt2(&crate::psd::build_txt2(&[(0, &t)], None)).unwrap();
+    let object = out.path(&["1", "1"]).and_then(E::as_array).and_then(|a| a.first()).expect("the object");
+    assert_eq!(object.path(&["0", "0"]).and_then(E::as_str), Some("Hi\rBy\u{e9}e\r"));
+    let lens: Vec<i64> =
+        object.path(&["0", "5", "0"]).and_then(E::as_array).expect("paragraph runs").iter().filter_map(|r| r.get("1").and_then(E::as_i64)).collect();
+    assert_eq!(lens, vec![3, 5]);
+    assert_eq!(out.path(&["0", "8", "0"]).and_then(E::as_array).map(<[E]>::len), Some(1), "a native block names one frame");
 }
 
 /// A kept `Txt2` object — same text, so its extras are still true — keeps everything the file

@@ -513,6 +513,16 @@ want the verdict, the merged `results.json`/`summary.md` and the regression chec
 Every `--bench` name must match a `[[bench]]` name in `perf/budgets.toml`; an unknown name
 is rejected before any benchmark runs or any report or baseline is written.
 
+`perf_scenarios` rows that time a command and then the canvas refresh after it also split each
+sample: `cmd_samples_ms` and `refresh_samples_ms` (`samples_ms`, what budgets judge, is their sum),
+`refresh_kinds` (how many refreshes were `gpu-rect`, `gpu-full`, `rect`/`full` on the CPU
+compositor, also without an adapter, `none` when nothing needed drawing, …) and `fallbacks` (why
+the wgpu compositor didn't draw, `CpuReason::kind`). The console line ends with the medians, e.g.
+`cmd 0.06 + refresh 1.71 ms {"gpu-rect": 7}`, so a slow row says whether the engine or the canvas
+is the cost before you profile it. The bench refreshes like the app's `damage_since`: the last
+edit's rect only when the canvas showed the revision before it, else everything; a row whose timed
+refresh also had to draw untimed setup edits is reported on stderr.
+
 Read the sample count before quoting a percentile. `--reps` defaults to 7 in `--quick` and 15
 otherwise, it is per bench, and some rows cap it themselves (the `#211` algorithm rows use
 `b.reps.min(5)`); percentiles are nearest-rank, so **at n ≤ 5 the "p95" is simply the maximum**. A

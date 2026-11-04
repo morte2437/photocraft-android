@@ -714,6 +714,41 @@ fn ungroup_restores_children_in_order() {
 }
 
 #[test]
+fn ungroup_the_sole_empty_group_is_refused() {
+    // #11118: ungrouping the only root layer when it was an empty group emptied the document
+    // and cleared the active layer, while deleting a layer refuses to drop the last one.
+    let mut s = session(8);
+    let child = active(&s).id;
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    let group = active(&s).id;
+    s.execute("layer.hideLayers", json!({ "layer": child.0 })).unwrap();
+    s.execute("layer.delete.hiddenLayers", json!({})).unwrap(); // the group is now empty
+    let bg = doc(&s).layers.iter().find(|l| !l.is_group()).unwrap().id;
+    s.execute("layer.hideLayers", json!({ "layer": bg.0 })).unwrap();
+    s.execute("layer.delete.hiddenLayers", json!({})).unwrap(); // the empty group is the sole layer
+    assert_eq!(doc(&s).layers.len(), 1);
+    assert!(doc(&s).layers[0].is_group());
+    let steps = s.active().unwrap().history.past_len();
+    assert!(s.execute("layer.ungroupLayers", json!({ "layer": group.0 })).is_err(), "ungrouping the sole empty group must be refused, not empty the document");
+    assert_eq!(doc(&s).layers.len(), 1, "the group is left in place");
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "a refused edit records no history step");
+    assert_eq!(s.active().unwrap().active_layer, Some(group), "the group stays active");
+}
+
+#[test]
+fn ungroup_an_empty_group_next_to_other_layers_removes_it() {
+    // The control for the refusal above: an empty group that is not the only root layer still
+    // ungroups, and the group simply disappears.
+    let mut s = session(8);
+    let group = LayerId(s.execute("layer.new.group", json!({})).unwrap()["layer"].as_u64().unwrap());
+    assert!(doc(&s).layers.iter().any(|l| l.id == group));
+    s.execute("layer.ungroupLayers", json!({ "layer": group.0 })).unwrap();
+    assert!(doc(&s).layers.iter().all(|l| l.id != group), "the empty group is gone");
+    assert_eq!(doc(&s).layers.len(), 2, "nothing arrived in its place");
+    assert_eq!(s.active().unwrap().active_layer, doc(&s).top_layer(), "an active layer survives");
+}
+
+#[test]
 fn reveal_all_grows_the_canvas() {
     let mut s = session(8);
     s.execute("layer.translate", json!({"dx": 0, "dy": 0})).ok();

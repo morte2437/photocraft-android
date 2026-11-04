@@ -426,3 +426,176 @@ fn long_press_y_button_selects_art_history() {
     frame(&mut app, &ctx, 2.05, vec![pointer(row, false)]);
     assert_eq!(app.ui.tool, Tool::ArtHistoryBrush);
 }
+
+#[test]
+fn next_slot_tool_wraps_around_the_flyout() {
+    // One-tool slot: Alt-click is a no-op (still “cycles” to itself).
+    assert_eq!(next_slot_tool(&[Tool::Frame], Tool::Frame), Tool::Frame);
+    // Two-tool slot (Hand ↔ RotateView).
+    let two = [Tool::Hand, Tool::RotateView];
+    assert_eq!(next_slot_tool(&two, Tool::Hand), Tool::RotateView);
+    assert_eq!(next_slot_tool(&two, Tool::RotateView), Tool::Hand, "wrap");
+    // Three-tool slot.
+    let three = [Tool::Lasso, Tool::PolygonLasso, Tool::MagneticLasso];
+    assert_eq!(next_slot_tool(&three, Tool::Lasso), Tool::PolygonLasso);
+    assert_eq!(next_slot_tool(&three, Tool::PolygonLasso), Tool::MagneticLasso);
+    assert_eq!(next_slot_tool(&three, Tool::MagneticLasso), Tool::Lasso, "wrap");
+    // Four-tool marquee flyout: starts from the current tool, not always the first.
+    let slot = [Tool::RectMarquee, Tool::EllipseMarquee, Tool::SingleRowMarquee, Tool::SingleColumnMarquee];
+    assert_eq!(next_slot_tool(&slot, Tool::RectMarquee), Tool::EllipseMarquee);
+    assert_eq!(next_slot_tool(&slot, Tool::EllipseMarquee), Tool::SingleRowMarquee);
+    assert_eq!(next_slot_tool(&slot, Tool::SingleColumnMarquee), Tool::RectMarquee);
+    assert_eq!(next_slot_tool(&slot, Tool::Brush), Tool::EllipseMarquee, "unknown from → after the first");
+    // Empty slot: no panic, the current tool stays.
+    assert_eq!(next_slot_tool(&[], Tool::Brush), Tool::Brush);
+}
+
+/// Edit › Toolbar hidden tools shrink the Alt-click cycle to the remaining flyout members.
+#[test]
+fn visible_sections_drop_hidden_tools_from_alt_click_slots() {
+    let hidden = vec!["EllipseMarquee".into(), "SingleRowMarquee".into()];
+    let sections = visible_sections(&hidden);
+    let marquee = sections
+        .iter()
+        .flat_map(|s| s.iter())
+        .find(|(_, tools)| tools.contains(&Tool::RectMarquee))
+        .map(|(_, tools)| tools.as_slice())
+        .expect("marquee slot remains");
+    assert_eq!(marquee, &[Tool::RectMarquee, Tool::SingleColumnMarquee]);
+    assert_eq!(next_slot_tool(marquee, Tool::RectMarquee), Tool::SingleColumnMarquee);
+    assert_eq!(next_slot_tool(marquee, Tool::SingleColumnMarquee), Tool::RectMarquee, "wrap over the visible pair");
+}
+
+/// Photoshop: Alt/Option-click a toolbar button cycles its flyout tools without opening the menu.
+#[test]
+fn alt_click_cycles_the_tool_flyout_slot() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+    frame(&mut app, &ctx, 0.0, vec![]);
+    frame(&mut app, &ctx, 0.1, vec![]);
+    let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::RectMarquee)).unwrap();
+    let slot = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).nth(index).copied().unwrap();
+    assert_eq!(slot, &[Tool::RectMarquee, Tool::EllipseMarquee, Tool::SingleRowMarquee, Tool::SingleColumnMarquee]);
+    let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
+    let mut buttons: Vec<Rect> = ctx.viewport(|v| {
+        v.prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, w)| w.iter())
+            .filter(|w| w.rect.size() == egui::Vec2::splat(bx) && w.sense.senses_click())
+            .map(|w| w.rect)
+            .collect()
+    });
+    buttons.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    let at = buttons[index].center();
+    let alt = egui::Modifiers { alt: true, ..Default::default() };
+    let pointer = |pos, pressed, modifiers| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers };
+    let flyout = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<(egui::Id, Rect)>(egui::Id::unique("tool-flyout"))).is_some();
+    app.ui.tool = Tool::RectMarquee;
+    // Plain click keeps the shown tool.
+    frame(&mut app, &ctx, 1.0, vec![egui::Event::PointerMoved(at), pointer(at, true, Default::default())]);
+    frame(&mut app, &ctx, 1.05, vec![pointer(at, false, Default::default())]);
+    frame(&mut app, &ctx, 1.1, vec![]);
+    assert_eq!(app.ui.tool, Tool::RectMarquee);
+    assert!(!flyout(&ctx));
+    // Alt-click advances through every flyout entry, including ones Shift+M skips.
+    // Clear i.modifiers before the release while keeping Alt on the release event, so a
+    // regression that only reads i.modifiers (and ignores the pointer-release modifiers) fails.
+    for (t, want) in [(1.5, Tool::EllipseMarquee), (2.0, Tool::SingleRowMarquee), (2.5, Tool::SingleColumnMarquee), (3.0, Tool::RectMarquee)] {
+        frame(&mut app, &ctx, t, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
+        frame(&mut app, &ctx, t + 0.05, vec![egui::Event::ModifiersChanged(Default::default()), pointer(at, false, alt)]);
+        frame(&mut app, &ctx, t + 0.1, vec![]);
+        assert_eq!(app.ui.tool, want, "alt-click at {t}");
+        assert!(!flyout(&ctx), "alt-click must not open the flyout");
+    }
+    // From another tool, Alt-click advances from the slot's remembered (shown) tool: Rect after the wrap.
+    app.ui.tool = Tool::Brush;
+    frame(&mut app, &ctx, 4.0, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
+    frame(&mut app, &ctx, 4.05, vec![egui::Event::ModifiersChanged(Default::default()), pointer(at, false, alt)]);
+    frame(&mut app, &ctx, 4.1, vec![]);
+    assert_eq!(app.ui.tool, Tool::EllipseMarquee, "inactive slot cycles from its shown tool");
+}
+
+/// #10301 CodeRabbit: two rapid Alt-clicks on Hand ↔ RotateView must not fit-on-screen.
+#[test]
+fn rapid_alt_clicks_on_hand_slot_do_not_fit_on_screen() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+    frame(&mut app, &ctx, 0.0, vec![]);
+    frame(&mut app, &ctx, 0.1, vec![]);
+    let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::Hand)).unwrap();
+    let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
+    let mut buttons: Vec<Rect> = ctx.viewport(|v| {
+        v.prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, w)| w.iter())
+            .filter(|w| w.rect.size() == egui::Vec2::splat(bx) && w.sense.senses_click())
+            .map(|w| w.rect)
+            .collect()
+    });
+    buttons.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    let at = buttons[index].center();
+    let alt = egui::Modifiers { alt: true, ..Default::default() };
+    let pointer = |pos, pressed, modifiers| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers };
+    app.ui.tool = Tool::RotateView;
+    let zoom_before = app.ui.views.first().map(|v| v.zoom).unwrap_or(1.0);
+    // Two Alt-clicks within egui's double-click window: cycle Hand → RotateView, never fit-on-screen.
+    frame(&mut app, &ctx, 1.0, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
+    frame(&mut app, &ctx, 1.02, vec![egui::Event::ModifiersChanged(alt), pointer(at, false, alt)]);
+    frame(&mut app, &ctx, 1.04, vec![]);
+    assert_eq!(app.ui.tool, Tool::Hand);
+    frame(&mut app, &ctx, 1.08, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
+    frame(&mut app, &ctx, 1.10, vec![egui::Event::ModifiersChanged(alt), pointer(at, false, alt)]);
+    frame(&mut app, &ctx, 1.12, vec![]);
+    assert_eq!(app.ui.tool, Tool::RotateView, "second Alt-click cycles back; must not stick on Hand from double-click");
+    let zoom_after = app.ui.views.first().map(|v| v.zoom).unwrap_or(1.0);
+    assert_eq!(zoom_after, zoom_before, "Alt double-click must not run view.fitOnScreen");
+}
+
+/// #10301 CodeRabbit: plain click after Alt-click within the double-click window must not fit.
+#[test]
+fn plain_click_after_alt_on_hand_slot_does_not_fit_on_screen() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    // Far from fit-on-screen so a real Hand double-click is observable.
+    if let Some(v) = app.ui.views.first_mut() {
+        v.zoom = 4.0;
+    }
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+    frame(&mut app, &ctx, 0.0, vec![]);
+    frame(&mut app, &ctx, 0.1, vec![]);
+    let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::Hand)).unwrap();
+    let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
+    let mut buttons: Vec<Rect> = ctx.viewport(|v| {
+        v.prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, w)| w.iter())
+            .filter(|w| w.rect.size() == egui::Vec2::splat(bx) && w.sense.senses_click())
+            .map(|w| w.rect)
+            .collect()
+    });
+    buttons.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    let at = buttons[index].center();
+    let alt = egui::Modifiers { alt: true, ..Default::default() };
+    let none = egui::Modifiers::default();
+    let pointer = |pos, pressed, modifiers| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers };
+    app.ui.tool = Tool::RotateView;
+    let zoom_of = |app: &PhotocraftApp| app.ui.views.first().map(|v| v.zoom).unwrap_or(1.0);
+    assert_eq!(zoom_of(&app), 4.0);
+    // Alt-click cycles to Hand; a plain click soon after is egui's "second" click of a double.
+    frame(&mut app, &ctx, 1.0, vec![egui::Event::ModifiersChanged(alt), egui::Event::PointerMoved(at), pointer(at, true, alt)]);
+    frame(&mut app, &ctx, 1.02, vec![egui::Event::ModifiersChanged(alt), pointer(at, false, alt)]);
+    frame(&mut app, &ctx, 1.04, vec![]);
+    assert_eq!(app.ui.tool, Tool::Hand);
+    frame(&mut app, &ctx, 1.08, vec![egui::Event::ModifiersChanged(none), egui::Event::PointerMoved(at), pointer(at, true, none)]);
+    frame(&mut app, &ctx, 1.10, vec![egui::Event::ModifiersChanged(none), pointer(at, false, none)]);
+    frame(&mut app, &ctx, 1.12, vec![]);
+    assert_eq!(app.ui.tool, Tool::Hand, "plain click keeps Hand selected");
+    assert_eq!(zoom_of(&app), 4.0, "plain click paired with prior Alt-click must not fitOnScreen");
+}
