@@ -18,6 +18,7 @@ fn class(id: &str) -> Class {
     Class { name: UnicodeString::new_nul(""), class_id: Id::new(id) }
 }
 
+/// Build the measured descriptor independently of the production converter.
 fn descriptor() -> Descriptor {
     Descriptor::new("null")
         .with("null", D::Reference(vec![ReferenceItem::Class(class("Path"))]))
@@ -28,6 +29,7 @@ fn item(d: Descriptor) -> AtnItem {
     AtnItem { event: AtnEvent::Code(*b"Mk  "), dictionary: b"Make".to_vec(), descriptor: Some(d), ..Default::default() }
 }
 
+/// Exercise the public byte importer rather than invoking the converter directly.
 fn load(item: AtnItem) -> photocraft_engine::atn_cmds::Imported {
     let bytes = atn::write(&AtnFile {
         name: UnicodeString::new_nul("Paths"),
@@ -38,11 +40,13 @@ fn load(item: AtnItem) -> photocraft_engine::atn_cmds::Imported {
     import(&bytes).unwrap()
 }
 
+/// Parse public export bytes so assertions inspect the actual saved ATN item.
 fn saved(action: &Action) -> AtnItem {
     let bytes = export("Paths", &[action], &[], false).unwrap().0;
     atn::parse(&bytes).unwrap().actions.remove(0).items.remove(0)
 }
 
+/// Names, key order, ID encoding and dialog flags must survive both Make event aliases.
 #[test]
 fn descriptor_identity_flags_and_make_alias_roundtrip() {
     for named in [false, true] {
@@ -68,6 +72,8 @@ fn descriptor_identity_flags_and_make_alias_roundtrip() {
     }
 }
 
+/// Compare enabled canonical and retained-descriptor playback with native output at all depths.
+/// Glyph bounds distinguish the older active text layer from the newest layer independently.
 #[test]
 fn playback_matches_native_path_and_preserves_text_with_undo_redo() {
     for noncanonical in [false, true] {
@@ -120,6 +126,7 @@ fn playback_matches_native_path_and_preserves_text_with_undo_redo() {
     }
 }
 
+/// Unknown keys and unsupported reference chains remain verbatim kept steps, never guessed mappings.
 #[test]
 fn unsupported_path_forms_are_kept_and_save_without_loss() {
     let original = descriptor();
@@ -147,6 +154,7 @@ fn unsupported_path_forms_are_kept_and_save_without_loss() {
     }
 }
 
+/// A missing document or non-text receiver must fail without changing document or history.
 #[test]
 fn non_text_and_no_document_playback_fail_without_edits() {
     for document in [false, true] {
@@ -163,6 +171,7 @@ fn non_text_and_no_document_playback_fail_without_edits() {
     }
 }
 
+/// Explicit native targets and corrupt wire metadata cannot export as the implicit measured form.
 #[test]
 fn native_export_refuses_explicit_targets_and_damaged_metadata() {
     for params in [json!({"layer":1}), json!({"layers":[1]}), json!({(SOURCE):"bad base64"}), json!({(SOURCE):Value::Null})] {

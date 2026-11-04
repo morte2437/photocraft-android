@@ -6,6 +6,7 @@ use super::{Descriptor, ReferenceItem, Value, json};
 pub(super) const COMMAND: &str = "type.createWorkPath";
 const SOURCE: &str = "_atnTypePathDescriptor";
 
+/// Canonical Make Path descriptor for the active text layer; it carries no path geometry.
 fn descriptor() -> Descriptor {
     desc("null").with("null", class_ref("Path")).with("From", target_ref("TxLr"))
 }
@@ -20,6 +21,7 @@ fn supported(d: &Descriptor) -> bool {
             if class.class_id.is("TxLr") && type_id.is("Ordn") && value.is("Trgt"))
 }
 
+/// Map only the measured active-text reference, retaining noncanonical wire identity for export.
 pub(super) fn from(d: &Descriptor) -> Mapped {
     if !supported(d) {
         return Mapped::Unsupported { harmless: false };
@@ -32,6 +34,8 @@ pub(super) fn from(d: &Descriptor) -> Mapped {
     step(COMMAND, params)
 }
 
+/// Export implicit native playback or a validated original descriptor; explicit targets cannot
+/// be represented by this measured form and must use the caller's unsupported-step handling.
 pub(super) fn to(p: &Value) -> Option<Descriptor> {
     if p.as_object()?.keys().any(|key| key != SOURCE) {
         return None;
