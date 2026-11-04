@@ -3562,3 +3562,25 @@ fn restyling_the_photoshop_era_objects_keeps_the_raw_strings_of_the_file() {
     let runs = era_runs(&crate::psd::parse_txt2(&out).unwrap());
     assert_eq!(runs.first().and_then(|(_, f)| f.get("FontSize")).and_then(E::as_f64), Some(24.0), "and the legacy copy was restyled");
 }
+
+/// Colour passes are grouped in one walk of the glyphs: with a colour per letter, every placed
+/// glyph lands in exactly one pass and each pass holds only its own glyphs.
+#[test]
+fn colour_passes_hold_each_glyph_once() {
+    let mut e = TextEngine::new();
+    let text = "abcdeghjkm".repeat(200);
+    let runs = text
+        .char_indices()
+        .map(|(i, ch)| TextRun { len: ch.len_utf8(), style: CharStyle { size_pt: 12.0, color: Color::rgb(i as f32 / 2000.0, 0.5, 0.5), ..Default::default() } })
+        .collect();
+    let t = TextLayer { text, runs, ..Default::default() };
+    let l = e.layout(&t, 72.0);
+    let passes = crate::render::visible_color_passes(&l, None);
+    assert!(passes.len() > 1000, "{} passes", passes.len());
+    let mut seen: Vec<usize> = passes.iter().flat_map(|(_, _, p)| p.glyphs.iter().copied()).collect();
+    seen.sort_unstable();
+    assert_eq!(seen, (0..l.glyphs.len()).collect::<Vec<_>>());
+    for (c, _, p) in &passes {
+        assert!(p.glyphs.iter().all(|&i| l.styles[l.glyphs[i].style as usize].color == *c));
+    }
+}

@@ -367,6 +367,9 @@ pub struct UiState {
     /// Layers panel blend-mode filter.
     #[serde(default = "default_layer_filter_mode")]
     pub layer_filter_mode: photocraft_color::BlendMode,
+    /// Layers panel effect filter (#10880).
+    #[serde(default)]
+    pub layer_filter_effect: crate::layer_filter_ui::effect::EffectKind,
     /// Layers panel attribute filter (#10881).
     #[serde(default)]
     pub layer_filter_attribute: crate::layer_filter_ui::attribute::Attribute,
@@ -585,6 +588,7 @@ impl Default for UiState {
             layer_filter_by: Default::default(),
             layer_filter_name: String::new(),
             layer_filter_mode: default_layer_filter_mode(),
+            layer_filter_effect: Default::default(),
             layer_filter_attribute: Default::default(),
             layer_filter_color: Default::default(),
             pen: None,
