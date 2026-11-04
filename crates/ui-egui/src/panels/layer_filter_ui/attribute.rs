@@ -140,7 +140,9 @@ impl Attribute {
     }
 }
 
-/// Whether `l` is a pixel layer with no visible pixels on `canvas`; an empty group isn't listed.
+/// Whether `l` is a pixel layer with no visible pixels; an empty group isn't listed. Stored pixels
+/// past the canvas count (they are the layer's, Reveal All brings them back); `canvas` only bounds
+/// the check for a layer whose default pixel is opaque (see [`has_visible_pixels`]).
 fn is_empty(l: &Layer, canvas: Option<Rect>) -> bool {
     matches!(&l.content, LayerContent::Raster(s) if !has_visible_pixels(s, canvas))
 }
