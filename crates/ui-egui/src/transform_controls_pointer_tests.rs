@@ -313,6 +313,32 @@ fn modal_dialogs_do_not_start_move_transform_controls() {
     }
 }
 
+/// Full-window dialogs with embedded previews must not forward ordinary Move gestures.
+#[test]
+fn modal_workspaces_without_tool_event_controllers_do_not_move_layers() {
+    for command in ["filter.filterGallery", "filter.adaptiveWideAngle"] {
+        let (mut app, ctx, layers) = fixture();
+        app.run("layer.rasterize.layer", json!({"layer": layers[0].0})).unwrap();
+        app.run("layer.select", json!({"layer": layers[0].0})).unwrap();
+        crate::menus::invoke(&mut app, &ctx, command, json!({})).unwrap();
+        assert_eq!(crate::distort_ui::modal_workspace(&app), Some(command));
+        let before = app.session.active().unwrap().doc.clone();
+        let steps = app.session.active().unwrap().history.past_len();
+        for controls in [true, false] {
+            app.ui.tool_options.move_show_transform = controls;
+            for (kind, at) in [("down", [200.0, 150.0]), ("move", [220.0, 160.0]), ("up", [220.0, 160.0])] {
+                pointer(&mut app, &ctx, kind, at);
+                assert!(app.ui.transform.is_none());
+                assert!(app.drag.is_none());
+            }
+            assert_eq!(app.session.active().unwrap().doc, before);
+            assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+            assert_eq!(app.ui.tool, Tool::Move);
+            assert_eq!(crate::distort_ui::modal_workspace(&app), Some(command));
+        }
+    }
+}
+
 /// Modal canvas samplers retain ownership even when Move and its controls are selected.
 #[test]
 fn move_pointer_still_samples_into_the_color_picker() {

@@ -1213,14 +1213,16 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     ok(json!({"status": app.ui.status}))
 }
 
-/// Dialog samplers run first; full-window workspaces keep their own tool-event controllers.
+/// Dialog samplers run first; workspaces with tool-event controllers receive their gestures.
 fn modal_blocks_move_pointer(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Move
         && (!app.ui.dialogs.is_empty()
             || app.ui.layers_panel_dialog.is_some()
             || app.discard.is_some()
             || app.camera_raw.is_some()
-            || app.smart_svg.modal_open())
+            || app.smart_svg.modal_open()
+            || app.distort.gallery.is_some()
+            || app.wide_angle.is_some())
 }
 
 fn parse_pointer(p: &Value) -> std::result::Result<ParsedPointer, String> {
