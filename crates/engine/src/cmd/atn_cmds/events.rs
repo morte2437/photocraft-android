@@ -1051,6 +1051,14 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("", "autoCutout", "Select Subject", "select.subject", &[F("sampleAllLayers", "sampleAllLayers", Kind::Bool)]),
     Event { code: "ClrR", name: "colorRange", label: "Color Range", ids: &["select.colorRange"], from: color_range_from, to: color_range_to },
     // Edit.
+    Event {
+        code: "Grdn",
+        name: "gradientClassEvent",
+        label: "Gradient",
+        ids: &["paint.gradient"],
+        from: super::steps_gradient::from,
+        to: super::steps_gradient::to,
+    },
     Event { code: "Fl  ", name: "fill", label: "Fill", ids: &["edit.fill", "paint.bucket"], from: fill_from, to: fill_to },
     Event {
         code: "Strk",
