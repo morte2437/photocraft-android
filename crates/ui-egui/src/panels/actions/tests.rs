@@ -2471,7 +2471,7 @@ fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
             // The assertions below still require the explicitly named A mask alone to change.
             app.run("layer.layerMask.revealAll", json!({})).unwrap();
             app.session.select_layer(a).unwrap();
-            let mut params = json!({"brightness":40});
+            let mut params = json!({"brightness":40,"target":"pixels"});
             if mask {
                 params["target"] = json!("mask");
             }
