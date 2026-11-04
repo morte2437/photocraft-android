@@ -103,6 +103,8 @@ pub(super) fn is_enabled_with_engine(app: &PhotocraftApp, id: &str, engine_enabl
         // Batch's dialog is built from an Actions-panel action. Keep it disabled until one
         // exists instead of opening a menu item that can only report "record an action".
         "file.automate.batch" => crate::actions::selected_action(app).is_some() && engine_enabled(),
+        #[cfg(target_arch = "wasm32")]
+        "file.export.dataSetsAsFiles" => false,
         i if wraps(i) => engine_enabled(),
         _ => true,
     })
@@ -236,6 +238,7 @@ fn wraps(id: &str) -> bool {
             | "file.export.layerCompsToFiles"
             | "file.export.artboardsToFiles"
             | "file.export.artboardsToPdf"
+            | "file.export.dataSetsAsFiles"
             | "layer.new.artboard"
             | "file.export.colorLookupTables"
             | "view.newGuideLayout"
