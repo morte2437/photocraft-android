@@ -3889,6 +3889,7 @@ curves	Smooth	Làm mượt
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} được hệ thống dành riêng và không thể gán.
 	Low-Latency Drawing (vsync off, applies at next launch)	Vẽ độ trễ thấp (tắt vsync, áp dụng ở lần khởi động sau)
 	Reference point location	Vị trí điểm tham chiếu
+	Toggle reference point	Bật/tắt điểm tham chiếu
 	Free Transform is still being applied; try again when it has finished.	Biến đổi tự do vẫn đang được áp dụng; hãy thử lại khi hoàn tất.
 	The transform couldn't be applied.	Không thể áp dụng phép biến đổi.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Các lớp cần {needed} bộ nhớ GPU; ngân sách chỉ dành cho chúng {budget}.

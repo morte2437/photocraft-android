@@ -807,6 +807,9 @@ mod transform_rotate_snap_tests;
 mod transform_type_tests;
 
 #[cfg(test)]
+mod transform_reference_point_tests;
+
+#[cfg(test)]
 mod transform_several_tests;
 
 #[cfg(test)]

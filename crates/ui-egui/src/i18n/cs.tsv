@@ -4014,6 +4014,7 @@ navigator	Zoom	Zvětšení
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} je vyhrazena systémem a nelze ji přiřadit.
 	Low-Latency Drawing (vsync off, applies at next launch)	Kreslení s nízkou latencí (bez vertikální synchronizace, platí po dalším spuštění)
 	Reference point location	Umístění referenčního bodu
+	Toggle reference point	Zobrazit/skrýt referenční bod
 	Free Transform is still being applied; try again when it has finished.	Volná transformace se stále použije; zkuste to znovu, až skončí.
 	The transform couldn't be applied.	Transformaci nelze použít.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Vrstvy potřebují {needed} paměti GPU; rozpočet jim ponechává {budget}.
