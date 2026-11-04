@@ -4245,6 +4245,7 @@ navigator	Zoom	Zoom
 	Step {step} is waiting for its dialog	Il passaggio {step} attende la sua finestra di dialogo
 @plural	{n} action|{n} actions	{n} azione|{n} azioni
 	Background (Default)	Sfondo (predefinito)
+	Background (default)	Sfondo (predefinito)
 	Include All Subfolders	Includi tutte le sottocartelle
 	Auto Add/Delete	Aggiungi/elimina automaticamente
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Non attivare anche Immagine speculare nelle impostazioni di stampa: le due inversioni si annullano.

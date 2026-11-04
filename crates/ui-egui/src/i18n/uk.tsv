@@ -3984,6 +3984,7 @@ curves	Smooth	Згладити
 	Step {step} is waiting for its dialog	Крок {step} очікує на свій діалог
 @plural	{n} action|{n} actions	{n} операція|{n} операції|{n} операцій
 	Background (Default)	Фон (типовий)
+	Background (default)	Фон (типовий)
 	Include All Subfolders	Включити всі вкладені папки
 	Auto Add/Delete	Автододавання/видалення
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Не вмикайте також дзеркальне відображення в параметрах друку: два відображення скасовують одне одного.

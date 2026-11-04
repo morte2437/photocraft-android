@@ -3297,6 +3297,7 @@ curves	Smooth	Glätten
 	Step {step} is waiting for its dialog	Schritt {step} wartet auf seinen Dialog
 @plural	{n} action|{n} actions	{n} Aktion|{n} Aktionen
 	Background (Default)	Hintergrund (Standard)
+	Background (default)	Hintergrund (Standard)
 	Content-Aware Fill	Inhaltsbasiert füllen
 	Include All Subfolders	Alle Unterordner einschließen
 	Auto Add/Delete	Autom. hinzuf./löschen

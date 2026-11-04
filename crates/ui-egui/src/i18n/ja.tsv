@@ -3900,6 +3900,7 @@ curves	Smooth	スムーズ
 	Step {step} is waiting for its dialog	ステップ {step} はダイアログを待っています
 @plural	{n} action|{n} actions	アクション {n} 個
 	Background (Default)	背景（既定）
+	Background (default)	背景（既定）
 	Include All Subfolders	すべてのサブフォルダーを含める
 	Forward Warp	前方ワープ
 	Twirl Clockwise	時計回りに渦巻き

@@ -3245,6 +3245,7 @@ curves	Smooth	Сгладить
 	Step {step} is waiting for its dialog	Шаг {step} ожидает своего диалога
 @plural	{n} action|{n} actions	{n} операция|{n} операции|{n} операций
 	Background (Default)	Фон (по умолчанию)
+	Background (default)	Фон (по умолчанию)
 	Content-Aware Fill	Заливка с учётом содержимого
 	Include All Subfolders	Включить все вложенные папки
 	Auto Add/Delete	Автодобавление/удаление
