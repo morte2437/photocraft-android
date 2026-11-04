@@ -86,11 +86,13 @@ pub type DialogEdits = HashMap<u64, EditHistory<Map<String, Value>>>;
 /// Once a frame: records each open parameter dialog's settings and forgets closed dialogs.
 pub fn track_dialogs(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let busy = ctx.input(|i| i.pointer.any_down());
+    // A colour an open Color Picker only shows in a dialog is no step of it until the picker's OK.
+    let previewed = crate::color_picker_ui::live_preview::previewed_dialogs(app);
     let dialogs = &app.ui.dialogs;
     app.dialog_edits.retain(|id, _| dialogs.iter().any(|d| d.id == *id));
     for d in dialogs.iter().filter(|d| d.kind == DialogKind::Command) {
         let now = settings(&d.fields);
-        app.dialog_edits.entry(d.id).or_insert_with(|| EditHistory::new(&now)).settle(&now, busy);
+        app.dialog_edits.entry(d.id).or_insert_with(|| EditHistory::new(&now)).settle(&now, busy || previewed.contains(&d.id));
     }
 }
 

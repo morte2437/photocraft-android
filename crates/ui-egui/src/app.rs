@@ -165,6 +165,7 @@ impl PhotocraftApp {
             raw_redevelop: Vec::new(),
             wide_angle: None,
             dialog_edits: Default::default(),
+            color_picker_live: Vec::new(),
             pending_after_prompt: None,
             tone_hist: None,
             doc_hist: None,
