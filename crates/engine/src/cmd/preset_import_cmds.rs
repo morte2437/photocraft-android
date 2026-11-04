@@ -60,15 +60,22 @@ pub(crate) fn file_bytes_limited(p: &Value, cmd: &str, what: &str, max_bytes: u6
     if len > max_bytes {
         return Err(bad(cmd, format!("{path}: file too large ({len} bytes)")));
     }
-    use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = read_preset_bytes(file, cmd, path, max_bytes)?;
+    let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    Ok((bytes, stem))
+}
+
+/// Bound the actual stream independently of metadata, which can become stale before reading.
+/// One extra byte distinguishes an exact-limit file from an oversized or growing input.
+fn read_preset_bytes(reader: impl std::io::Read, cmd: &str, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
     let mut bytes = Vec::new();
-    file.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    reader.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes).map_err(|error| EngineError::Other(format!("{path}: {error}")))?;
     if bytes.len() as u64 > max_bytes {
         return Err(bad(cmd, format!("{path}: file too large")));
     }
-    let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    Ok((bytes, stem))
+    Ok(bytes)
 }
 
 /// The preset names in use, for naming new presets.
@@ -405,6 +412,19 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    /// A growing stream must fail the actual-read check after at most cap + 1 bytes;
+    /// the exact-limit control stays valid, including a zero-byte budget.
+    #[test]
+    fn preset_stream_limit_does_not_depend_on_metadata() {
+        for cap in [0_u64, 2] {
+            let mut exact = std::io::Cursor::new(vec![7; cap as usize]);
+            assert_eq!(super::read_preset_bytes(&mut exact, "test", "fixture", cap).unwrap(), vec![7; cap as usize]);
+            let mut growing = std::io::Cursor::new(vec![7; 32]);
+            let error = super::read_preset_bytes(&mut growing, "test", "fixture", cap).unwrap_err();
+            assert!(error.to_string().contains("file too large"), "{error}");
+            assert_eq!(growing.position(), cap + 1, "the reader must not consume the rest of a growing source");
+        }
+    }
     #[test]
     fn decoded_preset_data_cannot_exceed_its_format_budget() {
         // Both payloads have four encoded characters: checking base64 length alone is insufficient.

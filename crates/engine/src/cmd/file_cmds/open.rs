@@ -188,12 +188,7 @@ pub fn open_bytes_as_with_options(
     let (r, raw_settings) = if let Some((imported, settings)) = raw {
         (imported, Some(settings))
     } else {
-        let r = if s.batch_open_notices.is_some() {
-            photocraft_io::import_with_options(&decode_name, bytes, &opts)
-        } else {
-            photocraft_io::import_with_options(&decode_name, bytes, &opts)
-        }
-        .map_err(|e| crate::error::io_open_error(&decode_name, e))?;
+        let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| crate::error::io_open_error(&decode_name, e))?;
         (r, None)
     };
     if (s.batch_open.is_some() || s.batch_open_notices.is_some()) && r.preview_only {

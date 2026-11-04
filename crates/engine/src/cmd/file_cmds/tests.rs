@@ -509,6 +509,129 @@ fn batch_quiet_profile_open_uses_caller_policy_and_retains_diagnostics() {
     assert!(!std::path::Path::new(&invalid).exists());
 }
 
+/// The sentinel bounds even the broken version: named live-document cycles must reject first,
+/// while an acyclic action preserves the caller's recorder and surrounding playback stack.
+#[test]
+fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn gate(id: &str, _: &Value) -> Result<()> {
+        if id == "file.automate.batch" && CALLS.fetch_add(1, Ordering::SeqCst) >= 4 {
+            return Err(EngineError::Other("bounded Batch recursion sentinel".into()));
+        }
+        Ok(())
+    }
+    for mutual in [false, true] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":8,"height":8})).unwrap();
+        let nested = |name| ("file.automate.batch".into(), json!({"source":"open","action":name}));
+        s.actions.list = vec![
+            crate::actions_cmds::Action::new("Recorder", vec![]),
+            crate::actions_cmds::Action::new("Loop A", vec![nested(if mutual { "Loop B" } else { "Loop A" })]),
+            crate::actions_cmds::Action::new("Loop B", vec![nested("Loop A")]),
+            crate::actions_cmds::Action::new("Leaf", vec![("layer.new.layer".into(), json!({"name":"visited"}))]),
+        ];
+        let definitions = s.actions.list[1..].to_vec();
+        s.actions.playback_stack = vec!["Enclosing".into()];
+        s.actions.recording = Some((s.journal.len(), 0));
+        let take = s.actions.take;
+        s.authorize = Some(gate);
+        CALLS.store(0, Ordering::SeqCst);
+        let result = batch(&mut s, &json!({"source":"open","action":"Loop A"})).unwrap();
+        assert!(result["errors"][0]["error"].as_str().unwrap().contains("recursive action"), "{result}");
+        assert!(CALLS.load(Ordering::SeqCst) <= 2, "the cycle check must beat the finite sentinel");
+        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
+        assert_eq!(s.actions.take, take);
+        assert_eq!(&s.actions.list[1..], definitions.as_slice());
+        let before = doc(&s).walk().len();
+        let result = batch(&mut s, &json!({"source":"open","action":"Leaf"})).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(doc(&s).walk().len(), before + 1);
+        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
+        assert_eq!(s.actions.take, take);
+        assert_eq!(&s.actions.list[1..], definitions.as_slice());
+    }
+}
+
+/// Named live-document playback must normalize recorded targets and percentage coordinates,
+/// just as ordinary action playback does, before authorization sees execution params.
+#[test]
+fn named_open_document_batch_uses_effective_recorded_parameters() {
+    fn gate(id: &str, p: &Value) -> Result<()> {
+        if id == "type.create" && (p.get("xPercent").is_some() || p["x"] != json!(50.0) || p["y"] != json!(40.0)) {
+            return Err(EngineError::Other("type position was not normalized before authorization".into()));
+        }
+        if id == "layer.setProps" && p.get("_actionLayer").is_some() {
+            return Err(EngineError::Other("recorded visibility target leaked to execution".into()));
+        }
+        Ok(())
+    }
+    for through_batch in [false, true] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":200,"height":100})).unwrap();
+        let a = s.execute("layer.new.layer", json!({"name":"A"})).unwrap()["layer"].as_u64().unwrap();
+        let b = s.execute("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap();
+        s.actions.list.push(crate::actions_cmds::Action::new(
+            "Recorded",
+            vec![
+                ("layer.setProps".into(), json!({"visible":false,"_actionLayer":{"name":"A","ordinal":0}})),
+                ("type.create".into(), json!({"text":"x","size":12,"xPercent":25.0,"yPercent":40.0})),
+            ],
+        ));
+        if through_batch {
+            s.authorize = Some(gate);
+            let result = s.execute("file.automate.batch", json!({"source":"open","action":"Recorded"})).unwrap();
+            assert_eq!(result["errors"], json!([]), "{result}");
+        } else {
+            let result = s.execute("actions.play", json!({"action":"Recorded"})).unwrap();
+            assert_eq!(result["ran"], 2, "{result}");
+        }
+        assert!(!doc(&s).layer(photocraft_doc::LayerId(a)).unwrap().visible);
+        assert!(doc(&s).layer(photocraft_doc::LayerId(b)).unwrap().visible);
+        assert_eq!(doc(&s).walk().iter().filter(|(_, _, layer)| matches!(layer.content, photocraft_doc::LayerContent::Text(_))).count(), 1);
+    }
+}
+
+/// Structured outputs reject a repeated live-document destination before editing that document;
+/// the ordinary native template control retains main's intentional later-file-wins behavior.
+#[test]
+fn structured_open_document_batch_guards_destinations_before_editing() {
+    let dir = tmp("batch-open-collision-policy");
+    for structured in [false, true] {
+        let mut s = Session::new();
+        for color in ["#ff0000", "#0000ff"] {
+            s.execute("file.new", json!({"width":2,"height":2,"background":color})).unwrap();
+        }
+        let before = s.documents()[1].history.past_len();
+        let output = join(&dir, if structured { "structured" } else { "ordinary" });
+        let mut p = json!({"source":"open","output":output,"format":"png","stopOnError":true,
+            "steps":[["image.adjustments.invert",{}]]});
+        if structured {
+            p["namingComponents"] = json!([{"text":"same.png"}]);
+        } else {
+            p["naming"] = json!("same.png");
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        let saved = photocraft_io::import("same.png", &std::fs::read(join(&output, "same.png")).unwrap()).unwrap().document;
+        let pixel = photocraft_compose::render(&saved, Rect::new(0, 0, 1, 1)).px[0];
+        if structured {
+            assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+            assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("not written"));
+            assert_eq!(pixel, [0.0, 1.0, 1.0, 1.0], "the first result remains intact");
+            assert_eq!(s.documents()[1].history.past_len(), before);
+            assert_eq!(photocraft_compose::render(&s.documents()[1].doc, Rect::new(0, 0, 1, 1)).px[0], [0.0, 0.0, 1.0, 1.0]);
+        } else {
+            assert_eq!(result["files"].as_array().unwrap().len(), 2, "{result}");
+            assert_eq!(result["errors"], json!([]), "{result}");
+            assert_eq!(pixel, [1.0, 1.0, 0.0, 1.0], "native naming keeps the later result");
+            assert_eq!(s.documents()[1].history.past_len(), before + 1);
+        }
+    }
+}
+
 /// A background recorded Batch keeps quiet opening, structured content and collision refusal
 /// through the shared cancellation/write runner; the duplicate never replaces the first result.
 #[test]

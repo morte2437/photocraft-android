@@ -227,6 +227,8 @@ struct ProcessOptions<'a> {
     input: Option<&'a InputPolicy<'a>>,
 }
 
+/// Open and process one scratch input, collecting opening diagnostics even on failure.
+/// All destination writes retain the worker's cancellation checkpoint.
 fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: ProcessOptions<'_>, f: &dyn Fn(&mut Session, &str) -> Result<bool>) -> Result<()> {
     if let Some(written) = options.written {
         written.check(out).map_err(EngineError::Other)?;
@@ -371,6 +373,7 @@ pub fn validate_flat_outputs(outputs: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
+/// Exercise the native runner without recorded opening or collision-policy overrides.
 #[cfg(test)]
 pub(super) fn process_batch_outputs(
     raw_ppi: f64,
@@ -393,6 +396,8 @@ struct BatchRun<'a> {
     check_duplicates: bool,
 }
 
+/// Share background progress, interruption and write ordering across native and recorded inputs.
+/// Recorded opening and destination policy vary without replacing those lifecycle checks.
 fn process_batch_outputs_with(
     config: BatchRun<'_>,
     outputs: Vec<(String, String)>,
@@ -552,6 +557,8 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 }
 
 /// Apply the selected file-error policy while retaining per-file results for direct callers.
+/// Resolve explicit or named steps, then run folder work on scratch documents or edit live tabs.
+/// Named actions carry their recursion context and both routes normalize recorded parameters.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
     let quiet_raw = match p.get("suppressOpenOptions") {
@@ -701,15 +708,18 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if source == "open" {
         let save = SaveOpts::from_params(s, p, cmd)?;
-        if p.get("calledActions").is_some_and(|value| !value.is_null()) {
-            let previous = std::mem::replace(&mut s.actions.list, actions.list.clone());
-            let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+        // Carry the selected action's cycle context on the live session too. Preserve its
+        // recorder, revision and other state; only a packaged library temporarily replaces definitions.
+        let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
+        let previous_list = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list));
+        let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+        s.actions.playback_stack = previous_stack;
+        if let Some(previous) = previous_list {
             s.actions.list = previous;
-            return result;
         }
-        return batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+        return result;
     }
-    let check_duplicates = save_and_close || include_non_images || p.get("namingComponents").is_some_and(|value| !value.is_null());
+    let check_duplicates = recorded_output_guard(p);
     let names = if save_and_close { None } else { batch_naming::plan(&inputs, &output, &format, p)? };
     let mut save = SaveOpts::from_params(s, p, cmd)?;
     if save_and_close {
@@ -903,6 +913,14 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
+/// Preserve the recorded/structured collision policy while ordinary native Batch keeps
+/// current main's later-file-wins behavior. The validated request uses this in both source modes.
+fn recorded_output_guard(p: &Value) -> bool {
+    p.get("destination").and_then(Value::as_str) == Some("saveAndClose")
+        || p.get("includeNonImages").and_then(Value::as_bool) == Some(true)
+        || p.get("namingComponents").is_some_and(|value| !value.is_null())
+}
+
 /// Source: Opened Files runs on the live documents, so edits remain in their histories.
 /// Documents are identified before playback; a step that closes or reorders tabs cannot make
 /// the next input silently become a different document.
@@ -954,11 +972,18 @@ fn batch_open_documents(
     let mut errors = Vec::new();
     let mut stopped = None;
     let mut done = 0;
+    let mut written = OutputClaims::default();
+    let check_duplicates = recorded_output_guard(p);
     for (index, (id, name, path)) in originals.iter().enumerate() {
         // The document a recorded Save / Save As marked as saved, with its earlier saved
         // revision: when Batch then writes nothing, it reads as changed again.
         let mut marked: Option<(u64, u64)> = None;
         let result = (|| -> Result<()> {
+            // A rejected destination cannot edit the next document either.
+            if check_duplicates && let Some(paths) = &planned {
+                let out = paths.get(index).ok_or_else(|| EngineError::Other("batch output plan is incomplete".into()))?;
+                written.check(out).map_err(EngineError::Other)?;
+            }
             let position = s.documents().iter().position(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?;
             s.set_active(position);
             let mut saved: Option<Arc<Document>> = None;
@@ -975,7 +1000,8 @@ fn batch_open_documents(
                     }
                     continue;
                 }
-                let response = s.execute(command, params.clone())?;
+                let params = crate::actions_cmds::playback_params(s, command, params)?;
+                let response = s.execute(command, params)?;
                 if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
                     return Err(EngineError::Other(error));
                 }
@@ -989,6 +1015,7 @@ fn batch_open_documents(
             };
             let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
             save_doc_as(&doc, out, &ext, save)?;
+            written.record(out, path);
             files.push(out.clone());
             Ok(())
         })();
