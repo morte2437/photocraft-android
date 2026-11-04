@@ -20,12 +20,22 @@ pub(crate) enum Hit {
 /// The nearest handle within `tol` (on a small box their grab areas overlap), else inside or
 /// outside the box.
 pub(crate) fn hit(t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
+    hit_with(t, p, tol, true)
+}
+
+/// [`hit`] for the Free Transform box, whose reference point is a handle only while the options
+/// bar's Toggle Reference Point is on (#11098).
+pub(super) fn box_hit(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
+    hit_with(t, p, tol, app.ui.tool_options.transform_reference_point)
+}
+
+fn hit_with(t: &TransformSession, p: [f64; 2], tol: f64, pivot: bool) -> Hit {
     let d = |a: [f64; 2]| ((a[0] - p[0]).powi(2) + (a[1] - p[1]).powi(2)).sqrt();
     let mid = |i: usize| {
         let (a, b) = (t.quad[i], t.quad[(i + 1) % 4]);
         [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
     };
-    let handles = (0..4).map(|i| (t.quad[i], Hit::Corner(i))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain([(t.pivot, Hit::Pivot)]);
+    let handles = (0..4).map(|i| (t.quad[i], Hit::Corner(i))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain(pivot.then_some((t.pivot, Hit::Pivot)));
     let nearest = handles.map(|(q, h)| (d(q), h)).filter(|(dist, _)| *dist < tol).min_by(|a, b| a.0.total_cmp(&b.0));
     match nearest {
         Some((_, h)) => h,
@@ -72,10 +82,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
         warp_pointer(app, ev, tol, mods);
         return true;
     }
+    let show_pivot = app.ui.tool_options.transform_reference_point;
     let Some(pv) = app.transform_preview.as_mut() else { return false };
     match ev {
         ToolEvent::Down { x, y, .. } => {
-            let mut h = hit(&t, [x, y], tol);
+            let mut h = hit_with(&t, [x, y], tol, show_pivot);
             // ⌥-click away from the handles moves the reference point there (and drags it).
             if mods.alt
                 && matches!(h, Hit::Inside | Hit::Outside)
@@ -266,7 +277,7 @@ pub(super) fn rotate_dir(t: &TransformSession, pv: Option<&TransformPreview>, p:
 
 /// The handle a drag in progress holds, else the one under document point `p`.
 pub(super) fn handle_at(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
-    app.transform_preview.as_ref().and_then(|pv| pv.gesture.map(|g| g.hit)).unwrap_or_else(|| hit(t, p, tol))
+    app.transform_preview.as_ref().and_then(|pv| pv.gesture.map(|g| g.hit)).unwrap_or_else(|| box_hit(app, t, p, tol))
 }
 
 /// Cursor for hovering a document point while transforming. `xf` is the canvas's view;

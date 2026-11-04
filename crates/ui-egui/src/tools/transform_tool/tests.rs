@@ -776,6 +776,39 @@ fn the_nearest_handle_wins_on_a_small_box() {
     assert_eq!(hit(&s, [40.0, 40.0], 12.0), Hit::Outside);
 }
 
+/// Toggle Reference Point (#11098): off by default, as in Photoshop, so a press on the centre
+/// moves the content instead of grabbing the hidden reference point; ticked, the centre drags
+/// the reference point again.
+#[test]
+fn the_reference_point_is_only_draggable_when_toggled_on() {
+    let ctx = egui::Context::default();
+    let none = egui::Modifiers::NONE;
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(4, 4, 60, 60));
+    assert!(!app.ui.tool_options.transform_reference_point, "off by default");
+    begin(&mut app, &ctx).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    let (quad, pivot) = (t.quad, t.pivot);
+    assert_ne!(box_hit(&app, t, pivot, 12.0), Hit::Pivot);
+    pointer(&mut app, ToolEvent::Down { x: pivot[0], y: pivot[1], pressure: 1.0 }, none);
+    pointer(&mut app, ToolEvent::Move { x: pivot[0] + 5.0, y: pivot[1], pressure: 1.0 }, none);
+    pointer(&mut app, ToolEvent::Up { x: pivot[0] + 5.0, y: pivot[1] }, none);
+    let t = app.ui.transform.as_ref().unwrap();
+    assert!(close(t.quad, quad.map(|[x, y]| [x + 5.0, y])), "the box moved: {:?}", t.quad);
+
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(4, 4, 60, 60));
+    app.ui.tool_options.transform_reference_point = true;
+    begin(&mut app, &ctx).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    let (quad, pivot) = (t.quad, t.pivot);
+    assert_eq!(box_hit(&app, t, pivot, 12.0), Hit::Pivot);
+    pointer(&mut app, ToolEvent::Down { x: pivot[0], y: pivot[1], pressure: 1.0 }, none);
+    pointer(&mut app, ToolEvent::Move { x: pivot[0] + 5.0, y: pivot[1], pressure: 1.0 }, none);
+    pointer(&mut app, ToolEvent::Up { x: pivot[0] + 5.0, y: pivot[1] }, none);
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.quad, quad, "the box stays");
+    assert!((t.pivot[0] - pivot[0] - 5.0).abs() < 1e-6, "the reference point moved: {:?}", t.pivot);
+}
+
 #[test]
 fn interior_patch_points_are_hidden_and_grid_anchors_stay() {
     assert!(on_section_edge(0, 0) && on_section_edge(1, 0) && on_section_edge(0, 2));
