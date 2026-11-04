@@ -2342,6 +2342,88 @@ fn a_stricter_current_gate_still_denies_the_captured_dialog_edit() {
 }
 
 #[test]
+fn paused_spelling_checks_the_live_gate_before_resuming_history() {
+    fn deny_correction(id: &str, p: &Value) -> photocraft_engine::Result<()> {
+        if id == "edit.checkSpelling" && p["action"] == "changeAll" { Err(photocraft_engine::EngineError::Other("live spelling gate".into())) } else { Ok(()) }
+    }
+    for service in 0..3 {
+        let (mut app, _, _) = paused_history_spelling(true, Some(deny_second_spelling_change));
+        let before = app.session.active().unwrap().doc.clone();
+        let rows = app.session.active().unwrap().history.entries();
+        let token = app.ui.type_panels.spell.as_ref().unwrap().resume.unwrap();
+        app.session.authorize = None;
+        match service {
+            0 => app.session.authorize = Some(deny_correction),
+            1 => {
+                app.automation_input = true;
+                app.services.automation_authorize = Some(deny_correction);
+            }
+            _ => {
+                app.automation_input = true;
+                app.services.automation_command = Some(Box::new(|id, _| if id == "edit.checkSpelling" { Err("live spelling gate".into()) } else { Ok(()) }));
+            }
+        }
+        assert!(spelling_change(&mut app, json!({"action":"changeAll","word":"Teh","replace":"The"})).is_err());
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+        assert_eq!(app.session.active().unwrap().history.entries(), rows);
+        assert!(app.paused_playbacks.paused.get(&token).unwrap().history.is_some(), "denial must leave the bound continuation untouched");
+        assert!(app.session.execute("actions.setHistory", json!({"singleState":false})).is_err());
+        let fields = serde_json::Map::from_iter([(RESUME.to_string(), json!(token))]);
+        abandoned(&mut app, &fields);
+        app.session.execute("actions.setHistory", json!({"singleState":false})).unwrap();
+    }
+}
+
+#[test]
+fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
+    for explicit in [false, true] {
+        for mask in [false, true] {
+            let mut app = gated_blur_fixture(true, false);
+            let a = app.session.active().unwrap().active_layer.unwrap();
+            app.run("layer.layerMask.revealAll", json!({})).unwrap();
+            let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap());
+            app.session.select_layer(a).unwrap();
+            let mut params = json!({"brightness":40});
+            if mask {
+                params["target"] = json!("mask");
+            }
+            if explicit {
+                params["layer"] = json!(a.0);
+            }
+            app.session.actions.list[0].steps[0] = ("image.adjustments.brightnessContrast".into(), params);
+            let dialog = pause_gated_blur(&mut app, None);
+            app.session.select_layer(b).unwrap();
+            let before = app.session.active().unwrap().doc.clone();
+            let result = crate::dialogs::confirm(&mut app, dialog);
+            if explicit {
+                result.unwrap();
+                assert_eq!(app.session.active().unwrap().doc.layer(b).unwrap(), before.layer(b).unwrap());
+            } else {
+                assert!(result.is_err_and(|e| e.contains("receiver changed")));
+                assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+            }
+        }
+    }
+}
+
+#[test]
+fn a_document_channel_adjustment_survives_an_active_layer_change() {
+    let mut app = gated_blur_fixture(true, false);
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap());
+    app.run("channel.new", json!({"name":"Alpha","fill":"black"})).unwrap();
+    app.session.select_layer(a).unwrap();
+    app.session.actions.list[0].steps[0] = ("image.adjustments.brightnessContrast".into(), json!({"brightness":40,"target":{"channel":0}}));
+    let dialog = pause_gated_blur(&mut app, None);
+    app.session.select_layer(b).unwrap();
+    let before = app.session.active().unwrap().doc.clone();
+    crate::dialogs::confirm(&mut app, dialog).unwrap();
+    let after = &app.session.active().unwrap().doc;
+    assert_eq!(after.layers, before.layers);
+    assert_ne!(after.channels, before.channels);
+}
+
+#[test]
 fn an_implicit_paused_filter_refuses_a_public_api_receiver_change() {
     for single in [false, true] {
         for explicit in [false, true] {

@@ -802,6 +802,14 @@ pub fn close_spelling(app: &mut PhotocraftApp) {
     }
 }
 
+fn spelling_change_all_params(item: &Value, word: &str, replace: &str, all_layers: bool) -> Value {
+    let mut params = json!({"action":"changeAll", "word":word, "replace":replace, "allLayers":all_layers});
+    if !all_layers {
+        params["layer"] = item["layer"].clone();
+    }
+    params
+}
+
 fn spelling_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     let Some(d) = app.ui.type_panels.spell.clone() else { return };
@@ -930,7 +938,7 @@ fn spelling_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 let p = if a == "change" {
                     json!({ "action": "change", "layer": i["layer"], "start": i["start"], "end": i["end"], "word": word, "replace": change_to })
                 } else {
-                    json!({ "action": "changeAll", "word": word, "replace": change_to, "allLayers": all_layers })
+                    spelling_change_all_params(i, &word, &change_to, all_layers)
                 };
                 if let Err(error) = crate::actions::spelling_change(app, p) {
                     app.ui.status = error;
@@ -969,6 +977,30 @@ mod tests {
         assert!(!app.ui.type_panels.styles);
         menu(&mut app, "window.panel.glyphs", &json!({"show": true})).unwrap().unwrap();
         assert!(app.ui.type_panels.glyphs);
+    }
+
+    #[test]
+    fn change_all_keeps_the_listed_layer_after_a_session_selection_change() {
+        for all_layers in [false, true] {
+            let mut app = app_with_text("Teh cat");
+            let listed = app.session.active().unwrap().active_layer.unwrap();
+            app.run("type.create", json!({"x":10,"y":90,"text":"Teh dog"})).unwrap();
+            let other = app.session.active().unwrap().active_layer.unwrap();
+            app.session.select_layer(listed).unwrap();
+            menu(&mut app, "edit.checkSpelling", &json!({"allLayers":false})).unwrap().unwrap();
+            let item = app.ui.type_panels.spell.as_ref().unwrap().items[0].clone();
+            app.session.select_layer(other).unwrap();
+            let params = spelling_change_all_params(&item, "Teh", "The", all_layers);
+            if all_layers {
+                assert!(params.get("layer").is_none());
+            }
+            crate::actions::spelling_change(&mut app, params).unwrap();
+            let doc = &app.session.active().unwrap().doc;
+            for (id, expected) in [(listed, "The cat"), (other, if all_layers { "The dog" } else { "Teh dog" })] {
+                let photocraft_doc::LayerContent::Text(text) = &doc.layer(id).unwrap().content else { panic!("not text") };
+                assert_eq!(text.text, expected);
+            }
+        }
     }
 
     #[test]

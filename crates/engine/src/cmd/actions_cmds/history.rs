@@ -223,6 +223,7 @@ struct PausedDocument {
 /// Exact document/history binding of a dialog continuation. Never stored in dialog JSON.
 #[derive(Clone, Debug)]
 pub struct ActionHistoryContinuation {
+    _policy_lease: Arc<()>,
     group: Option<ActionHistory>,
     active: Option<DocId>,
     documents: Vec<PausedDocument>,
@@ -286,6 +287,9 @@ impl ActionHistoryContinuation {
 
     /// Publish the prefix and capture the same document/history/source binding for both callers.
     fn capture(s: &mut Session) -> Self {
+        s.paused_action_history.retain(|lease| lease.strong_count() != 0);
+        let policy_lease = Arc::new(());
+        s.paused_action_history.push(Arc::downgrade(&policy_lease));
         let group = s.action_history.take();
         if let Some(group) = &group {
             consolidate(s, group);
@@ -297,7 +301,7 @@ impl ActionHistoryContinuation {
             .filter(|st| Some(st.doc.id) == active || group.as_ref().is_some_and(|g| g.before.iter().any(|b| b.id == st.doc.id)))
             .map(|st| PausedDocument { id: st.doc.id, doc: st.doc.clone(), history: HistoryBinding::of(&st.history), source_snapshot: st.source_snapshot })
             .collect();
-        Self { group, active, documents }
+        Self { _policy_lease: policy_lease, group, active, documents }
     }
 }
 
@@ -320,6 +324,26 @@ pub fn finish_pending_history(s: &mut Session) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn history_policy_stays_fixed_until_all_paused_continuations_are_released() {
+        for single in [false, true] {
+            let mut s = Session::new();
+            s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+            begin_document_history(&mut s, "Paused");
+            let continuation = ActionHistoryContinuation::capture(&mut s);
+            let copy = continuation.clone();
+            assert!(s.execute("actions.setHistory", json!({"singleState":!single})).is_err());
+            assert_eq!(s.prefs().actions.create_single_history_state, single);
+            continuation.resume(&mut s).unwrap();
+            finish_document_history(&mut s);
+            drop(continuation);
+            assert!(s.execute("actions.setHistory", json!({"singleState":!single})).is_err());
+            drop(copy);
+            s.execute("actions.setHistory", json!({"singleState":!single})).unwrap();
+            assert_eq!(s.prefs().actions.create_single_history_state, !single);
+        }
+    }
 
     #[test]
     fn idle_dialog_rebind_keeps_first_edit_and_clear_boundaries() {
@@ -365,8 +389,9 @@ mod tests {
             s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
             begin_document_history(&mut s, "Spell");
             let continuation = ActionHistoryContinuation::capture(&mut s);
-            s.execute("actions.setHistory", json!({"singleState":true})).unwrap();
-            begin_document_history(&mut s, "Parent");
+            // An independently owned parent scope must never be taken, even for a paused
+            // per-step action whose policy is now protected from changes.
+            s.action_history = Some(ActionHistory { name: "Parent".into(), external: true, before: Vec::new() });
             let before = s.active().unwrap().doc.clone();
             let rows = s.active().unwrap().history.entries();
             assert!(continuation.suspend_after_edit(&mut s).is_err());

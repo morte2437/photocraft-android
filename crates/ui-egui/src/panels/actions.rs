@@ -243,18 +243,28 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         // from the next step when it is confirmed (`resume`). Agents play headlessly.
         if action.dialogs.contains(&i) && !app.automation_input && (crate::filter_dialog::has_dialog(id) || crate::adjust_dialog::has_dialog(id)) {
             let label = label_of(id);
-            let filter_receiver = (id.starts_with("filter.") && p.get("layer").is_none()).then(|| app.session.active().and_then(|st| st.active_layer));
+            let active_layer = app.session.active().and_then(|st| st.active_layer);
             let dialog = crate::dialogs::open_command_dialog(app, id, &label);
             let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
-            if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
-                paused.filter_receiver = filter_receiver;
-            }
+            let mut receiver = None;
             if let Some(d) = app.ui.dialog_mut(dialog) {
                 if let Some(o) = p.as_object() {
                     // `__` keys are the dialog's own markers (`params_of` drops them), not step values.
                     d.fields.extend(o.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())));
                 }
                 d.fields.insert(RESUME.into(), json!(token));
+                // Mask/color-component targets still belong to a layer; alpha channels and
+                // Quick Mask belong to the document. Inspect the target the dialog captured.
+                let document_target = d
+                    .fields
+                    .get("target")
+                    .is_some_and(|target| target.as_str() == Some("quickMask") || target.get("channel").and_then(Value::as_u64).is_some());
+                if p.get("layer").is_none_or(Value::is_null) && !document_target {
+                    receiver = Some(active_layer);
+                }
+            }
+            if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
+                paused.filter_receiver = receiver;
             }
             paused = Some(json!({"step": i, "id": id, "dialog": dialog}));
             break;
@@ -854,7 +864,7 @@ pub(crate) struct PausedPlayback {
     /// The document a pause at Check Spelling was playing on. That dialog doesn't block the
     /// document tabs, so Done ([`resume_spelling`]) continues only on this document.
     doc: Option<photocraft_doc::DocId>,
-    /// An implicit filter step resolves this active layer at the pause. The outer Option marks
+    /// An implicit filter/adjustment step resolves this active layer at the pause. The outer Option marks
     /// that binding even when there was no active layer; explicit-layer and other dialogs omit it.
     filter_receiver: Option<Option<photocraft_doc::LayerId>>,
 }
@@ -890,7 +900,7 @@ pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<
     if let Some(receiver) = paused.filter_receiver
         && app.session.active().and_then(|st| st.active_layer) != receiver
     {
-        return Err("the paused filter's receiver changed while its dialog was open".into());
+        return Err("the paused command's receiver changed while its dialog was open".into());
     }
     let captured = paused.gate;
     let saved = app.session.authorize;
@@ -938,16 +948,12 @@ pub(crate) fn spelling_change(app: &mut PhotocraftApp, params: Value) -> Result<
         return Err("the active document changed while Check Spelling was open".into());
     }
     let history = paused.history.clone();
-    let gate = paused.gate.or(app.session.authorize);
-    if let Some(authorize) = gate {
-        authorize("edit.checkSpelling", &params).map_err(|error| error.to_string())?;
-    }
     let fields = serde_json::Map::from_iter([(RESUME.to_string(), json!(token))]);
-    prepare_history(app, &fields)?;
-    let saved_gate = app.session.authorize;
-    app.session.authorize = gate;
-    let result = app.run("edit.checkSpelling", params);
-    app.session.authorize = saved_gate;
+    let result = run_step_dialog(app, &fields, "edit.checkSpelling", params);
+    // A rejected admission did not resume this continuation. Keep the original token intact.
+    if app.paused_playbacks.paused.get(&token).is_some_and(|paused| paused.history.is_some()) {
+        return result;
+    }
     if let Some(history) = history {
         match history.suspend_after_edit(&mut app.session) {
             Ok(history) => {

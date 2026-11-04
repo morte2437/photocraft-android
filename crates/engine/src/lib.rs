@@ -207,6 +207,8 @@ pub struct Session {
     coalesce_request: Option<String>,
     /// The outer action's original document/history states, independent of command transactions.
     action_history: Option<actions_cmds::ActionHistory>,
+    /// Weak leases expire when every copy of a suspended continuation is abandoned.
+    paused_action_history: Vec<std::sync::Weak<()>>,
     /// Tests observe the actual scratch-session boundary without retaining it or changing output.
     #[cfg(test)]
     batch_history_observer: Option<fn(&Session)>,
