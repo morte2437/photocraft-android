@@ -4,6 +4,7 @@ use photocraft_doc::{DocId, Document};
 use photocraft_ops::{History, LayerTarget};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Debug)]
 struct BeforeDocument {
@@ -226,6 +227,9 @@ struct PausedDocument {
 #[derive(Clone, Debug)]
 pub struct ActionHistoryContinuation {
     _policy_lease: Arc<()>,
+    /// Set by the first successful `resume`, shared by every clone: a kept clone can't reopen a
+    /// scope that already ran (and may have finished).
+    resumed: Arc<AtomicBool>,
     group: Option<ActionHistory>,
     active: Option<DocId>,
     documents: Vec<PausedDocument>,
@@ -244,6 +248,9 @@ impl ActionHistoryContinuation {
             if !Arc::ptr_eq(&st.doc, &before.doc) || HistoryBinding::of(&st.history) != before.history || st.source_snapshot != before.source_snapshot {
                 return Err(EngineError::Other("the paused action's document or history changed".into()));
             }
+        }
+        if self.resumed.swap(true, Ordering::SeqCst) {
+            return Err(EngineError::Other("the paused action was already resumed".into()));
         }
         if let Some(group) = &self.group {
             for before in &group.before {
@@ -303,7 +310,7 @@ impl ActionHistoryContinuation {
             .filter(|st| Some(st.doc.id) == active || group.as_ref().is_some_and(|g| g.before.iter().any(|b| b.id == st.doc.id)))
             .map(|st| PausedDocument { id: st.doc.id, doc: st.doc.clone(), history: HistoryBinding::of(&st.history), source_snapshot: st.source_snapshot })
             .collect();
-        Self { _policy_lease: policy_lease, group, active, documents }
+        Self { _policy_lease: policy_lease, resumed: Arc::new(AtomicBool::new(false)), group, active, documents }
     }
 }
 
@@ -324,6 +331,22 @@ pub fn finish_pending_history(s: &mut Session) {
 
 #[cfg(test)]
 mod tests {
+    /// Batch 16 review: a kept clone can't reopen a scope its continuation already resumed and
+    /// finished, even with the document and history unchanged.
+    #[test]
+    fn a_continuation_resumes_once() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+        s.execute("actions.setHistory", json!({"singleState":true})).unwrap();
+        begin_document_history(&mut s, "Spell");
+        let continuation = ActionHistoryContinuation::capture(&mut s);
+        let kept = continuation.clone();
+        continuation.resume(&mut s).unwrap();
+        finish_document_history(&mut s);
+        assert!(kept.resume(&mut s).is_err(), "the clone shares the resumed mark");
+        assert!(s.action_history.is_none());
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -253,13 +253,10 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
                     d.fields.extend(o.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())));
                 }
                 d.fields.insert(RESUME.into(), json!(token));
-                // Mask/color-component targets still belong to a layer; alpha channels and
-                // Quick Mask belong to the document. Inspect the target the dialog captured.
-                let document_target = d
-                    .fields
-                    .get("target")
-                    .is_some_and(|target| target.as_str() == Some("quickMask") || target.get("channel").and_then(Value::as_u64).is_some());
-                if p.get("layer").is_none_or(Value::is_null) && !document_target {
+                // Kept for every implicit step, also one opened on a document target: the dialog
+                // may switch it to a layer-owned one, and `run_step_dialog` checks the receiver
+                // for the target it confirms.
+                if p.get("layer").is_none_or(Value::is_null) {
                     receiver = Some(active_layer);
                 }
             }
@@ -902,6 +899,12 @@ impl PausedPlaybacks {
     }
 }
 
+/// Whether a dialog command's `target` belongs to the document rather than to a layer: alpha
+/// channels and Quick Mask do; masks and colour components still belong to a layer.
+fn document_target(params: &Value) -> bool {
+    params.get("target").is_some_and(|target| target.as_str() == Some("quickMask") || target.get("channel").and_then(Value::as_u64).is_some())
+}
+
 /// Admit the final dialog command before resuming history or starting a worker. The captured
 /// policy judges the edited parameters; a current live gate still governs dispatch and nested
 /// work. With no live gate, reinstall the captured gate for job admission and rendering.
@@ -910,6 +913,7 @@ pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<
     let token = token.as_u64().ok_or("this dialog doesn't belong to a paused action")?;
     let paused = app.paused_playbacks.paused.get(&token).ok_or("this dialog doesn't belong to a paused action")?;
     if let Some(receiver) = paused.filter_receiver
+        && !document_target(&params)
         && app.session.active().and_then(|st| st.active_layer) != receiver
     {
         return Err("the paused command's receiver changed while its dialog was open".into());

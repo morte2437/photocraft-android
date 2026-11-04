@@ -2564,6 +2564,23 @@ fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
         }
     }
 
+    // Batch 16 review: a dialog paused on a document target (an alpha channel) and switched to
+    // the layer's pixels checks the layer that was active at the pause.
+    {
+        let mut app = gated_blur_fixture(true, false);
+        let a = app.session.active().unwrap().active_layer.unwrap();
+        let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap());
+        app.session.select_layer(a).unwrap();
+        app.session.actions.list[0].steps[0] = ("image.adjustments.brightnessContrast".into(), json!({"brightness":40,"target":{"channel":0}}));
+        let dialog = pause_gated_blur(&mut app, None);
+        app.ui.dialog_mut(dialog).unwrap().fields.insert("target".into(), json!("pixels"));
+        app.session.select_layer(b).unwrap();
+        let before = app.session.active().unwrap().doc.clone();
+        let result = crate::dialogs::confirm(&mut app, dialog);
+        assert!(result.is_err_and(|e| e.contains("receiver changed")));
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+    }
+
     // An omitted target inherits the mask selected when the paused dialog opens. This is
     // distinct from native playback without a dialog, which resolves the current channel.
     let mut app = gated_blur_fixture(true, false);
