@@ -408,7 +408,7 @@ fn frame(app: &mut PhotocraftApp) {
     if app.ui.crop_rect.is_some() || app.crop.drag.is_some() {
         return;
     }
-    // A committed crop hid the frame: it stays hidden for this document until the next press.
+    // A committed crop or Esc hid the frame: it stays hidden for this document until the next press.
     if app.crop.dismissed.is_some() && app.crop.dismissed == dismiss_key(app) {
         return;
     }
@@ -488,6 +488,13 @@ pub(crate) fn show_frame(app: &mut PhotocraftApp) {
     if app.crop.dismissed.take().is_some() {
         frame(app);
     }
+}
+
+/// Esc or the options bar's cancel: [`cancel`], then [`hide_frame`], so the frame disappears as in
+/// Photoshop (#10370) and stays hidden as after a commit.
+pub fn dismiss(app: &mut PhotocraftApp) {
+    cancel(app);
+    hide_frame(app);
 }
 
 /// The active document's identity for [`CropState::dismissed`].

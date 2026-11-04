@@ -297,6 +297,11 @@ fn a_hidden_filter_row_is_deselected() {
     h.state_mut().ui.layer_filter_name.clear();
     h.run_steps(4);
     assert!(!selected(&h, "Gaussian Blur"));
+    // The Name filter hid Smart A too, so it deselected it (#10879): select it again.
+    assert!(h.state().session.active().unwrap().selected_layers().is_empty());
+    h.state_mut().session.execute("layer.select", json!({"layer": a})).unwrap();
+    h.run_steps(4);
+    assert!(!selected(&h, "Gaussian Blur"), "selecting the layer does not bring the filter row back");
     h.key_press(egui::Key::Delete);
     h.run_steps(4);
     let st = h.state().session.active().unwrap();

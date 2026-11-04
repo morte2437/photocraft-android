@@ -1456,6 +1456,93 @@ fn inspect_reports_selection() {
     assert_eq!(v["layers"][0]["selected"], true);
 }
 
+fn link_group(s: &Session, id: LayerId) -> Option<u64> {
+    doc(s).layer(id).unwrap().link_group
+}
+
+/// A and B linked (red blocks), C unlinked: (session, A, B, C, A and B's link group).
+fn linked_pair() -> (Session, LayerId, LayerId, LayerId, Option<u64>) {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(0, 0, 5, 5));
+    let b = rect_layer(&mut s, Rect::new(10, 0, 15, 5));
+    let c = rect_layer(&mut s, Rect::new(20, 0, 25, 5));
+    select_all(&mut s, &[a, b]);
+    assert_eq!(s.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    let group = link_group(&s, a);
+    assert!(group.is_some() && link_group(&s, b) == group);
+    (s, a, b, c, group)
+}
+
+/// #11217: a copy of one linked layer alone joins its original's link group; copied together with
+/// an unlinked layer it is unlinked (both measured in the reference application). The originals
+/// stay linked.
+#[test]
+fn duplicating_one_linked_layer_keeps_the_copy_in_its_link_group() {
+    let (mut s, a, b, c, group) = linked_pair();
+    // One layer, and with an unlinked layer beside it (several selected).
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    let copy = LayerId(s.execute("layer.duplicate", json!({"inPlace": true})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(link_group(&s, copy), group, "the lone copy joins the originals' link group");
+    select_all(&mut s, &[a, c]);
+    let r = s.execute("layer.duplicate", json!({})).unwrap();
+    let copies: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(copies.len(), 2);
+    assert!(copies.iter().all(|id| link_group(&s, *id).is_none()), "a lone copy of a group has nothing to stay linked to");
+    assert_eq!((link_group(&s, a), link_group(&s, b), link_group(&s, c)), (group, group, None), "the originals keep their links");
+}
+
+/// #11217 review: copy-dragging layers in the panel goes through `apply_move`, which must
+/// relink its copies the way Duplicate does: a lone copy joins its original's link group, a
+/// copied pair is linked to each other under a fresh group, not to the originals.
+#[test]
+fn copy_dragging_linked_layers_relinks_the_copies() {
+    let (mut s, a, b, c, group) = linked_pair();
+    let r = s.execute("layer.moveTo", json!({"layer": a.0, "target": c.0, "position": "above", "copy": true})).unwrap();
+    let copy = LayerId(r["layer"].as_u64().unwrap());
+    assert_eq!(link_group(&s, copy), group, "the lone copy-dragged copy joins the originals' link group");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
+
+    let r = s.execute("layer.moveTo", json!({"layers": [a.0, b.0], "target": c.0, "position": "above", "copy": true})).unwrap();
+    let copies: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(copies.len(), 2);
+    let fresh = link_group(&s, copies[0]);
+    assert!(fresh.is_some() && fresh != group && link_group(&s, copies[1]) == fresh, "the copied pair is linked to each other under a fresh group");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
+}
+
+/// #11217 review: copies of a linked pair stay linked to each other under a new group, not the
+/// originals', which keep theirs.
+#[test]
+fn duplicating_a_linked_pair_links_the_copies_to_each_other() {
+    let (mut s, a, b, _, group) = linked_pair();
+    select_all(&mut s, &[a, b]);
+    let r = s.execute("layer.duplicate", json!({})).unwrap();
+    let copies: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(copies.len(), 2);
+    let fresh = link_group(&s, copies[0]);
+    assert!(fresh.is_some() && fresh != group, "a group of their own: {fresh:?} vs {group:?}");
+    assert_eq!(link_group(&s, copies[1]), fresh, "the copies are linked to each other");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep theirs");
+    // Moving a copy moves its partner copy only.
+    let (a0, b0) = (bounds(&s, a), bounds(&s, b));
+    s.execute("layer.translate", json!({"layer": copies[0].0, "dx": 3})).unwrap();
+    assert_eq!(bounds(&s, copies[1]), b0.translate(3, 0));
+    assert_eq!((bounds(&s, a), bounds(&s, b)), (a0, b0));
+}
+
+/// #11217: Layer via Copy of one linked layer (no selection) joins its original's link group too
+/// (measured): the same rule as `layer.duplicate`, on its own code path in `layer_via`.
+#[test]
+fn layer_via_copy_of_one_linked_layer_keeps_the_copy_in_its_link_group() {
+    let (mut s, a, b, _, group) = linked_pair();
+    let layers = doc(&s).layers.len();
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    let copy = LayerId(s.execute("layer.new.layerViaCopy", json!({})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(doc(&s).layers.len(), layers + 1, "only the active layer is copied");
+    assert_eq!(link_group(&s, copy), group, "the lone copy joins the originals' link group");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
+}
+
 /// #7538: `selection: true` moves the selection with the layers in the same step, as the Move
 /// tool does with several layers selected; without it the selection stays.
 #[test]
