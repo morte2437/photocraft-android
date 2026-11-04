@@ -3412,6 +3412,7 @@ curves	Smooth	تنعيم
 	Low-Latency Drawing (vsync off, applies at next launch)	رسم بزمن استجابة منخفض (إيقاف vsync، يسري عند التشغيل التالي)
 # Free Transform: a new layer while the box is open (#5859)
 	Reference point location	موقع النقطة المرجعية
+	Toggle reference point	إظهار/إخفاء النقطة المرجعية
 	Free Transform is still being applied; try again when it has finished.	لا يزال التحويل الحر قيد التطبيق؛ حاول مرة أخرى عند انتهائه.
 	The transform couldn't be applied.	تعذر تطبيق التحويل.
 # Preferences › Performance › GPU Memory; the status bar and slow-redraw notice

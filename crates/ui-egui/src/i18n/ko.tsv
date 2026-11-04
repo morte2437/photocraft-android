@@ -3605,6 +3605,7 @@ curves	Smooth	매끄럽게
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut}은(는) 시스템에서 예약되어 할당할 수 없습니다.
 	Low-Latency Drawing (vsync off, applies at next launch)	저지연 그리기(수직 동기화 끔, 다음 실행 시 적용)
 	Reference point location	기준점 위치
+	Toggle reference point	기준점 표시/숨기기
 	Free Transform is still being applied; try again when it has finished.	자유 변형을 아직 적용하는 중입니다. 완료된 후 다시 시도하세요.
 	The transform couldn't be applied.	변형을 적용할 수 없습니다.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	레이어에 GPU 메모리 {needed}가 필요하지만 예산은 {budget}만 남겨 둡니다.

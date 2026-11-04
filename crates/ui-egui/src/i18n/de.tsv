@@ -3414,6 +3414,7 @@ curves	Smooth	Glätten
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} ist vom System reserviert und kann nicht zugewiesen werden.
 	Low-Latency Drawing (vsync off, applies at next launch)	Zeichnen mit geringer Latenz (ohne VSync, gilt ab dem nächsten Start)
 	Reference point location	Position des Referenzpunkts
+	Toggle reference point	Referenzpunkt ein-/ausblenden
 	Free Transform is still being applied; try again when it has finished.	Frei transformieren wird noch angewendet; versuchen Sie es erneut, wenn es fertig ist.
 	The transform couldn't be applied.	Die Transformation konnte nicht angewendet werden.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Die Ebenen brauchen {needed} GPU-Speicher; das Budget lässt ihnen {budget}.

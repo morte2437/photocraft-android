@@ -263,7 +263,8 @@ fn reference_point_toggle(ui: &mut egui::Ui, on: &mut bool) -> bool {
         *on = !*on;
     }
     crate::widgets::check_box(ui.painter(), rect, *on, resp.hovered(), resp.is_pointer_button_down_on(), &tk);
-    let label = tl!("Toggle Reference Point");
+    // The catalogue's "Toggle reference point" (sentence case, like the grid's tooltip).
+    let label = tl!("Toggle reference point");
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, *on, label));
     resp.on_hover_text(label);
     *on
