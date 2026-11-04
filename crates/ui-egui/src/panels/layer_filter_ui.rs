@@ -313,11 +313,15 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             FilterBy::Artboard => {}
         }
     });
+    selection::follow(app, ui.ctx());
 }
 
 pub mod effect;
+pub mod selection;
 
 #[cfg(test)]
 mod effect_tests;
+#[cfg(test)]
+mod selection_tests;
 #[cfg(test)]
 mod tests;
