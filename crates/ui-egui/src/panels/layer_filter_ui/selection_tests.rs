@@ -69,6 +69,26 @@ fn a_filter_that_hides_the_selected_layer_deselects_it_and_turning_it_off_keeps_
     assert_eq!(selection(&h), none(), "turning the filter off does not bring the selection back");
 }
 
+/// Batch 16 review: a filter already on when the row is first drawn (set before the panel drew,
+/// as `ui.set {layerFilter}` can) deselects the layers it hides too.
+#[test]
+fn a_filter_on_before_the_rows_first_draw_deselects_the_hidden_layers() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Red"})).unwrap();
+    s.execute("type.create", json!({"text": "Hello", "x": 4, "y": 20, "size": 12})).unwrap();
+    let red = s.active().unwrap().doc.walk().into_iter().find(|(_, _, l)| l.name == "Red").map(|(_, _, l)| l.id).unwrap();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    let mut h = Harness::builder().with_size(vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        app.ui.layer_filter = vec!["type".into()];
+        app
+    });
+    h.run_steps(8);
+    assert_eq!(selection(&h), none(), "Kind › Type hides Red from the first draw on");
+}
+
 #[test]
 fn a_filter_that_lists_none_of_the_selected_layers_deselects_them_all() {
     let mut h = harness();

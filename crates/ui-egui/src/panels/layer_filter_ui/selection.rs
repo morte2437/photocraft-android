@@ -12,7 +12,8 @@ use crate::PhotocraftApp;
 
 /// Deselect the layers the filter hides when its criteria changed since the last call. The
 /// criteria are kept in `ctx`'s memory, so a change from the filter row or from `ui.set
-/// {layerFilter}` is seen the next time the row is drawn.
+/// {layerFilter}` is seen the next time the row is drawn; with nothing kept yet (the row's first
+/// draw, e.g. after `ui.set` while the panel was closed) a filter that is on counts as applied.
 pub fn follow(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let id = egui::Id::unique("layer-filter-applied");
     let now = Filter::of(&app.ui);
@@ -21,7 +22,7 @@ pub fn follow(app: &mut PhotocraftApp, ctx: &egui::Context) {
         d.insert_temp(id, now.clone());
         before
     });
-    if before.is_some_and(|b| b != now) && now.active() {
+    if before.is_none_or(|b| b != now) && now.active() {
         deselect_hidden(app);
     }
 }
