@@ -279,8 +279,24 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
     retained_segment_bytes(&segments, samples, limits)?;
     let le = t.le;
     let tiled = t.tag_uint(ifd, tag::TILE_WIDTH).is_some();
-    let decoded: Vec<Result<Vec<u16>>> = par::map(segments.len(), |i| {
-        let s = &segments[i];
+    // Segments naming the same bytes at the same geometry decode to the same samples, so each
+    // distinct one is decoded once and shared. A file can point every tile at one small range;
+    // decoding it per tile multiplied header work (a lossless JPEG rebuilds its Huffman tables on
+    // every decode) and retained buffers by the tile count.
+    let mut first_of = std::collections::HashMap::new();
+    let mut unique: Vec<usize> = Vec::new();
+    let slot: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            *first_of.entry((s.offset, s.len, s.w, s.h, s.h.min(height - s.y))).or_insert_with(|| {
+                unique.push(i);
+                unique.len() - 1
+            })
+        })
+        .collect();
+    let decoded: Vec<Result<Vec<u16>>> = par::map(unique.len(), |u| {
+        let s = &segments[unique[u]];
         let rows = s.h.min(height - s.y);
         let src = t.bytes(s.offset, s.len).ok_or_else(|| RawError::malformed("raw data lies outside the file"))?;
         // Every branch below sizes at least one buffer from the segment's own geometry, which
@@ -322,9 +338,9 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
     // One segment holding the whole image row for row (a single strip): its buffer is the plane, no
     // second full-size buffer and no copy. The scatter below then has no segment left to place.
     let whole = matches!(segments.as_slice(), [s] if s.x == 0 && s.y == 0 && s.w == width && s.h >= height);
-    let mut decoded = decoded.into_iter();
+    let mut decoded: Vec<Vec<u16>> = decoded.into_iter().collect::<Result<_>>()?;
     let taken = if whole {
-        let mut d = decoded.next().ok_or_else(|| RawError::malformed("raw segment missing"))??;
+        let mut d = decoded.pop().ok_or_else(|| RawError::malformed("raw segment missing"))?;
         if d.len() < width * height * samples {
             return Err(RawError::malformed("raw segment is smaller than the image"));
         }
@@ -334,8 +350,9 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
         None
     };
     let mut data = taken.unwrap_or_else(|| vec![0u16; width * height * samples]);
-    for (s, d) in segments.iter().zip(decoded) {
-        let d = d?;
+    // The whole-image segment above is the plane itself: nothing is left to scatter.
+    for (s, &k) in segments.iter().zip(&slot).filter(|_| !whole) {
+        let d = &decoded[k];
         let rows = s.h.min(height - s.y);
         let cols = s.w.min(width - s.x);
         for r in 0..rows {
