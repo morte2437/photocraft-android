@@ -859,6 +859,8 @@ mod tests {
         let path = root.join("probe.psd").to_string_lossy().into_owned();
 
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        // A save script closes this earlier tab, shifting the saved document's index.
+        app.session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
         app.session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
         let doc = app.session.active().unwrap().doc.id;
         for name in ["good.png", "blocked/fail.png"] {
@@ -870,9 +872,13 @@ mod tests {
         }
         app.session.prefs.edit(|p| p.plug_ins.generator_enabled = true);
         app.session.file_menu.image_assets.push(doc);
+        app.session.execute("file.scripts.scriptEventsManager", json!({"enabled": true, "add": {"event": "saveDocument", "steps": [["file.close", {"document": 0}]]}})).unwrap();
 
         let revision = app.session.active().unwrap().revision;
         app.saved(doc, revision, &path, &[], false);
+
+        assert_eq!(app.session.documents().len(), 1);
+        assert_eq!(app.session.active().unwrap().doc.id, doc);
 
         assert_eq!(app.session.active().unwrap().path.as_deref(), Some(path.as_str()), "the document save itself succeeded");
         assert!(assets.join("good.png").is_file(), "the good asset was exported");
@@ -889,6 +895,7 @@ mod tests {
         );
         // A clean generation afterwards reports the success line with no error notice (#11079 control).
         app.ui.notices.clear();
+        app.session.execute("file.scripts.scriptEventsManager", json!({"enabled": false})).unwrap();
         std::fs::remove_file(assets.join("blocked")).unwrap();
         let revision = app.session.active().unwrap().revision;
         app.saved(doc, revision, &path, &[], false);
