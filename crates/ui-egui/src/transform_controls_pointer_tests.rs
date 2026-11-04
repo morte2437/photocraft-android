@@ -313,6 +313,67 @@ fn modal_dialogs_do_not_start_move_transform_controls() {
     }
 }
 
+/// A dialog opened after Down must not strand the Move drag or replace its starting point.
+#[test]
+fn ordinary_move_gesture_can_finish_after_a_dialog_opens() {
+    let (mut app, ctx, layers) = fixture();
+    let old = layers.map(|id| bounds(&app, id));
+    let steps = app.session.active().unwrap().history.past_len();
+    pointer(&mut app, &ctx, "down", [200.0, 150.0]);
+    assert!(app.drag.is_some());
+    accepted(&mut app, &ctx, "ui.dialog.open", json!({"kind": "about"}));
+    let dialog = app.ui.dialogs.last().unwrap().id;
+    pointer(&mut app, &ctx, "down", [250.0, 175.0]);
+    assert_eq!(app.drag.as_ref().unwrap().start, [200.0, 150.0], "the modal rejects a replacement Down");
+    pointer(&mut app, &ctx, "move", [220.0, 160.0]);
+    pointer(&mut app, &ctx, "up", [220.0, 160.0]);
+    assert!(app.drag.is_none());
+    assert!(app.ui.transform.is_none());
+    for (id, previous) in layers.into_iter().zip(old) {
+        assert_eq!(bounds(&app, id), previous.translate(20, 10));
+    }
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
+    assert_eq!(app.ui.dialogs.last().unwrap().id, dialog);
+    accepted(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog": dialog}));
+    let after = app.session.active().unwrap().doc.clone();
+    pointer(&mut app, &ctx, "move", [270.0, 190.0]);
+    pointer(&mut app, &ctx, "up", [270.0, 190.0]);
+    assert_eq!(app.session.active().unwrap().doc, after, "later input cannot resume the finished gesture");
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
+}
+
+/// A modal may interrupt a handle drag, but Up still ends its gesture before Enter commits.
+#[test]
+fn transform_handle_gesture_can_finish_after_a_dialog_opens() {
+    let (mut app, ctx, layers) = fixture();
+    let before = app.session.active().unwrap().doc.clone();
+    let old = layers.map(|id| bounds(&app, id));
+    let steps = app.session.active().unwrap().history.past_len();
+    pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+    let initial = app.ui.transform.as_ref().expect("the handle starts Free Transform").quad;
+    accepted(&mut app, &ctx, "ui.dialog.open", json!({"kind": "about"}));
+    let dialog = app.ui.dialogs.last().unwrap().id;
+    pointer(&mut app, &ctx, "down", [200.0, 150.0]);
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, initial, "the modal cannot move the preview on Down");
+    pointer(&mut app, &ctx, "move", [700.0, 440.0]);
+    pointer(&mut app, &ctx, "up", [700.0, 440.0]);
+    let preview = app.ui.transform.as_ref().unwrap().quad;
+    assert_ne!(preview, initial, "the existing handle gesture still updates its preview");
+    assert_eq!(app.session.active().unwrap().doc, before);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+    assert_eq!(app.ui.dialogs.last().unwrap().id, dialog);
+    accepted(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog": dialog}));
+    pointer(&mut app, &ctx, "move", [650.0, 410.0]);
+    pointer(&mut app, &ctx, "up", [650.0, 410.0]);
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, preview, "later input cannot resume the released handle");
+    enter(&mut app, &ctx);
+    assert_one_transform(&app, steps);
+    for (id, previous) in layers.into_iter().zip(old) {
+        let scaled = bounds(&app, id);
+        assert!(scaled.width() < previous.width() && scaled.height() < previous.height());
+    }
+}
+
 /// Full-window dialogs with embedded previews must not forward ordinary Move gestures.
 #[test]
 fn modal_workspaces_without_tool_event_controllers_do_not_move_layers() {

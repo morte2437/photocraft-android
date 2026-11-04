@@ -1200,7 +1200,7 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
             continue;
         }
         if !pointer_event_intercepted(app, ctx, &gesture, &sample) {
-            if modal_blocks_move_pointer(app) {
+            if modal_blocks_move_pointer(app, sample.ev) {
                 continue;
             }
             if app.ui.tool == Tool::Move && !gesture.secondary && !gesture.middle && !gesture.space && matches!(sample.ev, ToolEvent::Down { .. }) {
@@ -1213,8 +1213,8 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     ok(json!({"status": app.ui.status}))
 }
 
-/// Dialog samplers run first; workspaces with tool-event controllers receive their gestures.
-fn modal_blocks_move_pointer(app: &PhotocraftApp) -> bool {
+/// Dialog samplers run first; block new Move gestures while allowing an active one to finish.
+fn modal_blocks_move_pointer(app: &PhotocraftApp, event: ToolEvent) -> bool {
     app.ui.tool == Tool::Move
         && (!app.ui.dialogs.is_empty()
             || app.ui.layers_panel_dialog.is_some()
@@ -1223,6 +1223,12 @@ fn modal_blocks_move_pointer(app: &PhotocraftApp) -> bool {
             || app.smart_svg.modal_open()
             || app.distort.gallery.is_some()
             || app.wide_angle.is_some())
+        && (matches!(event, ToolEvent::Down { .. })
+            || (app.drag.is_none()
+                && app.layer_box.is_none()
+                && app.guide_drag.is_none()
+                // Existing transform sessions, including Warp, only finish or ignore Move/Up.
+                && app.ui.transform.is_none()))
 }
 
 fn parse_pointer(p: &Value) -> std::result::Result<ParsedPointer, String> {
