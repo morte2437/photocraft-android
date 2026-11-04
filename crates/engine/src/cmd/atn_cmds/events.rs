@@ -6,6 +6,7 @@ use super::descriptors::{
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
 use super::steps_artboard::{artboard_edit_from, artboard_edit_to, artboard_from, artboard_to};
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
+use super::steps_content_aware::{caf_from, caf_to};
 use super::steps_direct_adjustments::{gradient_from, gradient_to, replace_from, replace_to};
 use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, shear_from, shear_to, wave_from, wave_to};
 use super::steps_doc::{
@@ -799,6 +800,7 @@ pub(super) const EVENTS: &[Event] = &[
         label: "Make",
         ids: &[
             "type.convertToShape",
+            "type.createWorkPath",
             "layer.new.layer",
             "layer.layerStyle.createLayer",
             "layer.new.group",
@@ -1051,6 +1053,14 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("", "autoCutout", "Select Subject", "select.subject", &[F("sampleAllLayers", "sampleAllLayers", Kind::Bool)]),
     Event { code: "ClrR", name: "colorRange", label: "Color Range", ids: &["select.colorRange"], from: color_range_from, to: color_range_to },
     // Edit.
+    Event {
+        code: "Grdn",
+        name: "gradientClassEvent",
+        label: "Gradient",
+        ids: &["paint.gradient"],
+        from: super::steps_gradient::from,
+        to: super::steps_gradient::to,
+    },
     Event { code: "Fl  ", name: "fill", label: "Fill", ids: &["edit.fill", "paint.bucket"], from: fill_from, to: fill_to },
     Event {
         code: "Strk",
@@ -1094,6 +1104,7 @@ pub(super) const EVENTS: &[Event] = &[
         from: |d| profile_from(d, "edit.convertToProfile"),
         to: profile_to,
     },
+    Event { code: "", name: "cafWorkspace", label: "Content-Aware Fill", ids: &["edit.contentAwareFill"], from: caf_from, to: caf_to },
     // File and actions.
     Event { code: "Cls ", name: "close", label: "Close", ids: &["file.close"], from: close_from, to: close_to },
     Event { code: "Expr", name: "export", label: "Export", ids: &["file.export.saveForWebLegacy"], from: export_from, to: export_to },

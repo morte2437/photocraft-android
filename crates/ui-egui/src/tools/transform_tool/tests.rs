@@ -2066,6 +2066,122 @@ fn app_with_square(size: u32, fill: photocraft_geom::Rect) -> PhotocraftApp {
     app
 }
 
+/// `app_with_square` (A, red over 8..24) plus B (x 40..56, y 8..24) and C (x 8..24, y 40..56)
+/// over it. A and B are linked; C isn't. Only A is selected, and active: (app, A, B, C).
+fn linked_layers_app() -> (PhotocraftApp, LayerId, LayerId, LayerId) {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let add = |app: &mut PhotocraftApp, fill: photocraft_geom::Rect| {
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, l| {
+                doc.layer_mut(l.unwrap()).unwrap().surface_mut().unwrap().fill_rect(fill, &[0.0, 0.0, 1.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        app.session.active().unwrap().active_layer.unwrap()
+    };
+    let b = add(&mut app, photocraft_geom::Rect::new(40, 8, 56, 24));
+    let c = add(&mut app, photocraft_geom::Rect::new(8, 40, 24, 56));
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    (app, a, b, c)
+}
+
+/// #11217: ⌥⌘T on a linked layer without a selection makes no copy in the reference application
+/// (measured): it frames and moves the whole link group, as Free Transform does. An unlinked
+/// layer still gets its copy.
+#[test]
+fn free_transform_a_copy_of_a_linked_layer_boxes_the_link_group_without_a_copy() {
+    let ctx = egui::Context::default();
+    let (mut app, a, b, c) = linked_layers_app();
+    let layers = app.session.active().unwrap().doc.layers.len();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "no copy of a linked layer");
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.made, None, "nothing made to take back");
+    assert_eq!(t.layers, [a.0, b.0], "the box frames the link group");
+    cancel(&mut app);
+    app.session.execute("layer.select", json!({"layer": c.0})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "an unlinked layer is copied");
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(MadeLayer::Copy));
+    cancel(&mut app);
+}
+
+/// #11217: the box over one selected linked layer frames, previews and commits its whole link
+/// group, as in Photoshop. It used to frame A alone; B only moved at the commit.
+#[test]
+fn free_transform_of_a_linked_layer_boxes_its_link_group() {
+    let (mut app, a, b, c) = linked_layers_app();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.layer, a.0, "the active layer stays the session's");
+    assert_eq!(t.layers, [a.0, b.0], "a box over the link group, in stack order");
+    assert_eq!(t.rect, [8.0, 8.0, 56.0, 24.0], "framing A and B together");
+    let pv = app.transform_preview.as_ref().unwrap();
+    assert!(pv.several.as_ref().is_some_and(|sv| sv.ids == [a, b]), "the preview moves both");
+    // The moving pixels hold B's blue block where B is, beside A's red one: B moves with the box
+    // on the canvas, not only at the commit.
+    assert_eq!(moving_texel(&app, [48, 16]).0, Some(Color32::BLUE), "the linked layer's pixels are in the preview");
+    assert_eq!(moving_texel(&app, [16, 16]).0, Some(Color32::RED), "and the active layer's");
+    assert_eq!(moving_texel(&app, [16, 48]).0, None, "the unlinked layer is outside the moving pixels");
+    let t = app.ui.transform.as_mut().unwrap();
+    t.quad = t.quad.map(|[x, y]| [x + 4.0, y]);
+    commit(&mut app);
+    assert!(app.ui.transform.is_none(), "{}", app.ui.status);
+    let st = app.session.active().unwrap();
+    let bounds = |id: LayerId| st.doc.layer(id).unwrap().surface().unwrap().content_bounds();
+    assert_eq!(bounds(a), photocraft_geom::Rect::new(12, 8, 28, 24));
+    assert_eq!(bounds(b), photocraft_geom::Rect::new(44, 8, 60, 24));
+    assert_eq!(bounds(c), photocraft_geom::Rect::new(8, 40, 24, 56), "an unlinked layer stays put");
+}
+
+/// #11217: a layer without linked layers still opens the one-layer box.
+#[test]
+fn free_transform_of_an_unlinked_layer_boxes_that_layer_alone() {
+    let (mut app, _, _, c) = linked_layers_app();
+    app.session.execute("layer.select", json!({"layer": c.0})).unwrap();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!((t.layer, t.rect), (c.0, [8.0, 40.0, 24.0, 56.0]));
+    assert!(t.layers.is_empty(), "a one-layer session");
+    assert!(app.transform_preview.as_ref().unwrap().several.is_none());
+}
+
+/// #11217 review: a layer linked to the Background opens the one-layer box: the link doesn't pull
+/// the Background into the box, as the selection doesn't either (#6501).
+#[test]
+fn free_transform_of_a_layer_linked_to_the_background_boxes_that_layer_alone() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let bg = app.session.active().unwrap().doc.layers[0].id;
+    app.session.execute("layer.select", json!({"layer": bg.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!((t.layer, t.rect), (a.0, [8.0, 8.0, 24.0, 24.0]), "the box frames A, not the canvas-sized Background");
+    assert!(t.layers.is_empty(), "a one-layer session");
+    let pv = app.transform_preview.as_ref().unwrap();
+    assert!(pv.several.is_none());
+    assert!(pv.doc.layer(bg).unwrap().visible, "the Background stays under the box");
+}
+
+/// #11217: a locked layer in the link group refuses the box before it opens, as a locked layer
+/// among several selected ones does.
+#[test]
+fn a_locked_linked_layer_refuses_the_box_over_its_link_group() {
+    let (mut app, a, b, _) = linked_layers_app();
+    app.session.execute("layer.setProps", json!({"layer": b.0, "locks": {"position": true}})).unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    assert_eq!(begin(&mut app, &egui::Context::default()), Err(LOCKED.to_string()));
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+}
+
 /// #2439: a layer under others keeps its place in the stack while the box is open. The
 /// canvas under the box shows only the layers below it; the ones over it are composited on
 /// their own and drawn over the moving pixels.
@@ -3163,6 +3279,26 @@ fn mask_view_keeps_move_and_transform_available_behind_a_colour_set() {
         let mask = &actual.mask.as_ref().unwrap().surface;
         assert!(mask.sample_channel(24, 30, 0) > 0.99 && mask.sample_channel(40, 30, 0) < 0.01, "only the mask moved");
     }
+}
+
+/// Batch 16 review: ⌥⌘T with the unlinked mask of a linked layer targeted still copies; only the
+/// layer's own pixels take the link group's box without a copy.
+#[test]
+fn free_transform_a_copy_of_a_targeted_mask_on_a_linked_layer_still_copies() {
+    let mut app = masked_app(false);
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    let b = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.ui.mask_target = true;
+    let layers = app.session.active().unwrap().doc.layers.len();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the layer is copied");
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(MadeLayer::Copy));
+    cancel(&mut app);
 }
 
 #[test]

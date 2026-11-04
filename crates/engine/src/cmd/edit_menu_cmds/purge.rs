@@ -17,13 +17,14 @@ fn clip_bytes(s: &Session) -> usize {
     s.clipboard.as_ref().map_or(0, |c| c.surface.tiles().map(|(_, t)| t.len()).sum())
 }
 
+/// Apply the requested irreversible purge and record its boundary so action finalization cannot resurrect undo states.
 pub(super) fn purge(s: &mut Session, what: &str) -> Result<Value> {
     let mut freed = 0usize;
     let mut items: Vec<&str> = Vec::new();
     if matches!(what, "undo" | "all") && s.active().is_some_and(|d| d.history.can_undo()) {
         let before = history_bytes(s, false);
         if let Some(st) = s.active_mut() {
-            st.history.purge_last();
+            st.history.purge_undo();
         }
         freed += before.saturating_sub(history_bytes(s, false));
         items.push("undo");

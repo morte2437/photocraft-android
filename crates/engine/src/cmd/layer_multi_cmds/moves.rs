@@ -1,5 +1,5 @@
 use super::selection::{reselect, same_named_targets, selected, top_level};
-use super::structure::check_group_depth;
+use super::structure::{check_group_depth, relink_copies};
 use super::{Document, EngineError, Layer, LayerContent, LayerId, Result, Session, Value, bad, int_i32, json};
 
 /// A Layers-panel drag of the selected layer records its drop target by name (and which of
@@ -379,6 +379,11 @@ fn apply_move(doc: &mut Document, moved_ids: &[LayerId], target: LayerId, pos: &
         siblings.splice(at..at, moved);
     }
     check_group_depth(doc, "Reorder Layer")?;
+    // A copy is a new layer: it starts unlinked from its original, as a Duplicate does
+    // (#11217); copies of a whole linked set stay linked to each other under a fresh group.
+    if copy {
+        relink_copies(doc, &copies)?;
+    }
     // The layers now sit in their new parents; carry each across to its new board. Copies keep the
     // order of `moved_ids`, so `from` lines up with either list.
     let landed: &[LayerId] = if copy { &copies } else { moved_ids };

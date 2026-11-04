@@ -196,6 +196,7 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
     let (action, from) = match actions_cmds::playback_plan(&app.session, params) {
         Ok(plan) => plan,
         Err(e) => {
+            actions_cmds::finish_pending_history(&mut app.session);
             restore_recording(app, suspended.as_ref());
             return Err(e.to_string());
         }
@@ -203,6 +204,7 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
     let recording = match actions_cmds::begin_playback(&mut app.session, &action) {
         Ok(r) => r,
         Err(e) => {
+            actions_cmds::finish_pending_history(&mut app.session);
             restore_recording(app, suspended.as_ref());
             return Err(e.to_string());
         }
@@ -241,14 +243,25 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         // from the next step when it is confirmed (`resume`). Agents play headlessly.
         if action.dialogs.contains(&i) && !app.automation_input && (crate::filter_dialog::has_dialog(id) || crate::adjust_dialog::has_dialog(id)) {
             let label = label_of(id);
+            let active_layer = app.session.active().and_then(|st| st.active_layer);
             let dialog = crate::dialogs::open_command_dialog(app, id, &label);
             let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
+            let mut receiver = None;
             if let Some(d) = app.ui.dialog_mut(dialog) {
                 if let Some(o) = p.as_object() {
                     // `__` keys are the dialog's own markers (`params_of` drops them), not step values.
                     d.fields.extend(o.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())));
                 }
                 d.fields.insert(RESUME.into(), json!(token));
+                // Kept for every implicit step, also one opened on a document target: the dialog
+                // may switch it to a layer-owned one, and `run_step_dialog` checks the receiver
+                // for the target it confirms.
+                if p.get("layer").is_none_or(Value::is_null) {
+                    receiver = Some(active_layer);
+                }
+            }
+            if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
+                paused.filter_receiver = receiver;
             }
             paused = Some(json!({"step": i, "id": id, "dialog": dialog}));
             break;
@@ -317,19 +330,29 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             }
         }
     }
+    let history = if failed.is_none() && paused.is_some() { actions_cmds::suspend_history(&mut app.session) } else { None };
     actions_cmds::finish_playback(&mut app.session, None, &action, from);
     match paused.as_ref().and_then(waiting_dialog).cloned() {
         // Paused for a dialog: the call goes on after it, so recording stays suspended.
         Some(dialog) if failed.is_none() => {
             let token = paused_token(app, &dialog);
             let entry = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t));
-            match (owner, entry) {
-                (Some(owner), Some(p)) => p.record = Some(owner),
+            match entry {
+                Some(p) => {
+                    p.record = owner;
+                    p.history = history;
+                }
                 // No continuation to carry the recording: the call ends here.
-                (owner, _) => restore_recording(app, owner.as_ref()),
+                _ => {
+                    drop(history);
+                    restore_recording(app, owner.as_ref());
+                }
             }
         }
-        _ => restore_recording(app, owner.as_ref()),
+        _ => {
+            drop(history);
+            restore_recording(app, owner.as_ref());
+        }
     }
     Ok(match (failed, paused) {
         (Some(f), _) => json!({"action": action.name, "ran": ran, "failed": f}),
@@ -802,12 +825,27 @@ pub(crate) fn suspended_guard(app: &PhotocraftApp, id: &str) -> Result<(), Strin
 
 /// A step dialog's command failed: the action ends there.
 pub fn abandoned(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) {
-    let record = fields.get(RESUME).and_then(|t| app.paused_playbacks.take(t)).and_then(|p| p.record);
+    let paused = fields.get(RESUME).and_then(|t| app.paused_playbacks.take(t));
+    let record = paused.and_then(|p| {
+        drop(p.history);
+        p.record
+    });
+    actions_cmds::finish_pending_history(&mut app.session);
     restore_recording(app, record.as_ref());
 }
 
 /// The automation gate a session installs ([`photocraft_engine::Session::authorize`]).
 type Gate = fn(&str, &Value) -> photocraft_engine::Result<()>;
+
+/// A function-pointer dispatch gate cannot carry two different policies into nested jobs.
+/// Changed gates and distinct simultaneous Session/service gates both end this continuation;
+/// hosts that need both policies must supply one composed gate at both boundaries.
+fn continuation_gate(captured: Option<Gate>, live: Option<Gate>) -> Result<Option<Gate>, String> {
+    if captured.zip(live).is_some_and(|(before, now)| !std::ptr::fn_addr_eq(before, now)) {
+        return Err("the authorization context changed or uses policies that cannot be combined for this paused action".into());
+    }
+    Ok(live.or(captured))
+}
 
 /// A playback paused at a step dialog: the action and step it continues from, and the gate it
 /// was playing under (`None` for one a person started).
@@ -822,6 +860,7 @@ pub(crate) struct PausedPlayback {
     /// box, automation), which end the call through `resume`, `abandoned` or `stopped`, so the
     /// recording comes back exactly once.
     record: Option<Value>,
+    history: Option<actions_cmds::ActionHistoryContinuation>,
     /// The actions still to play after this one, as they were when Play started a whole set.
     /// Actions have no id, so the whole action stands in for one: an action deleted and made again
     /// under the same name, or edited, while the dialog is open no longer matches.
@@ -832,6 +871,9 @@ pub(crate) struct PausedPlayback {
     /// The document a pause at Check Spelling was playing on. That dialog doesn't block the
     /// document tabs, so Done ([`resume_spelling`]) continues only on this document.
     doc: Option<photocraft_doc::DocId>,
+    /// An implicit filter/adjustment step resolves this active layer at the pause. The outer Option marks
+    /// that binding even when there was no active layer; explicit-layer and other dialogs omit it.
+    filter_receiver: Option<Option<photocraft_doc::LayerId>>,
 }
 
 /// The paused playbacks, by the token their dialog carries. The dialog's fields hold only the
@@ -843,15 +885,104 @@ pub(crate) struct PausedPlaybacks {
 }
 
 impl PausedPlaybacks {
+    /// Allocate an opaque token retaining the action, resume position and captured authorization gate.
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, then: Vec::new(), ran: 0, doc: None });
+        self.paused
+            .insert(self.last, PausedPlayback { action, from, gate, record: None, history: None, then: Vec::new(), ran: 0, doc: None, filter_receiver: None });
         self.last
     }
 
+    /// Consume the continuation named by a numeric dialog token; malformed or expired tokens identify no playback.
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }
+}
+
+/// Whether a dialog command's `target` belongs to the document rather than to a layer: alpha
+/// channels and Quick Mask do; masks and colour components still belong to a layer.
+fn document_target(params: &Value) -> bool {
+    params.get("target").is_some_and(|target| target.as_str() == Some("quickMask") || target.get("channel").and_then(Value::as_u64).is_some())
+}
+
+/// Admit the final dialog command before resuming history or starting a worker. The captured
+/// policy judges the edited parameters; a current live gate still governs dispatch and nested
+/// work. With no live gate, reinstall the captured gate for job admission and rendering.
+pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>, command: &str, params: Value) -> Result<Value, String> {
+    let Some(token) = fields.get(RESUME) else { return app.run(command, params) };
+    let token = token.as_u64().ok_or("this dialog doesn't belong to a paused action")?;
+    let paused = app.paused_playbacks.paused.get(&token).ok_or("this dialog doesn't belong to a paused action")?;
+    if let Some(receiver) = paused.filter_receiver
+        && !document_target(&params)
+        && app.session.active().and_then(|st| st.active_layer) != receiver
+    {
+        return Err("the paused command's receiver changed while its dialog was open".into());
+    }
+    let captured = paused.gate;
+    let saved = app.session.authorize;
+    let service = if app.automation_input { app.services.automation_authorize } else { None };
+    for authorize in [captured, saved, service].into_iter().flatten() {
+        authorize(command, &params).map_err(|e| e.to_string())?;
+    }
+    if app.automation_input
+        && let Some(authorize) = app.services.automation_command.as_ref()
+    {
+        authorize(command, &params)?;
+    }
+    let gate = continuation_gate(captured, continuation_gate(saved, service)?)?;
+    prepare_history(app, fields)?;
+    app.session.authorize = gate;
+    let result = app.run(command, params);
+    app.session.authorize = saved;
+    result
+}
+
+/// Bind the dialog's own edit to its suspended action before it runs or starts a worker.
+pub(crate) fn prepare_history(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let Some(token) = fields.get(RESUME).and_then(Value::as_u64) else { return Ok(()) };
+    let history = app.paused_playbacks.paused.get_mut(&token).ok_or("this dialog doesn't belong to a paused action")?.history.take();
+    if let Some(history) = history
+        && let Err(e) = history.resume(&mut app.session)
+    {
+        if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
+            paused.history = Some(history);
+        }
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+/// Check Spelling owns each correction only while it runs; the open window owns a bound token.
+pub(crate) fn spelling_change(app: &mut PhotocraftApp, params: Value) -> Result<Value, String> {
+    let Some(token) = app.ui.type_panels.spell.as_ref().and_then(|dialog| dialog.resume) else {
+        return app.run("edit.checkSpelling", params);
+    };
+    let paused = app.paused_playbacks.paused.get(&token).ok_or("this dialog doesn't belong to a paused action")?;
+    if paused.doc.is_some_and(|doc| Some(doc) != app.session.active().map(|state| state.doc.id)) {
+        return Err("the active document changed while Check Spelling was open".into());
+    }
+    let history = paused.history.clone();
+    let fields = serde_json::Map::from_iter([(RESUME.to_string(), json!(token))]);
+    let result = run_step_dialog(app, &fields, "edit.checkSpelling", params);
+    // A rejected admission did not resume this continuation. Keep the original token intact.
+    if app.paused_playbacks.paused.get(&token).is_some_and(|paused| paused.history.is_some()) {
+        return result;
+    }
+    if let Some(history) = history {
+        match history.suspend_after_edit(&mut app.session) {
+            Ok(history) => {
+                let paused = app.paused_playbacks.paused.get_mut(&token).ok_or("the spelling continuation ended during its correction")?;
+                paused.history = Some(history);
+            }
+            Err(error) => {
+                if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
+                    paused.history = Some(history);
+                }
+                return Err(error.to_string());
+            }
+        }
+    }
+    result
 }
 
 /// Check Spelling's Done for the action paused at its step: the action continues when the document
@@ -881,10 +1012,8 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         return Err("this dialog doesn't belong to a paused action".into());
     };
     let owner = paused.record.clone();
-    // The dialog's command may run as a background job; the next step needs its result.
-    if let Some(doc) = app.session.active().map(|d| d.doc.id)
-        && let Some(job) = app.session.job_on(doc)
-        && let Err(e) = app.session.wait_job(job.id)
+    if let Some(history) = &paused.history
+        && let Err(e) = history.resume(&mut app.session)
     {
         restore_recording(app, owner.as_ref());
         let template = "Action playback failed: {error}";
@@ -892,9 +1021,43 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         app.ui.status_error = true;
         return Err(e.to_string());
     }
-    let params = json!({"action": paused.action, "from": paused.from});
+    // The dialog's command may run as a background job; the next step needs its result.
+    if let Some(doc) = app.session.active().map(|d| d.doc.id)
+        && let Some(job) = app.session.job_on(doc)
+        && let Err(e) = app.session.wait_job(job.id)
+    {
+        actions_cmds::finish_pending_history(&mut app.session);
+        restore_recording(app, owner.as_ref());
+        let template = "Action playback failed: {error}";
+        app.ui.status = crate::i18n::fmt(tl!(template), &[("error", &e.to_string())]);
+        app.ui.status_error = true;
+        return Err(e.to_string());
+    }
     let saved = app.session.authorize;
-    app.session.authorize = paused.gate.or(saved);
+    let service = if app.automation_input { app.services.automation_authorize } else { None };
+    let remaining = !paused.then.is_empty()
+        || app
+            .session
+            .actions
+            .list
+            .iter()
+            .find(|action| action.name == paused.action)
+            .is_some_and(|action| action.enabled_steps().any(|(i, _)| i >= paused.from));
+    let gate =
+        if remaining { continuation_gate(saved, service).and_then(|live| continuation_gate(paused.gate, live)) } else { Ok(saved.or(service).or(paused.gate)) };
+    let gate = match gate {
+        Ok(gate) => gate,
+        Err(error) => {
+            // The admitted dialog edit has completed; preserve it while rejecting the tail.
+            actions_cmds::finish_pending_history(&mut app.session);
+            restore_recording(app, owner.as_ref());
+            app.ui.status = error.clone();
+            app.ui.status_error = true;
+            return Err(error);
+        }
+    };
+    let params = json!({"action": paused.action, "from": paused.from});
+    app.session.authorize = gate;
     let mut played = play_owned(app, &params, owner);
     // Paused again at a later dialog of the same action (not of one it calls, which resumes
     // alone): that dialog carries the rest of the set.

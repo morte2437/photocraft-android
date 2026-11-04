@@ -118,7 +118,7 @@ fn equivalent(actual: &Session, expected: &Session) {
     }
 }
 
-/// Undo exactly the native control's history edits, then redo the complete document state.
+/// Undo the expected playback history edits, then redo the complete document state.
 fn undo_redo(s: &mut Session, before: &Document, after: &Document, edits: usize) {
     for _ in 0..edits {
         assert!(s.undo());
@@ -164,45 +164,62 @@ fn create_layers_playback_matches_native_effect_layers_and_undo_at_each_depth() 
 /// The recorded whole-percent limits and interior values match native effect scaling at all depths.
 #[test]
 fn scale_effects_playback_matches_native_settings_and_undo_at_each_depth() {
-    for depth in [8, 16, 32] {
-        for percent in [1.0, 100.0, 200.0, 1000.0] {
-            let (mut native, native_source) = fixture(depth);
-            let native_past = native.active().unwrap().history.past_len();
-            native.execute(SCALE, json!({"scale":percent})).unwrap();
-            scaled_shadow(&native, native_source, percent);
-            let edits = native.active().unwrap().history.past_len() - native_past;
-            let (mut recorded, _) = fixture(depth);
-            let before = recorded.active().unwrap().doc.clone();
-            let past = recorded.active().unwrap().history.past_len();
-            recorded.actions.list.push(action(vec![item(SCALE, scale(percent))]));
-            let result = recorded.execute("actions.play", json!({"action":0})).unwrap();
-            assert_eq!(result["ran"], 1);
-            assert!(result.get("failed").is_none(), "{depth}/{percent}: {result}");
-            let after = recorded.active().unwrap().doc.clone();
-            assert_eq!(recorded.active().unwrap().history.past_len(), past + edits);
-            equivalent(&recorded, &native);
-            undo_redo(&mut recorded, &before, &after, edits);
+    for single_state in [false, true] {
+        for depth in [8, 16, 32] {
+            for percent in [1.0, 100.0, 200.0, 1000.0] {
+                let (mut native, native_source) = fixture(depth);
+                let native_past = native.active().unwrap().history.past_len();
+                native.execute(SCALE, json!({"scale":percent})).unwrap();
+                scaled_shadow(&native, native_source, percent);
+                let edits = native.active().unwrap().history.past_len() - native_past;
+                let (mut recorded, _) = fixture(depth);
+                recorded.execute("actions.setHistory", json!({"singleState":single_state})).unwrap();
+                let before = recorded.active().unwrap().doc.clone();
+                let past = recorded.active().unwrap().history.past_len();
+                recorded.actions.list.push(action(vec![item(SCALE, scale(percent))]));
+                let result = recorded.execute("actions.play", json!({"action":0})).unwrap();
+                assert_eq!(result["ran"], 1);
+                assert!(result.get("failed").is_none(), "{depth}/{percent}: {result}");
+                let after = recorded.active().unwrap().doc.clone();
+                // Grouped playback omits the unchanged 100% scale; per-step mode keeps native rows.
+                let playback_edits = if single_state { usize::from(percent != 100.0) } else { edits };
+                assert_eq!(recorded.active().unwrap().history.past_len(), past + playback_edits, "singleState={single_state}, depth={depth}, scale={percent}");
+                equivalent(&recorded, &native);
+                undo_redo(&mut recorded, &before, &after, playback_edits);
+            }
         }
     }
 }
 
-/// Scaling then splitting keeps the same native result and two separately reversible edits.
+/// Scaling then splitting keeps native pixels with one grouped or two separately reversible edits.
 #[test]
 fn scale_then_create_layers_matches_native_sequence() {
-    let (mut native, _) = fixture(16);
-    native.execute(SCALE, json!({"scale":200})).unwrap();
-    native.execute(CREATE, json!({})).unwrap();
-    let (mut recorded, _) = fixture(16);
-    let before = recorded.active().unwrap().doc.clone();
-    let past = recorded.active().unwrap().history.past_len();
-    recorded.actions.list.push(action(vec![item(SCALE, scale(200.0)), item(CREATE, create())]));
-    let result = recorded.execute("actions.play", json!({"action":0})).unwrap();
-    assert_eq!(result["ran"], 2);
-    assert!(result.get("failed").is_none());
-    assert_eq!(recorded.active().unwrap().history.past_len(), past + 2);
-    let after = recorded.active().unwrap().doc.clone();
-    equivalent(&recorded, &native);
-    undo_redo(&mut recorded, &before, &after, 2);
+    for single_state in [false, true] {
+        let (mut native, _) = fixture(16);
+        native.execute(SCALE, json!({"scale":200})).unwrap();
+        native.execute(CREATE, json!({})).unwrap();
+        let (mut recorded, _) = fixture(16);
+        recorded.execute("actions.setHistory", json!({"singleState":single_state})).unwrap();
+        let before = recorded.active().unwrap().doc.clone();
+        let past = recorded.active().unwrap().history.past_len();
+        recorded.actions.list.push(action(vec![item(SCALE, scale(200.0)), item(CREATE, create())]));
+        let result = recorded.execute("actions.play", json!({"action":0})).unwrap();
+        assert_eq!(result["ran"], 2);
+        assert!(result.get("failed").is_none());
+        let edits = if single_state { 1 } else { 2 };
+        assert_eq!(recorded.active().unwrap().history.past_len(), past + edits);
+        let after = recorded.active().unwrap().doc.clone();
+        equivalent(&recorded, &native);
+        if !single_state {
+            // Per-step playback must also preserve the native intermediate scaled-effects state.
+            assert!(native.undo());
+            assert!(recorded.undo());
+            equivalent(&recorded, &native);
+            assert!(native.redo());
+            assert!(recorded.redo());
+        }
+        undo_redo(&mut recorded, &before, &after, edits);
+    }
 }
 
 /// Unedited wire identity/order/flags survive; a supported scale edit exports its new value.

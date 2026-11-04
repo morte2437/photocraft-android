@@ -1085,6 +1085,19 @@ impl Default for Integrations {
     }
 }
 
+/// Actions panel Playback Options. These are saved independently of an action library.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Actions {
+    pub create_single_history_state: bool,
+}
+
+impl Default for Actions {
+    fn default() -> Self {
+        Self { create_single_history_state: true }
+    }
+}
+
 /// The History panel's History Options… (not part of Edit › Preferences in Photoshop either).
 /// Photoshop's snapshot options come with #3634.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1169,6 +1182,7 @@ impl LayerMaskOverlay {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
+    pub actions: Actions,
     pub general: General,
     pub interface: Interface,
     pub workspace: Workspace,
@@ -1563,6 +1577,9 @@ impl Session {
             }
         } else {
             next.set(path, value)?;
+        }
+        if next.actions.create_single_history_state != self.prefs().actions.create_single_history_state && crate::actions_cmds::history_policy_in_use(self) {
+            return Err("cannot change action history settings during playback".into());
         }
         // Old `prefs.set interface.theme` clients (by path or inside a section object) still
         // select a visible theme.

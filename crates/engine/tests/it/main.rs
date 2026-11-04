@@ -1,7 +1,10 @@
 //! The crate's integration tests, linked into one test binary.
 
+mod actions_single_history;
 mod affinity;
 mod artboard_export_names;
+mod atn_classic_gradient;
+mod atn_content_aware_fill;
 mod atn_crystallize_cell_size;
 mod atn_direct_adjustments;
 mod atn_layer_style;
@@ -11,6 +14,7 @@ mod atn_ripple_amount;
 mod atn_selective_color;
 mod atn_shear;
 mod atn_stroke_width;
+mod atn_type_path;
 mod atn_v12;
 mod background_and_mask_depth;
 mod background_layer_consistency;

@@ -29,6 +29,10 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     let id = st.active_layer.ok_or("no active layer")?;
     // Several layers selected: one box moves them all, as in Photoshop (#6501).
     let targets = photocraft_engine::transform_cmds::selection_targets(st);
+    // The selection takes its linked layers along, as `edit.transform` does: in Photoshop the box
+    // over one linked layer frames and moves the whole link group (#11217), but not a linked
+    // Background (`box_targets`). Unlinked, unchanged.
+    let targets = photocraft_engine::transform_cmds::box_targets(&doc, &targets);
     if targets != [id] {
         return begin_several(app, ctx, doc, revision, id, targets);
     }
@@ -251,6 +255,19 @@ pub const WARP_ONE_LAYER: &str = "Warp works on one layer at a time: select a si
 /// its selected pixels, as Layer via Copy) and transforms the copy (#352).
 pub fn begin_copy(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
     let selection = app.session.active().is_some_and(|d| d.doc.selection.is_some());
+    // A linked layer without a selection: the reference application makes no copy and frames the
+    // whole link group, as Free Transform does (measured, #11217). Unlinked layers get the copy,
+    // and so does a targeted mask (a lone target).
+    let target = crate::canvas::paint_target(app);
+    let linked = !selection
+        && app.session.active().is_some_and(|st| {
+            let lone = photocraft_engine::transform_cmds::lone_target(&st.doc, st.active_layer, &json!({ "target": target }));
+            let targets = photocraft_engine::transform_cmds::selection_targets(st);
+            matches!(lone, Ok(None)) && photocraft_engine::transform_cmds::box_targets(&st.doc, &targets) != targets
+        });
+    if linked {
+        return begin(app, ctx);
+    }
     let params = if selection { json!({}) } else { json!({"inPlace": true}) };
     app.run(if selection { "layer.new.layerViaCopy" } else { "layer.duplicate" }, params)?;
     let made = app.session.active().and_then(|st| st.active_layer.map(|layer| (st.doc.id, layer)));

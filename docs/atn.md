@@ -18,6 +18,29 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
+## Action playback history
+
+Actions create one history entry named `Action: <name>` by default. Nested plays
+share the outer action's entry, and a failing or Stop step keeps the completed
+prefix. A play with no document change adds no entry and preserves redo.
+`actions.setHistory {"singleState":false}` restores per-step history. The option
+is saved as `actions.createSingleHistoryState` in preferences and defaults to true
+when loading older preferences. It is separate from Playback Options' performance
+modes; the Playback Options dialog can use the same setting when #5212 lands.
+
+Step-dialog confirmation joins the original play only while its document and
+history still match the paused state. Cancel keeps the completed prefix; an
+intervening edit or document switch prevents the stale dialog from applying.
+Batch and droplets group each processed document independently under the action's
+name and use the same saved option.
+Existing non-linear History ordering and visibility options continue to apply.
+
+Explicit Clear History and Purge Histories steps keep their normal effects. Later
+edits form a grouped entry from that new boundary, without restoring discarded
+states. If an action explicitly chooses an intermediate row as the History Brush
+source, its pixels are retained as a named snapshot when grouping removes that
+row; the action still adds only one Undo entry.
+
 ## Supported events
 
 | Code | String ID | Label | PhotoCraft command(s) |
@@ -45,6 +68,7 @@ the reference application.
 | (string ID only) | collapseAllGroupsEvent | Collapse All Groups | `layer.setExpanded` |
 | `ClrB` | colorBalance | Color Balance | `image.adjustments.colorBalance` |
 | `ClrR` | colorRange | Color Range | `select.colorRange` |
+| (string ID only) | cafWorkspace | Content-Aware Fill | `edit.contentAwareFill` |
 | `Cntc` | contract | Contract | `select.modify.contract` |
 | `CnvM` | convertMode | Convert Mode | `image.mode.rgb`, `image.mode.grayscale`, `image.mode.cmyk`, `image.mode.lab`, `image.mode.multichannel`, `image.mode.bits8`, `image.mode.bits16`, `image.mode.bits32`, `image.mode.bitmap` |
 | (string ID only) | convertToProfile | Convert to Profile | `edit.convertToProfile` |
@@ -83,6 +107,7 @@ the reference application.
 | `Flip` | flip | Flip | `image.imageRotation.flipCanvasHorizontal`, `image.imageRotation.flipCanvasVertical`, `edit.transform.flipHorizontal`, `edit.transform.flipVertical` |
 | (string ID only) | focusMask | Focus Area | `select.focusArea` |
 | `GsnB` | gaussianBlur | Gaussian Blur | `filter.blur.gaussianBlur` |
+| `Grdn` | gradientClassEvent | Classic Gradient (custom RGB, centred midpoints) | `paint.gradient` |
 | (string ID only) | gradientMapEvent | Gradient Map | `image.adjustments.gradientMap` |
 | `GrMp` | (code only) | Gradient Map (recorded classic form) | `image.adjustments.gradientMap` |
 | `RplC` | replaceColor | Replace Color (Lab sample box) | `image.adjustments.replaceColor` |
@@ -99,7 +124,7 @@ the reference application.
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
 | `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
-| `Mk  ` | make | Make | `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape` |
+| `Mk  ` | make | Make | `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath` |
 | (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
 | (string ID only) | matchColor | Match Color | `image.adjustments.matchColor` |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
@@ -248,6 +273,38 @@ The separate `CropPhotos0001` helper remains a complete kept Photoshop step.
 Playback stops at that enabled helper before subsequent duplicate/crop steps can
 run. This covers the parent event, not complete recordings with generated helpers.
 
+### Content-Aware Fill recordings
+
+`cafWorkspace` maps Rectangular / Default color adaptation / None rotation with New Layer or
+Current Layer output to `edit.contentAwareFill`, retaining all seven keys and the three booleans:
+Sample All Layers, Scale and Mirror. The selection comes from the preceding selection step.
+New Layer is in the measured reference; Current Layer and the enumeration type IDs are explicit
+in [Stephen Marsh's published Action Manager example](https://community.adobe.com/questions-712/expand-and-content-aware-fill-functions-are-not-working-via-javascript-1172085).
+
+| Recorded key, in order | Supported value | Native parameter |
+|---|---|---|
+| `cafSamplingRegion` | `cafSamplingRegionRectangular` | `sampling: "rectangular"` |
+| `cafSampleAllLayers` | boolean | `sampleAllLayers` |
+| `cafColorAdaptationLevel` | `cafColorAdaptationDefault` | `colorAdaptation: "default"` |
+| `cafRotationAmount` | `cafRotationAmountNone` | `rotationAdaptation: "none"` |
+| `cafScale` | boolean | `scale` |
+| `cafMirror` | boolean | `mirror` |
+| `cafOutput` | `cafOutputToNewLayer`, `cafOutputToCurrentLayer` | `output: "new"`, `"current"` |
+
+Descriptor types, source identity and key order survive save while its native settings are
+unchanged. Editing a supported setting exports the new values in canonical form instead of
+restoring stale source values; malformed preservation data still refuses export.
+Native export writes the seven keys explicitly; the known native boolean, color
+adaptation, rotation and Current Layer output defaults are supported when sampling is explicitly
+Rectangular. A native call using the Auto sampling default cannot yet be exported.
+
+The reference's ellipses do not establish additional enum forms. Auto/Custom sampling,
+other adaptation levels, Duplicate Layer output, absent keys, unknown settings and
+malformed or repeated fields remain complete kept steps. Native layer targets, sampling/fill
+edits and nondefault seeds also refuse export rather than lose their settings. Playback uses
+the existing native fill and its selection, authorization, job and Undo/Redo behavior. The
+remaining CAF forms and the other recorded tools in #10710 are still separate work.
+
 ### Layer Style menu recordings
 
 `scaleEffectsEvent` maps to `layer.layerStyle.scaleEffects` with the recorded `Scl `
@@ -268,6 +325,19 @@ A supported scale edit exports its new value canonically; damaged preservation
 metadata remains refused. These two rows are the implemented subset of #10723;
 the other menu recordings remain separate work. Playback reuses native history
 and rendering; this does not claim Photoshop pixel equivalence.
+
+### Type Create Work Path recordings
+
+Make (`Mk  ` / `make`) maps to `type.createWorkPath` when `null` is the `Path`
+class reference and `From` is the target text layer (`TxLr.Ordn.Trgt`). Playback
+uses the existing native glyph-outline command and leaves the text layer editable.
+Undo restores the previous work path; Redo restores the new one.
+
+The mapping preserves the complete descriptor, including key order and reference
+names. Unknown or duplicate keys, named sources, other source classes and other
+reference chains remain complete kept Photoshop steps. Native export supports
+the implicit active text layer only; explicit layer targets refuse export.
+This is another implemented subset of #10723, not support for its remaining events.
 
 ### Settings retained by mapped events
 
@@ -440,6 +510,32 @@ differences that do not change what a step does.
 - Colours are kept as 8-bit values (51.0031 becomes 51); gradient names become "Custom".
 - Levels and Curves write the composite as `Chnl.Cmps` (the application skips `Ordn.Trgt`, #8543).
 
+### Classic Gradient recordings
+
+`Grdn` / `gradientClassEvent` maps to `paint.gradient` for custom RGB gradients
+with byte-valued colours and centred colour/transparency midpoints. The five
+measured styles are Linear, Radial, Angle, Reflected and Diamond. Pixel endpoints,
+opacity, blend mode, reverse, dither and the transparency switch are explicit;
+an omitted `Dthr` is off, rather than the native command's on default. The
+recorded interpolation method maps to the existing Classic, Perceptual, Linear
+or Smooth implementation, and `Intr` supplies smoothness.
+
+Unchanged recordings retain their complete descriptor bytes, key order, ID
+encoding and explicit defaults. A supported edit writes the recorded key order:
+`From`, `T   `, non-default `Opct` and `Md  `, `Type`, non-default `Rvrs`, enabled
+`Dthr` and `UsMs`, `gradientsInterpolationMethod`, then required `Grad`. Source
+data is never replayed in place of edited executable settings. Native export
+requires explicit stops, transparency (an empty list means opaque) and method;
+it does not resolve a named or current gradient preset at save time.
+
+Unknown/duplicate keys, absent interpolation methods, non-centred midpoints,
+fractional RGB colours, noise gradients and dynamic foreground/background stops
+remain kept steps. The current preset model does not represent those forms
+faithfully. Invalid units/enums or missing `Grad` also stay kept, rather than
+using a different gradient. The default Make/Set gradient fill-layer recordings
+are separate work. Synthetic fixtures follow the measured reference below;
+no new Photoshop recording or pixel-equivalence measurement is claimed.
+
 ## Reference forms
 
 How the reference application resolves a layer or document a step names, measured on 2026-11-01 by
@@ -554,7 +650,6 @@ layer reference, `Ordn.Trgt`); mapping them needs only the event name.
 | Layer > Smart Objects > Stack Mode > None | `imageStackConvertSmartObject` | none |
 | Layer > Video Layers > New Blank Video Layer, Insert Blank Frame, Delete Frame, Show / Hide Altered Video | `addBlankVideoLayer`, `insertBlankFrame`, `deleteFrame`, `showAlteredVideo` / `hideAlteredVideo` | none |
 | Layer > Video Layers > Interpret Footage | `interpretFootage` | `Vrsn` long (1), `interpretAlpha` (`alphaInterpretation`: `Ignr` ignore, …), `colorConvertAlterations` bool |
-| Type > Create Work Path | Make, `null` = class `Path`, `From` = text layer (`TxLr`) target | |
 | Edit > Find and Replace Text (Replace All) | `replace`, `null` = reference: property `replace` of all text layers (`TxLr` `Ordn.Al`), `Usng` = `find` text, `replace` text, `checkAll`, `Fwd `, `caseSensitive`, `wholeWord`, `ignoreAccents` bool | |
 | Edit > Check Spelling | `spellCheck`, `null` = property `spellCheck` of all text layers, `Usng` = `checkAll` bool | recorded with its dialog switched on; the corrections themselves are not recorded |
 | Image > Analysis > Set Measurement Scale > Custom | Set, `null` = property `measurementScale` of the document target, `T   ` = `pixelLength` long, `logicalLength` double, `logicalUnits` text | |
@@ -641,9 +736,7 @@ the recorded steps back from the saved Actions panel. Ranges come from the dialo
 | Convert Mode, several layers, "Don't Flatten" | `T   ` as a **class** (`Grys`), `Fltt` false, `Rstr` false | With `Fltt` and `Rstr` the step plays without the flatten question. |
 | New Group with a colour | `Usng` (`Clr ` label), `layerSectionStart`, `layerSectionEnd`, top-level `Nm  ` | |
 | Shear (`Shr `) | `ShrP` list of `Pnt ` (`Hrzn`, `Vrtc` doubles), `UndA` (`WrpA` wrap around, `RptE` repeat edge pixels), `ShrS` long, `ShrE` long | The dialog writes whole numbers: `Hrzn` -64..63 (dragging past the grid clamps), `Vrtc` 1..128 with the first point at 1 and the last at 128; dragging a point out of the grid deletes it. `ShrS` is 0 and `ShrE` the last point's index (count - 1). Script runs take any value unclamped and crashed on far-off `ShrE`/`ShrS` or a first `Vrtc` below 1. |
-| Gradient tool, classic (`Grdn` / `gradientClassEvent`) | `From`, `T   ` points in pixels; `Opct` percent, `Md  ` blend mode, `Type` (`GrdT`: `Lnr `, `Rdl `, `Angl`, `Rflc`, `Dmnd`), `Rvrs` bool, `Dthr` bool, `UsMs` bool (transparency), `gradientsInterpolationMethod` (`Perc` perceptual, …), `Grad` gradient object (as in Gradient Map) | Recorded in that order. `Opct`, `Md  ` and `Rvrs` appear only when they differ from 100 %, Normal and off; `Dthr` and `UsMs` only when on. The five types are the only accepted values. A step without `Grad` fails. |
 | Gradient tool, default mode | two steps: Make (`null` = class `contentLayer`, `Usng` = `Type` gradient layer object) then Set (`null` = `contentLayer` target, `T   ` = the same object plus `Algn` false) | The object: `Dthr`, `gradientsInterpolationMethod`, `Angl` angle, `Type`, `Scl ` percent, `Ofst` (`Hrzn`, `Vrtc` percent), `Grad`. The new tool makes a gradient fill layer; Make holds the first click, Set the finished drag. |
-| Content-Aware Fill (`cafWorkspace`) | `cafSamplingRegion` (`cafSamplingRegionRectangular`, …), `cafSampleAllLayers` bool, `cafColorAdaptationLevel` (`cafColorAdaptationDefault`, …), `cafRotationAmount` (`cafRotationAmountNone`, …), `cafScale` bool, `cafMirror` bool, `cafOutput` (`cafOutputToNewLayer`, …) | Runs on the selection, which is recorded as its own step before it. |
 | Perspective Warp (`perspectiveWarpTransform`) | `null` = layer target, `Md  ` (`perspectiveWarpMode`: `warp`), `referenceRect` rectangle in pixels, `vertices` list of points in pixels (the layout quad), `warpedVertices` (the same points after warping), `quads` list of `indices` (4 vertex indexes each) | Layout and warp are one step. |
 | Print (`print`) then Print One Copy (`printOneCopy`) | `print`: `null` = reference `printOutput` property of the target document; `printOutput` (`PstS`, `Inte`, `printSixteenBit`, `printerName` text, `printProofSetup`), `printViewProofSetup`, `printOutputOptions` (caption, marks, `Bckg` colour, `BrdT`, `Bld `, `Rslt`, `vectorData`, `PgPs`, `Left`, `Top `, `Scl `, crop rectangle), `osSpecificPrintInfo` raw data, `Cptn` text. `printOneCopy` has no keys. | Pressing Print in the dialog records both steps. |
 | Create Droplet (`CrtD`) | `In  ` alias: the droplet file; `Fldr` bool (include subfolders); `Usng` reference to the action; then the Batch keys below (destination, file naming, error log) when set | The same settings as Batch, with the droplet file instead of a source folder. |

@@ -283,6 +283,16 @@ pub(crate) fn targets_of(doc: &Document, selected: &[LayerId], active: Option<La
     if ids.is_empty() { active.into_iter().collect() } else { ids }
 }
 
+/// The layers one box over `targets` moves: `targets` with the layers linked to them, as the Move
+/// tool takes them along. In Photoshop transforming one linked layer transforms the whole link
+/// group (#11217). A linked Background joins only when it is a target itself: `targets_of`
+/// leaves it out of a box over other layers, and a link doesn't bring it back in.
+pub fn box_targets(doc: &Document, targets: &[LayerId]) -> Vec<LayerId> {
+    let mut ids = crate::layer_multi_cmds::move_targets(doc, targets);
+    ids.retain(|id| targets.contains(id) || !doc.is_background(*id));
+    ids
+}
+
 /// The `layers` param: the layers one box transforms together (at most 10000, each in the
 /// document), without those a listed group carries. `None` when it isn't given.
 fn layers_param(doc: &Document, p: &Value) -> Result<Option<Vec<LayerId>>> {
@@ -816,8 +826,9 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         (None, false) if many.is_some() => None,
         (None, false) => return Err(EngineError::Other("no active layer".into())),
     };
+    let listed = many.is_some();
     // The layers the box moves: those listed, the one named, or else the layer selection (#6501).
-    let ids: Vec<LayerId> = match (many, explicit) {
+    let mut ids: Vec<LayerId> = match (many, explicit) {
         (Some(ids), _) => ids,
         _ if lone.is_some() => Vec::new(),
         (None, Some(id)) => vec![id],
@@ -825,6 +836,13 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if let Some(missing) = ids.iter().find(|id| st.doc.layer(**id).is_none()) {
         return Err(EngineError::NoLayer(*missing));
+    }
+    // The named layer or the selection takes its linked layers along, as the Move tool does: in
+    // Photoshop transforming one linked layer transforms the whole link group (#11217), but not a
+    // linked Background it didn't target ([`box_targets`]). A caller listing `layers` gets
+    // exactly those.
+    if !listed {
+        ids = box_targets(&st.doc, &ids);
     }
     let rect = match p.get("rect").and_then(Value::as_array) {
         Some(r) if r.len() == 4 => {

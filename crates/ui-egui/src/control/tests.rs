@@ -890,7 +890,7 @@ fn ui_set_drives_the_layers_panel_artboard_filter() {
     assert_eq!(app.ui.layer_filter_by, FilterBy::Artboard);
     let bad = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "artboards"}}));
     assert_eq!(bad["ok"], false, "{bad}");
-    assert!(bad.to_string().contains("kind, name, effect, mode, color, smartObject or artboard"), "{bad}");
+    assert!(bad.to_string().contains("kind, name, effect, mode, attribute, color, smartObject or artboard"), "{bad}");
     assert_eq!(app.ui.layer_filter_by, FilterBy::Artboard, "a bad value changed nothing");
 }
 
@@ -928,9 +928,9 @@ fn ui_set_drives_the_layers_panel_filter() {
     let ok = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "name", "name": "ink"}}));
     assert_eq!(ok["ok"], true, "{ok}");
     assert_eq!((app.ui.layer_filter_by, app.ui.layer_filter_name.as_str()), (FilterBy::Name, "ink"));
-    let ok = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "mode", "mode": "Pass Through", "kinds": ["type", "pixel", "type"]}}));
+    let ok = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "mode", "mode": "Multiply", "kinds": ["type", "pixel", "type"]}}));
     assert_eq!(ok["ok"], true, "{ok}");
-    assert_eq!((app.ui.layer_filter_by, app.ui.layer_filter_mode), (FilterBy::Mode, photocraft_color::BlendMode::PassThrough));
+    assert_eq!((app.ui.layer_filter_by, app.ui.layer_filter_mode), (FilterBy::Mode, photocraft_color::BlendMode::Multiply));
     assert_eq!(app.ui.layer_filter, ["type", "pixel"], "kinds are kept once each");
     assert_eq!(app.ui.layer_filter_name, "ink", "fields left out keep their value");
     for bad in [
@@ -940,6 +940,8 @@ fn ui_set_drives_the_layers_panel_filter() {
         json!({"layerFilter": {"kinds": "pixel"}}),
         json!({"layerFilter": {"name": 3}}),
         json!({"layerFilter": {"mode": "Nonsense"}}),
+        // The Mode list has no Pass Through (#10878).
+        json!({"layerFilter": {"mode": "Pass Through"}}),
         json!({"layerFilter": {"color": "crimson"}}),
         json!({"layerFilter": {"by": "kind", "extra": true}}),
         json!({"layerFilter": {"by": "kind"}, "tileGrid": "yes"}),
@@ -947,6 +949,7 @@ fn ui_set_drives_the_layers_panel_filter() {
         let r = call(&mut app, &ctx, "ui.set", bad.clone());
         assert_eq!(r["ok"], false, "{bad} → {r}");
         assert_eq!(app.ui.layer_filter_by, FilterBy::Mode, "{bad} changed nothing");
+        assert_eq!(app.ui.layer_filter_mode, photocraft_color::BlendMode::Multiply, "{bad} left the mode alone");
     }
     // #5898: the Color filter through the same path.
     let ok = call(&mut app, &ctx, "ui.set", json!({"layerFilter": {"by": "color", "color": "red"}}));

@@ -205,6 +205,13 @@ pub struct Session {
     typed_layer: Option<(photocraft_doc::DocId, LayerId)>,
     /// Coalescing key of the command being executed.
     coalesce_request: Option<String>,
+    /// The outer action's original document/history states, independent of command transactions.
+    action_history: Option<actions_cmds::ActionHistory>,
+    /// Weak leases expire when every copy of a suspended continuation is abandoned.
+    paused_action_history: Vec<std::sync::Weak<()>>,
+    /// Tests observe the actual scratch-session boundary without retaining it or changing output.
+    #[cfg(test)]
+    batch_history_observer: Option<fn(&Session)>,
     /// Pixels copied with Edit › Copy / Cut (shared by all documents, like Photoshop).
     pub clipboard: Option<edit_cmds::Clip>,
     /// Layer › Layer Style › Copy Layer Style: the effects and the Blending Options
