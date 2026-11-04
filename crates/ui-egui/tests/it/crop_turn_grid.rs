@@ -32,9 +32,13 @@ fn app(classic: bool, show: OverlayShow) -> (PhotocraftApp, egui::Context) {
 }
 
 fn turning(app: &mut PhotocraftApp, ctx: &egui::Context) -> [f64; 2] {
+    turning_by(app, ctx, 10.0)
+}
+
+fn turning_by(app: &mut PhotocraftApp, ctx: &egui::Context, degrees: f64) -> [f64; 2] {
     let c = crop_ui::center(app.ui.crop_rect.unwrap());
     let p = [c[0] + 500.0, c[1]];
-    let a = 10.0_f64.to_radians();
+    let a = degrees.to_radians();
     let q = [c[0] + 500.0 * a.cos(), c[1] + 500.0 * a.sin()];
     control(app, ctx, "ui.pointer", json!({"events":[{"kind":"down","x":p[0],"y":p[1]},{"kind":"move","x":q[0],"y":q[1]}]}));
     assert!(crop_ui::turning(app).is_some(), "the real pointer path must start a turn");
@@ -98,6 +102,80 @@ fn zoom_and_hidpi_do_not_change_screen_point_spacing() {
         assert!((pair[1] - pair[0] - 48.0).abs() < 0.001, "{xs:?}");
     }
     release(&mut app, &ctx, p);
+}
+
+#[test]
+fn canvas_paints_48_point_cells_at_zoom_two_and_hidpi() {
+    fn collect(shape: &egui::Shape, clip: egui::Rect, lines: &mut Vec<[egui::Pos2; 2]>) {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, clip, lines)),
+            egui::Shape::Path(path) if path.stroke.color == egui::epaint::ColorMode::Solid(egui::Color32::from_white_alpha(90)) => {
+                assert_eq!(path.points.len(), 2);
+                assert_eq!(path.stroke.width, 1.0);
+                assert!(path.points.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+                let points = [path.points[0], path.points[1]];
+                assert!(egui::Rect::from_two_pos(points[0], points[1]).intersects(clip));
+                lines.push(points);
+            }
+            _ => {}
+        }
+    }
+
+    // Exercise both paint call sites: the initial upright turn and a moved
+    // default-mode turn whose camera counter-rotates the frame.
+    for degrees in [0.0, 10.0] {
+        let (mut app, ctx) = app(false, OverlayShow::Always);
+        ctx.set_pixels_per_point(2.0);
+        control(&mut app, &ctx, "ui.set", json!({"zoom":2.0}));
+        let p = turning_by(&mut app, &ctx, degrees);
+        assert_eq!(crop_ui::angle(&app) == 0.0, degrees == 0.0);
+        app.ui.extras.rulers = false;
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(600.0, 480.0));
+        // Deliberately narrower than the canvas and frame, to detect a caller
+        // passing the whole canvas instead of the painter's actual clip.
+        let clip = egui::Rect::from_center_size(rect.center(), egui::vec2(180.0, 130.0));
+        let mut view = app.ui.views[0].clone();
+        view.fit_pending = false;
+        view.fill_pending = false;
+        view.doc_size = [412, 301];
+        view.center = [206.0, 150.5];
+        let xf = photocraft_ui_egui::canvas::ViewXform { rect, zoom: 1.0, center: view.center, flip: false, rotation: view.rotation, aspect: 1.0 };
+        let q = crop_ui::corners(app.ui.crop_rect.unwrap(), crop_ui::angle(&app)).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0))), ..Default::default() };
+        let output = ctx.run_ui(input, |ui| {
+            ui.set_clip_rect(clip);
+            let painted_view = photocraft_ui_egui::canvas::canvas_view(&mut app, ui, 0, rect, view.clone(), true);
+            assert_eq!(painted_view.zoom, 2.0);
+        });
+        assert_eq!(output.pixels_per_point, 2.0);
+        assert_eq!(app.canvas_ppp(), 2.0);
+        assert!(crop_ui::turning(&app).is_some());
+        let mut lines = Vec::new();
+        for shape in &output.shapes {
+            let before = lines.len();
+            collect(&shape.shape, clip, &mut lines);
+            if lines.len() != before {
+                assert_eq!(shape.clip_rect, clip);
+            }
+        }
+        assert_eq!(lines.len(), 6, "only the three visible lines per axis: {degrees} degrees, {lines:?}");
+        for vertical in [true, false] {
+            let mut positions = Vec::new();
+            for points in &lines {
+                let delta = points[1] - points[0];
+                if (delta.x.abs() < 0.001) == vertical {
+                    let (coordinate, lo, hi) = if vertical { (points[0].x, q[0].y, q[3].y) } else { (points[0].y, q[0].x, q[1].x) };
+                    let endpoints = if vertical { [points[0].y, points[1].y] } else { [points[0].x, points[1].x] };
+                    near(&endpoints, &[lo, hi]);
+                    positions.push(coordinate);
+                }
+            }
+            positions.sort_by(f32::total_cmp);
+            let center = if vertical { rect.center().x } else { rect.center().y };
+            near(&positions, &[center - 48.0, center, center + 48.0]);
+        }
+        release(&mut app, &ctx, p);
+    }
 }
 
 #[test]
