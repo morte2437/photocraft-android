@@ -238,10 +238,11 @@ missing or unusable file reports the native command's error.
 Convert Type to Shape retains Make's `contentLayer` class reference and `Usng`
 target `textLayer` reference; it does not export a separate `convertToShape`
 event. Other Make mappings, including Solid Color and Pattern fills, are unchanged.
-Shape Blur maps only the measured radius form (`Rds ` pixels, 5–1000; omitted
-radius uses the native factory value 10). Later dialog forms carrying
-`customShape` or `keyOriginType` remain kept. Native explicit shape choices cannot
-be saved as radius-only descriptors; no custom asset lookup or new kernel is added.
+Shape Blur maps the measured radius form (`Rds ` pixels, 5–1000; omitted
+radius uses the native factory value 10) and the recorded custom-shape form below.
+Custom-shape playback requires the asset selected by its ID to be installed.
+Other unsupported dialog fields or origin values remain kept. Native explicit
+shape choices cannot be saved as radius-only descriptors.
 
 Crop and Straighten Photos executes the native scan operation once, creating one
 document per photo found inside the selection and leaving the source unchanged.
@@ -398,7 +399,7 @@ PSD-specific LUT Data Order and Table Order handling is separately tracked by
 ### Shape Blur with a recorded custom shape
 
 The measured `shapeBlur` form contains a pixel radius, a `customShape` object
-with `Nm  ` and `Idnt` text, and optionally the recorded `keyOriginType` value 9.
+with `"Nm  "` and `Idnt` text, and optionally the recorded `keyOriginType` value 9.
 The nested object class is corroborated by
 [ag-psd's public descriptor definitions](https://github.com/Agamnentzar/ag-psd/blob/master/src/descriptor.ts).
 The ID selects the installed shape even after a rename. If that asset is absent,

@@ -279,6 +279,215 @@ fn batch_save_close_refuses_lossy_exr_parts() {
     assert_eq!(result["files"].as_array().unwrap().len(), 1, "ordinary flat EXR still saves: {result}");
 }
 
+/// In-place EXR writes retain canonical windows or refuse both active and closed results.
+#[test]
+fn batch_save_close_refuses_changed_exr_windows() {
+    use exr::prelude::*;
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("window.exr");
+    for (origin, display, accepted) in [
+        ((-3, 5), IntegerBounds::new((-3, 5), (2, 2)), false),
+        ((0, 0), IntegerBounds::new((-1, -1), (4, 4)), false),
+        ((0, 0), IntegerBounds::new((0, 0), (2, 2)), true),
+    ] {
+        let layer = Layer::new(
+            (2, 2),
+            LayerAttributes { layer_position: Vec2(origin.0, origin.1), ..Default::default() },
+            Encoding::FAST_LOSSLESS,
+            AnyChannels::sort(
+                [("R", 0.25), ("G", 0.5), ("B", 2.0)].into_iter().map(|(name, value)| AnyChannel::new(name, FlatSamples::F32(vec![value; 4]))).collect(),
+            ),
+        );
+        Image::from_layers(ImageAttributes::new(display), vec![layer]).write().to_file(&input).unwrap();
+        let before = std::fs::read(&input).unwrap();
+        for snapshot in [false, true] {
+            std::fs::write(&input, &before).unwrap();
+            let steps = if snapshot { json!([["file.openAs", {"path":"recorded.exr"}], ["file.saveAs", {}], ["file.close", {}]]) } else { json!([]) };
+            let result = Session::new()
+                .execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","overrideOpen":snapshot,"steps":steps}))
+                .unwrap();
+            assert_eq!(result["files"].as_array().unwrap().len(), usize::from(accepted), "{result}");
+            if accepted {
+                let after = std::fs::read(&input).unwrap();
+                let info = photocraft_codecs::exr_info(&after, &Default::default()).unwrap();
+                assert_eq!(info[0].data_window, (0, 0, 2, 2));
+                assert_eq!(info[0].display_window, info[0].data_window);
+                let rgba = |bytes: &[u8]| {
+                    photocraft_codecs::decode(bytes)
+                        .unwrap()
+                        .convert(photocraft_codecs::ChannelLayout::Rgba, photocraft_codecs::SampleType::F32)
+                        .to_f32_samples()
+                        .unwrap()
+                };
+                assert_eq!(rgba(&after), rgba(&before));
+            } else {
+                assert!(result["errors"][0]["error"].as_str().unwrap().contains("data/display windows"), "{result}");
+                assert_eq!(std::fs::read(&input).unwrap(), before);
+            }
+        }
+        std::fs::write(&input, &before).unwrap();
+        let separate =
+            Session::new().execute("file.automate.batch", json!({"input":[input],"output":dir.path().join("copies"),"format":"exr","steps":[]})).unwrap();
+        assert_eq!(separate["files"].as_array().unwrap().len(), 1, "{separate}");
+        assert_eq!(std::fs::read(&input).unwrap(), before);
+    }
+}
+
+/// Targa alpha remains source data even when its descriptor omits the alpha flag.
+#[test]
+fn batch_save_close_refuses_targa_24_alpha_loss() {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image};
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("alpha.tga");
+    for (alpha, descriptor_alpha) in [([0, 173], true), ([0, 0], true), ([0, 173], false)] {
+        let image = Image::from_u8(2, 1, ChannelLayout::Rgba, vec![11, 22, 33, alpha[0], 77, 88, 99, alpha[1]]).unwrap();
+        let mut before = photocraft_codecs::encode(&image, Format::Tga, &EncodeOptions::default()).unwrap();
+        if !descriptor_alpha {
+            before[17] &= 0xf0;
+        }
+        let opened = photocraft_io::import("alpha.tga", &before).unwrap().document;
+        assert_eq!(opened.channels.len(), 1, "the fixture must retain its imported alpha plane");
+        for snapshot in [false, true] {
+            std::fs::write(&input, &before).unwrap();
+            let steps = if snapshot { json!([["file.openAs", {"path":"recorded.tga"}], ["file.saveAs", {}], ["file.close", {}]]) } else { json!([]) };
+            let result = Session::new()
+                .execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","tgaBits":24,"overrideOpen":snapshot,"steps":steps}))
+                .unwrap();
+            assert_eq!(result["files"], json!([]), "{result}");
+            assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("24-bit Targa"), "{result}");
+            assert_eq!(std::fs::read(&input).unwrap(), before);
+        }
+    }
+}
+
+/// Automatic/32-bit Targa keeps hidden RGB and alpha; separate 24-bit output reports the loss.
+#[test]
+fn batch_targa_preservation_and_export_warnings() {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image};
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("alpha.tga");
+    let pixels = vec![11, 22, 33, 0, 77, 88, 99, 173];
+    let image = Image::from_u8(2, 1, ChannelLayout::Rgba, pixels.clone()).unwrap();
+    let before = photocraft_codecs::encode(&image, Format::Tga, &EncodeOptions::default()).unwrap();
+    for bits in [Value::Null, json!(32)] {
+        std::fs::write(&input, &before).unwrap();
+        let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","tgaBits":bits,"steps":[]})).unwrap();
+        assert_eq!(result["files"], json!([input]), "{result}");
+        assert_eq!(photocraft_codecs::decode(&std::fs::read(&input).unwrap()).unwrap().data(), pixels);
+    }
+    for snapshot in [false, true] {
+        std::fs::write(&input, &before).unwrap();
+        let steps = if snapshot { json!([["file.saveAs", {}], ["file.close", {}]]) } else { json!([]) };
+        let result = Session::new()
+            .execute("file.automate.batch", json!({"input":[input],"output":dir.path().join("copies"),"format":"tga","tgaBits":24,"steps":steps}))
+            .unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+        let output = result["files"][0].as_str().unwrap();
+        assert_eq!(photocraft_codecs::decode(&std::fs::read(output).unwrap()).unwrap().data(), &[11, 22, 33, 77, 88, 99]);
+        assert!(
+            result["notices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["warnings"].as_array().is_some_and(|w| w.iter().any(|v| v.as_str().is_some_and(|s| s.contains("24-bit") && s.contains("Alpha 1"))))),
+            "{result}"
+        );
+        assert_eq!(std::fs::read(&input).unwrap(), before);
+    }
+}
+
+/// Explicit 24-bit options do not reject opaque RGB or the grayscale Targa option bypass.
+#[test]
+fn batch_targa_24_keeps_opaque_and_gray_alpha_results() {
+    use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image};
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("allowed.tga");
+    for (layout, pixels) in [(ChannelLayout::Rgb, vec![11, 22, 33, 77, 88, 99]), (ChannelLayout::GrayA, vec![0, 0, 96, 255])] {
+        let image = Image::from_u8(2, 1, layout, pixels.clone()).unwrap();
+        std::fs::write(&input, photocraft_codecs::encode(&image, Format::Tga, &EncodeOptions::default()).unwrap()).unwrap();
+        let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","tgaBits":24,"steps":[]})).unwrap();
+        assert_eq!(result["files"], json!([input]), "{result}");
+        assert_eq!(photocraft_codecs::decode(&std::fs::read(&input).unwrap()).unwrap().data(), pixels);
+    }
+}
+
+/// A tiny flat TIFF with real composite transparency and an optional retained alpha plane.
+fn batch_tiff_alpha_fixture(extra: bool, opaque: bool) -> Vec<u8> {
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+    use photocraft_doc::{AlphaChannel, Document, Layer};
+    use photocraft_geom::{Rect, Size};
+    use photocraft_raster::Surface;
+    let mut doc = Document::new("alpha", Size::new(2, 2), ColorMode::Rgb, SampleType::U8);
+    let mut pixels = Surface::new(doc.pixel_format());
+    pixels.fill_rect(if opaque { Rect::new(0, 0, 2, 2) } else { Rect::new(1, 1, 2, 2) }, &[1.0, 0.0, 0.0, 1.0]);
+    doc.layers.push(Layer::new("Art", LayerContent::Raster(pixels)));
+    if extra {
+        let mut mask = Surface::new(PixelFormat::new(ColorMode::Grayscale, SampleType::U8, false));
+        mask.fill_rect(Rect::new(0, 0, 1, 2), &[1.0]);
+        doc.channels.push(AlphaChannel::new("Mask", mask));
+    }
+    photocraft_io::export(&doc, "alpha.tif", &photocraft_io::ExportOptions { tiff_transparency: Some(true), ..Default::default() }).unwrap().bytes
+}
+
+/// The actual flat path refuses explicit and auxiliary-plane matting before replacing the source.
+#[test]
+fn batch_save_close_refuses_flat_tiff_transparency_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("alpha.tif");
+    for (extra, transparency) in [(false, json!(false)), (true, Value::Null)] {
+        let before = batch_tiff_alpha_fixture(extra, false);
+        for snapshot in [false, true] {
+            std::fs::write(&input, &before).unwrap();
+            let steps = if snapshot {
+                json!([["file.openAs", {"path":"recorded.tif"}], ["layer.toggleLockTransparency", {}], ["file.saveAs", {}], ["file.close", {}]])
+            } else {
+                json!([["layer.toggleLockTransparency", {}]])
+            };
+            let result = Session::new()
+                .execute(
+                    "file.automate.batch",
+                    json!({"input":[input],"destination":"saveAndClose","overrideOpen":snapshot,"tiffTransparency":transparency,"steps":steps}),
+                )
+                .unwrap();
+            assert_eq!(result["files"], json!([]), "{result}");
+            assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("TIFF composite transparency"), "{result}");
+            assert_eq!(std::fs::read(&input).unwrap(), before);
+        }
+    }
+}
+
+/// Keeping flat alpha, preserving actual layers and writing an opaque composite remain allowed.
+#[test]
+fn batch_tiff_alpha_guard_keeps_legitimate_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("allowed.tif");
+    for (layered, opaque, transparency) in [(false, false, json!(true)), (true, false, json!(false)), (false, true, Value::Null)] {
+        let before = batch_tiff_alpha_fixture(true, opaque);
+        std::fs::write(&input, &before).unwrap();
+        let steps = if !layered && !opaque { json!([["layer.toggleLockTransparency", {}]]) } else { json!([]) };
+        let result = Session::new()
+            .execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","tiffTransparency":transparency,"steps":steps}))
+            .unwrap();
+        assert_eq!(result["files"], json!([input]), "{result}");
+        let bytes = std::fs::read(&input).unwrap();
+        assert_eq!(photocraft_codecs::tiff_photoshop_tags(&bytes).1.is_some(), layered);
+        let back = photocraft_io::import("allowed.tif", &bytes).unwrap().document;
+        assert_eq!(back.channels.len(), 1);
+        assert_eq!(back.channels[0].surface.pixel(0, 0)[0], 1.0);
+        assert_eq!(back.channels[0].surface.pixel(1, 1)[0], 0.0);
+        if layered {
+            let LayerContent::Raster(surface) = &back.layers[0].content else { panic!("the saved layer must remain raster") };
+            assert_eq!(surface.pixel(0, 0).last().copied(), Some(0.0));
+        } else {
+            let actual = photocraft_codecs::decode(&bytes).unwrap();
+            let original = photocraft_codecs::decode(&before).unwrap();
+            assert_eq!(actual.data(), original.data());
+        }
+    }
+}
+
 /// The largest supported custom kernel is prepared on the worker and can be cancelled without an edit.
 #[test]
 fn custom_shape_preparation_yields_a_cancellable_job() {

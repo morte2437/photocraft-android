@@ -61,10 +61,18 @@ fn collect_inputs(p: &Value, cmd: &str, output: &str, include_non_images: bool) 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn list_files_tree(dir: &str, skip: &str, cmd: &str, include_non_images: bool) -> Result<Vec<BatchInput>> {
     use std::path::{Path, PathBuf};
-    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let canon = |p: &Path| std::fs::canonicalize(p).map_err(|error| EngineError::Other(format!("{}: {error}", p.display())));
     let root = Path::new(dir);
-    let root_canon = canon(root).ok_or_else(|| EngineError::Other(format!("{dir}: cannot open the folder")))?;
-    let skip = if skip.is_empty() { None } else { canon(Path::new(skip)) };
+    let root_canon = canon(root)?;
+    let skip = if skip.is_empty() {
+        None
+    } else {
+        match std::fs::canonicalize(skip) {
+            Ok(path) => Some(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(EngineError::Other(format!("{skip}: {error}"))),
+        }
+    };
     let mut seen = std::collections::HashSet::new();
     seen.insert(root_canon);
     let mut out = Vec::new();
@@ -81,17 +89,25 @@ pub(crate) fn list_files_tree(dir: &str, skip: &str, cmd: &str, include_non_imag
         if depth >= MAX_SUBFOLDER_DEPTH {
             continue;
         }
-        let Ok(rd) = std::fs::read_dir(&folder) else { continue };
-        let mut subs: Vec<(String, PathBuf)> = rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), p)))
-            .collect();
+        let rd = std::fs::read_dir(&folder).map_err(|error| EngineError::Other(format!("{shown}: {error}")))?;
+        let mut subs: Vec<(String, PathBuf)> = Vec::new();
+        for entry in rd {
+            let path = entry.map_err(|error| EngineError::Other(format!("{shown}: {error}")))?.path();
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue, // Broken links are not inputs.
+                Err(error) => return Err(EngineError::Other(format!("{}: {error}", path.display()))),
+            };
+            if metadata.is_dir()
+                && let Some(name) = path.file_name()
+            {
+                subs.push((name.to_string_lossy().into_owned(), path));
+            }
+        }
         subs.sort();
         // Pushed in reverse so the stack pops them in name order.
         for (name, sub) in subs.into_iter().rev() {
-            let Some(c) = canon(&sub) else { continue };
+            let c = canon(&sub)?;
             if skip.as_ref() == Some(&c) || !seen.insert(c) {
                 continue;
             }
@@ -291,16 +307,13 @@ fn process_one(
             }
         }
         let d = scratch.active().ok_or(EngineError::NoDocument)?;
-        if let Some(format) = options.format {
+        let warnings = if let Some(format) = options.format {
             let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
-            if let Some(ctx) = options.ctx {
-                save_batch_doc(&d.doc, out, &ext, save, ctx)?;
-            } else {
-                save_doc_as(&d.doc, out, &ext, save)?;
-            }
+            if let Some(ctx) = options.ctx { save_batch_doc(&d.doc, out, &ext, save, ctx)? } else { save_doc_as(&d.doc, out, &ext, save)? }
         } else {
-            save_doc(&d.doc, out, save)?;
-        }
+            save_doc(&d.doc, out, save)?
+        };
+        record_export_warnings(&mut scratch, out, warnings);
         Ok(())
     })();
     if let Some(input) = options.input {
@@ -311,11 +324,18 @@ fn process_one(
 
 /// Encode before the Batch write checkpoint. Esc accepted during an action or encode therefore
 /// leaves the current destination untouched; the worker owns the write once the checkpoint passes.
-fn save_batch_doc(doc: &Document, out: &str, format: &str, save: SaveOpts, ctx: &crate::jobs::JobCtx) -> Result<()> {
-    let (bytes, _) = encode(doc, format, save)?;
+fn save_batch_doc(doc: &Document, out: &str, format: &str, save: SaveOpts, ctx: &crate::jobs::JobCtx) -> Result<Vec<String>> {
+    let (bytes, warnings) = encode(doc, format, save)?;
     ctx.batch_before_write()?;
     write_file(out, &bytes)?;
-    Ok(())
+    Ok(warnings)
+}
+
+/// Keep encoder diagnostics beside the existing per-file opening notices, including snapshots.
+fn record_export_warnings(scratch: &mut Session, out: &str, warnings: Vec<String>) {
+    if !warnings.is_empty() {
+        scratch.batch_open_notices.get_or_insert_with(Vec::new).push(json!({"file": out, "warnings": warnings}));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -775,6 +795,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let mut save = SaveOpts::from_params(s, p, cmd)?;
     if save_and_close {
         save.tiff_layers = save_close_tiff_layers;
+        save.preserve_alpha = true;
     }
     let authorize = s.authorize;
     let raw_ppi = super::open::raw_open_resolution(s);
@@ -926,7 +947,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     match saved {
                         Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
                             validate_result(scratch, &doc)?;
-                            save_batch_doc(&doc, out, &encode_format, save, ctx)?;
+                            let warnings = save_batch_doc(&doc, out, &encode_format, save, ctx)?;
+                            record_export_warnings(scratch, out, warnings);
                             Ok(true)
                         }
                         _ => {
@@ -1120,14 +1142,18 @@ fn preserve_exr(bytes: &[u8]) -> Result<()> {
     let parts = photocraft_codecs::exr_info(bytes, &Default::default()).map_err(|e| EngineError::Other(format!("cannot inspect EXR source: {e}")))?;
     if parts.len() != 1
         || parts.first().is_none_or(|p| {
-            p.deep
+            p.data_window != (0, 0, p.width, p.height)
+                || p.display_window != p.data_window
+                || p.deep
                 || p.view.is_some()
                 || !(3..=4).contains(&p.channels.len())
                 || p.channels.iter().any(|c| !matches!(c.name.as_str(), "R" | "G" | "B" | "A"))
                 || ["R", "G", "B"].iter().any(|name| !p.channels.iter().any(|c| c.name == *name))
         })
     {
-        return Err(EngineError::Other("Save and Close cannot preserve this EXR's parts or channels; save to a separate output folder".into()));
+        return Err(EngineError::Other(
+            "Save and Close cannot preserve this EXR's parts or channels, or its data/display windows; save to a separate output folder".into(),
+        ));
     }
     Ok(())
 }
