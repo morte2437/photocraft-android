@@ -81,3 +81,21 @@ fn image_processor_folders_are_chosen_with_browse() {
     assert_eq!(field(&h, "output"), Some(json!("/tmp/web")));
     assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Folder { .. }, FileDialogRequest::Folder { .. }]));
 }
+
+#[test]
+fn data_sets_as_files_folder_is_chosen_with_browse() {
+    let (mut h, asked) = harness(vec![Some(FileDialogAnswer::FolderTo("/tmp/dataset-exports".into()))]);
+    h.state_mut().run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    h.state_mut().run("image.variables.dataSets", json!({"dataSets": [{"name": "Set 1", "values": []}]})).unwrap();
+    h.state_mut().sync_views();
+    let ctx = h.ctx.clone();
+    crate::menus::invoke(h.state_mut(), &ctx, "file.export.dataSetsAsFiles", json!({})).unwrap();
+    h.run_steps(4);
+    assert!(field(&h, "dir").is_some(), "the dialog has a Dir field");
+    assert_eq!(field(&h, "naming"), Some(json!("{name}")));
+    assert_eq!(field(&h, "format"), Some(json!("png")));
+    h.get_by_label("Browse…").click();
+    h.run_steps(4);
+    assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Folder { .. }]));
+    assert_eq!(field(&h, "dir"), Some(json!("/tmp/dataset-exports")));
+}

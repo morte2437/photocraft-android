@@ -175,6 +175,7 @@ fn set_quiet(s: &mut Session, f: impl FnOnce(&mut Document)) -> Result<()> {
 /// as it was and the journal forgets the commands `f` ran, so an action being recorded does not
 /// replay an edit that was taken back.
 pub(crate) fn compound<R>(s: &mut Session, label: &str, f: impl FnOnce(&mut Session) -> Result<R>) -> Result<R> {
+    crate::actions_cmds::before_action_edit(s);
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let (before, history, prior) = (st.doc.clone(), st.history.clone(), st.layer_target());
     // An inner command may select a layer that disappears when the compound rolls back.

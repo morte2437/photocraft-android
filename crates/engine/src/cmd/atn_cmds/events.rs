@@ -6,8 +6,9 @@ use super::descriptors::{
 use super::fields::{F, Kind, Mapped, fields_from, fields_to, none, step};
 use super::steps_artboard::{artboard_edit_from, artboard_edit_to, artboard_from, artboard_to};
 use super::steps_channels::{match_color_from, match_color_to, merge_spot_from, merge_spot_to, split_from, split_to, trap_from, trap_to};
+use super::steps_content_aware::{caf_from, caf_to};
 use super::steps_direct_adjustments::{gradient_from, gradient_to, replace_from, replace_to};
-use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, wave_from, wave_to};
+use super::steps_distort::{PINCH, POLAR, SPHERIZE, TWIRL, ZIGZAG, keys_from, keys_to, shear_from, shear_to, wave_from, wave_to};
 use super::steps_doc::{
     align_from, align_to, canvas_size_from, canvas_size_to, close_from, close_to, conditional_from, conditional_to, convert_mode_from, convert_mode_to,
     crop_from, crop_to, export_from, export_to, image_size_from, image_size_to, merge_visible_from, merge_visible_to, open_from, open_to, paste_from, paste_to,
@@ -23,6 +24,7 @@ use super::steps_layer::{
     move_from, move_to, paste_effects_from, paste_effects_to, play_from, play_to, rotate_from, rotate_to, select_from, select_to, stroke_to, visibility_from,
     visibility_to,
 };
+use super::steps_layer_style::{scale_from, style_to};
 use super::steps_make::{locking_from, locking_to, make_from, make_to, set_from, set_to};
 use super::steps_other::{DE_INTERLACE, HSB_HSL, bare_from, bare_to, custom_from, custom_to, enums_from, enums_to};
 use super::tables::{NOISE, OFFSET_FILL, SMART_BLUR_MODE, SMART_BLUR_QUALITY, TRIM};
@@ -548,6 +550,7 @@ pub(super) const EVENTS: &[Event] = &[
         &[F("Hrzn", "horizontal", Kind::Long), F("Vrtc", "vertical", Kind::Long), F("Fl  ", "undefinedAreas", Kind::Enum("FlMd", OFFSET_FILL))]
     ),
     // Distort (#10605): every key in recorded order, Photoshop's limits and defaults.
+    Event { code: "Shr ", name: "shear", label: "Shear", ids: &["filter.distort.shear"], from: shear_from, to: shear_to },
     Event {
         code: "Pnch",
         name: "pinch",
@@ -763,6 +766,7 @@ pub(super) const EVENTS: &[Event] = &[
     },
     Event { code: "Dplc", name: "duplicate", label: "Duplicate", ids: &["layer.duplicate", "image.duplicate"], from: duplicate_from, to: duplicate_to },
     // Layers.
+    Event { code: "", name: "scaleEffectsEvent", label: "Scale Effects", ids: &["layer.layerStyle.scaleEffects"], from: scale_from, to: style_to },
     target_event!("reverse", "Reverse", "layer.arrange.reverse"),
     target_event!("selectLinkedLayers", "Select Linked Layers", "layer.selectLinkedLayers"),
     target_event!("disableLayerStyle", "Clear Layer Style", "layer.layerStyle.clear"),
@@ -796,7 +800,9 @@ pub(super) const EVENTS: &[Event] = &[
         label: "Make",
         ids: &[
             "type.convertToShape",
+            "type.createWorkPath",
             "layer.new.layer",
+            "layer.layerStyle.createLayer",
             "layer.new.group",
             "layer.groupLayers",
             "layer.duplicate",
@@ -1047,6 +1053,14 @@ pub(super) const EVENTS: &[Event] = &[
     ev!("", "autoCutout", "Select Subject", "select.subject", &[F("sampleAllLayers", "sampleAllLayers", Kind::Bool)]),
     Event { code: "ClrR", name: "colorRange", label: "Color Range", ids: &["select.colorRange"], from: color_range_from, to: color_range_to },
     // Edit.
+    Event {
+        code: "Grdn",
+        name: "gradientClassEvent",
+        label: "Gradient",
+        ids: &["paint.gradient"],
+        from: super::steps_gradient::from,
+        to: super::steps_gradient::to,
+    },
     Event { code: "Fl  ", name: "fill", label: "Fill", ids: &["edit.fill", "paint.bucket"], from: fill_from, to: fill_to },
     Event {
         code: "Strk",
@@ -1090,6 +1104,7 @@ pub(super) const EVENTS: &[Event] = &[
         from: |d| profile_from(d, "edit.convertToProfile"),
         to: profile_to,
     },
+    Event { code: "", name: "cafWorkspace", label: "Content-Aware Fill", ids: &["edit.contentAwareFill"], from: caf_from, to: caf_to },
     // File and actions.
     Event { code: "Cls ", name: "close", label: "Close", ids: &["file.close"], from: close_from, to: close_to },
     Event { code: "Expr", name: "export", label: "Export", ids: &["file.export.saveForWebLegacy"], from: export_from, to: export_to },

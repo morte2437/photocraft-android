@@ -298,6 +298,33 @@ fn rename_failure_keeps_original() {
     assert_no_temp(&d.0);
 }
 
+/// The unresolved Windows recovery state (branch coverage, #11178): the error names the backup
+/// where the original survives, `rename_error` passes it through without the false `UNCHANGED`
+/// promise, and `retry_rename` does not retry it into a fresh backup name that would forget it.
+#[test]
+fn an_unresolved_recovery_reports_the_backup_and_is_not_retried() {
+    let unresolved = || {
+        unresolved_recovery_error(
+            Path::new("/docs/report.psd"),
+            &io::Error::new(io::ErrorKind::PermissionDenied, "completion locked"),
+            &io::Error::new(io::ErrorKind::PermissionDenied, "restoration locked"),
+            Path::new("/docs/.report.psd.7.pcsave.tmp"),
+        )
+    };
+    let reported = rename_error(unresolved(), Path::new("/docs/report.psd"));
+    let msg = reported.to_string();
+    assert!(msg.contains(".report.psd.7.pcsave.tmp") && msg.contains("recover"), "the recovery location survives reporting: {msg}");
+    assert!(!msg.contains(UNCHANGED), "the destination is not the unchanged original in this state: {msg}");
+    let calls = Cell::new(0);
+    let e = retry_rename(RenameRetry { attempts: 7, first_delay_ms: 0 }, || {
+        calls.set(calls.get() + 1);
+        Err(unresolved())
+    })
+    .unwrap_err();
+    assert_eq!(calls.get(), 1, "the retry loop must not run again over an unresolved recovery");
+    assert!(!e.to_string().contains(UNCHANGED), "{e}");
+}
+
 #[test]
 fn cross_device_rename_errors_clearly_and_never_writes_in_place() {
     let d = TempDir::new("exdev");

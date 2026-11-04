@@ -599,6 +599,11 @@ impl PhotocraftApp {
     }
 
     fn saved_inner(&mut self, doc: DocId, revision: u64, path: &str, warnings: &[String], copy: bool, kind: SaveKind) {
+        // Per-output Image Assets failures from the after-save hook, reported with this save (#11117).
+        let mut asset_errors: Vec<String> = Vec::new();
+        // The successful outputs and their folder, kept for the partial-failure status line.
+        let mut asset_ok = 0usize;
+        let mut asset_dir = String::new();
         // Automation: only a layered save becomes the document's file; a flat one is a
         // copy, as in the headless server (#2579).
         let (hooks, arm) = match kind {
@@ -624,15 +629,25 @@ impl PhotocraftApp {
                     app.remember_stamp(doc, path);
                 }
                 // "Save Document" script events and File › Generate › Image Assets.
-                if hooks
-                    && let Some(i) = app.session.active_index()
-                    && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, i)
-                {
-                    let template = "Saved {path}; image assets: {n} in {dir}";
-                    app.ui.status = crate::i18n::fmt(
-                        tl!(template),
-                        &[("path", path), ("n", &r["files"].as_array().map_or(0, Vec::len).to_string()), ("dir", r["dir"].as_str().unwrap_or(""))],
-                    );
+                if hooks && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, doc) {
+                    let files = r["files"].as_array().map_or(0, Vec::len);
+                    asset_ok = files;
+                    asset_dir = r["dir"].as_str().unwrap_or("").to_string();
+                    let n = files.to_string();
+                    let dir = r["dir"].as_str().unwrap_or("");
+                    asset_errors = r["errors"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|e| format!("{}: {}", e["asset"].as_str().unwrap_or("an asset"), e["error"].as_str().unwrap_or("the export failed")))
+                        .collect();
+                    let template = if asset_errors.is_empty() {
+                        "Saved {path}; image assets: {n} in {dir}"
+                    } else {
+                        "Saved {path}; image assets: {n} in {dir} ({e} failed)"
+                    };
+                    let e = asset_errors.len().to_string();
+                    app.ui.status = crate::i18n::fmt(tl!(template), &[("path", path), ("n", &n), ("dir", dir), ("e", &e)]);
                 }
                 Ok(())
             });
@@ -648,6 +663,21 @@ impl PhotocraftApp {
         self.ui.status_error = false;
         let what = crate::i18n::fmt(tl!("Saved {name}"), &[("name", file_open::display_name(path).as_str())]);
         notices::io_warnings(self, &what, warnings);
+        // #11117: a successful save whose Image Assets partially failed must say which outputs
+        // did not land, and of which document: the status keeps the full saved path (same-named
+        // documents only differ by their folder) and what did go out, the notice lists every failure.
+        if !asset_errors.is_empty() {
+            let e = asset_errors.len();
+            let full = crate::i18n::fmt(tl!("Saved {name}"), &[("name", path)]);
+            let title = crate::i18n::fmt(
+                &crate::i18n::trn(crate::i18n::current(), e as u64, "{what}: {n} Image Assets output failed", "{what}: {n} Image Assets outputs failed"),
+                &[("what", &full), ("n", &e.to_string())],
+            );
+            let written = crate::i18n::fmt(tl!("{ok} written to {dir}"), &[("ok", &asset_ok.to_string()), ("dir", &asset_dir)]);
+            self.ui.status = format!("{title} ({written}): {}", asset_errors[0]);
+            self.ui.status_error = true;
+            notices::post(self, title, asset_errors, true, None);
+        }
         self.sync_views();
     }
 
@@ -808,5 +838,72 @@ impl PhotocraftApp {
             crate::new_doc_ui::set_clipboard(&mut f, c.bounds.width(), c.bounds.height());
         }
         f
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #11117: when Image Assets partially failed after a successful user save, the failures
+    /// were dropped with the hook result and the status only counted the assets that worked.
+    #[test]
+    fn a_user_save_reports_image_assets_outputs_that_failed() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("photocraft-11117-{}-{unique}", std::process::id()));
+        let assets = root.join("probe-assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        // `blocked` is a regular file, so the `blocked/fail.png` asset cannot create its folder;
+        // `good.png` stays writable. No permissions or artificial results are involved.
+        std::fs::write(assets.join("blocked"), "not a folder").unwrap();
+        let path = root.join("probe.psd").to_string_lossy().into_owned();
+
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        // A save script closes this earlier tab, shifting the saved document's index.
+        app.session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        app.session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let doc = app.session.active().unwrap().doc.id;
+        for name in ["good.png", "blocked/fail.png"] {
+            let id = app.session.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+            // A layer with no pixels is "the layer is empty" before its path is even looked at,
+            // so both layers carry a painted pixel and only the blocked folder can fail.
+            app.session.execute("edit.fill", json!({"contents": "color", "color": "#808080"})).unwrap();
+            app.session.execute("layer.renameLayer", json!({"layer": id, "name": name})).unwrap();
+        }
+        app.session.prefs.edit(|p| p.plug_ins.generator_enabled = true);
+        app.session.file_menu.image_assets.push(doc);
+        app.session
+            .execute("file.scripts.scriptEventsManager", json!({"enabled": true, "add": {"event": "saveDocument", "steps": [["file.close", {"document": 0}]]}}))
+            .unwrap();
+
+        let revision = app.session.active().unwrap().revision;
+        app.saved(doc, revision, &path, &[], false);
+
+        assert_eq!(app.session.documents().len(), 1);
+        assert_eq!(app.session.active().unwrap().doc.id, doc);
+
+        assert_eq!(app.session.active().unwrap().path.as_deref(), Some(path.as_str()), "the document save itself succeeded");
+        assert!(assets.join("good.png").is_file(), "the good asset was exported");
+        let notice = app.ui.notices.iter().find(|notice| notice.error).expect("the failed asset is reported as an error notice");
+        assert_eq!(notice.title, format!("Saved {path}: 1 Image Assets output failed"), "the failure names the saved document by its full path");
+        assert_eq!(notice.lines.len(), 1, "{:?}", notice.lines);
+        assert!(notice.lines[0].starts_with("blocked/fail.png: asset path"), "{:?}", notice.lines[0]);
+        assert!(app.ui.status_error, "the status line carries the failure");
+        assert!(app.ui.status.starts_with(&notice.title), "{}", app.ui.status);
+        assert!(
+            app.ui.status.contains("1 written to") && app.ui.status.contains("blocked/fail.png"),
+            "the status keeps the success count, folder and first failure: {}",
+            app.ui.status
+        );
+        // A clean generation afterwards reports the success line with no error notice (#11079 control).
+        app.ui.notices.clear();
+        app.session.execute("file.scripts.scriptEventsManager", json!({"enabled": false})).unwrap();
+        std::fs::remove_file(assets.join("blocked")).unwrap();
+        let revision = app.session.active().unwrap().revision;
+        app.saved(doc, revision, &path, &[], false);
+        assert!(app.ui.notices.iter().all(|notice| !notice.error), "no notice when every asset went out");
+        assert!(!app.ui.status_error);
+        assert!(app.ui.status.contains("image assets: 2 in"), "{}", app.ui.status);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

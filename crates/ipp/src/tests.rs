@@ -651,3 +651,23 @@ fn printer_names_are_encoded_as_one_request_target_segment() {
     assert_eq!(queue_path("office printer/1", false).unwrap(), "/printers/office%20printer%2F1");
     assert!(queue_path("printer\r\nX-Injected: yes", false).is_err());
 }
+
+/// A reply arriving a byte at a time, its blank line split across reads, is still found: the
+/// header search resumes where it stopped instead of rescanning everything read so far.
+#[test]
+fn a_header_trickled_a_byte_at_a_time_is_found() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        s.set_nodelay(true).unwrap();
+        for b in b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokEXTRA" {
+            s.write_all(&[*b]).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
+    let mut stream = Stream::Tcp(TcpStream::connect(addr).unwrap());
+    let raw = read_response(&mut stream).unwrap();
+    assert!(raw.ends_with(b"\r\n\r\nok"), "{:?}", String::from_utf8_lossy(&raw));
+    server.join().unwrap();
+}

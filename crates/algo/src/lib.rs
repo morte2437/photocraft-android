@@ -43,6 +43,8 @@ pub mod histogram;
 mod image;
 pub mod inpaint;
 pub mod lens;
+mod lens_flare;
+mod lens_flare_data;
 pub mod liquify;
 pub mod magnetic;
 pub mod matting;
@@ -846,7 +848,7 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
         FilterParams::Fibers { variance, strength, seed, foreground, background } => {
             render::fibers(src, out, ctx, *variance, *strength, *seed, (*foreground, *background))
         }
-        FilterParams::LensFlare { brightness, center_x, center_y, lens } => render::lens_flare(src, out, ctx, *brightness, (*center_x, *center_y), *lens),
+        FilterParams::LensFlare { brightness, center_x, center_y, lens } => lens_flare::lens_flare(src, out, ctx, *brightness, (*center_x, *center_y), *lens),
         FilterParams::LightingEffects { lights, gloss, metallic, exposure, ambience, texture, height, white_is_high } => render::lighting(
             src,
             out,

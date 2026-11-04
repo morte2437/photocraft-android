@@ -336,8 +336,10 @@ fn bands(r: Rect, rows: i32) -> Vec<Rect> {
     let mut out = Vec::new();
     let mut y = r.y0;
     while y < r.y1 {
-        out.push(Rect::new(r.x0, y, r.x1, (y + rows).min(r.y1)));
-        y += rows;
+        // Saturating near the coordinate ceiling: a wrapped edge would never reach `y1`.
+        let end = y.saturating_add(rows.max(1)).min(r.y1);
+        out.push(Rect::new(r.x0, y, r.x1, end));
+        y = end;
     }
     out
 }

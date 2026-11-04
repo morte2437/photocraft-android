@@ -1081,3 +1081,74 @@ fn the_web_build_caps_memory_usage() {
         assert_eq!(honoured_memory_usage_mb(stored, false), stored, "desktop, {stored} MB");
     }
 }
+
+/// The effect cache budget is the stored MB in bytes, at least 16 MB (a hand-edited 0 included),
+/// at most 1536 MB on a 32-bit address space (the web, 32-bit Windows) and 65536 MB elsewhere,
+/// and never wraps: on wasm32 an uncapped 4096 MB shifted into `usize` was 0. Both kinds of
+/// build are checked on every target, in `u64` so the expectations themselves can't overflow a
+/// 32-bit `usize`.
+#[test]
+fn the_effect_cache_budget_is_capped_on_32_bit_builds_and_never_wraps() {
+    const MB: u64 = 1 << 20;
+    let cap = WASM_MEMORY_USAGE_CAP_MB;
+    for (stored, small_mb, large_mb) in [
+        (0, 16, 16),
+        (15, 16, 16),
+        (16, 16, 16),
+        (768, 768, 768),
+        (cap, cap, cap),
+        (cap + 1, cap, cap + 1),
+        (4096, cap, 4096),
+        (65536, cap, 65536),
+        (u32::MAX, cap, 65536),
+    ] {
+        assert_eq!(effect_cache_budget_bytes_for(stored, true), u64::from(small_mb) * MB, "32-bit, {stored} MB");
+        assert_eq!(effect_cache_budget_bytes_for(stored, false), u64::from(large_mb) * MB, "64-bit, {stored} MB");
+    }
+    let p = Performance { effect_cache_mb: 4096, ..Performance::default() };
+    let expected = effect_cache_budget_bytes_for(4096, cfg!(target_pointer_width = "32"));
+    assert_eq!(u64::try_from(p.effect_cache_budget_bytes()).ok(), Some(expected), "fits this target's usize");
+}
+
+/// The Effect Cache field accepts only what the build honours, so the dialog never shows a value
+/// the cache doesn't get.
+#[test]
+fn the_effect_cache_range_matches_the_honoured_budget() {
+    assert_eq!(effect_cache_max_mb(true), WASM_MEMORY_USAGE_CAP_MB);
+    assert_eq!(effect_cache_max_mb(false), 65536);
+    for small in [true, false] {
+        let max = effect_cache_max_mb(small);
+        assert_eq!(effect_cache_budget_bytes_for(max, small), u64::from(max) << 20, "small = {small}: the largest accepted value is honoured");
+    }
+    assert_eq!(effect_cache_budget_bytes_for(EFFECT_CACHE_MIN_MB, false), u64::from(EFFECT_CACHE_MIN_MB) << 20, "the smallest accepted value is honoured");
+    let small = cfg!(target_pointer_width = "32");
+    assert_eq!(range("performance.effectCacheMb"), Some((f64::from(EFFECT_CACHE_MIN_MB), f64::from(effect_cache_max_mb(small)))));
+    assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small))).is_ok());
+    assert!(check_value("performance.effectCacheMb", &json!(effect_cache_max_mb(small) + 1)).is_err());
+    assert!(Performance::default().effect_cache_mb <= effect_cache_max_mb(true), "the default fits the 32-bit cap");
+}
+
+/// An Effect Cache the field no longer accepts loads as the nearest value it does: a 32-bit build
+/// took up to 65536 MB before its 1536 MB cap, and Apply from another Preferences tab sends every
+/// value, so the old one rejected the whole change. On every target: the helper for both kinds of
+/// build, and the load and Apply paths for this one.
+#[test]
+fn an_effect_cache_above_the_cap_loads_clamped_and_does_not_block_apply() {
+    let cap = WASM_MEMORY_USAGE_CAP_MB;
+    for (stored, small_mb, large_mb) in [(0, 16, 16), (768, 768, 768), (cap + 1, cap, cap + 1), (4096, cap, 4096), (65536, cap, 65536), (u32::MAX, cap, 65536)]
+    {
+        assert_eq!(accepted_effect_cache_mb(stored, true), small_mb, "32-bit, {stored} MB");
+        assert_eq!(accepted_effect_cache_mb(stored, false), large_mb, "64-bit, {stored} MB");
+    }
+    let max = effect_cache_max_mb(SMALL_ADDRESS_SPACE);
+    for (saved, loaded) in [(u64::from(max) + 1, max), (u64::from(u32::MAX), max), (0, EFFECT_CACHE_MIN_MB), (768, 768)] {
+        let mut s = session();
+        let invalid = s.load_prefs_json(&json!({"performance": {"effectCacheMb": saved}}).to_string()).unwrap();
+        assert!(invalid.is_empty(), "{saved} MB reads, so it isn't reported: {invalid:?}");
+        assert_eq!(s.execute("prefs.get", json!({"path": "performance.effectCacheMb"})).unwrap(), json!(loaded), "{saved} MB");
+        let mut values = s.execute("prefs.get", json!({"path": ""})).unwrap();
+        values["fileHandling"]["recentFileCount"] = json!(7);
+        s.execute("prefs.set", json!({"path": "", "value": values})).unwrap();
+        assert_eq!(s.execute("prefs.get", json!({"path": "fileHandling.recentFileCount"})).unwrap(), json!(7), "{saved} MB");
+    }
+}

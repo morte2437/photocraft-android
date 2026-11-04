@@ -7,8 +7,9 @@
 //! `edit.transform.againCopy`) into an action. A replayable command's journal entry replaces the
 //! entries of the commands it ran on its own behalf, so they are recorded once (#3067). Playback
 //! runs those steps with [`Session::execute`] and stops at the first error, leaving one history
-//! step per step that ran. Steps switched off with `actions.toggle` (the Actions panel check
-//! marks) are skipped by playback, Batch and droplets.
+//! entry for the whole play by default (`actions.setHistory` opts into per-step history).
+//! Steps switched off with `actions.toggle` (the Actions panel check marks) are skipped by
+//! playback, Batch and droplets.
 //!
 //! An untrusted session installs [`Session::authorize`]. `actions.play` calls it for every nested
 //! step, because the outer `actions.play` id would otherwise hide a recorded `file.*` command from
@@ -21,6 +22,11 @@ use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
+
+mod history;
+pub(crate) use history::ActionHistory;
+pub use history::{ActionHistoryContinuation, finish_pending_history, suspend_history};
+pub(crate) use history::{before_edit as before_action_edit, begin_document_history, finish_document_history, history_rows, reconcile_history_removal};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
@@ -565,6 +571,7 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
 pub fn begin_playback(s: &mut Session, action: &Action) -> Result<Option<(usize, usize)>> {
     flush_recording(s)?;
     if s.actions.playing == 0 {
+        history::begin(s, &action.name);
         s.actions.playback_steps = 0;
     }
     let recording = s.actions.recording.take();
@@ -573,9 +580,13 @@ pub fn begin_playback(s: &mut Session, action: &Action) -> Result<Option<(usize,
     Ok(recording)
 }
 
+/// Unwind the playback stack and finish grouping only at the outer boundary, then restore suspended recording.
 pub fn finish_playback(s: &mut Session, recording: Option<(usize, usize)>, action: &Action, from: usize) {
     s.actions.playback_stack.pop();
     s.actions.playing = s.actions.playing.saturating_sub(1);
+    if s.actions.playing == 0 {
+        history::finish_playback(s);
+    }
     if let Some((_, idx)) = recording {
         restore_recording(s, idx, &action.name, from);
     }
@@ -827,8 +838,34 @@ fn set_color(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"action": name, "color": color}))
 }
 
+/// Active playback and retained dialog continuations keep their chosen history policy.
+pub(crate) fn history_policy_in_use(s: &Session) -> bool {
+    s.actions.playing != 0 || s.action_history.is_some() || s.paused_action_history.iter().any(|lease| lease.strong_count() != 0)
+}
+
+/// Kept separate from Playback Options' performance modes until #5212 provides that dialog.
+fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
+    not_playing(s, "actions.setHistory")?;
+    if history_policy_in_use(s) {
+        return Err(bad("actions.setHistory", "cannot change action history settings during playback"));
+    }
+    let enabled = p.get("singleState").and_then(Value::as_bool).ok_or_else(|| bad("actions.setHistory", "singleState must be a boolean"))?;
+    s.edit_prefs(|prefs| prefs.actions.create_single_history_state = enabled);
+    Ok(json!({"singleState":enabled}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "actions.setHistory",
+            label: "Set Actions History",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"singleState":bool} → {singleState}. Persist Create a single history state (default true). Playback Options can use this setting without changing its performance mode."##,
+            enabled: always,
+            run: set_history,
+            journal: false,
+        },
         CommandSpec {
             id: "actions.move",
             label: "Move Action or Step",
@@ -884,7 +921,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Play Action",
             menu: &[],
             shortcut: None,
-            params: r##"{"action":name|index, "from":step?} → {action, ran, failed?:{step, id, error}}. step and from are 0-based; steps switched off with actions.toggle are skipped. Stops at the first error (the command still returns ok, with failed set) and leaves one history step per step that ran. Nested calls are supported up to 16 levels; cycles are rejected. Recording stores a named call rather than its expanded commands. Each step is checked with Session::authorize when one is installed."##,
+            params: r##"{"action":name|index, "from":step?} → {action, ran, failed?:{step, id, error}}. step and from are 0-based; steps switched off with actions.toggle are skipped. Stops at the first error (the command still returns ok, with failed set) and groups document edits in one Action: <name> history entry by default; actions.setHistory can retain per-step history. Nested calls are supported up to 16 levels; cycles are rejected. Recording stores a named call rather than its expanded commands. Each step is checked with Session::authorize when one is installed."##,
             enabled: always,
             run: play,
             journal: false,

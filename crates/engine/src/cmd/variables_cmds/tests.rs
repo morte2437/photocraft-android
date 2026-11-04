@@ -652,3 +652,20 @@ fn exported_data_sets_keep_the_character_style() {
     assert_eq!((got.weight, got.italic, got.underline), (style.weight, style.italic, style.underline));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn data_set_commands_require_data_sets_to_be_enabled() {
+    let mut s = Session::new();
+    assert!(!s.is_enabled("file.export.dataSetsAsFiles"));
+    assert!(!s.is_enabled("image.applyDataSet"));
+
+    s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    // Document exists but has no data sets: commands remain disabled
+    assert!(!s.is_enabled("file.export.dataSetsAsFiles"));
+    assert!(!s.is_enabled("image.applyDataSet"));
+
+    // Once data sets are defined, commands become enabled
+    s.execute("image.variables.dataSets", json!({"dataSets": [{"name": "Set 1", "values": []}]})).unwrap();
+    assert!(s.is_enabled("file.export.dataSetsAsFiles"));
+    assert!(s.is_enabled("image.applyDataSet"));
+}

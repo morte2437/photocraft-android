@@ -1382,7 +1382,9 @@ fn temporary_type_transform_free_scale_center_scale_move_skew_and_rotation() {
             }
             "rotate" | "snap" => {
                 let a = [frame.quad[1][0] + 20.0, frame.quad[1][1] - 10.0];
-                let da: f64 = 0.42;
+                // A snapped drag turns in 15° steps from where it started, so the first preview steps need a
+                // turn of at least half a step to change anything (#11099).
+                let da: f64 = if gesture == "snap" { 0.9 } else { 0.42 };
                 let (x, y) = (a[0] - frame.pivot[0], a[1] - frame.pivot[1]);
                 let b = [frame.pivot[0] + x * da.cos() - y * da.sin(), frame.pivot[1] + x * da.sin() + y * da.cos()];
                 (a, b, if gesture == "snap" { type_command() | Modifiers::SHIFT } else { type_command() })
@@ -1420,8 +1422,9 @@ fn temporary_type_transform_free_scale_center_scale_move_skew_and_rotation() {
                     .mul(&initial),
             );
         } else if gesture == "snap" {
-            let angle = after.transform.m[1].atan2(after.transform.m[0]).to_degrees();
-            assert!((angle / 15.0 - (angle / 15.0).round()).abs() < 1e-8);
+            // Shift snaps the turn made by the drag, not the absolute angle (#11099).
+            let turn = (after.transform.m[1].atan2(after.transform.m[0]) - initial.m[1].atan2(initial.m[0])).to_degrees();
+            assert!((turn / 15.0 - (turn / 15.0).round()).abs() < 1e-8);
         } else if gesture == "center" {
             let p = after.transform.apply(Point::new((frame.rect[0] + frame.rect[2]) / 2.0, (frame.rect[1] + frame.rect[3]) / 2.0));
             assert!((p.x - frame.pivot[0]).abs() < 1e-8 && (p.y - frame.pivot[1]).abs() < 1e-8);

@@ -233,8 +233,13 @@ fn read_text_metadata(bytes: &[u8], mut remaining: usize, meta: &mut Metadata) -
         };
         let keyword_len = latin1_len(keyword).ok_or_else(text_limit)?;
         let limit = remaining.saturating_sub(keyword_len);
-        let Some(text) = bounded_text(value, deflated, latin1, limit)? else { continue };
-        remaining = remaining.checked_sub(keyword_len).and_then(|left| left.checked_sub(text.len())).ok_or_else(text_limit)?;
+        // What a chunk inflated is charged even when its text is then dropped (bad UTF-8, a
+        // corrupt or truncated stream): otherwise every rejected chunk could inflate up to the
+        // whole remaining budget again.
+        let (text, produced) = bounded_text(value, deflated, latin1, limit)?;
+        remaining = remaining.checked_sub(produced).ok_or_else(text_limit)?;
+        let Some(text) = text else { continue };
+        remaining = remaining.checked_sub(keyword_len).ok_or_else(text_limit)?;
         let keyword: String = keyword.iter().map(|&b| char::from(b)).collect();
         match kind {
             // Some writers put XMP in Latin-1 text chunks instead of the usual iTXt.
@@ -254,9 +259,11 @@ fn read_text_metadata(bytes: &[u8], mut remaining: usize, meta: &mut Metadata) -
 
 /// No input-sized allocation until its decoded size fits. Inflation uses a
 /// fixed scratch buffer and checks each batch before growing the output.
-fn bounded_text(input: &[u8], compressed: bool, latin1: bool, limit: usize) -> Result<Option<String>, CodecError> {
+/// Returns the text (`None` when it is dropped) and the bytes produced for it,
+/// which the caller charges whether or not the text is kept.
+fn bounded_text(input: &[u8], compressed: bool, latin1: bool, limit: usize) -> Result<(Option<String>, usize), CodecError> {
     let mut output = Vec::new();
-    let mut append = |bytes: &[u8]| -> Result<(), CodecError> {
+    let append = |output: &mut Vec<u8>, bytes: &[u8]| -> Result<(), CodecError> {
         let added = if latin1 { latin1_len(bytes).ok_or_else(text_limit)? } else { bytes.len() };
         if output.len().checked_add(added).is_none_or(|len| len > limit) {
             return Err(text_limit());
@@ -279,24 +286,34 @@ fn bounded_text(input: &[u8], compressed: bool, latin1: bool, limit: usize) -> R
         loop {
             let start_in = decoder.total_in();
             let start_out = decoder.total_out();
-            let Some(tail) = usize::try_from(start_in).ok().and_then(|at| input.get(at..)) else { return Ok(None) };
-            let Ok(status) = decoder.decompress(tail, &mut scratch, flate2::FlushDecompress::None) else { return Ok(None) };
-            let Some(batch) = usize::try_from(decoder.total_out() - start_out).ok().and_then(|len| scratch.get(..len)) else { return Ok(None) };
-            append(batch)?;
+            let Some(tail) = usize::try_from(start_in).ok().and_then(|at| input.get(at..)) else { return Ok((None, output.len())) };
+            let Ok(status) = decoder.decompress(tail, &mut scratch, flate2::FlushDecompress::None) else {
+                // The backend may write a batch before it reports corruption: charge it too.
+                let written = usize::try_from(decoder.total_out().saturating_sub(start_out)).unwrap_or(usize::MAX);
+                // Latin-1 text is charged at its UTF-8 length, as on the success path.
+                let charged = match scratch.get(..written) {
+                    Some(batch) if latin1 => latin1_len(batch).unwrap_or(usize::MAX),
+                    _ => written,
+                };
+                return Ok((None, output.len().saturating_add(charged)));
+            };
+            let Some(batch) = usize::try_from(decoder.total_out() - start_out).ok().and_then(|len| scratch.get(..len)) else { return Ok((None, output.len())) };
+            append(&mut output, batch)?;
             if status == flate2::Status::StreamEnd {
                 break;
             }
             if start_in == decoder.total_in() && start_out == decoder.total_out() {
-                return Ok(None); // Truncated stream: never keep partial text.
+                return Ok((None, output.len())); // Truncated stream: never keep partial text.
             }
         }
     } else {
         if !latin1 && std::str::from_utf8(input).is_err() {
-            return Ok(None);
+            return Ok((None, output.len()));
         }
-        append(input)?;
+        append(&mut output, input)?;
     }
-    Ok(String::from_utf8(output).ok())
+    let produced = output.len();
+    Ok((String::from_utf8(output).ok(), produced))
 }
 
 fn is_latin1_keyword(k: &str) -> bool {
@@ -1303,5 +1320,39 @@ mod streamed_tests {
         assert!(rows.push(&narrow).is_err());
         // Two of three rows.
         assert!(rows.finish().is_err());
+    }
+}
+
+#[cfg(test)]
+mod text_budget_tests {
+    use super::*;
+    use std::io::Write;
+
+    /// A compressed iTXt chunk whose text inflates to `len` bytes of invalid UTF-8.
+    fn bad_itxt(len: usize) -> Vec<u8> {
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(&vec![0xff; len]).unwrap();
+        let mut data = b"Comment\0\x01\x00\0\0".to_vec();
+        data.extend_from_slice(&z.finish().unwrap());
+        let mut out = (data.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(b"iTXt");
+        out.extend_from_slice(&data);
+        let mut crc = flate2::Crc::new();
+        crc.update(b"iTXt");
+        crc.update(&data);
+        out.extend_from_slice(&crc.sum().to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn dropped_text_still_counts_against_the_budget() {
+        let one = [b"\x89PNG\r\n\x1a\n".to_vec(), bad_itxt(100_000)].concat();
+        let mut meta = Metadata::default();
+        read_text_metadata(&one, 1 << 20, &mut meta).unwrap();
+        assert!(meta.text.is_empty(), "invalid UTF-8 is dropped");
+        // Twenty chunks inflate 2 MB between them: each is dropped, but the work is charged.
+        let many = [b"\x89PNG\r\n\x1a\n".to_vec(), bad_itxt(100_000).repeat(20)].concat();
+        let mut meta = Metadata::default();
+        assert!(matches!(read_text_metadata(&many, 1 << 20, &mut meta), Err(CodecError::LimitExceeded(_))));
     }
 }

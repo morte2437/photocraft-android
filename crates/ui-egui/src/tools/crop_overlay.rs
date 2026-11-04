@@ -9,7 +9,7 @@
 //! The state lives in `ToolOptions` (`crop_overlay`, `crop_overlay_show`,
 //! `crop_overlay_orientation`), which `ui.inspect` reports and `ui.set` drives.
 
-use egui::{Key, Modifiers};
+use egui::{Key, Modifiers, Rect, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::PhotocraftApp;
@@ -52,6 +52,19 @@ impl CropOverlay {
             Self::Triangle => "triangle",
             Self::GoldenRatio => "goldenRatio",
             Self::GoldenSpiral => "goldenSpiral",
+        }
+    }
+
+    /// The icon the overlay menus and the options-bar button show (#10889), drawn in the house
+    /// icon style with the frame's crop marks around the guide it names.
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Thirds => "crop-overlay-thirds",
+            Self::Grid => "crop-overlay-grid",
+            Self::Diagonal => "crop-overlay-diagonal",
+            Self::Triangle => "crop-overlay-triangle",
+            Self::GoldenRatio => "crop-overlay-golden-ratio",
+            Self::GoldenSpiral => "crop-overlay-golden-spiral",
         }
     }
 
@@ -234,13 +247,90 @@ fn golden_spiral() -> Polyline {
     pts.into_iter().map(|[x, y]| [(x / PHI).clamp(0.0, 1.0), y.clamp(0.0, 1.0)]).collect()
 }
 
-/// The guides the pending crop box shows now: none when the options say not to.
+/// Full-frame guides, or none when the options say not to. Canvas painting uses
+/// [`current_guides_for_frame`] to restrict the turning grid to its viewport.
 pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
+    current_guides_visible(app, w, h, Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)))
+}
+
+/// Guides for the frame actually being painted. Use the caller's quad and clip:
+/// canvas navigation may not have written its local camera back to UI state yet.
+pub fn current_guides_for_frame(app: &PhotocraftApp, q: [egui::Pos2; 4], clip: Rect) -> Vec<Polyline> {
+    let (w, h) = (q[0].distance(q[1]), q[0].distance(q[3]));
+    let Some(visible) = visible_frame(q, clip, w, h) else { return Vec::new() };
+    current_guides_visible(app, w, h, visible)
+}
+
+fn current_guides_visible(app: &PhotocraftApp, w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
     let o = &app.ui.tool_options;
     if app.ui.tool != Tool::Crop || !o.crop_overlay_show.shows(app.crop.drag.is_some()) {
         return Vec::new();
     }
+    // Classic Mode and Straighten were not measured: only the default mode's turn
+    // replaces the chosen composition overlay (#10931).
+    if !o.crop_shield.classic_mode && crate::crop_ui::turning(app).is_some() {
+        return turn_grid(w, h, visible);
+    }
     guides(o.crop_overlay, o.crop_overlay_orientation, w, h)
+}
+
+/// The canvas's visible extent in the crop frame's own screen-point axes. The
+/// inverse basis also handles a flipped/rotated view and pixel aspect correction.
+fn visible_frame(q: [egui::Pos2; 4], clip: Rect, w: f32, h: f32) -> Option<Rect> {
+    if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
+        return None;
+    }
+    if !clip.is_finite() || !clip.is_positive() {
+        return None;
+    }
+    let (u, v) = (q[1] - q[0], q[3] - q[0]);
+    let det = f64::from(u.x) * f64::from(v.y) - f64::from(u.y) * f64::from(v.x);
+    if !det.is_finite() || det.abs() < f64::EPSILON {
+        return None;
+    }
+    let mut visible = Rect::NOTHING;
+    for p in [clip.left_top(), clip.right_top(), clip.right_bottom(), clip.left_bottom()] {
+        let d = p - q[0];
+        let x = (f64::from(d.x) * f64::from(v.y) - f64::from(d.y) * f64::from(v.x)) / det * f64::from(w);
+        let y = (f64::from(u.x) * f64::from(d.y) - f64::from(u.y) * f64::from(d.x)) / det * f64::from(h);
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        visible.extend_with(pos2(x.clamp(0.0, f64::from(w)) as f32, y.clamp(0.0, f64::from(h)) as f32));
+    }
+    Some(visible)
+}
+
+/// The temporary turning grid: 48 logical screen points between lines, centred
+/// on the frame. `visible` is in the frame's screen-point axes, before mapping
+/// back to its unit square. Generate only visible lines, however far the frame
+/// is zoomed or panned, rather than truncating around its offscreen centre.
+pub fn turn_grid(w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
+    const SPACING: f64 = 48.0;
+    // Covers 196,608 logical points per axis; bound hostile viewport dimensions,
+    // not the size of the projected document or the grid's distance from centre.
+    const MAX_VISIBLE_LINES: usize = 4096;
+    if !(w.is_finite() && h.is_finite() && visible.is_finite()) || w < 1.0 || h < 1.0 {
+        return Vec::new();
+    }
+    let visible = visible.intersect(Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)));
+    if !visible.is_positive() {
+        return Vec::new();
+    }
+    let axis = |len: f32, lo: f32, hi: f32, vertical: bool| {
+        let len = f64::from(len);
+        let mid = len * 0.5;
+        // Keep the centre-based phase, but index directly into the visible range.
+        // Lines coincident with the frame outline need not be drawn twice.
+        let first = ((f64::from(lo) - mid) / SPACING).ceil().max((-mid / SPACING).floor() + 1.0);
+        let last = ((f64::from(hi) - mid) / SPACING).floor().min((mid / SPACING).ceil() - 1.0);
+        let count = (last - first + 1.0).clamp(0.0, MAX_VISIBLE_LINES as f64) as usize;
+        (0..count).map(move |i| {
+            let f = ((mid + (first + i as f64) * SPACING) / len) as f32;
+            if vertical { vec![[f, 0.0], [f, 1.0]] } else { vec![[0.0, f], [1.0, f]] }
+        })
+    };
+    axis(w, visible.min.x, visible.max.x, true).chain(axis(h, visible.min.y, visible.max.y, false)).collect()
 }
 
 /// O: the next overlay (the orientation starts over).
@@ -283,32 +373,44 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 /// The options bar's overlay button and its menu (Photoshop's "Set the overlay options for the
 /// Crop tool").
 pub fn options_button(o: &mut ToolOptions, ui: &mut egui::Ui) {
-    let r =
-        crate::icons::button(ui, "grid-3x3", 24.0, false, &format!("{}  ({})", tl!("Set the overlay options for the Crop tool"), tl!(o.crop_overlay.label())));
+    let r = crate::icons::button(
+        ui,
+        o.crop_overlay.icon(),
+        24.0,
+        false,
+        &format!("{}  ({})", tl!("Set the overlay options for the Crop tool"), tl!(o.crop_overlay.label())),
+    );
     egui::Popup::menu(&r).show(|ui| {
         ui.set_min_width(220.0);
-        let item = |ui: &mut egui::Ui, on: bool, label: &str, key: Option<&str>| {
-            let mut b = egui::Button::new(format!("{} {}", if on { "✔" } else { "  " }, label));
+        // Check mark, then the entry's icon (the overlays have one, #10889), then the label.
+        let item = |ui: &mut egui::Ui, on: bool, icon: Option<&str>, label: &str, key: Option<&str>| {
+            let mut atoms = egui::Atoms::default();
+            atoms.push_right(format!("{} ", if on { "✔" } else { "  " }));
+            if let Some(name) = icon {
+                atoms.push_right(crate::icons::image(name, 14.0, crate::theme::Tokens::get(ui.ctx()).icon));
+            }
+            atoms.push_right(label.to_owned());
+            let mut b = egui::Button::new(atoms);
             if let Some(k) = key {
                 b = b.shortcut_text(crate::shortcuts::pretty(k));
             }
             ui.add(b).clicked()
         };
         for k in CropOverlay::ALL {
-            if item(ui, o.crop_overlay == k, tl!(k.label()), None) {
+            if item(ui, o.crop_overlay == k, Some(k.icon()), tl!(k.label()), None) {
                 set_overlay(o, k);
                 ui.close();
             }
         }
         ui.separator();
         for s in OverlayShow::ALL {
-            if item(ui, o.crop_overlay_show == s, tl!(s.label()), None) {
+            if item(ui, o.crop_overlay_show == s, None, tl!(s.label()), None) {
                 o.crop_overlay_show = s;
                 ui.close();
             }
         }
         ui.separator();
-        if item(ui, false, tl!("Cycle Overlay"), Some("O")) {
+        if item(ui, false, None, tl!("Cycle Overlay"), Some("O")) {
             cycle(o);
             ui.close();
         }

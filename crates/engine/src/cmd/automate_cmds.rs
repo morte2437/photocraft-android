@@ -324,9 +324,13 @@ pub fn document_opened(s: &mut Session) {
     fire_event(s, "openDocument");
 }
 
-/// After the shell saved document `index`: Save Document scripts and Image Assets.
-pub fn document_saved(s: &mut Session, index: usize) -> Option<Value> {
+/// After the shell saved document `doc`: Save Document scripts and Image Assets.
+/// The script runs first and may close or reorder tabs, so asset generation resolves the saved
+/// document's identity again: a script that closed a different tab must not skip its assets, and
+/// one that closed the saved document must not generate a replacement tab's (#11121).
+pub fn document_saved(s: &mut Session, doc: photocraft_doc::DocId) -> Option<Value> {
     fire_event(s, "saveDocument");
+    let index = s.documents().iter().position(|st| st.doc.id == doc)?;
     crate::web_cmds::on_saved(s, index)
 }
 
@@ -431,6 +435,9 @@ fn run_droplet(s: &mut Session, p: &Value) -> Result<Value> {
         join(&first.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), "droplet-output")
     });
     let mut bp = json!({"steps": steps, "input": inputs, "output": output, "format": opts.get("format").cloned().unwrap_or(json!("same"))});
+    if let Some(name) = v.get("action").and_then(|action| action.get("name")).or_else(|| v.get("name")) {
+        bp["action"] = name.clone();
+    }
     if let Some(q) = opts.get("quality") {
         bp["quality"] = q.clone();
     }
