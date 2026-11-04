@@ -1510,6 +1510,17 @@ fn duplicating_a_linked_pair_links_the_copies_to_each_other() {
     assert_eq!((bounds(&s, a), bounds(&s, b)), (a0, b0));
 }
 
+/// #11217 review: Layer via Copy of one linked layer (no selection) starts unlinked too — the
+/// same rule as `layer.duplicate`, on its own code path in `layer_via`.
+#[test]
+fn layer_via_copy_of_one_linked_layer_leaves_the_copy_unlinked() {
+    let (mut s, a, b, _, group) = linked_pair();
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    let copy = LayerId(s.execute("layer.new.layerViaCopy", json!({})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(link_group(&s, copy), None, "the copy is unlinked");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
+}
+
 /// #7538: `selection: true` moves the selection with the layers in the same step, as the Move
 /// tool does with several layers selected; without it the selection stays.
 #[test]
