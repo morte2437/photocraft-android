@@ -1,6 +1,6 @@
 use super::batch::tile_grid;
-use super::consts::{ACC_FORMAT, CHUNK, CHUNK_UNIFORM, FX_BUDGET, MAP16, MAP32, MAX_PATTERN_TEXTURE_BYTES, OP_UNIFORM, PAGE, PATTERN_BUDGET, RESIDENT_BUDGET};
-use super::kit::{Kit, SHADER, tex_entry, uniform_entry};
+use super::consts::{ACC_FORMAT, CHUNK, CHUNK_UNIFORM, FX_BUDGET, MAX_PATTERN_TEXTURE_BYTES, OP_UNIFORM, PAGE, PATTERN_BUDGET, RESIDENT_BUDGET};
+use super::kit::{Kit, SHADER, build_jobs, tex_entry, uniform_entry, vertex_entry, vertex_shader};
 use super::paging::{cell_rect, field_reaches, first_error, grid_rects};
 use super::textures::{FxEntry, Resident, Tex, TexKind};
 use super::{
@@ -47,8 +47,22 @@ impl Compositor {
     /// built in parallel, each inside its own error scope on the thread that builds it (wgpu's
     /// scopes are per thread): on DX12, FXC compiles one shader at a time and the ~30 pipelines
     /// took about 8 s on one core (#6419).
+    ///
+    /// No shader is used by two threads at once (#9173): wgpu-hal's D3D12 backend caches each
+    /// compiled shader and hands every pipeline a reference to it, but FXC's blobs count
+    /// references without atomics (gfx-rs/wgpu#10547), so threads sharing one could free it
+    /// while the cache still held it, and dropping the device then aborted the process. So each
+    /// job has its own vertex entry point and fragment shaders ([`build_jobs`]), and builds of
+    /// several compositors take turns.
     fn build(device: &wgpu::Device, acc_format: wgpu::TextureFormat) -> (Self, Option<wgpu::Error>) {
+        static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _building = BUILDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pc_compose"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let jobs = build_jobs(acc_format);
+        let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("pc_compose_vertex"),
+            source: wgpu::ShaderSource::Wgsl(vertex_shader(jobs.len()).into()),
+        });
         let bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_compose_uniforms"),
             entries: &[uniform_entry(0, CHUNK_UNIFORM), uniform_entry(1, OP_UNIFORM)],
@@ -63,12 +77,12 @@ impl Compositor {
             immediate_size: 0,
         });
         // `None` only for kernels without a fragment entry point, which are never drawn.
-        let pipeline = |k: Kernel, format: wgpu::TextureFormat| {
+        let pipeline = |k: Kernel, format: wgpu::TextureFormat, vs: &str| {
             let entry = k.entry()?;
             Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: Some(&layout),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+                vertex: wgpu::VertexState { module: &vertex, entry_point: Some(vs), buffers: &[], compilation_options: Default::default() },
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
@@ -84,12 +98,16 @@ impl Compositor {
         };
         // Effect maps render to R32Float / R16Float, which some adapters (e.g. GL without float
         // render targets) can't: then layer effects use the CPU compositor and the rest stays here.
-        let keys = Kernel::DRAWN.iter().filter(|k| !k.is_map()).map(|&k| (k, acc_format));
-        let keys: Vec<_> = keys.chain(Kernel::DRAWN.iter().filter(|k| k.is_map()).flat_map(|&k| [(k, MAP32), (k, MAP16)])).collect();
-        let built = fx::par_map(keys, |key| {
-            let (built, error) = first_error(device, || pipeline(key.0, key.1));
-            (key, built, error)
+        let built = fx::par_map(jobs.into_iter().enumerate().collect(), |(job, keys)| {
+            let vs = vertex_entry(job);
+            keys.into_iter()
+                .map(|key| {
+                    let (built, error) = first_error(device, || pipeline(key.0, key.1, &vs));
+                    (key, built, error)
+                })
+                .collect::<Vec<_>>()
         });
+        let built = built.into_iter().flatten();
         let (mut pipelines, mut maps) = (HashMap::new(), Vec::new());
         let (mut error, mut map_error) = (None, None);
         for (key, built, e) in built {

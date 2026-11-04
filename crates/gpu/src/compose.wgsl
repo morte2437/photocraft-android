@@ -73,13 +73,9 @@ const F_LAYER_SHAPE: u32 = 1048576u; // fx merge: B is the shape; layer = its co
 @group(1) @binding(6) var map_tex: texture_2d<f32>;
 @group(1) @binding(7) var pat_tex: texture_2d<f32>;
 
+// The full-chunk triangle's vertex stage lives in `vertex_shader` (kit.rs): one entry point per
+// pipeline build job, so no two threads share a compiled vertex shader.
 struct VOut { @builtin(position) pos: vec4<f32> };
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32) -> VOut {
-    let uv = vec2(f32((vi << 1u) & 2u), f32(vi & 2u));
-    return VOut(vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0));
-}
 
 fn local(pos: vec4<f32>) -> vec2<i32> { return vec2<i32>(floor(pos.xy)); }
 fn doc_px(p: vec2<i32>) -> vec2<i32> { return chunk.origin + p; }
