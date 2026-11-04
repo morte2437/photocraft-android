@@ -303,6 +303,7 @@ struct ToolSet {
     eyedropper_sample: Option<String>,
     eyedropper_ring: Option<bool>,
     cam_transform_on_drop: Option<bool>,
+    move_show_transform: Option<bool>,
     tile_grid: Option<bool>,
     layer_filter: Option<crate::layer_filter_ui::Filter>,
     pen_mode: Option<String>,
@@ -323,6 +324,7 @@ impl ToolSet {
             eyedropper_ring: bool_field(p, "eyedropperRing")?,
             // Content-Aware Move's Transform On Drop checkbox.
             cam_transform_on_drop: bool_field(p, "camTransformOnDrop")?,
+            move_show_transform: bool_field(p, "moveShowTransform")?,
             // Developer overlay of the active layer's storage tiles (tile_overlay.rs).
             tile_grid: bool_field(p, "tileGrid")?,
             layer_filter: p.get("layerFilter").map(|v| crate::layer_filter_ui::patched(&app.ui, v)).transpose()?,
@@ -358,6 +360,9 @@ impl ToolSet {
         }
         if let Some(on) = self.cam_transform_on_drop {
             app.ui.tool_options.cam_transform_on_drop = on;
+        }
+        if let Some(on) = self.move_show_transform {
+            app.ui.tool_options.move_show_transform = on;
         }
         if let Some(on) = self.tile_grid {
             app.ui.view.tile_grid = on;
@@ -1182,6 +1187,9 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
             continue;
         }
         if !pointer_event_intercepted(app, ctx, &gesture, &sample) {
+            if app.ui.tool == Tool::Move && !gesture.secondary && !gesture.middle && !gesture.space && matches!(sample.ev, ToolEvent::Down { .. }) {
+                app.begin_move_transform_controls(ctx, sample.x, sample.y);
+            }
             forward_pointer_event(app, &gesture, sample);
         }
     }
