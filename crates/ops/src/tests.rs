@@ -1182,6 +1182,33 @@ fn clear_states_keeps_the_document_and_undo_brings_the_list_back() {
 }
 
 #[test]
+fn an_action_preserves_an_accepted_clear_over_an_empty_capture() {
+    let mut captured = History::new(50);
+    assert!(!captured.clear_states(), "ordinary empty Clear still refuses");
+    captured.preserve_action_clear(&History::new(50));
+    assert!(!captured.is_cleared(), "no boundary without an accepted Clear");
+    let mut later = captured.clone();
+    let original = Arc::new(base());
+    let mut current = original.clone();
+    edit(&mut later, &mut current, "Black source", |doc| doc.name = "black".into());
+    assert!(later.set_brush_source(1));
+    current = later.undo(current).unwrap().0;
+    assert!(Arc::ptr_eq(&current, &original));
+    assert!(later.clear_states(), "the live redo row makes Clear legitimate");
+    captured.preserve_action_clear(&later);
+    assert!(captured.is_cleared() && captured.can_undo());
+    assert_eq!(captured.undo_label(), Some(CLEAR_HISTORY_LABEL));
+    let Some(ActionBrushSource::Cleared(source)) = captured.preserve_action_brush_source(&later) else { panic!("the exact cleared source must survive") };
+    assert_eq!(source.doc.name, "black");
+    captured.set_cleared_brush_snapshot(7);
+    let restored = captured.undo(current.clone()).unwrap().0;
+    assert!(Arc::ptr_eq(&restored, &current), "Undo Clear restores the list, not pixels");
+    assert!(!captured.is_cleared());
+    assert_eq!(captured.brush_source_snapshot(), Some(7));
+    assert_eq!(captured.past_len(), 0);
+}
+
+#[test]
 fn cleared_states_still_count_in_the_memory_figures_and_the_budget() {
     let mut h = History::new(50);
     let mut cur = Arc::new(base());

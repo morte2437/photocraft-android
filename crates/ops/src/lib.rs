@@ -615,6 +615,19 @@ impl History {
         if self.undo.is_empty() && self.redo.is_empty() {
             return false;
         }
+        self.clear_states_including_empty();
+        true
+    }
+
+    /// Preserve a Clear already accepted during an action when its command-local rows fold
+    /// into this captured history, which may have no rows. Ordinary empty Clear still refuses.
+    pub fn preserve_action_clear(&mut self, later: &Self) {
+        if later.is_cleared() && !self.is_cleared() {
+            self.clear_states_including_empty();
+        }
+    }
+
+    fn clear_states_including_empty(&mut self) {
         let undo = std::mem::take(&mut self.undo);
         let redo = std::mem::take(&mut self.redo);
         let brush_source = self.brush_source.take();
@@ -622,7 +635,6 @@ impl History {
         self.cleared = Some(Box::new(Cleared { undo, redo, brush_source, brush_source_snapshot }));
         self.last_record = None;
         self.tiles = None;
-        true
     }
 
     /// Whether the last change to the list was Clear History (so undo restores the states).

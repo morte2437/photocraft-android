@@ -2243,6 +2243,185 @@ fn deny_blur(id: &str, _: &Value) -> photocraft_engine::Result<()> {
     if id == "filter.blur.gaussianBlur" { Err(photocraft_engine::EngineError::Other("blur denied".into())) } else { Ok(()) }
 }
 
+fn deny_wide_blur(id: &str, params: &Value) -> photocraft_engine::Result<()> {
+    if id == "filter.blur.gaussianBlur" && params["radius"].as_f64().is_some_and(|radius| radius > 1.0) {
+        Err(photocraft_engine::EngineError::Other("edited blur radius denied".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn gated_blur_fixture(single: bool, background: bool) -> PhotocraftApp {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 16, "height": 16, "background": "#000000"})).unwrap();
+    app.run("select.rect", json!({"x": 8, "y": 0, "width": 8, "height": 16})).unwrap();
+    app.run("edit.fill", json!({"color": "#ffffff"})).unwrap();
+    app.run("select.deselect", json!({})).unwrap();
+    app.run("actions.setHistory", json!({"singleState": single})).unwrap();
+    app.background_jobs = background;
+    let mut action = Action::new("Gated blur", vec![("filter.blur.gaussianBlur".into(), json!({"radius": 1}))]);
+    action.dialogs.insert(0);
+    app.session.actions.list.push(action);
+    app
+}
+
+fn pause_gated_blur(app: &mut PhotocraftApp, gate: Option<Gate>) -> u64 {
+    app.session.authorize = gate;
+    let paused = play(app, &json!({"action": "Gated blur"})).unwrap();
+    app.session.authorize = None; // The temporary control gate ends before a later human OK.
+    paused["paused"]["dialog"].as_u64().unwrap()
+}
+
+#[test]
+fn a_paused_dialog_authorizes_edited_params_before_history_or_worker_admission() {
+    for (single, background) in [(true, false), (true, true), (false, false)] {
+        let mut app = gated_blur_fixture(single, background);
+        let dialog = pause_gated_blur(&mut app, Some(deny_wide_blur));
+        app.ui.dialog_mut(dialog).unwrap().fields.insert("radius".into(), json!(4));
+        let before = app.session.active().unwrap().doc.clone();
+        let revision = app.session.active().unwrap().revision;
+        let count = app.session.active().unwrap().history.past_len();
+        let error = crate::dialogs::confirm(&mut app, dialog).unwrap_err();
+        assert!(error.contains("edited blur radius denied"), "{error}");
+        let state = app.session.active().unwrap();
+        assert_eq!(state.doc.as_ref(), before.as_ref(), "denial changes no pixels");
+        assert_eq!(state.revision, revision);
+        assert_eq!(state.history.past_len(), count);
+        assert!(app.session.job_on(state.doc.id).is_none(), "no worker was admitted");
+        assert!(app.session.authorize.is_none());
+        assert!(app.paused_playbacks.paused.is_empty());
+        assert_eq!(app.session.actions.playing, 0);
+        app.run("layer.renameLayer", json!({"name": "Outside"})).unwrap();
+        assert_eq!(app.session.active().unwrap().history.past_len(), count + 1, "no action scope leaked");
+    }
+}
+
+#[test]
+fn an_allowed_paused_edit_and_an_ordinary_manual_dialog_still_run() {
+    for (paused, background) in [(true, false), (true, true), (false, false)] {
+        let mut app = gated_blur_fixture(true, background);
+        let before = app.session.active().unwrap().doc.clone();
+        let dialog = if paused {
+            pause_gated_blur(&mut app, Some(deny_wide_blur))
+        } else {
+            crate::dialogs::open_command_dialog(&mut app, "filter.blur.gaussianBlur", "Gaussian Blur")
+        };
+        app.ui.dialog_mut(dialog).unwrap().fields.insert("radius".into(), json!(if paused { 1 } else { 4 }));
+        crate::dialogs::confirm(&mut app, dialog).unwrap();
+        let state = app.session.active().unwrap();
+        assert_ne!(state.doc.layers[0].surface().unwrap().pixel(7, 8), before.layers[0].surface().unwrap().pixel(7, 8));
+        assert!(app.session.job_on(state.doc.id).is_none(), "the resumed action waited for its worker");
+        assert!(app.session.authorize.is_none(), "the transient captured gate was restored");
+        assert!(app.paused_playbacks.paused.is_empty());
+        assert_eq!(app.session.actions.playing, 0);
+    }
+}
+
+#[test]
+fn a_stricter_current_gate_still_denies_the_captured_dialog_edit() {
+    for service in [false, true] {
+        let mut app = gated_blur_fixture(true, true);
+        let dialog = pause_gated_blur(&mut app, Some(deny_wide_blur));
+        let before = app.session.active().unwrap().doc.clone();
+        if service {
+            app.automation_input = true;
+            app.services.automation_authorize = Some(deny_blur);
+        } else {
+            app.session.authorize = Some(deny_blur);
+        }
+        let error = crate::dialogs::confirm(&mut app, dialog).unwrap_err();
+        assert!(error.contains("blur denied"), "{error}");
+        assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+        if service {
+            assert!(app.session.authorize.is_none());
+        } else {
+            assert!(app.session.authorize.unwrap()("filter.blur.gaussianBlur", &json!({"radius": 1})).is_err(), "the live gate was restored");
+        }
+        assert!(app.paused_playbacks.paused.is_empty());
+    }
+}
+
+#[test]
+fn an_implicit_paused_filter_refuses_a_public_api_receiver_change() {
+    for single in [false, true] {
+        for explicit in [false, true] {
+            let mut app = gated_blur_fixture(single, false);
+            let a = app.session.active().unwrap().active_layer.unwrap();
+            let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name": "B"})).unwrap()["layer"].as_u64().unwrap());
+            app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 16})).unwrap();
+            app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+            app.run("select.deselect", json!({})).unwrap();
+            app.session.select_layer(a).unwrap();
+            if explicit {
+                app.session.actions.list[0].steps[0].1["layer"] = json!(a.0);
+            }
+            let dialog = pause_gated_blur(&mut app, None);
+            // Supported host/session API, not a modal-blocked native menu/control command.
+            app.session.select_layer(b).unwrap();
+            let before = app.session.active().unwrap().doc.clone();
+            let result = crate::dialogs::confirm(&mut app, dialog);
+            let after = &app.session.active().unwrap().doc;
+            if explicit {
+                result.unwrap();
+                assert_ne!(after.layer(a).unwrap().surface().unwrap().pixel(7, 8), before.layer(a).unwrap().surface().unwrap().pixel(7, 8));
+                assert_eq!(after.layer(b).unwrap().surface().unwrap().pixel(7, 8), before.layer(b).unwrap().surface().unwrap().pixel(7, 8));
+            } else {
+                assert!(result.is_err_and(|e| e.contains("receiver changed")));
+                assert_eq!(after.as_ref(), before.as_ref(), "neither layer may be edited after stale implicit targeting");
+            }
+            assert!(app.paused_playbacks.paused.is_empty());
+            assert_eq!(app.session.actions.playing, 0);
+        }
+    }
+}
+
+#[test]
+fn an_implicit_filter_keeps_its_receiver_when_only_other_selected_layers_change() {
+    let mut app = gated_blur_fixture(true, false);
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let b = photocraft_doc::LayerId(app.run("layer.new.layer", json!({"name": "Other"})).unwrap()["layer"].as_u64().unwrap());
+    app.session.select_layer(a).unwrap();
+    let dialog = pause_gated_blur(&mut app, None);
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.active().unwrap().selected_layers().len(), 2);
+    let before = app.session.active().unwrap().doc.clone();
+    crate::dialogs::confirm(&mut app, dialog).unwrap();
+    let after = &app.session.active().unwrap().doc;
+    assert_ne!(after.layer(a).unwrap().surface().unwrap().pixel(7, 8), before.layer(a).unwrap().surface().unwrap().pixel(7, 8));
+    assert_eq!(after.layer(b).unwrap().surface().unwrap().content_bounds(), before.layer(b).unwrap().surface().unwrap().content_bounds());
+}
+
+fn deny_displace_file(id: &str, params: &Value) -> photocraft_engine::Result<()> {
+    if id == "filter.distort.displace" && params.get("mapPath").is_some() {
+        Err(photocraft_engine::EngineError::Other("chosen displacement map denied".into()))
+    } else {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_deferred_displace_map_is_authorized_before_reading_or_resuming_history() {
+    let mut app = recording_with_displace_child();
+    app.background_jobs = true;
+    let (show, _) = crate::file_dialog::fake(vec![Some(crate::file_dialog::FileDialogAnswer::Paths(vec!["denied-map.png".into()]))]);
+    app.services.file_dialog = Some(show);
+    app.session.authorize = Some(deny_displace_file);
+    let dialog = pause_child(&mut app);
+    app.session.authorize = None;
+    let before = app.session.active().unwrap().doc.clone();
+    let count = app.session.active().unwrap().history.past_len();
+    crate::dialogs::confirm(&mut app, dialog).unwrap();
+    assert!(app.file_dialog_open());
+    app.poll_file_dialog(&egui::Context::default(), None);
+    assert!(app.ui.status.contains("chosen displacement map denied"), "{}", app.ui.status);
+    assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
+    assert_eq!(app.session.active().unwrap().history.past_len(), count);
+    assert!(app.session.authorize.is_none());
+    assert!(app.session.job_on(before.id).is_none());
+    assert_displace_call_finished(&mut app, 0);
+}
+
 #[test]
 fn a_step_the_gate_denies_opens_no_dialog() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

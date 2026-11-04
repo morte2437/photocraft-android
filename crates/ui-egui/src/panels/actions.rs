@@ -243,8 +243,12 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         // from the next step when it is confirmed (`resume`). Agents play headlessly.
         if action.dialogs.contains(&i) && !app.automation_input && (crate::filter_dialog::has_dialog(id) || crate::adjust_dialog::has_dialog(id)) {
             let label = label_of(id);
+            let filter_receiver = (id.starts_with("filter.") && p.get("layer").is_none()).then(|| app.session.active().and_then(|st| st.active_layer));
             let dialog = crate::dialogs::open_command_dialog(app, id, &label);
             let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
+            if let Some(paused) = app.paused_playbacks.paused.get_mut(&token) {
+                paused.filter_receiver = filter_receiver;
+            }
             if let Some(d) = app.ui.dialog_mut(dialog) {
                 if let Some(o) = p.as_object() {
                     // `__` keys are the dialog's own markers (`params_of` drops them), not step values.
@@ -850,6 +854,9 @@ pub(crate) struct PausedPlayback {
     /// The document a pause at Check Spelling was playing on. That dialog doesn't block the
     /// document tabs, so Done ([`resume_spelling`]) continues only on this document.
     doc: Option<photocraft_doc::DocId>,
+    /// An implicit filter step resolves this active layer at the pause. The outer Option marks
+    /// that binding even when there was no active layer; explicit-layer and other dialogs omit it.
+    filter_receiver: Option<Option<photocraft_doc::LayerId>>,
 }
 
 /// The paused playbacks, by the token their dialog carries. The dialog's fields hold only the
@@ -863,13 +870,47 @@ pub(crate) struct PausedPlaybacks {
 impl PausedPlaybacks {
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused.insert(self.last, PausedPlayback { action, from, gate, record: None, history: None, then: Vec::new(), ran: 0, doc: None });
+        self.paused
+            .insert(self.last, PausedPlayback { action, from, gate, record: None, history: None, then: Vec::new(), ran: 0, doc: None, filter_receiver: None });
         self.last
     }
 
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }
+}
+
+/// Admit the final dialog command before resuming history or starting a worker. The captured
+/// policy judges the edited parameters; a current live gate still governs dispatch and nested
+/// work. With no live gate, reinstall the captured gate for job admission and rendering.
+pub(crate) fn run_step_dialog(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>, command: &str, params: Value) -> Result<Value, String> {
+    let Some(token) = fields.get(RESUME) else { return app.run(command, params) };
+    let token = token.as_u64().ok_or("this dialog doesn't belong to a paused action")?;
+    let paused = app.paused_playbacks.paused.get(&token).ok_or("this dialog doesn't belong to a paused action")?;
+    if let Some(receiver) = paused.filter_receiver
+        && app.session.active().and_then(|st| st.active_layer) != receiver
+    {
+        return Err("the paused filter's receiver changed while its dialog was open".into());
+    }
+    let captured = paused.gate;
+    let saved = app.session.authorize;
+    let live = saved.or(if app.automation_input { app.services.automation_authorize } else { None });
+    if let Some(authorize) = captured {
+        authorize(command, &params).map_err(|e| e.to_string())?;
+    }
+    if let Some(authorize) = live {
+        authorize(command, &params).map_err(|e| e.to_string())?;
+    }
+    if app.automation_input
+        && let Some(authorize) = app.services.automation_command.as_ref()
+    {
+        authorize(command, &params)?;
+    }
+    prepare_history(app, fields)?;
+    app.session.authorize = live.or(captured);
+    let result = app.run(command, params);
+    app.session.authorize = saved;
+    result
 }
 
 /// Bind the dialog's own edit to its suspended action before it runs or starts a worker.

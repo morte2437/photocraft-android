@@ -142,9 +142,7 @@ fn consolidate(s: &mut Session, group: &ActionHistory) {
             history.add_current_visibility(&visibility);
             st.coalesce = None;
         }
-        if st.history.is_cleared() {
-            history.clear_states();
-        }
+        history.preserve_action_clear(&st.history);
         if let Some(source) = history.preserve_action_brush_source(&st.history) {
             let (source, restore_on_clear_undo) = match source {
                 photocraft_ops::ActionBrushSource::Current(source) => (source, false),

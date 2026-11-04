@@ -364,6 +364,79 @@ fn action_history_setting_is_persisted_and_rejects_wrong_types() {
     assert!(restored.prefs().actions.create_single_history_state);
 }
 
+#[test]
+fn an_open_document_batch_cannot_change_an_active_history_scope_setting() {
+    for single in [false, true] {
+        let mut s = session();
+        s.execute("actions.setHistory", json!({"singleState": single})).unwrap();
+        let past = s.active().unwrap().history.past_len();
+        let result = s
+            .execute(
+                "file.automate.batch",
+                json!({"source": "open", "action": "Setting boundary", "steps": [
+                    ["layer.renameLayer", {"name": "Prefix"}], ["actions.setHistory", {"singleState": false}], ["layer.renameLayer", {"name": "Suffix"}]
+                ]}),
+            )
+            .unwrap();
+        if single {
+            assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+            assert!(result.to_string().contains("cannot change action history settings"), "{result}");
+            assert!(s.prefs().actions.create_single_history_state);
+            assert_eq!(s.active().unwrap().doc.layers[0].name, "Prefix");
+            assert_eq!(s.active().unwrap().history.undo_label(), Some("Action: Setting boundary"));
+            assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+        } else {
+            assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+            assert!(!s.prefs().actions.create_single_history_state);
+            assert_eq!(s.active().unwrap().doc.layers[0].name, "Suffix");
+            assert_eq!(s.active().unwrap().history.past_len(), past + 2);
+        }
+        s.execute("actions.setHistory", json!({"singleState": !single})).unwrap();
+        assert_eq!(s.prefs().actions.create_single_history_state, !single, "the batch scope ended");
+    }
+}
+
+#[test]
+fn a_real_action_still_refuses_history_setting_changes_with_grouping_on_or_off() {
+    for single in [false, true] {
+        let mut s = session();
+        s.execute("actions.setHistory", json!({"singleState": single})).unwrap();
+        s.actions.list = vec![Action::new("Setting", vec![("actions.setHistory".into(), json!({"singleState": !single}))])];
+        let result = s.execute("actions.play", json!({"action": 0})).unwrap();
+        assert_eq!(result["failed"]["id"], "actions.setHistory");
+        assert_eq!(s.prefs().actions.create_single_history_state, single);
+    }
+}
+
+#[test]
+fn an_accepted_clear_survives_an_action_that_returns_to_empty_captured_history() {
+    for single in [false, true] {
+        let mut s = session();
+        s.execute("actions.setHistory", json!({"singleState": single})).unwrap();
+        let original = s.active().unwrap().doc.clone();
+        assert_eq!(s.active().unwrap().history.past_len(), 0);
+        assert!(s.execute("history.clear", json!({})).is_err(), "ordinary empty Clear still refuses");
+        s.actions.list = vec![Action::new(
+            "Empty capture Clear",
+            vec![
+                ("edit.fill".into(), json!({"color": "#000000"})),
+                ("history.setSource".into(), json!({"state": 1})),
+                ("edit.undo".into(), json!({})),
+                ("history.clear".into(), json!({})),
+            ],
+        )];
+        let result = s.execute("actions.play", json!({"action": 0})).unwrap();
+        assert!(result.get("failed").is_none(), "{result}");
+        assert!(s.active().unwrap().history.is_cleared());
+        assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &original));
+        assert!(s.undo(), "Undo Clear remains available with an empty captured baseline");
+        assert!(!s.active().unwrap().history.is_cleared());
+        assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &original));
+        s.execute("edit.fill", json!({"contents": "history"})).unwrap();
+        assert_eq!(s.active().unwrap().doc.layers[0].surface().unwrap().rgba(0, 0), [0.0, 0.0, 0.0, 1.0], "the exact black source is restored");
+    }
+}
+
 /// A command's internal purge must not remove the outer action's only Undo snapshot.
 #[test]
 fn frame_compound_retains_undo_redo_content_and_layer_targets() {

@@ -840,6 +840,9 @@ fn set_color(s: &mut Session, p: &Value) -> Result<Value> {
 /// Kept separate from Playback Options' performance modes until #5212 provides that dialog.
 fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
     not_playing(s, "actions.setHistory")?;
+    if s.action_history.is_some() {
+        return Err(bad("actions.setHistory", "cannot change action history settings during playback"));
+    }
     let enabled = p.get("singleState").and_then(Value::as_bool).ok_or_else(|| bad("actions.setHistory", "singleState must be a boolean"))?;
     s.edit_prefs(|prefs| prefs.actions.create_single_history_state = enabled);
     Ok(json!({"singleState":enabled}))
