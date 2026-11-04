@@ -495,6 +495,11 @@ fn every_mapped_command_exports_and_imports_back() {
         ("select.rect", json!({"x":1,"y":2,"width":3,"height":4,"mode":"intersect"})),
         ("edit.pasteSpecial.pasteInto", json!({})),
         ("edit.pasteSpecial.pasteOutside", json!({})),
+        (
+            "edit.contentAwareFill",
+            json!({"sampling":"rectangular","sampleAllLayers":true,"colorAdaptation":"default",
+                "rotationAdaptation":"none","scale":true,"mirror":false,"output":"new"}),
+        ),
         ("edit.fade", json!({"opacity":50,"mode":"Multiply"})),
         ("layer.linkLayers", json!({})),
         ("layer.distribute.leftEdges", json!({})),
