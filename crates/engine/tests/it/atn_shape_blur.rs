@@ -55,6 +55,102 @@ fn saved(s: &Session) -> Vec<u8> {
     photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap()
 }
 
+fn smart_params(s: &Session) -> serde_json::Value {
+    s.active()
+        .unwrap()
+        .doc
+        .walk()
+        .into_iter()
+        .find_map(|(_, _, l)| match &l.content {
+            LayerContent::Smart(sm) => sm.smart_filters.first().map(|filter| filter.params.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn smart_square(radius: u32) -> Session {
+    let mut s = fixture(16);
+    s.execute("filter.convertForSmartFilters", json!({})).unwrap();
+    s.execute("filter.blur.shapeBlur", json!({"radius":radius,"shape":"square"})).unwrap();
+    s
+}
+
+#[test]
+fn smart_filter_params_resolve_custom_shapes_and_keep_portable_geometry() {
+    for selector in [json!({"shapeId":SHAPE_ID}), json!({"shapeName":"Renamed Square"})] {
+        let mut s = fixture(16);
+        install_square(&mut s);
+        s.execute("filter.convertForSmartFilters", json!({})).unwrap();
+        s.execute("filter.blur.shapeBlur", json!({"radius":5,"shape":"circle"})).unwrap();
+        let before = saved(&s);
+        s.execute("layer.smartFilter.setParams", json!({"index":0,"params":selector})).unwrap();
+        let path = smart_params(&s)["shapePath"].clone();
+        assert!(path.is_object());
+        assert_eq!(pixels(&s), pixels(&smart_square(5)));
+        let after = saved(&s);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(saved(&s), before);
+        s.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(saved(&s), after);
+
+        let mut reopened = Session::new();
+        assert!(!reopened.presets.shapes.iter().flat_map(|g| &g.items).any(|shape| shape.id.as_deref() == Some(SHAPE_ID)));
+        reopened.add_document(photocraft_format::load_from_bytes(&after).unwrap(), None);
+        reopened.execute("layer.smartFilter.setParams", json!({"index":0,"params":{"radius":6}})).unwrap();
+        assert_eq!(smart_params(&reopened)["shapePath"], path);
+        assert_eq!(pixels(&reopened), pixels(&smart_square(6)));
+    }
+}
+
+#[test]
+fn smart_filter_selector_changes_replace_the_old_custom_geometry() {
+    for (initial, replacement) in [
+        (json!({"radius":5,"shapeId":SHAPE_ID}), json!({"shapeId":"replacement-triangle"})),
+        (json!({"radius":5,"shapeName":"Renamed Square"}), json!({"shapeName":"Replacement Triangle"})),
+    ] {
+        let mut s = fixture(16);
+        install_square(&mut s);
+        s.execute("shape.presets.new", json!({"name":"Replacement Triangle","id":"replacement-triangle","path":"M 0 0 L 10 0 L 5 10 Z"})).unwrap();
+        s.execute("filter.convertForSmartFilters", json!({})).unwrap();
+        s.execute("filter.blur.shapeBlur", initial).unwrap();
+        let old_path = smart_params(&s)["shapePath"].clone();
+        let old_pixels = pixels(&s);
+        s.execute("layer.smartFilter.setParams", json!({"index":0,"params":replacement})).unwrap();
+        assert_ne!(smart_params(&s)["shapePath"], old_path);
+        let mut expected = fixture(16);
+        expected.load_presets_json(s.presets.to_json(&s));
+        expected.execute("filter.convertForSmartFilters", json!({})).unwrap();
+        expected.execute("filter.blur.shapeBlur", json!({"radius":5,"shapeId":"replacement-triangle"})).unwrap();
+        assert_ne!(pixels(&s), old_pixels);
+        assert_eq!(pixels(&s), pixels(&expected));
+    }
+}
+
+#[test]
+fn smart_filter_invalid_or_denied_shape_edits_are_atomic() {
+    let mut s = smart_square(5);
+    install_square(&mut s);
+    for params in [json!({"shapeId":"missing"}), json!({"shapeName":"missing"}), json!({"shapeName":false})] {
+        rejected_smart_params(&mut s, params);
+    }
+    s.execute("layer.smartFilter.setParams", json!({"index":0,"params":{"shapeId":SHAPE_ID}})).unwrap();
+    rejected_smart_params(&mut s, json!({"shapeId":"missing"}));
+    s.authorize = Some(|id, _| if id == "filter.blur.shapeBlur" { Err(photocraft_engine::EngineError::Other("shape edit denied".into())) } else { Ok(()) });
+    let error = rejected_smart_params(&mut s, json!({"radius":6}));
+    assert!(error.to_string().contains("shape edit denied"), "{error}");
+}
+
+fn rejected_smart_params(s: &mut Session, params: serde_json::Value) -> photocraft_engine::EngineError {
+    let before = saved(s);
+    let history = s.active().unwrap().history.past_len();
+    let revision = s.active().unwrap().revision;
+    let error = s.execute("layer.smartFilter.setParams", json!({"index":0,"params":params})).unwrap_err();
+    assert_eq!(saved(s), before);
+    assert_eq!(s.active().unwrap().history.past_len(), history);
+    assert_eq!(s.active().unwrap().revision, revision);
+    error
+}
+
 /// A conflicting display name must not select a different kernel; playback remains undoable.
 #[test]
 fn custom_shape_uses_installed_id_despite_name_collision_and_undoes() {

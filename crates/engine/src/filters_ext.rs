@@ -484,14 +484,7 @@ fn uses_colours(id: &str) -> bool {
 /// recorded params (journal, smart filters) reproduce the result.
 pub(crate) fn prepare(s: &Session, id: &str, p: &Value) -> Value {
     let mut out = if p.is_object() { p.clone() } else { json!({}) };
-    if id == "filter.blur.shapeBlur"
-        && out.get("shapePath").is_none()
-        && ["shapeId", "shapeName"].iter().any(|key| out.get(key).is_some_and(|v| !v.is_null()))
-        && let Ok(path) = crate::presets::shapes::filter_path(s, &out)
-    {
-        // Smart filters keep geometry, so reopening doesn't depend on the preset library.
-        out["shapePath"] = crate::vector_cmds::path_json(&path);
-    }
+    let _ = resolve_shape_path(s, id, &mut out);
     if uses_colours(id)
         && let Value::Object(m) = &mut out
     {
@@ -499,6 +492,14 @@ pub(crate) fn prepare(s: &Session, id: &str, p: &Value) -> Value {
         m.entry("background").or_insert_with(|| json!(s.tools.background));
     }
     out
+}
+
+/// Keep portable custom-shape geometry in recorded params. Kernel preparation stays in the job.
+pub(crate) fn resolve_shape_path(s: &Session, id: &str, p: &mut Value) -> Result<()> {
+    if id == "filter.blur.shapeBlur" && p.get("shapePath").is_none() && ["shapeId", "shapeName"].iter().any(|key| p.get(key).is_some_and(|v| !v.is_null())) {
+        p["shapePath"] = crate::vector_cmds::path_json(&crate::presets::shapes::filter_path(s, p)?);
+    }
+    Ok(())
 }
 
 /// A flattened document (or one of its layers) as an RGBA map image.

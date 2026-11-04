@@ -258,12 +258,7 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
     if id == "filter.distort.displace" {
         prepared = crate::filters_ext::displace_request(&prepared);
     }
-    if id == "filter.blur.shapeBlur"
-        && prepared.get("shapePath").is_none()
-        && ["shapeId", "shapeName"].iter().any(|key| prepared.get(key).is_some_and(|v| !v.is_null()))
-    {
-        prepared["shapePath"] = crate::vector_cmds::path_json(&crate::presets::shapes::filter_path(s, &prepared)?);
-    }
+    crate::filters_ext::resolve_shape_path(s, id, &mut prepared)?;
     let p = &prepared;
     let mut fp = params_for(id, p).ok_or_else(|| EngineError::Other(format!("unknown filter {id}")))?;
     crate::filters_ext::resolve(s, &mut fp, p)?;

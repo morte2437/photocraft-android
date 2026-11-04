@@ -287,7 +287,7 @@ pub fn parse_3dl(text: &str) -> Result<LutFile, LutError> {
             let expected = n.checked_pow(3).ok_or_else(|| LutError(format!("unsupported 3dl cube size {n}")))?;
             // One row more than the declared cube, and the first row has exactly `n` values:
             // that row is the shaper, not a 28th node of a 3³ cube (#9078).
-            let nodes = if rows.len() == expected + 1 && first_len == Some(n) {
+            let nodes = if shaper.is_none() && rows.len() == expected + 1 && first_len == Some(n) {
                 shaper = rows.first().map(|row| row.to_vec());
                 &rows[1..]
             } else {
@@ -951,6 +951,19 @@ DOMAIN_MAX 0.5 1 1
         let l = parse_3dl(&text).unwrap();
         let last = &l.data[l.data.len() - 3..];
         assert!((last[0] - 4094.0 / 4095.0).abs() < 1e-6, "{last:?}");
+    }
+
+    #[test]
+    fn three_dl_mesh_extra_node_cannot_replace_a_captured_shaper() {
+        for (bits, size) in [(2, 5), (3, 9)] {
+            let mut text = mesh_3dl(bits, 12, size, 4095.0, true);
+            let valid = parse_3dl(&text).unwrap();
+            assert_eq!(valid.size, size);
+            assert_eq!(valid.data, parse_3dl(&mesh_3dl(bits, 12, size, 4095.0, false)).unwrap().data);
+            text.push_str("4095 4095 4095\n");
+            let error = parse_3dl(&text).unwrap_err().to_string();
+            assert!(error.contains(&format!("expected {} rows", size * size * size)), "{error}");
+        }
     }
 
     #[test]
