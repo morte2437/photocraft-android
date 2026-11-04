@@ -623,11 +623,9 @@ impl PhotocraftApp {
                     st.saved_revision = revision;
                     app.remember_stamp(doc, path);
                 }
-                // "Save Document" script events and File › Generate › Image Assets.
-                if hooks
-                    && let Some(i) = app.session.active_index()
-                    && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, i)
-                {
+                // "Save Document" script events and File › Generate › Image Assets: bound to the
+                // saved document's identity, which the script may move between tabs (#11121).
+                if hooks && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, doc) {
                     let template = "Saved {path}; image assets: {n} in {dir}";
                     app.ui.status = crate::i18n::fmt(
                         tl!(template),
