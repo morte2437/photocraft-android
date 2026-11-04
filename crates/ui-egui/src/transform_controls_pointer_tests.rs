@@ -279,19 +279,75 @@ fn invalid_later_pointer_event_does_not_begin_a_transform() {
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
 }
 
-/// The control entry must obey the same modal command gate before it creates a transform.
+/// A modal owns the whole gesture, including ordinary Move with transform controls disabled.
 #[test]
 fn modal_dialogs_do_not_start_move_transform_controls() {
     for command in ["file.new", "edit.preferences.general"] {
         let (mut app, ctx, _) = fixture();
-        let before = app.session.active().unwrap().doc.clone();
-        let steps = app.session.active().unwrap().history.past_len();
         crate::menus::invoke(&mut app, &ctx, command, json!({})).unwrap();
         assert_eq!(app.ui.dialogs.len(), 1, "{command} opened its modal");
-        pointer(&mut app, &ctx, "down", [800.0, 500.0]);
-        assert!(app.ui.transform.is_none(), "{command} owns input before the Move handle entry");
-        assert_eq!(app.session.active().unwrap().doc, before);
-        assert_eq!(app.session.active().unwrap().history.past_len(), steps);
-        assert_eq!(app.ui.dialogs.len(), 1, "the press leaves the modal open");
+        let before = app.session.active().unwrap().doc.clone();
+        let steps = app.session.active().unwrap().history.past_len();
+        let selected = app.session.active().unwrap().selected_layers();
+        let active = app.session.active().unwrap().active_layer;
+        for controls in [true, false] {
+            app.ui.tool_options.move_show_transform = controls;
+            for from in [[800.0, 500.0], [200.0, 150.0]] {
+                let to = [from[0] + 20.0, from[1] + 10.0];
+                for (kind, at) in [("down", from), ("move", to), ("up", to)] {
+                    pointer(&mut app, &ctx, kind, at);
+                    assert!(app.ui.transform.is_none(), "{command} owns input before the Move handle entry");
+                    assert!(app.drag.is_none(), "{command} must not start an ordinary Move drag");
+                    assert!(app.layer_box.is_none());
+                    assert!(app.guide_drag.is_none());
+                }
+                assert_eq!(app.session.active().unwrap().doc, before);
+                assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+                assert_eq!(app.session.active().unwrap().selected_layers(), selected);
+                assert_eq!(app.session.active().unwrap().active_layer, active);
+                assert_eq!(app.ui.tool, Tool::Move);
+                assert_eq!(app.ui.tool_options.move_show_transform, controls);
+                assert_eq!(app.ui.dialogs.len(), 1, "the gesture leaves the modal open");
+            }
+        }
     }
+}
+
+/// Modal canvas samplers retain ownership even when Move and its controls are selected.
+#[test]
+fn move_pointer_still_samples_into_the_color_picker() {
+    let (mut app, ctx, _) = fixture();
+    let before = app.session.active().unwrap().doc.clone();
+    let steps = app.session.active().unwrap().history.past_len();
+    let id = crate::color_picker_ui::open(&mut app, "foreground");
+    for (kind, at) in [("down", [200.0, 150.0]), ("move", [220.0, 160.0]), ("up", [220.0, 160.0])] {
+        pointer(&mut app, &ctx, kind, at);
+    }
+    assert_eq!(app.ui.dialog_mut(id).unwrap().fields["color"], "#ff0000");
+    assert!(app.ui.transform.is_none());
+    assert!(app.drag.is_none());
+    assert_eq!(app.session.active().unwrap().doc, before);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+}
+
+/// A full-window editor receives its own stroke instead of a Move or Free Transform gesture.
+#[test]
+fn move_pointer_still_reaches_the_liquify_workspace() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 120, "height": 80, "depth": 8})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.sync_views();
+    let ctx = egui::Context::default();
+    accepted(&mut app, &ctx, "ui.set", json!({"tool": "Move", "moveShowTransform": true}));
+    crate::menus::invoke(&mut app, &ctx, "filter.liquify", json!({})).unwrap();
+    let before = app.session.active().unwrap().doc.clone();
+    let steps = app.session.active().unwrap().history.past_len();
+    for (kind, at) in [("down", [50.0, 40.0]), ("move", [60.0, 40.0]), ("up", [60.0, 40.0])] {
+        pointer(&mut app, &ctx, kind, at);
+    }
+    assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 1);
+    assert!(app.ui.transform.is_none());
+    assert!(app.drag.is_none());
+    assert_eq!(app.session.active().unwrap().doc, before);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
 }
