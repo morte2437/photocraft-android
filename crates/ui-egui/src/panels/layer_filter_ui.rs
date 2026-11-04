@@ -1,8 +1,9 @@
 //! The Layers panel's filter row (#5048): a filter-type dropdown, as in Photoshop, then the
-//! controls for that type. Kind toggles layer kinds, Name matches part of the layer name, Mode
-//! picks one blend mode, Color one layer colour label (#5898), Smart Object toggles linked, missing
-//! and embedded smart objects, Artboard lists only the artboards that hold the selected layers. The
-//! criteria live in `UiState` (`layer_filter*`), so the control channel can read and set them.
+//! controls for that type. Kind toggles layer kinds, Name matches part of the layer name, Effect
+//! picks one effect kind (#10880), Mode picks one blend mode, Color one layer colour label (#5898),
+//! Smart Object toggles linked, missing and embedded smart objects, Artboard lists only the
+//! artboards that hold the selected layers. The criteria live in `UiState` (`layer_filter*`), so
+//! the control channel can read and set them.
 
 use std::collections::HashSet;
 
@@ -20,6 +21,7 @@ pub enum FilterBy {
     #[default]
     Kind,
     Name,
+    Effect,
     Mode,
     Color,
     SmartObject,
@@ -34,6 +36,7 @@ pub struct Filter {
     /// As typed; matched trimmed and ignoring case.
     pub name: String,
     pub mode: BlendMode,
+    pub effect: effect::EffectKind,
     pub color: LabelColor,
     /// The Smart Object toggles that are on, from [`SMART`].
     pub smart: Vec<String>,
@@ -51,6 +54,7 @@ impl Filter {
             kinds: ui.layer_filter.clone(),
             name: ui.layer_filter_name.clone(),
             mode: ui.layer_filter_mode,
+            effect: ui.layer_filter_effect,
             color: ui.layer_filter_color,
             smart: ui.layer_filter_smart.clone(),
             missing: HashSet::new(),
@@ -74,14 +78,15 @@ impl Filter {
         f
     }
 
-    /// Whether the panel is filtered. Like Photoshop, Mode and Color always filter (by Normal and
-    /// by no colour at first); Kind, Name and Smart Object only once a toggle is on or some text is
-    /// typed; Artboard only while some layers are selected and each of them is in an artboard.
+    /// Whether the panel is filtered. Like Photoshop, Effect, Mode and Color always filter (by
+    /// Bevel & Emboss, by Normal and by no colour at first); Kind, Name and Smart Object only once a
+    /// toggle is on or some text is typed; Artboard only while some layers are selected and each of
+    /// them is in an artboard.
     pub fn active(&self) -> bool {
         match self.by {
             FilterBy::Kind => !self.kinds.is_empty(),
             FilterBy::Name => !self.name.trim().is_empty(),
-            FilterBy::Mode | FilterBy::Color => true,
+            FilterBy::Effect | FilterBy::Mode | FilterBy::Color => true,
             FilterBy::SmartObject => !self.smart.is_empty(),
             FilterBy::Artboard => !self.board_rows.is_empty(),
         }
@@ -95,6 +100,7 @@ impl Filter {
         match self.by {
             FilterBy::Kind => self.kinds.iter().any(|k| k == kind(l)),
             FilterBy::Name => l.name.to_lowercase().contains(&self.name.trim().to_lowercase()),
+            FilterBy::Effect => self.effect.shows(l),
             FilterBy::Mode => l.blend == self.mode,
             FilterBy::Color => l.label == self.color,
             FilterBy::SmartObject => {
@@ -151,20 +157,21 @@ pub const KINDS: [&str; 5] = ["pixel", "adjustment", "type", "shape", "smart"];
 /// not there, and embedded in the document.
 pub const SMART: [&str; 3] = ["linked", "missing", "embedded"];
 
-/// `ui.set {layerFilter: {by?, kinds?, name?, mode?, color?, smart?}}`: `current` with the given
-/// fields replaced, or an error naming the bad field (nothing changes then). `by` is `kind`,
-/// `name`, `mode`, `color`, `smartObject` or `artboard`; `kinds` a list of [`KINDS`]; `mode` a
-/// blend mode name such as `Multiply` or `Pass Through`; `color` a label colour id (`none`, `red`,
-/// … `gray`, [`LabelColor::id`]); `smart` a list of [`SMART`]. Artboard has no criteria of its
-/// own: the selected layers pick the artboards.
+/// `ui.set {layerFilter: {by?, kinds?, name?, effect?, mode?, color?, smart?}}`: `current` with
+/// the given fields replaced, or an error naming the bad field (nothing changes then). `by` is
+/// `kind`, `name`, `effect`, `mode`, `color`, `smartObject` or `artboard`; `kinds` a list of
+/// [`KINDS`]; `effect` an [`effect::EffectKind`] id; `mode` a blend mode name such as `Multiply`
+/// or `Pass Through`; `color` a label colour id (`none`, `red`, … `gray`, [`LabelColor::id`]);
+/// `smart` a list of [`SMART`]. Artboard has no criteria of its own: the selected layers pick the
+/// artboards.
 pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, String> {
     let Some(o) = v.as_object() else { return Err("layerFilter must be an object".into()) };
-    if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "mode", "color", "smart"].contains(&k.as_str())) {
-        return Err(format!("unknown layerFilter field `{k}` (fields: by, kinds, name, mode, color, smart)"));
+    if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "effect", "mode", "color", "smart"].contains(&k.as_str())) {
+        return Err(format!("unknown layerFilter field `{k}` (fields: by, kinds, name, effect, mode, color, smart)"));
     }
     let mut f = Filter::of(current);
     if let Some(by) = o.get("by") {
-        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name, mode, color, smartObject or artboard".to_string())?;
+        f.by = serde_json::from_value(by.clone()).map_err(|_| "layerFilter.by must be kind, name, effect, mode, color, smartObject or artboard".to_string())?;
     }
     if let Some(kinds) = o.get("kinds") {
         let list = kinds.as_array().ok_or("layerFilter.kinds must be a list")?;
@@ -186,6 +193,9 @@ pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, Strin
         f.mode = photocraft_engine::commands::blend_from_str(name)
             .filter(|m| *m == BlendMode::PassThrough || BlendMode::LAYER_MODES.contains(m))
             .ok_or_else(|| format!("layerFilter.mode: unknown blend mode `{name}`"))?;
+    }
+    if let Some(e) = o.get("effect") {
+        f.effect = effect::parse(e)?;
     }
     if let Some(color) = o.get("color") {
         let id = color.as_str().ok_or("layerFilter.color must be a label colour id")?;
@@ -215,6 +225,7 @@ pub fn apply(ui: &mut UiState, f: Filter) {
     ui.layer_filter = f.kinds;
     ui.layer_filter_name = f.name;
     ui.layer_filter_mode = f.mode;
+    ui.layer_filter_effect = f.effect;
     ui.layer_filter_color = f.color;
     ui.layer_filter_smart = f.smart;
 }
@@ -238,6 +249,7 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let by = [
             (FilterBy::Kind, tl!("Kind")),
             (FilterBy::Name, tl!("Name")),
+            (FilterBy::Effect, tl!("Effect")),
             (FilterBy::Mode, tl!("Mode")),
             (FilterBy::Color, tl!("Color")),
             (FilterBy::SmartObject, tl!("Smart Object")),
@@ -268,6 +280,7 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let width = ui.available_width().max(48.0);
                 widgets::text_field(ui, ui.scope_id().with("layer-filter-name"), &mut app.ui.layer_filter_name, tl!("Search"), width, false);
             }
+            FilterBy::Effect => effect::controls(app, ui),
             FilterBy::Mode => {
                 let modes: Vec<(BlendMode, &str)> = std::iter::once(BlendMode::PassThrough).chain(BlendMode::LAYER_MODES).map(|m| (m, m.label())).collect();
                 let width = ui.available_width().max(96.0);
@@ -302,5 +315,9 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     });
 }
 
+pub mod effect;
+
+#[cfg(test)]
+mod effect_tests;
 #[cfg(test)]
 mod tests;

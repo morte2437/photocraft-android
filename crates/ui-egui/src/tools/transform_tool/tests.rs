@@ -1999,6 +1999,53 @@ fn free_transform_keeps_the_layer_under_the_layers_over_it() {
     cancel(&mut app);
 }
 
+/// #9387: a layer under others keeps its place in the stack when something over it blends or
+/// adjusts (a PSD usually has one): the plain layers over the moving one still cover it.
+#[test]
+fn plain_layers_still_cover_the_moving_one_under_a_blend_or_adjustment_layer() {
+    use photocraft_color::BlendMode;
+    for adjustment in [false, true] {
+        let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+        let red = app.session.active().unwrap().active_layer.unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(16, 16, 40, 40), &[0.0, 0.0, 1.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        let blue = app.session.active().unwrap().active_layer.unwrap();
+        let bg = app.session.active().unwrap().doc.layers[0].id;
+        let top = if adjustment {
+            app.session.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap();
+            app.session.active().unwrap().active_layer.unwrap()
+        } else {
+            app.session.execute("layer.new.layer", json!({})).unwrap();
+            let top = app.session.active().unwrap().active_layer.unwrap();
+            app.session
+                .edit("blend", |doc, _| {
+                    doc.layer_mut(top).unwrap().blend = BlendMode::Multiply;
+                    Ok(())
+                })
+                .unwrap();
+            top
+        };
+        app.session.execute("layer.select", json!({"layer": red.0})).unwrap();
+        begin(&mut app, &gpu_ctx()).unwrap();
+        let pv = app.transform_preview.as_ref().unwrap();
+        assert!(!pv.doc.layer(blue).unwrap().visible, "adjustment={adjustment}: the plain layer is drawn over the box, not under it");
+        assert!(pv.doc.layer(top).unwrap().visible, "adjustment={adjustment}: the layer that blends stays in the document under the box");
+        assert!(pv.doc.layer(bg).unwrap().visible);
+        let (texture, rect) = pv.above.as_ref().and_then(|a| a.shown.as_ref()).expect("the plain layer covers the moving one");
+        assert_eq!(*rect, photocraft_geom::Rect::new(16, 16, 40, 40), "adjustment={adjustment}");
+        let (image, _) = texture.level_image(0).unwrap();
+        let centre = image.pixels[12 * image.size[0] + 12];
+        // The adjustment is composited with the layer it covers: inverted blue is yellow.
+        assert_eq!(centre, if adjustment { Color32::from_rgb(255, 255, 0) } else { Color32::BLUE }, "adjustment={adjustment}");
+        cancel(&mut app);
+    }
+}
+
 #[test]
 fn plain_layers_from_the_top_cover_the_moving_one() {
     use photocraft_color::BlendMode;
@@ -2006,7 +2053,7 @@ fn plain_layers_from_the_top_cover_the_moving_one() {
     let px = |name: &str| Layer::raster(name, photocraft_color::PixelFormat::RGBA8);
     let covers = |layers: &[Layer], id: LayerId| {
         let mut out = Vec::new();
-        covering(layers, id, &mut out);
+        covering(layers, id, &mut out, &mut Vec::new());
         out
     };
     // In a group: the group's layers over it, then the ones over the group; never the layers
@@ -2019,7 +2066,7 @@ fn plain_layers_from_the_top_cover_the_moving_one() {
     assert_eq!(covers(&layers, c), [tp, inner], "a clipped layer: covered by what is over its clipping group");
 
     // Under the box, the covering layers leave the document; over it, they alone show.
-    let above = Above { ctx: egui::Context::default(), name: String::new(), max_side: 64, ids: vec![tp, inner], shown: None };
+    let above = Above { ctx: egui::Context::default(), name: String::new(), max_side: 64, ids: vec![tp, inner], applied: Vec::new(), shown: None };
     let mut under = layers.clone();
     above.hide_in(&mut under);
     let vis = |ls: &[Layer]| [ls[0].visible, ls[1].visible, ls[2].visible];
@@ -2033,20 +2080,50 @@ fn plain_layers_from_the_top_cover_the_moving_one() {
     };
     assert_eq!(inside, [false, false, true]);
 
-    // A layer that blends with what is under it stops the search: it and everything under it
-    // stay in the document under the box.
+    // A layer that blends with what is under it can't be drawn on its own: it stays in the
+    // document under the box, and the plain layers around it still cover (#9387).
     layers[2].blend = BlendMode::Multiply;
-    assert!(covers(&layers, t).is_empty());
+    assert_eq!(covers(&layers, t), [inner]);
     layers[2].blend = BlendMode::Normal;
     let mut multiply = px("multiply");
     multiply.blend = BlendMode::Multiply;
+    let m = multiply.id;
     layers.insert(2, multiply);
-    assert_eq!(covers(&layers, t), [tp]);
+    assert_eq!(covers(&layers, t), [tp, inner]);
+    assert!(!covers(&layers, t).contains(&m));
     // A group that isn't Normal or Pass Through keeps what is inside it.
     layers[1].blend = BlendMode::Screen;
     layers.remove(2);
     assert_eq!(covers(&layers, t), [tp]);
-    assert_eq!(covers(&layers, LayerId::fresh()), [tp], "not in the stack: down to the first layer that isn't plain");
+    assert_eq!(covers(&layers, LayerId::fresh()), [tp, layers[0].id], "not in the stack: every plain layer, the Screen group passed over");
+}
+
+/// #9387: an adjustment layer over covering layers is composited with them as well as staying
+/// under the box; one with nothing covering under it has nothing to adjust.
+#[test]
+fn adjustments_over_covering_layers_are_applied_to_them() {
+    use photocraft_doc::{Adjustment, Layer};
+    let px = |name: &str| Layer::raster(name, photocraft_color::PixelFormat::RGBA8);
+    let adjustment = |name: &str| Layer::new(name, LayerContent::Adjustment(Adjustment::Invert));
+    let find = |layers: &[Layer], id: LayerId| {
+        let (mut out, mut applied) = (Vec::new(), Vec::new());
+        covering(layers, id, &mut out, &mut applied);
+        (out, applied)
+    };
+    let (target, under, over, adj_top, adj_between, adj_under) =
+        (px("target"), px("under"), px("over"), adjustment("top"), adjustment("between"), adjustment("under"));
+    let (t, u, o, top, between, below) = (target.id, under.id, over.id, adj_top.id, adj_between.id, adj_under.id);
+    // Bottom to top: target, an adjustment with nothing to adjust over it, two plain layers
+    // around another adjustment, and an adjustment on top.
+    let layers = vec![target, adj_under, under, adj_between, over, adj_top];
+    let (covers, applied) = find(&layers, t);
+    assert_eq!(covers, [o, u]);
+    assert_eq!(applied, [top, between], "adjustments over a covering layer, top down");
+    assert!(!applied.contains(&below), "nothing covers under it");
+
+    // Nothing covers: no adjustment applies.
+    let alone = vec![px("a"), adjustment("b")];
+    assert_eq!(find(&alone, alone[0].id), (Vec::new(), Vec::new()));
 }
 
 /// A context that reports a real GPU's texture limit (the default reports 2048).
