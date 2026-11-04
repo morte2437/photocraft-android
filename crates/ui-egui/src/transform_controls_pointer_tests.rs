@@ -95,6 +95,7 @@ fn corner_drag_scales_both_selected_layers_in_one_free_transform_step() {
 #[test]
 fn rotation_zone_uses_the_existing_transform_gesture() {
     let (mut app, ctx, layers) = fixture();
+    let before = app.session.active().unwrap().doc.clone();
     let steps = app.session.active().unwrap().history.past_len();
     // Fourteen points beyond the corner: outside its 12pt handle, inside the rotation band.
     pointer(&mut app, &ctx, "down", [814.0, 500.0]);
@@ -107,6 +108,44 @@ fn rotation_zone_uses_the_existing_transform_gesture() {
     assert!((rotated.quad[1][1] - rotated.quad[0][1]).abs() > 1.0, "the upper edge rotates");
     enter(&mut app, &ctx);
     assert_one_transform(&app, steps);
+    assert_ne!(app.session.active().unwrap().doc, before, "Enter commits the rotation to the document");
+}
+
+#[test]
+fn zoomed_control_channel_press_starts_the_visible_corner() {
+    let (mut app, ctx, layers) = fixture();
+    accepted(&mut app, &ctx, "ui.set", json!({"zoom": 2.0, "center": [500, 350]}));
+    let old = layers.map(|id| bounds(&app, id));
+    let steps = app.session.active().unwrap().history.past_len();
+    pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+    assert_eq!(app.ui.transform.as_ref().expect("the projected corner is visible at 200%").layers, layers.map(|id| id.0));
+    pointer(&mut app, &ctx, "move", [700.0, 440.0]);
+    pointer(&mut app, &ctx, "up", [700.0, 440.0]);
+    enter(&mut app, &ctx);
+    assert_one_transform(&app, steps);
+    for (id, previous) in layers.into_iter().zip(old) {
+        let scaled = bounds(&app, id);
+        assert!(scaled.width() < previous.width() && scaled.height() < previous.height());
+    }
+}
+
+#[test]
+fn off_canvas_handles_do_not_start_transform_controls() {
+    for (zoom, center) in [(3.0, [500, 350]), (1.0, [0, 0])] {
+        let (mut app, ctx, _) = fixture();
+        accepted(&mut app, &ctx, "ui.set", json!({"zoom": zoom, "center": center}));
+        let xf = crate::canvas::ViewXform::active(&app).unwrap();
+        let projected_corner = xf.to_screen(800.0, 500.0);
+        assert!(projected_corner.is_finite() && !xf.rect.contains(projected_corner), "the actual corner is outside the visible canvas");
+        let before = app.session.active().unwrap().doc.clone();
+        let steps = app.session.active().unwrap().history.past_len();
+        pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+        assert!(app.ui.transform.is_none(), "off-canvas press cannot activate a hidden handle");
+        pointer(&mut app, &ctx, "up", [800.0, 500.0]);
+        assert!(app.ui.transform.is_none());
+        assert_eq!(app.session.active().unwrap().doc, before);
+        assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+    }
 }
 
 #[test]
