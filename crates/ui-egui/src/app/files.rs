@@ -872,7 +872,9 @@ mod tests {
         }
         app.session.prefs.edit(|p| p.plug_ins.generator_enabled = true);
         app.session.file_menu.image_assets.push(doc);
-        app.session.execute("file.scripts.scriptEventsManager", json!({"enabled": true, "add": {"event": "saveDocument", "steps": [["file.close", {"document": 0}]]}})).unwrap();
+        app.session
+            .execute("file.scripts.scriptEventsManager", json!({"enabled": true, "add": {"event": "saveDocument", "steps": [["file.close", {"document": 0}]]}}))
+            .unwrap();
 
         let revision = app.session.active().unwrap().revision;
         app.saved(doc, revision, &path, &[], false);
