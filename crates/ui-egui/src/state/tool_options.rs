@@ -313,6 +313,14 @@ pub(super) fn default_layer_filter_mode() -> photocraft_color::BlendMode {
     photocraft_color::BlendMode::Normal
 }
 
+/// A stored Mode filter set to Pass Through, which the Mode list offered until #10878, loads as
+/// Normal: Pass Through isn't a mode the filter lists any more.
+pub(super) fn layer_filter_mode_or_normal<'de, D: serde::Deserializer<'de>>(d: D) -> Result<photocraft_color::BlendMode, D::Error> {
+    use serde::Deserialize;
+    let mode = photocraft_color::BlendMode::deserialize(d)?;
+    Ok(if mode == photocraft_color::BlendMode::PassThrough { photocraft_color::BlendMode::Normal } else { mode })
+}
+
 fn one_u32() -> u32 {
     1
 }
