@@ -2629,7 +2629,7 @@ cameraRaw	Roughness	Ruhed
 	Frequency	Frekvens
 	Use tablet pressure to change pen width	Brug tablettryk til at ændre penbredden
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 	About	Om
 	Contributors	Bidragydere
 	Models	Modeller
@@ -3182,6 +3182,9 @@ curves	Smooth	Udjævn
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} trin har ingen PhotoCraft-ækvivalent endnu|{n} trin har ingen PhotoCraft-ækvivalent endnu
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Gemte {n} handling i {file}|Gemte {n} handlinger i {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} trin uden Photoshop-ækvivalent udeladt|{n} trin uden Photoshop-ækvivalent udeladt
+@plural	{n} action file loaded|{n} action files loaded	{n} handlingsfil indlæst|{n} handlingsfiler indlæst
+	{set} from {file} replaced the one from {earlier}	Sættet {set} fra {file} erstattede det fra {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunne ikke indlæses: {errors}|{n} filer kunne ikke indlæses: {errors}
 
 	File Naming	Filnavngivning
 	Starting serial	Startserienummer
@@ -3278,17 +3281,8 @@ curves	Smooth	Udjævn
 	Shadow Opacity	Skyggeopacitet
 # PhotoCraft release checks.
 	Check for Updates…	Søg efter opdateringer…
-	PhotoCraft Updates	PhotoCraft-opdateringer
-	Checking for updates…	Søger efter opdateringer…
 	Open the release page to choose an installer for your system.	Åbn udgivelsessiden for at vælge et installationsprogram til dit system.
-	Open Download Page	Åbn downloadsiden
-	PhotoCraft is up to date.	PhotoCraft er opdateret.
-	Could not check for updates.	Kunne ikke søge efter opdateringer.
-	Updates have not been checked yet.	Der er endnu ikke søgt efter opdateringer.
-	Check Again	Søg igen
 	Automatically Check for Updates	Søg automatisk efter opdateringer
-	Installed version: {version}	Installeret version: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} er tilgængelig.
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Brug den indlejrede profil ({profile})
 	Convert to the working space ({profile})	Konvertér til arbejdsfarverummet ({profile})
@@ -3367,6 +3361,7 @@ curves	Smooth	Udjævn
 	This document's layers: {needed} of {budget} for layers	Dette dokuments lag: {needed} af {budget} til lag
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Dette dokuments lag kræver {needed}, men kan rumme {budget}: gentegninger af hele dokumentet bruger CPU'en
 	GPU Memory (MB, 0 = Automatic)	GPU-hukommelse (MB, 0 = automatisk)
+	Scratch Size Limit (MB, 0 = No Limit)	Størrelsesgrænse for arbejdsdisk (MB, 0 = ingen grænse)
 	{path}: the path is not valid Unicode; save under another name.	{path}: stien er ikke gyldig Unicode; gem under et andet navn.
 	Replace	Erstat
 	{name} was changed by another app after it was opened or saved here.	{name} blev ændret af et andet program, efter at den blev åbnet eller gemt her.
@@ -4723,7 +4718,6 @@ shape	Appearance	Udseende
 	Level:	Niveau:
 	Percentile:	Percentil:
 	Refine Edge…	Forfin kant…
-	Release Notes	Udgivelsesnoter
 	Remember Settings	Husk indstillinger
 	Reset Essentials	Nulstil Grundlæggende
 	Rounded Rectangle Tool	Afrundet rektangelværktøj
@@ -4734,7 +4728,6 @@ shape	Appearance	Udseende
 	Tile Horizontally	Side om side vandret
 	Tile Vertically	Side om side lodret
 	Uncached Refresh	Opdatering uden cache
-	Update and Restart	Opdatér og genstart
 	Warming Filter (81)	Opvarmningsfilter (81)
 	Warming Filter (LBA)	Opvarmningsfilter (LBA)
 @plural	{n} document|{n} documents	{n} dokument|{n} dokumenter
@@ -4779,3 +4772,4 @@ cameraRaw	White Balance: As Shot	Hvidbalance: Som fotograferet
 	Path operations	Stihandlinger
 	The path was discarded	Stien blev kasseret
 	The path was kept as the Work Path	Stien blev bevaret som arbejdssti
+	Edit Brush…	Rediger pensel…

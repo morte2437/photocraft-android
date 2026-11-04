@@ -235,24 +235,25 @@ fn carries_selection(app: &PhotocraftApp, t: &TransformSession) -> bool {
 }
 
 /// A transform of `document` is open that carries its selection along (#5297): the canvas traces
-/// the whole outline, not only the part in view where it started, for [`draw_selection`].
+/// the whole outline, not only the part in view where it started, for [`selection_ants`].
 pub(crate) fn carries_selection_of(app: &PhotocraftApp, document: DocId) -> bool {
     matches!((&app.ui.transform, &app.transform_preview), (Some(t), Some(pv)) if pv.doc.id == document && carries_selection(app, t))
 }
 
 /// The marching ants where the open box puts them (#5297): the selection follows a move, scale,
 /// rotation, skew, distort, perspective or warp while it is made, to where applying it leaves it.
-/// `segs` is the outline of `document`'s selection at rest. False when no open transform carries
-/// that selection: the caller draws it where it is.
-pub(crate) fn draw_selection(
+/// `segs` is the outline of `document`'s selection at rest. The ants are returned as shapes for
+/// `painter`, not drawn (the canvas paints them over the guides, #10671). `None` when no open
+/// transform carries that selection: the caller draws it where it is.
+pub(crate) fn selection_ants(
     app: &PhotocraftApp,
     painter: &egui::Painter,
     xf: &ViewXform,
     document: DocId,
     segs: &[crate::outline::Segment],
     time: f64,
-) -> bool {
-    let Some(t) = app.ui.transform.as_ref().filter(|_| carries_selection_of(app, document)) else { return false };
+) -> Option<Vec<egui::Shape>> {
+    let t = app.ui.transform.as_ref().filter(|_| carries_selection_of(app, document))?;
     let scr = |(x, y): (f64, f64)| xf.to_screen(x as f32, y as f32);
     let doc = |p: [i32; 2]| [f64::from(p[0]), f64::from(p[1])];
     let along = |a: [f64; 2], b: [f64; 2], k: f64| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
@@ -268,7 +269,7 @@ pub(crate) fn draw_selection(
             };
             (0..n).map(move |i| (at(i), at(i + 1)))
         });
-        crate::canvas::marching_ants_lines(painter, lines, time);
+        Some(crate::canvas::marching_ants_line_shapes(painter, lines, time))
     } else if let Some(h) = Homography::rect_to_quad(t.rect, t.quad) {
         // Past a Distort's horizon the outline has no place, like the pixels (#4863): a run that
         // crosses it stops short of it, where its points are still a finite way off.
@@ -288,9 +289,10 @@ pub(crate) fn draw_selection(
             }
             Some((scr(h.apply(a[0], a[1])), scr(h.apply(b[0], b[1]))))
         });
-        crate::canvas::marching_ants_lines(painter, lines, time);
+        Some(crate::canvas::marching_ants_line_shapes(painter, lines, time))
+    } else {
+        Some(Vec::new())
     }
-    true
 }
 
 /// What the styled preview of the moving layer is drawn from (transform_fx.rs), at `zoom` screen

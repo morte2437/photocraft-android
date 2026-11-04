@@ -115,7 +115,7 @@ fn soft_shape_matches_an_equal_vector_mask() {
 fn soft_shape_keeps_its_stroke_crisp() {
     let stroke = ShapeStroke { width: 4.0, paint: Fill::Solid(Color::rgb(1.0, 0.0, 0.0)), ..ShapeStroke::default() };
     let d = shape_doc(SampleType::U8, 0.5, 10.0, Some(stroke));
-    let px = render(&d, Rect::new(0, 100, 200, 101)).px;
+    let px = render(&d, Rect::new(0, 100, 200, 101)).into_px();
     // Centred 4 px stroke over x = 48..52: opaque red.
     for x in [48, 49, 50, 51] {
         let p = px[x];

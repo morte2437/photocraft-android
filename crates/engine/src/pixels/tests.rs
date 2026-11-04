@@ -448,10 +448,14 @@ fn an_opaque_layer_of_distant_blocks_is_refused_not_half_adjusted() {
 }
 
 #[test]
-fn a_selection_with_a_nonzero_default_over_distant_blocks_is_refused() {
-    let mut m = Surface::with_default(PixelFormat::GRAY8, &[0.5]);
+fn a_selection_with_a_nonzero_default_over_distant_blocks_visits_only_stored_tiles() {
+    let mut m = Surface::with_default(PixelFormat::GRAY8, &[0.2]);
     let sel = distant_blocks(PixelFormat::GRAY8, 1.0);
-    assert!(adjust_mask(&mut m, &Adjustment::Invert, Some(&sel)).is_err());
+    adjust_mask(&mut m, &Adjustment::Invert, Some(&sel)).unwrap();
+    // The infinite selected default changes without materializing the grid between the holes.
+    assert!((m.default_pixel()[0] - 0.8).abs() < 0.01);
+    assert!((m.pixel(2_000_000_005, 2_000_000_005)[0] - 0.35).abs() < 0.01);
+    assert_eq!(m.tile_count(), 2);
 }
 
 /// #9483: a destructive edit with full coverage writes its result exactly, even over huge 32-bit

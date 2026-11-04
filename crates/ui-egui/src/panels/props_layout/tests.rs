@@ -203,7 +203,9 @@ fn layers_opacity_and_fill_rows_keep_a_gap() {
         let (s, layers) = kinds();
         let mut h = Harness::builder().with_size(vec2(1440.0, 1000.0)).with_max_steps(64).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-            PhotocraftApp::new(s, crate::Services::default())
+            let mut app = PhotocraftApp::new(s, crate::Services::default());
+            app.ui.tool = crate::state::Tool::Brush;
+            app
         });
         set(&mut h, json!({"dockWidth": dw}));
         select(&mut h, layers[0].1);

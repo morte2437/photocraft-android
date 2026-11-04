@@ -451,9 +451,15 @@ fn refine_edge_outputs_to_a_new_document() {
 #[test]
 fn refine_edge_shift_and_contrast() {
     let mut s = blurred_edge_selected();
-    // A hard selection moves 1 px at 100%: no band of several pixels.
-    s.execute("select.refineEdge", json!({"shiftEdge": 100})).unwrap();
-    assert!(cov(&s, 40, 20) > 0.99 && cov(&s, 41, 20) < 0.01);
+    // Shift Edge leaves a hard selection where it is (selected x < 40), at either end.
+    for shift in [100, -100] {
+        s.execute("select.refineEdge", json!({"shiftEdge": shift})).unwrap();
+        assert!(cov(&s, 39, 20) > 0.99 && cov(&s, 40, 20) < 0.01, "Shift Edge {shift}% moved a hard edge");
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    // A feathered one moves: -100% pulls its half-covered point inside the old edge.
+    s.execute("select.refineEdge", json!({"feather": 4, "shiftEdge": -100})).unwrap();
+    assert!(cov(&s, 37, 20) < 0.5 && cov(&s, 30, 20) > 0.99);
     s.execute("edit.undo", json!({})).unwrap();
     s.execute("select.refineEdge", json!({"feather": 8, "contrast": 100})).unwrap();
     assert!(cov(&s, 38, 20) == 1.0 && cov(&s, 42, 20) == 0.0);
@@ -661,8 +667,9 @@ fn refine_edge_edits_match_the_tools_and_reach_the_outputs() {
     // Refinement runs on the edited selection: Shift Edge contracts the brushed bar too.
     let mut s = two_regions(8);
     s.execute("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 20})).unwrap();
-    s.execute("select.refineEdge", json!({"shiftEdge": -100, "edits": [{"tool": "brush", "points": [[30, 80], [100, 80]], "size": 20}]})).unwrap();
-    assert!(cov(&s, 60, 80) >= 0.5 && cov(&s, 60, 89) < 0.5 && cov(&s, 60, 70) < 0.5, "the hard 20 px bar shrank by one pixel at -100% Shift Edge");
+    s.execute("select.refineEdge", json!({"feather": 4, "shiftEdge": -100, "edits": [{"tool": "brush", "points": [[30, 80], [100, 80]], "size": 20}]}))
+        .unwrap();
+    assert!(cov(&s, 60, 80) >= 0.5 && cov(&s, 60, 87) < 0.5 && cov(&s, 60, 72) < 0.5, "the feathered 20 px bar did not shrink at -100% Shift Edge");
     // Layer mask and new-layer outputs take the edited selection.
     let mut s = blurred_edge_selected();
     let r = s.execute("select.refineEdge", json!({"output": "layerMask", "edits": [{"tool": "invert"}]})).unwrap();

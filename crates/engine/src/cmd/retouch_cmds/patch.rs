@@ -49,10 +49,7 @@ pub(super) fn target_layer(s: &Session, p: &Value) -> Result<Option<LayerId>> {
     if crate::channel_cmds::is_channel_target(p) {
         return Ok(None);
     }
-    match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => Ok(Some(LayerId(id))),
-        None => Ok(Some(s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into()))?)),
-    }
+    crate::commands::layer_param(s, p).map(Some)
 }
 
 /// Integer drag offset, rejecting non-finite and absurd values.
@@ -233,6 +230,8 @@ pub(super) fn patch(s: &mut Session, p: &Value) -> Result<Value> {
 /// exact, the colour fit approximate. `max_cells` caps the coarse grid, `min_step` sets a floor on
 /// the coarsening (the view's zoom-out factor: finer detail wouldn't show).
 pub fn preview(s: &Session, p: &Value, max_cells: u64, min_step: u32) -> Result<(Document, Rect)> {
+    let captured = crate::channel_cmds::inject_target(s, CMD, p.clone());
+    let p = &captured;
     let plan = plan(s, p)?;
     let d = s.active().ok_or(EngineError::Other("no document open".into()))?;
     let pixels = u64::from(plan.area.width() + 4) * u64::from(plan.area.height() + 4);
@@ -243,6 +242,9 @@ pub fn preview(s: &Session, p: &Value, max_cells: u64, min_step: u32) -> Result<
     let sel = d.doc.selection.as_ref().ok_or_else(|| bad(CMD, "select the area to patch first"))?;
     let (surf, lock) = crate::channel_cmds::target_surface(&mut doc, plan.id, p)?;
     let dmg = patch_surface(surf, sel, &plan, lock, step);
+    if let (Some(colors), Some(id)) = (crate::color_channels::target(s, p)?, plan.id) {
+        crate::channel_cmds::restrict_to_color(&d.doc, &mut doc, id, colors)?;
+    }
     Ok((doc, dmg))
 }
 

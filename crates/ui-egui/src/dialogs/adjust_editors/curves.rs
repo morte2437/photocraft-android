@@ -40,9 +40,32 @@ pub fn tone_channels(space: ToneSpace, gray: bool) -> &'static [ToneChannel] {
     }
 }
 
-pub(super) fn channel_picker(ui: &mut egui::Ui, id: egui::Id, chans: &[ToneChannel], text: &str) -> usize {
-    let opts: Vec<(usize, &str)> = chans.iter().enumerate().map(|(i, c)| (i, c.label)).collect();
-    channel_picker_opts(ui, id, &opts, text, true)
+/// Visible tone records and their histogram indices. A partial selection has a neutral combined
+/// entry followed by the selected native components; Properties keeps the complete editor.
+pub(super) fn editor_channels(cx: &EditorCx, space: ToneSpace) -> Vec<(ToneChannel, String, usize)> {
+    let channels = tone_channels(space, cx.gray);
+    if let Some(iso) = &cx.isolated_curve {
+        if let Some(colors) = iso.components {
+            let keys = adjust_params::channel_keys(space);
+            let mut result = vec![(ToneChannel { key: "", label: "" }, iso.name.clone(), 0)];
+            for k in colors.indices() {
+                if let Some(key) = keys.get(k) {
+                    // HistSource::Colors reserves slot 0 for the combined set, including Lab.
+                    let histogram = k + 1;
+                    let channel = channels.iter().find(|c| c.key == *key).copied().unwrap_or(ToneChannel { key, label: key });
+                    result.push((channel, tl!(channel.label).to_owned(), histogram));
+                }
+            }
+            return result;
+        }
+        return vec![(ToneChannel { key: iso.key, label: "" }, if iso.translate { tl!(&iso.name).to_owned() } else { iso.name.clone() }, iso.hist)];
+    }
+    channels.iter().enumerate().map(|(i, c)| (*c, tl!(c.label).to_owned(), i)).collect()
+}
+
+pub(super) fn editor_channel_picker(ui: &mut egui::Ui, id: egui::Id, channels: &[(ToneChannel, String, usize)]) -> usize {
+    let options: Vec<_> = channels.iter().enumerate().map(|(i, (_, name, _))| (i, name.as_str())).collect();
+    channel_picker_opts(ui, id, &options, tl!("Channel:"), false)
 }
 
 /// The popup, with `translate` for whether the built-in labels follow the interface language;
@@ -221,16 +244,41 @@ fn set_pencil(v: &mut Value, pencil: bool, gray: bool) -> bool {
     true
 }
 
+/// Partial sets have a combined record even in Lab. Convert each displayed curve separately,
+/// so the normal Lab serializer (which aliases the composite to Lightness) cannot discard it.
+fn set_editor_pencil(v: &mut Value, pencil: bool, cx: &EditorCx) -> bool {
+    if cx.isolated_curve.as_ref().is_none_or(|c| c.components.is_none()) {
+        return set_pencil(v, pencil, cx.gray);
+    }
+    let mut next = v.clone();
+    for (channel, _, _) in editor_channels(cx, space_of(v)) {
+        let key = curve_key(&channel);
+        let mut scalar = json!({"pencil":v.get("pencil").and_then(Value::as_bool).unwrap_or(false)});
+        if let Some(curve) = v.get(key) {
+            scalar["points"] = curve.clone();
+        }
+        if !set_pencil(&mut scalar, pencil, true) {
+            return false;
+        }
+        if let Some(curve) = scalar.get("points") {
+            next[key] = curve.clone();
+        }
+    }
+    next["pencil"] = json!(pencil);
+    *v = next;
+    true
+}
+
 /// Mode buttons above the graph: points, pencil, and Smooth for the shown channel's drawing.
-fn curves_mode_row(ui: &mut egui::Ui, v: &mut Value, key: &str, gray: bool) -> Edit {
+fn curves_mode_row(ui: &mut egui::Ui, v: &mut Value, key: &str, cx: &EditorCx) -> Edit {
     let pencil = v.get("pencil").and_then(Value::as_bool).unwrap_or(false);
     let mut e = Edit::default();
     ui.horizontal(|ui| {
         if crate::icons::button(ui, "spline", 24.0, !pencil, tl!("Edit points to modify the curve")).clicked() && pencil {
-            e.add(Edit::discrete(set_pencil(v, false, gray)));
+            e.add(Edit::discrete(set_editor_pencil(v, false, cx)));
         }
         if crate::icons::button(ui, "pencil", 24.0, pencil, tl!("Draw to modify the curve")).clicked() && !pencil {
-            e.add(Edit::discrete(set_pencil(v, true, gray)));
+            e.add(Edit::discrete(set_editor_pencil(v, true, cx)));
         }
         let label = crate::i18n::tr_ctx(crate::i18n::current(), "curves", "Smooth");
         let smooth = ui
@@ -251,25 +299,19 @@ fn curves_mode_row(ui: &mut egui::Ui, v: &mut Value, key: &str, gray: bool) -> E
 pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let t = Tokens::get(ui.ctx());
     let space = space_of(v);
-    let chans = tone_channels(space, cx.gray);
+    let channels = editor_channels(cx, space);
     let state_id = cx.mem.with("curves");
     let mut st: CurveUi = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
     let isolated = cx.isolated_curve.as_ref();
-    let ch = if let Some(iso) = isolated {
-        channel_picker_opts(ui, cx.mem.with("curves-ch"), &[(0, iso.name.as_str())], tl!("Channel:"), iso.translate)
-    } else {
-        channel_picker(ui, cx.mem.with("curves-ch"), chans, tl!("Channel:"))
-    };
+    let ch = editor_channel_picker(ui, cx.mem.with("curves-ch"), &channels);
     if ch != st.channel {
         st = CurveUi { channel: ch, ..Default::default() };
     }
-    let chan =
-        if let Some(iso) = isolated { ToneChannel { key: iso.key, label: "" } } else { chans.get(ch).copied().unwrap_or(ToneChannel { key: "", label: "" }) };
+    let (chan, _, hist_i) = channels.get(ch).cloned().unwrap_or((ToneChannel { key: "", label: "" }, String::new(), 0));
     let overlay_others = isolated.is_none();
-    let tinted = isolated.is_some_and(|c| c.tint) || (isolated.is_none() && ch != 0);
-    let hist_i = isolated.map_or(ch, |c| c.hist);
+    let tinted = isolated.is_some_and(|c| c.tint) || (isolated.is_none_or(|c| c.components.is_some()) && ch != 0);
     let key = curve_key(&chan);
-    let mut e = curves_mode_row(ui, v, key, cx.gray);
+    let mut e = curves_mode_row(ui, v, key, cx);
     let pencil = v.get("pencil").and_then(Value::as_bool).unwrap_or(false);
     let mut pts = read_curve(v, key);
     let mut map = read_map(v, key);
@@ -342,7 +384,7 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     };
     if overlay_others && ch == 0 {
         // Photoshop overlays the edited channel curves on the composite.
-        for c in chans.iter().skip(1) {
+        for c in tone_channels(space, cx.gray).iter().skip(1) {
             if pencil {
                 let m = read_map(v, c.key);
                 if m.iter().enumerate().any(|(k, o)| (o - k as f32).abs() > 0.5) {
@@ -404,6 +446,7 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     if drawn {
         write_map(v, key, &map);
         if space == ToneSpace::Lab
+            && isolated.is_none_or(|c| c.components.is_none())
             && let Some(o) = v.as_object_mut()
         {
             o.remove("points");
@@ -412,7 +455,7 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     }
     if changed && !pencil {
         v[key] = json!(pts.iter().map(|q| [q[0].round(), q[1].round()]).collect::<Vec<_>>());
-        if space == ToneSpace::Lab {
+        if space == ToneSpace::Lab && isolated.is_none_or(|c| c.components.is_none()) {
             // Lab has no composite: "points" would alias lightness.
             if let Some(o) = v.as_object_mut() {
                 o.remove("points");
@@ -421,6 +464,174 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
         e.changed = true;
     }
     e
+}
+
+#[cfg(test)]
+mod multi_channel_tests {
+    use super::super::levels::read_levels;
+    use super::super::{auto_levels, editor};
+    use super::*;
+    use crate::{PhotocraftApp, tone::HistSource};
+    use photocraft_engine::{Session, channel_cmds};
+    use std::sync::Arc;
+
+    fn context(mode: &str) -> EditorCx {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":32,"height":24,"mode":mode})).unwrap();
+        s.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+        EditorCx {
+            mem: egui::Id::unique("subset-tone-test"),
+            hist: None,
+            gray: false,
+            swatches: [[0.0; 3], [1.0; 3]],
+            gradients: Vec::new(),
+            dialog: true,
+            dynamic_color_sliders: false,
+            isolated_curve: channel_cmds::isolated_curve_channel(s.active().unwrap()),
+        }
+    }
+    #[test]
+    fn combined_tone_entry_is_neutral_and_only_selected_components_are_listed() {
+        for (mode, space, keys, label) in [
+            ("rgb", ToneSpace::Rgb, vec!["", "red", "blue"], "RB"),
+            ("cmyk", ToneSpace::Cmyk, vec!["", "cyan", "yellow"], "CY"),
+            ("lab", ToneSpace::Lab, vec!["", "lightness", "b"], "Lb"),
+        ] {
+            let cx = context(mode);
+            let options = editor_channels(&cx, space);
+            assert_eq!(options.iter().map(|(c, _, _)| c.key).collect::<Vec<_>>(), keys);
+            assert_eq!(options.first().unwrap().1, label);
+            assert!(!cx.isolated_curve.as_ref().unwrap().tint);
+        }
+    }
+    #[test]
+    fn both_tone_editors_render_subset_choices_without_mutating_values() {
+        for kind in ["levels", "curves"] {
+            let cx = context("rgb");
+            let base =
+                photocraft_engine::adjust_params::to_params(&photocraft_engine::adjust_params::default_for(kind, photocraft_doc::ColorMode::Rgb).unwrap());
+            let mut values = base.clone();
+            let mut harness = egui_kittest::Harness::new_ui(|ui| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    editor(ui, kind, &mut values, &cx);
+                }
+            });
+            PhotocraftApp::setup_context(&harness.ctx, Default::default());
+            harness.run();
+            drop(harness);
+            assert_eq!(values, base);
+        }
+    }
+    #[test]
+    fn subset_histograms_match_both_editors_in_all_native_spaces_and_depths() {
+        use egui_kittest::kittest::Queryable;
+        use photocraft_geom::Rect as PixelRect;
+
+        for mode in ["rgb", "cmyk", "lab"] {
+            for depth in [8, 16, 32] {
+                let mut s = Session::new();
+                s.execute("file.new", json!({"width":32,"height":24,"mode":mode,"depth":depth})).unwrap();
+                s.edit("Distinct native histogram bins", |doc, id| {
+                    let surface = doc.layer_mut(id.unwrap()).unwrap().surface_mut().unwrap();
+                    let mut pixel = vec![0.25, 0.5, 0.75];
+                    pixel.resize(surface.format().mode.color_channels(), 0.0);
+                    pixel.push(1.0);
+                    surface.fill_rect(PixelRect::new(0, 0, 32, 24), &pixel);
+                    pixel[0] = 0.375;
+                    pixel[2] = 0.875;
+                    surface.fill_rect(PixelRect::new(16, 0, 32, 24), &pixel);
+                    Ok(())
+                })
+                .unwrap();
+                s.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+                let st = s.active().unwrap();
+                let isolated = channel_cmds::isolated_curve_channel(st).unwrap();
+                let colors = isolated.components.unwrap();
+                let mut cx = context(mode);
+                cx.isolated_curve = Some(isolated);
+                for kind in ["levels", "curves"] {
+                    let base = adjust_params::to_params(&adjust_params::default_for(kind, st.doc.mode).unwrap());
+                    let space = space_of(&base);
+                    let hist = Arc::new(tone::compute_histograms(&st.doc, HistSource::Colors { layer: st.active_layer.unwrap(), colors }, space));
+                    // Native subset histograms have their own combined slot even in Lab, whose
+                    // ordinary composite histograms instead start with Lightness at slot 0.
+                    assert_eq!(hist.ch.len(), 1 + st.doc.pixel_format().mode.color_channels());
+                    assert_eq!(hist[0].iter().sum::<u32>(), 2 * 32 * 24);
+                    assert_eq!(hist[1].iter().sum::<u32>(), 32 * 24);
+                    assert_eq!(hist[2], [0; 256]);
+                    assert_eq!(hist[3].iter().sum::<u32>(), 32 * 24);
+                    assert_ne!(hist[1], hist[3]);
+                    cx.hist = Some(hist.clone());
+                    for (choice, (channel, _, histogram)) in editor_channels(&cx, space).into_iter().enumerate() {
+                        assert!(hist[histogram].iter().any(|n| *n > 0));
+                        let mut values = base.clone();
+                        let mut harness = egui_kittest::Harness::new_ui(|ui| {
+                            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                                editor(ui, kind, &mut values, &cx);
+                            }
+                        });
+                        PhotocraftApp::setup_context(&harness.ctx, Default::default());
+                        harness.ctx.data_mut(|d| d.insert_temp(cx.mem.with(format!("{kind}-ch")), choice));
+                        harness.run_steps(4);
+                        if kind == "levels" {
+                            harness.get_by_label("Auto").click();
+                            harness.run_steps(2);
+                        }
+                        drop(harness);
+                        if kind == "levels" {
+                            let (lo, hi) = auto_levels(&hist[histogram]);
+                            let levels = read_levels(&values, channel.key);
+                            assert_eq!((levels[0], levels[2]), (lo, hi), "{mode}@{depth} {}", channel.key);
+                        } else {
+                            assert_eq!(values, base);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn lab_subset_keeps_combined_curve_in_point_pencil_and_component_edits() {
+        for pencil in [false, true] {
+            for channel in [0usize, 2] {
+                let cx = context("lab");
+                let mut values = adjust_params::to_params(&adjust_params::default_for("curves", photocraft_doc::ColorMode::Lab).unwrap());
+                values["points"] = json!([[0, 0], [100, 150], [255, 255]]);
+                if pencil {
+                    assert!(set_editor_pencil(&mut values, true, &cx));
+                }
+                let combined = values["points"].clone();
+                let component = values["b"].clone();
+                let mut harness = egui_kittest::Harness::new_ui(|ui| {
+                    if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                        editor(ui, "curves", &mut values, &cx);
+                    }
+                });
+                PhotocraftApp::setup_context(&harness.ctx, Default::default());
+                harness.ctx.data_mut(|d| d.insert_temp(cx.mem.with("curves-ch"), channel));
+                harness.run_steps(4);
+                let graph = harness.ctx.data(|d| d.get_temp::<Rect>(cx.mem.with("curves-graph"))).unwrap();
+                let pos = pos2(graph.left() + graph.width() * 0.45, graph.top() + graph.height() * 0.25);
+                harness.event(egui::Event::PointerMoved(pos));
+                for pressed in [true, false] {
+                    harness.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+                    harness.step();
+                }
+                harness.run_steps(2);
+                drop(harness);
+                assert!(values.get("points").is_some(), "combined record lost");
+                if channel == 0 {
+                    assert_ne!(values["points"], combined);
+                } else {
+                    assert_eq!(values["points"], combined);
+                    assert_ne!(values["b"], component);
+                }
+                assert!(set_editor_pencil(&mut values, !pencil, &cx));
+                assert!(values.get("points").is_some());
+                assert!(values.get("b").is_some());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

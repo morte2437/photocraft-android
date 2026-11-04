@@ -112,6 +112,11 @@ pub(super) fn paint_clipping_indicator(painter: &egui::Painter, at: Pos2, color:
     painter.add(egui::Shape::line(vec![at + vec2(2.0, 0.0), tip, at + vec2(8.0, 0.0)], stroke));
 }
 
+/// Height of an artboard's row. Photoshop sets artboards apart from layers and groups in the
+/// Layers panel: a shorter row with the name in bold and no thumbnail (a board is a canvas, not a
+/// folder), so the boards read as headings over their layers (#10218).
+pub(super) const ARTBOARD_ROW_H: f32 = 26.0;
+
 /// One row of the Layers panel for `l`, `depth` levels inside groups or artboards: it paints the
 /// row, queues what a click or drag on it asks for in `actions`, and returns the row's rect.
 #[allow(clippy::too_many_arguments)]
@@ -129,6 +134,12 @@ pub(super) fn layer_row(
     let t = Tokens::get(ctx);
     // The Layers Panel Options thumbnail size controls rows and both layer/mask thumbnails.
     let (base, row_h) = crate::layers_panel_ui::thumbnail_geometry(app.ui.layers_panel_options.thumbnail_size, t.pro);
+    // A board's row is a compact heading with no thumbnail, never taller than a layer's (with
+    // thumbnails off every row is already compact). A board with a mask keeps its usual row,
+    // thumbnail and all: the thumbnail is what clicks go back to from the mask, what ends the mask
+    // view, what carries the target brackets, and what spaces the mask's chain from the triangle.
+    let compact = l.artboard().is_some() && l.mask.is_none() && l.vector_mask.is_none();
+    let (base, row_h) = if compact { (0.0, row_h.min(ARTBOARD_ROW_H)) } else { (base, row_h) };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
     // With thumbnails off no mask thumbnail is drawn, so none may keep catching drags from older frames.
     if base == 0.0 {
@@ -292,6 +303,11 @@ fn paint_row_background(painter: &egui::Painter, t: &Tokens, l: &Layer, rect: Re
         painter.rect_filled(rect, t.radius, t.hover.gamma_multiply(0.5));
         painter.rect_filled(rect, t.radius, t.accent.gamma_multiply(0.12));
     }
+    if l.artboard().is_some() && !selected && !is_hovered {
+        // A faint band behind a board's row, so where each board starts stands out in a long
+        // list. Under the label colour and the dividers, which keep their look on every row.
+        painter.rect_filled(rect, if t.pro { 0.0 } else { t.radius }, t.hover.gamma_multiply(0.35));
+    }
     let eye_cell = eye_cell(rect);
     if let Some((_, background)) = t.layer_label_colors(l.label) {
         painter.rect_filled(eye_cell, 0.0, background);
@@ -360,7 +376,15 @@ fn paint_target_brackets(app: &PhotocraftApp, painter: &egui::Painter, t: &Token
 fn paint_row_name(painter: &egui::Painter, t: &Tokens, rc: &RowCtx<'_>, x: f32, name_right: f32) -> Option<Rect> {
     let (l, doc, rect, ts, selected) = (rc.l, rc.doc, rc.rect, rc.ts, rc.row.selected);
     let name_color = if l.visible { t.text } else { t.text_faint };
-    let font = if selected && !t.pro { theme::medium(13.0) } else { egui::FontId::proportional(if t.pro { 12.0 } else { 13.0 }) };
+    let size = if t.pro { 12.0 } else { 13.0 };
+    let font = if l.artboard().is_some() {
+        // Artboards are named in bold, as in Photoshop.
+        theme::semibold(size)
+    } else if selected && !t.pro {
+        theme::medium(13.0)
+    } else {
+        egui::FontId::proportional(size)
+    };
     // Photoshop before 2026 set the Background layer's name in italics; 2026 sets it upright.
     let italic = !t.pro && doc.is_background(l.id);
     // Photoshop rows show only the name; the kind sub-label is a Studio-theme addition.
@@ -405,20 +429,19 @@ fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, 
         let mask = if v.filter { "filter" } else { "layer" };
         actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off", "mask": mask})));
     }
-    let adjustment = matches!(l.content, LayerContent::Adjustment(_));
-    let fill_mask = matches!(l.content, LayerContent::Fill(_)) && l.mask.is_some();
+    let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
     if on_vector {
         // The vector mask thumbnail targets the vector mask: the path tools edit it and the
         // Paths panel selects the layer's path.
         app.ui.selected_path = Some("layer".into());
         actions.push(("ui.vectorMaskTarget".into(), json!(true)));
-    } else if on_mask || (fill_mask && !on_thumb) {
+    } else if on_mask || (content_less && l.mask.is_some() && !on_thumb) {
         if on_mask {
             // The mask thumbnail also switches Properties to the mask (#3369).
             app.ui.properties_layer = None;
         }
         actions.push(("ui.maskTarget".into(), json!(true)));
-    } else if on_thumb || adjustment || !row.primary {
+    } else if on_thumb || !row.primary {
         actions.push(("ui.maskTarget".into(), json!(false)));
     }
     // ⌥-click the layer thumbnail: fit the layer on screen, as Photoshop does.

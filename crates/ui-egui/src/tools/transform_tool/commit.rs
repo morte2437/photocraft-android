@@ -284,6 +284,12 @@ pub(crate) const SAVE_FOR_WEB: &str = "file.export.saveForWebLegacy";
 /// While transforming, Undo and Redo apply to the box: `Some(enabled)` for those commands (and
 /// Toggle Last State, which would change the document under the box), `None` for the rest.
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
+    if (matches!(id, "edit.freeTransform" | "edit.freeTransformCopy") || id.starts_with("edit.transform."))
+        && crate::vector_ui::free_transform_path(app).is_none()
+        && crate::canvas::multiple_color_target(app)
+    {
+        return Some(false);
+    }
     let t = app.ui.transform.as_ref()?;
     if committing(app).is_some() {
         return box_command(id).then_some(false);

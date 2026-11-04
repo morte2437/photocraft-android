@@ -53,7 +53,9 @@ pub mod tool_feedback;
 mod tool_input;
 mod transform_controls;
 mod view_xform;
+pub(crate) mod viewport_pages;
 pub mod wheel_nav;
+pub mod zoom_field;
 pub mod zoom_hold;
 pub mod zoom_levels;
 pub mod zoom_window_fit;
@@ -64,7 +66,6 @@ pub(crate) use cursors::{alt_picks, alt_samples, composite_color, paint_bucket_c
 use cursors::{brush_tip_centre, eyedropper_ring, precise_other_cursor, visible_crosshair};
 #[cfg(test)]
 pub(crate) use display::GPU_OUTPUT;
-#[cfg(test)]
 use display::texture_key;
 pub(crate) use display::{cache_key, canvas_display, display_doc, display_image};
 use display::{checker, hdr_preview, sync_display_lut};
@@ -86,15 +87,17 @@ use navigator::navigator_waits_for_drag;
 pub use navigator::{NAVIGATOR_SIDE, navigator_gpu_view, navigator_texture, navigator_waits_for_gpu};
 #[cfg(test)]
 use paint::draw_tool_state;
-pub(crate) use paint::{clip_line, marching_ants_lines, marching_ants_mapped};
+pub(crate) use paint::{clip_line, marching_ants_line_shapes, marching_ants_mapped};
 use paint::{
-    draw_beyond_canvas, draw_drag_preview, marching_ants_segments, paint_cpu_detail, paint_cpu_document, paint_gpu_view, paint_mapped_image_at, pattern_xf,
+    draw_beyond_canvas, draw_drag_preview, marching_ants_segment_shapes, paint_cpu_detail, paint_cpu_document, paint_gpu_view, paint_mapped_image_at,
+    pattern_xf,
 };
 use selection::selection_shown_offset;
 pub use selection::{SelCursor, selection_cursor};
 pub(crate) use selection::{floating_outline, selection_drag_delta};
 #[cfg(test)]
 use start_screen::start_screen_drop_hint;
+pub(crate) use strokes::multiple_color_target;
 pub use strokes::paint_target;
 pub(crate) use strokes::{ClonePreviewCache, CommittedStroke, LiveStroke, cancel_mixer_on_context_change, freehand_tool, spread_ms, strokes_live};
 use strokes::{HOLD_REPEAT_MS, draw_clone_preview, feed_live_stroke, pointer_button_modifiers, pointer_moves, stroke_wants_time, tap_at_peak_pressure};
@@ -230,7 +233,11 @@ struct SelectionPaintInput<'a> {
     idx: usize,
 }
 
-fn paint_selection_outline(app: &mut PhotocraftApp, input: SelectionPaintInput<'_>) {
+/// The marching ants of the selection, traced from this frame's snapshot like the image under
+/// them, returned to be painted over the grid and guides (#10671): a guide on the same device
+/// pixel as an edge used to hide it, at some zoom levels and not others.
+fn paint_selection_outline(app: &mut PhotocraftApp, input: SelectionPaintInput<'_>) -> Vec<egui::Shape> {
+    let mut ants = Vec::new();
     // Select and Mask outlines its refined selection (on its preview proxy, reduced by `k`) in
     // the Marching Ants view and hides the ants in the others.
     let refined = crate::select_mask_view::ants(app, input.idx);
@@ -314,15 +321,23 @@ fn paint_selection_outline(app: &mut PhotocraftApp, input: SelectionPaintInput<'
                 shown.center = [input.xf.center[0] - dx as f32, input.xf.center[1] - dy as f32];
             }
             // Under a Free Transform box they are where the box puts them (#5297).
-            if !(carried && crate::transform_tool::draw_selection(app, input.painter, &input.xf, input.doc.id, segs, time)) {
-                marching_ants_segments(input.painter, &shown, segs, time);
-            }
+            let boxed = carried.then(|| crate::transform_tool::selection_ants(app, input.painter, &input.xf, input.doc.id, segs, time)).flatten();
+            ants = boxed.unwrap_or_else(|| marching_ants_segment_shapes(input.painter, &shown, segs, time));
             input.ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
+    ants
 }
 
-fn paint_canvas(app: &mut PhotocraftApp, ui: &egui::Ui, view: &View, xf: ViewXform, input: &CanvasPaintInput<'_>) -> (bool, egui::layers::ShapeIdx, Rect) {
+/// Paints the document, and returns whether the pixels past the canvas show, the Layer Edges slot,
+/// the canvas edge on screen, and the selection's ants still to be painted ([`paint_selection_outline`]).
+fn paint_canvas(
+    app: &mut PhotocraftApp,
+    ui: &egui::Ui,
+    view: &View,
+    xf: ViewXform,
+    input: &CanvasPaintInput<'_>,
+) -> (bool, egui::layers::ShapeIdx, Rect, Vec<egui::Shape>) {
     let ctx = input.ctx;
     let rect = input.rect;
     let painter = input.painter;
@@ -398,6 +413,29 @@ fn paint_canvas(app: &mut PhotocraftApp, ui: &egui::Ui, view: &View, xf: ViewXfo
             pixel_grid: false,
             view_key: egui::Id::unique(("pc-canvas-proxy", ctx.viewport_id(), idx)).value(),
             display: sync_display_lut(app, &shown, key, output),
+            output: output.unwrap_or(0),
+            hdr: hdr_preview(app, doc),
+            offset: [0.0, 0.0],
+        };
+        paint_gpu_view(painter, rect, params, &pattern);
+    } else if gpu_ok && viewport_pages::show(app, ctx, idx, &xf, view.zoom) {
+        // Too large for the document's texture set: the pages in view, rendered in the background.
+        on_gpu = true;
+        app.perf.gpu = true;
+        let key = viewport_pages::stream_key(doc.id.0);
+        let params = crate::gpu_canvas::ViewParams {
+            doc: key,
+            doc_size: [doc.size.width, doc.size.height],
+            zoom: point_zoom,
+            center: xf.center,
+            rotation: if view.rotation.is_finite() { view.rotation.to_radians() } else { 0.0 },
+            shadow: {
+                let t = crate::theme::Tokens::get(ctx);
+                !t.bevel && !t.pro && drop_shadow
+            },
+            pixel_grid,
+            view_key: egui::Id::unique(("pc-canvas-pages", ctx.viewport_id(), doc.id.0)).value(),
+            display: sync_display_lut(app, doc, key, output),
             output: output.unwrap_or(0),
             hdr: hdr_preview(app, doc),
             offset: [0.0, 0.0],
@@ -544,9 +582,9 @@ fn paint_canvas(app: &mut PhotocraftApp, ui: &egui::Ui, view: &View, xf: ViewXfo
     // in (`layer_edges_rect`), so a press that Auto-Selects a layer outlines that layer.
     let layer_edges = painter.add(egui::Shape::Noop);
 
-    paint_selection_outline(app, SelectionPaintInput { ctx, painter, ui, view, xf, rect, doc, idx });
+    let ants = paint_selection_outline(app, SelectionPaintInput { ctx, painter, ui, view, xf, rect, doc, idx });
 
-    (beyond, layer_edges, edge_rect)
+    (beyond, layer_edges, edge_rect, ants)
 }
 
 struct CanvasNavigationInput<'a> {
@@ -1244,7 +1282,7 @@ struct CanvasOverlayInput<'a> {
     zoom_out: &'a dyn Fn(bool) -> bool,
 }
 
-fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut View, input: &CanvasOverlayInput<'_>) {
+fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut View, input: &CanvasOverlayInput<'_>, ants: Vec<egui::Shape>) {
     let ctx = input.ctx;
     let painter = input.painter;
     let xf = input.xf;
@@ -1265,6 +1303,8 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     if app.ui.view.shows(app.ui.view.show.canvas_guides) || crate::guide_layout_ui::preview(app, doc).is_some() {
         crate::rulers::draw_guides(app, painter, xf, doc);
     }
+    // The selection's ants go over the grid and guides, as in Photoshop (#10671).
+    painter.extend(ants);
     // The pending crop frame shows on its own document only, not on the other tiles (#1918).
     let foreign_crop = if app.session.active_index() == Some(idx) { None } else { app.ui.crop_rect.take() };
     draw_drag_preview(app, painter, xf);
@@ -2013,7 +2053,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     } else {
         xf
     };
-    let (beyond, layer_edges, edge_rect) = painted.unwrap_or_else(|| paint_canvas(app, ui, &display_view, xf, &paint_input));
+    let (beyond, layer_edges, edge_rect, ants) = painted.unwrap_or_else(|| paint_canvas(app, ui, &display_view, xf, &paint_input));
     // A Hand drag (the tool, Space or the middle button) keeps every overlay on screen, as in
     // Photoshop: the Pen path being drawn, paths, guides, grid, transform box (#6592). Only the
     // tool cursors below give way to the fist.
@@ -2034,7 +2074,9 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             panning,
             zoom_out: &zoom_out,
         };
-        paint_primary_overlays(app, ui, &mut view, &input);
+        paint_primary_overlays(app, ui, &mut view, &input, ants);
+    } else {
+        painter.extend(ants);
     }
     let tail = CanvasTailInput {
         ctx: &ctx,
@@ -2101,6 +2143,9 @@ mod transform_controls_tests;
 
 #[cfg(test)]
 mod layer_edges_tests;
+
+#[cfg(test)]
+mod guide_ants_tests;
 
 #[cfg(test)]
 mod rotation_preview_isolation_tests {
@@ -2628,6 +2673,171 @@ mod lasso_preview_tests {
         app.ui.magnetic.live = vec![[120.0, 60.0], [130.0, 100.0]];
         let (dashes, solid) = painted(&mut app, |app, p| draw_tool_state(app, p, &xf(), None));
         assert_eq!((dashes, solid), (0, 1), "Magnetic Lasso: the traced border is solid");
+    }
+}
+
+#[cfg(test)]
+mod multi_channel_ui_tests {
+    use super::*;
+    fn app() -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width":64,"height":64})).unwrap();
+        app.sync_views();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        app
+    }
+    #[test]
+    fn pixel_tools_capture_the_whole_channel_set_and_gradients_stay_on_pixels() {
+        let mut app = app();
+        assert_eq!(paint_target(&app), json!({"colors":[0,2]}));
+        app.ui.tool = Tool::Gradient;
+        app.ui.tool_options.gradient_classic = false;
+        assert!(!crate::gradient_ui::live_mode(&app));
+    }
+    #[test]
+    fn viewing_a_layer_mask_overrides_colour_targets_for_live_brush_strokes() {
+        for depth in [8, 16, 32] {
+            for view in ["gray", "overlay"] {
+                for colors in [vec![0], vec![0, 2]] {
+                    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+                    app.run("file.new", json!({"width":64,"height":64,"depth":depth})).unwrap();
+                    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+                    app.run("channel.target", json!({"colors":colors})).unwrap();
+                    app.run("view.layerMask", json!({"mode":view})).unwrap();
+                    assert_eq!(paint_target(&app), json!("mask"), "{depth}-bit {view} {colors:?}");
+                    assert!(app.layer_mask_targeted());
+                    app.run("tools.setColors", json!({"foreground":[0.0,0.0,0.0,1.0]})).unwrap();
+                    app.run("tools.setBrush", json!({"brush":{"size":12,"hardness":1.0,"smoothing":{"amount":0.0}}})).unwrap();
+                    app.ui.tool = Tool::Brush;
+                    let st = app.session.active().unwrap();
+                    let layer = st.active_layer.unwrap();
+                    let original = st.doc.layer(layer).unwrap().surface().unwrap().clone();
+                    let steps = st.history.past_len();
+                    tool_event(&mut app, ToolEvent::Down { x: 12.0, y: 32.0, pressure: 1.0 }, egui::Modifiers::NONE);
+                    tool_event(&mut app, ToolEvent::Move { x: 32.0, y: 32.0, pressure: 1.0 }, egui::Modifiers::NONE);
+                    let shown = display_doc(&mut app, 0).0;
+                    let shown_layer = shown.layer(layer).unwrap();
+                    assert_eq!(shown_layer.surface().unwrap(), &original);
+                    assert!(shown_layer.mask.as_ref().unwrap().surface.sample_channel(28, 32, 0) < 0.1);
+                    tool_event(&mut app, ToolEvent::Up { x: 32.0, y: 32.0 }, egui::Modifiers::NONE);
+                    let st = app.session.active().unwrap();
+                    let committed = st.doc.layer(layer).unwrap();
+                    assert_eq!(committed.surface().unwrap(), &original);
+                    assert_eq!(committed.mask.as_ref().unwrap().surface, shown_layer.mask.as_ref().unwrap().surface);
+                    assert_eq!(st.history.past_len(), steps + 1);
+                    app.run("channel.target", json!({"colors":colors})).unwrap();
+                    assert_eq!(paint_target(&app), json!({"colors":colors}));
+                    assert!(!app.layer_mask_targeted());
+                }
+            }
+        }
+    }
+    /// The colour rows stay selected when another layer becomes active. An adjustment layer has no
+    /// pixels, so the Brush paints its mask, as it does without colour rows selected.
+    #[test]
+    fn colour_rows_left_selected_still_paint_an_adjustment_layers_mask() {
+        for colors in [vec![0], vec![0, 2]] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width":64,"height":64})).unwrap();
+            app.run("channel.target", json!({"colors":colors})).unwrap();
+            app.run("layer.newAdjustmentLayer.levels", json!({})).unwrap();
+            app.sync_views();
+            assert_eq!(paint_target(&app), json!("mask"), "{colors:?}");
+            app.run("tools.setColors", json!({"foreground":[0.0,0.0,0.0,1.0]})).unwrap();
+            app.run("tools.setBrush", json!({"brush":{"size":12,"hardness":1.0,"smoothing":{"amount":0.0}}})).unwrap();
+            app.ui.tool = Tool::Brush;
+            let st = app.session.active().unwrap();
+            let layer = st.active_layer.unwrap();
+            let steps = st.history.past_len();
+            tool_event(&mut app, ToolEvent::Down { x: 12.0, y: 32.0, pressure: 1.0 }, egui::Modifiers::NONE);
+            tool_event(&mut app, ToolEvent::Move { x: 32.0, y: 32.0, pressure: 1.0 }, egui::Modifiers::NONE);
+            tool_event(&mut app, ToolEvent::Up { x: 32.0, y: 32.0 }, egui::Modifiers::NONE);
+            let st = app.session.active().unwrap();
+            assert_eq!(st.history.past_len(), steps + 1, "{colors:?}: one stroke");
+            assert!(st.doc.layer(layer).unwrap().mask.as_ref().unwrap().surface.sample_channel(28, 32, 0) < 0.1, "{colors:?}: the mask was painted");
+        }
+    }
+
+    /// Targeting a layer mask with colour rows selected (its thumbnail, or adding the mask) moves
+    /// the Channels panel onto the mask, as in Photoshop: tools, dialogs and menu commands then
+    /// all edit the mask. Several rows still stop the Move tool on a layer that needs
+    /// rasterizing, which paints only after the prompt.
+    #[test]
+    fn targeting_a_mask_over_colour_rows_edits_the_mask_everywhere() {
+        let ctx = egui::Context::default();
+        let set = |app: &mut PhotocraftApp, p: serde_json::Value| {
+            let (req, _) = crate::control::ControlRequest::new("ui.set", p);
+            assert!(matches!(crate::control::handle(app, &ctx, &req), crate::control::Outcome::Done(v) if v["ok"] != false));
+        };
+        for colors in [vec![0], vec![0, 2]] {
+            for add in [false, true] {
+                let mut app = self::app();
+                if !add {
+                    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+                    set(&mut app, json!({"maskTarget": false}));
+                }
+                app.run("channel.target", json!({"colors":colors})).unwrap();
+                app.sync_views();
+                assert!(paint_target(&app).get("colors").is_some(), "{colors:?}: the rows are the target first");
+                let journal = app.session.journal.len();
+                if add {
+                    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+                } else {
+                    set(&mut app, json!({"maskTarget": true}));
+                }
+                app.sync_views();
+                assert_eq!(app.session.journal.len(), journal + usize::from(add), "{colors:?} add={add}: no extra recorded step");
+                assert_eq!(paint_target(&app), json!("mask"), "{colors:?} add={add}");
+                assert!(app.layer_mask_targeted(), "{colors:?} add={add}");
+                assert_eq!(app.with_mask_target("filter.blur.gaussianBlur", json!({}))["target"], "mask");
+                assert!(crate::distort_ui::colour_set_target(&app).is_null());
+                assert!(!multiple_color_target(&app));
+                // Clicking a colour row again takes the rows back.
+                app.run("channel.target", json!({"colors":colors})).unwrap();
+                app.sync_views();
+                assert!(paint_target(&app).get("colors").is_some(), "{colors:?} add={add}: the rows again");
+            }
+        }
+        // A mask added to another layer, or a fill layer's mask, leaves the rows targeted.
+        let mut app = self::app();
+        let active = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        let other = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.select", json!({"layer": active.0})).unwrap();
+        app.run("layer.layerMask.revealAll", json!({})).unwrap();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        app.run("layer.layerMask.revealAll", json!({"layer": other.0})).unwrap();
+        app.sync_views();
+        assert_eq!(paint_target(&app), json!({"colors":[0,2]}), "a mask on another layer");
+        app.run("layer.newFillLayer.solidColor", json!({})).unwrap();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        set(&mut app, json!({"maskTarget": true}));
+        app.sync_views();
+        assert!(matches!(app.session.active().unwrap().channel_view.target, photocraft_engine::channel_cmds::ChannelTarget::Color(_)), "a fill layer");
+        let mut app = self::app();
+        app.run("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        app.sync_views();
+        assert_eq!(paint_target(&app), json!("pixels"));
+        assert!(crate::rasterize_prompt::needed(&app).is_some());
+        assert!(multiple_color_target(&app));
+        let refused = crate::liquify_ui::open(&mut app, &ctx).unwrap_err();
+        assert!(refused.contains("Rasterize"), "{refused}");
+    }
+
+    #[test]
+    fn subset_does_not_block_guides_or_vector_path_transforms() {
+        let mut app = app();
+        app.ui.tool = Tool::Move;
+        app.run("view.newGuide", json!({"orientation":"vertical","position":12})).unwrap();
+        tool_event(&mut app, ToolEvent::Down { x: 12.0, y: 12.0, pressure: 1.0 }, egui::Modifiers::default());
+        assert!(app.guide_drag.is_some());
+        app.guide_drag = None;
+        app.run("path.set", json!({"name":"work","path":{"subpaths":[{"closed":true,"knots":[[10,10],[30,10],[30,20],[10,20]]}]}})).unwrap();
+        app.ui.tool = Tool::PathSelection;
+        assert!(crate::menus::is_enabled(&app, "edit.freeTransform"));
+        crate::transform_tool::begin(&mut app, &egui::Context::default()).unwrap();
+        assert!(app.ui.transform.as_ref().unwrap().path.is_some());
     }
 }
 

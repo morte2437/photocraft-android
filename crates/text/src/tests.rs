@@ -1732,6 +1732,26 @@ fn psd_round_trips_antialias_opentype_and_warp() {
     }
 }
 
+/// EngineData only maps Photoshop's `OldStyle` bool to `onum`. Other Numerals tags (`lnum` /
+/// `pnum` / `tnum`) stay in `.pcraft` until a Photoshop-authored PSD oracle exists — we do not
+/// invent EngineData keys or copy figure-style tables from GPL editors (AGENTS.md clean-room).
+#[test]
+fn psd_engine_data_keeps_only_oldstyle_among_numeral_tags() {
+    let style = CharStyle {
+        font_family: "Inter".into(),
+        size_pt: 20.0,
+        features: ["lnum", "onum", "pnum", "tnum"].iter().map(|t| FontFeature { tag: (*t).into(), value: 1 }).collect(),
+        ..Default::default()
+    };
+    let t = styled("0123456789", style);
+    let bytes = crate::psd::build_tysh(&t, 72.0, None);
+    let back = crate::psd::text_layer_from_tysh(&bytes, 72.0).expect("tysh");
+    let runs = back.char_runs();
+    let mut got: Vec<&str> = runs[0].style.features.iter().map(|f| f.tag.as_str()).collect();
+    got.sort_unstable();
+    assert_eq!(got, ["onum"]);
+}
+
 /// A legacy-signature `TySh` (#1469): zero PointBase, `bounds` (the layout box) and `boundingBox`
 /// (the ink box, as Photoshop writes it) both around `anchor` in a remote local space, and a
 /// `transform` that cancels the remote origin.
@@ -2809,6 +2829,25 @@ fn font_metadata_large_nameless_lists_rebuild_after_edit() {
     }
 }
 
+#[test]
+fn font_metadata_reordered_duplicates_keep_distinct_dictionary_records() {
+    use crate::engine_data::Value as E;
+    let record = |name: &str, marker| E::Dict(vec![("Name".into(), E::String(name.into())), ("PrivateFontFlag".into(), E::Int(marker))]);
+    let mut layer = point("Original", 24.0);
+    let mut template = crate::psd::build_engine_data(&layer, None, 72.0);
+    let resource = vec![record("A", 1), record("A", 2), record("B", 3)];
+    let document = vec![record("B", 30), record("A", 10), record("A", 20)];
+    template.get_mut("ResourceDict").unwrap().set("FontSet", E::Array(resource.clone()));
+    template.get_mut("DocumentResources").unwrap().set("FontSet", E::Array(document.clone()));
+    layer.text = "Edited".into();
+    let rebuilt = crate::psd::build_engine_data(&layer, Some(template), 72.0);
+    assert_eq!(&rebuilt.path(&["ResourceDict", "FontSet"]).unwrap().as_array().unwrap()[..3], resource.as_slice());
+    let fonts = rebuilt.path(&["DocumentResources", "FontSet"]).unwrap().as_array().unwrap();
+    assert_eq!(&fonts[..3], &[document[1].clone(), document[2].clone(), document[0].clone()], "reordered duplicates must keep distinct metadata");
+    let repeated = crate::psd::font_set(&["A", "A", "A", "A"].map(str::to_string), Some(&E::Array(resource.clone())));
+    assert_eq!(repeated, E::Array(vec![resource[0].clone(), resource[1].clone(), resource[0].clone(), resource[0].clone()]));
+}
+
 /// Same-runner release probe: compare the original and repaired source, not a wall-clock CI limit.
 #[test]
 #[ignore = "release performance measurement for large imported FontSets"]
@@ -2872,6 +2911,39 @@ fn a_word_wider_than_the_paragraph_box_breaks_at_the_box_edge() {
     let l = e.layout(&spaced, 72.0);
     assert_eq!(l.lines.len(), 2, "{:?}", l.lines);
     assert_eq!(l.lines[1].range.start, 3, "{:?}", l.lines);
+}
+
+/// [`TextLayout::overflows`] reads dropped lines off the layout: text that fits covers its end
+/// through trailing empty paragraphs; a taller text's lines stop short of the text's end; an
+/// empty uncovered tail of pure trailing breaks that fit is not an overflow.
+#[test]
+fn overflows_says_whether_a_box_holds_its_text() {
+    let mut e = TextEngine::new();
+    let tall_box = TextShape::Box { x: 0.0, y: 0.0, width: 220.0, height: 900.0 };
+    // Everything fits, trailing breaks included: the trailing empty paragraphs cover the
+    // text's end.
+    for text in ["a", "a\n", "a\n\n", "", "Lorem ipsum dolor sit amet"] {
+        let l = e.layout(&TextLayer { shape: tall_box.clone(), ..point(text, 24.0) }, 72.0);
+        assert!(!l.overflows(text), "{text:?}: {} lines", l.lines.len());
+    }
+    // The box holds one line of 24 pt type — additional lines are dropped, and the last line
+    // stops short of the text.
+    let short_box = TextShape::Box { x: 0.0, y: 0.0, width: 220.0, height: 34.0 };
+    let text = "ab\ncd\nef";
+    let l = e.layout(&TextLayer { shape: short_box.clone(), ..point(text, 24.0) }, 72.0);
+    assert!(l.overflows(text), "{:?}", l.lines.last().map(|ln| ln.range.clone()));
+    // A trailing break whose empty paragraph doesn't fit is an overflow as well.
+    let l = e.layout(&TextLayer { shape: short_box.clone(), ..point("ab\n\n", 24.0) }, 72.0);
+    assert!(l.overflows("ab\n\n"), "{:?}", l.lines.last().map(|ln| ln.range.clone()));
+    // A box holding one full line plus exactly one more empty paragraph is not.
+    let exact = point("ab\n", 24.0);
+    let l = e.layout(&TextLayer { shape: tall_box.clone(), ..exact }, 72.0);
+    assert!(!l.overflows("ab\n"), "{:?}", l.lines.last().map(|ln| ln.range.clone()));
+    // Empty text never overflows: even a box too short for its paragraph (no lines laid out)
+    // has nothing to lose, so no overflow mark.
+    let l = e.layout(&TextLayer { shape: short_box.clone(), ..point("", 24.0) }, 72.0);
+    assert!(!l.overflows(""), "{} lines", l.lines.len());
+    let _ = &mut e;
 }
 
 /// Closed polygon in text space.
@@ -3489,4 +3561,26 @@ fn restyling_the_photoshop_era_objects_keeps_the_raw_strings_of_the_file() {
     assert!(out.windows(6).any(|w| w == b"(0100)"), "{:?}", String::from_utf8_lossy(&out));
     let runs = era_runs(&crate::psd::parse_txt2(&out).unwrap());
     assert_eq!(runs.first().and_then(|(_, f)| f.get("FontSize")).and_then(E::as_f64), Some(24.0), "and the legacy copy was restyled");
+}
+
+/// Colour passes are grouped in one walk of the glyphs: with a colour per letter, every placed
+/// glyph lands in exactly one pass and each pass holds only its own glyphs.
+#[test]
+fn colour_passes_hold_each_glyph_once() {
+    let mut e = TextEngine::new();
+    let text = "abcdeghjkm".repeat(200);
+    let runs = text
+        .char_indices()
+        .map(|(i, ch)| TextRun { len: ch.len_utf8(), style: CharStyle { size_pt: 12.0, color: Color::rgb(i as f32 / 2000.0, 0.5, 0.5), ..Default::default() } })
+        .collect();
+    let t = TextLayer { text, runs, ..Default::default() };
+    let l = e.layout(&t, 72.0);
+    let passes = crate::render::visible_color_passes(&l, None);
+    assert!(passes.len() > 1000, "{} passes", passes.len());
+    let mut seen: Vec<usize> = passes.iter().flat_map(|(_, _, p)| p.glyphs.iter().copied()).collect();
+    seen.sort_unstable();
+    assert_eq!(seen, (0..l.glyphs.len()).collect::<Vec<_>>());
+    for (c, _, p) in &passes {
+        assert!(p.glyphs.iter().all(|&i| l.styles[l.glyphs[i].style as usize].color == *c));
+    }
 }

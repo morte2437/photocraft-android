@@ -137,6 +137,8 @@ fi
 if has appimage; then
   APPDIR="$WORK/PhotoCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
+  # Preserve the sctk-adwaita MIT notice in the packaged AppImage.
+  install -Dm644 "$ROOT/NOTICE" "$APPDIR/usr/share/doc/photocraft/NOTICE"
   # AppRun is a script, not a symlink: it installs the .desktop entry and icons into
   # $XDG_DATA_HOME before launching, so Wayland compositors can resolve the window's
   # app_id to our icon instead of the generic Wayland logo (#593; opt-out env in the
@@ -206,7 +208,9 @@ fi
 if [[ -z "${CROSS_TARGET:-}" ]]; then
   "$STAGE/usr/bin/photocraft-cli" --version
 elif [[ -n "${EMULATOR:-}" ]]; then
-  "$EMULATOR" "$STAGE/usr/bin/photocraft-cli" --version
+  # Set, so malloc_tuning::apply doesn't re-execute the CLI (#8743): under qemu-user that exec goes
+  # to the host kernel, which can't run a $CROSS_ARCH binary, and glibc then hands it to /bin/sh.
+  MALLOC_TRIM_THRESHOLD_=131072 "$EMULATOR" "$STAGE/usr/bin/photocraft-cli" --version
 fi
 echo "==> done"
 ls -lh "$DIST"

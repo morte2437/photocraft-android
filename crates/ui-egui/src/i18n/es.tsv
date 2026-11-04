@@ -30,7 +30,7 @@
 # Command-id override: under Edit > Purge a bare "Deshacer" reads as an action, not the history.
 # Rendering mode and recovery
 # Camera Raw: contextual controls and window title
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
 # Shared screen eyedropper and text Color Picker (#1128).
@@ -4181,6 +4181,9 @@ navigator	Zoom	Zoom
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} paso aún no tiene equivalente en PhotoCraft|{n} pasos aún no tienen equivalente en PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Se guardó {n} acción en {file}|Se guardaron {n} acciones en {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} paso sin equivalente en Photoshop omitido|{n} pasos sin equivalente en Photoshop omitidos
+@plural	{n} action file loaded|{n} action files loaded	Se cargó {n} archivo de acciones|Se cargaron {n} archivos de acciones
+	{set} from {file} replaced the one from {earlier}	El conjunto {set} de {file} reemplazó al de {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	No se pudo cargar {n} archivo: {errors}|No se pudieron cargar {n} archivos: {errors}
 	Starting serial	Número de serie inicial
 	Insert Stop…	Insertar detención…
 	Save Set…	Guardar conjunto…
@@ -4200,6 +4203,7 @@ navigator	Zoom	Zoom
 	Sent to {printer}	Enviado a {printer}
 	set in Print Settings…	se establece en Ajustes de impresión…
 	ICO is limited to 256 × 256 pixels	ICO está limitado a 256 × 256 píxeles
+	Memory usage percent	Uso de memoria (%)
 	Show Favorite Fonts	Mostrar fuentes favoritas
 	No favorite fonts yet: click the star beside a font to add it.	Aún no hay fuentes favoritas: haz clic en la estrella junto a una fuente para añadirla.
 	Favorite fonts	Fuentes favoritas
@@ -4239,17 +4243,8 @@ navigator	Zoom	Zoom
 	Kept {name}: written by another application	Se conservó {name}: lo escribió otra aplicación
 	Shadow Tint	Tinte de sombras
 	Check for Updates…	Buscar actualizaciones…
-	PhotoCraft Updates	Actualizaciones de PhotoCraft
-	Checking for updates…	Buscando actualizaciones…
 	Open the release page to choose an installer for your system.	Abra la página de la versión para elegir un instalador para su sistema.
-	Open Download Page	Abrir página de descarga
-	PhotoCraft is up to date.	PhotoCraft está actualizado.
-	Could not check for updates.	No se pudieron buscar actualizaciones.
-	Updates have not been checked yet.	Aún no se han buscado actualizaciones.
-	Check Again	Comprobar de nuevo
 	Automatically Check for Updates	Buscar actualizaciones automáticamente
-	Installed version: {version}	Versión instalada: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} está disponible.
 	Paints from the History panel's source state	Pinta a partir del estado de origen del panel Historia
 	Sets the source for the history brush	Establece el origen del pincel de historia
 	Highlight Mode	Modo de luces
@@ -4271,6 +4266,7 @@ navigator	Zoom	Zoom
 	Chisel Soft	Cincelar suave
 	Open color-less EXR as ACEScg	Abrir EXR sin espacio de color como ACEScg
 	Do not append "copy" to filename when saving a copy	No añadir «copy» al nombre de archivo al guardar una copia
+	Save Full-Size Composite in .pcraft Files	Guardar la imagen compuesta a tamaño completo en los archivos .pcraft
 	Edit Selected Guides	Editar guías seleccionadas
 	Clear Selected Guides	Borrar guías seleccionadas
 	Bicubic Automatic	Bicúbica automática
@@ -4323,6 +4319,7 @@ navigator	Zoom	Zoom
 	This document's layers: {needed} of {budget} for layers	Capas de este documento: {needed} de {budget} para capas
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Las capas de este documento necesitan {needed} pero pueden ocupar {budget}: los redibujados de todo el documento usan la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria de GPU (MB, 0 = Automático)
+	Scratch Size Limit (MB, 0 = No Limit)	Límite de tamaño del disco de memoria virtual (MB, 0 = sin límite)
 	{path}: the path is not valid Unicode; save under another name.	{path}: la ruta no es Unicode válido; guarde con otro nombre.
 	{name} was changed by another app after it was opened or saved here.	Otra aplicación cambió {name} después de abrirlo o guardarlo aquí.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Reemplázalo con este documento, o cancela y usa Archivo › Guardar como para conservar ambos.
@@ -4358,6 +4355,9 @@ navigator	Zoom	Zoom
 	There is no color table to save.	No hay ninguna tabla de colores para guardar.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Se guardó {n} color en {file}|Se guardaron {n} colores en {file}
 	GPU adapter	Adaptador de GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	El contenido AI/PDF/EPS se editará como SVG. Al guardar se reemplaza el origen incrustado; las funciones específicas del formato pueden cambiar.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Importar estilos…
 	Export Selected Styles…	Exportar estilos seleccionados…
 	Export Styles…	Exportar estilos…
@@ -4407,6 +4407,7 @@ navigator	Zoom	Zoom
 	Font size presets	Valores predefinidos de tamaño de fuente
 	Leading presets	Valores predefinidos de interlineado
 	Tracking presets	Valores predefinidos de tracking
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Entrada numérica no válida. Se requiere un número entero entre {min}% y {max}%. Se ha insertado el valor anterior.
 	Color Aware	Según color
 	Decontaminate Colors	Descontaminar colores
 	Edge Detection	Detección de bordes
@@ -4425,3 +4426,9 @@ navigator	Zoom	Zoom
 	Select and Mask was closed: another layer was selected	Se cerró Seleccionar y aplicar máscara: se seleccionó otra capa
 	Select Layer Under Cursor	Seleccionar capa bajo el cursor
 	Drag to move the selected path	Arrastre para mover el trazado seleccionado
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Colores usados recientemente
+	Stop Color	Color de la parada
+	Shapes can't use patterns yet	Las formas aún no pueden usar motivos
+	Edit Brush…	Editar pincel…

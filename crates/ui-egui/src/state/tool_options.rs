@@ -109,6 +109,12 @@ pub struct ToolOptions {
     pub corner_radius: f32,
     pub polygon_sides: u32,
     pub line_weight: f32,
+    /// Line arrowheads.
+    pub arrow_start: bool,
+    pub arrow_end: bool,
+    pub arrow_width: f32,
+    pub arrow_length: f32,
+    pub arrow_concavity: f32,
     /// Freeform Pen › Curve Fit: how far (px) the fitted path may stray from the pointer trace.
     #[serde(default = "default_curve_fit")]
     pub curve_fit: f32,
@@ -423,6 +429,11 @@ impl Default for ToolOptions {
             corner_radius: 0.0,
             polygon_sides: 5,
             line_weight: 3.0,
+            arrow_start: false,
+            arrow_end: false,
+            arrow_width: 52.0,
+            arrow_length: 50.0,
+            arrow_concavity: 0.0,
             curve_fit: default_curve_fit(),
             pen_auto_add_delete: true,
             marquee_style: default_marquee_style(),

@@ -99,24 +99,45 @@ pub(crate) fn font_entry(name: &str) -> E {
 }
 
 /// Keep imported font metadata while retaining the requested font indices. New fonts use
-/// the normal defaults; same-name duplicates retain their own positional records.
+/// the normal defaults; duplicate records are consumed once before reusing the first match.
 pub(crate) fn font_set(names: &[String], original: Option<&E>) -> E {
     let entries = original.and_then(E::as_array).unwrap_or_default();
-    // Resolve fallback names once, retaining the first match just as the original scan did.
-    // Missing names and reordered resource dictionaries must not rescan all entries per font.
-    let mut first_by_name = std::collections::HashMap::new();
-    for entry in entries {
+    // Keep a queue per name so differently ordered ResourceDict/DocumentResources do not
+    // collapse distinct duplicate metadata. Each index leaves its queue at most once.
+    let mut by_name = std::collections::HashMap::new();
+    for (i, entry) in entries.iter().enumerate() {
         if let Some(name) = entry.get("Name").and_then(E::as_str) {
-            first_by_name.entry(name).or_insert(entry);
+            let (_, available) = by_name.entry(name).or_insert_with(|| (i, std::collections::VecDeque::new()));
+            available.push_back(i);
         }
     }
+    let mut used = vec![false; entries.len()];
     E::Array(
         names
             .iter()
             .enumerate()
             .map(|(i, name)| {
                 let matches = |entry: &&E| entry.get("Name").and_then(E::as_str) == Some(name.as_str());
-                entries.get(i).filter(matches).or_else(|| first_by_name.get(name.as_str()).copied()).cloned().unwrap_or_else(|| font_entry(name))
+                let positional = entries.get(i).filter(matches).filter(|_| used.get(i) == Some(&false)).map(|_| i);
+                let selected = positional.or_else(|| {
+                    let (_, available) = by_name.get_mut(name.as_str())?;
+                    while let Some(index) = available.pop_front() {
+                        if used.get(index) == Some(&false) {
+                            return Some(index);
+                        }
+                    }
+                    None
+                });
+                if let Some(index) = selected
+                    && let Some(used) = used.get_mut(index)
+                {
+                    *used = true;
+                }
+                selected
+                    .or_else(|| by_name.get(name.as_str()).map(|(first, _)| *first))
+                    .and_then(|index| entries.get(index))
+                    .cloned()
+                    .unwrap_or_else(|| font_entry(name))
             })
             .collect(),
     )

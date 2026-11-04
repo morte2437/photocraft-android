@@ -176,7 +176,7 @@ pub(super) fn black_white(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Ed
             e.add(Edit::discrete(true));
         }
         let mut c = rgb_of(v, "tintColor", [0.882, 0.827, 0.702]);
-        let r = ui.add_enabled_ui(on, |ui| color_button(ui, &mut c)).inner;
+        let r = ui.add_enabled_ui(on, |ui| color_button(ui, &mut c, tl!("Tint Color"))).inner;
         if r.changed {
             v["tintColor"] = json!(adjust_params::hex(c));
         }
@@ -221,7 +221,7 @@ pub(super) fn photo_filter(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> E
         if ui.radio(use_color, tl!("Color:")).clicked() {
             use_color = true;
         }
-        let r = ui.add_enabled_ui(use_color, |ui| color_button(ui, &mut c)).inner;
+        let r = ui.add_enabled_ui(use_color, |ui| color_button(ui, &mut c, tl!("Photo Filter"))).inner;
         if r.changed {
             v["color"] = json!(adjust_params::hex(c));
         }

@@ -3967,6 +3967,9 @@ curves	Smooth	Εξομάλυνση
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} βήμα δεν έχει ακόμη αντίστοιχο στο PhotoCraft|{n} βήματα δεν έχουν ακόμη αντίστοιχο στο PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Αποθηκεύτηκε {n} ενέργεια στο {file}|Αποθηκεύτηκαν {n} ενέργειες στο {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Παραλείφθηκε {n} βήμα χωρίς αντίστοιχο στο Photoshop|Παραλείφθηκαν {n} βήματα χωρίς αντίστοιχο στο Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Φορτώθηκε {n} αρχείο ενεργειών|Φορτώθηκαν {n} αρχεία ενεργειών
+	{set} from {file} replaced the one from {earlier}	Το σύνολο {set} από το {file} αντικατέστησε εκείνο από το {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Δεν ήταν δυνατή η φόρτωση {n} αρχείου: {errors}|Δεν ήταν δυνατή η φόρτωση {n} αρχείων: {errors}
 	File Naming	Ονομασία αρχείων
 	Starting serial	Αρχικός αριθμός σειράς
 	Insert Stop…	Εισαγωγή διακοπής…
@@ -3987,6 +3990,7 @@ curves	Smooth	Εξομάλυνση
 	Sent to {printer}	Στάλθηκε στον {printer}
 	set in Print Settings…	ορίζεται στις ρυθμίσεις εκτύπωσης…
 	ICO is limited to 256 × 256 pixels	Το ICO περιορίζεται σε 256 × 256 εικονοστοιχεία
+	Memory usage percent	Χρήση μνήμης (%)
 	Show Favorite Fonts	Εμφάνιση αγαπημένων γραμματοσειρών
 	No favorite fonts yet: click the star beside a font to add it.	Δεν υπάρχουν ακόμη αγαπημένες γραμματοσειρές: κάντε κλικ στο αστέρι δίπλα σε μια γραμματοσειρά για να την προσθέσετε.
 	Favorite fonts	Αγαπημένες γραμματοσειρές
@@ -4026,17 +4030,8 @@ curves	Smooth	Εξομάλυνση
 	Kept {name}: written by another application	Το {name} διατηρήθηκε: γράφτηκε από άλλη εφαρμογή
 	Shadow Tint	Χροιά σκιών
 	Check for Updates…	Έλεγχος ενημερώσεων…
-	PhotoCraft Updates	Ενημερώσεις PhotoCraft
-	Checking for updates…	Έλεγχος για ενημερώσεις…
 	Open the release page to choose an installer for your system.	Ανοίξτε τη σελίδα της έκδοσης για να επιλέξετε πρόγραμμα εγκατάστασης για το σύστημά σας.
-	Open Download Page	Άνοιγμα σελίδας λήψης
-	PhotoCraft is up to date.	Το PhotoCraft είναι ενημερωμένο.
-	Could not check for updates.	Δεν ήταν δυνατός ο έλεγχος ενημερώσεων.
-	Updates have not been checked yet.	Δεν έχει γίνει ακόμη έλεγχος ενημερώσεων.
-	Check Again	Νέος έλεγχος
 	Automatically Check for Updates	Αυτόματος έλεγχος ενημερώσεων
-	Installed version: {version}	Εγκατεστημένη έκδοση: {version}
-	PhotoCraft {version} is available.	Το PhotoCraft {version} είναι διαθέσιμο.
 	Paints from the History panel's source state	Βάφει από την κατάσταση πηγής του πίνακα Ιστορικό
 	Sets the source for the history brush	Ορίζει την πηγή για το πινέλο ιστορικού
 	Highlight Mode	Λειτουργία φωτεινών τόνων
@@ -4058,6 +4053,7 @@ curves	Smooth	Εξομάλυνση
 	Chisel Soft	Μαλακή σμίλευση
 	Open color-less EXR as ACEScg	Άνοιγμα EXR χωρίς χρωματική δήλωση ως ACEScg
 	Do not append "copy" to filename when saving a copy	Να μην προστίθεται «copy» στο όνομα αρχείου κατά την αποθήκευση αντιγράφου
+	Save Full-Size Composite in .pcraft Files	Αποθήκευση σύνθετης εικόνας πλήρους μεγέθους στα αρχεία .pcraft
 	EXIF	EXIF
 	Edit Selected Guides	Επεξεργασία επιλεγμένων οδηγών
 	Clear Selected Guides	Απαλοιφή επιλεγμένων οδηγών
@@ -4111,6 +4107,7 @@ curves	Smooth	Εξομάλυνση
 	This document's layers: {needed} of {budget} for layers	Επίπεδα αυτού του εγγράφου: {needed} από {budget} για επίπεδα
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Τα επίπεδα αυτού του εγγράφου χρειάζονται {needed} αλλά μπορούν να καταλάβουν {budget}: η επανασχεδίαση όλου του εγγράφου γίνεται στη CPU
 	GPU Memory (MB, 0 = Automatic)	Μνήμη GPU (MB, 0 = Αυτόματο)
+	Scratch Size Limit (MB, 0 = No Limit)	Όριο μεγέθους δίσκου προσωρινής αποθήκευσης (MB, 0 = χωρίς όριο)
 	{path}: the path is not valid Unicode; save under another name.	{path}: η διαδρομή δεν είναι έγκυρο Unicode· αποθηκεύστε με άλλο όνομα.
 	{name} was changed by another app after it was opened or saved here.	Το {name} άλλαξε από άλλη εφαρμογή αφού ανοίχτηκε ή αποθηκεύτηκε εδώ.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Αντικαταστήστε το με αυτό το έγγραφο ή ακυρώστε και χρησιμοποιήστε Αρχείο › Αποθήκευση ως για να κρατήσετε και τα δύο.
@@ -4146,6 +4143,9 @@ curves	Smooth	Εξομάλυνση
 	There is no color table to save.	Δεν υπάρχει πίνακας χρωμάτων για αποθήκευση.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Αποθηκεύτηκε {n} χρώμα στο {file}|Αποθηκεύτηκαν {n} χρώματα στο {file}
 	GPU adapter	Προσαρμογέας GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Το περιεχόμενο AI/PDF/EPS θα υποστεί επεξεργασία ως SVG. Η αποθήκευση αντικαθιστά την ενσωματωμένη πηγή· οι ιδιότητες του αρχικού τύπου αρχείου μπορεί να αλλάξουν.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Εισαγωγή στιλ…
 	Export Selected Styles…	Εξαγωγή επιλεγμένων στιλ…
 	Export Styles…	Εξαγωγή στιλ…
@@ -4196,6 +4196,7 @@ curves	Smooth	Εξομάλυνση
 	Font size presets	Προεπιλογές μεγέθους γραμματοσειράς
 	Leading presets	Προεπιλογές διάστιχου
 	Tracking presets	Προεπιλογές διαστήματος χαρακτήρων
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Μη έγκυρη αριθμητική τιμή. Απαιτείται ακέραιος αριθμός μεταξύ {min}% και {max}%. Εισήχθη η προηγούμενη τιμή.
 	Color Aware	Με βάση το χρώμα
 	Decontaminate Colors	Απολύμανση χρωμάτων
 	Edge Detection	Ανίχνευση άκρης
@@ -4213,3 +4214,9 @@ curves	Smooth	Εξομάλυνση
 	Select and Mask was closed: its document is no longer the active one	Η Επιλογή και μάσκα έκλεισε: το έγγραφό της δεν είναι πλέον το ενεργό
 	Select and Mask was closed: another layer was selected	Η Επιλογή και μάσκα έκλεισε: επιλέχθηκε άλλο επίπεδο
 	Select Layer Under Cursor	Επιλογή επιπέδου κάτω από τον δρομέα
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Χρώματα που χρησιμοποιήθηκαν πρόσφατα
+	Stop Color	Χρώμα στάσης
+	Shapes can't use patterns yet	Τα σχήματα δεν μπορούν ακόμη να χρησιμοποιούν μοτίβα
+	Edit Brush…	Επεξεργασία πινέλου…

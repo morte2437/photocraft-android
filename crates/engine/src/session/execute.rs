@@ -3,6 +3,7 @@ use super::{
     Arc, Document, EngineError, LayerId, Result, Session, Value, brush_cmds, channel_cmds, commands, hidden_target, jobs, layer_multi_cmds, retouch_cmds,
     smart_cmds,
 };
+use crate::color_channels;
 
 impl Session {
     /// Run a command by id with JSON params. Returns a JSON result.
@@ -95,7 +96,10 @@ impl Session {
     /// may run.
     pub(crate) fn admit(&mut self, id: &str, spec: &commands::CommandSpec, params: &Value) -> Result<Value> {
         let run_params = channel_cmds::inject_target(self, id, commands::inject_kind(id, params.clone()));
-        if let Err(why) = self.explicit_layer_enabled(spec, params).unwrap_or_else(|| self.precondition(spec, &run_params)) {
+        if let Some(why) = color_channels::refusal(self, id, &run_params) {
+            return Err(EngineError::Disabled(id.into(), why));
+        }
+        if let Err(why) = self.explicit_layer_enabled(spec, params)?.unwrap_or_else(|| self.precondition(spec, &run_params)) {
             return Err(EngineError::Disabled(id.to_string(), why));
         }
         if let Some(why) = self.job_conflict(id, spec.journal) {
@@ -133,8 +137,21 @@ impl Session {
 
     /// The command's own precondition for a call with `params` (their target filled in).
     fn precondition(&self, spec: &commands::CommandSpec, params: &Value) -> std::result::Result<(), String> {
+        if let Some(why) = color_channels::refusal(self, spec.id, params) {
+            return Err(why);
+        }
         if self.names_existing_layer(spec.id, params) {
             return Ok(());
+        }
+        // A recorded invalid comp index succeeds without an edit, even with no comps.
+        // Ordinary Apply and references by id/name retain the command's usual precondition.
+        if spec.id == "layerComp.apply"
+            && params
+                .get("comp")
+                .and_then(Value::as_object)
+                .is_some_and(|fields| fields.len() == 1 && fields.get("index").is_some_and(|index| index.as_u64().is_some() || index.as_i64().is_some()))
+        {
+            return self.active().map(|_| ()).ok_or_else(|| "no document open".into());
         }
         // `ifPresent`: with no Background there is nothing to do, which isn't an error.
         if spec.id == "layer.new.layerFromBackground" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
@@ -142,6 +159,12 @@ impl Session {
         }
         if spec.id == "layer.smartFilter.deleteFilterMask" && params.get("ifPresent").and_then(Value::as_bool) == Some(true) {
             return smart_cmds::smart_layer_active(self);
+        }
+        // Recorded Unlink can be repeated on a single, already-unlinked layer.
+        // Keep the menu toggle's two-layer requirement when no state is supplied.
+        if spec.id == "layer.linkLayers" && params.get("linked").and_then(Value::as_bool) == Some(false) {
+            let d = self.active().ok_or_else(|| "no document open".to_string())?;
+            return if d.selected_layers().is_empty() { Err("no layer selected".into()) } else { Ok(()) };
         }
         channel_cmds::mask_target_enabled(self, spec.id, params).unwrap_or_else(|| (spec.enabled)(self))
     }
@@ -160,19 +183,43 @@ impl Session {
     /// than on the active one, which stays active (#466). A script, action or agent can then
     /// Replace Contents, Rasterize or Merge Down a layer without selecting it first. `None` for
     /// other commands, or without such a layer.
-    pub(crate) fn explicit_layer_enabled(&mut self, spec: &commands::CommandSpec, params: &Value) -> Option<std::result::Result<(), String>> {
+    pub(crate) fn explicit_layer_enabled(&mut self, spec: &commands::CommandSpec, params: &Value) -> Result<Option<std::result::Result<(), String>>> {
         if !spec.params.contains("\"layer\":id") {
-            return None;
+            return Ok(None);
         }
-        let target = LayerId(params.get("layer")?.as_u64()?);
-        let d = self.active_mut()?;
-        d.doc.layer(target)?;
+        // An ATN group-end index is a valid no-op only for Select. Let that command validate
+        // its other parameters and preserve the current selection.
+        if spec.id == "layer.select"
+            && let Some(selector @ Value::Object(fields)) = params.get("layer")
+            && (fields.contains_key("index") || fields.contains_key("ordinal"))
+            && commands::recorded_layer(self, selector)?.is_none()
+        {
+            return Ok(None);
+        }
+        let target = match commands::explicit_layer(self, params) {
+            Ok(Some(target)) => target,
+            Ok(None) => return Ok(None),
+            // Read-only queries keep their own parameter-error contract; recorded commands
+            // must identify a missing named receiver before checking the active layer.
+            Err(_) if !spec.journal => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(d) = self.active_mut() else { return Ok(None) };
+        if d.doc.layer(target).is_none() {
+            return Ok(None);
+        }
         let active = d.active_layer.replace(target);
-        let r = self.precondition(spec, params);
+        // The checks see the resolved id: a relative ordinal (`Frwr`, `Bckw`) would otherwise
+        // resolve again from the swapped-in active layer and land one layer further.
+        let mut resolved = params.clone();
+        if let Some(fields) = resolved.as_object_mut() {
+            fields.insert("layer".into(), Value::from(target.0));
+        }
+        let r = self.precondition(spec, &resolved);
         if let Some(d) = self.active_mut() {
             d.active_layer = active;
         }
-        Some(r)
+        Ok(Some(r))
     }
 
     /// Apply an undoable edit to the active document.
@@ -200,23 +247,34 @@ impl Session {
         // through this entry; the requesting session's authority must reach those renders.
         let _authorization = crate::jobs::render_authorization_scope(self.authorize);
         let _document = crate::doc_path::scope(self.active().and_then(|d| d.path.as_deref()).map(std::path::Path::new));
+        photocraft_compose::discard_unreadable_pixel_caches();
+        let scratch_generation = photocraft_raster::spill::read_error_generation();
         let restrict = self.color_restrict;
         let filter_mask_layer = self.filter_mask_layer;
         let sampler_map = self.sampler_map.take();
         let symmetry_map = self.symmetry_map.take();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         let before = st.doc.clone();
+        // Only this document's pixels gate its edits: an unreadable tile elsewhere (another
+        // open document) does not block it.
+        before.scratch_health().map_err(EngineError::Other)?;
         // Selecting layers is not a step, so the state this edit leaves behind targets what was
         // selected just before it (#1356): undoing a stroke keeps the painted layer active.
         let prior = st.layer_target();
+        let previous_active_layer = st.active_layer;
         let mut doc = (*before).clone();
         let mut active = st.active_layer;
         let r = f(&mut doc, &mut active)?;
-        if let (Some(k), Some(id)) = (restrict, active) {
-            channel_cmds::restrict_to_color(&before, &mut doc, id, k);
+        if let Some(restrict) = restrict {
+            channel_cmds::restrict_to_color(&before, &mut doc, restrict.layer, restrict.colors)?;
         }
         if let Some(id) = filter_mask_layer {
             smart_cmds::refresh_after_filter_mask_edit(&mut doc, id)?;
+        }
+        if let Err(error) = photocraft_raster::spill::check_since(scratch_generation).and_then(|()| before.scratch_health()).and_then(|()| doc.scratch_health())
+        {
+            st.active_layer = previous_active_layer;
+            return Err(EngineError::Other(error));
         }
         st.doc = Arc::new(doc);
         st.active_layer = active;

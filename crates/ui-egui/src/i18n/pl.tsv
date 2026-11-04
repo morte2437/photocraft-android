@@ -3883,6 +3883,9 @@ curves	Smooth	Wygładź
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} krok nie ma jeszcze odpowiednika w PhotoCraft|{n} kroki nie mają jeszcze odpowiednika w PhotoCraft|{n} kroków nie ma jeszcze odpowiednika w PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Zapisano {n} operację do {file}|Zapisano {n} operacje do {file}|Zapisano {n} operacji do {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Pominięto {n} krok bez odpowiednika w Photoshopie|Pominięto {n} kroki bez odpowiednika w Photoshopie|Pominięto {n} kroków bez odpowiednika w Photoshopie
+@plural	{n} action file loaded|{n} action files loaded	Wczytano {n} plik operacji|Wczytano {n} pliki operacji|Wczytano {n} plików operacji
+	{set} from {file} replaced the one from {earlier}	Zestaw {set} z {file} zastąpił zestaw z {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Nie udało się wczytać {n} pliku: {errors}|Nie udało się wczytać {n} plików: {errors}|Nie udało się wczytać {n} plików: {errors}
 	File Naming	Nazewnictwo plików
 	Starting serial	Początkowy numer seryjny
 	Insert Stop…	Wstaw zatrzymanie…
@@ -3903,6 +3906,7 @@ curves	Smooth	Wygładź
 	Sent to {printer}	Wysłano do {printer}
 	set in Print Settings…	ustawiane w ustawieniach druku…
 	ICO is limited to 256 × 256 pixels	ICO jest ograniczony do 256 × 256 pikseli
+	Memory usage percent	Użycie pamięci (%)
 	Show Favorite Fonts	Pokaż ulubione czcionki
 	No favorite fonts yet: click the star beside a font to add it.	Brak ulubionych czcionek: kliknij gwiazdkę obok czcionki, aby ją dodać.
 	Favorite fonts	Ulubione czcionki
@@ -3942,17 +3946,8 @@ curves	Smooth	Wygładź
 	Kept {name}: written by another application	Zachowano {name}: zapisany przez inną aplikację
 	Shadow Tint	Tinta cieni
 	Check for Updates…	Sprawdź aktualizacje…
-	PhotoCraft Updates	Aktualizacje PhotoCraft
-	Checking for updates…	Sprawdzanie aktualizacji…
 	Open the release page to choose an installer for your system.	Otwórz stronę wydania, aby wybrać instalator dla swojego systemu.
-	Open Download Page	Otwórz stronę pobierania
-	PhotoCraft is up to date.	PhotoCraft jest aktualny.
-	Could not check for updates.	Nie udało się sprawdzić aktualizacji.
-	Updates have not been checked yet.	Aktualizacje nie zostały jeszcze sprawdzone.
-	Check Again	Sprawdź ponownie
 	Automatically Check for Updates	Automatycznie sprawdzaj aktualizacje
-	Installed version: {version}	Zainstalowana wersja: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} jest dostępny.
 	Paints from the History panel's source state	Maluje ze stanu źródłowego panelu Historia
 	Sets the source for the history brush	Ustawia źródło dla pędzla historii
 	Highlight Mode	Tryb świateł
@@ -3974,6 +3969,7 @@ curves	Smooth	Wygładź
 	Chisel Soft	Dłuto miękkie
 	Open color-less EXR as ACEScg	Otwieraj EXR bez profilu koloru jako ACEScg
 	Do not append "copy" to filename when saving a copy	Nie dodawaj „copy” do nazwy pliku przy zapisywaniu kopii
+	Save Full-Size Composite in .pcraft Files	Zapisuj obraz złożony w pełnym rozmiarze w plikach .pcraft
 	Edit Selected Guides	Edytuj zaznaczone prowadnice
 	Clear Selected Guides	Usuń zaznaczone prowadnice
 	Bicubic Automatic	Dwusześcienna automatyczna
@@ -4026,6 +4022,7 @@ curves	Smooth	Wygładź
 	This document's layers: {needed} of {budget} for layers	Warstwy tego dokumentu: {needed} z {budget} na warstwy
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Warstwy tego dokumentu potrzebują {needed}, ale mogą zająć {budget}: odświeżanie całego dokumentu używa CPU
 	GPU Memory (MB, 0 = Automatic)	Pamięć GPU (MB, 0 = Automatycznie)
+	Scratch Size Limit (MB, 0 = No Limit)	Limit rozmiaru dysku roboczego (MB, 0 = bez limitu)
 	{path}: the path is not valid Unicode; save under another name.	{path}: ścieżka nie jest prawidłowym Unicode; zapisz pod inną nazwą.
 	Replace	Zastąp
 	{name} was changed by another app after it was opened or saved here.	Plik {name} został zmieniony przez inną aplikację po otwarciu lub zapisaniu go tutaj.
@@ -4063,6 +4060,9 @@ curves	Smooth	Wygładź
 	There is no color table to save.	Brak tabeli kolorów do zapisania.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Zapisano {n} kolor do {file}|Zapisano {n} kolory do {file}|Zapisano {n} kolorów do {file}
 	GPU adapter	Karta GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Zawartość AI/PDF/EPS będzie edytowana jako SVG. Zapisanie zastąpi osadzone źródło; właściwości specyficzne dla formatu mogą się zmienić.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Importuj style…
 	Export Selected Styles…	Eksportuj zaznaczone style…
 	Export Styles…	Eksportuj style…
@@ -4113,6 +4113,7 @@ curves	Smooth	Wygładź
 	Font size presets	Ustawienia wstępne rozmiaru czcionki
 	Leading presets	Ustawienia wstępne interlinii
 	Tracking presets	Ustawienia wstępne światła
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Nieprawidłowa wartość liczbowa. Wymagana jest liczba całkowita od {min}% do {max}%. Wstawiono poprzednią wartość.
 	Clear Selection	Wyczyść zaznaczenie
 	Color Aware	Według kolorów
 	Decontaminate Colors	Odkażanie kolorów
@@ -4131,3 +4132,10 @@ curves	Smooth	Wygładź
 	Select and Mask was closed: its document is no longer the active one	Zamknięto Zaznacz i maskuj: jego dokument nie jest już aktywny
 	Select and Mask was closed: another layer was selected	Zamknięto Zaznacz i maskuj: wybrano inną warstwę
 	Select Layer Under Cursor	Zaznacz warstwę pod kursorem
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Próbnik kolorów
+	Recently Used Colors	Ostatnio używane kolory
+	Stop Color	Kolor punktu
+	Shapes can't use patterns yet	Kształty nie mogą jeszcze używać wzorków
+	Edit Brush…	Edytuj pędzel…

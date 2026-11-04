@@ -276,6 +276,23 @@ pub fn preview_factor(command: &str, params: &Value, k: u32) -> u32 {
         },
         _ => k,
     });
+    // Minimum and Maximum measure the radius in whole pixels (Squareness rounds it, Roundness
+    // floors it, and 0 is the identity), so at k = 4 a typed 1.5 px became 0.375 = 0 proxy px and
+    // the preview showed the untouched document while OK applied a real effect (#10474). Keep at
+    // least one proxy pixel of radius, and the largest k whose whole-pixel proxy radius, scaled
+    // back, is within 1 px of the one OK applies: Squareness at 6 px and k = 4 rounds 1.5 to 2 proxy
+    // px (8 px), and Roundness's disc reaches floor(1.5) = 1 proxy px along an axis (4 px).
+    // A large radius still previews on a proxy: at full size Roundness costs O(radius) per pixel.
+    if matches!(command, "filter.other.minimum" | "filter.other.maximum") {
+        let Some(r) = params.get("radius").and_then(Value::as_f64).filter(|r| r.is_finite()) else { return k };
+        let r = r.clamp(0.2, 500.0);
+        let whole: fn(f64) -> f64 = if params.get("preserve").and_then(Value::as_str) == Some("roundness") { f64::floor } else { f64::round };
+        let fits = |d: u32| {
+            let d = f64::from(d);
+            d <= r.floor() && (whole(r / d) * d - whole(r)).abs() <= 1.0
+        };
+        return (1..=k).rev().find(|&d| fits(d)).unwrap_or(1);
+    }
     // Mosaic rounds its cells to whole pixels: 10 px cells at k = 4 became 3 proxy px = 12 px.
     // Divide the cell size evenly instead.
     match params.get("cellSize").and_then(Value::as_f64) {
@@ -521,6 +538,15 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     }
     restore_remembered(app, command, spec.params, &mut fields);
     apply_command_defaults(app, command, &mut fields);
+    if photocraft_engine::channel_cmds::follows_target(command) {
+        if app.filter_mask_targeted() && photocraft_engine::channel_cmds::follows_filter_mask(command) {
+            fields.insert("target".into(), json!("filterMask"));
+        } else if app.layer_mask_targeted() {
+            fields.insert("target".into(), json!("mask"));
+        } else if let Some(colors) = photocraft_engine::color_channels::selected(&app.session) {
+            fields.insert("target".into(), colors.params());
+        }
+    }
     if crate::blur_pins::handles(command) {
         crate::blur_pins::init(app, &mut fields);
     }
@@ -609,6 +635,15 @@ pub fn open_with_spec(app: &mut PhotocraftApp, command: &str, label: &str, spec:
             _ => continue,
         };
         fields.insert(p.key, v);
+    }
+    if !fields.contains_key("target") && !fields.contains_key("__smartFilter") {
+        if photocraft_engine::channel_cmds::follows_filter_mask(command) && app.filter_mask_targeted() {
+            fields.insert("target".into(), json!("filterMask"));
+        } else if photocraft_engine::channel_cmds::follows_target(command) && app.layer_mask_targeted() {
+            fields.insert("target".into(), json!("mask"));
+        } else if let Some(colors) = photocraft_engine::color_channels::selected(&app.session).filter(|c| c.len() > 1) {
+            fields.insert("target".into(), colors.params());
+        }
     }
     app.ui.open_dialog(crate::state::DialogKind::Command, fields)
 }
@@ -1335,15 +1370,116 @@ impl FilterPreviewKey {
     /// parameters moved on. A reopened dialog has a new id, a different command or a different
     /// document, and a committed document a new revision, so neither survives this test.
     pub fn same_target(&self, other: &Self) -> bool {
+        self.k == other.k && self.same_target_at_any_scale(other)
+    }
+
+    /// [`Self::same_target`] at any proxy factor: whether the canvas may keep showing this frame,
+    /// drawn at its own `k`, while the factor moves under a drag. A parameter can set the factor
+    /// (Minimum and Maximum's radius, Mosaic's cell size, #10474), and the frame for the old one is
+    /// still the closest thing to the result until the new one lands.
+    pub fn same_target_at_any_scale(&self, other: &Self) -> bool {
         self.doc == other.doc
             && self.revision == other.revision
             && self.dialog == other.dialog
             && self.active == other.active
             && self.target == other.target
             && self.command == other.command
-            && self.k == other.k
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod multi_channel_dialog_tests {
+    use super::*;
+    #[test]
+    fn filter_mask_dialog_keeps_its_target_when_color_channels_change() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.run("file.new", json!({"width":32,"height":24,"mode":"lab","depth":16})).unwrap();
+        app.run("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        app.run("filter.blur.gaussianBlur", json!({"radius":2})).unwrap();
+        app.run("paint.stroke", json!({"points":[[8,0],[8,23]],"size":8,"hardness":1,"color":"#000000","target":"filterMask"})).unwrap();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        app.run("view.layerMask", json!({"mode":"gray","mask":"filter"})).unwrap();
+        let command = "filter.blur.gaussianBlur";
+        let id = open(&mut app, command).unwrap();
+        let params = params_of(&app.ui.dialog_mut(id).unwrap().fields);
+        assert_eq!(params["target"], "filterMask");
+        app.run("channel.target", json!({"channel":"composite"})).unwrap();
+        let st = app.session.active().unwrap();
+        let layer = st.active_layer.unwrap();
+        let preview = preview_document(&st.doc, Some(layer), command, &params, 1).unwrap();
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let mask = |doc: &Document| match &doc.layer(layer).unwrap().content {
+            photocraft_doc::LayerContent::Smart(sm) => sm.filter_mask.clone(),
+            _ => panic!("expected a smart object"),
+        };
+        assert_eq!(mask(&app.session.active().unwrap().doc), mask(&preview));
+    }
+    #[test]
+    fn mask_view_dialogs_capture_the_mask_for_preview_and_confirmation() {
+        for mode in ["rgb", "cmyk", "lab"] {
+            for depth in [8, 16, 32] {
+                for command in ["image.adjustments.levels", "image.adjustments.curves", "filter.blur.gaussianBlur"] {
+                    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+                    app.run("file.new", json!({"width":32,"height":24,"mode":mode,"depth":depth})).unwrap();
+                    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+                    app.session
+                        .edit("Mask edge", |doc, id| {
+                            doc.layer_mut(id.unwrap()).unwrap().mask.as_mut().unwrap().surface.fill_rect(photocraft_geom::Rect::new(0, 0, 16, 24), &[0.25]);
+                            Ok(())
+                        })
+                        .unwrap();
+                    app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+                    app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+                    let id = if command.starts_with("image.") { crate::adjust_dialog::open(&mut app, command) } else { open(&mut app, command) }.unwrap();
+                    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+                    let (key, value) = match command {
+                        "image.adjustments.levels" => ("gamma", json!(1.4)),
+                        "image.adjustments.curves" => ("points", json!([[0, 0], [100, 160], [255, 255]])),
+                        _ => ("radius", json!(2)),
+                    };
+                    fields.insert(key.into(), value);
+                    let params = params_of(fields);
+                    assert_eq!(params["target"], json!("mask"));
+                    app.run("channel.target", json!({"channel":{"color":1}})).unwrap();
+                    let st = app.session.active().unwrap();
+                    let layer = st.active_layer.unwrap();
+                    let before = st.doc.layer(layer).unwrap().clone();
+                    let preview = preview_document(&st.doc, Some(layer), command, &params, 1).unwrap();
+                    let shown = preview.layer(layer).unwrap();
+                    assert_eq!(shown.surface(), before.surface());
+                    assert_ne!(shown.mask.as_ref().unwrap().surface, before.mask.as_ref().unwrap().surface);
+                    crate::dialogs::confirm(&mut app, id).unwrap();
+                    let actual = app.session.active().unwrap().doc.layer(layer).unwrap();
+                    assert_eq!(actual.surface(), before.surface());
+                    assert_eq!(actual.mask.as_ref().unwrap().surface, shown.mask.as_ref().unwrap().surface);
+                }
+            }
+        }
+    }
+    #[test]
+    fn ordinary_filter_captures_the_set_and_preview_equals_confirmation() {
+        let mut session = photocraft_engine::Session::new();
+        session.execute("file.new", json!({"width":32,"height":24,"depth":16})).unwrap();
+        session
+            .edit("edge", |doc, id| {
+                doc.layer_mut(id.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 16, 24), &[0.2, 0.4, 0.6, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        session.execute("channel.target", json!({"colors":[0,2]})).unwrap();
+        let mut app = PhotocraftApp::new(session, Default::default());
+        let command = "filter.blur.gaussianBlur";
+        let id = open(&mut app, command).unwrap();
+        let params = params_of(&app.ui.dialog_mut(id).unwrap().fields);
+        assert_eq!(params["target"], json!({"colors":[0,2]}));
+        app.session.execute("channel.target", json!({"channel":"green"})).unwrap();
+        let st = app.session.active().unwrap();
+        let layer = st.active_layer.unwrap();
+        let preview = preview_document(&st.doc, Some(layer), command, &params, 1).unwrap();
+        app.session.execute(command, params).unwrap();
+        assert_eq!(preview.layer(layer).unwrap().surface(), app.session.active().unwrap().doc.layer(layer).unwrap().surface());
+    }
+}

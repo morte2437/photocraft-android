@@ -295,15 +295,54 @@ pub fn svg_source_image(bytes: &[u8], fmt: PixelFormat, scale: f64) -> Result<So
     if let Some(img) = cache_get(&key) {
         return Ok(img);
     }
-    let buf = photocraft_io::svg::rasterize(bytes, scale as f32).map_err(|e| other(format!("can't render the SVG smart object: {e}")))?;
+    let buf = photocraft_io::svg::rasterize_bounded(bytes, scale as f32, 24_000_000).map_err(|e| other(format!("can't render the SVG smart object: {e}")))?;
     let img = SourceImage { surface: Arc::new(buffer_to_surface(&buf, fmt)), bounds: buf.rect };
     cache_put(key, img.clone());
     Ok(img)
 }
 
+/// Render SVG's sRGB colours into the destination profile before placement. The profile is
+/// part of the source cache key, so assigning a different profile cannot reuse old colours.
+pub(super) fn svg_source_image_in(bytes: &[u8], doc: &Document, scale: f64) -> Result<SourceImage> {
+    use photocraft_color::{ColorMode, SampleType};
+
+    let fmt = doc.pixel_format();
+    let profile = crate::color_cmds::document_profile(doc);
+    // An exact built-in sRGB destination needs no CMS conversion. Keep the direct render
+    // path (and its depth-specific cache) without approximating custom profile equality.
+    if doc.mode == ColorMode::Rgb && profile.to_bytes().as_ref() == photocraft_cms::Builtin::Srgb.profile().to_bytes().as_ref() {
+        return svg_source_image(bytes, fmt, scale);
+    }
+    let mut h = blake3::Hasher::new();
+    h.update(b"svg-icc\0");
+    h.update(bytes);
+    h.update(&scale.to_bits().to_le_bytes());
+    h.update(&profile.to_bytes());
+    let key = (*h.finalize().as_bytes(), fmt);
+    if let Some(image) = cache_get(&key) {
+        return Ok(image);
+    }
+    let source = svg_source_image(bytes, PixelFormat::new(ColorMode::Rgb, SampleType::F32, true), scale)?;
+    let image = convert_svg_source(source, doc)?;
+    cache_put(key, image.clone());
+    Ok(image)
+}
+
+/// Convert an sRGB SVG rendering into the document's profile and pixel format (relative
+/// colorimetric, black-point compensation), keeping its bounds.
+pub(super) fn convert_svg_source(source: SourceImage, doc: &Document) -> Result<SourceImage> {
+    use photocraft_cms::{Builtin, Intent, Transform};
+    let fmt = doc.pixel_format();
+    let profile = crate::color_cmds::document_profile(doc);
+    let transform = Transform::new(Builtin::Srgb.profile(), &profile, Intent::RelativeColorimetric, true)
+        .map_err(|e| other(format!("can't convert the SVG smart object's colours: {e}")))?;
+    let surface = crate::color_cmds::convert_surface(&source.surface, photocraft_color::ColorMode::Rgb, fmt, &transform).convert(fmt);
+    Ok(SourceImage { surface: Arc::new(surface), bounds: source.bounds })
+}
+
 /// The scale a vector source is rasterised at for its placement: the larger axis scale of the
 /// transform in 1/16 steps (so nudges reuse the cache), between 1/16 and 64.
-pub(super) fn vector_scale(sm: &SmartObject) -> f64 {
+pub(crate) fn vector_scale(sm: &SmartObject) -> f64 {
     let [a, b, c, d, ..] = sm.transform.m;
     let k = (a * a + b * b).sqrt().max((c * c + d * d).sqrt());
     if !k.is_finite() {

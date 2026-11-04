@@ -3951,6 +3951,9 @@ cameraData	Lens	Lens
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} adımın PhotoCraft’ta henüz karşılığı yok
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} eylem {file} dosyasına kaydedildi
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop karşılığı olmayan {n} adım atlandı
+@plural	{n} action file loaded|{n} action files loaded	{n} eylem dosyası yüklendi
+	{set} from {file} replaced the one from {earlier}	{file} dosyasındaki {set} kümesi, {earlier} dosyasındakinin yerini aldı
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} dosya yüklenemedi: {errors}
 	Starting serial	Başlangıç sıra numarası
 	Insert Stop…	Durdurma Ekle…
 	Save Set…	Seti Kaydet…
@@ -3999,6 +4002,7 @@ cameraData	Lens	Lens
 	Kept {name}: written by another application	{name} korundu: başka bir uygulama tarafından yazılmış
 	Shadow Tint	Gölge tonu
 	Redrawing	Yeniden çiziliyor
+	Memory usage percent	Bellek kullanım yüzdesi
 	Show Favorite Fonts	Favori yazı tiplerini göster
 	No favorite fonts yet: click the star beside a font to add it.	Henüz favori yazı tipi yok: eklemek için bir yazı tipinin yanındaki yıldıza tıklayın.
 	Favorite fonts	Favori yazı tipleri
@@ -4033,17 +4037,8 @@ cameraData	Lens	Lens
 	Shadow Color	Gölge Rengi
 	Shadow Opacity	Gölge Opaklığı
 	Check for Updates…	Güncellemeleri Denetle…
-	PhotoCraft Updates	PhotoCraft Güncellemeleri
-	Checking for updates…	Güncellemeler denetleniyor…
 	Open the release page to choose an installer for your system.	Sisteminize uygun yükleyiciyi seçmek için sürüm sayfasını açın.
-	Open Download Page	İndirme Sayfasını Aç
-	PhotoCraft is up to date.	PhotoCraft güncel.
-	Could not check for updates.	Güncellemeler denetlenemedi.
-	Updates have not been checked yet.	Güncellemeler henüz denetlenmedi.
-	Check Again	Yeniden Denetle
 	Automatically Check for Updates	Güncellemeleri Otomatik Denetle
-	Installed version: {version}	Yüklü sürüm: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} kullanılabilir.
 	Use the embedded profile ({profile})	Gömülü profili kullanın ({profile})
 	Convert to the working space ({profile})	Çalışma alanına dönüştürün ({profile})
 	Remember this choice for future images	Bu seçimi sonraki görüntüler için hatırla
@@ -4057,6 +4052,7 @@ cameraData	Lens	Lens
 	Chisel Soft	Yumuşak Keski
 	Open color-less EXR as ACEScg	Renk bilgisi olmayan EXR'yi ACEScg olarak aç
 	Do not append "copy" to filename when saving a copy	Kopya kaydederken dosya adına "copy" ekleme
+	Save Full-Size Composite in .pcraft Files	.pcraft dosyalarına tam boyutlu bileşik görüntüyü kaydet
 	Edit Selected Guides	Seçili Kılavuzları Düzenle
 	Clear Selected Guides	Seçili Kılavuzları Temizle
 	Bicubic Automatic	Bikübik Otomatik
@@ -4132,6 +4128,7 @@ cameraData	Lens	Lens
 	This document's layers: {needed} of {budget} for layers	Bu belgenin katmanları: katmanlar için {budget} içinden {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Bu belgenin katmanlarının {needed} belleğe ihtiyacı var ama en fazla {budget} kullanabilirler: tüm belgenin yeniden çizimi CPU'yu kullanır
 	GPU Memory (MB, 0 = Automatic)	GPU Belleği (MB, 0 = Otomatik)
+	Scratch Size Limit (MB, 0 = No Limit)	Geçici disk boyut sınırı (MB, 0 = Sınırsız)
 	{path}: the path is not valid Unicode; save under another name.	{path}: yol geçerli bir Unicode değil; başka bir adla kaydedin.
 	{name} was changed by another app after it was opened or saved here.	{name}, burada açıldıktan veya kaydedildikten sonra başka bir uygulama tarafından değiştirildi.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Bu belgeyle değiştirin ya da iptal edip ikisini de korumak için Dosya › Farklı Kaydet'i kullanın.
@@ -4167,6 +4164,18 @@ cameraData	Lens	Lens
 	There is no color table to save.	Kaydedilecek renk tablosu yok.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} renk {file} konumuna kaydedildi
 	GPU adapter	GPU bağdaştırıcısı
+smartSvg	Choose executable…	Çalıştırılabilir dosya seç…
+smartSvg	Choose the application used to edit this SVG:	Bu SVG'yi düzenlemek için kullanılacak uygulamayı seçin:
+smartSvg	Edit SVG Smart Object	SVG Akıllı Nesnesini Düzenle
+smartSvg	Other application	Diğer uygulama
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (dahili düzenleyici)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	SVG düzenleyicisi açıldı. Bu Akıllı Nesneyi güncellemek için SVG'yi kaydedin.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Açılan SVG dosyasına kaydedin. Kaydedilen her değişiklik PhotoCraft'ta bir geri alma adımı olur.
+smartSvg	Stop syncing this Smart Object	Bu Akıllı Nesnenin eşitlemesini durdur
+smartSvg	Updates wait while another document or an editing dialog is active.	Başka bir belge veya düzenleme iletişim kutusu etkin olduğunda güncellemeler bekler.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS içeriği SVG olarak düzenlenecek. Kaydetmek gömülü kaynağı değiştirir; biçime özgü özellikler değişebilir.
+
+# Styles panel: Import / Export Styles (.asl)
 @plural	Imported {n} style from {file}|Imported {n} styles from {file}	{file} dosyasından {n} stil içe aktarıldı
 @plural	Exported {n} style to {file}|Exported {n} styles to {file}	{n} stil {file} dosyasına dışa aktarıldı
 	Import Styles…	Stilleri İçe Aktar…
@@ -4216,6 +4225,7 @@ cameraData	Lens	Lens
 	Font size presets	Yazı tipi boyutu hazır ayarları
 	Leading presets	Satır aralığı hazır ayarları
 	Tracking presets	İzleme hazır ayarları
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Geçersiz sayısal giriş. {min}% ile {max}% arasında bir tam sayı gerekiyor. Önceki değer eklendi.
 	Color Aware	Renge Duyarlı
 	Decontaminate Colors	Renkleri Arındır
 	Edge Detection	Kenar Algılama
@@ -4238,3 +4248,9 @@ cameraData	Lens	Lens
 	Current Layer:	Geçerli Katman:
 	Underlying Layer:	Alttaki Katman:
 	Drag to move the selected path	Seçili yolu taşımak için sürükleyin
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Son Kullanılan Renkler
+	Stop Color	Durak Rengi
+	Shapes can't use patterns yet	Şekiller henüz desen kullanamaz
+	Edit Brush…	Fırçayı Düzenle…

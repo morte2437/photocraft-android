@@ -726,6 +726,25 @@ fn remove_strokes_waiting_are_dropped_when_the_tool_changes() {
 }
 
 #[test]
+fn subset_remove_uses_the_existing_layer_without_losing_the_saved_new_layer_option() {
+    let mut app = app();
+    app.ui.tool = Tool::Remove;
+    app.ui.tool_options.remove_new_layer = true;
+    app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+    let layers = app.session.active().unwrap().doc.walk().len();
+    tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 18.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 42.0 }, egui::Modifiers::NONE);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    let (id, params) = app.session.journal.last().unwrap();
+    assert_eq!(id, "paint.remove");
+    assert_eq!(params["newLayer"], json!(false));
+    assert_eq!(app.session.active().unwrap().doc.walk().len(), layers);
+    assert!(app.ui.tool_options.remove_new_layer);
+    app.run("channel.target", json!({"channel":"composite"})).unwrap();
+    assert_eq!(remove_params(&app.ui.tool_options, true)["newLayer"], json!(true));
+}
+
+#[test]
 fn create_a_new_layer_sends_new_layer_to_the_command() {
     let mut app = app();
     app.run("paint.pencil", json!({"points": [[0, 30], [100, 30]], "size": 200, "color": "#808080"})).unwrap();

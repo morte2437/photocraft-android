@@ -3,11 +3,20 @@ use super::layer_params::{layer_param, mask_new_layer};
 use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
 
 /// Add an adjustment layer above the active one; it takes the mask `mask_new_layer` builds from `p` (a path, the selection, or the default white mask).
+/// Optional opacity is a 0..1 fraction, validated before the creation edit.
 pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &str) -> Result<Value> {
+    let opacity = match p.get("opacity") {
+        None => 1.0,
+        Some(value) => value
+            .as_f64()
+            .filter(|o| o.is_finite() && (0.0..=1.0).contains(o))
+            .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "opacity must be a number in 0..1".into() })? as f32,
+    };
     let label = format!("New {} Layer", adj.label());
     let name = adj.label().to_string();
     let id = s.edit(&label, |doc, active| {
         let mut l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
+        l.opacity = opacity;
         mask_new_layer(doc, &mut l, p, cmd, true)?;
         let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
         *active = Some(id);
@@ -18,9 +27,21 @@ pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &
 
 /// Apply `adj` in place to the targeted layer mask, the targeted alpha channel or Quick Mask, or else the active layer's pixels, as one history step named `label`.
 pub(super) fn destructive_adjust(s: &mut Session, label: &str, adj: Adjustment, p: &Value) -> Result<Value> {
+    if let Some(colors) = crate::color_channels::target(s, p)? {
+        let id = layer_param(s, p)?;
+        return s.edit(label, |doc, _| {
+            let bounds = doc.bounds();
+            let selection = doc.selection.clone();
+            let surf = paint_surface(doc, id, p)?;
+            let extent = bounds.union(&surf.content_bounds());
+            crate::color_channels::adjust(surf, colors, &adj, selection.as_ref(), extent)?;
+            Ok(Value::Null)
+        });
+    }
+
     if is_mask_target(p) {
         // The targeted layer mask (#780): ⌘I inverts it, as in Photoshop.
-        let id = layer_param(s, &Value::Null)?;
+        let id = layer_param(s, p)?;
         return s.edit(label, |doc, _| {
             check_all_unlocked(doc, id)?;
             let sel = doc.selection.clone();
@@ -39,11 +60,11 @@ pub(super) fn destructive_adjust(s: &mut Session, label: &str, adj: Adjustment, 
             Ok(Value::Null)
         });
     }
-    let id = layer_param(s, &Value::Null)?;
+    let id = layer_param(s, p)?;
     s.edit(label, |doc, _| {
         let sel = doc.selection.clone();
         let mode = doc.mode;
-        let surf = paint_surface(doc, id, &Value::Null)?;
+        let surf = paint_surface(doc, id, p)?;
         pixels::adjust_surface(surf, &adj, sel.as_ref(), mode).map_err(EngineError::Other)?;
         Ok(())
     })?;

@@ -170,6 +170,9 @@ fn shift_right_mode_picker_cancels_and_other_gestures_keep_their_routes() {
     h.state_mut().ui.tool = Tool::Pencil;
     h.run_steps(2);
     assert!(h.state().ui.brush_mode_menu.is_none());
+    // Spot Healing has no Shift+right-click menu here: its right-click keeps the picker.
+    h.state_mut().ui.tool = Tool::SpotHealing;
+    h.run_steps(1);
     mode_right_click(&mut h, Modifiers::SHIFT);
     assert!(h.state().ui.brush_mode_menu.is_none() && h.state().ui.brush_picker.is_some());
     h.state_mut().ui.brush_picker = None;
@@ -689,4 +692,163 @@ fn one_frame_feeds_every_pointer_move_not_just_the_latest() {
     let end = *queued.last().unwrap();
     press(&mut h, end, PointerButton::Primary, false);
     assert_committed_points(&h, &queued);
+}
+
+/// Shift+right-click with `tool` and the labels of the menu it opened (empty: none opened).
+fn open_tool_menu(h: &mut Harness<'static, PhotocraftApp>, tool: Tool) -> Vec<&'static str> {
+    h.state_mut().ui.tool = tool;
+    h.run_steps(1);
+    mode_right_click(h, Modifiers::SHIFT);
+    if h.state().ui.brush_mode_menu.is_none() { Vec::new() } else { crate::brush_mode_menu::labels(tool) }
+}
+
+fn choose_row(h: &mut Harness<'static, PhotocraftApp>, label: &str) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label(label).click();
+    h.run_steps(2);
+    assert!(h.state().ui.brush_mode_menu.is_none(), "choosing {label} closes the menu");
+}
+
+#[test]
+fn shift_right_menu_lists_each_tools_own_rows_in_order() {
+    use crate::brush_mode_menu::{Item, items};
+    use egui_kittest::kittest::Queryable;
+    let blend: Vec<&'static str> = photocraft_doc::BlendMode::LAYER_MODES.iter().map(|m| m.label()).collect();
+    let with = |extra: &[&'static str]| {
+        let mut v = blend.clone();
+        for (i, l) in extra.iter().enumerate() {
+            v.insert(2 + i, l);
+        }
+        v
+    };
+    let edit = |rest: Vec<&'static str>| std::iter::once("Edit Brush…").chain(rest).collect::<Vec<_>>();
+    for (tool, want) in [
+        (Tool::Brush, edit(with(&["Behind", "Clear"]))),
+        (Tool::Pencil, edit(with(&["Behind", "Clear"]))),
+        (Tool::CloneStamp, edit(with(&[]))),
+        (Tool::Eraser, vec!["Brush", "Pencil", "Block"]),
+        (Tool::Dodge, edit(vec!["Shadows", "Midtones", "Highlights"])),
+        (Tool::Sponge, edit(vec!["Desaturate", "Saturate"])),
+        (Tool::PaintBucket, with(&["Clear"])),
+        (Tool::MixerBrush, vec!["Edit Brush…"]),
+        (Tool::Healing, vec!["Normal", "Multiply", "Screen", "Darken", "Lighten", "Color", "Luminosity"]),
+        (Tool::SpotHealing, vec![]),
+        (Tool::MagicEraser, vec![]),
+    ] {
+        let mut h = harness(None);
+        let journal = h.state().session.journal.len();
+        assert_eq!(open_tool_menu(&mut h, tool), want, "{tool:?}");
+        assert_eq!(h.state().session.journal.len(), journal, "{tool:?}: opening changes nothing");
+        if want.is_empty() {
+            continue;
+        }
+        assert!(h.state().ui.brush_picker.is_none(), "{tool:?}");
+        // A separator after Edit Brush…, and the blend modes in their groups.
+        let rows = items(tool);
+        if rows.first() == Some(&Item::EditBrush) && rows.len() > 1 {
+            assert_eq!(rows.get(1), Some(&Item::Separator), "{tool:?}");
+        }
+        if want.contains(&"Darken") && want.contains(&"Dissolve") {
+            let at = rows.iter().position(|i| *i == Item::Blend(photocraft_doc::BlendMode::Darken)).unwrap();
+            assert_eq!(rows[at - 1], Item::Separator, "{tool:?}");
+        }
+        // The rows the menu shows first are drawn, top to bottom, in that order.
+        let tops: Vec<f32> = want.iter().take(4).map(|l| h.get_by_label(l).rect().top()).collect();
+        assert!(tops.windows(2).all(|w| w[0] < w[1]), "{tool:?}: {tops:?}");
+    }
+}
+
+#[test]
+fn shift_right_menu_rows_set_what_the_options_bar_sets() {
+    use photocraft_doc::BlendMode;
+    let mut h = harness(None);
+    // Pencil: Clear is the Pencil's own flag, Behind its brush's, both through tools.setBrush.
+    open_tool_menu(&mut h, Tool::Pencil);
+    choose_row(&mut h, "Clear");
+    assert!(h.state().ui.tool_options.pencil_clear && !h.state().ui.tool_options.brush_clear);
+    open_tool_menu(&mut h, Tool::Pencil);
+    choose_row(&mut h, "Behind");
+    assert!(!h.state().ui.tool_options.pencil_clear && h.state().session.tools.brush.behind);
+    assert_eq!(h.state().session.journal.last().unwrap(), &("tools.setBrush".into(), json!({"brush": {"mode": "Normal", "behind": true}})));
+    // Clone Stamp: its own brush's mode, as the options bar's Mode dropdown.
+    open_tool_menu(&mut h, Tool::CloneStamp);
+    choose_row(&mut h, "Multiply");
+    assert_eq!(h.state().session.tools.brush.mode, BlendMode::Multiply);
+    assert_eq!(h.state().session.journal.last().unwrap(), &("tools.setBrush".into(), json!({"brush": {"mode": "Multiply"}})));
+    assert_eq!(crate::blend_keys::tool_mode(h.state_mut()), Some(BlendMode::Multiply));
+    h.state_mut().ui.tool = Tool::Brush;
+    h.run_steps(1);
+    assert_eq!(h.state().session.tools.brush.mode, BlendMode::Normal, "the Brush keeps its own mode");
+    // Healing Brush: the short list.
+    open_tool_menu(&mut h, Tool::Healing);
+    choose_row(&mut h, "Luminosity");
+    assert_eq!(h.state().session.tools.brush.mode, BlendMode::Luminosity);
+    // Tool options: Eraser Mode, Dodge Range, Sponge Mode, Paint Bucket and Gradient modes.
+    open_tool_menu(&mut h, Tool::Eraser);
+    choose_row(&mut h, "Block");
+    assert_eq!(h.state().ui.tool_options.eraser_mode, "block");
+    open_tool_menu(&mut h, Tool::Dodge);
+    choose_row(&mut h, "Highlights");
+    assert_eq!(h.state().ui.tool_options.tone_range, "highlights");
+    open_tool_menu(&mut h, Tool::Sponge);
+    choose_row(&mut h, "Saturate");
+    assert_eq!(h.state().ui.tool_options.sponge_mode, "saturate");
+    open_tool_menu(&mut h, Tool::PaintBucket);
+    choose_row(&mut h, "Clear");
+    assert!(h.state().ui.tool_options.bucket_clear);
+    open_tool_menu(&mut h, Tool::PaintBucket);
+    choose_row(&mut h, "Screen");
+    assert!(!h.state().ui.tool_options.bucket_clear);
+    assert_eq!(h.state().ui.tool_options.bucket_blend_mode, BlendMode::Screen);
+    open_tool_menu(&mut h, Tool::Gradient);
+    choose_row(&mut h, "Overlay");
+    assert_eq!(h.state().ui.tool_options.gradient_blend_mode, BlendMode::Overlay);
+    // The checked row is the current one.
+    open_tool_menu(&mut h, Tool::Eraser);
+    assert_eq!(crate::brush_mode_menu::current(h.state(), Tool::Eraser), Some(crate::brush_mode_menu::Item::Eraser("block")));
+}
+
+#[test]
+fn edit_brush_opens_the_brush_preset_picker_at_the_click() {
+    for tool in [Tool::Brush, Tool::CloneStamp, Tool::MixerBrush, Tool::Dodge] {
+        let mut h = harness(None);
+        open_tool_menu(&mut h, tool);
+        let at = h.state().ui.brush_mode_menu.unwrap();
+        let journal = h.state().session.journal.len();
+        choose_row(&mut h, "Edit Brush…");
+        assert_eq!(h.state().ui.brush_picker, Some(at), "{tool:?}");
+        assert_eq!(h.state().session.journal.len(), journal, "{tool:?}");
+        h.run_steps(2);
+        assert!(h.state().ui.brush_picker.is_some(), "{tool:?}: the picker stays open");
+    }
+}
+
+#[test]
+fn behind_and_clear_are_greyed_on_the_background_layer() {
+    use crate::brush_mode_menu::{Item, enabled, find};
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(None);
+    let (bg, top) = {
+        let doc = &h.state().session.active().unwrap().doc;
+        (doc.layers[0].id, doc.layers[1].id)
+    };
+    h.state_mut().session.active_mut().unwrap().active_layer = Some(bg);
+    for tool in [Tool::Brush, Tool::Pencil, Tool::PaintBucket] {
+        open_tool_menu(&mut h, tool);
+        assert!(!enabled(h.state(), Item::Clear), "{tool:?}");
+        assert!(find(h.state(), "Clear").is_err(), "{tool:?}");
+        assert!(enabled(h.state(), Item::Blend(photocraft_doc::BlendMode::Multiply)));
+        let journal = h.state().session.journal.len();
+        h.get_by_label("Clear").click();
+        h.run_steps(2);
+        let o = &h.state().ui.tool_options;
+        assert!(!o.brush_clear && !o.pencil_clear && !o.bucket_clear, "{tool:?}");
+        assert_eq!(h.state().session.journal.len(), journal, "{tool:?}: a greyed row does nothing");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+    assert!(!enabled(h.state(), Item::Behind));
+    // On a normal layer they are available again.
+    h.state_mut().session.active_mut().unwrap().active_layer = Some(top);
+    assert!(enabled(h.state(), Item::Behind) && enabled(h.state(), Item::Clear));
 }

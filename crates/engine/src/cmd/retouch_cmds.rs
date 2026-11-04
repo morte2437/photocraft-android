@@ -169,10 +169,7 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));
     }
-    let id = match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => LayerId(id),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into()))?,
-    };
+    let id = crate::commands::layer_param(s, p)?;
     Ok((Stroke { brush, points: pts }, Some(id)))
 }
 

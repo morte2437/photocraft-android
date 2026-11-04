@@ -32,7 +32,7 @@
 
 # Layer Style dialog: style presets and per-effect defaults
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -3282,6 +3282,9 @@ curves	Smooth	Glätten
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} Schritt hat noch keine Entsprechung in PhotoCraft|{n} Schritte haben noch keine Entsprechung in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} Aktion in {file} gespeichert|{n} Aktionen in {file} gespeichert
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} Schritt ohne Photoshop-Entsprechung ausgelassen|{n} Schritte ohne Photoshop-Entsprechung ausgelassen
+@plural	{n} action file loaded|{n} action files loaded	{n} Aktionsdatei geladen|{n} Aktionsdateien geladen
+	{set} from {file} replaced the one from {earlier}	Satz {set} aus {file} hat den aus {earlier} ersetzt
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} Datei konnte nicht geladen werden: {errors}|{n} Dateien konnten nicht geladen werden: {errors}
 	File Naming	Dateibenennung
 	Starting serial	Startnummer
 	Insert Stop…	Stopp einfügen…
@@ -3303,6 +3306,7 @@ curves	Smooth	Glätten
 	Sent to {printer}	An {printer} gesendet
 	set in Print Settings…	in den Druckeinstellungen festlegen…
 	ICO is limited to 256 × 256 pixels	ICO ist auf 256 × 256 Pixel begrenzt
+	Memory usage percent	Speichernutzung (%)
 	Show Favorite Fonts	Favorisierte Schriften anzeigen
 	No favorite fonts yet: click the star beside a font to add it.	Noch keine favorisierten Schriften: Klicken Sie auf den Stern neben einer Schrift, um sie hinzuzufügen.
 	Favorite fonts	Favorisierte Schriften
@@ -3342,17 +3346,8 @@ curves	Smooth	Glätten
 	Kept {name}: written by another application	{name} beibehalten: von einer anderen Anwendung geschrieben
 	Shadow Tint	Schattentönung
 	Check for Updates…	Nach Updates suchen…
-	PhotoCraft Updates	PhotoCraft-Updates
-	Checking for updates…	Suche nach Updates…
 	Open the release page to choose an installer for your system.	Öffnen Sie die Versionsseite und wählen Sie ein Installationspaket für Ihr System.
-	Open Download Page	Downloadseite öffnen
-	PhotoCraft is up to date.	PhotoCraft ist auf dem neuesten Stand.
-	Could not check for updates.	Updates konnten nicht geprüft werden.
-	Updates have not been checked yet.	Es wurde noch nicht nach Updates gesucht.
-	Check Again	Erneut prüfen
 	Automatically Check for Updates	Automatisch nach Updates suchen
-	Installed version: {version}	Installierte Version: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} ist verfügbar.
 	Paints from the History panel's source state	Malt aus dem Quellzustand des Protokollbedienfelds
 	Sets the source for the history brush	Legt die Quelle für den Protokollpinsel fest
 	Highlight Mode	Lichtermodus
@@ -3374,6 +3369,7 @@ curves	Smooth	Glätten
 	Chisel Soft	Meißeln weich
 	Open color-less EXR as ACEScg	Farbangabenloses EXR als ACEScg öffnen
 	Do not append "copy" to filename when saving a copy	Beim Speichern einer Kopie „copy“ nicht an den Dateinamen anhängen
+	Save Full-Size Composite in .pcraft Files	Kompositbild in voller Größe in .pcraft-Dateien speichern
 	Color Profile	Farbprofil
 	EXIF	EXIF
 	Edit Selected Guides	Ausgewählte Hilfslinien bearbeiten
@@ -3429,6 +3425,7 @@ curves	Smooth	Glätten
 	This document's layers: {needed} of {budget} for layers	Ebenen dieses Dokuments: {needed} von {budget} für Ebenen
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Die Ebenen dieses Dokuments brauchen {needed}, dürfen aber {budget} belegen: Das ganze Dokument wird auf der CPU neu gezeichnet
 	GPU Memory (MB, 0 = Automatic)	GPU-Speicher (MB, 0 = Automatisch)
+	Scratch Size Limit (MB, 0 = No Limit)	Größenlimit für Arbeitsvolume (MB, 0 = kein Limit)
 	{path}: the path is not valid Unicode; save under another name.	{path}: Der Dateipfad enthält ungültige Zeichen. Speichere unter einem anderen Namen.
 	{name} was changed by another app after it was opened or saved here.	{name} wurde von einer anderen App geändert, nachdem es hier geöffnet oder gespeichert wurde.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Ersetze die Datei durch dieses Dokument oder brich ab und nutze Datei › Speichern unter, um beide zu behalten.
@@ -3457,6 +3454,18 @@ curves	Smooth	Glätten
 	There is no color table to save.	Es gibt keine Farbtabelle zum Speichern.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} Farbe in {file} gespeichert|{n} Farben in {file} gespeichert
 	GPU adapter	GPU-Adapter
+smartSvg	Edit SVG Smart Object	SVG-Smart-Objekt bearbeiten
+smartSvg	Choose the application used to edit this SVG:	Wählen Sie die Anwendung zum Bearbeiten dieses SVG:
+smartSvg	Other application	Andere Anwendung
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (interner Editor)
+smartSvg	Choose executable…	Programm auswählen…
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Speichern Sie die geöffnete SVG-Datei. Jede gespeicherte Änderung wird in PhotoCraft zu einem Rückgängig-Schritt.
+smartSvg	Updates wait while another document or an editing dialog is active.	Aktualisierungen warten, während ein anderes Dokument oder ein Bearbeitungsdialog aktiv ist.
+smartSvg	Stop syncing this Smart Object	Synchronisierung dieses Smart-Objekts beenden
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	SVG-Editor geöffnet. Speichern Sie das SVG, um dieses Smart-Objekt zu aktualisieren.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS-Inhalte werden als SVG bearbeitet. Speichern ersetzt die eingebettete Quelle; formatspezifische Eigenschaften können sich ändern.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Stile importieren…
 	Export Selected Styles…	Ausgewählte Stile exportieren…
 	Export Styles…	Stile exportieren…
@@ -3515,6 +3524,7 @@ curves	Smooth	Glätten
 	Font size presets	Schriftgrößen-Vorgaben
 	Leading presets	Zeilenabstand-Vorgaben
 	Tracking presets	Laufweiten-Vorgaben
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Ungültige Zahleneingabe. Es ist eine ganze Zahl zwischen {min}% und {max}% erforderlich. Der vorherige Wert wurde eingesetzt.
 	Clear Selection	Auswahl löschen
 	Color Aware	Farbbezogen
 	Decontaminate Colors	Farben dekontaminieren
@@ -3532,3 +3542,12 @@ curves	Smooth	Glätten
 	Refine Hair needs hair detection, which isn't available yet	Haare verbessern benötigt eine Haarerkennung, die noch nicht verfügbar ist
 	Select and Mask was closed: its document is no longer the active one	Auswählen und maskieren wurde geschlossen: Das zugehörige Dokument ist nicht mehr aktiv
 	Select and Mask was closed: another layer was selected	Auswählen und maskieren wurde geschlossen: Es wurde eine andere Ebene ausgewählt
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Farbwähler
+	Recently Used Colors	Zuletzt verwendete Farben
+	Stop Color	Farbe der Farbunterbrechung
+	Shapes can't use patterns yet	Formen können noch keine Muster verwenden
+	Solid Color	Volltonfarbe
+	Tint Color	Tönungsfarbe
+	Edit Brush…	Pinsel bearbeiten…

@@ -203,6 +203,9 @@ pub fn abandon(app: &mut PhotocraftApp) {
 /// where ⌘ is the temporary Move tool (`hold_keys::cmd_nudges`, #2474). Returns true when a key
 /// was used.
 pub fn arrow_keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
+    if app.ui.text_edit.is_some() {
+        return false;
+    }
     use egui::{Key, Modifiers};
     let cmd = ctx.input(|i| i.modifiers.command) && crate::hold_keys::cmd_nudges(app);
     if app.ui.tool != Tool::Move && app.ui.transform.is_none() && !cmd {

@@ -989,11 +989,11 @@ fn with_driver_printable(p: &Value) -> Value {
 
 fn driver_printable(p: &Value) -> Option<Value> {
     let printer = printer_name(p).ok()?;
-    let settings = printer_settings(p).ok()?;
-    let pg = with_spooler(|| craft_print::rgb::page(&printer, settings.as_ref())).ok()?;
-    // Only for the paper the driver is set to: a print laid out on another paper keeps the
-    // fixed margin (and `print_windows` refuses it), as before.
     let (pw, ph) = paper(p, "file.print").ok()?;
+    // The page `print_windows` prints on, turned as it turns it for the layout's orientation.
+    let (_, pg) = settings_for_layout(&printer, printer_settings(p).ok()?, (pw, ph)).ok()?;
+    // Only for the paper the driver is set to, either way round: a print laid out on another
+    // paper keeps the fixed margin (and `print_windows` refuses it), as before.
     if (pg.paper.0 - pw).abs() > 2.0 || (pg.paper.1 - ph).abs() > 2.0 {
         return None;
     }

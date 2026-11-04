@@ -110,6 +110,9 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Ar
     if let Some(shown) = crate::type_panels_ui::color_picker::display_doc(app, idx) {
         return shown;
     }
+    if let Some(shown) = crate::color_picker_preview::display_doc(app, idx) {
+        return shown;
+    }
     if let Some(shown) = crate::solid_fill_ui::display_doc(app, idx) {
         return shown;
     }

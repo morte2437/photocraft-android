@@ -49,7 +49,7 @@
 
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -3885,6 +3885,9 @@ curves	Smooth	スムーズ
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} 個のステップにはまだ PhotoCraft の対応機能がありません
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{file} にアクション {n} 個を保存しました
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Photoshop に対応するもののない {n} 個のステップを省きました
+@plural	{n} action file loaded|{n} action files loaded	アクションファイル {n} 個を読み込みました
+	{set} from {file} replaced the one from {earlier}	{file} のセット {set} が {earlier} のセットを置き換えました
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} 個のファイルを読み込めませんでした: {errors}
 	File Naming	ファイル名の付け方
 	Starting serial	開始番号
 	Insert Stop…	ストップを挿入…
@@ -3962,6 +3965,7 @@ curves	Smooth	スムーズ
 	Reset All Locked Settings	ロックされた設定をすべて初期化
 	Copy Texture to Other Tools	テクスチャを他のツールにコピー
 	ICO is limited to 256 × 256 pixels	ICO は 256 × 256 ピクセルまでです
+	Memory usage percent	メモリ使用率 (%)
 	Show Favorite Fonts	お気に入りのフォントを表示
 	No favorite fonts yet: click the star beside a font to add it.	お気に入りのフォントはまだありません。フォントの横の星をクリックして追加してください。
 	Favorite fonts	お気に入りのフォント
@@ -4001,17 +4005,8 @@ curves	Smooth	スムーズ
 	Kept {name}: written by another application	{name} はそのままにしました: 別のアプリケーションが書き込んだファイルです
 	Shadow Tint	シャドウの色かぶり補正
 	Check for Updates…	アップデートを確認…
-	PhotoCraft Updates	PhotoCraft のアップデート
-	Checking for updates…	アップデートを確認中…
 	Open the release page to choose an installer for your system.	リリースページでお使いのシステム用のインストーラーを選択してください。
-	Open Download Page	ダウンロードページを開く
-	PhotoCraft is up to date.	PhotoCraft は最新です。
-	Could not check for updates.	アップデートを確認できませんでした。
-	Updates have not been checked yet.	まだアップデートを確認していません。
-	Check Again	再確認
 	Automatically Check for Updates	アップデートを自動的に確認
-	Installed version: {version}	インストール済みのバージョン: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} が利用可能です。
 	Paints from the History panel's source state	ヒストリーパネルのソース状態からペイントします
 	Sets the source for the history brush	ヒストリーブラシのソースを設定します
 	Highlight Mode	ハイライトモード
@@ -4033,6 +4028,7 @@ curves	Smooth	スムーズ
 	Chisel Soft	チゼルソフト
 	Open color-less EXR as ACEScg	色空間のないEXRをACEScgとして開く
 	Do not append "copy" to filename when saving a copy	コピーを保存するときにファイル名に「copy」を付けない
+	Save Full-Size Composite in .pcraft Files	.pcraftファイルにフルサイズの合成画像を保存
 	Edit Selected Guides	選択したガイドを編集
 	Clear Selected Guides	選択したガイドを消去
 	Bicubic Automatic	バイキュービック法 (自動)
@@ -4085,6 +4081,7 @@ curves	Smooth	スムーズ
 	This document's layers: {needed} of {budget} for layers	このドキュメントのレイヤー: レイヤー用 {budget} のうち {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	このドキュメントのレイヤーには {needed} が必要ですが、使えるのは {budget} です: ドキュメント全体の再描画は CPU で行われます
 	GPU Memory (MB, 0 = Automatic)	GPU メモリ（MB、0 = 自動）
+	Scratch Size Limit (MB, 0 = No Limit)	仮想記憶ディスクのサイズ上限（MB、0 = 上限なし）
 	{path}: the path is not valid Unicode; save under another name.	{path}: パスが有効な Unicode ではありません。別の名前で保存してください。
 	Replace	置き換え
 	{name} was changed by another app after it was opened or saved here.	{name} は、ここで開くか保存した後に別のアプリで変更されました。
@@ -4122,6 +4119,9 @@ curves	Smooth	スムーズ
 	There is no color table to save.	保存するカラーテーブルがありません。
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{file} に {n} 色を保存しました
 	GPU adapter	GPU アダプター
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS の内容を SVG として編集します。保存すると埋め込みソースが置き換わります。形式固有の機能が変わる場合があります。
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	スタイルを読み込み…
 	Export Selected Styles…	選択したスタイルを書き出し…
 	Export Styles…	スタイルを書き出し…
@@ -4171,6 +4171,7 @@ curves	Smooth	スムーズ
 	Font size presets	フォントサイズのプリセット
 	Leading presets	行送りのプリセット
 	Tracking presets	トラッキングのプリセット
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	無効な数値です。{min}% から {max}% までの整数が必要です。以前の値が挿入されました。
 	Clear Selection	選択範囲をクリア
 	Color Aware	カラー認識
 	Decontaminate Colors	不要なカラーの除去
@@ -4189,3 +4190,10 @@ curves	Smooth	スムーズ
 	Select and Mask was closed: its document is no longer the active one	「選択とマスク」を閉じました: 対象のドキュメントがアクティブではなくなりました
 	Select and Mask was closed: another layer was selected	「選択とマスク」を閉じました: 別のレイヤーが選択されました
 	Drag to move the selected path	ドラッグして選択したパスを移動
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	カラーピッカー
+	Recently Used Colors	最近使用したカラー
+	Stop Color	分岐点のカラー
+	Shapes can't use patterns yet	シェイプではまだパターンを使用できません
+	Edit Brush…	ブラシを編集…

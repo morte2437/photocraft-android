@@ -256,6 +256,26 @@ fn type_menu_checkmarks_follow_the_layer() {
 }
 
 #[test]
+fn numerals_checkmark_follows_the_selection() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.numerals.tabularLining";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.lining"), Some(false));
+    menu(&mut app, &ctx, "type.openType.numerals.default", json!({})).unwrap();
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.notAStyle"), None);
+}
+
+#[test]
 fn batch_menu_requires_a_recorded_action() {
     let (mut app, ctx) = app_with(1);
     assert!(!crate::menus::is_enabled(&app, "file.automate.batch"));
@@ -437,12 +457,22 @@ fn batch_dialogs_include_all_subfolders() {
         let fields = &mut app.ui.dialog_mut(d).unwrap().fields;
         assert_eq!(fields["includeSubfolders"], json!(false), "{id}");
         assert_eq!(fields["__labels"]["includeSubfolders"], json!("Include All Subfolders"), "{id}");
+        if id == "file.automate.batch" {
+            assert_eq!(fields["source"], json!("folder"));
+            assert_eq!(fields["stopOnError"], json!(false));
+            assert_eq!(fields["errorLog"], json!(""));
+        }
         fields.insert("input".into(), json!(input));
         fields.insert("output".into(), json!(dir.join(out).to_string_lossy()));
         fields.insert("includeSubfolders".into(), json!(true));
         let r = crate::dialogs::confirm(&mut app, d).unwrap();
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{id}: {r}");
-        assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        if id == "file.automate.batch" {
+            assert!(dir.join(out).join("a.png").is_file(), "{id} writes subfolder inputs flat: {r}");
+            assert!(!dir.join(out).join("sub").exists());
+        } else {
+            assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

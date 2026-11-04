@@ -54,7 +54,7 @@
 # Strings added on main after this catalog was written (2026-10).
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 # Layer Style > Blending Options (Advanced Blending)
 
 # Swatches panel
@@ -4230,6 +4230,9 @@ navigator	Zoom	Zoom
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} passaggio non ha ancora un equivalente in PhotoCraft|{n} passaggi non hanno ancora un equivalente in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Salvata {n} azione in {file}|Salvate {n} azioni in {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Omesso {n} passaggio senza equivalente in Photoshop|Omessi {n} passaggi senza equivalente in Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Caricato {n} file di azioni|Caricati {n} file di azioni
+	{set} from {file} replaced the one from {earlier}	Il set {set} di {file} ha sostituito quello di {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Impossibile caricare {n} file: {errors}|Impossibile caricare {n} file: {errors}
 	File Naming	Denominazione file
 	Starting serial	Numero di serie iniziale
 	Insert Stop…	Inserisci interruzione…
@@ -4250,6 +4253,7 @@ navigator	Zoom	Zoom
 	Sent to {printer}	Inviato a {printer}
 	set in Print Settings…	impostato nelle impostazioni di stampa…
 	ICO is limited to 256 × 256 pixels	ICO è limitato a 256 × 256 pixel
+	Memory usage percent	Uso memoria (%)
 	Show Favorite Fonts	Mostra font preferiti
 	No favorite fonts yet: click the star beside a font to add it.	Ancora nessun font preferito: fai clic sulla stella accanto a un font per aggiungerlo.
 	Favorite fonts	Font preferiti
@@ -4289,17 +4293,8 @@ navigator	Zoom	Zoom
 	Kept {name}: written by another application	{name} mantenuto: scritto da un’altra applicazione
 	Shadow Tint	Tinta ombre
 	Check for Updates…	Cerca aggiornamenti…
-	PhotoCraft Updates	Aggiornamenti di PhotoCraft
-	Checking for updates…	Ricerca aggiornamenti…
 	Open the release page to choose an installer for your system.	Apri la pagina della versione per scegliere un programma di installazione per il tuo sistema.
-	Open Download Page	Apri pagina di download
-	PhotoCraft is up to date.	PhotoCraft è aggiornato.
-	Could not check for updates.	Impossibile cercare aggiornamenti.
-	Updates have not been checked yet.	Gli aggiornamenti non sono ancora stati verificati.
-	Check Again	Controlla di nuovo
 	Automatically Check for Updates	Cerca automaticamente aggiornamenti
-	Installed version: {version}	Versione installata: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} è disponibile.
 	Paints from the History panel's source state	Dipinge dallo stato di origine del pannello Cronologia
 	Sets the source for the history brush	Imposta l'origine del pennello storia
 	Highlight Mode	Metodo luci
@@ -4321,6 +4316,7 @@ navigator	Zoom	Zoom
 	Chisel Soft	Cesello morbido
 	Open color-less EXR as ACEScg	Apri gli EXR senza spazio colore come ACEScg
 	Do not append "copy" to filename when saving a copy	Non aggiungere "copy" al nome del file quando si salva una copia
+	Save Full-Size Composite in .pcraft Files	Salva l'immagine composita a dimensione piena nei file .pcraft
 	Adobe-rgb-compat	Adobe RGB (compatibile)
 	All shortcuts reset to Photoshop defaults.	Tutte le scorciatoie ripristinate ai predefiniti di Photoshop.
 	Arc Lower	Arco inferiore
@@ -4534,6 +4530,7 @@ shape	Appearance	Aspetto
 	This document's layers: {needed} of {budget} for layers	Livelli di questo documento: {needed} su {budget} per i livelli
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	I livelli di questo documento richiedono {needed} ma possono occupare {budget}: i ridisegni dell'intero documento usano la CPU
 	GPU Memory (MB, 0 = Automatic)	Memoria GPU (MB, 0 = Automatico)
+	Scratch Size Limit (MB, 0 = No Limit)	Limite dimensioni disco di memoria virtuale (MB, 0 = nessun limite)
 	{path}: the path is not valid Unicode; save under another name.	{path}: il percorso non è Unicode valido; salva con un altro nome.
 	{name} was changed by another app after it was opened or saved here.	{name} è stato modificato da un'altra app dopo essere stato aperto o salvato qui.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Sostituiscilo con questo documento, oppure annulla e usa File › Salva con nome per tenerli entrambi.
@@ -4560,6 +4557,9 @@ shape	Appearance	Aspetto
 	There is no color table to save.	Non c'è alcuna tabella colori da salvare.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Salvato {n} colore in {file}|Salvati {n} colori in {file}
 	GPU adapter	Adattatore GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Il contenuto AI/PDF/EPS verrà modificato come SVG. Il salvataggio sostituisce la sorgente incorporata; le caratteristiche specifiche del formato potrebbero cambiare.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Importa stili…
 	Export Selected Styles…	Esporta stili selezionati…
 	Export Styles…	Esporta stili…
@@ -4609,6 +4609,7 @@ shape	Appearance	Aspetto
 	Font size presets	Predefiniti dimensione font
 	Leading presets	Predefiniti interlinea
 	Tracking presets	Predefiniti spaziatura
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Valore numerico non valido. È richiesto un numero intero compreso tra {min}% e {max}%. È stato inserito il valore precedente.
 	Color Aware	In base al colore
 	Decontaminate Colors	Decontamina colori
 	Edge Detection	Rilevamento bordi
@@ -4625,3 +4626,9 @@ shape	Appearance	Aspetto
 	Refine Hair needs hair detection, which isn't available yet	Migliora capelli richiede il rilevamento dei capelli, non ancora disponibile
 	Select and Mask was closed: its document is no longer the active one	Seleziona e maschera è stato chiuso: il suo documento non è più quello attivo
 	Select and Mask was closed: another layer was selected	Seleziona e maschera è stato chiuso: è stato selezionato un altro livello
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Colori usati di recente
+	Stop Color	Colore del punto
+	Shapes can't use patterns yet	Le forme non possono ancora usare pattern
+	Edit Brush…	Modifica pennello…

@@ -123,7 +123,7 @@
 
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -3969,6 +3969,9 @@ curves	Smooth	Згладити
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} крок ще не має відповідника в PhotoCraft|{n} кроки ще не мають відповідника в PhotoCraft|{n} кроків ще не мають відповідника в PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Збережено {n} операцію до {file}|Збережено {n} операції до {file}|Збережено {n} операцій до {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Пропущено {n} крок без відповідника в Photoshop|Пропущено {n} кроки без відповідника в Photoshop|Пропущено {n} кроків без відповідника в Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Завантажено {n} файл операцій|Завантажено {n} файли операцій|Завантажено {n} файлів операцій
+	{set} from {file} replaced the one from {earlier}	Набір {set} з {file} замінив набір з {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Не вдалося завантажити {n} файл: {errors}|Не вдалося завантажити {n} файли: {errors}|Не вдалося завантажити {n} файлів: {errors}
 	File Naming	Іменування файлів
 	Starting serial	Початковий порядковий номер
 	Insert Stop…	Вставити зупинку…
@@ -3989,6 +3992,7 @@ curves	Smooth	Згладити
 	Sent to {printer}	Надіслано на {printer}
 	set in Print Settings…	задається в параметрах друку…
 	ICO is limited to 256 × 256 pixels	ICO обмежено розміром 256 × 256 пікселів
+	Memory usage percent	Використання пам’яті (%)
 	Show Favorite Fonts	Показати вибрані шрифти
 	No favorite fonts yet: click the star beside a font to add it.	Вибраних шрифтів ще немає: натисніть зірочку біля шрифту, щоб додати його.
 	Favorite fonts	Вибрані шрифти
@@ -4028,17 +4032,8 @@ curves	Smooth	Згладити
 	Kept {name}: written by another application	{name} залишено без змін: записаний іншою програмою
 	Shadow Tint	Відтінок тіней
 	Check for Updates…	Перевірити оновлення…
-	PhotoCraft Updates	Оновлення PhotoCraft
-	Checking for updates…	Перевірка оновлень…
 	Open the release page to choose an installer for your system.	Відкрийте сторінку випуску й виберіть інсталятор для своєї системи.
-	Open Download Page	Відкрити сторінку завантаження
-	PhotoCraft is up to date.	PhotoCraft оновлено до останньої версії.
-	Could not check for updates.	Не вдалося перевірити оновлення.
-	Updates have not been checked yet.	Оновлення ще не перевірялися.
-	Check Again	Перевірити знову
 	Automatically Check for Updates	Автоматично перевіряти оновлення
-	Installed version: {version}	Встановлена версія: {version}
-	PhotoCraft {version} is available.	Доступна версія PhotoCraft {version}.
 	Paints from the History panel's source state	Малює з вихідного стану панелі «Історія»
 	Sets the source for the history brush	Задає джерело для пензля історії
 	Highlight Mode	Режим світлих тонів
@@ -4060,6 +4055,7 @@ curves	Smooth	Згладити
 	Chisel Soft	М'яке різьблення
 	Open color-less EXR as ACEScg	Відкривати EXR без колірного профілю як ACEScg
 	Do not append "copy" to filename when saving a copy	Не додавати «copy» до імені файлу під час збереження копії
+	Save Full-Size Composite in .pcraft Files	Зберігати зведене зображення в повному розмірі у файлах .pcraft
 	Edit Selected Guides	Редагувати вибрані напрямні
 	Clear Selected Guides	Очистити вибрані напрямні
 	Bicubic Automatic	Бікубічна, автоматично
@@ -4112,6 +4108,7 @@ curves	Smooth	Згладити
 	This document's layers: {needed} of {budget} for layers	Шари цього документа: {needed} з {budget} для шарів
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Шарам цього документа потрібно {needed}, але займати вони можуть {budget}: увесь документ перемальовується на CPU
 	GPU Memory (MB, 0 = Automatic)	Пам'ять GPU (МБ, 0 = автоматично)
+	Scratch Size Limit (MB, 0 = No Limit)	Обмеження розміру робочого диска (МБ, 0 = без обмеження)
 	{path}: the path is not valid Unicode; save under another name.	{path}: шлях не є коректним Unicode; збережіть під іншою назвою.
 	Replace	Замінити
 	{name} was changed by another app after it was opened or saved here.	Файл {name} змінила інша програма після того, як його тут відкрили або зберегли.
@@ -4156,6 +4153,9 @@ curves	Smooth	Згладити
 	There is no color table to save.	Немає таблиці кольорів для збереження.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Збережено {n} колір у {file}|Збережено {n} кольори у {file}|Збережено {n} кольорів у {file}
 	GPU adapter	Адаптер GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Вміст AI/PDF/EPS редагуватиметься як SVG. Збереження замінить вбудоване джерело; властивості початкового формату можуть змінитися.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Імпортувати стилі…
 	Export Selected Styles…	Експортувати вибрані стилі…
 	Export Styles…	Експортувати стилі…
@@ -4206,6 +4206,7 @@ curves	Smooth	Згладити
 	Font size presets	Набори розмірів шрифту
 	Leading presets	Набори інтерліньяжу
 	Tracking presets	Набори трекінгу
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Неприпустиме числове значення. Потрібне ціле число від {min}% до {max}%. Вставлено попереднє значення.
 	Clear Selection	Очистити виділення
 	Color Aware	З урахуванням кольору
 	Decontaminate Colors	Очистити кольори
@@ -4223,3 +4224,10 @@ curves	Smooth	Згладити
 	Refine Hair needs hair detection, which isn't available yet	Для уточнення волосся потрібне розпізнавання волосся, яке ще недоступне
 	Select and Mask was closed: its document is no longer the active one	Вікно «Виділити та маскувати» закрито: його документ більше не активний
 	Select and Mask was closed: another layer was selected	Вікно «Виділити та маскувати» закрито: вибрано інший шар
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Вибір кольору
+	Recently Used Colors	Нещодавно використані кольори
+	Stop Color	Колір контрольної точки
+	Shapes can't use patterns yet	Фігури поки не можуть використовувати візерунки
+	Edit Brush…	Редагувати пензель…

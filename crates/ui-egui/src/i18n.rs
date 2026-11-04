@@ -23,7 +23,9 @@
 mod catalog;
 mod system;
 
-pub use system::system_lang;
+#[cfg(test)]
+pub(crate) use system::with_decimal_separator;
+pub use system::{decimal_separator, system_lang};
 
 use std::cell::Cell;
 use std::sync::OnceLock;

@@ -85,7 +85,8 @@ impl<'a> UniformAreas<'a> {
                         Some(v) => v,
                         None => {
                             let bpp = s.default_bytes().len().max(1);
-                            let mut px = t.bytes().chunks_exact(bpp);
+                            let bytes = t.bytes();
+                            let mut px = bytes.chunks_exact(bpp);
                             let v = px.next().filter(|p0| px.all(|p| p == *p0)).map(Box::from);
                             self.tile_values.lock().unwrap_or_else(PoisonError::into_inner).insert(id, v.clone());
                             v

@@ -1,4 +1,3 @@
-use super::dropdown::swatch_popup;
 use super::{Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Tokens, Ui, Vec2, pos2};
 
 /// Cached RGB data; drawing work is bounded by the 256 display bins, never the image size.
@@ -77,10 +76,13 @@ fn checker_tile(ctx: &egui::Context) -> egui::TextureHandle {
     tile
 }
 
-/// A compact colour popup with the shared desktop eyedropper. Keep egui's colour cache so hue
-/// survives black/white and alpha edits, and keep linear and encoded call sites distinct.
-pub fn color_edit_button_srgba(ui: &mut Ui, color: &mut Color32) -> Response {
-    color_edit_button(ui, color, egui::color_picker::Alpha::BlendOrAdditive)
+/// A colour swatch that opens PhotoCraft's Color Picker dialog (HSB, RGB, Lab, CMYK, hex and the
+/// eyedropper), titled `title` as Photoshop's "Color Picker (…)", on its colour. While it is open
+/// the swatch previews the colour it shows; OK keeps the colour (the alpha stays), Cancel restores
+/// the exact colour the swatch had. The response is `changed` in every frame the colour changes;
+/// [`crate::color_picker_ui::widget_picker_open`] tells a preview from the final colour.
+pub fn color_edit_button_srgba(ui: &mut Ui, color: &mut Color32, title: &str) -> Response {
+    color_edit_button(ui, color, title, false)
 }
 
 pub(crate) fn color_swatch(ui: &mut Ui, color: Color32) -> Response {
@@ -118,76 +120,109 @@ pub fn color_swatch_button(ui: &mut Ui, color: Color32, label: &str) -> Response
     response.on_hover_text(label)
 }
 
-fn color_edit_button(ui: &mut Ui, color: &mut Color32, alpha: egui::color_picker::Alpha) -> Response {
-    let mut response = color_swatch(ui, *color);
-    let id = response.id.with("screen-color");
-    if let Some(rgb) = crate::screen_picker::take(ui.ctx(), id) {
-        *color = sampled_color(rgb, *color, alpha);
+/// Where a swatch keeps the exact colour it had when it opened its Color Picker, for Cancel.
+fn opening_id(response: &Response) -> egui::Id {
+    response.id.with("picker-opening")
+}
+
+/// Set once the open picker previewed a colour on the swatch.
+fn previewed_id(response: &Response) -> egui::Id {
+    response.id.with("picker-previewed")
+}
+
+/// The swatch was clicked: keep its exact colour for Cancel.
+fn stash_opening<T: Clone + Send + Sync + 'static>(ui: &Ui, response: &Response, value: &T) {
+    ui.data_mut(|d| {
+        d.insert_temp(opening_id(response), value.clone());
+        d.remove::<bool>(previewed_id(response));
+    });
+}
+
+/// Follow the swatch's Color Picker: OK's colour (`picked`), the colour it shows while open, or
+/// the colour the swatch opened it with when it closes without one. True in the frame a preview
+/// changes `value` and in the frame the picker closes after OK or a preview, so a host can commit
+/// then; a picker closed without either changes nothing (a host must not rewrite its values).
+fn follow_picker<T: Clone + PartialEq + Send + Sync + 'static>(ui: &Ui, response: &Response, value: &mut T, picked: impl Fn([f32; 3], &T) -> T) -> bool {
+    use crate::color_picker_ui::{WidgetEvent, take_widget_color, take_widget_event};
+    let ctx = ui.ctx();
+    if let Some(rgb) = take_widget_color(ctx, response.id) {
+        ctx.data_mut(|d| {
+            d.remove::<T>(opening_id(response));
+            d.remove::<bool>(previewed_id(response));
+        });
+        *value = picked(rgb, value);
+        return true;
+    }
+    match take_widget_event(ctx, response.id) {
+        Some(WidgetEvent::Preview(rgb)) => {
+            let v = picked(rgb, value);
+            let changed = v != *value;
+            if changed {
+                ctx.data_mut(|d| d.insert_temp(previewed_id(response), true));
+            }
+            *value = v;
+            changed
+        }
+        Some(WidgetEvent::Restore) => {
+            let (opening, previewed) = ctx.data_mut(|d| {
+                let v = d.get_temp::<T>(opening_id(response));
+                let previewed = d.get_temp::<bool>(previewed_id(response)) == Some(true);
+                d.remove::<T>(opening_id(response));
+                d.remove::<bool>(previewed_id(response));
+                (v, previewed)
+            });
+            let Some(v) = opening else { return false };
+            let changed = previewed || v != *value;
+            *value = v;
+            changed
+        }
+        None => false,
+    }
+}
+
+fn color_edit_button(ui: &mut Ui, color: &mut Color32, title: &str, opaque: bool) -> Response {
+    let mut response = color_swatch_button(ui, *color, title);
+    if follow_picker(ui, &response, color, |rgb, c| picked_color(rgb, *c, opaque)) {
         response.mark_changed();
     }
-    swatch_popup(&response).show(|ui| {
-        if egui::color_picker::color_picker_color32(ui, color, alpha) {
-            response.mark_changed();
-        }
-        if let Some(rgb) = crate::screen_picker::button(ui, id) {
-            *color = sampled_color(rgb, *color, alpha);
-            response.mark_changed();
-        }
-    });
+    if response.clicked() {
+        stash_opening(ui, &response, color);
+        let [r, g, b, _] = color.to_srgba_unmultiplied();
+        crate::color_picker_ui::request_for_widget(ui.ctx(), response.id, title, [r, g, b].map(|v| f32::from(v) / 255.0));
+    }
     response
 }
 
-fn sampled_color(rgb: [f32; 3], original: Color32, alpha: egui::color_picker::Alpha) -> Color32 {
+fn picked_color(rgb: [f32; 3], original: Color32, opaque: bool) -> Color32 {
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    if matches!(alpha, egui::color_picker::Alpha::BlendOrAdditive) && original.is_additive() {
+    if !opaque && original.is_additive() {
         return Color32::from_rgb_additive(byte(rgb[0]), byte(rgb[1]), byte(rgb[2]));
     }
-    Color32::from_rgba_unmultiplied(
-        byte(rgb[0]),
-        byte(rgb[1]),
-        byte(rgb[2]),
-        if matches!(alpha, egui::color_picker::Alpha::Opaque) { 255 } else { original.a() },
-    )
+    Color32::from_rgba_unmultiplied(byte(rgb[0]), byte(rgb[1]), byte(rgb[2]), if opaque { 255 } else { original.to_srgba_unmultiplied()[3] })
 }
 
-pub fn color_edit_button_srgb(ui: &mut Ui, rgb: &mut [u8; 3]) -> Response {
+/// [`color_edit_button_srgba`] for an opaque 8-bit sRGB colour.
+pub fn color_edit_button_srgb(ui: &mut Ui, rgb: &mut [u8; 3], title: &str) -> Response {
     let mut color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-    let response = color_edit_button(ui, &mut color, egui::color_picker::Alpha::Opaque);
+    let response = color_edit_button(ui, &mut color, title, true);
     if response.changed() {
         *rgb = [color.r(), color.g(), color.b()];
     }
     response
 }
 
-/// Like egui's float RGB widget, this entry point stores linear RGB (not encoded hex values).
-pub fn color_edit_button_rgb(ui: &mut Ui, rgb: &mut [f32; 3]) -> Response {
-    let mut response = color_swatch(ui, Color32::from(egui::Rgba::from_rgb(rgb[0], rgb[1], rgb[2])));
-    let id = response.id.with("screen-color");
-    let to_linear = |color: [f32; 3]| color.map(egui::ecolor::linear_from_gamma);
-    if let Some(color) = crate::screen_picker::take(ui.ctx(), id) {
-        *rgb = to_linear(color);
+/// [`color_edit_button_srgba`] for a float colour stored as linear RGB (like egui's float RGB
+/// widget). The Color Picker works in encoded sRGB; opening it and pressing OK unchanged keeps the
+/// float value as it was.
+pub fn color_edit_button_rgb(ui: &mut Ui, rgb: &mut [f32; 3], title: &str) -> Response {
+    let mut response = color_swatch_button(ui, Color32::from(egui::Rgba::from_rgb(rgb[0], rgb[1], rgb[2])), title);
+    if follow_picker(ui, &response, rgb, |color, _| color.map(egui::ecolor::linear_from_gamma)) {
         response.mark_changed();
     }
-    let rgba = egui::Rgba::from_rgb(rgb[0], rgb[1], rgb[2]);
-    let cache = response.id.with("linear-hsva");
-    let mut hsva = ui
-        .ctx()
-        .data(|d| d.get_temp::<(egui::Rgba, egui::ecolor::Hsva)>(cache))
-        .filter(|(previous, _)| *previous == rgba)
-        .map(|(_, hsva)| hsva)
-        .unwrap_or_else(|| egui::ecolor::Hsva::from(rgba));
-    swatch_popup(&response).show(|ui| {
-        if egui::color_picker::color_picker_hsva_2d(ui, &mut hsva, egui::color_picker::Alpha::Opaque) {
-            let color = egui::Rgba::from(hsva);
-            *rgb = [color.r(), color.g(), color.b()];
-            response.mark_changed();
-        }
-        if let Some(color) = crate::screen_picker::button(ui, id) {
-            *rgb = to_linear(color);
-            hsva = egui::ecolor::Hsva::from(egui::Rgba::from_rgb(rgb[0], rgb[1], rgb[2]));
-            response.mark_changed();
-        }
-    });
-    ui.ctx().data_mut(|d| d.insert_temp(cache, (egui::Rgba::from_rgb(rgb[0], rgb[1], rgb[2]), hsva)));
+    if response.clicked() {
+        stash_opening(ui, &response, rgb);
+        let encoded = rgb.map(|c| if c.is_finite() { egui::ecolor::gamma_from_linear(c.clamp(0.0, 1.0)) } else { 0.0 });
+        crate::color_picker_ui::request_for_widget(ui.ctx(), response.id, title, encoded);
+    }
     response
 }

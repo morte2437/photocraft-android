@@ -2627,7 +2627,7 @@ cameraRaw	Roughness	Grovhet
 	Frequency	Frekvens
 	Use tablet pressure to change pen width	Använd tryckkänslighet på ritplattan för att ändra pennans bredd
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 	About	Om
 	Contributors	Medverkande
 	Models	Modeller
@@ -3180,6 +3180,9 @@ curves	Smooth	Jämna ut
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} steg saknar ännu motsvarighet i PhotoCraft|{n} steg saknar ännu motsvarighet i PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Sparade {n} åtgärd i {file}|Sparade {n} åtgärder i {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} steg utan motsvarighet i Photoshop utelämnades|{n} steg utan motsvarighet i Photoshop utelämnades
+@plural	{n} action file loaded|{n} action files loaded	{n} åtgärdsfil inläst|{n} åtgärdsfiler inlästa
+	{set} from {file} replaced the one from {earlier}	Uppsättningen {set} från {file} ersatte den från {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunde inte läsas in: {errors}|{n} filer kunde inte läsas in: {errors}
 
 	File Naming	Filnamngivning
 	Starting serial	Startnummer
@@ -3276,17 +3279,8 @@ curves	Smooth	Jämna ut
 	Shadow Opacity	Skuggopacitet
 # PhotoCraft release checks.
 	Check for Updates…	Sök efter uppdateringar…
-	PhotoCraft Updates	PhotoCraft-uppdateringar
-	Checking for updates…	Söker efter uppdateringar…
 	Open the release page to choose an installer for your system.	Öppna versionssidan för att välja ett installationsprogram för ditt system.
-	Open Download Page	Öppna hämtningssida
-	PhotoCraft is up to date.	PhotoCraft är uppdaterat.
-	Could not check for updates.	Det gick inte att söka efter uppdateringar.
-	Updates have not been checked yet.	Ingen sökning efter uppdateringar har gjorts ännu.
-	Check Again	Sök igen
 	Automatically Check for Updates	Sök efter uppdateringar automatiskt
-	Installed version: {version}	Installerad version: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} finns tillgänglig.
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Använd den inbäddade profilen ({profile})
 	Convert to the working space ({profile})	Konvertera till arbetsfärgrymden ({profile})
@@ -3365,6 +3359,7 @@ curves	Smooth	Jämna ut
 	This document's layers: {needed} of {budget} for layers	Lagren i det här dokumentet: {needed} av {budget} för lager
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Lagren i det här dokumentet behöver {needed} men får använda {budget}: omritningar av hela dokumentet använder CPU:n
 	GPU Memory (MB, 0 = Automatic)	GPU-minne (MB, 0 = automatisk)
+	Scratch Size Limit (MB, 0 = No Limit)	Storleksgräns för arbetsdisk (MB, 0 = ingen gräns)
 	{path}: the path is not valid Unicode; save under another name.	{path}: sökvägen är inte giltig Unicode; spara under ett annat namn.
 	Replace	Ersätt
 	{name} was changed by another app after it was opened or saved here.	{name} har ändrats av en annan app efter att den öppnades eller sparades här.
@@ -4721,7 +4716,6 @@ shape	Appearance	Utseende
 	Level:	Nivå:
 	Percentile:	Percentil:
 	Refine Edge…	Förfina kant…
-	Release Notes	Versionsinformation
 	Remember Settings	Kom ihåg inställningar
 	Reset Essentials	Återställ Grundläggande
 	Rounded Rectangle Tool	Verktyget Rundad rektangel
@@ -4732,7 +4726,6 @@ shape	Appearance	Utseende
 	Tile Horizontally	Lägg sida vid sida vågrätt
 	Tile Vertically	Lägg sida vid sida lodrätt
 	Uncached Refresh	Uppdatera utan cache
-	Update and Restart	Uppdatera och starta om
 	Warming Filter (81)	Värmefilter (81)
 	Warming Filter (LBA)	Värmefilter (LBA)
 @plural	{n} document|{n} documents	{n} dokument|{n} dokument
@@ -4777,3 +4770,4 @@ cameraRaw	White Balance: As Shot	Vitbalans: som tagen
 	Path operations	Banåtgärder
 	The path was discarded	Banan kasserades
 	The path was kept as the Work Path	Banan behölls som arbetsbana
+	Edit Brush…	Redigera pensel…

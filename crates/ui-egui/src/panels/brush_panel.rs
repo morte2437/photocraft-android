@@ -1,7 +1,7 @@
 //! Window › Brush Settings (F5) and Window › Brushes: Photoshop's floating brush panel.
 //!
-//! Brush Settings: the section list with enable boxes on the left (selecting a controls section
-//! shows its options without enabling it; the last five rows only toggle), the selected section's controls on the right (see [`crate::brush_sections`]),
+//! Brush Settings: the section list with enable boxes on the left (clicking a controls section
+//! shows and enables it; the last five rows only toggle), the selected section's controls on the right (see [`crate::brush_sections`]),
 //! and a live stroke preview strip below, rendered with the real brush engine and cached on the
 //! settings (it re-renders only when they change). Brushes: the presets in collapsible groups with
 //! tip thumbnails and stroke previews, a size slider and a search field.
@@ -242,7 +242,7 @@ pub(crate) fn full_uv() -> egui::Rect {
     egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
 }
 
-/// Selecting a controls section shows its settings without enabling it; the final five rows toggle, keeping
+/// Clicking a controls section shows and enables it; the final five rows only toggle, keeping
 /// the current controls open. The lock on the right is a separate hit target.
 fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSettings) {
     let t = Tokens::get(ui.ctx());
@@ -284,7 +284,6 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
                 ui.painter().rect_filled(r, t.radius_sm, t.hover);
             }
             let mut x = r.left() + 6.0;
-            let mut box_clicked = false;
             if *has_box && let Some(flag) = section_flag(b, i) {
                 let br = egui::Rect::from_center_size(egui::pos2(x + 6.0, r.center().y), vec2(13.0, 13.0));
                 // A checkbox-only row is one accessible checkbox across its whole width. A
@@ -297,14 +296,15 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
                     resp
                 });
                 let on_lock = resp.interact_pointer_pos().is_some_and(|p| p.x > r.right() - 22.0);
-                // For controls sections, only the checkbox toggles the setting; a row
-                // click selects the settings without enabling them (#5136).
-                let pressed = box_resp.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) || (toggle_only && resp.is_pointer_button_down_on() && !on_lock);
+                // A press on the row (but not its lock) presses the box too: a release there
+                // turns the section on, or toggles a checkbox-only row (#4476).
+                let pressed = box_resp.as_ref().is_some_and(|b| b.is_pointer_button_down_on()) || (resp.is_pointer_button_down_on() && !on_lock);
                 let hovered = box_resp.as_ref().is_some_and(|b| b.hovered()) || (toggle_only && resp.hovered());
                 widgets::check_box(ui.painter(), br, *flag, hovered, pressed, &t);
-                box_clicked = box_resp.as_ref().is_some_and(|resp| resp.clicked());
-                if box_clicked || (toggle_only && resp.clicked() && !on_lock) {
+                if box_resp.is_some_and(|resp| resp.clicked()) || (toggle_only && resp.clicked() && !on_lock) {
                     *flag = !*flag;
+                } else if !toggle_only && resp.clicked() && !on_lock {
+                    *flag = true;
                 }
                 x += 20.0;
             } else {
@@ -338,7 +338,7 @@ fn section_list(app: &mut PhotocraftApp, ui: &mut egui::Ui, b: &mut BrushSetting
                     lock_clicked = true;
                 }
             }
-            if !toggle_only && resp.clicked() && !lock_clicked && !box_clicked {
+            if !toggle_only && resp.clicked() && !lock_clicked {
                 app.ui.brush_section = i;
             }
             if i == 0 {

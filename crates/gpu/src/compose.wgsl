@@ -1449,18 +1449,6 @@ fn fs_mblur(in: VOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_mglow(in: VOut) -> @location(0) vec4<f32> {
     let d = textureLoad(tex_a, local(in.pos), 0).r + 0.5;
-    if (op.p0.w > 0.5) {
-        let t = (d - op.p0.x) / op.p0.y;
-        var tail = 0.0;
-        if (t >= 0.0 && t <= 1.0) {
-            tail = op.p0.z * t * t * (3.0 - 2.0 * t);
-        } else if (t > 1.0 && t <= 2.0) {
-            let u = t - 1.0;
-            let remaining = 1.0 - u;
-            tail = op.p0.z * remaining * remaining * (1.0 + 2.0 * u);
-        }
-        return mout(tail);
-    }
     var m = 0.5 * clamp(1.0 - (d - op.p0.x) / op.p0.y, 0.0, 1.0);
     if (d <= op.p0.x) { m = 1.0; }
     return mout(m);
@@ -1472,11 +1460,7 @@ fn fs_mglow(in: VOut) -> @location(0) vec4<f32> {
 fn fs_mfinish(in: VOut) -> @location(0) vec4<f32> {
     let p = local(in.pos);
     var v = textureLoad(tex_a, p, 0).r;
-    if (op.p0.x > 1.5) {
-        v = max(v, textureLoad(tex_b, p, 0).r);
-    } else if (op.p0.x > 0.5) {
-        v = abs(v - textureLoad(tex_b, p, 0).r);
-    }
+    if (op.p0.x > 0.5) { v = abs(v - textureLoad(tex_b, p, 0).r); }
     if (op.p0.y > 0.5 && op.p0.y < 1.5) { v = 1.0 - v; }
     if (op.p0.z > 0.5) { v = lut(0, v); }
     if (op.p0.y > 1.5) { v = 1.0 - v; }

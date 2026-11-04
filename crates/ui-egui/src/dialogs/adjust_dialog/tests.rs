@@ -721,6 +721,23 @@ fn command_click_adds_nothing_in_lab_or_on_a_targeted_mask() {
 }
 
 #[test]
+fn captured_mask_curves_ignore_canvas_point_clicks_after_retargeting() {
+    for target in [json!({"channel":"composite"}), json!({"colors":[0,2]})] {
+        for every_channel in [false, true] {
+            let mut app = app_with_image();
+            app.run("layer.layerMask.revealAll", json!({})).unwrap();
+            app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+            app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+            let id = open(&mut app, "image.adjustments.curves").unwrap();
+            let before = crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields);
+            app.run("channel.target", target.clone()).unwrap();
+            assert!(add_point_at(&mut app, &egui::Context::default(), 8.0, 8.0, every_channel));
+            assert_eq!(crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields), before);
+        }
+    }
+}
+
+#[test]
 fn ui_pointer_drives_an_armed_curves_picker() {
     let mut app = app_with_image();
     let id = open(&mut app, "image.adjustments.curves").unwrap();
@@ -825,6 +842,77 @@ fn curves_harness(app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
 fn popup_channels(h: &mut Harness<'static, PhotocraftApp>) -> Vec<String> {
     h.query_all_by_role(egui::accesskit::Role::ComboBox).filter_map(|n| n.value().map(|s| s.to_string())).collect()
 }
+#[test]
+fn lab_subset_recall_preserves_combined_record_beside_native_lightness() {
+    for kind in ["levels", "curves"] {
+        let mut app = app_with_image();
+        app.run("file.new", json!({"width":32,"height":24,"mode":"lab","depth":16})).unwrap();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        let command = format!("image.adjustments.{kind}");
+        let id = open(&mut app, &command).unwrap();
+        let dialog = app.ui.dialog_mut(id).unwrap();
+        let (key, combined) = if kind == "curves" { ("points", json!([[0, 0], [100, 170], [255, 255]])) } else { ("gamma", json!(1.7)) };
+        dialog.fields.insert(key.into(), combined.clone());
+        let fields = dialog.fields.clone();
+        let lightness = fields["lightness"].clone();
+        remember(&mut app, &fields);
+        app.ui.dialogs.clear();
+        let id = open_last(&mut app, &command).unwrap();
+        let fields = &app.ui.dialog_mut(id).unwrap().fields;
+        assert_eq!(fields[key], combined);
+        assert_eq!(fields["lightness"], lightness);
+        assert_eq!(fields["target"], json!({"colors":[0,2]}));
+    }
+}
+#[test]
+fn levels_recall_on_a_viewed_mask_keeps_its_settings_beside_a_lab_colour_set() {
+    let mut app = app_with_image();
+    app.run("file.new", json!({"width":32,"height":24,"mode":"lab","depth":16})).unwrap();
+    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+    app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+    app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+    let command = "image.adjustments.levels";
+    let id = open(&mut app, command).unwrap();
+    let dialog = app.ui.dialog_mut(id).unwrap();
+    assert_eq!(dialog.fields["target"], json!("mask"));
+    // Lab Levels alias the master to the Lightness record; the editor keeps both in step.
+    let lightness = json!({"gamma":1.5,"inBlack":20.0,"inWhite":255.0,"outBlack":0.0,"outWhite":255.0});
+    dialog.fields.insert("lightness".into(), lightness.clone());
+    dialog.fields.insert("gamma".into(), json!(1.5));
+    dialog.fields.insert("inBlack".into(), json!(20.0));
+    let fields = dialog.fields.clone();
+    remember(&mut app, &fields);
+    app.ui.dialogs.clear();
+    let id = open_last(&mut app, command).unwrap();
+    let fields = &app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["target"], json!("mask"));
+    assert_eq!(fields["gamma"], json!(1.5));
+    assert_eq!(fields["inBlack"], json!(20.0));
+    assert_eq!(fields["lightness"], lightness);
+}
+#[test]
+fn curves_reset_keeps_the_captured_mask_or_native_space_after_retargeting() {
+    for mask in [false, true] {
+        let mut app = app_with_image();
+        app.run("file.new", json!({"width":32,"height":24,"mode":"lab","depth":16})).unwrap();
+        app.run("layer.layerMask.revealAll", json!({})).unwrap();
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        if mask {
+            app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+        }
+        let id = open(&mut app, "image.adjustments.curves").unwrap();
+        let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+        let target = fields["target"].clone();
+        if mask {
+            app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        } else {
+            app.run("view.layerMask", json!({"mode":"gray"})).unwrap();
+        }
+        reset(&app, &egui::Context::default(), &mut fields);
+        assert_eq!(fields["target"], target);
+        assert_eq!(fields.contains_key("a"), !mask, "mask curves stay gray; native curves stay Lab");
+    }
+}
 
 /// FILE-215-3: Curves on a targeted filter mask edits a gray plane, and its histogram is the
 /// filter mask's, not the smart object's colours.
@@ -848,4 +936,34 @@ fn curves_on_a_targeted_filter_mask_is_a_gray_plane() {
     let h = tone::compute_histograms(&st.doc, HistSource::Channel { layer: id, surface }, photocraft_doc::adjust::ToneSpace::Rgb);
     assert!(h.ch[0][0] > 0 && h.ch[0][255] > 0, "black and white levels");
     assert_eq!(curve_mode(&app, "curves"), photocraft_doc::ColorMode::Grayscale);
+}
+
+#[test]
+fn captured_filter_mask_curves_stay_gray_after_selecting_native_channels() {
+    let mut app = app_with_image();
+    app.run("file.new", json!({"width":32,"height":24,"mode":"lab","depth":16})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("edit.fill", json!({"contents":"white"})).unwrap();
+    app.run("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    app.run("filter.blur.gaussianBlur", json!({"radius":2})).unwrap();
+    let layer = app.session.active().unwrap().active_layer.unwrap();
+    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+    app.run("paint.stroke", json!({"points":[[8,8]],"size":8,"color":"#000000","target":"filterMask"})).unwrap();
+    app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+    app.run("view.layerMask", json!({"mode":"gray","mask":"filter"})).unwrap();
+    assert_eq!(crate::canvas::paint_target(&app), json!("filterMask"));
+    assert!(app.filter_mask_targeted());
+    assert!(!app.layer_mask_targeted());
+    assert_eq!(app.ui.filter_mask_target, Some(layer.0));
+    let id = open(&mut app, "image.adjustments.curves").unwrap();
+    let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+    assert_eq!(fields["target"], json!("filterMask"));
+    app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+    assert_eq!(curve_mode_for_fields(&app, "curves", &fields), photocraft_doc::ColorMode::Grayscale);
+    reset(&app, &egui::Context::default(), &mut fields);
+    assert_eq!(fields["target"], json!("filterMask"));
+    assert!(!fields.contains_key("a"));
+    let before = crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields);
+    assert!(add_point_at(&mut app, &egui::Context::default(), 8.0, 8.0, false));
+    assert_eq!(crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields), before);
 }

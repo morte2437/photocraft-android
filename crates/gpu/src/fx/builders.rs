@@ -55,8 +55,7 @@ impl B {
             GlowTechnique::Softer => {
                 // Inner glows spread 1 - alpha.
                 let src = if inner { self.shift(In::Shape, 0.0, 0.0, 0.0, true) } else { In::Shape };
-                let m = self.spread_blur(src, (g.size, g.spread), inner, 0.0, 0.0);
-                if inner { m } else { self.softer_glow_tail(m, g.size, g.range) }
+                self.spread_blur(src, (g.size, g.spread), inner, 0.0, 0.0)
             }
         };
         self.finish_glow(m, fx::glow_lut(g), inner, center);

@@ -34,7 +34,7 @@ pub fn f32_to_bytes(samples: &[f32]) -> Vec<u8> {
 /// Allocates `len` bytes, reporting a machine without that much memory instead of aborting.
 fn try_buffer(len: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    out.try_reserve_exact(len).map_err(|_| PsdError::LimitExceeded("not enough memory for the converted plane"))?;
+    out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory for the converted plane"))?;
     Ok(out)
 }
 
@@ -128,7 +128,7 @@ fn interleave(mode: ColorMode, color: &[Cow<'_, [u8]>], alpha: Option<&[u8]>, pa
         .filter(|&len| len as u64 <= crate::compression::MAX_DECODED_BYTES)
         .ok_or(PsdError::LimitExceeded("RGBA output exceeds MAX_DECODED_BYTES"))?;
     let mut out = Vec::new();
-    out.try_reserve_exact(len).map_err(|_| PsdError::LimitExceeded("not enough memory for RGBA output"))?;
+    out.try_reserve_exact(len).map_err(|_| PsdError::OutOfMemory("not enough memory for RGBA output"))?;
     out.resize(len, 255);
     if mode == ColorMode::Rgb {
         let [r, g, b] = color else { return Err(PsdError::invalid("RGB requires three channels")) };
@@ -439,7 +439,7 @@ mod tests {
     fn plane_conversion_reports_absurd_sizes() {
         assert!(matches!(unpack_bits(&[0], usize::MAX / 2, 4), Err(PsdError::LimitExceeded(_))));
         assert!(matches!(plane_to_u8(&[0], 1, usize::MAX / 2, 4), Err(PsdError::LimitExceeded(_))));
-        assert!(matches!(unpack_bits(&[0], 1 << 40, 1 << 20), Err(PsdError::LimitExceeded(_))));
+        assert!(matches!(unpack_bits(&[0], 1 << 40, 1 << 20), Err(PsdError::LimitExceeded(_) | PsdError::OutOfMemory(_))));
     }
 
     /// A bitmap composite whose RGBA output is over the decode budget is refused up front.

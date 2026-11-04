@@ -395,7 +395,7 @@ fn shapeless_stroke_tile_skips_match_full_region_across_blending_settings() {
                         .unwrap();
                         let mut band_pixels = Vec::with_capacity(whole.px.len());
                         for band in bands {
-                            band_pixels.extend(band.px);
+                            band_pixels.extend(band.into_px());
                         }
                         assert_eq!(whole.px, band_pixels, "banded: {depth:?}, {position:?}, {blend:?}, fill={fill}, blend_if={blend_if}");
                     }
@@ -639,7 +639,7 @@ fn transparency_shapes_off_ignores_masks_and_reaches_groups() {
                 l.mask = Some(LayerMask { surface: photocraft_raster::Surface::with_default(PixelFormat::GRAY8, &[77.0 / 255.0]), ..LayerMask::reveal_all() });
                 l.advanced.transparency_shapes = tsl;
                 d.layers.push(l);
-                render(&d, d.bounds()).px
+                render(&d, d.bounds()).into_px()
             };
             let (off, on) = (render_with(false), render_with(true));
             assert!(off.iter().zip(&on).all(|(a, b)| close(*a, *b)), "{mode:?} ({depth:?}): a mask isn't the layer's transparency");
@@ -691,13 +691,13 @@ fn transparency_shapes_off_keeps_the_base_alpha_under_a_clipped_knockout() {
             base.advanced.transparency_shapes = false;
             base.vector_mask = Some(photocraft_doc::vector::VectorMask { feather: 1.5, ..photocraft_doc::vector::VectorMask::new(square.clone()) });
             d.layers.push(base);
-            let alone = render(&d, d.bounds()).px;
+            let alone = render(&d, d.bounds()).into_px();
             let mut red = solid(&d, "red", full(&d), [1.0, 0.0, 0.0, 0.5]);
             red.clipped = true;
             let mut knock = knocker(&d, k);
             knock.clipped = true;
             d.layers.extend([red, knock]);
-            let got = render(&d, d.bounds()).px;
+            let got = render(&d, d.bounds()).into_px();
             let what = format!("{k:?} ({depth:?})");
             for (i, (g, a)) in got.iter().zip(&alone).enumerate() {
                 if i % 12 < 6 {

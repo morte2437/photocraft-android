@@ -187,6 +187,12 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
         // ⌘↩ / Ctrl+Enter (#306): load the path selected in the Paths panel (or the one being
         // drawn) as a selection.
         "path.toSelection" if params.get("name").is_none() => crate::vector_ui::path_to_selection(app, params.clone()),
+        // ⌘⇧↩ / ⌘⌥↩ load the same path, adding it to or subtracting it from the selection.
+        "path.addToSelection" | "path.subtractFromSelection" if params.get("name").is_none() => {
+            let mut p = params.as_object().cloned().unwrap_or_default();
+            p.insert("mode".into(), json!(if id == "path.addToSelection" { "add" } else { "subtract" }));
+            crate::vector_ui::path_to_selection(app, Value::Object(p))
+        }
         // Layer › Rename Layer from a menu starts in-place renaming in the Layers panel.
         "layer.renameLayer" if params.get("name").is_none() => {
             let st = app.session.active().ok_or("no document")?;
@@ -296,6 +302,9 @@ fn invoke_file_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, 
 }
 
 pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if let Some(result) = crate::smart_svg_ui::intercept(app, id, &params) {
+        return result;
+    }
     if id == "layer.selectUnderCursor" {
         return select_layer_under_cursor(app, ctx);
     }
@@ -698,7 +707,9 @@ fn invoke_window_command(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str)
             let count = app.session.documents().len();
             let active = app.session.active_index().ok_or("no document open")?;
             let next = if id == "window.nextDocument" { (active + 1) % count } else { (active + count - 1) % count };
-            app.session.set_active(next);
+            if next != active {
+                app.run("document.activate", json!({"document": next}))?;
+            }
             app.jobs.focus = None;
             Ok(json!({"document": next}))
         })()),

@@ -57,6 +57,69 @@ fn detect_system_tags() -> Vec<String> {
     Vec::new()
 }
 
+/// The decimal separator of the system's number format (Windows: Region › Decimal symbol), when it
+/// is `.` or `,` and can be read: Photoshop's numeric fields take only that one (a German Windows
+/// refuses a typed `.`). `None` where it can't be read (macOS, Linux and the web for now, or another
+/// symbol): the fields then take both.
+pub fn decimal_separator() -> Option<char> {
+    #[cfg(test)]
+    {
+        TEST_DECIMAL.get()
+    }
+    #[cfg(not(test))]
+    {
+        static SYSTEM: std::sync::OnceLock<Option<char>> = std::sync::OnceLock::new();
+        *SYSTEM.get_or_init(detect_decimal_separator)
+    }
+}
+
+/// `.` or `,` as a decimal separator; anything else (empty, `٫`, two characters) is not one.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+fn separator_from(text: &str) -> Option<char> {
+    match text.trim() {
+        "." => Some('.'),
+        "," => Some(','),
+        _ => None,
+    }
+}
+
+/// The user's own number format (`HKCU\Control Panel\International\sDecimal`, where Windows keeps
+/// the decimal symbol of the format chosen in Region, with any change made to it), read through a
+/// safe binding.
+#[cfg(target_os = "windows")]
+fn detect_decimal_separator() -> Option<char> {
+    use winsafe::{self as w, co};
+    match w::HKEY::CURRENT_USER.RegGetValue(Some("Control Panel\\International"), Some("sDecimal"), co::RRF::RT_REG_SZ) {
+        Ok(w::RegistryValue::Sz(text)) => separator_from(&text),
+        _ => None,
+    }
+}
+
+#[cfg(all(not(test), not(target_os = "windows")))]
+fn detect_decimal_separator() -> Option<char> {
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    // Tests take both separators unless they choose one (`with_decimal_separator`), whatever the
+    // developer's own number format is.
+    static TEST_DECIMAL: std::cell::Cell<Option<char>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `run` as on a system whose decimal separator is `sep` (`None`: unknown, both taken).
+#[cfg(test)]
+pub(crate) fn with_decimal_separator<R>(sep: Option<char>, run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<char>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_DECIMAL.set(self.0);
+        }
+    }
+    let _restore = Restore(TEST_DECIMAL.replace(sep));
+    run()
+}
+
 #[cfg(test)]
 thread_local! {
     // Keep ordinary tests independent of the developer's locale, without mutating OS or
@@ -125,6 +188,27 @@ mod tests {
             assert_eq!(system_lang().code(), "ko");
         });
         assert_eq!(system_lang(), Lang::EN);
+    }
+
+    #[test]
+    fn only_a_point_or_a_comma_is_a_decimal_separator() {
+        assert_eq!(separator_from(","), Some(','));
+        assert_eq!(separator_from(" . "), Some('.'));
+        for other in ["", "\u{66b}", ",,", "'", "x"] {
+            assert_eq!(separator_from(other), None, "{other:?}");
+        }
+        assert_eq!(decimal_separator(), None, "tests take both unless they choose");
+        with_decimal_separator(Some(','), || assert_eq!(decimal_separator(), Some(',')));
+        assert_eq!(decimal_separator(), None);
+    }
+
+    /// The real Windows number format is read (the developer's or CI's: `,` or `.`).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_windows_number_format_has_a_decimal_separator() {
+        let sep = detect_decimal_separator();
+        eprintln!("Windows decimal separator: {sep:?}");
+        assert!(matches!(sep, Some('.' | ',')), "{sep:?}");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

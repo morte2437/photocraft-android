@@ -2416,7 +2416,7 @@
 	Frequency	التردد
 	Use tablet pressure to change pen width	استخدام ضغط الجهاز اللوحي لتغيير عرض القلم
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 	About	حول
 	Contributors	المساهمون
 	Models	النماذج
@@ -3264,6 +3264,9 @@ curves	Smooth	تنعيم
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} خطوة ليس لها مكافئ في PhotoCraft بعد|{n} خطوة ليس لها مكافئ في PhotoCraft بعد|{n} خطوتان ليس لهما مكافئ في PhotoCraft بعد|{n} خطوات ليس لها مكافئ في PhotoCraft بعد|{n} خطوةً ليس لها مكافئ في PhotoCraft بعد|{n} خطوة ليس لها مكافئ في PhotoCraft بعد
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	تم حفظ {n} إجراء في {file}|تم حفظ {n} إجراء في {file}|تم حفظ {n} إجراءين في {file}|تم حفظ {n} إجراءات في {file}|تم حفظ {n} إجراءً في {file}|تم حفظ {n} إجراء في {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	تم استبعاد {n} خطوة ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوة ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوتين ليس لهما مكافئ في Photoshop|تم استبعاد {n} خطوات ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوةً ليس لها مكافئ في Photoshop|تم استبعاد {n} خطوة ليس لها مكافئ في Photoshop
+@plural	{n} action file loaded|{n} action files loaded	تم تحميل {n} ملف إجراءات|تم تحميل {n} ملف إجراءات|تم تحميل {n} ملفي إجراءات|تم تحميل {n} ملفات إجراءات|تم تحميل {n} ملفًا للإجراءات|تم تحميل {n} ملف إجراءات
+	{set} from {file} replaced the one from {earlier}	حلّت المجموعة {set} من {file} محل المجموعة من {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	تعذّر تحميل {n} ملف: {errors}|تعذّر تحميل {n} ملف: {errors}|تعذّر تحميل {n} ملفين: {errors}|تعذّر تحميل {n} ملفات: {errors}|تعذّر تحميل {n} ملفًا: {errors}|تعذّر تحميل {n} ملف: {errors}
 
 	File Naming	تسمية الملفات
 	Starting serial	الرقم التسلسلي الأولي
@@ -3330,17 +3333,8 @@ curves	Smooth	تنعيم
 	Shadow Tint	صبغة الظلال
 # PhotoCraft release checks.
 	Check for Updates…	التحقق من وجود تحديثات…
-	PhotoCraft Updates	تحديثات PhotoCraft
-	Checking for updates…	جارٍ التحقق من وجود تحديثات…
 	Open the release page to choose an installer for your system.	افتح صفحة الإصدار لاختيار برنامج التثبيت المناسب لنظامك.
-	Open Download Page	فتح صفحة التنزيل
-	PhotoCraft is up to date.	PhotoCraft محدّث.
-	Could not check for updates.	تعذر التحقق من وجود تحديثات.
-	Updates have not been checked yet.	لم يتم التحقق من التحديثات بعد.
-	Check Again	التحقق مرة أخرى
 	Automatically Check for Updates	التحقق من وجود تحديثات تلقائيًا
-	Installed version: {version}	الإصدار المثبت: {version}
-	PhotoCraft {version} is available.	يتوفر PhotoCraft {version}.
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	يرسم من حالة المصدر في لوحة السجل
 	Sets the source for the history brush	يحدد مصدر فرشاة السجل
@@ -3430,6 +3424,7 @@ curves	Smooth	تنعيم
 	This document's layers: {needed} of {budget} for layers	طبقات هذا المستند: {needed} من {budget} للطبقات
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	تحتاج طبقات هذا المستند إلى {needed} لكنها تستوعب {budget}: تستخدم إعادة رسم المستند بالكامل وحدة المعالجة المركزية
 	GPU Memory (MB, 0 = Automatic)	ذاكرة GPU (ميغابايت، 0 = تلقائي)
+	Scratch Size Limit (MB, 0 = No Limit)	حد حجم ملف التسويد (ميغابايت، 0 = بلا حد)
 	{path}: the path is not valid Unicode; save under another name.	{path}: المسار ليس Unicode صالحًا؛ احفظ باسم آخر.
 	{name} was changed by another app after it was opened or saved here.	تم تغيير {name} بواسطة تطبيق آخر بعد فتحه أو حفظه هنا.
 	Replace it with this document, or cancel and use File › Save As to keep both.	استبدله بهذا المستند، أو ألغِ واستخدم ملف › حفظ باسم للاحتفاظ بكليهما.
@@ -3541,13 +3536,11 @@ curves	Smooth	تنعيم
 	Drawn on the CPU: {reason}. Click for System Info.	يُرسم على CPU: {reason}. انقر لعرض معلومات النظام.
 	Level:	المستوى:
 	Percentile:	المئين:
-	Release Notes	ملاحظات الإصدار
 	Remember Settings	تذكر الإعدادات
 	Show Channels in Color	عرض القنوات بالألوان
 	Show Statistics	عرض الإحصائيات
 	Source:	المصدر:
 	Uncached Refresh	تحديث دون ذاكرة التخزين المؤقت
-	Update and Restart	التحديث وإعادة التشغيل
 	X	X
 	Y	Y
 
@@ -3555,3 +3548,4 @@ curves	Smooth	تنعيم
 
 	The path was kept as the Work Path	تم الاحتفاظ بالمسار كمسار عمل
 	The path was discarded	تم تجاهل المسار
+	Edit Brush…	تحرير الفرشاة…

@@ -3725,6 +3725,9 @@ curves	Smooth	Làm mượt
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} bước chưa có chức năng tương ứng trong PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Đã lưu {n} hành động vào {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Đã bỏ qua {n} bước không có chức năng tương ứng trong Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Đã nạp {n} tệp hành động
+	{set} from {file} replaced the one from {earlier}	Bộ {set} từ {file} đã thay thế bộ từ {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Không thể nạp {n} tệp: {errors}
 	File Naming	Đặt tên tệp
 	Starting serial	Số thứ tự bắt đầu
 	Insert Stop…	Chèn điểm dừng…
@@ -3755,6 +3758,7 @@ curves	Smooth	Làm mượt
 	Sent to {printer}	Đã gửi tới {printer}
 	set in Print Settings…	đặt trong thiết lập in…
 	ICO is limited to 256 × 256 pixels	ICO giới hạn ở 256 × 256 pixel
+	Memory usage percent	Tỷ lệ sử dụng bộ nhớ
 	Show Favorite Fonts	Hiển thị phông chữ yêu thích
 	No favorite fonts yet: click the star beside a font to add it.	Chưa có phông chữ yêu thích: nhấp vào ngôi sao bên cạnh phông chữ để thêm.
 	Favorite fonts	Phông chữ yêu thích
@@ -3794,17 +3798,8 @@ curves	Smooth	Làm mượt
 	Kept {name}: written by another application	Đã giữ {name}: do ứng dụng khác ghi
 	Shadow Tint	Sắc độ bóng tối
 	Check for Updates…	Kiểm tra bản cập nhật…
-	PhotoCraft Updates	Bản cập nhật PhotoCraft
-	Checking for updates…	Đang kiểm tra bản cập nhật…
 	Open the release page to choose an installer for your system.	Mở trang phát hành để chọn bộ cài đặt cho hệ thống của bạn.
-	Open Download Page	Mở trang tải xuống
-	PhotoCraft is up to date.	PhotoCraft đã được cập nhật.
-	Could not check for updates.	Không thể kiểm tra bản cập nhật.
-	Updates have not been checked yet.	Chưa kiểm tra bản cập nhật.
-	Check Again	Kiểm tra lại
 	Automatically Check for Updates	Tự động kiểm tra bản cập nhật
-	Installed version: {version}	Phiên bản đã cài: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} đã có sẵn.
 	Paints from the History panel's source state	Vẽ từ trạng thái nguồn của bảng Lịch sử
 	Sets the source for the history brush	Đặt nguồn cho cọ lịch sử
 	Highlight Mode	Chế độ vùng sáng
@@ -3826,6 +3821,7 @@ curves	Smooth	Làm mượt
 	Chisel Soft	Đục mềm
 	Open color-less EXR as ACEScg	Mở EXR không khai báo màu sắc dưới dạng ACEScg
 	Do not append "copy" to filename when saving a copy	Không thêm "copy" vào tên tệp khi lưu bản sao
+	Save Full-Size Composite in .pcraft Files	Lưu ảnh tổng hợp kích thước đầy đủ trong tệp .pcraft
 	Edit Selected Guides	Sửa đường căn đã chọn
 	Clear Selected Guides	Xóa đường căn đã chọn
 	Bicubic Automatic	Bicubic tự động
@@ -3903,6 +3899,7 @@ curves	Smooth	Làm mượt
 	This document's layers: {needed} of {budget} for layers	Các lớp của tài liệu này: {needed} trên {budget} dành cho lớp
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Các lớp của tài liệu này cần {needed} nhưng chỉ được dùng {budget}: vẽ lại toàn bộ tài liệu dùng CPU
 	GPU Memory (MB, 0 = Automatic)	Bộ nhớ GPU (MB, 0 = Tự động)
+	Scratch Size Limit (MB, 0 = No Limit)	Giới hạn dung lượng đĩa tạm (MB, 0 = Không giới hạn)
 	{path}: the path is not valid Unicode; save under another name.	{path}: đường dẫn không phải Unicode hợp lệ; hãy lưu với tên khác.
 	Replace	Thay thế
 	{name} was changed by another app after it was opened or saved here.	{name} đã bị một ứng dụng khác thay đổi sau khi được mở hoặc lưu ở đây.
@@ -3940,6 +3937,18 @@ curves	Smooth	Làm mượt
 	There is no color table to save.	Không có bảng màu nào để lưu.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Đã lưu {n} màu vào {file}
 	GPU adapter	Bộ điều hợp GPU
+smartSvg	Choose executable…	Chọn tệp thực thi…
+smartSvg	Choose the application used to edit this SVG:	Chọn ứng dụng dùng để chỉnh sửa SVG này:
+smartSvg	Edit SVG Smart Object	Chỉnh sửa Đối tượng thông minh SVG
+smartSvg	Other application	Ứng dụng khác
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (trình chỉnh sửa nội bộ)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	Đã mở trình chỉnh sửa SVG. Lưu SVG để cập nhật Đối tượng thông minh này.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Lưu vào tệp SVG đã mở. Mỗi lần lưu thay đổi tạo một bước hoàn tác trong PhotoCraft.
+smartSvg	Stop syncing this Smart Object	Dừng đồng bộ Đối tượng thông minh này
+smartSvg	Updates wait while another document or an editing dialog is active.	Các cập nhật sẽ chờ khi tài liệu khác hoặc hộp thoại chỉnh sửa đang hoạt động.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Nội dung AI/PDF/EPS sẽ được chỉnh sửa dưới dạng SVG. Lưu sẽ thay thế nguồn nhúng; các tính năng riêng của định dạng có thể thay đổi.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Nhập kiểu…
 	Export Selected Styles…	Xuất các kiểu đã chọn…
 	Export Styles…	Xuất kiểu…
@@ -3992,6 +4001,7 @@ curves	Smooth	Làm mượt
 	Font size presets	Cỡ chữ đặt sẵn
 	Leading presets	Giãn dòng đặt sẵn
 	Tracking presets	Khoảng cách chữ đặt sẵn
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Giá trị số không hợp lệ. Cần một số nguyên từ {min}% đến {max}%. Đã chèn giá trị trước đó.
 	Clear Selection	Xóa vùng chọn
 	Color Aware	Nhận biết màu
 	Decontaminate Colors	Khử nhiễm màu
@@ -4010,3 +4020,10 @@ curves	Smooth	Làm mượt
 	Select and Mask was closed: its document is no longer the active one	Đã đóng Chọn và Mặt nạ: tài liệu của nó không còn là tài liệu đang hoạt động
 	Select and Mask was closed: another layer was selected	Đã đóng Chọn và Mặt nạ: một lớp khác đã được chọn
 	Select Layer Under Cursor	Chọn lớp dưới con trỏ
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Bộ chọn màu
+	Recently Used Colors	Màu dùng gần đây
+	Stop Color	Màu điểm dừng
+	Shapes can't use patterns yet	Hình chưa thể dùng mẫu tô
+	Edit Brush…	Chỉnh sửa cọ…

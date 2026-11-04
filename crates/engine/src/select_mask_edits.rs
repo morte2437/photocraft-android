@@ -239,7 +239,9 @@ fn invert(base: Option<&Surface>, canvas: Rect) -> Option<Surface> {
             if r.is_empty() {
                 continue;
             }
-            let inverted: Vec<f32> = b.read_region(r).chunks_exact(ch).map(|px| 1.0 - px.first().copied().unwrap_or(0.0).clamp(0.0, 1.0)).collect();
+            let read = b.read_region(r);
+            let inverted: Vec<f32> = read.chunks_exact(ch).map(|px| 1.0 - px.first().copied().unwrap_or(0.0).clamp(0.0, 1.0)).collect();
+            photocraft_raster::scratch::give(read);
             s.write_region(r, &inverted);
         }
     }

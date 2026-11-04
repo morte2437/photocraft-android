@@ -1242,9 +1242,9 @@ fn live_rectangle_corner_radius_edit_preserves_other_corners_and_history() {
     assert_eq!(get_radii(&app), [12.0; 4]);
 }
 
-/// #534: dragging in a shape's fill picker, opened from the Properties panel at the right edge
-/// of the window, keeps the picker in place (it flipped from side to side as its width
-/// followed the colour readouts, which moved it under the pointer).
+/// #534: using a shape's fill popover, opened from the Properties panel at the right edge of
+/// the window, keeps it in place (it flipped from side to side as its width followed the
+/// colour readouts, which moved it under the pointer).
 #[test]
 fn shape_colour_picker_stays_put_while_dragging() {
     use egui::{PointerButton, vec2};
@@ -1287,20 +1287,18 @@ fn shape_colour_picker_stays_put_while_dragging() {
         }
     };
     let before = fill(&h);
-    // Drag across the picker's colour area.
-    let start = opened.min + vec2(60.0, opened.height() * 0.5);
-    h.hover_at(start);
-    h.step();
-    press(&mut h, start, true);
-    for i in 1..=10 {
-        h.event(egui::Event::PointerMoved(start + vec2(i as f32 * 5.0, i as f32)));
-        h.step();
+    // Opening folders scrolls the list: the popover stays where it opened, inside the window.
+    for label in ["Pure", "Dark"] {
+        h.get_by_label(label).click();
+        h.run_steps(3);
         let r = popup(&h).expect("the picker stays open");
-        assert_eq!(r.left_top(), opened.left_top(), "step {i}: the picker moved from {opened:?} to {r:?}");
-        assert!(h.ctx.content_rect().contains_rect(r), "step {i}: {r:?} runs off the window");
+        assert_eq!(r.left_top(), opened.left_top(), "{label}: the picker moved from {opened:?} to {r:?}");
+        assert!(h.ctx.content_rect().contains_rect(r), "{label}: {r:?} runs off the window");
     }
-    press(&mut h, start, false);
-    assert_ne!(fill(&h), before, "the drag picked a colour");
+    h.get_by_label("Dark Red").click();
+    h.run_steps(2);
+    assert_eq!(popup(&h).map(|r| r.left_top()), Some(opened.left_top()), "picking keeps the popover open in place");
+    assert_ne!(fill(&h), before, "the swatch picked a colour");
 }
 
 /// The options bar edits the selected shape's fill and stroke.

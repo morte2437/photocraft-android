@@ -5,6 +5,7 @@ use super::params::{
     input_object, merged_object, modifiers_from, num_field, ok, screen_point, uint_field, whole_object,
 };
 use super::{ControlRequest, DialogKind, Outcome, PhotocraftApp, SHELL_DIALOG, Tool, ToolEvent, Value, json, run_waiting, tool_event, wrap};
+use photocraft_engine::jobs::{CancelReport, JobId};
 
 /// A domain handler: `Some` when it owns the request's method, `None` to let the next one try.
 type Handler = fn(&mut PhotocraftApp, &egui::Context, &ControlRequest) -> Option<Outcome>;
@@ -51,6 +52,9 @@ fn engine_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReq
 
 fn context_choose(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     let Some(id) = str_param(p, "id") else { return err("missing `id`") };
+    if app.ui.canvas_tool_menu.is_none() && app.ui.brush_mode_menu.is_some() {
+        return mode_menu_choose(app, ctx, id);
+    }
     let Some(menu) = app.ui.canvas_tool_menu.as_ref() else { return err("no canvas context menu is open") };
     if !crate::canvas_tool_menu::available(app, menu, id) {
         return err("context action is unavailable");
@@ -64,6 +68,22 @@ fn context_choose(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Ou
     }
     crate::canvas_tool_menu::choose(app, ctx, id);
     ok(json!({"command": id, "dialog": app.ui.dialogs.last().map(|d| d.id)}))
+}
+
+/// A row of the painting tools' Shift+right-click menu, by its English label (`brushModeMenu.choices`).
+fn mode_menu_choose(app: &mut PhotocraftApp, ctx: &egui::Context, label: &str) -> Outcome {
+    let item = match crate::brush_mode_menu::find(app, label) {
+        Ok(item) => item,
+        Err(e) => return err(e),
+    };
+    if let Some((command, params)) = crate::brush_mode_menu::engine_call(app, app.ui.tool, item)
+        && let Some(authorize) = app.services.automation_command.as_ref()
+        && let Err(error) = authorize(command, &params)
+    {
+        return err(error);
+    }
+    crate::brush_mode_menu::choose(app, ctx, item);
+    ok(json!({"choice": label, "brushPicker": app.ui.brush_picker.is_some()}))
 }
 
 fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
@@ -104,18 +124,27 @@ fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRe
 fn jobs_cancel(app: &mut PhotocraftApp, p: &Value) -> Outcome {
     let all = p.get("job").is_none_or(Value::is_null);
     match p.get("job").and_then(Value::as_u64) {
-        Some(j) if app.session.job(photocraft_engine::jobs::JobId(j)).is_some() => {
-            let cancelled = crate::jobs_ui::cancel(app, photocraft_engine::jobs::JobId(j));
-            ok(json!({"cancelled": usize::from(cancelled)}))
-        }
+        // Same reply as the engine's `jobs.cancel`: `{cancelled: n}`, plus `notCancelled:
+        // [{job, reason}]` for the jobs left running (a save already writing its file, a print).
+        Some(j) if app.session.job(JobId(j)).is_some() => ok(cancel_each(app, vec![JobId(j)]).to_json()),
         Some(j) => err(format!("no running job {j}")),
         None if all => {
             let ids: Vec<_> = app.session.jobs().into_iter().map(|j| j.id).collect();
-            let cancelled = ids.into_iter().filter(|j| crate::jobs_ui::cancel(app, *j)).count();
-            ok(json!({"cancelled": cancelled}))
+            ok(cancel_each(app, ids).to_json())
         }
         None => err("`job` must be a job id"),
     }
+}
+
+fn cancel_each(app: &mut PhotocraftApp, ids: Vec<JobId>) -> CancelReport {
+    let mut report = CancelReport::default();
+    for id in ids {
+        match crate::jobs_ui::try_cancel(app, id) {
+            Ok(()) => report.cancelled.push(id),
+            Err(why) => report.refused.push((id, why)),
+        }
+    }
+    report
 }
 
 // ---- the shell: view state, windows, GPU, focus, screenshots ----
@@ -586,6 +615,9 @@ impl PanelSet {
             app.ui.mask_target = m;
             app.ui.properties_layer = None;
             app.ui.vector_mask_target &= !m;
+            if m {
+                app.target_mask_over_colour_rows();
+            }
             app.sync_mask_targets();
         }
         if let Some(open) = self.updates_open {
@@ -1347,7 +1379,11 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     let p = &req.params;
     Some(match req.method.as_str() {
         "app.open" => match str_param(p, "path") {
-            Some(path) => app_open(app, path),
+            Some(path) => match p.get("approveHighMemory") {
+                None | Some(Value::Null) => app_open(app, path, false),
+                Some(Value::Bool(approved)) => app_open(app, path, *approved),
+                Some(_) => err("expected boolean for `approveHighMemory`"),
+            },
             None => err("missing `path`"),
         },
         "app.save" => match crate::FormatChoices::from_params(p, "app.save") {
@@ -1366,7 +1402,9 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     })
 }
 
-fn app_open(app: &mut PhotocraftApp, path: &str) -> Outcome {
+/// The `app.open` control method: opens a path through the configured automation read
+/// capability, with optional high-memory approval.
+fn app_open(app: &mut PhotocraftApp, path: &str, approved: bool) -> Outcome {
     if let Some(outcome) = open_pcraft_directory(app, path) {
         return outcome;
     }
@@ -1376,7 +1414,7 @@ fn app_open(app: &mut PhotocraftApp, path: &str) -> Outcome {
     };
     wrap(opened.and_then(|(name, bytes)| {
         let name = app.open_name(&name);
-        let warnings = app.open_automation_bytes(&name, &bytes)?;
+        let warnings = app.open_automation_bytes_with_approval(&name, &bytes, approved)?;
         // Brushes/gradients go to the preset libraries: no document, no Open Recent entry.
         if !crate::preset_files_ui::is_preset_file(&name) {
             app.opened_from(path);
