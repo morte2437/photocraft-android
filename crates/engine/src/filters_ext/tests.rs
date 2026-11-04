@@ -33,11 +33,18 @@ fn lens_flare_keeps_off_canvas_centers_and_native_defaults() {
 /// Extreme centers and malformed inputs remain bounded command executions with finite pixels.
 #[test]
 fn lens_flare_extreme_centers_do_not_panic_or_corrupt_pixels() {
-    for p in [json!({"centerX": 1e300, "centerY": -1e300}), json!({"centerX": null, "centerY": []}), json!({"centerX": 5, "centerY": -5, "brightness": -100})] {
-        let mut s = session();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("filter.render.lensFlare", p)));
-        assert!(result.is_ok());
-        assert!(pixels(&s).iter().all(|v| v.is_finite()));
+    for lens in ["zoom", "prime35", "prime105", "moviePrime"] {
+        for p in [
+            json!({"centerX": 1e300, "centerY": -1e300, "lens": lens}),
+            json!({"centerX": 1e38, "centerY": -1e38, "lens": lens}),
+            json!({"centerX": null, "centerY": [], "lens": lens}),
+            json!({"centerX": 5, "centerY": -5, "brightness": -100, "lens": lens}),
+        ] {
+            let mut s = session();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute("filter.render.lensFlare", p.clone())));
+            assert!(result.is_ok(), "{p}");
+            assert!(pixels(&s).iter().all(|v| v.is_finite()), "non-finite pixels for {p}");
+        }
     }
 }
 

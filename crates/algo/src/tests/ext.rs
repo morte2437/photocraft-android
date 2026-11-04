@@ -435,6 +435,82 @@ fn lens_flare_is_brightest_at_its_centre() {
     assert!(out.pixel(38, 2)[0] >= 0.2 - 1e-6, "screen never darkens");
 }
 
+/// A Lens Flare on black over `r` (its reference bounds), as straight RGB.
+fn flare_on_black(r: Rect, lens: LensType) -> Vec<f32> {
+    let s = flat(SampleType::F32, r, BLACK);
+    let p = FilterParams::LensFlare { brightness: 100.0, center_x: 0.3, center_y: 0.3, lens };
+    apply(&s, &p, output_area(&p, s.content_bounds(), r, None), r, None).read_region(r)
+}
+
+#[test]
+fn lens_flare_scales_with_the_image() {
+    // Sizes are fractions of the image diagonal: the same flare on a twice-as-large image, halved,
+    // is the small one (up to the one-pixel rays, which stay one pixel wide).
+    for lens in [LensType::Zoom, LensType::Prime35, LensType::Prime105, LensType::MoviePrime] {
+        let (small, big) = (Rect::new(0, 0, 200, 150), Rect::new(0, 0, 400, 300));
+        let a = flare_on_black(small, lens);
+        let b = flare_on_black(big, lens);
+        let mut diff = 0.0f64;
+        for y in 0..150usize {
+            for x in 0..200usize {
+                for k in 0..3 {
+                    let at = |xx: usize, yy: usize| f64::from(b[(yy * 400 + xx) * 4 + k]);
+                    let halved = (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1)) / 4.0;
+                    diff += (halved - f64::from(a[(y * 200 + x) * 4 + k])).abs();
+                }
+            }
+        }
+        let mean = diff / (200.0 * 150.0 * 3.0);
+        assert!(mean < 0.01, "{lens:?}: mean difference {mean}");
+    }
+}
+
+#[test]
+fn every_lens_flare_lens_looks_different() {
+    let r = Rect::new(0, 0, 160, 120);
+    let lenses = [LensType::Zoom, LensType::Prime35, LensType::Prime105, LensType::MoviePrime];
+    let flares: Vec<Vec<f32>> = lenses.iter().map(|l| flare_on_black(r, *l)).collect();
+    for i in 0..flares.len() {
+        for j in i + 1..flares.len() {
+            let d: f32 = flares[i].iter().zip(&flares[j]).map(|(a, b)| (a - b).abs()).sum::<f32>() / flares[i].len() as f32;
+            assert!(d > 0.01, "{:?} and {:?} are nearly the same ({d})", lenses[i], lenses[j]);
+        }
+    }
+}
+
+#[test]
+fn lens_flare_with_an_overflowing_centre_leaves_finite_pixels() {
+    // A centre of 1e300 from a command becomes infinite in f32; NaN must not reach the pixels.
+    let src = flat(SampleType::F32, R, [0.2, 0.3, 0.4, 1.0]);
+    for lens in [LensType::Zoom, LensType::Prime35, LensType::Prime105, LensType::MoviePrime] {
+        for (cx, cy) in [(f32::INFINITY, f32::NEG_INFINITY), (1e38, -1e38), (f32::NAN, 0.5), (5.0, -5.0)] {
+            let out = run(&src, &FilterParams::LensFlare { brightness: 100.0, center_x: cx, center_y: cy, lens });
+            let px = out.read_region(R);
+            assert!(px.iter().all(|v| v.is_finite()), "{lens:?} at ({cx}, {cy})");
+            assert!(px.iter().zip(src.read_region(R)).all(|(a, b)| *a >= b - 1e-6), "{lens:?}: screen never darkens");
+        }
+    }
+}
+
+#[test]
+fn lens_flare_between_two_measured_brightnesses_blends_their_light() {
+    // 75 % and 100 % are measured levels; 87.5 % is halfway, so its light is their mean. On black
+    // 32-bit the result is the light itself; at 0 and 1 the clamp makes the blend nonlinear.
+    let black = flat(SampleType::F32, R, [0.0, 0.0, 0.0, 1.0]);
+    for lens in [LensType::Zoom, LensType::Prime35, LensType::Prime105, LensType::MoviePrime] {
+        let at = |brightness: f32| run(&black, &FilterParams::LensFlare { brightness, center_x: 0.25, center_y: 0.5, lens }).read_region(R);
+        let (lo, mid, hi) = (at(75.0), at(87.5), at(100.0));
+        let mut checked = 0;
+        for ((l, m), h) in lo.iter().zip(&mid).zip(&hi) {
+            if [*l, *m, *h].iter().all(|v| *v > 0.0 && *v < 1.0) {
+                assert!((m - 0.5 * (l + h)).abs() < 1e-4, "{lens:?}: {m} is not the mean of {l} and {h}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 100, "{lens:?}: too few unclipped values ({checked})");
+    }
+}
+
 #[test]
 fn lens_flare_never_darkens_32_bit_values_above_one() {
     // #5785: the screen formula turned 2.0 into 1.5 (and 1.0 at the core).
