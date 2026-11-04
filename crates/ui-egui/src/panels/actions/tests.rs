@@ -2443,16 +2443,17 @@ fn unchanged_and_released_gates_allow_the_action_tail() {
 }
 
 #[test]
-fn distinct_configured_gates_require_one_composed_policy_for_automated_resume() {
+fn configured_gates_require_one_composed_policy_for_automated_resume() {
     fn deny_file_open(id: &str, _: &Value) -> photocraft_engine::Result<()> {
         if id == "file.open" { Err(photocraft_engine::EngineError::Other("file open denied".into())) } else { Ok(()) }
     }
     assert!(!std::ptr::fn_addr_eq(deny_wide_blur as Gate, deny_file_open as Gate));
-    for automated in [false, true] {
+    for (automated, identical) in [(false, false), (true, false), (true, true)] {
         let mut app = gated_blur_fixture(true, false);
         app.session.actions.list[0].steps.push(("layer.renameLayer".into(), json!({"name":"Allowed tail"})));
         app.session.authorize = Some(deny_wide_blur);
-        app.services.automation_authorize = Some(deny_file_open);
+        let service: Gate = if identical { deny_wide_blur } else { deny_file_open };
+        app.services.automation_authorize = Some(service);
         // The service is configured before the real local pause, but becomes effective only
         // for the automated OK. Both callbacks allow this edit and its remaining command.
         for gate in [deny_wide_blur as Gate, deny_file_open as Gate] {
@@ -2465,7 +2466,7 @@ fn distinct_configured_gates_require_one_composed_policy_for_automated_resume() 
         app.automation_input = automated;
         let result = crate::dialogs::confirm(&mut app, dialog);
         let state = app.session.active().unwrap();
-        if automated {
+        if automated && !identical {
             assert!(result.is_err_and(|error| error.contains("policies that cannot be combined")));
             assert_eq!(state.doc.as_ref(), before.as_ref());
             assert_eq!(state.history.past_len(), rows);
@@ -2478,7 +2479,7 @@ fn distinct_configured_gates_require_one_composed_policy_for_automated_resume() 
             assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
         }
         assert!(std::ptr::fn_addr_eq(app.session.authorize.unwrap(), deny_wide_blur as Gate));
-        assert!(std::ptr::fn_addr_eq(app.services.automation_authorize.unwrap(), deny_file_open as Gate));
+        assert!(std::ptr::fn_addr_eq(app.services.automation_authorize.unwrap(), service));
         assert!(app.paused_playbacks.paused.is_empty());
         assert_eq!(app.session.actions.playing, 0);
     }
@@ -2544,6 +2545,26 @@ fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
             }
         }
     }
+
+    // An omitted target inherits the mask selected when the paused dialog opens. This is
+    // distinct from native playback without a dialog, which resolves the current channel.
+    let mut app = gated_blur_fixture(true, false);
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    app.run("layer.layerMask.revealAll", json!({})).unwrap();
+    app.run("edit.fill", json!({"color":"#808080","target":"mask"})).unwrap();
+    assert!(app.layer_mask_targeted());
+    app.session.actions.list[0].steps[0] = ("image.adjustments.brightnessContrast".into(), json!({"brightness":40}));
+    let before = app.session.active().unwrap().doc.clone();
+    let rows = app.session.active().unwrap().history.past_len();
+    let dialog = pause_gated_blur(&mut app, None);
+    assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["target"], "mask");
+    crate::dialogs::confirm(&mut app, dialog).unwrap();
+    let state = app.session.active().unwrap();
+    assert_ne!(state.doc.layer(a).unwrap().mask, before.layer(a).unwrap().mask);
+    assert_eq!(state.doc.layer(a).unwrap().surface(), before.layer(a).unwrap().surface());
+    assert_eq!(state.history.past_len(), rows + 1);
+    assert!(app.session.undo());
+    assert_eq!(app.session.active().unwrap().doc.as_ref(), before.as_ref());
 }
 
 #[test]
