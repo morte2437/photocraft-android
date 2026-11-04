@@ -485,6 +485,11 @@ fn settings_at_the_value_the_event_plays_still_export() {
 /// Each mapped command retains its parameters through its corresponding ATN descriptor.
 fn every_mapped_command_exports_and_imports_back() {
     let cases: Vec<(&str, Value)> = vec![
+        (
+            "paint.gradient",
+            json!({"from":[1,1],"to":[6,2],"style":"linear","method":"classic","smoothness":100,
+            "stops":[[0,"#0020ff"],[1,"#ffe000"]],"transparency":[],"opacity":100,"mode":"Normal","reverse":false,"dither":false}),
+        ),
         ("filter.render.clouds", json!({})),
         ("filter.render.differenceClouds", json!({})),
         ("filter.render.fibers", json!({"variance": 20, "strength": 7, "seed": -123})),
@@ -495,6 +500,11 @@ fn every_mapped_command_exports_and_imports_back() {
         ("select.rect", json!({"x":1,"y":2,"width":3,"height":4,"mode":"intersect"})),
         ("edit.pasteSpecial.pasteInto", json!({})),
         ("edit.pasteSpecial.pasteOutside", json!({})),
+        (
+            "edit.contentAwareFill",
+            json!({"sampling":"rectangular","sampleAllLayers":true,"colorAdaptation":"default",
+                "rotationAdaptation":"none","scale":true,"mirror":false,"output":"new"}),
+        ),
         ("edit.fade", json!({"opacity":50,"mode":"Multiply"})),
         ("layer.linkLayers", json!({})),
         ("layer.distribute.leftEdges", json!({})),
@@ -619,6 +629,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("image.duplicate", json!({"mergedOnly": true})),
         ("layer.new.layer", json!({"name": "Ink", "opacity": 0.5, "mode": "Multiply"})),
         ("type.convertToShape", json!({})),
+        ("type.createWorkPath", json!({})),
         ("filter.blur.shapeBlur", json!({})),
         ("filter.blur.shapeBlur", json!({"radius": 10})),
         ("layer.new.group", json!({"name": "G"})),
@@ -885,6 +896,10 @@ fn every_mapped_command_exports_and_imports_back() {
                 }
                 assert_eq!(steps[0].0, *id, "{id} came back as another command");
                 let mut back = steps[0].1.clone();
+                if *id == "paint.gradient" {
+                    // Executable values match; independent public tests verify the source carrier.
+                    back.as_object_mut().unwrap().remove("__atnClassicGradient");
+                }
                 normalise(&mut back);
                 if *id == "actions.play" || *id == "actions.conditional" {
                     back["set"] = json!("S");

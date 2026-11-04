@@ -1394,4 +1394,8 @@ fn crop_menu_rows_act_like_the_options_bar() {
     reopen(&mut app);
     choose(&mut app, &ctx, CROP_CANCEL);
     assert!(!crate::crop_ui::pending(&app));
+    // ...and, as Esc does, hides the frame without cropping (#10370).
+    crate::crop_ui::ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None);
+    assert_eq!(app.session.active().unwrap().doc.size, size);
 }

@@ -179,6 +179,7 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
+/// Run one source through its action and output pipeline while finalizing only that document's owned history scope.
 fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,
@@ -187,11 +188,16 @@ fn process_outputs<'a>(
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
     let raw_ppi = s.prefs().raw_defaults.resolution;
+    let action_prefs = s.prefs().actions.clone();
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
+    let run = |scratch: &mut Session, out: &str| {
+        scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
+        f(scratch, out)
+    };
     for (path, out) in outputs {
-        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None }, f);
+        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None }, &run);
         match r {
             Ok(()) => {
                 written.record(&out, path);
@@ -478,8 +484,17 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
+/// Execute the selected source set with per-document action scopes and restore the caller's library on every exit.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let action_name = s
+        .action_history
+        .as_ref()
+        .map(|group| group.name.clone())
+        .or_else(|| s.actions.playback_stack.first().cloned())
+        .or_else(|| p.get("action").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| p.get("action").and_then(|action| action.get("name")).and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| "Batch".into());
     let mut steps =
         parse_steps(p.get("steps").or_else(|| p.get("action")).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "missing \"steps\"".into() })?)?;
     // Each result goes to the destination folder, which overrides the action's recorded Save /
@@ -541,18 +556,27 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if source == "open" {
         let save = SaveOpts::from_params(s, p, cmd)?;
-        if p.get("calledActions").is_some_and(|value| !value.is_null()) {
-            let previous = std::mem::replace(&mut s.actions.list, actions.list.clone());
-            let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
-            s.actions.list = previous;
-            return result;
+        // A top-level open-document batch owns its lazy per-document scope. A batch
+        // inside an action shares that action's scope and must not finish it early.
+        let owns_history = s.action_history.is_none() && s.prefs().actions.create_single_history_state;
+        if owns_history {
+            crate::actions_cmds::begin_document_history(s, &action_name);
         }
-        return batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+        let previous = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list.clone()));
+        let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+        if owns_history {
+            crate::actions_cmds::finish_document_history(s);
+        }
+        if let Some(previous) = previous {
+            s.actions.list = previous;
+        }
+        return result;
     }
     let names = batch_naming::plan(&inputs, &output, &format, p)?;
     let save = SaveOpts::from_params(s, p, cmd)?;
     let authorize = s.authorize;
     let raw_ppi = s.prefs().raw_defaults.resolution;
+    let action_prefs = s.prefs().actions.clone();
     let outputs: Vec<(String, String)> = match names {
         Some(names) => inputs.iter().map(|input| input.path.clone()).zip(names).collect(),
         None => inputs
@@ -570,6 +594,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // Each input runs in its own scratch session, so what the played steps spend is carried from
     // one input to the next (failed or not) and back to this session, not restarted per input.
     let was_playing = s.actions.playing > 0;
+    #[cfg(test)]
+    let history_observer = s.batch_history_observer;
     crate::jobs::run(
         s,
         "Batch",
@@ -580,6 +606,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 scratch.authorize = authorize;
                 scratch.actions = actions.clone();
                 scratch.actions.playback_steps = carried.get();
+                scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
+                let owns_history = scratch.action_history.is_none() && scratch.prefs().actions.create_single_history_state;
+                if owns_history {
+                    crate::actions_cmds::begin_document_history(scratch, &action_name);
+                }
                 let result = (|| {
                     // A recorded save marks a result. If the action later closes or switches
                     // documents, write the saved snapshot instead of the new active document.
@@ -616,6 +647,13 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                         _ => Ok(false),
                     }
                 })();
+                if owns_history {
+                    crate::actions_cmds::finish_document_history(scratch);
+                }
+                #[cfg(test)]
+                if let Some(observe) = history_observer {
+                    observe(scratch);
+                }
                 carried.set(scratch.actions.playback_steps);
                 result
             };
@@ -751,4 +789,244 @@ fn batch_open_documents(
     }
     result["documents"] = json!(originals.len());
     Ok(result)
+}
+
+#[cfg(test)]
+mod action_history_tests {
+    use super::*;
+    use crate::actions_cmds::Action;
+    use std::cell::RefCell;
+
+    #[derive(Debug)]
+    struct Observed {
+        id: photocraft_doc::DocId,
+        past: usize,
+        label: String,
+        name: String,
+        undo_name: String,
+    }
+
+    thread_local! { static OBSERVED: RefCell<Vec<Observed>> = const { RefCell::new(Vec::new()) }; }
+
+    /// Inspect the real scratch boundary without retaining or changing the scratch session.
+    fn observe(s: &Session) {
+        assert!(s.action_history.is_none(), "Batch must release the scratch scope on every exit");
+        let st = s.active().unwrap();
+        let mut history = st.history.clone();
+        let (before, _) = history.undo(st.doc.clone()).unwrap();
+        let undo_name = before.layer(st.active_layer.unwrap()).unwrap().name.clone();
+        let (after, _) = history.redo(before).unwrap();
+        assert_eq!(after.as_ref(), st.doc.as_ref(), "redo restores exact document and layer identities");
+        let name = st.doc.layer(st.active_layer.unwrap()).unwrap().name.clone();
+        OBSERVED.with(|seen| {
+            seen.borrow_mut().push(Observed { id: st.doc.id, past: st.history.past_len(), label: st.history.undo_label().unwrap().into(), name, undo_name })
+        });
+    }
+
+    /// Batch and droplets keep one independent named entry per input, including nested and stopped runs.
+    #[test]
+    fn batch_and_droplet_document_history_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = photocraft_codecs::Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgb, vec![255; 48]).unwrap();
+        let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+        let paths: Vec<_> = ["a.png", "b.png"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, &bytes).unwrap();
+                path
+            })
+            .collect();
+        for (case, single, nested, stopped, droplet) in [
+            ("batch", true, false, false, false),
+            ("off", false, false, false, false),
+            ("nested", true, true, false, false),
+            ("stopped", true, false, true, false),
+            ("droplet", true, false, false, true),
+        ] {
+            OBSERVED.with(|seen| seen.borrow_mut().clear());
+            let mut s = Session::new();
+            s.batch_history_observer = Some(observe);
+            s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+            let mut steps = vec![("layer.renameLayer".into(), json!({"name":"Prefix"}))];
+            if stopped {
+                steps.push(("actions.stopMessage".into(), json!({"message":"Stop here"})));
+            }
+            steps.push(("layer.renameLayer".into(), json!({"name":"Final"})));
+            let action_steps = if nested {
+                s.actions.list.push(Action::new("Child", steps));
+                vec![("actions.play".to_string(), json!({"action":"Child"}))]
+            } else {
+                steps
+            };
+            let output = dir.path().join(case);
+            let result = if droplet {
+                let path = dir.path().join("named.pcdroplet");
+                s.execute("file.automate.createDroplet", json!({"path":path,"name":"Named","steps":action_steps,"output":output,"shim":false})).unwrap();
+                s.execute("file.automate.runDroplet", json!({"droplet":path,"input":paths})).unwrap()
+            } else {
+                s.execute("file.automate.batch", json!({"action":"Named","steps":action_steps,"input":paths,"output":output})).unwrap()
+            };
+            assert_eq!(result["errors"].as_array().unwrap().len(), if stopped { 2 } else { 0 }, "{case}: {result}");
+            OBSERVED.with(|seen| {
+                let seen = seen.borrow();
+                assert_eq!(seen.len(), 2, "{case}");
+                assert_ne!(seen[0].id, seen[1].id, "inputs have separate editing identities");
+                for entry in seen.iter() {
+                    assert_eq!(entry.past, if single { 1 } else { 2 }, "{case}: {entry:?}");
+                    if single {
+                        assert_eq!(entry.label, "Action: Named", "{case}");
+                    }
+                    assert_eq!(entry.name, if stopped { "Prefix" } else { "Final" }, "{case}");
+                    if !single {
+                        assert_eq!(entry.undo_name, "Prefix", "OFF undoes only the last step");
+                    } else {
+                        assert_ne!(entry.undo_name, "Prefix", "ON undoes the whole play");
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    /// Batch over open documents must preserve an enclosing action scope and finish its own document scopes.
+    fn opened_document_batch_keeps_top_level_and_parent_history_boundaries() {
+        for single in [false, true] {
+            for parent in [false, true] {
+                let mut s = Session::new();
+                for _ in 0..2 {
+                    s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+                }
+                s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+                let before: Vec<_> = s.documents().iter().map(|st| (st.doc.clone(), st.history.past_len())).collect();
+                let params = json!({"source":"open","action":"Opened batch","steps":[
+                    ["layer.renameLayer",{"name":"Prefix"}], ["layer.renameLayer",{"name":"Final"}]
+                ]});
+                if parent {
+                    s.actions.list.push(Action::new(
+                        "Parent",
+                        vec![
+                            ("layer.renameLayer".into(), json!({"name":"Before batch"})),
+                            ("file.automate.batch".into(), params),
+                            ("layer.renameLayer".into(), json!({"name":"After batch"})),
+                        ],
+                    ));
+                    let result = s.execute("actions.play", json!({"action":"Parent"})).unwrap();
+                    assert!(result.get("failed").is_none(), "{result}");
+                } else {
+                    let result = s.execute("file.automate.batch", params).unwrap();
+                    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+                }
+                assert!(s.action_history.is_none());
+                for (index, (original, past)) in before.iter().enumerate() {
+                    s.set_active(index);
+                    let st = s.active().unwrap();
+                    let after = st.doc.clone();
+                    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, if parent && index == 1 { "After batch" } else { "Final" });
+                    let steps = if parent && index == 1 { 4 } else { 2 };
+                    assert_eq!(st.history.past_len(), past + if single { 1 } else { steps });
+                    if single {
+                        assert_eq!(st.history.undo_label(), Some(if parent { "Action: Parent" } else { "Action: Opened batch" }));
+                    }
+                    assert!(s.undo());
+                    if single {
+                        assert_eq!(s.active().unwrap().doc.as_ref(), original.as_ref());
+                    } else {
+                        assert_ne!(s.active().unwrap().doc.as_ref(), original.as_ref());
+                    }
+                    assert!(s.redo());
+                    assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+                }
+            }
+        }
+    }
+
+    #[test]
+    /// A Batch failure restores the library and leaves the caller's active history scope owned by the caller.
+    fn opened_document_batch_error_restores_library_without_finishing_parent() {
+        for parent in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+            s.execute("actions.setHistory", json!({"singleState":true})).unwrap();
+            s.actions.list.push(Action::new("Original", vec![]));
+            let library = serde_json::to_value(&s.actions.list).unwrap();
+            let before = s.active().unwrap().doc.clone();
+            if parent {
+                crate::actions_cmds::begin_document_history(&mut s, "Parent");
+            }
+            let result = s
+                .execute(
+                    "file.automate.batch",
+                    json!({
+                        "source":"open","action":"Broken","calledActions":[Action::new("Foreign", vec![])],
+                        "steps":[["layer.renameLayer",{"name":"Prefix"}],["layer.renameLayer",{"name":false}]]
+                    }),
+                )
+                .unwrap();
+            assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+            assert_eq!(serde_json::to_value(&s.actions.list).unwrap(), library);
+            if parent {
+                assert_eq!(s.action_history.as_ref().unwrap().name, "Parent");
+                s.execute("layer.renameLayer", json!({"name":"Parent tail"})).unwrap();
+                crate::actions_cmds::finish_document_history(&mut s);
+            } else {
+                assert!(s.action_history.is_none());
+            }
+            let st = s.active().unwrap();
+            let after = st.doc.clone();
+            assert_eq!(st.history.undo_label(), Some(if parent { "Action: Parent" } else { "Action: Broken" }));
+            assert!(s.undo());
+            assert_eq!(s.active().unwrap().doc.as_ref(), before.as_ref());
+            assert!(s.redo());
+            assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
+        }
+    }
+
+    thread_local! { static CANCEL_CONTEXT: RefCell<Option<crate::jobs::JobCtx>> = const { RefCell::new(None) }; }
+
+    fn cancel_after_prefix(id: &str, params: &Value) -> Result<()> {
+        if id == "layer.renameLayer" && params["name"] == "Cancel here" {
+            CANCEL_CONTEXT.with(|ctx| ctx.borrow().as_ref().unwrap().cancel());
+            return Err(EngineError::Cancelled);
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// Cancellation after a completed edit retains an undoable prefix without leaving a Batch-owned scope open.
+    fn cancelled_folder_batch_finalizes_its_completed_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = photocraft_codecs::Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgb, vec![255; 48]).unwrap();
+        let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+        let input = dir.path().join("input.png");
+        std::fs::write(&input, bytes).unwrap();
+        let mut s = Session::new();
+        s.execute("actions.setHistory", json!({"singleState":true})).unwrap();
+        let ctx = crate::jobs::JobCtx::new();
+        s.set_inline_job_ctx(Some(ctx.clone()));
+        CANCEL_CONTEXT.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+        OBSERVED.with(|seen| seen.borrow_mut().clear());
+        s.authorize = Some(cancel_after_prefix);
+        s.batch_history_observer = Some(observe);
+        let result = s
+            .execute(
+                "file.automate.batch",
+                json!({"action":"Cancelled batch","input":[input],"output":dir.path().join("out"),
+                    "steps":[["layer.renameLayer",{"name":"Prefix"}],["layer.renameLayer",{"name":"Cancel here"}]]
+                }),
+            )
+            .unwrap();
+        CANCEL_CONTEXT.with(|slot| *slot.borrow_mut() = None);
+        assert!(ctx.cancelled());
+        assert_eq!(result["cancelled"], true, "{result}");
+        assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
+        OBSERVED.with(|seen| {
+            let seen = seen.borrow();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].past, 1);
+            assert_eq!(seen[0].label, "Action: Cancelled batch");
+            assert_eq!(seen[0].name, "Prefix");
+            assert_ne!(seen[0].undo_name, "Prefix");
+        });
+    }
 }

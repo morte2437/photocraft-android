@@ -172,10 +172,11 @@ fn export_supported_document(
         })
         .collect();
     let previous = (!text_layers.is_empty()).then(|| preserved.iter().find(|(_, key, _)| key == b"Txt2").map(|(_, _, data)| data.to_vec())).flatten();
-    // A fresh document of ordinary (Metrics) text has nothing to put in `Txt2`, and Photoshop never
-    // writes its empty `<< /0 << >> >>` stub — readers such as Photopea reject it (#3514). Keep the
-    // block when the file had one (round-trip its pen positions/extras) or a layer is Optical (the
-    // one mode EngineData can't carry; #1348).
+    // A fresh document of ordinary (Metrics) text with no Txt2-only OpenType settings has nothing
+    // to put in `Txt2`, and Photoshop never writes its empty `<< /0 << >> >>` stub — readers such
+    // as Photopea reject it (#3514). Keep the block when the file had one (round-trip its pen
+    // positions/extras), a layer is Optical (#1348), or a layer carries stylistic sets / other
+    // Txt2-only features (#10308).
     let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers))
         .then(|| photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi));
     for (sig, key, data) in preserved {

@@ -41,6 +41,29 @@ fn place_embedded_enablement_does_not_require_native_doc() {
 }
 
 #[test]
+fn data_sets_as_files_enablement_respects_target_platform() {
+    let (app, _) = app_with(1);
+    let enabled = is_enabled_with_engine(&app, "file.export.dataSetsAsFiles", || true);
+    if cfg!(target_arch = "wasm32") {
+        assert_eq!(enabled, Some(false));
+    } else {
+        assert_eq!(enabled, Some(true));
+    }
+}
+
+#[test]
+fn data_sets_as_files_dialog_respects_target_platform() {
+    let (mut app, ctx) = app_with(1);
+    app.run("image.variables.dataSets", json!({"dataSets": [{"name": "Set 1", "values": []}]})).unwrap();
+    let res = front(&mut app, &ctx, "file.export.dataSetsAsFiles", &json!({}));
+    if cfg!(target_arch = "wasm32") {
+        assert!(matches!(res, Some(Err(msg)) if msg.contains("unavailable on the web")));
+    } else {
+        assert!(matches!(res, Some(Ok(v)) if v.get("dialog").is_some()));
+    }
+}
+
+#[test]
 fn show_snap_extras_and_screen_modes_are_state() {
     let (mut app, ctx) = app_with(1);
     for id in [

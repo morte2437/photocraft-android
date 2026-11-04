@@ -101,6 +101,8 @@ pub fn apply(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
         return Err("Apply is only available for Preferences".into());
     }
     let fields = d.fields.clone();
+    // As OK does: an open colour picker would leave a previewed colour in the applied values.
+    crate::dialogs::confirm_preflight(app, id)?;
     let result = confirm(app, &fields)?;
     let values = Value::Object(preference_values(app.session.prefs()));
     if let Some(d) = app.ui.dialog_mut(id) {

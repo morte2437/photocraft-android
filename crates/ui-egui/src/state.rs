@@ -16,7 +16,7 @@ pub use panel_state::{
 };
 pub use tool::Tool;
 pub use tool_options::{SampleAllLayers, ToolOptions};
-use tool_options::{default_brush_tool, default_layer_filter_mode, yes};
+use tool_options::{default_brush_tool, default_layer_filter_mode, layer_filter_mode_or_normal, yes};
 pub use transform::{
     BoxResize, CamTransform, ContentAwareOptions, Extras, MadeLayer, TextEdit, TransformMode, TransformSession, TypeInsertionStyle, TypeTransform,
 };
@@ -365,11 +365,14 @@ pub struct UiState {
     #[serde(default)]
     pub layer_filter_name: String,
     /// Layers panel blend-mode filter.
-    #[serde(default = "default_layer_filter_mode")]
+    #[serde(default = "default_layer_filter_mode", deserialize_with = "layer_filter_mode_or_normal")]
     pub layer_filter_mode: photocraft_color::BlendMode,
     /// Layers panel effect filter (#10880).
     #[serde(default)]
     pub layer_filter_effect: crate::layer_filter_ui::effect::EffectKind,
+    /// Layers panel attribute filter (#10881).
+    #[serde(default)]
+    pub layer_filter_attribute: crate::layer_filter_ui::attribute::Attribute,
     /// Layers panel colour filter (#5898): the label colour listed (None: layers without one).
     #[serde(default)]
     pub layer_filter_color: photocraft_doc::LabelColor,
@@ -586,6 +589,7 @@ impl Default for UiState {
             layer_filter_name: String::new(),
             layer_filter_mode: default_layer_filter_mode(),
             layer_filter_effect: Default::default(),
+            layer_filter_attribute: Default::default(),
             layer_filter_color: Default::default(),
             pen: None,
             pen_doc: None,

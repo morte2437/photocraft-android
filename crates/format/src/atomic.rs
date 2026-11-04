@@ -494,6 +494,40 @@ fn context(e: io::Error, msg: String) -> io::Error {
 
 const UNCHANGED: &str = "the original file was not changed";
 
+/// Marks the error of a Windows replacement that moved the original to its backup name and then
+/// could neither complete the save nor put the original back: the original survives only at that
+/// backup, so the destination is not the unchanged original and must never be reported as such
+/// (#11178). `rename_error` recognizes the marker and passes the error through untouched.
+const RECOVERY_UNRESOLVED: &str = "could not restore the original";
+
+/// The error for that unresolved Windows replacement state: names the recovery copy and says the
+/// destination is currently missing, instead of the usual `UNCHANGED` reassurance (#11178).
+/// When the restoration failed because the backup itself is gone (`NotFound`), nothing survives
+/// at that name and saying so would be a second false comfort after the lost original.
+/// Its kind is deliberately not `PermissionDenied`: the retry loop must not pick a fresh backup
+/// name over the unresolved recovery and forget where the original is.
+#[cfg(any(windows, test))]
+pub(crate) fn unresolved_recovery_error(dest: &Path, completion: &io::Error, restoration: &io::Error, recovery: &Path) -> io::Error {
+    let msg = if restoration.kind() == io::ErrorKind::NotFound {
+        format!(
+            "cannot save {}: the previous version moved to its backup name but {RECOVERY_UNRESOLVED} from it \
+             (completing the save failed: {completion}; the backup {} no longer exists: {restoration}), \
+             so the destination currently holds no file under that name — check whether it was moved",
+            dest.display(),
+            recovery.display()
+        )
+    } else {
+        format!(
+            "cannot save {}: the previous version moved to its backup name but {RECOVERY_UNRESOLVED} from it \
+             (completing the save failed: {completion}; restoring the backup failed: {restoration}); \
+             your document survives at {}, recover it from there before saving again",
+            dest.display(),
+            recovery.display()
+        )
+    };
+    io::Error::other(msg)
+}
+
 /// Replacement already happened: never claim that the original file is unchanged or undo it.
 #[cfg(windows)]
 pub(crate) fn publication_error(error: io::Error, path: &Path) -> io::Error {
@@ -515,6 +549,12 @@ fn write_error(e: io::Error, path: &Path, dir: &Path) -> io::Error {
 }
 
 fn rename_error(e: io::Error, path: &Path) -> io::Error {
+    // A Windows replacement that moved the original to its backup and failed to restore it is
+    // already fully described (with the recovery location); never append the `UNCHANGED`
+    // reassurance, which would be false in that state (#11178).
+    if e.to_string().contains(RECOVERY_UNRESOLVED) {
+        return e;
+    }
     let msg = if is_cross_device(&e) {
         format!("cannot save {}: the temporary file is on a different volume than the destination ({e}); {UNCHANGED}", path.display())
     } else if e.kind() == io::ErrorKind::PermissionDenied {
