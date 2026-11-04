@@ -394,6 +394,11 @@ impl Fetch for LoadFetch<'_> {
         let Some(path) = blob_path(hash) else {
             return Err(FormatError::corrupt(format!("invalid blob hash `{hash}`")));
         };
+        // A new blob is retained beside every earlier one, so it may inflate to no more than
+        // what the load's total budget has left: checking the total only after decompressing
+        // would let each of several blobs allocate a full `max_blob_bytes` first.
+        let left = usize::try_from(self.opts.max_total_bytes.saturating_sub(self.total)).unwrap_or(usize::MAX);
+        let limit = limit.min(left);
         // The stored zstd frame of incompressible data is a little larger than the data, so a
         // blob right at `limit` must still be read; `decompress_bounded` enforces `limit`.
         let z = self.src.get(&path, limit.saturating_add(limit / 8).saturating_add(4096))?;
@@ -1747,4 +1752,10 @@ fn an_incompressible_blob_at_its_limit_still_loads() {
     let mut fetch = LoadFetch { src: &src, opts: crate::LoadOptions::default(), total: 0, blobs: HashMap::new() };
     assert_eq!(fetch.blob_bounded(&hash, data.len()).unwrap().as_slice(), data.as_slice());
     assert!(LoadFetch { src: &src, opts: crate::LoadOptions::default(), total: 0, blobs: HashMap::new() }.blob_bounded(&hash, data.len() - 1).is_err());
+    // What the load's total budget has left bounds the decompression too.
+    let opts = crate::LoadOptions { max_total_bytes: 10 * data.len() as u64, ..Default::default() };
+    let spent = |total: u64| LoadFetch { src: &src, opts, total, blobs: HashMap::new() };
+    assert!(spent(9 * data.len() as u64).blob_bounded(&hash, usize::MAX).is_ok());
+    let e = spent(9 * data.len() as u64 + 1).blob_bounded(&hash, usize::MAX).unwrap_err();
+    assert!(matches!(e, FormatError::LimitExceeded(ref m) if m.contains(&format!("exceeds {} bytes", data.len() - 1))), "{e}");
 }

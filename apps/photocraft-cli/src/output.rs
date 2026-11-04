@@ -8,7 +8,13 @@ use crate::{Result, args::ExportArgs};
 impl From<&ExportArgs> for ExportOptions {
     fn from(a: &ExportArgs) -> Self {
         // TIFF output is flat unless asked: scripted conversions keep predictable sizes.
-        let mut o = ExportOptions { tiff_layers: a.tiff_layers, tga_bits: a.tga_bits, pcraft_full_composite: a.pcraft_full_composite, ..Default::default() };
+        let mut o = ExportOptions {
+            tiff_layers: a.tiff_layers,
+            tiff_transparency: a.tiff_transparency,
+            tga_bits: a.tga_bits,
+            pcraft_full_composite: a.pcraft_full_composite,
+            ..Default::default()
+        };
         if let Some(q) = a.quality {
             o.encode.jpeg_quality = q;
             // Asking for a quality asks for a lossy WebP; the default WebP stays lossless.
@@ -19,6 +25,7 @@ impl From<&ExportArgs> for ExportOptions {
         if let Some(c) = a.tiff_compression {
             o.encode.tiff_compression = c;
         }
+        o.encode.tiff_pyramid = a.tiff_pyramid;
         if let Some(f) = a.jpeg_format {
             o.encode.jpeg_format = f;
         }

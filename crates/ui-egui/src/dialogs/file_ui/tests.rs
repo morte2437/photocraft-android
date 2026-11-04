@@ -282,6 +282,65 @@ fn the_save_for_web_dialog_seeds_from_the_remembered_preferences() {
     assert_eq!(f["colors"], 64);
 }
 
+/// #5305: Save for Web with the suggested name runs (and so is recorded) with only the
+/// folder, so an action saves each document under its own name; another name is kept.
+#[test]
+fn save_for_web_with_the_suggested_name_records_only_the_folder() {
+    let dir = std::env::temp_dir().join(format!("pc-webui-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, expected) in [
+        ("web.png", json!({"folder": dir.to_string_lossy()})),
+        ("other.png", json!({"path": dir.join("other.png").to_string_lossy()})),
+        ("web.gif", json!({"path": dir.join("web.gif").to_string_lossy()})),
+    ] {
+        let (mut app, ctx) = app();
+        let target = dir.join(name).to_string_lossy().into_owned();
+        let (dialog, _) = crate::file_dialog::fake(vec![Some(crate::file_dialog::FileDialogAnswer::SaveTo(target.clone()))]);
+        app.services.file_dialog = Some(dialog);
+        let id = open_web(&mut app);
+        app.ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png24"));
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        app.poll_file_dialog(&ctx, None);
+        assert!(std::path::Path::new(&target).exists(), "{target}");
+        let (id, params) = app.session.journal.last().unwrap();
+        assert_eq!(id, WEB_COMMAND);
+        for (k, v) in expected.as_object().unwrap() {
+            assert_eq!(&params[k], v, "{params}");
+        }
+        assert!(params.get(if name == "web.png" { "path" } else { "folder" }).is_none(), "{params}");
+        assert!(!dir.join("web.png").exists() || name == "web.png", "only the picked file is written");
+        let _ = std::fs::remove_file(&target);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A null `folder` is no destination: the picker asks. A document renamed while the picker is
+/// open writes the picked file, not one named after the new name.
+#[test]
+fn save_for_web_writes_the_picked_file_when_no_folder_is_given_or_the_name_changed() {
+    let dir = std::env::temp_dir().join(format!("pc-webui-renamed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for rename in [false, true] {
+        let (mut app, ctx) = app();
+        let target = dir.join("web.png").to_string_lossy().into_owned();
+        let (dialog, _) = crate::file_dialog::fake(vec![Some(crate::file_dialog::FileDialogAnswer::SaveTo(target.clone()))]);
+        app.services.file_dialog = Some(dialog);
+        let id = open_web(&mut app);
+        let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+        fields.insert("format".into(), json!("png24"));
+        fields.insert("folder".into(), Value::Null);
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        if rename {
+            std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc).name = "renamed".into();
+        }
+        app.poll_file_dialog(&ctx, None);
+        assert!(std::path::Path::new(&target).exists(), "rename {rename}: {target}");
+        assert!(!dir.join("renamed.png").exists(), "rename {rename}");
+        let _ = std::fs::remove_file(&target);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn save_for_web_starts_at_the_current_document_size() {
     let (mut app, _) = app();
@@ -473,6 +532,222 @@ fn save_for_web_authorizes_generated_palette_before_opening_a_picker() {
         assert_eq!(crate::dialogs::confirm(&mut app, id).unwrap_err(), "palette denied");
         assert!(!app.file_dialog_open());
     }
+}
+
+/// #8830: an invalid Matte (`#1111`, empty; set here the way `ui.dialog.set` would) makes the
+/// preview's encode fail, and the error the dialog shows must not widen it.
+#[test]
+fn save_for_web_keeps_its_width_while_the_matte_is_invalid() {
+    let (mut app, _) = app();
+    let id = open_web(&mut app);
+    app.ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png8"));
+    app.ui.dialog_mut(id).unwrap().fields.insert("matte".into(), json!("#111111"));
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).build_ui_state(
+        |ui, app| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                crate::dialogs::show(app, ui.ctx());
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    h.run_steps(5);
+    let dialog = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.ctx.data(|m| m.get_temp::<Vec<egui::Rect>>(egui::Id::unique("pc-dialog-rects"))).unwrap()[0];
+    let before = dialog(&h);
+    for matte in ["#1111", "", "#22222", "#111111"] {
+        h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("matte".into(), json!(matte));
+        h.run_steps(4);
+        let after = dialog(&h);
+        assert_eq!(after.width(), before.width(), "matte {matte:?}: before {before:?}, after {after:?}");
+    }
+}
+
+/// #8830: a typed Matte reaches the settings only once it is a whole colour (or `none`), so the
+/// previews never see a partial one such as `#1111` while the user is still typing, and the dialog
+/// does not resize under them (the report: "the whole interface jumps wider").
+#[test]
+fn save_for_web_matte_takes_only_whole_colours() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (app, _) = app();
+    let (mut h, id) = web_size_dialog(app);
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png8"));
+    h.run_steps(3);
+    let matte = |h: &egui_kittest::Harness<'static, PhotocraftApp>| h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["matte"].clone();
+    let dialog =
+        |h: &egui_kittest::Harness<'static, PhotocraftApp>| h.ctx.data(|m| m.get_temp::<Vec<egui::Rect>>(egui::Id::unique("pc-dialog-rects"))).unwrap()[0];
+    let before = dialog(&h);
+    let field = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.accesskit_node().value().as_deref() == Some("#ffffff"))
+        .map(|n| n.rect())
+        .expect("the Matte field");
+    h.hover_at(field.center());
+    h.run_steps(1);
+    h.drag_at(field.center());
+    h.run_steps(1);
+    h.drop_at(field.center());
+    h.run_steps(2);
+    for (typed, want) in [("#1111", "#ffffff"), ("", "#ffffff"), ("#22222g", "#ffffff"), ("#2A2a2A", "#2a2a2a"), ("None", "none")] {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.key_press(egui::Key::Backspace);
+        if !typed.is_empty() {
+            h.event(egui::Event::Text(typed.into()));
+        }
+        h.run_steps(2);
+        let now = dialog(&h);
+        assert_eq!((now.width(), now.height()), (before.width(), before.height()), "typing {typed:?} resized the dialog: {before:?} -> {now:?}");
+        assert_eq!(matte(&h), json!(want), "typed {typed:?}");
+        let shown = h.query_all_by_role(egui::accesskit::Role::TextInput).any(|n| n.accesskit_node().value().unwrap_or_default() == typed);
+        assert!(shown, "the field shows {typed:?} as typed");
+    }
+}
+
+/// #8830, review follow-ups: the field takes `#rrggbb` only (no `#rgb` short form: `parse_hex`
+/// wants six digits), accepts upper case (stored lower case) and a paste, keeps the typed draft in
+/// the field while the setting holds the last whole colour, and on blur shows that committed colour
+/// instead of the invalid draft.
+#[test]
+fn save_for_web_matte_short_form_case_paste_and_blur() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (app, _) = app();
+    let (mut h, id) = web_size_dialog(app);
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png8"));
+    h.run_steps(3);
+    let matte = |h: &egui_kittest::Harness<'static, PhotocraftApp>| h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["matte"].clone();
+    let values = |h: &egui_kittest::Harness<'static, PhotocraftApp>| -> Vec<String> {
+        h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.accesskit_node().value().unwrap_or_default()).collect()
+    };
+    let field = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.accesskit_node().value().as_deref() == Some("#ffffff"))
+        .map(|n| n.rect())
+        .expect("the Matte field");
+    h.hover_at(field.center());
+    h.run_steps(1);
+    h.drag_at(field.center());
+    h.run_steps(1);
+    h.drop_at(field.center());
+    h.run_steps(2);
+    let replace_with = |h: &mut egui_kittest::Harness<'static, PhotocraftApp>, text: &str, paste: bool| {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.key_press(egui::Key::Backspace);
+        h.event(if paste { egui::Event::Paste(text.into()) } else { egui::Event::Text(text.into()) });
+        h.run_steps(2);
+    };
+    // (text, pasted, setting afterwards)
+    for (typed, paste, want) in [
+        ("#fff", false, "#ffffff"),    // short form is not a colour here: draft only, setting unchanged
+        ("#ABCDEF", false, "#abcdef"), // upper case is accepted and stored lower case
+        ("#12AB3", true, "#abcdef"),   // a partial paste is a draft like partial typing
+        ("#12AB34", true, "#12ab34"),  // a whole pasted colour is taken
+    ] {
+        replace_with(&mut h, typed, paste);
+        assert_eq!(matte(&h), json!(want), "{typed:?} (paste: {paste})");
+        assert!(values(&h).iter().any(|v| v == typed), "the field keeps {typed:?} as typed: {:?}", values(&h));
+    }
+    // Blur with an invalid draft: the field shows the last committed colour, not the draft.
+    replace_with(&mut h, "#22222g", false);
+    assert_eq!(matte(&h), json!("#12ab34"));
+    assert!(values(&h).iter().any(|v| v == "#22222g"), "the draft is shown while focused");
+    h.key_press(egui::Key::Tab);
+    h.run_steps(3);
+    let shown = values(&h);
+    assert!(shown.iter().any(|v| v == "#12ab34"), "blur restores the committed colour: {shown:?}");
+    assert!(!shown.iter().any(|v| v == "#22222g"), "the invalid draft is gone after blur: {shown:?}");
+    assert_eq!(matte(&h), json!("#12ab34"));
+}
+
+/// #8830, the review follow-up: alt-tabbing away from the window and back must not throw away a
+/// partial Matte that is still being typed. egui keeps keyboard focus on the field while the OS
+/// window is unfocused (`Memory::has_focus` ignores the window, `Response::has_focus` does not),
+/// so the side that caches the typed text has to ask the same question the read side asks.
+#[test]
+fn save_for_web_matte_keeps_typed_text_across_window_focus_loss() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (app, _) = app();
+    let (mut h, id) = web_size_dialog(app);
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png8"));
+    h.run_steps(3);
+    let shown = |h: &egui_kittest::Harness<'static, PhotocraftApp>, want: &str| {
+        h.query_all_by_role(egui::accesskit::Role::TextInput).any(|n| n.accesskit_node().value().unwrap_or_default() == want)
+    };
+    let matte = |h: &egui_kittest::Harness<'static, PhotocraftApp>| h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["matte"].clone();
+    let field = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.accesskit_node().value().as_deref() == Some("#ffffff"))
+        .map(|n| n.rect())
+        .expect("the Matte field");
+    h.hover_at(field.center());
+    h.run_steps(1);
+    h.drag_at(field.center());
+    h.run_steps(1);
+    h.drop_at(field.center());
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.key_press(egui::Key::Backspace);
+    h.event(egui::Event::Text("#1111".into()));
+    h.run_steps(2);
+    assert!(shown(&h, "#1111"), "the field shows the partial value as typed");
+    assert_eq!(matte(&h), json!("#ffffff"), "a partial value must not reach the settings");
+    let focused = h.ctx.memory(|m| m.focused());
+    assert!(focused.is_some(), "the Matte field holds egui focus");
+    // The OS window loses focus (alt-tab away): only `RawInput::focused` goes false, egui itself
+    // keeps focus on the field.
+    h.input_mut().focused = false;
+    h.run_steps(1);
+    assert!(!h.ctx.input(|i| i.focused), "the frame ran with the window unfocused");
+    assert_eq!(h.ctx.memory(|m| m.focused()), focused, "egui keeps focus on the field while the window is unfocused");
+    // …and comes back to the same window.
+    h.input_mut().focused = true;
+    h.run_steps(2);
+    assert!(
+        shown(&h, "#1111"),
+        "the partial Matte is still in the field after the window came back: {:?}",
+        h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.accesskit_node().value().unwrap_or_default()).collect::<Vec<_>>()
+    );
+    assert_eq!(matte(&h), json!("#ffffff"), "the settings still hold the last whole colour");
+    // Finishing the colour takes it, so the field was live, not frozen.
+    h.event(egui::Event::Text("11".into()));
+    h.run_steps(2);
+    assert_eq!(matte(&h), json!("#111111"), "typing on completes as usual");
+}
+
+/// #8830, the second follow-up: a middle-click paste into an unfocused Matte field inserts the text
+/// and moves focus to the field inside the same `ui.add`. In the pinned egui fork
+/// (`crates/egui/src/widgets/text_edit/builder.rs:933-974`) the `MiddleClickPaste` branch writes the
+/// text into the field's buffer and then calls `Memory::request_focus`, which takes effect the same
+/// frame (`crates/egui/src/memory/mod.rs:945-950`). If the cache write side looks at the focus state
+/// read before `add`, it drops the pasted partial text, and the following frame restores the saved
+/// colour even though the field now has focus.
+#[test]
+fn save_for_web_matte_caches_a_middle_click_paste_that_arrives_with_focus() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let (app, _) = app();
+    let (mut h, id) = web_size_dialog(app);
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("format".into(), json!("png8"));
+    h.run_steps(3);
+    let matte = |h: &egui_kittest::Harness<'static, PhotocraftApp>| h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["matte"].clone();
+    let values = |h: &egui_kittest::Harness<'static, PhotocraftApp>| -> Vec<String> {
+        h.query_all_by_role(egui::accesskit::Role::TextInput).map(|n| n.accesskit_node().value().unwrap_or_default()).collect()
+    };
+    let field = h
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.accesskit_node().value().as_deref() == Some("#ffffff"))
+        .map(|n| n.rect())
+        .expect("the Matte field");
+    assert!(h.ctx.memory(|m| m.focused()).is_none(), "the Matte field starts unfocused");
+    h.hover_at(field.center());
+    h.run_steps(1);
+    // One frame: the PRIMARY-selection "#1111" is pasted at the click pos while the field gains
+    // focus, all inside `ui.add` - run_steps(1) so the single stale frame is visible, not a run()
+    // that would settle past the restore.
+    h.event(egui::Event::MiddleClickPaste { pos: field.center(), text: "#1111".into() });
+    h.run_steps(1);
+    assert!(h.ctx.memory(|m| m.focused()).is_some(), "the paste moved focus to the field");
+    h.run_steps(1);
+    let shown = values(&h);
+    assert!(shown.iter().any(|v| v.contains("#1111")), "the pasted partial must survive into the next frame, not be restored to the saved colour: {shown:?}");
+    assert_eq!(matte(&h), json!("#ffffff"), "a partial value must not reach the settings");
 }
 
 #[test]

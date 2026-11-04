@@ -142,6 +142,23 @@ pub(crate) fn recorded_params(s: &Session, id: &str, mut p: Value) -> Value {
 /// entry (Last Filter), a smart filter and the step's dialog never see it.
 pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
     let mut p = p.clone();
+    if id == "type.create" && (p.get("xPercent").is_some() || p.get("yPercent").is_some()) {
+        if p.get("box").is_some() || p.get("x").is_some() || p.get("y").is_some() {
+            return Err(bad(id, "recorded type position cannot mix percentages with pixel coordinates or a box"));
+        }
+        let size = s.active().ok_or(EngineError::NoDocument)?.doc.size;
+        for (percent_key, pixel_key, dimension) in [("xPercent", "x", size.width), ("yPercent", "y", size.height)] {
+            let percent = p.get(percent_key).and_then(Value::as_f64).ok_or_else(|| bad(id, format!("invalid `{percent_key}`")))?;
+            let pixel = percent / 100.0 * f64::from(dimension);
+            if !pixel.is_finite() || pixel.abs() > f64::from(f32::MAX) {
+                return Err(bad(id, format!("`{percent_key}` is outside the canvas coordinate range")));
+            }
+            if let Some(object) = p.as_object_mut() {
+                object.remove(percent_key);
+                object.insert(pixel_key.into(), json!(pixel));
+            }
+        }
+    }
     if id.starts_with("filter.gallery.")
         && let Some(object) = p.as_object_mut()
     {
@@ -397,10 +414,19 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"action": name, "index": idx}))
 }
 
+/// Whether a journal entry is recorded as an action step: a replayable command, except Check
+/// Spelling's corrections and lookups.
+fn recorded(id: &str, p: &Value) -> bool {
+    replayable(id) && (id != "edit.checkSpelling" || crate::type_spell_cmds::records(p))
+}
+
+/// Commands recorded with their step's dialog on: Check Spelling.
+const RECORDED_WITH_DIALOG: &[&str] = &["edit.checkSpelling"];
+
 /// Replayable journal entries not yet committed to this action while recording.
 pub fn pending_steps(s: &Session, action: usize) -> impl Iterator<Item = &(String, Value)> {
     let from = s.actions.recording.filter(|(_, i)| *i == action).map_or(s.journal.len(), |(from, _)| from);
-    s.journal.iter().skip(from).filter(|(id, _)| replayable(id))
+    s.journal.iter().skip(from).filter(|(id, p)| recorded(id, p))
 }
 
 pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
@@ -408,13 +434,64 @@ pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
     if idx >= s.actions.list.len() {
         return Err(bad("actions.stop", "the action being recorded no longer exists"));
     }
-    let steps: Vec<_> = pending_steps(s, idx).cloned().collect();
+    let steps = fold_recorded_nudges(pending_steps(s, idx).cloned());
     s.actions.recording = Some((s.journal.len(), idx));
     if !steps.is_empty() {
-        s.actions.list[idx].steps.extend(steps);
+        let action = &mut s.actions.list[idx];
+        let first = action.steps.len();
+        action.dialogs.extend(steps.iter().enumerate().filter(|(_, (id, _))| RECORDED_WITH_DIALOG.contains(&id.as_str())).map(|(i, _)| first + i));
+        action.steps.extend(steps);
         s.actions.touch();
     }
     Ok(())
+}
+
+/// Consecutive Move-tool keystrokes in one UI nudge run are one relative action step.
+/// The UI's `coalesce` run id distinguishes a held key from a later, separate gesture.
+fn fold_recorded_nudges(steps: impl IntoIterator<Item = (String, Value)>) -> Vec<(String, Value)> {
+    let mut out: Vec<(String, Value)> = Vec::new();
+    let mut last_run: Option<String> = None;
+    for (id, mut params) in steps {
+        let run = (id == "layer.translate")
+            .then(|| params.as_object())
+            .flatten()
+            .filter(|p| p.keys().all(|key| matches!(key.as_str(), "dx" | "dy" | "coalesce")))
+            .and_then(|p| p.get("coalesce").and_then(Value::as_str).filter(|run| run.starts_with("nudge:")))
+            .map(str::to_string);
+        if let Some(run) = &run {
+            // `layer.translate` moves each step by whole pixels, so the fold adds rounded steps.
+            let dx = params.get("dx").and_then(Value::as_f64).map(f64::round);
+            let dy = params.get("dy").and_then(Value::as_f64).map(f64::round);
+            if let (Some(dx), Some(dy)) = (dx, dy)
+                && dx.is_finite()
+                && dy.is_finite()
+            {
+                if last_run.as_ref() == Some(run)
+                    && let Some((last_id, previous)) = out.last_mut()
+                    && last_id == &id
+                {
+                    let sum_x = previous.get("dx").and_then(Value::as_f64).unwrap_or(0.0) + dx;
+                    let sum_y = previous.get("dy").and_then(Value::as_f64).unwrap_or(0.0) + dy;
+                    if sum_x.is_finite() && sum_y.is_finite() {
+                        previous["dx"] = json!(sum_x);
+                        previous["dy"] = json!(sum_y);
+                        continue;
+                    }
+                }
+                if let Some(object) = params.as_object_mut() {
+                    object.remove("coalesce");
+                    object.insert("dx".into(), json!(dx));
+                    object.insert("dy".into(), json!(dy));
+                }
+                last_run = Some(run.clone());
+                out.push((id, params));
+                continue;
+            }
+        }
+        last_run = None;
+        out.push((id, params));
+    }
+    out
 }
 
 fn stop(s: &mut Session, _p: &Value) -> Result<Value> {

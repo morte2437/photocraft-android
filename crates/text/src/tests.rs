@@ -1732,6 +1732,26 @@ fn psd_round_trips_antialias_opentype_and_warp() {
     }
 }
 
+/// EngineData only maps Photoshop's `OldStyle` bool to `onum`. Other Numerals tags (`lnum` /
+/// `pnum` / `tnum`) stay in `.pcraft` until a Photoshop-authored PSD oracle exists — we do not
+/// invent EngineData keys or copy figure-style tables from GPL editors (AGENTS.md clean-room).
+#[test]
+fn psd_engine_data_keeps_only_oldstyle_among_numeral_tags() {
+    let style = CharStyle {
+        font_family: "Inter".into(),
+        size_pt: 20.0,
+        features: ["lnum", "onum", "pnum", "tnum"].iter().map(|t| FontFeature { tag: (*t).into(), value: 1 }).collect(),
+        ..Default::default()
+    };
+    let t = styled("0123456789", style);
+    let bytes = crate::psd::build_tysh(&t, 72.0, None);
+    let back = crate::psd::text_layer_from_tysh(&bytes, 72.0).expect("tysh");
+    let runs = back.char_runs();
+    let mut got: Vec<&str> = runs[0].style.features.iter().map(|f| f.tag.as_str()).collect();
+    got.sort_unstable();
+    assert_eq!(got, ["onum"]);
+}
+
 /// A legacy-signature `TySh` (#1469): zero PointBase, `bounds` (the layout box) and `boundingBox`
 /// (the ink box, as Photoshop writes it) both around `anchor` in a remote local space, and a
 /// `transform` that cancels the remote origin.
@@ -3541,4 +3561,26 @@ fn restyling_the_photoshop_era_objects_keeps_the_raw_strings_of_the_file() {
     assert!(out.windows(6).any(|w| w == b"(0100)"), "{:?}", String::from_utf8_lossy(&out));
     let runs = era_runs(&crate::psd::parse_txt2(&out).unwrap());
     assert_eq!(runs.first().and_then(|(_, f)| f.get("FontSize")).and_then(E::as_f64), Some(24.0), "and the legacy copy was restyled");
+}
+
+/// Colour passes are grouped in one walk of the glyphs: with a colour per letter, every placed
+/// glyph lands in exactly one pass and each pass holds only its own glyphs.
+#[test]
+fn colour_passes_hold_each_glyph_once() {
+    let mut e = TextEngine::new();
+    let text = "abcdeghjkm".repeat(200);
+    let runs = text
+        .char_indices()
+        .map(|(i, ch)| TextRun { len: ch.len_utf8(), style: CharStyle { size_pt: 12.0, color: Color::rgb(i as f32 / 2000.0, 0.5, 0.5), ..Default::default() } })
+        .collect();
+    let t = TextLayer { text, runs, ..Default::default() };
+    let l = e.layout(&t, 72.0);
+    let passes = crate::render::visible_color_passes(&l, None);
+    assert!(passes.len() > 1000, "{} passes", passes.len());
+    let mut seen: Vec<usize> = passes.iter().flat_map(|(_, _, p)| p.glyphs.iter().copied()).collect();
+    seen.sort_unstable();
+    assert_eq!(seen, (0..l.glyphs.len()).collect::<Vec<_>>());
+    for (c, _, p) in &passes {
+        assert!(p.glyphs.iter().all(|&i| l.styles[l.glyphs[i].style as usize].color == *c));
+    }
 }

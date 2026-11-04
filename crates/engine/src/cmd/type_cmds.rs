@@ -24,10 +24,7 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
 }
 
 fn layer_id(s: &Session, p: &Value) -> Result<LayerId> {
-    match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => Ok(LayerId(id)),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into())),
-    }
+    crate::commands::layer_param(s, p)
 }
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {

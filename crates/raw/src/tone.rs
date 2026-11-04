@@ -688,7 +688,8 @@ fn guided(i: &[f32], p: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f
 /// carry the black point, so the change's map is computed from the luminance after it rather
 /// than before; that only differs in the deepest shadows.
 pub fn retone(px: &mut [[f32; 4]], w: usize, h: usize, curve: &[[f32; 2]], tone: Tone) {
-    if tone.is_neutral() || w == 0 || h == 0 || px.len() < w * h {
+    // Checked: a wrapped `w * h` would pass a tiny buffer with a huge `h`.
+    if tone.is_neutral() || w == 0 || h == 0 || w.checked_mul(h).is_none_or(|n| px.len() < n) {
         return;
     }
     let forward = |v: f32| crate::develop::tone(curve, v.clamp(0.0, 1.0)).clamp(0.0, 1.0).powf(1.0 / 1.8);
@@ -868,6 +869,14 @@ mod tests {
         let veiled = down.apply(200, 260, px[260 * w + 200]);
         assert!((0..3).all(|c| veiled[c] > px[260 * w + 200][c]), "{veiled:?}");
         assert!(Haze::new(w, h, |i| px[i], 0.0).is_none());
+    }
+
+    #[test]
+    fn retone_refuses_dimensions_whose_product_overflows() {
+        // `w * h` wraps to 0 in a release build, which passed the length check for any buffer.
+        let mut px = vec![[0.25f32, 0.25, 0.25, 1.0]];
+        retone(&mut px, usize::MAX / 2 + 1, 2, &[[0.0, 0.0], [1.0, 1.0]], SHADOWS);
+        assert_eq!(px, [[0.25, 0.25, 0.25, 1.0]]);
     }
 
     #[test]

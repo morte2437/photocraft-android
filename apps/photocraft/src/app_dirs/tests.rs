@@ -443,3 +443,28 @@ fn missing_exe_dir_or_env_never_panics() {
     let d = resolve(env_of(&[("PHOTOCRAFT_CONFIG_DIR", &empty), ("HOME", &empty), ("APPDATA", &empty)]), None);
     assert_eq!(d.dir, None, "empty variables are ignored");
 }
+
+#[cfg(unix)]
+#[test]
+fn the_write_probe_never_follows_an_entry_already_at_its_name() {
+    let root = temp("probe-link");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let victim = root.join("victim.txt");
+    std::fs::write(&victim, b"keep me").unwrap();
+    // Every name the probe tries, except the last, is a link to a file outside the folder.
+    let pid = std::process::id();
+    for attempt in 0..WRITE_PROBE_ATTEMPTS - 1 {
+        std::os::unix::fs::symlink(&victim, data.join(format!(".write-test-{pid}-{attempt}"))).unwrap();
+    }
+    ensure_writable(&data).unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+    // The links are left alone, and the probe that was created is gone.
+    assert!(std::fs::symlink_metadata(data.join(format!(".write-test-{pid}-0"))).unwrap().file_type().is_symlink());
+    assert!(!data.join(format!(".write-test-{pid}-{}", WRITE_PROBE_ATTEMPTS - 1)).exists());
+    // With every name taken the folder is reported unwritable, still without touching the file.
+    std::os::unix::fs::symlink(&victim, data.join(format!(".write-test-{pid}-{}", WRITE_PROBE_ATTEMPTS - 1))).unwrap();
+    assert!(ensure_writable(&data).is_err());
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+    let _ = std::fs::remove_dir_all(&root);
+}

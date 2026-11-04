@@ -196,6 +196,54 @@ fn err(e: impl std::fmt::Display) -> CodecError {
     CodecError::malformed(F, e)
 }
 
+const EXTENDED_XMP_HEADER: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
+
+/// The file without its Extended XMP APP1 segments (`None` when it has none), for `zune-jpeg`.
+///
+/// zune-jpeg keeps every Extended XMP fragment until a GUID's set is complete and re-sorts and
+/// re-checks all pending fragments after every marker it parses, so many small, consistent but
+/// incomplete fragments (or a few followed by many other markers) cost quadratic time before a
+/// pixel is decoded. Nothing here reads its reassembled Extended XMP ([`scan_metadata`] works on
+/// the original bytes), so the fragments are left out of what it parses. The walk stops at the
+/// first scan, as the header parse does, and skips stray bytes to the next `FF` as it does.
+fn without_extended_xmp(b: &[u8]) -> Option<Vec<u8>> {
+    let mut drop: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut i = 2; // past SOI
+    while let Some(&byte) = b.get(i) {
+        if byte != 0xFF {
+            i += b.get(i..)?.iter().position(|&v| v == 0xFF)?;
+            continue;
+        }
+        let Some(&code) = b.get(i + 1) else { break };
+        match code {
+            0xFF => i += 1,
+            0x01 | 0xD0..=0xD8 => i += 2,
+            0xD9 | 0xDA => break,
+            _ => {
+                let Some(len) = b.get(i + 2..i + 4).and_then(|s| <[u8; 2]>::try_from(s).ok()).map(u16::from_be_bytes) else { break };
+                let end = i.saturating_add(2 + usize::from(len));
+                if code == 0xE1 && b.get(i + 4..).is_some_and(|p| p.starts_with(EXTENDED_XMP_HEADER)) {
+                    drop.push(i..end.min(b.len()));
+                }
+                i = end;
+            }
+        }
+    }
+    if drop.is_empty() {
+        return None;
+    }
+    // Reserve what is kept, not the input: the dropped fragments may be most of it.
+    let kept = b.len().saturating_sub(drop.iter().map(|r| r.end - r.start).sum::<usize>());
+    let mut out = Vec::with_capacity(kept);
+    let mut at = 0;
+    for r in drop {
+        out.extend_from_slice(b.get(at..r.start)?);
+        at = r.end;
+    }
+    out.extend_from_slice(b.get(at..)?);
+    Some(out)
+}
+
 /// Whether `craft-jpeg` (rather than `zune-jpeg`) decodes the file: arithmetic coding
 /// (SOF9–SOF11) or a DCT frame whose precision isn't 8 bits (#4934, #5003). Lossless (SOF3) and
 /// 12-bit progressive Huffman (SOF2) go there too: craft-jpeg reports them unsupported, where
@@ -273,7 +321,8 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
         return Ok(img);
     }
     let options = DecoderOptions::default().set_strict_mode(false).set_max_width(65535).set_max_height(65535);
-    let mut dec = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
+    let stripped = without_extended_xmp(bytes);
+    let mut dec = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(stripped.as_deref().unwrap_or(bytes)), options);
     dec.decode_headers().map_err(err)?;
     let (w, h) = dec.dimensions().ok_or_else(|| err("no dimensions"))?;
     let (w, h) = (w as u32, h as u32);
@@ -523,6 +572,36 @@ mod tests {
     /// Return whether the JPEG begins with a JFIF APP0 segment.
     fn has_jfif_app0(bytes: &[u8]) -> bool {
         bytes.get(2..11) == Some(b"\xff\xe0\0\x10JFIF\0")
+    }
+
+    /// An APP1 Extended XMP fragment (GUID, total size, offset, data).
+    fn extended_xmp(offset: u32) -> Vec<u8> {
+        let mut seg = EXTENDED_XMP_HEADER.to_vec();
+        seg.extend_from_slice(&[b'A'; 32]);
+        seg.extend_from_slice(&1_000_000u32.to_be_bytes());
+        seg.extend_from_slice(&offset.to_be_bytes());
+        seg.push(b'x');
+        let mut out = vec![0xFF, 0xE1];
+        out.extend_from_slice(&u16::try_from(seg.len() + 2).unwrap().to_be_bytes());
+        out.extend_from_slice(&seg);
+        out
+    }
+
+    #[test]
+    fn extended_xmp_fragments_are_left_out_of_the_backend_parse() {
+        let img = Image::from_raw(16, 16, ChannelLayout::Rgb, SampleType::U8, vec![120; 16 * 16 * 3]).unwrap();
+        let plain = crate::encode(&img, Format::Jpeg, &EncodeOptions::default()).unwrap();
+        assert!(without_extended_xmp(&plain).is_none());
+        // 20000 consistent but incomplete fragments right after SOI: zune-jpeg would re-sort and
+        // re-check the growing pending list after each one.
+        let mut hostile = plain[..2].to_vec();
+        for k in 0..20_000u32 {
+            hostile.extend_from_slice(&extended_xmp(k * 2));
+        }
+        hostile.extend_from_slice(&plain[2..]);
+        assert_eq!(without_extended_xmp(&hostile).as_deref(), Some(&plain[..]));
+        let back = decode(&hostile, &Limits::default()).unwrap();
+        assert_eq!(back.dimensions(), (16, 16));
     }
 
     /// A tiny truncated scan under a frame patched to 20000×20000 is refused before the backend

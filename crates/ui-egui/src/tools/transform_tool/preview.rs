@@ -78,13 +78,16 @@ pub(super) struct Above {
     pub(super) max_side: usize,
     /// The covering layers (whole layers or groups, at any depth).
     pub(super) ids: Vec<LayerId>,
+    /// Adjustment layers over the covering ones: they stay in the document under the box as well,
+    /// and are composited with the covering layers so those keep the adjustment.
+    pub(super) applied: Vec<LayerId>,
     /// Their composite and the canvas area it covers; `None` when nothing visible covers the layer.
     pub(super) shown: Option<(crate::transform_tex::PreviewTextures, photocraft_geom::Rect)>,
 }
 
 impl Above {
     pub(super) fn new(ctx: &egui::Context, name: String, doc: &Document, id: LayerId, max_side: usize) -> Self {
-        let mut a = Self { ctx: ctx.clone(), name, max_side, ids: Vec::new(), shown: None };
+        let mut a = Self { ctx: ctx.clone(), name, max_side, ids: Vec::new(), applied: Vec::new(), shown: None };
         a.rebuild(doc, id);
         a
     }
@@ -92,11 +95,16 @@ impl Above {
     /// Composite what covers layer `id` of `doc` (the live document) again.
     pub(super) fn rebuild(&mut self, doc: &Document, id: LayerId) {
         self.ids.clear();
-        covering(&doc.layers, id, &mut self.ids);
+        self.applied.clear();
+        covering(&doc.layers, id, &mut self.ids, &mut self.applied);
         let mut up = doc.clone();
-        show_only(&mut up.layers, &self.ids);
+        let mut covers = doc.clone();
+        show_only(&mut covers.layers, &self.ids);
+        let keep: Vec<LayerId> = self.ids.iter().chain(&self.applied).copied().collect();
+        show_only(&mut up.layers, &keep);
         let canvas = up.bounds();
-        let rect = up
+        // An adjustment touches only pixels the covering layers have, so they alone bound the composite.
+        let rect = covers
             .layers
             .iter()
             .filter(|l| l.visible)
@@ -174,11 +182,15 @@ fn plain(l: &photocraft_doc::Layer) -> bool {
 }
 
 /// The layers over `id` in `layers` (bottom to top, groups holding `id` searched too) that cover
-/// it in the preview: from the top down, while they are [`plain`]. The first layer that isn't
-/// stops the search, so it and everything under it stay in the document under the box as before
-/// (an adjustment there keeps applying to the layers under it). A clipping group goes as a whole,
-/// and the layers clipped to `id` (or to the group holding it) stay with it.
-pub(super) fn covering(layers: &[photocraft_doc::Layer], id: LayerId, out: &mut Vec<LayerId>) {
+/// it in the preview, into `out`: every [`plain`] one, from the top down. A layer that isn't plain
+/// (an adjustment, a blend mode) is passed over and stays in the document under the box: it can't
+/// be drawn on its own, so the plain layers under it no longer wait for it to cover the moving
+/// layer (#9387). An adjustment layer over covering layers goes to `applied`: it stays under the
+/// box and is composited with them as well, so they keep its adjustment. A clipping group goes as
+/// a whole, and the layers clipped to `id` (or to the group holding it) stay with it.
+pub(super) fn covering(layers: &[photocraft_doc::Layer], id: LayerId, out: &mut Vec<LayerId>, applied: &mut Vec<LayerId>) {
+    // Adjustments met since the last covering layer: they count once one lies under them.
+    let mut pending: Vec<LayerId> = Vec::new();
     let mut end = layers.len();
     while end > 0 {
         // The clipping group ending at `end`: its base and the layers clipped to it.
@@ -194,14 +206,25 @@ pub(super) fn covering(layers: &[photocraft_doc::Layer], id: LayerId, out: &mut 
                 && let LayerContent::Group(group) = &g.content
                 && matches!(g.blend, photocraft_color::BlendMode::Normal | photocraft_color::BlendMode::PassThrough)
             {
-                covering(&group.children, id, out);
+                let before = out.len();
+                covering(&group.children, id, out, applied);
+                if out.len() > before {
+                    applied.append(&mut pending);
+                }
             }
             return;
         }
-        if !unit.iter().all(plain) {
-            return;
+        if unit.iter().all(plain) {
+            out.extend(unit.iter().map(|l| l.id));
+            if unit.iter().any(|l| l.visible) {
+                applied.append(&mut pending);
+            }
+        } else if let [l] = unit
+            && l.visible
+            && matches!(l.content, LayerContent::Adjustment(_))
+        {
+            pending.push(l.id);
         }
-        out.extend(unit.iter().map(|l| l.id));
         end = start;
     }
 }
