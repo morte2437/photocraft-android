@@ -279,8 +279,24 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
     retained_segment_bytes(&segments, samples, limits)?;
     let le = t.le;
     let tiled = t.tag_uint(ifd, tag::TILE_WIDTH).is_some();
-    let decoded: Vec<Result<Vec<u16>>> = par::map(segments.len(), |i| {
-        let s = &segments[i];
+    // Segments naming the same bytes at the same geometry decode to the same samples, so each
+    // distinct one is decoded once and shared. A file can point every tile at one small range;
+    // decoding it per tile multiplied header work (a lossless JPEG rebuilds its Huffman tables on
+    // every decode) and retained buffers by the tile count.
+    let mut first_of = std::collections::HashMap::new();
+    let mut unique: Vec<usize> = Vec::new();
+    let slot: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            *first_of.entry((s.offset, s.len, s.w, s.h, s.h.min(height - s.y))).or_insert_with(|| {
+                unique.push(i);
+                unique.len() - 1
+            })
+        })
+        .collect();
+    let decoded: Vec<Result<Vec<u16>>> = par::map(unique.len(), |u| {
+        let s = &segments[unique[u]];
         let rows = s.h.min(height - s.y);
         let src = t.bytes(s.offset, s.len).ok_or_else(|| RawError::malformed("raw data lies outside the file"))?;
         // Every branch below sizes at least one buffer from the segment's own geometry, which
@@ -322,9 +338,9 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
     // One segment holding the whole image row for row (a single strip): its buffer is the plane, no
     // second full-size buffer and no copy. The scatter below then has no segment left to place.
     let whole = matches!(segments.as_slice(), [s] if s.x == 0 && s.y == 0 && s.w == width && s.h >= height);
-    let mut decoded = decoded.into_iter();
+    let mut decoded: Vec<Vec<u16>> = decoded.into_iter().collect::<Result<_>>()?;
     let taken = if whole {
-        let mut d = decoded.next().ok_or_else(|| RawError::malformed("raw segment missing"))??;
+        let mut d = decoded.pop().ok_or_else(|| RawError::malformed("raw segment missing"))?;
         if d.len() < width * height * samples {
             return Err(RawError::malformed("raw segment is smaller than the image"));
         }
@@ -334,8 +350,9 @@ pub(crate) fn read_plane(t: &Tiff, ifd: &Ifd, limits: &Limits, layout: JpegLayou
         None
     };
     let mut data = taken.unwrap_or_else(|| vec![0u16; width * height * samples]);
-    for (s, d) in segments.iter().zip(decoded) {
-        let d = d?;
+    // The whole-image segment above is the plane itself: nothing is left to scatter.
+    for (s, &k) in segments.iter().zip(&slot).filter(|_| !whole) {
+        let d = &decoded[k];
         let rows = s.h.min(height - s.y);
         let cols = s.w.min(width - s.x);
         for r in 0..rows {
@@ -467,6 +484,11 @@ fn lossy_jpeg(src: &[u8], s: &Segment, rows: usize, samples: usize, bits: u32, t
         3 => ColorSpace::RGB,
         n => return Err(RawError::unsupported(format!("lossy DNG with {n} samples per pixel (1 or 3 are supported)"))),
     };
+    // zune-jpeg re-sorts and re-checks every pending Extended XMP fragment after each marker it
+    // parses, which is quadratic in a tile of many small fragments; a raw tile has no metadata.
+    if has_extended_xmp(src) {
+        return Err(RawError::unsupported("lossy JPEG tile with Extended XMP metadata"));
+    }
     let options = DecoderOptions::default().jpeg_set_out_colorspace(out).set_max_width(s.w).set_max_height(s.h);
     let mut dec = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(src), options);
     dec.decode_headers().map_err(|e| RawError::malformed(format!("lossy JPEG tile header: {e:?}")))?;
@@ -490,6 +512,36 @@ fn lossy_jpeg(src: &[u8], s: &Segment, rows: usize, samples: usize, bits: u32, t
     let full = s.w.checked_mul(s.h).and_then(|n| n.checked_mul(samples)).ok_or_else(|| RawError::malformed("lossy JPEG tile is too large"))?;
     v.resize(full, 0);
     Ok(v)
+}
+
+/// Whether a JPEG stream has an APP1 Extended XMP segment before its first scan. Walks the
+/// markers as a header parse does: stray bytes skip to the next `FF`.
+fn has_extended_xmp(b: &[u8]) -> bool {
+    const EXTENDED_XMP: &[u8] = b"http://ns.adobe.com/xmp/extension/\0";
+    let mut i = 2; // past SOI
+    while let Some(&byte) = b.get(i) {
+        if byte != 0xFF {
+            match b[i..].iter().position(|&v| v == 0xFF) {
+                Some(n) => i += n,
+                None => return false,
+            }
+            continue;
+        }
+        match b.get(i + 1) {
+            None | Some(0xD9 | 0xDA) => return false,
+            Some(0xFF) => i += 1,
+            Some(0x01 | 0xD0..=0xD8) => i += 2,
+            Some(&code) => {
+                let Some(len) = b.get(i + 2..i + 4).map(|l| usize::from(u16::from_be_bytes([l[0], l[1]]))) else { return false };
+                // The identifier must lie inside the segment's declared payload (length counts its own two bytes).
+                if code == 0xE1 && b.get(i + 4..(i + 2 + len).min(b.len())).is_some_and(|p| p.starts_with(EXTENDED_XMP)) {
+                    return true;
+                }
+                i += 2 + len;
+            }
+        }
+    }
+    false
 }
 
 /// Reverses TIFF predictor 2 (horizontal differencing) on interleaved samples: each sample
@@ -591,6 +643,25 @@ fn unpack_row_msb(row: &[u8], out: &mut [u16], bits: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extended_xmp_is_found_before_the_scan_only() {
+        let app1 = |payload: &[u8]| {
+            let mut seg = vec![0xFF, 0xE1];
+            seg.extend_from_slice(&u16::try_from(payload.len() + 2).unwrap().to_be_bytes());
+            seg.extend_from_slice(payload);
+            seg
+        };
+        let xmp = app1(b"http://ns.adobe.com/xmp/extension/\0GUID");
+        let plain = app1(b"http://ns.adobe.com/xap/1.0/\0<x/>");
+        let jpeg = |segs: &[&[u8]]| [&[0xFF, 0xD8][..], &segs.concat(), &[0xFF, 0xDA, 0, 2, 0xFF, 0xD9]].concat();
+        assert!(has_extended_xmp(&jpeg(&[&plain, &xmp])));
+        assert!(!has_extended_xmp(&jpeg(&[&plain])));
+        // After the scan it is entropy data, not a marker the header parse reads.
+        assert!(!has_extended_xmp(&[jpeg(&[]), xmp.clone()].concat()));
+        // A truncated length ends the walk.
+        assert!(!has_extended_xmp(&[0xFF, 0xD8, 0xFF, 0xE1, 0x00]));
+    }
 
     /// The grouped 10/12/14-bit readers equal the plain bit reader on every row width.
     #[test]

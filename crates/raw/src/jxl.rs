@@ -34,9 +34,19 @@ pub(crate) fn decode(src: &[u8], w: usize, h: usize, samples: usize, bits: u32, 
     // than the caller's per-buffer limit.
     let budget = (w as u64).saturating_mul(h as u64).saturating_mul(samples as u64).saturating_mul(16).min(limits.max_alloc);
     let budget = usize::try_from(budget).unwrap_or(usize::MAX);
+    // jxl-oxide inflates Brotli-compressed boxes (`brob`: Exif, XMP) into storage the tracker
+    // doesn't see, while it reads. A raw tile has no use for metadata, so refuse it unread.
+    if has_compressed_box(src) {
+        return Err(RawError::unsupported("JPEG XL raw tile with compressed metadata boxes"));
+    }
     guarded(|| {
         let image =
             JxlImage::builder().alloc_tracker(AllocTracker::with_limit(budget)).read(src).map_err(|e| RawError::malformed(format!("JPEG XL raw data: {e}")))?;
+        // Rendering samples spline geometry into an untracked vector with no bound on the sample
+        // count, whatever their colour; sensor data never draws splines.
+        if (0..image.num_loaded_frames()).filter_map(|i| image.frame(i)).any(|f| f.header().flags.splines()) {
+            return Err(RawError::unsupported("JPEG XL raw tile with splines"));
+        }
         let (jw, jh) = (image.width() as usize, image.height() as usize);
         if (jw, jh) != (w, h) {
             return Err(RawError::malformed(format!("JPEG XL raw tile is {jw}x{jh}, expected {w}x{h}")));
@@ -76,7 +86,65 @@ pub(crate) fn decode(src: &[u8], w: usize, h: usize, samples: usize, bits: u32, 
     })
 }
 
+/// The ISO/IEC 18181-2 container's signature box.
+#[cfg(not(target_arch = "wasm32"))]
+const CONTAINER_SIGNATURE: &[u8] = &[0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A];
+
+/// Whether `src` is a JPEG XL container holding a Brotli-compressed (`brob`) box. A malformed box
+/// size ends the walk: the decoder refuses that file itself.
+#[cfg(not(target_arch = "wasm32"))]
+fn has_compressed_box(src: &[u8]) -> bool {
+    if !src.starts_with(CONTAINER_SIGNATURE) {
+        return false;
+    }
+    let mut at = 0usize;
+    while let Some(head) = src.get(at..at.saturating_add(8)) {
+        if &head[4..] == b"brob" {
+            return true;
+        }
+        let size = match u32::from_be_bytes([head[0], head[1], head[2], head[3]]) {
+            0 => return false, // the last box, running to the end
+            1 => match src.get(at + 8..at.saturating_add(16)).and_then(|b| <[u8; 8]>::try_from(b).ok()) {
+                Some(b) => u64::from_be_bytes(b),
+                None => return false,
+            },
+            n => u64::from(n),
+        };
+        match usize::try_from(size).ok().filter(|&s| s >= 8).and_then(|s| at.checked_add(s)) {
+            Some(next) => at = next,
+            None => return false,
+        }
+    }
+    false
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(RawError::malformed("the JPEG XL decoder failed on this file")))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{CONTAINER_SIGNATURE, decode, has_compressed_box};
+    use crate::Limits;
+
+    fn container(boxes: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
+        let mut out = CONTAINER_SIGNATURE.to_vec();
+        for (kind, body) in boxes {
+            out.extend_from_slice(&(body.len() as u32 + 8).to_be_bytes());
+            out.extend_from_slice(*kind);
+            out.extend_from_slice(body);
+        }
+        out
+    }
+
+    #[test]
+    fn a_compressed_metadata_box_is_refused_before_decoding() {
+        let brob = container(&[(b"ftyp", b"jxl \0\0\0\0jxl "), (b"brob", b"Exif\x8b\x02\x80"), (b"jxlc", &[0xFF, 0x0A])]);
+        assert!(has_compressed_box(&brob));
+        assert!(decode(&brob, 1, 1, 1, 16, None, &Limits::default()).is_err());
+        assert!(!has_compressed_box(&container(&[(b"ftyp", b"jxl \0\0\0\0jxl "), (b"jxlc", &[0xFF, 0x0A])])));
+        // A bare codestream is not a container.
+        assert!(!has_compressed_box(&[0xFF, 0x0A, 0, 0, 0, 0, b'b', b'r', b'o', b'b']));
+    }
 }
