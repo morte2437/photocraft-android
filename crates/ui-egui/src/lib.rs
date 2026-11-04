@@ -798,6 +798,9 @@ mod transform_undo_tests;
 mod transform_type_tests;
 
 #[cfg(test)]
+mod transform_reference_point_tests;
+
+#[cfg(test)]
 mod transform_several_tests;
 
 #[cfg(test)]

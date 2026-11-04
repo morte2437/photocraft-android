@@ -61,7 +61,7 @@ use options_bar::{
 pub use options_bar::{options_bar, reset_warp};
 pub(crate) use pointer::{Gesture, Hit, hit, rotate_cursor_dir};
 #[cfg(test)]
-use pointer::{accepts_outside_click, box_hit, carry_pivot, near_rotate_corner, point_on_quad, rotation_degrees};
+use pointer::{accepts_outside_click, carry_pivot, near_rotate_corner, point_on_quad, rotation_degrees};
 pub use pointer::{cursor, pointer};
 pub(crate) use preview::solo_layer;
 use preview::{Above, composite_image, show_only};
