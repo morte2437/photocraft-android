@@ -169,6 +169,25 @@ fn reset_holds_the_frame_to_the_ratio_preset() {
     assert_eq!(app.ui.crop_rect, drawn, "Undo brings the drawn frame back");
 }
 
+/// A W x H x Resolution preset keeps the reset frame a pending crop (it sets an output size), so
+/// Commit still crops; Reset has nothing more to do on it until the frame changes again.
+#[test]
+fn reset_under_an_output_size_leaves_nothing_to_reset() {
+    let mut app = app(SampleType::U8);
+    ensure_frame(&mut app);
+    let o = &mut app.ui.tool_options;
+    o.crop_ratio = crate::crop_size::WHR.into();
+    (o.crop_width, o.crop_height, o.crop_resolution) = ("100 px".into(), "100 px".into(), "72".into());
+    drag(&mut app, &[[50.0, 20.0], [80.0, 40.0], [120.0, 70.0]], NONE);
+    assert!(modified(&app));
+    reset(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([50.0, 0.0, 150.0, 100.0]));
+    assert!(pending(&app), "the output size is still a crop to commit");
+    assert!(!modified(&app), "and Reset has nothing more to do");
+    drag(&mut app, &[[60.0, 10.0], [90.0, 40.0]], NONE);
+    assert!(modified(&app), "a new frame can be reset again");
+}
+
 /// #9730: the Crop tool's options bar has a Reset button beside Cancel and Commit, live once
 /// the frame was changed.
 #[test]

@@ -58,6 +58,9 @@ pub struct CropState {
     /// while this matches. Keyed by id, not tab index, so closing it never hides the frame of the
     /// tab that takes its place.
     dismissed: Option<(photocraft_doc::DocId, u32, u32)>,
+    /// The pending frame [`reset`] left when a W x H x Resolution preset kept it a crop: Reset
+    /// stays disabled while the frame is still that one.
+    reset_to: Option<[f64; 4]>,
     /// The frame is being edited (pressed since it was made): the canvas shows what lies past it.
     pub editing: bool,
     /// The document the pending frame (or gesture) belongs to ([`cancel_stale`], #1918).
@@ -541,7 +544,10 @@ fn dismiss_key(app: &PhotocraftApp) -> Option<(photocraft_doc::DocId, u32, u32)>
 /// The frame was drawn, moved, resized or turned since it was last framed by default, so
 /// [`reset`] has something to undo.
 pub fn modified(app: &PhotocraftApp) -> bool {
-    app.ui.tool == Tool::Crop && app.ui.crop_rect.is_some() && app.crop.drag.is_none() && (!app.crop.default_frame || app.ui.crop_angle != 0.0)
+    app.ui.tool == Tool::Crop
+        && app.ui.crop_rect.is_some()
+        && app.crop.drag.is_none()
+        && (app.ui.crop_angle != 0.0 || (!app.crop.default_frame && app.ui.crop_rect != app.crop.reset_to))
 }
 
 /// Reset the crop box (the options bar's Reset): the default frame again, upright, with the
@@ -564,6 +570,9 @@ pub fn reset(app: &mut PhotocraftApp) {
     crate::crop_straighten::reset(app);
     // As a new default frame is: held to the ratio preset (or output size) picked in the bar.
     fit_frame(app);
+    // A W x H x Resolution preset keeps the reset frame a pending crop (`fit_frame`), so remember
+    // it: Reset has nothing more to do until it changes.
+    app.crop.reset_to = app.ui.crop_rect.filter(|_| !app.crop.default_frame);
     if step_of(app) != before {
         app.crop.undo.push(before);
         app.crop.redo.clear();
