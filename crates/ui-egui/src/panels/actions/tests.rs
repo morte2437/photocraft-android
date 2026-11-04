@@ -456,6 +456,42 @@ fn nested_shell_actions_include_view_steps_and_propagate_failures() {
     assert!(r["failed"]["error"].as_str().unwrap().contains("denied nested view"));
     assert!(app.session.actions.playback_stack.is_empty());
     assert_eq!(app.session.actions.playing, 0);
+
+    app.session.authorize = None;
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("valid.png");
+    let corrupt = dir.path().join("corrupt.png");
+    let bytes = photocraft_io::export(&app.session.active().unwrap().doc, "png", &Default::default()).unwrap().bytes;
+    std::fs::write(&input, bytes).unwrap();
+    std::fs::write(&corrupt, b"not a PNG").unwrap();
+    let before = app.session.documents().len();
+    for mixed in [true, false] {
+        let output = dir.path().join(if mixed { "mixed" } else { "success" });
+        let inputs = if mixed { vec![&input, &corrupt] } else { vec![&input] };
+        let batch = json!({"input": inputs, "output": output, "steps": [], "format": "png"});
+        let index = app.session.actions.list.len();
+        let name = if mixed { "Mixed Batch" } else { "Successful Batch" };
+        app.session.actions.list.push(Action::new(name, vec![("file.automate.batch".into(), batch), ("file.new".into(), json!({"width": 2, "height": 2}))]));
+        let result = app.run("actions.play", json!({"action": index})).unwrap();
+        if mixed {
+            assert_eq!(result["ran"], 0, "{result}");
+            let batch = &result["failed"]["result"];
+            let files = batch["files"].as_array().unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(std::path::Path::new(files[0].as_str().unwrap()), output.join("valid.png").as_path());
+            assert_eq!(batch["errors"].as_array().unwrap().len(), 1);
+            assert_eq!(batch["errors"][0]["file"], json!(corrupt));
+            report_play(&mut app, &result);
+            assert!(app.ui.status_error);
+            assert!(app.ui.status.contains("1 file(s) failed") && app.ui.status.contains("1 saved") && app.ui.status.contains("corrupt.png"));
+            assert_eq!(app.session.documents().len(), before, "a failed Batch stops before file.new");
+        } else {
+            assert!(result.get("failed").is_none(), "{result}");
+            assert_eq!(result["ran"], 2);
+            assert_eq!(app.session.documents().len(), before + 1, "a successful Batch continues");
+        }
+        assert!(output.join("valid.png").exists(), "successful files remain available");
+    }
 }
 
 #[test]

@@ -276,80 +276,128 @@ pub fn playback_plan(s: &Session, p: &Value) -> Result<(Action, usize)> {
 /// without the rest of the list. A target that doesn't resolve is left alone: it fails at
 /// playback, as it would have before.
 pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Action> {
-    fn step_ref(step: &mut Value) -> Option<(String, &mut Value)> {
-        match step {
-            Value::Array(a) => {
-                let id = a.first()?.as_str()?.to_string();
-                Some((id, a.get_mut(1)?))
-            }
-            Value::Object(o) => {
-                let id = o.get("command").or_else(|| o.get("id"))?.as_str()?.to_string();
-                Some((id, o.get_mut("params")?))
-            }
-            // A parameter-less step cannot name another action.
-            _ => None,
-        }
+    /// Resolve in the current namespace before capture rewrites the reference.
+    fn target(list: &[Action], params: &Value, id: &str) -> Result<usize> {
+        if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, id) }
     }
-    fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut VecDeque<(usize, usize)>) {
-        let mut pending = Vec::new();
-        for (id, params) in steps.iter_mut() {
-            pending.push((id.clone(), params));
-            while let Some((id, params)) = pending.pop() {
-                // Follow the same explicit-step precedence as Batch. Walk the JSON tree with a
-                // heap stack; containers do not consume action-call depth or recurse on the stack.
-                if id == "file.automate.batch" {
-                    let explicit = if params.get("steps").is_some() {
-                        Some("steps")
-                    } else if params.get("action").is_some_and(Value::is_array) {
-                        Some("action")
-                    } else {
-                        None
-                    };
-                    if let Some(key) = explicit {
-                        if let Some(children) = params.get_mut(key).and_then(Value::as_array_mut) {
-                            pending.extend(children.iter_mut().rev().filter_map(step_ref));
-                        }
+    /// Visit calls in the current namespace, leaving embedded inline Batch scopes untouched.
+    fn visit_calls(steps: &mut [(String, Value)], f: &mut impl FnMut(&str, &mut Value, bool)) {
+        let mut pending: Vec<_> = steps.iter_mut().rev().map(|(id, params)| (id.clone(), params)).collect();
+        while let Some((id, params)) = pending.pop() {
+            let scoped = id == "file.automate.batch" && params.get("calledActions").is_some_and(|v| !v.is_null());
+            if id == "file.automate.batch" {
+                let inline = if params.get("steps").is_some() { Some("steps") } else { params.get("action").is_some_and(Value::is_array).then_some("action") };
+                if let Some(key) = inline {
+                    if scoped {
                         continue;
                     }
-                }
-                match id.as_str() {
-                    "actions.play" | "file.automate.batch" => {
-                        let resolved =
-                            if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, "actions.play") };
-                        let Ok(i) = resolved else { continue };
-                        if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
-                            obj.insert("action".into(), json!(action.name));
-                        }
-                        queue.push_back((i, depth));
-                    }
-                    // Conditional branches only take names, so there is nothing to rewrite.
-                    "actions.conditional" => {
-                        for key in ["then", "else"] {
-                            let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
-                            if let Some(i) = list.iter().position(|a| a.name == name) {
-                                queue.push_back((i, depth));
+                    // A present invalid `steps` still wins over `action`, just as at runtime.
+                    let Some(steps) = params.get_mut(key).and_then(Value::as_array_mut) else { continue };
+                    for step in steps.iter_mut().rev() {
+                        let call = match step {
+                            Value::Array(a) => {
+                                let Some(id) = a.first().and_then(Value::as_str).map(str::to_owned) else { continue };
+                                a.get_mut(1).map(|params| (id, params))
                             }
+                            Value::Object(o) => {
+                                let Some(id) = o.get("command").or_else(|| o.get("id")).and_then(Value::as_str).map(str::to_owned) else { continue };
+                                o.get_mut("params").map(|params| (id, params))
+                            }
+                            // String steps and omitted params use `{}`, with no action target.
+                            _ => None,
+                        };
+                        if let Some(call) = call {
+                            pending.push(call);
                         }
                     }
-                    _ => {}
+                    continue;
                 }
             }
+            f(&id, params, scoped);
         }
     }
+    /// Capture ordinary calls transitively, but retain an untouched source for scoped named Batch.
+    fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut VecDeque<(usize, usize)>, scoped: &mut BTreeSet<usize>) {
+        if depth > 16 {
+            return;
+        }
+        visit_calls(steps, &mut |id, params, own_actions| match id {
+            "actions.play" | "file.automate.batch" => {
+                let Ok(i) = target(list, params, id) else { return };
+                if own_actions {
+                    scoped.insert(i);
+                } else {
+                    if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
+                        obj.insert("action".into(), json!(action.name));
+                    }
+                    queue.push_back((i, depth));
+                }
+            }
+            "actions.conditional" => {
+                for key in ["then", "else"] {
+                    let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
+                    if let Some(i) = list.iter().position(|a| a.name == name) {
+                        queue.push_back((i, depth));
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
     let mut queue = VecDeque::new();
-    targets(list, steps, 1, &mut queue);
+    let mut scoped = BTreeSet::new();
+    targets(list, steps, 1, &mut queue, &mut scoped);
     let mut found = std::collections::BTreeMap::new();
-    // Visit each action at its shallowest call depth so a deeper path cannot hide its children.
+    // Visit shallow calls first, so a deeper path cannot hide a reachable dependency.
     while let Some((i, depth)) = queue.pop_front() {
-        // Playback stops at 16 levels, so deeper calls never run.
         if depth > 16 || found.contains_key(&i) {
             continue;
         }
         let Some(mut action) = list.get(i).cloned() else { continue };
-        targets(list, &mut action.steps, depth + 1, &mut queue);
+        targets(list, &mut action.steps, depth + 1, &mut queue, &mut scoped);
         found.insert(i, action);
     }
-    found.into_values().collect()
+    let mut found: Vec<_> = found.into_values().collect();
+    let mut originals = Vec::new();
+    let mut slots = std::collections::BTreeMap::new();
+    for i in scoped {
+        if let Some(action) = list.get(i) {
+            slots.insert(i, found.len() + originals.len());
+            originals.push(action.clone());
+        }
+    }
+    // A named Batch selects from the caller before switching to its embedded list. Its source
+    // must keep raw references, even when normal Play needs a normalized copy of the same action.
+    let final_len = found.len() + originals.len();
+    let mut remap = |id: &str, params: &mut Value, scoped: bool| {
+        if !matches!(id, "actions.play" | "file.automate.batch") {
+            return;
+        }
+        if scoped
+            && let Ok(i) = target(list, params, id)
+            && let Some(slot) = slots.get(&i)
+        {
+            params["action"] = json!(slot);
+            // The pinned source slot identifies its set; a numeric Batch choice cannot carry a named set.
+            if let Some(object) = params.as_object_mut() {
+                object.remove("set");
+            }
+            return;
+        }
+        // Appended source copies must not make an originally missing numeric target valid.
+        if let Some(i) = params.get("action").and_then(num).and_then(|i| usize::try_from(i).ok())
+            && i >= list.len()
+            && i < final_len
+        {
+            params["action"] = json!(final_len);
+        }
+    };
+    visit_calls(steps, &mut remap);
+    for action in &mut found {
+        visit_calls(&mut action.steps, &mut remap);
+    }
+    found.extend(originals);
+    found
 }
 
 fn always(_: &Session) -> std::result::Result<(), String> {
@@ -592,7 +640,7 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
         match playback_params(s, id, params).and_then(|p| if saves_smart_contents(s, id) { s.execute(SAVE_CONTENTS, json!({})) } else { s.execute(id, p) }) {
             Ok(value) => {
                 if let Some(error) = nested_failure(id, &value) {
-                    failed = Some(json!({"step": i, "id": id, "error": error}));
+                    failed = Some(json!({"step": i, "id": id, "error": error, "result": value}));
                     break;
                 }
                 ran += 1;
@@ -648,14 +696,13 @@ pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
             .unwrap_or("unknown error");
         return Some(format!("script failed: {error}"));
     }
-    // Batch keeps per-file results for direct callers, but a failed recorded Batch step stops its parent.
     if id == "file.automate.batch" {
-        let failure = value.get("errors")?.as_array()?.first()?;
-        return Some(format!(
-            "Batch failed for {}: {}",
-            failure.get("file").and_then(Value::as_str).unwrap_or("an input"),
-            failure.get("error").and_then(Value::as_str).unwrap_or("unknown error")
-        ));
+        let errors = value.get("errors")?.as_array()?;
+        let first = errors.first()?;
+        let error = first.get("error")?.as_str()?;
+        let file = first.get("file").or_else(|| first.get("document")).and_then(Value::as_str).unwrap_or("unknown input");
+        let saved = value.get("files").and_then(Value::as_array).map_or(0, Vec::len);
+        return Some(format!("Batch: {} file(s) failed, {saved} saved; first failure `{file}`: {error}", errors.len()));
     }
     (id == "actions.play" || id == "actions.conditional").then(|| value.get("failed")).flatten().map(|failure| {
         format!(

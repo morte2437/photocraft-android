@@ -1322,3 +1322,34 @@ fn record_keeps_an_empty_loaded_sets_exact_name() {
     assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
     assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }
+
+/// Extra source copies cannot turn deferred missing indices into valid action calls.
+#[test]
+fn scoped_source_slots_do_not_bind_previously_missing_references() {
+    let list = vec![
+        Action::new("Leaf", Vec::new()),
+        Action::new("Shared", vec![("actions.play".into(), json!({"action": 0}))]),
+        Action::new("Bad", vec![("actions.play".into(), json!({"action": 3}))]),
+    ];
+    let mut steps = vec![
+        ("actions.play".into(), json!({"action": "Shared"})),
+        ("file.automate.batch".into(), json!({"action": "Shared", "calledActions": []})),
+        ("actions.play".into(), json!({"action": "Bad"})),
+    ];
+    for id in ["actions.play", "file.automate.batch"] {
+        for action in [json!(3), json!(3.25), json!(-1), json!("Missing"), json!(null)] {
+            steps.push((id.into(), json!({"action": action})));
+            if id == "file.automate.batch" {
+                steps.push((id.into(), json!({"action": action, "calledActions": []})));
+            }
+        }
+    }
+    let called = called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 4);
+    assert_eq!(called.last(), list.get(1), "the raw source keeps its own indices");
+    for (id, params) in &steps[3..] {
+        assert!(resolve(&called, params, id).is_err(), "{id}: {params}");
+    }
+    let bad = called.iter().find(|a| a.name == "Bad").unwrap();
+    assert!(resolve(&called, &bad.steps[0].1, "actions.play").is_err());
+}

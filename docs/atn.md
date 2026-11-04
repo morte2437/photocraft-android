@@ -460,8 +460,10 @@ recorded steps also set `stopOnError`: the first failed input is reported,
 earlier outputs stay saved and later inputs are not processed. Native Batch
 continues by default. Export requires both recorded policies to preserve them.
 Any reported file error fails a recorded Batch step, so its parent action does
-not run later steps. A direct scripting call still returns the collected file
-results successfully, as measured in the reference application.
+not run later steps. Parent failures retain the child's saved files and per-file
+errors, including when an outer Batch fails. A direct scripting call still
+returns the collected file results successfully, as measured in the reference
+application.
 
 Save and Close support builds on
 [#10026 by @edaldridgePersonal](https://github.com/storytold/photocraft/pull/10026)

@@ -189,6 +189,30 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
+/// A per-input failure retaining the complete response from nested work.
+struct FileFailure {
+    error: EngineError,
+    result: Option<Value>,
+}
+
+impl From<EngineError> for FileFailure {
+    fn from(error: EngineError) -> Self {
+        Self { error, result: None }
+    }
+}
+
+impl FileFailure {
+    /// Ordinary failures keep their shape; nested failures also keep their results.
+    fn value(&self, key: &str, input: &str) -> Value {
+        let mut failure = json!({"error": self.error.to_string()});
+        failure[key] = json!(input);
+        if let Some(result) = &self.result {
+            failure["result"] = result.clone();
+        }
+        failure
+    }
+}
+
 fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,
@@ -201,13 +225,15 @@ fn process_outputs<'a>(
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
     for (path, out) in outputs {
-        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None, input: None }, f);
+        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None, input: None }, &|scratch, out| {
+            f(scratch, out).map_err(FileFailure::from)
+        });
         match r {
             Ok(()) => {
                 written.record(&out, path);
                 files.push(out);
             }
-            Err(e) => errors.push(json!({"file": path, "error": e.to_string()})),
+            Err(error) => errors.push(error.value("file", path)),
         }
     }
     json!({"files": files, "errors": errors})
@@ -229,12 +255,19 @@ struct ProcessOptions<'a> {
 
 /// Open and process one scratch input, collecting opening diagnostics even on failure.
 /// All destination writes retain the worker's cancellation checkpoint.
-fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: ProcessOptions<'_>, f: &dyn Fn(&mut Session, &str) -> Result<bool>) -> Result<()> {
+fn process_one(
+    raw_ppi: f64,
+    path: &str,
+    out: &str,
+    save: SaveOpts,
+    options: ProcessOptions<'_>,
+    f: &dyn Fn(&mut Session, &str) -> std::result::Result<bool, FileFailure>,
+) -> std::result::Result<(), FileFailure> {
     if let Some(written) = options.written {
         written.check(out).map_err(EngineError::Other)?;
     }
     let mut scratch = Session::new();
-    let result = (|| {
+    let result = (|| -> std::result::Result<(), FileFailure> {
         if let Some(input) = options.input {
             (input.prepare)(&mut scratch, path)?;
         } else {
@@ -254,7 +287,7 @@ fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: Pro
         if let Some(ctx) = options.ctx {
             ctx.check()?;
             if ctx.batch_interrupt_requested() {
-                return Err(EngineError::Cancelled);
+                return Err(EngineError::Cancelled.into());
             }
         }
         let d = scratch.active().ok_or(EngineError::NoDocument)?;
@@ -384,7 +417,9 @@ pub(super) fn process_batch_outputs(
     ctx: &crate::jobs::JobCtx,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Result<Value> {
-    process_batch_outputs_with(BatchRun { raw_ppi, format, save, policy, input: None, check_duplicates: false }, outputs, ctx, f)
+    process_batch_outputs_with(BatchRun { raw_ppi, format, save, policy, input: None, check_duplicates: false }, outputs, ctx, &|scratch, out| {
+        f(scratch, out).map_err(FileFailure::from)
+    })
 }
 
 struct BatchRun<'a> {
@@ -402,7 +437,7 @@ fn process_batch_outputs_with(
     config: BatchRun<'_>,
     outputs: Vec<(String, String)>,
     ctx: &crate::jobs::JobCtx,
-    f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+    f: &dyn Fn(&mut Session, &str) -> std::result::Result<bool, FileFailure>,
 ) -> Result<Value> {
     let BatchRun { raw_ppi, format, save, policy, input, check_duplicates } = config;
     let mut written = OutputClaims::default();
@@ -435,8 +470,7 @@ fn process_batch_outputs_with(
         }
         // An input that failed on its own (not because it was stopped) stays a failure with its
         // reason, even when a cancel or Esc lands while it runs.
-        let failure =
-            result.as_ref().err().filter(|error| !matches!(error, EngineError::Cancelled)).map(|error| json!({"file": path, "error": error.to_string()}));
+        let failure = result.as_ref().err().filter(|error| !matches!(&error.error, EngineError::Cancelled)).map(|error| error.value("file", path));
         if ctx.cancelled() {
             ctx.publish_batch_preview(path, None);
             // A cancel that lands while the result is written still leaves that file written.
@@ -479,7 +513,7 @@ fn process_batch_outputs_with(
                 files.push(out.clone());
             }
             Err(error) => {
-                errors.push(json!({"file": path, "error": error.to_string()}));
+                errors.push(error.value("file", path));
                 if policy.stop_on_error {
                     stopped = Some(path.clone());
                     break;
@@ -634,10 +668,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     } else if let Some(act) = p.get("action").filter(|v| v.is_array()) {
         parse_steps(act)?
     } else {
-        let action = list.get(batch_action(&list, p)?).ok_or_else(|| EngineError::Other("batch action disappeared".into()))?;
-        if s.actions.playback_stack.contains(&action.name) {
-            return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("recursive action call to `{}`", action.name) });
-        }
+        // The caller selects the source; calledActions supplies only its internal namespace.
+        let index = batch_action(&s.actions.list, p)?;
+        let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": index}))?;
         called_name = Some(action.name.clone());
         action.enabled_steps().map(|(_, (id, params))| (id.clone(), params.clone())).collect()
     };
@@ -682,24 +715,26 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
     // decoded and saved even with no steps) to the playback tree it is in and
-    // hands the count on, so a batch of batches can't multiply past the limit. A top-level batch
-    // is not limited by it.
+    // hands the count on, so nested batches cannot multiply past the limit. A top-level named
+    // action starts fresh; standalone explicit steps retain their existing behavior.
+    let named = called_name.is_some();
     let mut playback_steps = 0;
-    if s.actions.playing > 0 {
+    if s.actions.playing > 0 || named {
+        let spent = if s.actions.playing > 0 { s.actions.playback_steps } else { 0 };
         playback_steps =
-            s.actions
-                .playback_steps
-                .saturating_add((steps.len().max(1) as u64).saturating_mul(if source == "open" { s.documents().len() } else { inputs.len() } as u64));
+            spent.saturating_add((steps.len().max(1) as u64).saturating_mul(if source == "open" { s.documents().len() } else { inputs.len() } as u64));
         if playback_steps > crate::actions_cmds::MAX_PLAYBACK_STEPS {
-            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the playback step limit of the action that runs it".into() });
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the action playback step limit".into() });
         }
-        s.actions.playback_steps = playback_steps;
+        if s.actions.playing > 0 {
+            s.actions.playback_steps = playback_steps;
+        }
     }
     let mut playback_stack = s.actions.playback_stack.clone();
     playback_stack.extend(called_name);
     let actions = crate::actions_cmds::ActionState {
         list,
-        playing: s.actions.playing,
+        playing: if named { s.actions.playing.saturating_add(1) } else { s.actions.playing },
         playback_stack,
         playback_steps,
         script_depth: s.actions.script_depth,
@@ -708,14 +743,30 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if source == "open" {
         let save = SaveOpts::from_params(s, p, cmd)?;
-        // Carry the selected action's cycle context on the live session too. Preserve its
-        // recorder, revision and other state; only a packaged library temporarily replaces definitions.
+        // A caller's recording index belongs to its original library, not an embedded namespace.
+        // As in ordinary named playback, suspend it while executing and restore the Batch owner.
+        let previous_recording = if named {
+            crate::actions_cmds::flush_recording(s)?;
+            s.actions.recording.take()
+        } else {
+            None
+        };
+        // Swap only execution context, retaining the recorder, revision and script counters.
+        let previous_playing = std::mem::replace(&mut s.actions.playing, actions.playing);
         let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
+        let previous_steps = std::mem::replace(&mut s.actions.playback_steps, actions.playback_steps);
         let previous_list = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list));
         let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+        s.actions.playing = previous_playing;
         s.actions.playback_stack = previous_stack;
         if let Some(previous) = previous_list {
             s.actions.list = previous;
+        }
+        if previous_playing == 0 {
+            s.actions.playback_steps = previous_steps;
+        }
+        if named {
+            s.actions.recording = previous_recording;
         }
         return result;
     }
@@ -791,7 +842,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 Ok(())
             };
             let input = InputPolicy { prepare: &prepare, notices: &notices };
-            let run = |scratch: &mut Session, out: &str| {
+            let run = |scratch: &mut Session, out: &str| -> std::result::Result<bool, FileFailure> {
                 let source_id = scratch.active().map(|state| state.doc.id);
                 let source_path = scratch
                     .batch_open
@@ -806,7 +857,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
                     })
                 {
-                    return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")));
+                    return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")).into());
                 }
                 // Check the actual result, including a saved snapshot after Close, before either write path.
                 let validate_result = |scratch: &Session, doc: &Document| -> Result<()> {
@@ -842,12 +893,12 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 scratch.actions = actions.clone();
                 scratch.actions.playback_steps = carried.get();
                 scratch.actions.script_steps = script_steps.get();
-                let result = (|| {
+                let result = (|| -> std::result::Result<bool, FileFailure> {
                     let mut saved: Option<Arc<Document>> = None;
                     for (id, params) in &steps {
                         ctx.check()?;
                         if ctx.batch_interrupt_requested() {
-                            return Err(EngineError::Cancelled);
+                            return Err(EngineError::Cancelled.into());
                         }
                         if batch_save_point(id) {
                             let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
@@ -866,7 +917,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                         ctx.publish_batch_preview(&source_path, scratch.active().map(|state| state.doc.clone()));
                         // A failed step inside a called action makes this file an error, not a saved result.
                         if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
-                            return Err(EngineError::Other(error));
+                            return Err(FileFailure { error: EngineError::Other(error), result: Some(r) });
                         }
                     }
                     // While the saved document is still open the steps after the save reach the result too
@@ -978,7 +1029,7 @@ fn batch_open_documents(
         // The document a recorded Save / Save As marked as saved, with its earlier saved
         // revision: when Batch then writes nothing, it reads as changed again.
         let mut marked: Option<(u64, u64)> = None;
-        let result = (|| -> Result<()> {
+        let result = (|| -> std::result::Result<(), FileFailure> {
             // A rejected destination cannot edit the next document either.
             if check_duplicates && let Some(paths) = &planned {
                 let out = paths.get(index).ok_or_else(|| EngineError::Other("batch output plan is incomplete".into()))?;
@@ -1003,7 +1054,7 @@ fn batch_open_documents(
                 let params = crate::actions_cmds::playback_params(s, command, params)?;
                 let response = s.execute(command, params)?;
                 if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
-                    return Err(EngineError::Other(error));
+                    return Err(FileFailure { error: EngineError::Other(error), result: Some(response) });
                 }
             }
             let Some(paths) = &planned else { return Ok(()) };
@@ -1030,7 +1081,7 @@ fn batch_open_documents(
             }
         }
         if let Err(error) = result {
-            errors.push(json!({"document": name, "error": error.to_string()}));
+            errors.push(error.value("document", name));
             if policy.stop_on_error {
                 stopped = Some(name.clone());
                 break;

@@ -529,7 +529,7 @@ fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
             crate::actions_cmds::Action::new("Recorder", vec![]),
             crate::actions_cmds::Action::new("Loop A", vec![nested(if mutual { "Loop B" } else { "Loop A" })]),
             crate::actions_cmds::Action::new("Loop B", vec![nested("Loop A")]),
-            crate::actions_cmds::Action::new("Leaf", vec![("layer.new.layer".into(), json!({"name":"visited"}))]),
+            crate::actions_cmds::Action::new("Leaf", vec![("actions.play".into(), json!({"action":0}))]),
         ];
         let definitions = s.actions.list[1..].to_vec();
         s.actions.playback_stack = vec!["Enclosing".into()];
@@ -545,7 +545,8 @@ fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
         assert_eq!(s.actions.take, take);
         assert_eq!(&s.actions.list[1..], definitions.as_slice());
         let before = doc(&s).walk().len();
-        let result = batch(&mut s, &json!({"source":"open","action":"Leaf"})).unwrap();
+        let embedded = vec![crate::actions_cmds::Action::new("Embedded", vec![("layer.new.layer".into(), json!({"name":"visited"}))])];
+        let result = batch(&mut s, &json!({"source":"open","action":"Leaf","calledActions":embedded})).unwrap();
         assert_eq!(result["errors"], json!([]), "{result}");
         assert_eq!(doc(&s).walk().len(), before + 1);
         assert_eq!(s.actions.playback_stack, ["Enclosing"]);
@@ -3781,4 +3782,297 @@ fn open_as_and_place_keep_the_typed_hard_budget_fields() {
             }
         });
     });
+}
+
+/// Named Batch and Play cycles hit production guards before the test-only authorization ceiling.
+#[test]
+fn named_batch_cycles_stop_before_the_test_ceiling() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn bounded(id: &str, _: &Value) -> Result<()> {
+        if id == "file.automate.batch" && CALLS.fetch_add(1, Ordering::SeqCst) >= 4 {
+            return Err(EngineError::Other("test recursion ceiling".into()));
+        }
+        Ok(())
+    }
+    // Play checks authorization both before dispatch and at command execution.
+    for (route, calls) in [("self", 2), ("mutual", 3), ("play-child", 3), ("play-parent", 2)] {
+        for source in ["folder", "open"] {
+            let dir = tmp(&format!("named-batch-recursion-{route}-{source}"));
+            let input = png(&dir, "red.png", 8, 8, "#ff0000");
+            let output = join(&dir, "out");
+            let params = json!({"action": "A", "source": source, "input": [input], "output": output, "format": "png"});
+            let mut child = params.clone();
+            child["action"] = json!(if route == "self" || route == "play-parent" { "A" } else { "B" });
+            let first = if route == "play-child" { ("actions.play".into(), json!({"action": "B"})) } else { ("file.automate.batch".into(), child) };
+            let mut s = Session::new();
+            if source == "open" {
+                s.execute("file.open", json!({"path": input})).unwrap();
+            }
+            s.actions.list = vec![
+                crate::actions_cmds::Action::new("A", vec![first]),
+                crate::actions_cmds::Action::new("B", vec![("file.automate.batch".into(), params.clone())]),
+            ];
+            s.authorize = Some(bounded);
+            CALLS.store(0, Ordering::SeqCst);
+            let result =
+                if route == "play-parent" { s.execute("actions.play", json!({"action": "A"})) } else { s.execute("file.automate.batch", params) }.unwrap();
+            assert_eq!(CALLS.load(Ordering::SeqCst), calls, "{route}: the test ceiling must not be needed: {result}");
+            let error = if route == "play-parent" { &result["failed"]["error"] } else { &result["errors"][0]["error"] };
+            assert!(error.as_str().unwrap().contains("recursive action call"), "{route}: {result}");
+            if route != "play-parent" {
+                assert_eq!(result["files"], json!([]), "{route}: {result}");
+            }
+            assert!(!std::path::Path::new(&output).exists());
+            assert_eq!(s.actions.playing, 0);
+            assert!(s.actions.playback_stack.is_empty());
+        }
+    }
+}
+
+/// Rejected and successful named batches preserve the caller's playback and recording state.
+#[test]
+fn named_batch_limits_nesting_and_keeps_the_callers_state() {
+    use crate::actions_cmds::Action;
+    for source in ["folder", "open"] {
+        let dir = tmp(&format!("named-batch-state-{source}"));
+        let input = png(&dir, "red.png", 8, 8, "#ff0000");
+        let output = join(&dir, "out");
+        let params = json!({"action": "Invert", "source": source, "input": [input], "output": output, "format": "png"});
+        let mut s = Session::new();
+        if source == "open" {
+            s.execute("file.open", json!({"path": input})).unwrap();
+        }
+        s.actions.list.push(Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]));
+        s.actions.playing = 16;
+        s.actions.playback_stack = (0..16).map(|i| format!("Parent{i}")).collect();
+        let before = s.actions.clone();
+        let error = s.execute("file.automate.batch", params.clone()).unwrap_err();
+        assert!(error.to_string().contains("nesting exceeds 16"), "{error}");
+        assert_eq!(s.actions, before);
+        assert!(!std::path::Path::new(&output).exists());
+
+        s.actions.playing = 0;
+        s.actions.playback_stack.clear();
+        s.execute("actions.record", json!({"name": "Recorder"})).unwrap();
+        let recording = s.actions.recording;
+        let mut missing_output = params.clone();
+        missing_output.as_object_mut().unwrap().remove("output");
+        if source == "open" {
+            missing_output["source"] = json!("invalid");
+        }
+        assert!(s.execute("file.automate.batch", missing_output).is_err());
+        assert_eq!(s.actions.recording, recording);
+        assert!(s.actions.playback_stack.is_empty());
+        let result = s.execute("file.automate.batch", params.clone()).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(s.actions.recording, recording);
+        assert_eq!(s.actions.playing, 0);
+        assert!(s.actions.playback_stack.is_empty());
+        s.execute("actions.stop", json!({})).unwrap();
+        assert_eq!(s.actions.list[1].steps, vec![("file.automate.batch".into(), params)]);
+    }
+}
+
+/// Inputs and children share playback work, while a new top-level named batch starts fresh.
+#[test]
+fn named_batch_charges_the_existing_budget_across_inputs_and_children() {
+    use crate::actions_cmds::{Action, MAX_PLAYBACK_STEPS};
+    let dir = tmp("named-batch-budget");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let output = join(&dir, "out");
+    let mut s = Session::new();
+    s.actions.list.push(Action::new("Large", vec![("image.adjustments.invert".into(), json!({})); 100]));
+    let result = s.execute("file.automate.batch", json!({"action": "Large", "input": vec![input.clone(); 1001], "output": output})).unwrap_err();
+    assert!(result.to_string().contains("step limit"), "{result}");
+    assert!(!std::path::Path::new(&output).exists());
+    assert_eq!(s.actions.playing, 0);
+    assert!(s.actions.playback_stack.is_empty());
+
+    // A finished playback leaves its count behind; a new named Batch starts fresh.
+    s.actions.list = vec![Action::new("Empty", Vec::new())];
+    s.actions.playback_steps = MAX_PLAYBACK_STEPS;
+    let result = s.execute("file.automate.batch", json!({"action": "Empty", "input": [input], "output": join(&dir, "fresh")})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["files"].as_array().unwrap().len(), 1);
+
+    s.actions.list = vec![
+        Action::new("Outer", vec![("actions.play".into(), json!({"action": "Leaf"}))]),
+        Action::new("Leaf", vec![("select.deselect".into(), json!({})); 2]),
+    ];
+    s.actions.playing = 1;
+    s.actions.playback_stack = vec!["Parent".into()];
+    s.actions.playback_steps = MAX_PLAYBACK_STEPS - 4;
+    let result = s.execute("file.automate.batch", json!({"action": "Outer", "input": [input, input], "output": output, "naming": "{serial}"})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("step limit"), "{result}");
+    assert_eq!(s.actions.playback_steps, MAX_PLAYBACK_STEPS);
+    assert_eq!(s.actions.playing, 1);
+    assert_eq!(s.actions.playback_stack, ["Parent"]);
+}
+
+/// Nested named batches honor the caller's authorization and preserve its action state.
+#[test]
+fn named_batch_allows_nested_work_and_preserves_authorization() {
+    use crate::actions_cmds::Action;
+    fn deny_invert(id: &str, _: &Value) -> Result<()> {
+        if id == "image.adjustments.invert" { Err(EngineError::Other("invert denied".into())) } else { Ok(()) }
+    }
+    let dir = tmp("named-batch-nesting");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    for denied in [false, true] {
+        let output = join(&dir, &format!("out-{denied}"));
+        let inner = join(&dir, &format!("inner-{denied}"));
+        let child = json!({"action": "Leaf", "input": [input], "output": inner, "format": "png"});
+        let mut s = Session::new();
+        s.actions.list =
+            vec![Action::new("Outer", vec![("file.automate.batch".into(), child)]), Action::new("Leaf", vec![("image.adjustments.invert".into(), json!({}))])];
+        if denied {
+            s.authorize = Some(deny_invert);
+        }
+        let before = s.actions.clone();
+        let result = s.execute("file.automate.batch", json!({"action": "Outer", "input": [input], "output": output, "format": "png"})).unwrap();
+        if denied {
+            assert_eq!(result["files"], json!([]), "{result}");
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("invert denied"), "{result}");
+            assert!(!std::path::Path::new(&output).exists());
+            assert!(!std::path::Path::new(&inner).exists());
+        } else {
+            assert_eq!(result["errors"], json!([]), "{result}");
+            let saved = photocraft_io::import("red.png", &std::fs::read(join(&inner, "red.png")).unwrap()).unwrap().document;
+            assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0]);
+        }
+        assert_eq!(s.actions, before);
+    }
+}
+
+/// Action parents stop on child failure; direct scripts retain per-file results and continue.
+#[test]
+fn nested_batch_errors_stop_actions_but_direct_scripts_keep_results_and_continue() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("nested-batch-failure");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let output = join(&dir, "out");
+    let batch = json!({"input": [input], "output": output, "steps": [["file.close", {}]]});
+    let mut s = Session::new();
+    let result = s.execute("file.automate.batch", batch.clone()).unwrap();
+    assert_eq!(result["files"], json!([]));
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(result["errors"][0].as_object().unwrap().len(), 2, "ordinary errors still contain only file/error");
+    let steps = vec![("file.automate.batch".into(), batch), ("file.new".into(), json!({"width": 2, "height": 2}))];
+    s.actions.list.push(Action::new("Caller", steps.clone()));
+    let result = s.execute("actions.play", json!({"action": "Caller"})).unwrap();
+    assert_eq!(result["ran"], 0, "{result}");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("no active document"), "{result}");
+    let result = s.execute("file.scripts.browse", json!({"steps": steps})).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["results"].as_array().unwrap().len(), 2);
+    assert_eq!(result["results"][0]["result"]["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(s.documents().len(), 1, "the direct script reaches file.new");
+    assert_eq!(s.active().unwrap().doc.size, photocraft_doc::Size::new(2, 2));
+    assert!(!std::path::Path::new(&output).exists());
+    assert_eq!(crate::actions_cmds::nested_failure("file.automate.batch", &json!({"files": ["ok.png"], "errors": []})), None);
+    assert_eq!(crate::actions_cmds::nested_failure("file.automate.batch", &json!({"errors": "invalid"})), None);
+
+    let corrupt = join(&dir, "corrupt.png");
+    std::fs::write(&corrupt, b"not a PNG").unwrap();
+    let mut s = Session::new();
+    for caller in ["batch", "action", "script"] {
+        let output = join(&dir, caller);
+        let batch = json!({"input": [input, corrupt], "output": output, "steps": [], "format": "png"});
+        let steps = vec![("file.automate.batch".into(), batch.clone()), ("file.new".into(), json!({"width": 2, "height": 2}))];
+        let result = match caller {
+            "batch" => s.execute("file.automate.batch", batch).unwrap(),
+            "action" => {
+                s.actions.list.push(Action::new("Mixed", steps));
+                let result = s.execute("actions.play", json!({"action": "Mixed"})).unwrap();
+                assert_eq!(result["ran"], 0, "{result}");
+                let error = result["failed"]["error"].as_str().unwrap();
+                assert!(error.contains("1 file(s) failed") && error.contains("1 saved") && error.contains(&corrupt), "{error}");
+                result["failed"]["result"].clone()
+            }
+            _ => {
+                let result = s.execute("file.scripts.browse", json!({"steps": steps})).unwrap();
+                assert_eq!(result["ok"], true, "{result}");
+                assert_eq!(result["results"].as_array().unwrap().len(), 2);
+                assert!(result["results"][0].get("error").is_none(), "{result}");
+                result["results"][0]["result"].clone()
+            }
+        };
+        let saved = join(&output, "red.png");
+        assert_eq!(result["files"], json!([saved]), "{caller}: {result}");
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(result["errors"][0]["file"], corrupt);
+        assert!(std::path::Path::new(&saved).exists(), "{caller}: partial success remains saved");
+        if caller == "script" {
+            assert_eq!(s.documents().len(), 1, "the direct script reaches file.new");
+            assert_eq!(s.active().unwrap().doc.size, photocraft_doc::Size::new(2, 2));
+            s = Session::new();
+        } else {
+            assert!(s.documents().is_empty(), "{caller}: failed action parents stop");
+        }
+    }
+    let batch = json!({"input": [input], "output": join(&dir, "success"), "steps": [], "format": "png"});
+    s.actions.list.push(Action::new("Success", vec![("file.automate.batch".into(), batch), ("file.new".into(), json!({"width": 2, "height": 2}))]));
+    let result = s.execute("actions.play", json!({"action": "Success"})).unwrap();
+    assert!(result.get("failed").is_none(), "{result}");
+    assert_eq!(result["ran"], 2);
+    assert_eq!(s.documents().len(), 1, "a successful Batch reaches file.new");
+}
+
+/// Folder and live-document parents retain child outputs and failures, stopping later writes.
+#[test]
+fn nested_batches_retain_partial_results() {
+    let dir = tmp("nested-batch-results");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let corrupt = join(&dir, "corrupt.png");
+    std::fs::write(&corrupt, b"not a PNG").unwrap();
+    let mut s = Session::new();
+    for (source, naming) in [("folder", None), ("folder", Some("{serial}")), ("open", None)] {
+        let output = join(
+            &dir,
+            if source == "open" {
+                "open"
+            } else if naming.is_some() {
+                "named"
+            } else {
+                "default"
+            },
+        );
+        let outer = join(&output, "outer");
+        let later = join(&output, "later.png");
+        let mut params = json!({
+            "input": [input], "output": outer, "format": "png",
+            "steps": [
+                ["file.automate.batch", {"input": [input, corrupt], "output": output, "steps": [], "format": "png"}],
+                ["file.export.saveForWebLegacy", {"path": later, "format": "png"}]
+            ]
+        });
+        if let Some(naming) = naming {
+            params["naming"] = json!(naming);
+        }
+        if source == "open" {
+            s.execute("file.open", json!({"path": input})).unwrap();
+            params["source"] = json!("open");
+        }
+        let result = s.execute("file.automate.batch", params).unwrap();
+        assert_eq!(result["files"], json!([]), "{result}");
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+        if source == "open" {
+            assert!(result["errors"][0]["document"].is_string(), "{result}");
+        } else {
+            assert_eq!(result["errors"][0]["file"], input);
+        }
+        let error = result["errors"][0]["error"].as_str().unwrap();
+        assert!(error.contains("1 file(s) failed") && error.contains("1 saved"), "{error}");
+        let child = &result["errors"][0]["result"];
+        let saved = join(&output, "red.png");
+        assert_eq!(child["files"], json!([saved]), "{result}");
+        assert_eq!(child["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(child["errors"][0]["file"], corrupt);
+        assert!(std::path::Path::new(&saved).exists(), "the successful child output remains saved");
+        assert!(!std::path::Path::new(&outer).exists(), "the failed outer input is not written");
+        assert!(!std::path::Path::new(&later).exists(), "later steps do not execute");
+        assert_eq!(s.documents().len(), usize::from(source == "open"));
+    }
 }
