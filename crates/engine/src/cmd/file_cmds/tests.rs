@@ -2094,11 +2094,17 @@ fn nested_batch_errors_stop_actions_but_direct_scripts_keep_results_and_continue
     assert!(!std::path::Path::new(&output).exists());
     assert_eq!(crate::actions_cmds::nested_failure("file.automate.batch", &json!({"files": ["ok.png"], "errors": []})), None);
     assert_eq!(crate::actions_cmds::nested_failure("file.automate.batch", &json!({"errors": "invalid"})), None);
+}
 
+/// Partial child outputs survive file, action and direct-script failure handling.
+#[test]
+fn nested_batch_partial_failures_keep_outputs_and_stop_only_action_parents() {
+    let dir = tmp("nested-batch-partial-failure");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
     let corrupt = join(&dir, "corrupt.png");
     std::fs::write(&corrupt, b"not a PNG").unwrap();
-    let mut s = Session::new();
     for caller in ["batch", "action", "script"] {
+        let mut s = Session::new();
         let output = join(&dir, caller);
         let batch = json!({"input": [input, corrupt], "output": output, "steps": [], "format": "png"});
         let steps = vec![("file.automate.batch".into(), batch.clone()), ("file.new".into(), json!({"width": 2, "height": 2}))];
@@ -2128,11 +2134,18 @@ fn nested_batch_errors_stop_actions_but_direct_scripts_keep_results_and_continue
         if caller == "script" {
             assert_eq!(s.documents().len(), 1, "the direct script reaches file.new");
             assert_eq!(s.active().unwrap().doc.size, photocraft_doc::Size::new(2, 2));
-            s = Session::new();
         } else {
             assert!(s.documents().is_empty(), "{caller}: failed action parents stop");
         }
     }
+}
+
+/// A successful nested Batch lets the parent action reach its following step.
+#[test]
+fn successful_nested_batch_allows_later_action_steps() {
+    let dir = tmp("nested-batch-success");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let mut s = Session::new();
     let batch = json!({"input": [input], "output": join(&dir, "success"), "steps": [], "format": "png"});
     s.actions.list.push(Action::new("Success", vec![("file.automate.batch".into(), batch), ("file.new".into(), json!({"width": 2, "height": 2}))]));
     let result = s.execute("actions.play", json!({"action": "Success"})).unwrap();
