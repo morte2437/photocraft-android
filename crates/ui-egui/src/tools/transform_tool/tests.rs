@@ -2090,6 +2090,27 @@ fn linked_layers_app() -> (PhotocraftApp, LayerId, LayerId, LayerId) {
     (app, a, b, c)
 }
 
+/// #11217: ⌥⌘T on a linked layer without a selection makes no copy in the reference application
+/// (measured): it frames and moves the whole link group, as Free Transform does. An unlinked
+/// layer still gets its copy.
+#[test]
+fn free_transform_a_copy_of_a_linked_layer_boxes_the_link_group_without_a_copy() {
+    let ctx = egui::Context::default();
+    let (mut app, a, b, c) = linked_layers_app();
+    let layers = app.session.active().unwrap().doc.layers.len();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "no copy of a linked layer");
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.made, None, "nothing made to take back");
+    assert_eq!(t.layers, [a.0, b.0], "the box frames the link group");
+    cancel(&mut app);
+    app.session.execute("layer.select", json!({"layer": c.0})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "an unlinked layer is copied");
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(MadeLayer::Copy));
+    cancel(&mut app);
+}
+
 /// #11217: the box over one selected linked layer frames, previews and commits its whole link
 /// group, as in Photoshop. It used to frame A alone; B only moved at the commit.
 #[test]
