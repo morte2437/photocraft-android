@@ -540,7 +540,7 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
                     crate::canvas::commit_crop(app);
                 }
                 if icons::button(ui, "ban", 26.0, false, tl!("Cancel current crop operation  (Esc)")).clicked() {
-                    crate::crop_ui::cancel(app);
+                    crate::crop_ui::dismiss(app);
                 }
             });
         }

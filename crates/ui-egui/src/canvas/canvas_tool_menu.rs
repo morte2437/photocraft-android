@@ -313,7 +313,7 @@ fn choose_crop(app: &mut PhotocraftApp, menu: &CanvasToolMenu, command: &str) ->
     use crate::crop_overlay::{CropOverlay, OverlayShow};
     use crate::crop_presets::{Choice, apply_choice};
     match command {
-        CROP_CANCEL => crate::crop_ui::cancel(app),
+        CROP_CANCEL => crate::crop_ui::dismiss(app),
         CROP_COMMIT => crate::canvas::commit_crop(app),
         CROP_NEW => apply_choice(app, Choice::New),
         CROP_DELETE => apply_choice(app, Choice::Delete),
