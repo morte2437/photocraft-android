@@ -95,6 +95,14 @@ fn session() -> photocraft_engine::Session {
     }
     doc.layers.push(Layer::new("group", LayerContent::Group(Group { children: vec![inside], expanded: true, artboard: None, frame_stroke: None })));
     doc.layers.push(Layer::new("empty group", LayerContent::Group(Group { children: Vec::new(), expanded: true, artboard: None, frame_stroke: None })));
+    // A hidden group whose child is visible: Visible goes by the layer's own flag.
+    let mut child = Layer::new("in hidden group", LayerContent::Raster(photocraft_raster::Surface::new(photocraft_doc::PixelFormat::RGBA8)));
+    if let LayerContent::Raster(surface) = &mut child.content {
+        surface.fill_rect(full, &RED);
+    }
+    let mut hidden_group = Layer::new("hidden group", LayerContent::Group(Group { children: vec![child], expanded: true, artboard: None, frame_stroke: None }));
+    hidden_group.visible = false;
+    doc.layers.push(hidden_group);
     s
 }
 
@@ -111,7 +119,9 @@ fn rename_active(s: &mut photocraft_engine::Session, name: &str) {
 
 /// The names `attribute` lists.
 fn listed(doc: &Document, attribute: Attribute) -> BTreeSet<String> {
-    let filter = Filter::of(&UiState { layer_filter_by: FilterBy::Attribute, layer_filter_attribute: attribute, ..UiState::default() });
+    let mut filter = Filter::of(&UiState { layer_filter_by: FilterBy::Attribute, layer_filter_attribute: attribute, ..UiState::default() });
+    // As the panel does ([`Filter::of_app`]): Empty knows the canvas.
+    filter.empty = Some(std::sync::Arc::new(super::attribute::empty_layers_of(doc)));
     crate::layer_tree_ui::display_rows(doc, filter.active()).into_iter().filter(|(_, l)| filter.shows(l)).map(|(_, l)| l.name.clone()).collect()
 }
 
@@ -130,7 +140,8 @@ fn each_attribute_lists_the_measured_layers() {
     let everything = all(doc);
     let but = |gone: &[&str]| -> BTreeSet<String> { everything.difference(&names(gone)).cloned().collect() };
     // Every visible layer and every visible group.
-    assert_eq!(listed(doc, Attribute::Visible), but(&["hidden"]));
+    assert_eq!(listed(doc, Attribute::Visible), but(&["hidden", "hidden group"]));
+    assert!(listed(doc, Attribute::Visible).contains("in hidden group"), "a visible child of a hidden group");
     // Any lock counts, the Background's too.
     assert_eq!(listed(doc, Attribute::Locked), names(&["position lock", "all locked", "Background"]));
     // A pixel layer without pixels; the empty group isn't listed.
@@ -185,7 +196,26 @@ fn a_layer_with_an_opaque_default_pixel_is_not_empty() {
 }
 
 #[test]
-fn the_empty_layers_are_found_once_per_revision() {
+fn an_opaque_default_layer_erased_on_the_whole_canvas_is_empty() {
+    // 300 px wide: the second column of tiles reaches past the canvas, where the default stays.
+    let mut doc = Document::new("Opaque erased", photocraft_geom::Size::new(300, 30), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
+    let clear = [1.0, 0.0, 0.0, 0.0];
+    for (name, erased) in [("erased", photocraft_geom::Rect::new(0, 0, 300, 30)), ("half erased", photocraft_geom::Rect::new(0, 0, 200, 30))] {
+        let mut s = photocraft_raster::Surface::with_default(photocraft_doc::PixelFormat::RGBA8, &RED);
+        s.fill_rect(erased, &clear);
+        doc.layers.push(Layer::new(name, LayerContent::Raster(s)));
+    }
+    let mut dot = photocraft_raster::Surface::with_default(photocraft_doc::PixelFormat::RGBA8, &RED);
+    dot.fill_rect(photocraft_geom::Rect::new(0, 0, 300, 30), &clear);
+    dot.fill_rect(photocraft_geom::Rect::new(299, 29, 300, 30), &RED);
+    doc.layers.push(Layer::new("one pixel", LayerContent::Raster(dot)));
+    // The half erased layer has no tile over x 256..300, so the default shows there.
+    assert_eq!(listed(&doc, Attribute::Empty), names(&["erased"]));
+    assert_eq!(listed(&doc, Attribute::NotEmpty), names(&["half erased", "one pixel"]));
+}
+
+#[test]
+fn the_empty_layers_are_found_once_per_document() {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 40, "height": 30, "background": "transparent"})).unwrap();
     s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
@@ -195,7 +225,11 @@ fn the_empty_layers_are_found_once_per_revision() {
     let first = Filter::of_app(&app).empty.expect("found for Empty");
     assert!(first.is_empty(), "the filled layer has pixels");
     let again = Filter::of_app(&app).empty.unwrap();
-    assert!(std::sync::Arc::ptr_eq(&first, &again), "the same revision reuses the result");
+    assert!(std::sync::Arc::ptr_eq(&first, &again), "the same document reuses the result");
+    // Selecting a layer moves the revision but changes no pixels.
+    let id = app.session.active().unwrap().doc.layers[0].id;
+    app.session.select_layer(id).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &Filter::of_app(&app).empty.unwrap()), "a selection reuses the result");
     app.session.execute("paint.stroke", json!({"points": [[20, -10], [20, 40]], "size": 60, "erase": true, "brush": {"hardness": 1.0}})).unwrap();
     let after = Filter::of_app(&app);
     assert_eq!(after.empty.as_ref().map(|set| set.len()), Some(1), "an edit finds them again");
@@ -203,6 +237,9 @@ fn the_empty_layers_are_found_once_per_revision() {
     assert!(doc.walk().into_iter().all(|(_, _, l)| after.shows(l)), "the erased layer is listed");
     app.ui.layer_filter_attribute = Attribute::NotEmpty;
     assert!(Filter::of_app(&app).empty.is_some(), "Not Empty uses them too");
+    // Another document, with no empty layer, gets its own result.
+    app.session.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+    assert_eq!(Filter::of_app(&app).empty.map(|set| set.len()), Some(0), "the new document's layers");
     app.ui.layer_filter_attribute = Attribute::Visible;
     assert!(Filter::of_app(&app).empty.is_none(), "other attributes don't read pixels");
 }
@@ -217,7 +254,7 @@ fn each_opposite_lists_the_rest_groups_included() {
         assert_eq!(listed(doc, *negative), rest, "{negative:?} lists what {positive:?} doesn't");
     }
     // The three measured ones, spelled out.
-    assert_eq!(listed(doc, Attribute::NotVisible), names(&["hidden"]));
+    assert_eq!(listed(doc, Attribute::NotVisible), names(&["hidden", "hidden group"]));
     assert!(listed(doc, Attribute::NotLocked).contains("group"), "groups are listed too");
     assert!(!listed(doc, Attribute::NotLocked).contains("Background"));
     assert_eq!(listed(doc, Attribute::NotLinked), everything.difference(&names(&["linked a", "linked b"])).cloned().collect());
@@ -280,5 +317,5 @@ fn the_panel_filters_by_the_attribute_picked_in_the_dropdown() {
     h.query_all_by_label("Not Visible").last().expect("Not Visible in the open list").click();
     h.run_steps(4);
     assert_eq!(h.state().ui.layer_filter_attribute, Attribute::NotVisible);
-    assert_eq!(drawn(&h), names(&["hidden"]));
+    assert_eq!(drawn(&h), names(&["hidden", "hidden group"]));
 }
