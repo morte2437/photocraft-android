@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use photocraft_color::SampleType;
 use photocraft_doc::{AdvancedBlending, DocId, Layer, LayerContent, LayerId};
 use photocraft_raster::Surface;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{PhotocraftApp, widgets};
@@ -163,8 +162,15 @@ fn has_visible_pixels(s: &Surface) -> bool {
             block.chunks_exact(bpp).fold(0u8, |acc, px| px.get(at..at + size).map_or(acc, |a| a.iter().fold(acc, |acc, b| acc | b))) != 0
         }
     };
-    let tiles: Vec<_> = s.tiles().map(|(_, t)| t).collect();
-    tiles.par_iter().any(|t| t.bytes().chunks(bpp.saturating_mul(1024)).any(visible))
+    let tile_visible = |t: &Arc<photocraft_raster::Tile>| t.bytes().chunks(bpp.saturating_mul(1024)).any(visible);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        let tiles: Vec<_> = s.tiles().map(|(_, t)| t).collect();
+        tiles.par_iter().any(|t| tile_visible(t))
+    }
+    #[cfg(target_arch = "wasm32")]
+    s.tiles().any(|(_, t)| tile_visible(t))
 }
 
 /// The document, revision and document allocation [`empty_layers`] was found for.
