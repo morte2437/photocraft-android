@@ -1490,6 +1490,24 @@ fn duplicating_one_linked_layer_leaves_the_copy_unlinked() {
     assert_eq!((link_group(&s, a), link_group(&s, b), link_group(&s, c)), (group, group, None), "the originals keep their links");
 }
 
+/// #11217 review: copy-dragging layers in the panel goes through `apply_move`, which must
+/// relink its copies the way Duplicate does: a lone copy unlinked, a copied pair linked to
+/// each other under a fresh group, never to the originals.
+#[test]
+fn copy_dragging_linked_layers_relinks_the_copies() {
+    let (mut s, a, b, c, group) = linked_pair();
+    let r = s.execute("layer.moveTo", json!({"layer": a.0, "target": c.0, "position": "above", "copy": true})).unwrap();
+    let copy = LayerId(r["layer"].as_u64().unwrap());
+    assert_eq!(link_group(&s, copy), None, "the copy-dragged copy is unlinked");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
+
+    let r = s.execute("layer.moveTo", json!({"layers": [a.0, b.0], "target": c.0, "position": "above", "copy": true})).unwrap();
+    let copies: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
+    assert_eq!(copies.len(), 2);
+    let fresh = link_group(&s, copies[0]);
+    assert!(fresh.is_some() && fresh != group && link_group(&s, copies[1]) == fresh, "the copied pair is linked to each other under a fresh group");
+}
+
 /// #11217 review: copies of a linked pair stay linked to each other under a new group, not the
 /// originals', which keep theirs.
 #[test]
