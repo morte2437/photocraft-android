@@ -1547,16 +1547,15 @@ fn press_drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2], m: egui::Mo
 }
 
 #[test]
-fn distort_mode_moves_one_corner_and_ignores_rotate_and_edges() {
+fn distort_mode_moves_one_corner_and_ignores_rotate() {
     let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
     app.ui.extras.snap = false;
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut app, &ctx, "edit.transform.distort", json!({})).unwrap();
     let q0 = app.ui.transform.as_ref().unwrap().quad;
     assert_eq!(app.ui.transform.as_ref().unwrap().mode, TransformMode::Distort);
-    // Outside (rotate) and an edge handle do nothing in Distort.
+    // Outside (rotate) does nothing in Distort.
     press_drag(&mut app, [44.0, 44.0], [54.0, 10.0], egui::Modifiers::NONE);
-    press_drag(&mut app, [24.0, 16.0], [34.0, 16.0], egui::Modifiers::NONE);
     assert_eq!(app.ui.transform.as_ref().unwrap().quad, q0);
     // A corner moves alone, with no keys held.
     press_drag(&mut app, q0[1], [q0[1][0] + 7.0, q0[1][1] - 5.0], egui::Modifiers::NONE);
@@ -1566,6 +1565,110 @@ fn distort_mode_moves_one_corner_and_ignores_rotate_and_edges() {
     // Free Transform from the menu switches the live box back.
     crate::menus::invoke(&mut app, &ctx, "edit.freeTransform", json!({})).unwrap();
     assert_eq!(app.ui.transform.as_ref().unwrap().mode, TransformMode::Free);
+}
+
+/// #10085: in Distort a side handle moves its edge freely, both of its corners by exactly the
+/// drag, and the opposite edge stays. ⇧ and ⌥ change nothing, as on a Distort corner.
+#[test]
+fn distort_mode_moves_an_edge_by_the_drag() {
+    let distort = TransformMode::Distort;
+    let none = egui::Modifiers::NONE;
+    // Top edge (corners 0 and 1) up and to the right.
+    let top = [[12.0, -7.0], [112.0, -7.0], [100.0, 50.0], [0.0, 50.0]];
+    assert_eq!(drag_in(distort, [50.0, 0.0], [62.0, -7.0], none), top);
+    // Right edge (corners 1 and 2) in and down.
+    assert_eq!(drag_in(distort, [100.0, 25.0], [90.0, 40.0], none), [[0.0, 0.0], [90.0, 15.0], [90.0, 65.0], [0.0, 50.0]]);
+    // Bottom (2, 3) and left (3, 0) edges.
+    assert_eq!(drag_in(distort, [50.0, 50.0], [45.0, 58.0], none), [[0.0, 0.0], [100.0, 0.0], [95.0, 58.0], [-5.0, 58.0]]);
+    assert_eq!(drag_in(distort, [0.0, 25.0], [-6.0, 21.0], none), [[-6.0, -4.0], [100.0, 0.0], [100.0, 50.0], [-6.0, 46.0]]);
+    for mods in [egui::Modifiers::SHIFT, egui::Modifiers::ALT, egui::Modifiers::COMMAND, egui::Modifiers::SHIFT | egui::Modifiers::ALT] {
+        assert_eq!(drag_in(distort, [50.0, 0.0], [62.0, -7.0], mods), top, "{mods:?}");
+    }
+    // The reference point keeps its place in the box.
+    let mut s = session();
+    let g = Gesture { hit: Hit::Edge(0), start: [50.0, 0.0], quad0: s.quad, pivot0: s.pivot };
+    apply_mode_drag(&mut s, g, [62.0, -7.0], distort, false, none);
+    assert_eq!(s.pivot, carry_pivot(g.quad0, top, g.pivot0));
+}
+
+/// #10085: a Distort edge dragged onto or past the opposite one stops short of folding the box
+/// flat, as a corner does (#1323); the opposite edge never moves.
+#[test]
+fn distort_mode_edge_stops_before_the_box_collapses() {
+    let distort = TransformMode::Distort;
+    let start = turns(&corners([0.0, 0.0, 100.0, 50.0]));
+    for to in [[50.0, 50.0], [50.0, 90.0], [-200.0, 50.0], [50.0, f64::MAX]] {
+        let q = drag_in(distort, [50.0, 0.0], to, egui::Modifiers::NONE);
+        assert_eq!((q[2], q[3]), ([100.0, 50.0], [0.0, 50.0]), "the bottom edge stays: {to:?}");
+        assert!(turns(&q).iter().zip(start).all(|(t, t0)| t * t0.signum() > 0.0), "still convex, not flat: {to:?} {q:?}");
+        assert!(q.iter().flatten().all(|v| v.is_finite()), "{q:?}");
+        // The top edge still moved together, by the same offset.
+        assert_eq!([q[1][0] - q[0][0], q[1][1] - q[0][1]], [100.0, 0.0], "{to:?} {q:?}");
+    }
+}
+
+/// #10085 with real pointer events: a Distort side handle drags in the canvas, the committed
+/// layer is the quad the box showed (pixels inside it, none outside), in one history step.
+#[test]
+fn distort_mode_edge_drag_commits_what_it_shows_in_one_step() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    app.ui.extras.snap = false;
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "edit.transform.distort", json!({})).unwrap();
+    let steps = app.session.active().unwrap().history.past_len();
+    let q0 = app.ui.transform.as_ref().unwrap().quad;
+    // The right edge's handle, 8 px right and 8 px down.
+    press_drag(&mut app, [24.0, 16.0], [32.0, 24.0], egui::Modifiers::NONE);
+    let shown = app.ui.transform.as_ref().unwrap().quad;
+    assert_eq!(shown, [q0[0], [q0[1][0] + 8.0, q0[1][1] + 8.0], [q0[2][0] + 8.0, q0[2][1] + 8.0], q0[3]]);
+    commit(&mut app);
+    assert!(app.ui.transform.is_none(), "{}", app.ui.status);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.history.past_len(), steps + 1, "one undo step");
+    let s = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+    let alpha = |x: i32, y: i32| {
+        let mut p = [0.0f32; 4];
+        s.read_pixel(x, y, &mut p);
+        p[3]
+    };
+    // The parallelogram (8, 8) (32, 16) (32, 32) (8, 24): its slanted top and bottom edges.
+    assert!(alpha(28, 22) > 0.99 && alpha(10, 20) > 0.99, "inside {} {}", alpha(28, 22), alpha(10, 20));
+    assert!(alpha(28, 11) < 0.01 && alpha(10, 28) < 0.01, "outside {} {}", alpha(28, 11), alpha(10, 28));
+    let b = s.content_bounds();
+    // Within the resampling filter's pixel of the quad's bounds (8, 8)..(32, 32).
+    assert!((7..=8).contains(&b.x0) && (7..=8).contains(&b.y0) && (32..=33).contains(&b.x1) && (32..=33).contains(&b.y1), "{b:?}");
+}
+
+/// Perspective mode's side handles skew, as in Photoshop: the edge slides along itself only.
+#[test]
+fn perspective_mode_edge_slides_along_itself() {
+    let persp = TransformMode::Perspective;
+    let none = egui::Modifiers::NONE;
+    assert_eq!(drag_in(persp, [50.0, 0.0], [62.0, 7.0], none), [[12.0, 0.0], [112.0, 0.0], [100.0, 50.0], [0.0, 50.0]]);
+    assert_eq!(drag_in(persp, [100.0, 25.0], [94.0, 33.0], none), [[0.0, 0.0], [100.0, 8.0], [100.0, 58.0], [0.0, 50.0]]);
+    // ⌥: the opposite edge goes the other way.
+    assert_eq!(drag_in(persp, [50.0, 0.0], [62.0, 7.0], egui::Modifiers::ALT), [[12.0, 0.0], [112.0, 0.0], [88.0, 50.0], [-12.0, 50.0]]);
+}
+
+/// A Perspective side handle on a box whose opposite edge isn't parallel (here its right side
+/// already pulled out by a vertical corner pair) stops before the box folds over, as its
+/// corners do (#1323): a long slide along the top edge turned it concave.
+#[test]
+fn perspective_mode_edge_slide_stops_before_the_box_folds() {
+    let mut s = session();
+    s.quad = [[0.0, 0.0], [100.0, -20.0], [100.0, 70.0], [0.0, 50.0]];
+    let start = turns(&s.quad);
+    // Along the top edge, (5, -1), 100 steps the other way.
+    let g = Gesture { hit: Hit::Edge(0), start: [50.0, -10.0], quad0: s.quad, pivot0: s.pivot };
+    apply_mode_drag(&mut s, g, [-450.0, 90.0], TransformMode::Perspective, false, egui::Modifiers::NONE);
+    let q = s.quad;
+    assert!(turns(&q).iter().zip(start).all(|(t, t0)| t * t0.signum() > 0.0), "still convex: {q:?}");
+    assert!(q.iter().flatten().all(|v| v.is_finite()), "{q:?}");
+    assert_eq!((q[2], q[3]), (g.quad0[2], g.quad0[3]), "the other corners stay");
+    // The top edge only slid along itself, and some way.
+    assert!(((q[0][0] - g.quad0[0][0]) + (q[0][1] - g.quad0[0][1]) * 5.0).abs() < 1e-9, "{q:?}");
+    assert!(([q[1][0] - q[0][0] - 100.0, q[1][1] - q[0][1] + 20.0]).iter().all(|v| v.abs() < 1e-9), "{q:?}");
+    assert!(q[0][0] < -1.0, "it still slid: {q:?}");
 }
 
 /// #3941: Edit › Transform › Rotate must rotate from a corner handle, not scale.
@@ -3310,11 +3413,11 @@ fn handle_pointers_follow_what_the_drag_does() {
     // A Skew-mode corner slides along one edge, with or without Cmd; its edges skew.
     assert_eq!(indicators("edit.transform.skew", cmd()), (None, Some(Skew)));
     assert_eq!(indicators("edit.transform.skew", none), (None, Some(Skew)));
-    // Distort mode leaves the edges alone, Cmd or not.
-    assert_eq!(indicators("edit.transform.distort", none), (Some(Distort), None));
-    assert_eq!(indicators("edit.transform.distort", cmd()), (Some(Distort), None));
-    // Perspective mode: corners move in pairs; Cmd on an edge skews (`apply_drag`).
-    assert_eq!(indicators("edit.transform.perspective", none), (Some(Distort), None));
+    // Distort mode distorts from every handle, Cmd or not (#10085).
+    assert_eq!(indicators("edit.transform.distort", none), (Some(Distort), Some(Distort)));
+    assert_eq!(indicators("edit.transform.distort", cmd()), (Some(Distort), Some(Distort)));
+    // Perspective mode: corners move in pairs, and an edge skews along itself, Cmd or not.
+    assert_eq!(indicators("edit.transform.perspective", none), (Some(Distort), Some(Skew)));
     assert_eq!(indicators("edit.transform.perspective", cmd()), (Some(Distort), Some(Skew)));
     assert_eq!(indicators("edit.transform.scale", cmd()), (Some(Distort), Some(Skew)));
 }
