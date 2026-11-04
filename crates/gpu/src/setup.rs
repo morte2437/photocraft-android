@@ -1,6 +1,6 @@
 use super::batch::tile_grid;
 use super::consts::{ACC_FORMAT, CHUNK, CHUNK_UNIFORM, FX_BUDGET, MAX_PATTERN_TEXTURE_BYTES, OP_UNIFORM, PAGE, PATTERN_BUDGET, RESIDENT_BUDGET};
-use super::kit::{Kit, SHADER, build_jobs, tex_entry, uniform_entry, vertex_entry, vertex_shader};
+use super::kit::{Kit, SHADER, build_jobs, tex_entry, uniform_entry, vertex_shader};
 use super::paging::{cell_rect, field_reaches, first_error, grid_rects};
 use super::textures::{FxEntry, Resident, Tex, TexKind};
 use super::{
@@ -61,7 +61,7 @@ impl Compositor {
         let jobs = build_jobs(acc_format);
         let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pc_compose_vertex"),
-            source: wgpu::ShaderSource::Wgsl(vertex_shader(jobs.len()).into()),
+            source: wgpu::ShaderSource::Wgsl(vertex_shader(&jobs).into()),
         });
         let bgl0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_compose_uniforms"),
@@ -98,11 +98,11 @@ impl Compositor {
         };
         // Effect maps render to R32Float / R16Float, which some adapters (e.g. GL without float
         // render targets) can't: then layer effects use the CPU compositor and the rest stays here.
-        let built = fx::par_map(jobs.into_iter().enumerate().collect(), |(job, keys)| {
-            let vs = vertex_entry(job);
-            keys.into_iter()
+        let built = fx::par_map(jobs, |job| {
+            job.keys
+                .into_iter()
                 .map(|key| {
-                    let (built, error) = first_error(device, || pipeline(key.0, key.1, &vs));
+                    let (built, error) = first_error(device, || pipeline(key.0, key.1, &job.vertex));
                     (key, built, error)
                 })
                 .collect::<Vec<_>>()

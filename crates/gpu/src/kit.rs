@@ -127,41 +127,43 @@ pub(crate) fn uniform_entry(binding: u32, size: u64) -> wgpu::BindGroupLayoutEnt
 /// The compositor's WGSL source (exposed for validation in tests).
 pub const SHADER: &str = include_str!("compose.wgsl");
 
+/// One thread's share of the compositor's pipelines: the vertex entry point (in
+/// [`vertex_shader`]) and the (kernel, target format) pairs it builds.
+pub(crate) struct BuildJob {
+    pub(crate) vertex: String,
+    pub(crate) keys: Vec<(Kernel, wgpu::TextureFormat)>,
+}
+
 /// The compositor's pipelines, grouped by the thread that builds them: one job per kernel, and
-/// an effect-map kernel's R32F and R16F pipelines in the same job. With [`vertex_entry`], no two
-/// jobs share a shader (see `Compositor::build`).
-pub(crate) fn build_jobs(acc_format: wgpu::TextureFormat) -> Vec<Vec<(Kernel, wgpu::TextureFormat)>> {
+/// an effect-map kernel's R32F and R16F pipelines in the same job. Each job has its own vertex
+/// entry point, so no two jobs share a shader (see `Compositor::build`).
+pub(crate) fn build_jobs(acc_format: wgpu::TextureFormat) -> Vec<BuildJob> {
     let one = |k: Kernel| if k.is_map() { vec![(k, MAP32), (k, MAP16)] } else { vec![(k, acc_format)] };
     let (plain, maps): (Vec<Kernel>, Vec<Kernel>) = Kernel::DRAWN.iter().partition(|k| !k.is_map());
-    plain.into_iter().chain(maps).map(one).collect()
+    plain.into_iter().chain(maps).enumerate().map(|(job, k)| BuildJob { vertex: format!("vs_{job}"), keys: one(k) }).collect()
 }
 
-/// The vertex entry point of build job `job` in [`vertex_shader`].
-pub(crate) fn vertex_entry(job: usize) -> String {
-    format!("vs_{job}")
-}
-
-/// The full-chunk triangle's vertex stage, once per build job (`vs_0`, `vs_1`, ...): the same
-/// code under distinct names, so each job compiles its own vertex shader.
+/// The full-chunk triangle's vertex stage, once per build job under that job's name (`vs_0`,
+/// `vs_1`, ...): the same code under distinct names, so each job compiles its own vertex shader.
 ///
 /// A workaround, not a design: wgpu-hal's D3D12 shader cache shares a compiled FXC blob between
 /// threads, and FXC's blobs don't count references atomically, so a shared one can be freed
 /// while still cached (gfx-rs/wgpu#10547, #9173). Each copy costs one compile of a three-line
 /// shader. Once a wgpu release fixes the cache, go back to one `vs` in `compose.wgsl` and let
 /// `build_jobs` split map kernels by format again.
-pub(crate) fn vertex_shader(jobs: usize) -> String {
+pub(crate) fn vertex_shader(jobs: &[BuildJob]) -> String {
     let mut s = String::from(
         "struct VOut { @builtin(position) pos: vec4<f32> };
 ",
     );
-    for job in 0..jobs {
+    for job in jobs {
         s.push_str(&format!(
             "@vertex fn {}(@builtin(vertex_index) vi: u32) -> VOut {{
     let uv = vec2(f32((vi << 1u) & 2u), f32(vi & 2u));
     return VOut(vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0));
 }}
 ",
-            vertex_entry(job)
+            job.vertex
         ));
     }
     s
