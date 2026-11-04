@@ -311,6 +311,7 @@ struct ToolSet {
 }
 
 impl ToolSet {
+    /// Validate the complete tool patch before applying any field; omitted settings are retained.
     fn parse(app: &PhotocraftApp, p: &Value) -> std::result::Result<Self, String> {
         Ok(Self {
             gradient_blend: gradient_blend_param(p)?,
@@ -333,6 +334,7 @@ impl ToolSet {
         })
     }
 
+    /// Apply a validated patch, selecting the tool before its per-tool settings.
     fn apply(self, app: &mut PhotocraftApp) {
         if let Some(stroke) = &self.shape_stroke {
             if let Some(stroke) = stroke {
@@ -1161,6 +1163,7 @@ struct PointerGesture {
     mods: egui::Modifiers,
 }
 
+/// Validate every sample before starting a gesture, then respect modal, button and temporary-tool ownership.
 fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     // Every field and event is validated before the first event runs, so a rejected call
     // changes nothing (#2449).

@@ -64,6 +64,7 @@ fn assert_one_transform(app: &PhotocraftApp, steps: usize) {
     assert_eq!(state.history.entries().last().map(String::as_str), Some("Free Transform"));
 }
 
+/// The measured union-box gesture must commit both layer bounds as one undoable transform.
 #[test]
 fn corner_drag_scales_both_selected_layers_in_one_free_transform_step() {
     let (mut app, ctx, layers) = fixture();
@@ -92,6 +93,7 @@ fn corner_drag_scales_both_selected_layers_in_one_free_transform_step() {
     assert_eq!(app.session.active().unwrap().doc, after, "one Redo restores the transform");
 }
 
+/// Both committed layer bounds must follow the preview homography; a translation or one-layer rotation fails.
 #[test]
 fn rotation_zone_uses_the_existing_transform_gesture() {
     let (mut app, ctx, layers) = fixture();
@@ -127,6 +129,7 @@ fn rotation_zone_uses_the_existing_transform_gesture() {
     }
 }
 
+/// Non-unit zoom and a nonzero center expose missing document-to-screen conversion.
 #[test]
 fn zoomed_control_channel_press_starts_the_visible_corner() {
     let (mut app, ctx, layers) = fixture();
@@ -145,6 +148,7 @@ fn zoomed_control_channel_press_starts_the_visible_corner() {
     }
 }
 
+/// Geometric handles outside the active view must be unreachable through synthetic input.
 #[test]
 fn off_canvas_handles_do_not_start_transform_controls() {
     for (zoom, center) in [(3.0, [500, 350]), (1.0, [0, 0])] {
@@ -164,6 +168,7 @@ fn off_canvas_handles_do_not_start_transform_controls() {
     }
 }
 
+/// Visibility and setting gates must reject entry even when the point geometrically hits a handle.
 #[test]
 fn disabled_hidden_and_missed_controls_do_not_open_a_transform() {
     for (enabled, extras, at) in [(false, true, [800.0, 500.0]), (true, false, [800.0, 500.0]), (true, true, [900.0, 600.0])] {
@@ -177,6 +182,7 @@ fn disabled_hidden_and_missed_controls_do_not_open_a_transform() {
     }
 }
 
+/// Secondary buttons and Space-pan retain their established input ownership.
 #[test]
 fn nonprimary_and_space_presses_do_not_take_over_move_controls() {
     for params in [json!({"button": "right"}), json!({"button": "middle"}), json!({"space": true})] {
@@ -188,6 +194,7 @@ fn nonprimary_and_space_presses_do_not_take_over_move_controls() {
     }
 }
 
+/// An interior press must use Move without creating a transform session.
 #[test]
 fn interior_drag_keeps_the_ordinary_move_path() {
     let (mut app, ctx, layers) = fixture();
@@ -204,6 +211,7 @@ fn interior_drag_keeps_the_ordinary_move_path() {
     assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
 }
 
+/// Disabling Move controls must not disable the explicit Free Transform command.
 #[test]
 fn explicit_free_transform_still_works_with_move_controls_disabled() {
     let (mut app, ctx, _) = fixture();
@@ -217,6 +225,7 @@ fn explicit_free_transform_still_works_with_move_controls_disabled() {
     assert_one_transform(&app, steps);
 }
 
+/// A malformed boolean must reject the complete patch before a valid sibling field changes.
 #[test]
 fn invalid_move_show_transform_is_atomic_with_other_ui_fields() {
     for invalid in [json!("true"), json!(1), json!(null), json!([]), json!({})] {
@@ -234,6 +243,7 @@ fn invalid_move_show_transform_is_atomic_with_other_ui_fields() {
     }
 }
 
+/// Omission retains the setting, and later validation failure cannot partially apply a new value.
 #[test]
 fn move_show_transform_is_retained_when_omitted_and_waits_for_all_validation() {
     let (mut app, ctx, _) = fixture();
@@ -247,6 +257,7 @@ fn move_show_transform_is_retained_when_omitted_and_waits_for_all_validation() {
     assert!(app.ui.tool_options.move_show_transform);
 }
 
+/// A malformed later sample must be rejected before the first valid Down can open a session.
 #[test]
 fn invalid_later_pointer_event_does_not_begin_a_transform() {
     let (mut app, ctx, _) = fixture();
