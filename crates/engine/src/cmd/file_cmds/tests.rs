@@ -3978,6 +3978,7 @@ fn nested_batch_errors_stop_actions_but_direct_scripts_keep_results_and_continue
 /// Partial child outputs survive file, action and direct-script failure handling.
 #[test]
 fn nested_batch_partial_failures_keep_outputs_and_stop_only_action_parents() {
+    use crate::actions_cmds::Action;
     let dir = tmp("nested-batch-partial-failure");
     let input = png(&dir, "red.png", 8, 8, "#ff0000");
     let corrupt = join(&dir, "corrupt.png");
@@ -4022,6 +4023,7 @@ fn nested_batch_partial_failures_keep_outputs_and_stop_only_action_parents() {
 /// A successful nested Batch lets the parent action reach its following step.
 #[test]
 fn successful_nested_batch_allows_later_action_steps() {
+    use crate::actions_cmds::Action;
     let dir = tmp("nested-batch-success");
     let input = png(&dir, "red.png", 8, 8, "#ff0000");
     let mut s = Session::new();
