@@ -63,6 +63,21 @@ pub fn value_field_extent(
     value_field_in(ui, value, range, suffix, width, 0.0, opts, None).0
 }
 
+/// A [`value_field_extent`] showing the places [`value_field`](super::value_field) picks itself
+/// (the Properties panel's Transform fields: `50%` typed into a px W is half of `extent`, #10784).
+pub fn value_field_len(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+    units: FieldUnits,
+    extent: f64,
+) -> Response {
+    let opts = FieldOpts { units: Some(units), extent: Some(extent), ..Default::default() };
+    value_field_in(ui, value, range, suffix, width, 0.0, opts, None).0
+}
+
 pub(super) fn field_resolution_id() -> egui::Id {
     egui::Id::unique("pc-field-resolution")
 }
