@@ -3281,6 +3281,26 @@ fn mask_view_keeps_move_and_transform_available_behind_a_colour_set() {
     }
 }
 
+/// Batch 16 review: ⌥⌘T with the unlinked mask of a linked layer targeted still copies; only the
+/// layer's own pixels take the link group's box without a copy.
+#[test]
+fn free_transform_a_copy_of_a_targeted_mask_on_a_linked_layer_still_copies() {
+    let mut app = masked_app(false);
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    let b = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.ui.mask_target = true;
+    let layers = app.session.active().unwrap().doc.layers.len();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the layer is copied");
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(MadeLayer::Copy));
+    cancel(&mut app);
+}
+
 #[test]
 fn linked_mask_target_transforms_the_layer() {
     let mut app = masked_app(true);

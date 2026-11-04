@@ -256,11 +256,14 @@ pub const WARP_ONE_LAYER: &str = "Warp works on one layer at a time: select a si
 pub fn begin_copy(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
     let selection = app.session.active().is_some_and(|d| d.doc.selection.is_some());
     // A linked layer without a selection: the reference application makes no copy and frames the
-    // whole link group, as Free Transform does (measured, #11217). Unlinked layers get the copy.
+    // whole link group, as Free Transform does (measured, #11217). Unlinked layers get the copy,
+    // and so does a targeted mask (a lone target).
+    let target = crate::canvas::paint_target(app);
     let linked = !selection
         && app.session.active().is_some_and(|st| {
+            let lone = photocraft_engine::transform_cmds::lone_target(&st.doc, st.active_layer, &json!({ "target": target }));
             let targets = photocraft_engine::transform_cmds::selection_targets(st);
-            photocraft_engine::transform_cmds::box_targets(&st.doc, &targets) != targets
+            matches!(lone, Ok(None)) && photocraft_engine::transform_cmds::box_targets(&st.doc, &targets) != targets
         });
     if linked {
         return begin(app, ctx);
