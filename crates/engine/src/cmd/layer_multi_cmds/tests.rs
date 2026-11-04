@@ -1515,8 +1515,10 @@ fn duplicating_a_linked_pair_links_the_copies_to_each_other() {
 #[test]
 fn layer_via_copy_of_one_linked_layer_leaves_the_copy_unlinked() {
     let (mut s, a, b, _, group) = linked_pair();
+    let layers = doc(&s).layers.len();
     s.execute("layer.select", json!({"layer": a.0})).unwrap();
     let copy = LayerId(s.execute("layer.new.layerViaCopy", json!({})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(doc(&s).layers.len(), layers + 1, "only the active layer is copied");
     assert_eq!(link_group(&s, copy), None, "the copy is unlinked");
     assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
 }
