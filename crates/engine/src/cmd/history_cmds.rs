@@ -509,7 +509,7 @@ mod tests {
     }
 
     fn tile_bytes(doc: &Document) -> usize {
-        doc.layers.iter().filter_map(|l| l.surface()).flat_map(|s| s.tiles().map(|(_, t)| t.bytes().len())).sum()
+        doc.layers.iter().filter_map(|l| l.surface()).flat_map(|s| s.tiles().map(|(_, t)| t.len())).sum()
     }
 
     /// A Merged Layers snapshot is a flattened copy only it holds (#4530): it counts in the

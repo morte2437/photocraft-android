@@ -1098,7 +1098,7 @@ fn build() -> Vec<CommandSpec> {
                 };
                 if s.set_active(idx) { Ok(json!({"document": idx})) } else { Err(EngineError::Other(format!("no document at index {idx}"))) }
             },
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "document.move",

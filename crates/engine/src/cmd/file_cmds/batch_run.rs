@@ -1,7 +1,7 @@
 use super::open::import_at_raw_ppi;
-use super::paths::{extension, file_name, join, list_files, list_images, read_file, stem};
+use super::paths::{extension, file_name, join, list_files, list_images, read_file, stem, write_file};
 use super::processing::parse_steps;
-use super::save::{SaveOpts, save_doc};
+use super::save::{SaveOpts, encode, save_doc, save_doc_as};
 use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
 
 /// Inputs of a batch command: `"input"` is a folder or an array of files.
@@ -16,16 +16,18 @@ pub(crate) fn batch_inputs(p: &Value, cmd: &str) -> Result<Vec<String>> {
 /// One input of a batch run: the file, and the folder it sits in relative to the input folder
 /// (`""` at the top level, `"a/b"` two levels down), which its result keeps under `output`.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct BatchInput {
+pub struct BatchInput {
     pub path: String,
     pub rel_dir: String,
 }
 
 /// Subfolders below a batch input folder are walked at most this deep ("Include All Subfolders").
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAX_SUBFOLDER_DEPTH: usize = 32;
 
 /// A batch over subfolders lists at most this many files; a larger tree is an error, not a run
 /// that silently stops partway.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAX_SUBFOLDER_FILES: usize = 100_000;
 
 /// [`batch_inputs`] for the commands whose Photoshop dialog has "Include All Subfolders" (Batch,
@@ -70,12 +72,8 @@ pub(crate) fn list_files_tree(dir: &str, skip: &str, cmd: &str, include_non_imag
     let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
     while let Some((folder, rel, depth)) = stack.pop() {
         let shown = folder.to_string_lossy().into_owned();
-        // The top folder must be readable; a subfolder that isn't is skipped.
-        let files = match list_files(&shown, include_non_images) {
-            Ok(f) => f,
-            Err(e) if depth == 0 => return Err(e),
-            Err(_) => continue,
-        };
+        // A reached unreadable folder fails before any output is written.
+        let files = list_files(&shown, include_non_images)?;
         if out.len().saturating_add(files.len()) > MAX_SUBFOLDER_FILES {
             return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("{dir} holds more than {MAX_SUBFOLDER_FILES} files with its subfolders") });
         }
@@ -109,6 +107,11 @@ pub(crate) fn list_files_tree(dir: &str, _skip: &str, _cmd: &str, _include_non_i
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
+/// Image-only tree traversal shared with native Batch consumers.
+pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInput>> {
+    list_files_tree(dir, skip, cmd, false)
+}
+
 /// Opens each input in a scratch session, runs `f` on it and saves it to `output` as `format`
 /// (`"same"` keeps the input's extension). Errors per file are collected, not fatal.
 pub(crate) fn process_files(
@@ -137,15 +140,11 @@ pub(crate) fn process_tree(
     suffix: &str,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
-    process_outputs(s, default_outputs(inputs, output, format, suffix), save, None, false, InputOpen::default(), f)
-}
-
-/// Stream legacy destination names without collecting another path list for large batches.
-fn default_outputs<'a>(inputs: &'a [BatchInput], output: &'a str, format: &'a str, suffix: &'a str) -> impl Iterator<Item = (&'a str, String)> {
-    inputs.iter().map(move |BatchInput { path, rel_dir }| {
+    let outputs = inputs.iter().map(|BatchInput { path, rel_dir }| {
         let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
         (path.as_str(), join(&join(output, rel_dir), &format!("{}{suffix}.{ext}", stem(path))))
-    })
+    });
+    process_outputs(s, outputs, save, f)
 }
 
 /// The extension a batch output takes with Format "Same": the input's own, except for formats
@@ -154,7 +153,9 @@ fn default_outputs<'a>(inputs: &'a [BatchInput], output: &'a str, format: &'a st
 /// codec formats without a writer in this build. Those are saved as PSD, the format Photoshop's
 /// Save As offers for a raw. An input whose file name has no extension (a dot in a folder name
 /// doesn't count) is saved as PNG.
-pub(super) fn same_format(path: &str) -> String {
+/// The format Batch's "Save in the same format" writes for `path`: its own, or PSD for a file
+/// PhotoCraft only opens.
+pub fn same_format(path: &str) -> String {
     const IMPORT_ONLY: &[&str] =
         &["pdn", "kra", "krz", "af", "afdesign", "afphoto", "afpub", "heic", "heif", "hif", "svg", "svgz", "cin", "pcx", "xpm", "xcf", "xcfgz", "gz", "psdt"];
     let ext = extension(path).unwrap_or_else(|| "png".into());
@@ -188,103 +189,319 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
-/// How one Batch input is opened; Image Processor keeps automatic image-only opening.
-#[derive(Clone, Copy, Default)]
-struct InputOpen {
-    check_format: bool,
-    from_action: bool,
-    quiet_profiles: bool,
-    quiet_raw: bool,
-}
-
-/// Check collisions before input reads and isolate each file in a scratch session.
-/// An optional content format decouples encoding from the structured destination filename.
 fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,
     save: SaveOpts,
-    content_format: Option<&str>,
-    stop_on_error: bool,
-    open: InputOpen,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Value {
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
-    let raw_ppi = super::open::raw_open_resolution(s);
+    let raw_ppi = s.prefs().raw_defaults.resolution;
     let mut files = Vec::new();
     let mut errors = Vec::new();
-    let mut notices = Vec::new();
     let mut written = OutputClaims::default();
     for (path, out) in outputs {
-        let mut scratch = Session::new();
-        if open.quiet_profiles || open.quiet_raw {
-            scratch.prefs = s.prefs.clone();
-            scratch.color.settings = s.color.settings.clone();
-            if open.quiet_profiles {
-                scratch.color.settings.ask_on_mismatch = false;
-                scratch.color.settings.ask_on_missing = false;
-            }
-            scratch.authorize = s.authorize;
-            if open.quiet_raw {
-                scratch.batch_raw_open = Some(s.batch_raw_open.as_ref().unwrap_or(&s.prefs().raw_defaults).clone());
-            }
-            scratch.batch_open_notices = Some(Vec::new());
-        }
-        let r = (|| -> Result<()> {
-            written.check(&out).map_err(EngineError::Other)?;
-            // A folder must not silently use the embedded preview of an unsupported raw format.
-            #[cfg(not(target_arch = "wasm32"))]
-            if open.check_format && !super::paths::openable_name(path) {
-                return Err(EngineError::Other(format!("unsupported Batch folder input: {path}")));
-            }
-            #[cfg(target_arch = "wasm32")]
-            let _ = open.check_format;
-            if open.from_action {
-                scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
-            } else {
-                let bytes = read_file(path)?;
-                if open.quiet_profiles || open.quiet_raw {
-                    super::open::open_bytes_as(&mut scratch, &file_name(path), &bytes, None, Some(path.to_string()))?;
-                } else {
-                    let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
-                    scratch.add_document(doc, Some(path.to_string()));
-                }
-            }
-            if !f(&mut scratch, &out)? {
-                let d = scratch.active().ok_or(EngineError::NoDocument)?;
-                let ext = content_format.map(|format| if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() });
-                save_output(&d.doc, &out, save, ext.as_deref())?;
-            }
-            Ok(())
-        })();
-        notices.extend(scratch.batch_open_notices.take().unwrap_or_default());
+        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None, input: None }, f);
         match r {
             Ok(()) => {
                 written.record(&out, path);
                 files.push(out);
             }
-            Err(e) => {
-                errors.push(json!({"file": path, "error": e.to_string()}));
-                if stop_on_error {
+            Err(e) => errors.push(json!({"file": path, "error": e.to_string()})),
+        }
+    }
+    json!({"files": files, "errors": errors})
+}
+
+type PrepareInput<'a> = &'a dyn Fn(&mut Session, &str) -> Result<()>;
+
+struct InputPolicy<'a> {
+    prepare: PrepareInput<'a>,
+    notices: &'a std::cell::RefCell<Vec<Value>>,
+}
+
+struct ProcessOptions<'a> {
+    format: Option<&'a str>,
+    written: Option<&'a OutputClaims>,
+    ctx: Option<&'a crate::jobs::JobCtx>,
+    input: Option<&'a InputPolicy<'a>>,
+}
+
+fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: ProcessOptions<'_>, f: &dyn Fn(&mut Session, &str) -> Result<bool>) -> Result<()> {
+    if let Some(written) = options.written {
+        written.check(out).map_err(EngineError::Other)?;
+    }
+    let mut scratch = Session::new();
+    let result = (|| {
+        if let Some(input) = options.input {
+            (input.prepare)(&mut scratch, path)?;
+        } else {
+            let bytes = read_file(path)?;
+            let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+            scratch.add_document(doc, Some(path.to_string()));
+        }
+        if let Some(ctx) = options.ctx {
+            ctx.publish_batch_preview(path, scratch.active().map(|state| state.doc.clone()));
+        }
+        let saved_by_action = f(&mut scratch, out)?;
+        if saved_by_action {
+            // The action's saved snapshot is already written: a cancel or Esc arriving now stops the
+            // inputs after this one, not this result.
+            return Ok(());
+        }
+        if let Some(ctx) = options.ctx {
+            ctx.check()?;
+            if ctx.batch_interrupt_requested() {
+                return Err(EngineError::Cancelled);
+            }
+        }
+        let d = scratch.active().ok_or(EngineError::NoDocument)?;
+        if let Some(format) = options.format {
+            let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+            if let Some(ctx) = options.ctx {
+                save_batch_doc(&d.doc, out, &ext, save, ctx)?;
+            } else {
+                save_doc_as(&d.doc, out, &ext, save)?;
+            }
+        } else {
+            save_doc(&d.doc, out, save)?;
+        }
+        Ok(())
+    })();
+    if let Some(input) = options.input {
+        input.notices.borrow_mut().extend(scratch.batch_open_notices.take().unwrap_or_default());
+    }
+    result
+}
+
+/// Encode before the Batch write checkpoint. Esc accepted during an action or encode therefore
+/// leaves the current destination untouched; the worker owns the write once the checkpoint passes.
+fn save_batch_doc(doc: &Document, out: &str, format: &str, save: SaveOpts, ctx: &crate::jobs::JobCtx) -> Result<()> {
+    let (bytes, _) = encode(doc, format, save)?;
+    ctx.batch_before_write()?;
+    write_file(out, &bytes)?;
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct BatchPolicy {
+    pub(super) stop_on_error: bool,
+    pub(super) error_log: Option<String>,
+}
+
+impl BatchPolicy {
+    fn parse(p: &Value, cmd: &str) -> Result<Self> {
+        let stop_on_error = match p.get("stopOnError") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "\"stopOnError\" must be true or false".into() }),
+        };
+        let error_log = match p.get("errorLog") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(path)) if path.trim().is_empty() => None,
+            Some(Value::String(path)) => Some(path.clone()),
+            Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "\"errorLog\" must be a file path string".into() }),
+        };
+        Ok(Self { stop_on_error, error_log })
+    }
+}
+
+/// Photoshop-compatible Batch log encoding, shared by the desktop command and CLI.
+pub fn encode_batch_error_log<'a>(errors: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<u8> {
+    let mut body = String::from("Batch Start\r\n\r\n");
+    for (input, reason) in errors {
+        body.push_str(&format!("File: \"{input}\"\r\nError: {reason}\r\n\r\n"));
+    }
+    body.push_str("Batch End\r\n");
+    let mut bytes = vec![0xff, 0xfe];
+    for word in body.encode_utf16() {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes
+}
+
+fn write_error_log(path: &str, errors: &[Value]) -> Result<()> {
+    let bytes = encode_batch_error_log(errors.iter().map(|error| {
+        (error.get("file").or_else(|| error.get("document")).and_then(Value::as_str).unwrap_or("?"), error.get("error").and_then(Value::as_str).unwrap_or("?"))
+    }));
+    super::paths::write_file(path, &bytes).map_err(|error| EngineError::Other(format!("error log: {error}")))
+}
+
+fn error_log_failure(path: Option<&str>, errors: &[Value]) -> Option<String> {
+    path.and_then(|path| write_error_log(path, errors).err().map(|error| error.to_string()))
+}
+
+fn batch_outcome(files: Vec<String>, errors: Vec<Value>, stopped: Option<(String, Vec<String>)>, error_log: Option<&str>) -> Value {
+    let mut result = json!({"files": files, "errors": errors});
+    if let Some((at, skipped)) = stopped {
+        result["stopped"] = json!(at);
+        result["skipped"] = json!(skipped);
+    }
+    if let Some(path) = error_log {
+        result["errorLog"] = json!(path);
+    }
+    result
+}
+
+fn validate_error_log(policy: &BatchPolicy, inputs: impl IntoIterator<Item = String>, outputs: impl IntoIterator<Item = String>) -> Result<()> {
+    let Some(log) = &policy.error_log else { return Ok(()) };
+    let conflicts = |path: String| super::paths::same_destination(log, &path);
+    if inputs.into_iter().chain(outputs).any(conflicts) {
+        return Err(EngineError::BadParams { cmd: "file.automate.batch".into(), msg: "\"errorLog\" must not replace an input or batch output".into() });
+    }
+    Ok(())
+}
+
+/// A flat Batch result must not replace another input before it is opened. Compare resolved
+/// identities once for the whole plan, so aliases and large folder batches stay safe and linear.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn validate_flat_outputs(outputs: &[(String, String)]) -> Result<()> {
+    let sources: std::collections::HashMap<_, _> =
+        outputs.iter().enumerate().filter_map(|(index, (input, _))| std::fs::canonicalize(input).ok().map(|identity| (identity, index))).collect();
+    for (index, (_, output)) in outputs.iter().enumerate() {
+        let identity = super::paths::destination_identity(std::path::Path::new(output))
+            .ok_or_else(|| EngineError::BadParams { cmd: "file.automate.batch".into(), msg: format!("output path cannot be resolved safely: {output}") })?;
+        if sources.get(&identity).is_some_and(|&source_index| source_index != index) {
+            return Err(EngineError::BadParams {
+                cmd: "file.automate.batch".into(),
+                msg: format!("output would replace another input file: {output}; choose a different destination or naming template"),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn process_batch_outputs(
+    raw_ppi: f64,
+    outputs: Vec<(String, String)>,
+    format: &str,
+    save: SaveOpts,
+    policy: &BatchPolicy,
+    ctx: &crate::jobs::JobCtx,
+    f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+) -> Result<Value> {
+    process_batch_outputs_with(BatchRun { raw_ppi, format, save, policy, input: None, check_duplicates: false }, outputs, ctx, f)
+}
+
+struct BatchRun<'a> {
+    raw_ppi: f64,
+    format: &'a str,
+    save: SaveOpts,
+    policy: &'a BatchPolicy,
+    input: Option<&'a InputPolicy<'a>>,
+    check_duplicates: bool,
+}
+
+fn process_batch_outputs_with(
+    config: BatchRun<'_>,
+    outputs: Vec<(String, String)>,
+    ctx: &crate::jobs::JobCtx,
+    f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+) -> Result<Value> {
+    let BatchRun { raw_ppi, format, save, policy, input, check_duplicates } = config;
+    let mut written = OutputClaims::default();
+    let total = outputs.len();
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    let mut stopped = None;
+    let mut done = 0;
+    let mut interrupted = Vec::new();
+    for (index, (path, out)) in outputs.iter().enumerate() {
+        if ctx.cancelled() {
+            break;
+        }
+        if ctx.batch_take_interrupt() && !ctx.batch_wait_for_decision() {
+            ctx.publish_batch_preview(path, None);
+            ctx.cancel();
+            break;
+        }
+        ctx.progress(index as f32 / total.max(1) as f32, &format!("{} of {total}: {}", index + 1, file_name(path)));
+        let result = process_one(
+            raw_ppi,
+            path,
+            out,
+            save,
+            ProcessOptions { format: Some(format), written: check_duplicates.then_some(&written), ctx: Some(ctx), input },
+            f,
+        );
+        if result.is_ok() {
+            written.record(out, path);
+        }
+        // An input that failed on its own (not because it was stopped) stays a failure with its
+        // reason, even when a cancel or Esc lands while it runs.
+        let failure =
+            result.as_ref().err().filter(|error| !matches!(error, EngineError::Cancelled)).map(|error| json!({"file": path, "error": error.to_string()}));
+        if ctx.cancelled() {
+            ctx.publish_batch_preview(path, None);
+            // A cancel that lands while the result is written still leaves that file written.
+            if result.is_ok() {
+                files.push(out.clone());
+                done = index + 1;
+            } else if let Some(failure) = failure {
+                errors.push(failure);
+                done = index + 1;
+            } else {
+                done = index;
+            }
+            break;
+        }
+        if ctx.batch_take_interrupt() {
+            let continue_next = ctx.batch_wait_for_decision();
+            ctx.publish_batch_preview(path, None);
+            match failure {
+                Some(failure) => {
+                    errors.push(failure);
+                    done = index + 1;
+                }
+                None if continue_next => {
+                    interrupted.push(path.clone());
+                    done = index + 1;
+                }
+                None => {}
+            }
+            if continue_next {
+                continue;
+            }
+            ctx.cancel();
+            break;
+        }
+        ctx.batch_after_write();
+        ctx.publish_batch_preview(path, None);
+        done = index + 1;
+        match result {
+            Ok(()) => {
+                files.push(out.clone());
+            }
+            Err(error) => {
+                errors.push(json!({"file": path, "error": error.to_string()}));
+                if policy.stop_on_error {
+                    stopped = Some(path.clone());
                     break;
                 }
             }
         }
     }
-    let mut result = json!({"files":files,"errors":errors});
-    if !notices.is_empty() {
-        result["notices"] = json!(notices);
+    // No checkpoint follows the last input: a later Esc has nothing to interrupt.
+    ctx.batch_close_interrupts();
+    let log_failure = error_log_failure(policy.error_log.as_deref(), &errors);
+    let cancelled = ctx.cancelled();
+    if !cancelled {
+        ctx.progress(1.0, "");
     }
-    result
-}
-
-/// Structured naming determines the filename, not the encoded image format.
-fn save_output(doc: &Document, path: &str, save: SaveOpts, format: Option<&str>) -> Result<()> {
-    if let Some(format) = format {
-        let (bytes, _) = super::save::encode(doc, &format!("batch.{format}"), save)?;
-        super::paths::write_file(path, &bytes)
-    } else {
-        save_doc(doc, path, save).map(|_| ())
+    let mut skipped = interrupted;
+    skipped.extend(outputs.iter().skip(done).map(|(path, _)| path.clone()));
+    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped.clone())), policy.error_log.as_deref().filter(|_| log_failure.is_none()));
+    if !skipped.is_empty() {
+        result["skipped"] = json!(skipped);
     }
+    if cancelled {
+        result["cancelled"] = json!(true);
+    }
+    if let Some(error) = log_failure {
+        result["errorLogError"] = json!(error);
+    }
+    Ok(result)
 }
 
 /// The output paths a batch run has written, so a later input whose output name matches an
@@ -320,7 +537,6 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
-/// Resolve Batch's recorded action and set without substituting an action from another set.
 pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
     const CMD: &str = "file.automate.batch";
     if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
@@ -382,11 +598,15 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Bool(value)) => *value,
         _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "includeNonImages must be a boolean".into() }),
     };
-    let stop_on_error = match p.get("stopOnError") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "stopOnError must be a boolean".into() }),
+    let policy = BatchPolicy::parse(p, cmd)?;
+    let source = match p.get("source") {
+        None | Some(Value::Null) => "folder",
+        Some(Value::String(value)) if matches!(value.as_str(), "folder" | "open") => value.as_str(),
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "source must be folder or open".into() }),
     };
+    if source == "open" && (save_and_close || override_open || quiet_raw || quiet_profiles || include_non_images) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: "recorded folder-opening and Save and Close options require a folder source".into() });
+    }
     // Steps that call another action play it from the caller's actions; the playback stack comes
     // along so an action that batches itself is caught as a recursive call.
     let list = match p.get("calledActions") {
@@ -436,8 +656,16 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
-    let output = if save_and_close { String::new() } else { str_param(p, "output", cmd)?.to_string() };
-    let inputs = collect_inputs(p, cmd, &output, include_non_images)?;
+    let output = if save_and_close || source == "open" {
+        match p.get("output") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(path)) => path.clone(),
+            Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "output must be a folder path".into() }),
+        }
+    } else {
+        str_param(p, "output", cmd)?.to_string()
+    };
+    let inputs = if source == "folder" { collect_inputs(p, cmd, &output, include_non_images)? } else { Vec::new() };
     if save_and_close
         && inputs.iter().any(|input| s.documents().iter().any(|doc| doc.path.as_deref().is_some_and(|path| super::paths::same_file(&input.path, path))))
     {
@@ -451,7 +679,10 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // is not limited by it.
     let mut playback_steps = 0;
     if s.actions.playing > 0 {
-        playback_steps = s.actions.playback_steps.saturating_add((steps.len().max(1) as u64).saturating_mul(inputs.len() as u64));
+        playback_steps =
+            s.actions
+                .playback_steps
+                .saturating_add((steps.len().max(1) as u64).saturating_mul(if source == "open" { s.documents().len() } else { inputs.len() } as u64));
         if playback_steps > crate::actions_cmds::MAX_PLAYBACK_STEPS {
             return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the playback step limit of the action that runs it".into() });
         }
@@ -468,138 +699,330 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         script_steps: s.actions.script_steps,
         ..Default::default()
     };
+    if source == "open" {
+        let save = SaveOpts::from_params(s, p, cmd)?;
+        if p.get("calledActions").is_some_and(|value| !value.is_null()) {
+            let previous = std::mem::replace(&mut s.actions.list, actions.list.clone());
+            let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+            s.actions.list = previous;
+            return result;
+        }
+        return batch_open_documents(s, &steps, p, &output, &format, &policy, save);
+    }
+    let check_duplicates = save_and_close || include_non_images || p.get("namingComponents").is_some_and(|value| !value.is_null());
     let names = if save_and_close { None } else { batch_naming::plan(&inputs, &output, &format, p)? };
     let mut save = SaveOpts::from_params(s, p, cmd)?;
     if save_and_close {
         save.tiff_layers = save_close_tiff_layers;
     }
     let authorize = s.authorize;
-    // Each input runs in its own scratch session, so what the played steps spend is carried from
-    // one input to the next (failed or not) and back to this session, not restarted per input.
-    let carried = std::cell::Cell::new(playback_steps);
-    let carried = &carried;
-    let script_steps = std::cell::Cell::new(s.actions.script_steps);
-    let script_steps = &script_steps;
-    let structured = !save_and_close && p.get("namingComponents").is_some_and(|v| !v.is_null());
-    let run_format = structured.then(|| format.clone());
-    let run = move |scratch: &mut Session, out: &str| {
-        let source_id = scratch.active().map(|st| st.doc.id);
-        if save_and_close {
-            let encodable = extension(out).is_some_and(|ext| {
-                matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora") || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
-            });
-            if !encodable {
-                return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")));
-            }
+    let raw_ppi = super::open::raw_open_resolution(s);
+    let prefs = s.prefs.clone();
+    let color_settings = s.color.settings.clone();
+    let raw_settings = s.batch_raw_open.as_ref().unwrap_or(&s.prefs().raw_defaults).clone();
+    let script_count = s.actions.script_steps;
+    let outputs: Vec<(String, String)> = if save_and_close {
+        inputs.iter().map(|input| (input.path.clone(), input.path.clone())).collect()
+    } else {
+        match names {
+            Some(names) => inputs.iter().map(|input| input.path.clone()).zip(names).collect(),
+            None => inputs
+                .iter()
+                .map(|input| {
+                    let ext = if format == "same" { same_format(&input.path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                    (input.path.clone(), join(&output, &format!("{}.{ext}", stem(&input.path))))
+                })
+                .collect(),
         }
-        let content_ext = run_format.as_deref().map(|format| {
-            if format == "same" {
-                same_format(
-                    scratch
-                        .batch_open
-                        .as_ref()
-                        .map(|binding| binding.path.as_str())
-                        .or_else(|| scratch.active().and_then(|d| d.path.as_deref()))
-                        .unwrap_or("input.png"),
-                )
-            } else {
-                format.trim_start_matches('.').to_ascii_lowercase()
-            }
-        });
-        // Check the actual result, including a saved snapshot after Close, before either write path.
-        let validate_result = |scratch: &Session, doc: &Document| -> Result<()> {
-            if scratch.batch_open.as_ref().is_some_and(|binding| binding.sources.is_empty()) {
-                return Err(EngineError::Other("Override Open requires an executed Open step for this input".into()));
-            }
-            if !save_and_close {
-                return Ok(());
-            }
-            let from_source = scratch.batch_open.as_ref().map_or(source_id == Some(doc.id), |binding| binding.sources.contains(&doc.id));
-            if !from_source {
-                return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
-            }
-            // All recorded Opens passed their gates before inspecting the original source,
-            // including when this result is a saved snapshot whose document has been closed.
-            preserve_source(out)?;
-            let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
-            if tiff {
-                if !matches!(
-                    doc.pixel_format().mode,
-                    photocraft_color::ColorMode::Rgb | photocraft_color::ColorMode::Grayscale | photocraft_color::ColorMode::Cmyk
-                ) || doc.mode == photocraft_color::ColorMode::Multichannel
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    validate_flat_outputs(&outputs)?;
+    validate_error_log(&policy, outputs.iter().map(|(path, _)| path.clone()), outputs.iter().map(|(_, path)| path.clone()))?;
+    let was_playing = s.actions.playing > 0;
+    crate::jobs::run(
+        s,
+        "Batch",
+        false,
+        move |ctx| {
+            let carried = std::cell::Cell::new(playback_steps);
+            let script_steps = std::cell::Cell::new(script_count);
+            let notices = std::cell::RefCell::new(Vec::new());
+            let prepare = |scratch: &mut Session, path: &str| -> Result<()> {
+                #[cfg(not(target_arch = "wasm32"))]
+                if check_folder_format && !super::paths::openable_name(path) {
+                    return Err(EngineError::Other(format!("unsupported Batch folder input: {path}")));
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = check_folder_format;
+                if quiet_profiles || quiet_raw {
+                    scratch.prefs = prefs.clone();
+                    scratch.color.settings = color_settings.clone();
+                    if quiet_profiles {
+                        scratch.color.settings.ask_on_mismatch = false;
+                        scratch.color.settings.ask_on_missing = false;
+                    }
+                    scratch.authorize = authorize;
+                    if quiet_raw {
+                        scratch.batch_raw_open = Some(raw_settings.clone());
+                    }
+                    scratch.batch_open_notices = Some(Vec::new());
+                }
+                if override_open {
+                    scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
+                } else {
+                    let bytes = read_file(path)?;
+                    if quiet_profiles || quiet_raw {
+                        super::open::open_bytes_as(scratch, &file_name(path), &bytes, None, Some(path.to_string()))?;
+                    } else {
+                        let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+                        scratch.add_document(doc, Some(path.to_string()));
+                    }
+                }
+                Ok(())
+            };
+            let input = InputPolicy { prepare: &prepare, notices: &notices };
+            let run = |scratch: &mut Session, out: &str| {
+                let source_id = scratch.active().map(|state| state.doc.id);
+                let source_path = scratch
+                    .batch_open
+                    .as_ref()
+                    .map(|binding| binding.path.clone())
+                    .or_else(|| scratch.active().and_then(|state| state.path.clone()))
+                    .unwrap_or_default();
+                let encode_format = if format == "same" { same_format(&source_path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                if save_and_close
+                    && !extension(out).is_some_and(|ext| {
+                        matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora")
+                            || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
+                    })
                 {
-                    return Err(EngineError::Other("Save and Close cannot preserve this TIFF color mode".into()));
+                    return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")));
                 }
-                if !save.tiff_layers && super::save::tiff_would_write_layers(doc) {
-                    return Err(EngineError::Other("Save and Close would flatten TIFF layer data; keep tiffLayers enabled".into()));
-                }
+                // Check the actual result, including a saved snapshot after Close, before either write path.
+                let validate_result = |scratch: &Session, doc: &Document| -> Result<()> {
+                    if scratch.batch_open.as_ref().is_some_and(|binding| binding.sources.is_empty()) {
+                        return Err(EngineError::Other("Override Open requires an executed Open step for this input".into()));
+                    }
+                    if !save_and_close {
+                        return Ok(());
+                    }
+                    let from_source = scratch.batch_open.as_ref().map_or(source_id == Some(doc.id), |binding| binding.sources.contains(&doc.id));
+                    if !from_source {
+                        return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
+                    }
+                    // All recorded Opens passed their gates before inspecting the original source,
+                    // including when this result is a saved snapshot whose document has been closed.
+                    preserve_source(out)?;
+                    let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
+                    if tiff {
+                        if !matches!(
+                            doc.pixel_format().mode,
+                            photocraft_color::ColorMode::Rgb | photocraft_color::ColorMode::Grayscale | photocraft_color::ColorMode::Cmyk
+                        ) || doc.mode == photocraft_color::ColorMode::Multichannel
+                        {
+                            return Err(EngineError::Other("Save and Close cannot preserve this TIFF color mode".into()));
+                        }
+                        if !save.tiff_layers && super::save::tiff_would_write_layers(doc) {
+                            return Err(EngineError::Other("Save and Close would flatten TIFF layer data; keep tiffLayers enabled".into()));
+                        }
+                    }
+                    Ok(())
+                };
+                scratch.authorize = authorize;
+                scratch.actions = actions.clone();
+                scratch.actions.playback_steps = carried.get();
+                scratch.actions.script_steps = script_steps.get();
+                let result = (|| {
+                    let mut saved: Option<Arc<Document>> = None;
+                    for (id, params) in &steps {
+                        ctx.check()?;
+                        if ctx.batch_interrupt_requested() {
+                            return Err(EngineError::Cancelled);
+                        }
+                        if batch_save_point(id) {
+                            let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
+                            saved = Some(st.doc.clone());
+                            // Batch performs the action's Save / Save As (to its destination), so the
+                            // document is saved there as far as the steps after it see: a Close recorded
+                            // without a save policy (`"save":"ask"`) then closes it. A Save a Copy leaves
+                            // the document as changed as it was.
+                            if id != "file.saveACopy" {
+                                st.saved_revision = st.revision;
+                            }
+                            continue;
+                        }
+                        let params = crate::actions_cmds::playback_params(scratch, id, params)?;
+                        let r = scratch.execute(id, params)?;
+                        ctx.publish_batch_preview(&source_path, scratch.active().map(|state| state.doc.clone()));
+                        // A failed step inside a called action makes this file an error, not a saved result.
+                        if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
+                            return Err(EngineError::Other(error));
+                        }
+                    }
+                    // While the saved document is still open the steps after the save reach the result too
+                    // (#3058), so it is saved after the action as usual. Closed after its save, or with another
+                    // document left active, it is written as the save found it.
+                    match saved {
+                        Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
+                            validate_result(scratch, &doc)?;
+                            save_batch_doc(&doc, out, &encode_format, save, ctx)?;
+                            Ok(true)
+                        }
+                        _ => {
+                            validate_result(scratch, &scratch.active().ok_or(EngineError::NoDocument)?.doc)?;
+                            Ok(false)
+                        }
+                    }
+                })();
+                carried.set(scratch.actions.playback_steps);
+                script_steps.set(scratch.actions.script_steps);
+                result
+            };
+            let mut result = process_batch_outputs_with(
+                BatchRun { raw_ppi, format: &format, save, policy: &policy, input: Some(&input), check_duplicates },
+                outputs,
+                ctx,
+                &run,
+            )?;
+            let notices = notices.into_inner();
+            if !notices.is_empty() {
+                result["notices"] = json!(notices);
             }
-            Ok(())
-        };
-        scratch.authorize = authorize;
-        scratch.actions = actions.clone();
-        scratch.actions.playback_steps = carried.get();
-        scratch.actions.script_steps = script_steps.get();
-        let result = (|| {
-            // The document as the last recorded save found it, written once the action has run so a
-            // failing step still writes nothing.
+            Ok((result, carried.get(), script_steps.get()))
+        },
+        move |s, (result, carried, script_steps)| {
+            if was_playing {
+                s.actions.playback_steps = carried;
+            }
+            s.actions.script_steps = script_steps;
+            if let (Some(notices), Some(imports)) = (&mut s.batch_open_notices, result.get("notices").and_then(Value::as_array)) {
+                notices.extend(imports.iter().cloned());
+            }
+            Ok(result)
+        },
+    )
+}
+
+/// Source: Opened Files runs on the live documents, so edits remain in their histories.
+/// Documents are identified before playback; a step that closes or reorders tabs cannot make
+/// the next input silently become a different document.
+fn batch_open_documents(
+    s: &mut Session,
+    steps: &[(String, Value)],
+    p: &Value,
+    output: &str,
+    format: &str,
+    policy: &BatchPolicy,
+    save: SaveOpts,
+) -> Result<Value> {
+    let originals: Vec<(u64, String, String)> = s
+        .documents()
+        .iter()
+        .map(|state| {
+            let path = state.path.clone().unwrap_or_else(|| format!("{}.psd", state.doc.name));
+            (state.doc.id.0, state.doc.name.clone(), path)
+        })
+        .collect();
+    if originals.is_empty() {
+        return Err(EngineError::NoDocument);
+    }
+    let previous = s.active().map(|state| state.doc.id.0);
+    let virtual_inputs: Vec<BatchInput> = originals.iter().map(|(_, _, path)| BatchInput { path: path.clone(), rel_dir: String::new() }).collect();
+    let planned = if output.is_empty() {
+        None
+    } else {
+        let named = batch_naming::plan(&virtual_inputs, output, format, p)?;
+        Some(match named {
+            Some(paths) => paths,
+            None => virtual_inputs
+                .iter()
+                .map(|input| {
+                    let ext = if format == "same" { same_format(&input.path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                    join(output, &format!("{}.{ext}", stem(&input.path)))
+                })
+                .collect(),
+        })
+    };
+    // As for a folder: no result may replace another open document's file.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(paths) = &planned {
+        let plan: Vec<(String, String)> = originals.iter().map(|(_, _, path)| path.clone()).zip(paths.iter().cloned()).collect();
+        validate_flat_outputs(&plan)?;
+    }
+    validate_error_log(policy, originals.iter().map(|(_, _, path)| path.clone()), planned.iter().flat_map(|paths| paths.iter().cloned()))?;
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    let mut stopped = None;
+    let mut done = 0;
+    for (index, (id, name, path)) in originals.iter().enumerate() {
+        // The document a recorded Save / Save As marked as saved, with its earlier saved
+        // revision: when Batch then writes nothing, it reads as changed again.
+        let mut marked: Option<(u64, u64)> = None;
+        let result = (|| -> Result<()> {
+            let position = s.documents().iter().position(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?;
+            s.set_active(position);
             let mut saved: Option<Arc<Document>> = None;
-            for (id, params) in &steps {
-                if batch_save_point(id) {
-                    let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
-                    saved = Some(st.doc.clone());
-                    // Batch performs the action's Save / Save As (to its destination), so the
-                    // document is saved there as far as the steps after it see: a Close recorded
-                    // without a save policy (`"save":"ask"`) then closes it. A Save a Copy leaves
-                    // the document as changed as it was.
-                    if id != "file.saveACopy" {
-                        st.saved_revision = st.revision;
+            for (command, params) in steps {
+                if batch_save_point(command) {
+                    let state = s.active_mut().ok_or(EngineError::NoDocument)?;
+                    saved = Some(state.doc.clone());
+                    // With no destination nothing is written, so the document stays changed.
+                    if command != "file.saveACopy" && planned.is_some() {
+                        if marked.is_none() {
+                            marked = Some((state.doc.id.0, state.saved_revision));
+                        }
+                        state.saved_revision = state.revision;
                     }
                     continue;
                 }
-                let params = crate::actions_cmds::playback_params(scratch, id, params)?;
-                let r = scratch.execute(id, params)?;
-                // A failed step inside a called action makes this file an error, not a saved result.
-                if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
+                let response = s.execute(command, params.clone())?;
+                if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
                     return Err(EngineError::Other(error));
                 }
             }
-            // While the saved document is still open the steps after the save reach the result too
-            // (#3058), so it is saved after the action as usual. Closed after its save, or with another
-            // document left active, it is written as the save found it.
-            match saved {
-                Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
-                    validate_result(scratch, &doc)?;
-                    save_output(&doc, out, save, content_ext.as_deref())?;
-                    Ok(true)
-                }
-                _ => {
-                    validate_result(scratch, &scratch.active().ok_or(EngineError::NoDocument)?.doc)?;
-                    Ok(false)
-                }
-            }
+            let Some(paths) = &planned else { return Ok(()) };
+            let out = paths.get(index).ok_or_else(|| EngineError::Other("batch output plan is incomplete".into()))?;
+            let doc = match saved {
+                Some(saved) if s.active().is_some_and(|state| state.doc.id == saved.id) => s.active().ok_or(EngineError::NoDocument)?.doc.clone(),
+                Some(saved) => saved,
+                None => s.documents().iter().find(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?.doc.clone(),
+            };
+            let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+            save_doc_as(&doc, out, &ext, save)?;
+            files.push(out.clone());
+            Ok(())
         })();
-        carried.set(scratch.actions.playback_steps);
-        script_steps.set(scratch.actions.script_steps);
-        result
-    };
-    let open = InputOpen { check_format: check_folder_format, from_action: override_open, quiet_profiles, quiet_raw };
-    let r = match names {
-        _ if save_and_close => process_outputs(s, inputs.iter().map(|input| (input.path.as_str(), input.path.clone())), save, None, stop_on_error, open, &run),
-        Some(names) => {
-            process_outputs(s, inputs.iter().map(|i| i.path.as_str()).zip(names), save, structured.then_some(format.as_str()), stop_on_error, open, &run)
+        done = index + 1;
+        if result.is_err()
+            && let Some((doc, revision)) = marked
+            && let Some(position) = s.documents().iter().position(|state| state.doc.id.0 == doc)
+        {
+            s.set_active(position);
+            if let Some(state) = s.active_mut() {
+                state.saved_revision = revision;
+            }
         }
-        None => process_outputs(s, default_outputs(&inputs, &output, &format, ""), save, None, stop_on_error, open, &run),
-    };
-    if s.actions.playing > 0 {
-        s.actions.playback_steps = carried.get();
+        if let Err(error) = result {
+            errors.push(json!({"document": name, "error": error.to_string()}));
+            if policy.stop_on_error {
+                stopped = Some(name.clone());
+                break;
+            }
+        }
     }
-    s.actions.script_steps = script_steps.get();
-    // Nested Batch completion delivers its imports once to the enclosing input's diagnostics.
-    if let (Some(notices), Some(imports)) = (&mut s.batch_open_notices, r.get("notices").and_then(Value::as_array)) {
-        notices.extend(imports.iter().cloned());
+    if let Some(id) = previous
+        && let Some(position) = s.documents().iter().position(|state| state.doc.id.0 == id)
+    {
+        s.set_active(position);
     }
-    Ok(r)
+    let log_failure = error_log_failure(policy.error_log.as_deref(), &errors);
+    let skipped = originals.iter().skip(done).map(|(_, name, _)| name.clone()).collect();
+    let mut result = batch_outcome(files, errors, stopped.map(|at| (at, skipped)), policy.error_log.as_deref().filter(|_| log_failure.is_none()));
+    if let Some(error) = log_failure {
+        result["errorLogError"] = json!(error);
+    }
+    result["documents"] = json!(originals.len());
+    Ok(result)
 }
 
 /// Check source structure once at the common pre-write seam, after Open authorization and ownership.

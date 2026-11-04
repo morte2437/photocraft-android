@@ -362,10 +362,7 @@ const MAX_WARP_SIDE: u32 = 100_000;
 
 fn target(s: &Session, cmd: &str, p: &Value) -> Result<(LayerId, Rect)> {
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let id = match p.get("layer").and_then(Value::as_u64) {
-        Some(v) => LayerId(v),
-        None => st.active_layer.ok_or(EngineError::Other("no active layer".into()))?,
-    };
+    let id = crate::commands::layer_param(s, p)?;
     let layer = st.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
     let rect = match p.get("rect").and_then(Value::as_array) {
         Some(r) if r.len() == 4 => {

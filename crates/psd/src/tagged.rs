@@ -9,7 +9,7 @@ use crate::blend::BlendMode;
 use crate::descriptor::UnicodeString;
 use crate::error::{PsdError, Result};
 use crate::header::Version;
-use crate::io::{Reader, WriteExt};
+use crate::io::{Reader, Sink, WriteExt};
 
 /// Keys whose length field is 8 bytes in PSB files: the thirteen the Adobe
 /// specification lists, plus keys Photoshop also writes with 8-byte lengths
@@ -504,6 +504,29 @@ pub(crate) fn read_blocks_with(
 pub(crate) fn write_blocks(out: &mut Vec<u8>, blocks: &[TaggedBlock], version: Version, alignment: usize) -> Result<()> {
     for b in blocks {
         b.write(out, version, alignment)?;
+    }
+    Ok(())
+}
+
+/// [`write_blocks`] to a streaming [`Sink`]: each block's data goes straight through, so a large
+/// opaque block (an embedded smart object) is never copied whole.
+pub(crate) fn write_blocks_to<W: std::io::Write + std::io::Seek + ?Sized>(
+    out: &mut Sink<'_, W>,
+    blocks: &[TaggedBlock],
+    version: Version,
+    alignment: usize,
+) -> std::io::Result<()> {
+    for b in blocks {
+        out.small(|o| {
+            o.put(&b.signature);
+            o.put(&b.key);
+            o.put_len(b.data.len() as u64, uses_long_length(version, &b.key))
+        })?;
+        out.put(&b.data)?;
+        match &b.padding {
+            Some(p) => out.put(p)?,
+            None => out.zeros(TaggedBlock::default_padding(b.data.len(), alignment))?,
+        }
     }
     Ok(())
 }

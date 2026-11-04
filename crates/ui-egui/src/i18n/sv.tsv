@@ -3359,6 +3359,7 @@ curves	Smooth	Jämna ut
 	This document's layers: {needed} of {budget} for layers	Lagren i det här dokumentet: {needed} av {budget} för lager
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Lagren i det här dokumentet behöver {needed} men får använda {budget}: omritningar av hela dokumentet använder CPU:n
 	GPU Memory (MB, 0 = Automatic)	GPU-minne (MB, 0 = automatisk)
+	Scratch Size Limit (MB, 0 = No Limit)	Storleksgräns för arbetsdisk (MB, 0 = ingen gräns)
 	{path}: the path is not valid Unicode; save under another name.	{path}: sökvägen är inte giltig Unicode; spara under ett annat namn.
 	Replace	Ersätt
 	{name} was changed by another app after it was opened or saved here.	{name} har ändrats av en annan app efter att den öppnades eller sparades här.

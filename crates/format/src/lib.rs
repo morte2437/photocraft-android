@@ -8,6 +8,7 @@
 //! blobs/<blake3>.zst       content-addressed binary data (ICC, EXIF, PSD blocks, smart objects)
 //! thumb.png                optional thumbnail (caller-rendered)
 //! composite/preview.png    optional flattened preview (caller-rendered)
+//! composite/full.png       optional flattened composite at the canvas size (caller-rendered)
 //! save.lock                directory bundles only: held while a save runs (empty)
 //! ```
 //!
@@ -40,7 +41,7 @@ use std::path::Path;
 use photocraft_doc::Document;
 use photocraft_raster::Rgba8Image;
 
-pub use atomic::{atomic_write, atomic_write_progress};
+pub use atomic::{atomic_write, atomic_write_progress, atomic_write_stream, atomic_write_stream_progress};
 #[cfg(not(target_arch = "wasm32"))]
 pub use autosave::RecoveryStore;
 pub use autosave::{Autosaver, RecoveryEntry, discard_recovery, list_recovery, recover};
@@ -98,6 +99,12 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 pub struct SaveOptions {
     pub thumbnail: Option<Rgba8Image>,
     pub composite: Option<Rgba8Image>,
+    /// The flattened document at its canvas size, for other apps that read `.pcraft` files. A ZIP
+    /// save leaves it out when it would take the archive past 4 GiB or 65,535 entries, and every
+    /// save leaves it out when it cannot be encoded.
+    pub full_composite: Option<Rgba8Image>,
+    /// The ICC profile of `full_composite`'s pixels, embedded in its PNG.
+    pub full_composite_icc: Option<Vec<u8>>,
 }
 
 /// Limits applied while loading untrusted bundles.
@@ -131,9 +138,25 @@ pub const MAX_CANVAS_SIDE: u32 = 300_000;
 /// canvas with no content allocates nothing for its area.
 pub const MAX_CANVAS_PIXELS: u64 = MAX_CANVAS_SIDE as u64 * MAX_CANVAS_SIDE as u64;
 
+/// Byte budgets of a load in the browser build. A wasm32 instance has at most 4 GiB of linear
+/// memory, which the editor, the file's own bytes and the loaded document's composites share, so
+/// the desktop defaults (1 GiB a blob, 16 GiB in all) would let a small, highly compressible
+/// bundle exhaust it before any budget is reached.
+#[cfg(target_arch = "wasm32")]
+pub const BROWSER_MAX_BLOB_BYTES: usize = 512 << 20;
+/// See [`BROWSER_MAX_BLOB_BYTES`].
+#[cfg(target_arch = "wasm32")]
+pub const BROWSER_MAX_TOTAL_BYTES: u64 = 1 << 30;
+
 impl Default for LoadOptions {
     fn default() -> Self {
-        let limits = craft_pcraft_format::Limits::default();
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut limits = craft_pcraft_format::Limits::default();
+        #[cfg(target_arch = "wasm32")]
+        {
+            limits.max_blob_bytes = limits.max_blob_bytes.min(BROWSER_MAX_BLOB_BYTES);
+            limits.max_total_bytes = limits.max_total_bytes.min(BROWSER_MAX_TOTAL_BYTES);
+        }
         LoadOptions {
             max_manifest_bytes: limits.max_manifest_bytes,
             max_blob_bytes: limits.max_blob_bytes,
@@ -209,6 +232,17 @@ pub fn read_thumbnail(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
     let m = store::read_manifest(&src, &LoadOptions::default())?;
     match m.thumbnail {
         Some(p) => Ok(Some(src.get(&p, 64 << 20)?)),
+        None => Ok(None),
+    }
+}
+
+/// The embedded full-size composite (PNG bytes): `None` when the manifest has no
+/// `full_composite` member. A member that names any entry other than `composite/full.png` is
+/// refused.
+pub fn read_full_composite(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    let src = store::ZipSource::new(bytes)?;
+    match store::read_full_composite_entry(&src, &LoadOptions::default())? {
+        Some(p) => Ok(Some(src.get(p, bytes.len())?)),
         None => Ok(None),
     }
 }

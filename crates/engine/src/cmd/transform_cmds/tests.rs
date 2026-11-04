@@ -907,3 +907,64 @@ fn a_stroked_soft_shapes_frame_matches_the_hard_shapes() {
         assert_eq!(boxes(&s), hard, "{align} at {x}: Feather alone leaves the frame");
     }
 }
+
+/// Free Transform of a layer's own transparency (⌘-click its thumbnail) takes all of it and leaves
+/// no ghost where it was, as Photoshop does and as Move already did (#5595). Photoshop 2025, an
+/// anti-aliased 60 px ellipse moved 150 px with Free Transform: no pixel left behind.
+#[test]
+fn transforming_a_layers_own_transparency_leaves_no_ghost() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 300, "height": 120, "background": "transparent"})).unwrap();
+    s.execute("select.rect", json!({"x": 20, "y": 20, "width": 60, "height": 60, "ellipse": true, "antiAlias": true})).unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#cc2222"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency"})).unwrap();
+    let alpha_sum = |s: &Session, area: Rect| -> f32 {
+        let st = s.active().unwrap();
+        let surf = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+        surf.read_region(area).as_chunks::<4>().0.iter().map(|p| p[3]).sum()
+    };
+    let (old, new) = (Rect::new(0, 0, 110, 120), Rect::new(110, 0, 300, 120));
+    let before = alpha_sum(&s, old);
+    assert!(before > 2000.0, "the ellipse: {before}");
+    s.execute("edit.transform", json!({"dx": 150, "dy": 0})).unwrap();
+    s.execute("select.deselect", json!({})).unwrap();
+    let st = s.active().unwrap();
+    let surf = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+    let left = surf.read_region(old).as_chunks::<4>().0.iter().filter(|p| p[3] > 0.0).count();
+    assert_eq!(left, 0, "pixels left behind at the old spot");
+    let moved = alpha_sum(&s, new);
+    assert!((moved - before).abs() < 1.0, "all the coverage moved: {before} → {moved}");
+    // An opaque pixel half selected still splits half and half.
+    let mut s = session();
+    s.edit("half", |doc, _| {
+        let mut sel = Surface::new(PixelFormat::GRAY8);
+        sel.fill_rect(Rect::new(10, 10, 30, 20), &[0.5]);
+        doc.selection = Some(sel);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("edit.transform", json!({"dx": 40, "dy": 0})).unwrap();
+    let st = s.active().unwrap();
+    let surf = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+    let rest = surf.read_region(Rect::new(15, 15, 16, 16));
+    assert!((rest[3] - 0.5).abs() < 0.01, "half the opaque pixel stays: {rest:?}");
+}
+
+#[test]
+fn split_selected_lifts_up_to_the_selection_and_leaves_the_rest() {
+    // One half-covered pixel under a partial selection: the lift takes min(a, k), the rest keeps
+    // max(a − k, 0), and the two add back up to the pixel's coverage.
+    let gray_f32 = PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false);
+    let a = 0.5_f32;
+    for k in [0.25_f32, 0.5, 0.75] {
+        let mut surf = Surface::new(PixelFormat::RGBA32F);
+        surf.fill_rect(Rect::new(3, 4, 4, 5), &[1.0, 0.0, 0.0, a]);
+        let mut sel = Surface::new(gray_f32);
+        sel.fill_rect(Rect::new(3, 4, 4, 5), &[k]);
+        let (lifted, rest) = split_selected(&surf, &sel).unwrap();
+        let (l, r) = (lifted.sample_channel(3, 4, 3), rest.sample_channel(3, 4, 3));
+        assert!((l - a.min(k)).abs() < 1e-6, "k = {k}: lifted {l}, want {}", a.min(k));
+        assert!((r - (a - k).max(0.0)).abs() < 1e-6, "k = {k}: left {r}, want {}", (a - k).max(0.0));
+        assert!((l + r - a).abs() < 1e-6, "k = {k}: lifted {l} + left {r} != {a}");
+    }
+}

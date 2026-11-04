@@ -3306,6 +3306,7 @@ curves	Smooth	Glätten
 	Sent to {printer}	An {printer} gesendet
 	set in Print Settings…	in den Druckeinstellungen festlegen…
 	ICO is limited to 256 × 256 pixels	ICO ist auf 256 × 256 Pixel begrenzt
+	Memory usage percent	Speichernutzung (%)
 	Show Favorite Fonts	Favorisierte Schriften anzeigen
 	No favorite fonts yet: click the star beside a font to add it.	Noch keine favorisierten Schriften: Klicken Sie auf den Stern neben einer Schrift, um sie hinzuzufügen.
 	Favorite fonts	Favorisierte Schriften
@@ -3368,6 +3369,7 @@ curves	Smooth	Glätten
 	Chisel Soft	Meißeln weich
 	Open color-less EXR as ACEScg	Farbangabenloses EXR als ACEScg öffnen
 	Do not append "copy" to filename when saving a copy	Beim Speichern einer Kopie „copy“ nicht an den Dateinamen anhängen
+	Save Full-Size Composite in .pcraft Files	Kompositbild in voller Größe in .pcraft-Dateien speichern
 	Color Profile	Farbprofil
 	EXIF	EXIF
 	Edit Selected Guides	Ausgewählte Hilfslinien bearbeiten
@@ -3423,6 +3425,7 @@ curves	Smooth	Glätten
 	This document's layers: {needed} of {budget} for layers	Ebenen dieses Dokuments: {needed} von {budget} für Ebenen
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Die Ebenen dieses Dokuments brauchen {needed}, dürfen aber {budget} belegen: Das ganze Dokument wird auf der CPU neu gezeichnet
 	GPU Memory (MB, 0 = Automatic)	GPU-Speicher (MB, 0 = Automatisch)
+	Scratch Size Limit (MB, 0 = No Limit)	Größenlimit für Arbeitsvolume (MB, 0 = kein Limit)
 	{path}: the path is not valid Unicode; save under another name.	{path}: Der Dateipfad enthält ungültige Zeichen. Speichere unter einem anderen Namen.
 	{name} was changed by another app after it was opened or saved here.	{name} wurde von einer anderen App geändert, nachdem es hier geöffnet oder gespeichert wurde.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Ersetze die Datei durch dieses Dokument oder brich ab und nutze Datei › Speichern unter, um beide zu behalten.

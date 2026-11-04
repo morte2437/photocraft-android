@@ -122,14 +122,65 @@ fn enter_on_the_selection_frame_crops_to_it_at_8_and_16_bit() {
         assert_eq!(doc.size, Size::new(30, 40), "{depth:?}");
         assert_eq!(doc.depth, depth);
         assert!(doc.selection.is_none(), "cropping to the selection deselects, as in Photoshop");
-        // The new default frame is the whole (cropped) canvas: ↵ on it does nothing.
+        // No frame until a press, also after another tool and back; then the default one is the
+        // whole (cropped) canvas, and ↵ on it does nothing.
         ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None);
+        app.ui.tool = Tool::Move;
+        ensure_frame(&mut app);
+        crate::tool_memory::select(&mut app, Tool::Crop);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "picking the tool again keeps it hidden");
+        show_frame(&mut app);
         assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 30.0, 40.0]));
         let steps = app.session.active().unwrap().history.past_len();
         crate::canvas::commit_crop(&mut app);
         let st = app.session.active().unwrap();
         assert_eq!((st.doc.size, st.history.past_len()), (Size::new(30, 40), steps), "{depth:?}");
     }
+}
+
+/// A commit hides the frame; picking the Crop tool again keeps it hidden, as in Photoshop; a ratio
+/// or a press brings back the default frame, and the press's crop keeps its box Undo and Redo.
+#[test]
+fn a_hidden_frame_comes_back_on_a_ratio_or_a_press_with_redo_intact() {
+    let committed = || {
+        let mut app = app(SampleType::U8);
+        app.ui.crop_rect = Some([20.0, 10.0, 120.0, 60.0]);
+        crate::canvas::commit_crop(&mut app);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "hidden after the commit");
+        app
+    };
+    let whole = Some([0.0, 0.0, 100.0, 50.0]);
+    // Picking the Crop tool while it is still picked, or after another tool: still hidden.
+    let mut app = committed();
+    crate::tool_memory::select(&mut app, Tool::Crop);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None, "re-picked");
+    crate::tool_memory::select(&mut app, Tool::Move);
+    ensure_frame(&mut app);
+    crate::tool_memory::select(&mut app, Tool::Crop);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None, "picked after another tool");
+    show_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, whole);
+    assert!(app.crop.default_frame);
+    // A ratio fits the frame it brings back.
+    let mut app = committed();
+    app.ui.tool_options.crop_ratio = "1:1".into();
+    apply_ratio(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([25.0, 0.0, 75.0, 50.0]));
+    // A drawn crop undoes to the default frame, and redoes.
+    let mut app = committed();
+    drag(&mut app, &[[10.0, 10.0], [40.0, 30.0]], NONE);
+    let drawn = app.ui.crop_rect;
+    assert_eq!(drawn, Some([10.0, 10.0, 40.0, 30.0]));
+    assert!(intercept(&mut app, "edit.undo").is_some());
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, whole, "undo goes back to the default frame");
+    assert!(intercept(&mut app, "edit.redo").is_some());
+    assert_eq!(app.ui.crop_rect, drawn, "and redo still has the drawn frame");
 }
 
 #[test]
@@ -152,7 +203,7 @@ fn the_frame_is_edited_from_a_press_until_commit_cancel_or_another_tool() {
     assert!(shows_beyond_canvas(&app));
     crate::canvas::commit_crop(&mut app);
     ensure_frame(&mut app);
-    assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 50.0, 30.0]));
+    assert_eq!(app.ui.crop_rect, None, "no frame until the next press");
     assert!(!shows_beyond_canvas(&app));
     // Or until another tool is picked.
     drag(&mut app, &[[5.0, 5.0], [20.0, 20.0]], NONE);
@@ -387,13 +438,14 @@ fn handles_resize_with_shift_and_alt() {
     // Bottom-right corner, free.
     drag(&mut app, &[[120.0, 60.0], [140.0, 70.0]], NONE);
     assert_eq!(app.ui.crop_rect, Some([20.0, 20.0, 140.0, 70.0]));
-    // ⇧ keeps 120:50 from the top-left corner: the larger relative extent wins.
+    // ⇧ keeps 120:50 from the top-left corner: the corner follows the frame's diagonal, so the
+    // drag (−10, −20) projected onto (−120, −50) grows the frame by 2200 / 16900 (#10871).
     app.ui.crop_rect = Some([20.0, 20.0, 140.0, 70.0]);
     drag(&mut app, &[[20.0, 20.0], [10.0, 0.0]], SHIFT);
     let r = app.ui.crop_rect.unwrap();
     assert_eq!((r[2], r[3]), (140.0, 70.0), "opposite corner fixed");
     assert!(((r[2] - r[0]) / (r[3] - r[1]) - 120.0 / 50.0).abs() < 1e-9, "{r:?}");
-    assert_eq!(r[3] - r[1], 70.0);
+    assert!((r[3] - r[1] - 50.0 * (1.0 + 2200.0 / 16900.0)).abs() < 1e-9, "{r:?}");
     // ⌥ resizes about the centre.
     app.ui.crop_rect = Some([40.0, 20.0, 80.0, 60.0]);
     drag(&mut app, &[[80.0, 40.0], [90.0, 40.0]], Modifiers::ALT);
@@ -403,6 +455,26 @@ fn handles_resize_with_shift_and_alt() {
     app.ui.crop_rect = Some([40.0, 20.0, 80.0, 60.0]);
     drag(&mut app, &[[80.0, 40.0], [100.0, 40.0]], NONE);
     assert_eq!(app.ui.crop_rect, Some([40.0, 10.0, 100.0, 70.0]));
+}
+
+/// The top-right and bottom-left corners follow the other diagonal, (120, −50) and (−120, 50):
+/// the drag projected onto it grows the frame by 2200 / 16900, as on the top-left corner. Along
+/// the top-left / bottom-right diagonal the top-right x1 would move to about 141.4.
+#[test]
+fn shift_resize_follows_the_diagonal_of_the_top_right_and_bottom_left_corners() {
+    let mut app = app(SampleType::U8);
+    app.ui.crop_rect = Some([20.0, 20.0, 140.0, 70.0]);
+    drag(&mut app, &[[140.0, 20.0], [150.0, 0.0]], SHIFT);
+    let r = app.ui.crop_rect.unwrap();
+    assert_eq!((r[0], r[3]), (20.0, 70.0), "top-right: opposite corner fixed");
+    assert!((r[2] - (140.0 + 2640.0 / 169.0)).abs() < 1e-9, "top-right: {r:?}");
+    assert!((r[1] - (20.0 - 1100.0 / 169.0)).abs() < 1e-9, "top-right: {r:?}");
+    app.ui.crop_rect = Some([20.0, 20.0, 140.0, 70.0]);
+    drag(&mut app, &[[20.0, 70.0], [10.0, 90.0]], SHIFT);
+    let r = app.ui.crop_rect.unwrap();
+    assert_eq!((r[2], r[1]), (140.0, 20.0), "bottom-left: opposite corner fixed");
+    assert!((r[0] - (20.0 - 2640.0 / 169.0)).abs() < 1e-9, "bottom-left: {r:?}");
+    assert!((r[3] - (70.0 + 1100.0 / 169.0)).abs() < 1e-9, "bottom-left: {r:?}");
 }
 
 #[test]
@@ -851,7 +923,7 @@ fn enter_during_a_drag_ends_the_drag() {
     tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 40.0 }, NONE);
     ensure_frame(&mut app);
     assert_eq!(app.session.active().unwrap().doc.size, Size::new(100, 50));
-    assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 100.0, 50.0]));
+    assert_eq!(app.ui.crop_rect, None);
     assert!(!pending(&app));
 }
 
@@ -1143,4 +1215,80 @@ fn readout_shows_the_frame_size_while_drawing_or_resizing() {
     assert_eq!(frame_size([0.0, 0.0, 0.2, 0.4]), Some([1.0, 1.0]));
     assert_eq!(frame_size([f64::NAN, 0.0, 1.0, 1.0]), None);
     assert_eq!(frame_size([-f64::MAX, 0.0, f64::MAX, 1.0]), None);
+}
+
+/// #3145: the Info panel shows the pending frame's W × H while the Crop tool is active
+/// (between gestures too, and its own size when turned), and nothing for other tools.
+#[test]
+fn info_panel_shows_the_pending_frame_size() {
+    let mut app = app(SampleType::U8);
+    app.ui.tool = Tool::Crop;
+    app.ui.crop_rect = None;
+    assert_eq!(info_size(&app), None, "no frame");
+    app.ui.crop_rect = Some([20.0, 20.0, 100.0, 65.4]);
+    assert_eq!(info_size(&app), Some([80.0, 45.0]), "rounded as ↵ crops it");
+    app.ui.crop_angle = 30.0;
+    assert_eq!(info_size(&app), Some([80.0, 45.0]), "a turned frame keeps its own size");
+    app.ui.crop_rect = Some([f64::NAN, 0.0, 1.0, 1.0]);
+    assert_eq!(info_size(&app), None, "a broken frame shows nothing");
+    app.ui.crop_rect = Some([20.0, 20.0, 100.0, 60.0]);
+    app.ui.tool = Tool::Move;
+    assert_eq!(info_size(&app), None, "another tool shows the selection instead");
+}
+
+/// #3145 review: the crop frame's W and H use the Info panel's formatter for the ruler unit,
+/// the same one the selection's go through.
+#[test]
+fn info_size_is_shown_in_the_ruler_unit() {
+    use crate::panels::info::wh_readout;
+    use photocraft_engine::prefs::{Unit, UnitsAndRulers};
+    let mut app = app(SampleType::U8);
+    app.ui.crop_rect = Some([0.0, 0.0, 144.0, 72.0]);
+    let wh = info_size(&app).unwrap();
+    let mut ur = UnitsAndRulers::default();
+    let extent = [200.0, 100.0];
+    ur.rulers = Unit::Pixels;
+    assert_eq!(wh_readout(&ur, 72.0, extent, wh), ["144", "72"]);
+    ur.rulers = Unit::Inches;
+    assert_eq!(wh_readout(&ur, 72.0, extent, wh), ["2", "1"]);
+    assert_eq!(wh_readout(&ur, 144.0, extent, wh), ["1", "0.5"], "at the document's resolution");
+    ur.rulers = Unit::Centimeters;
+    assert_eq!(wh_readout(&ur, 72.0, extent, wh), ["5.08", "2.54"]);
+    ur.rulers = Unit::Percent;
+    assert_eq!(wh_readout(&ur, 72.0, extent, wh), ["72", "72"], "W of the width, H of the height");
+}
+
+/// #3145 review: after the crop is cancelled or committed, or the tool is left, W and H are the
+/// selection's again. With the Crop tool still picked, the new default frame is the selection's
+/// bounds (or the canvas), as in Photoshop, so the panel shows the same size. After a commit that
+/// frame waits for the next press.
+#[test]
+fn info_size_returns_to_the_selection_after_cancel_or_commit() {
+    let mut app = app(SampleType::U8);
+    app.run("select.rect", json!({"x": 20, "y": 10, "width": 80, "height": 40})).unwrap();
+    // Cancel: no frame, then the new default frame frames the selection.
+    ensure_frame(&mut app);
+    app.ui.crop_rect = Some([10.0, 10.0, 50.0, 40.0]);
+    assert_eq!(info_size(&app), Some([40.0, 30.0]));
+    cancel(&mut app);
+    assert_eq!(info_size(&app), None, "cancelled: the panel falls back to the selection");
+    ensure_frame(&mut app);
+    assert_eq!(info_size(&app), Some([80.0, 40.0]), "the new frame is the selection's bounds");
+    // Commit: the document is cropped and the frame is gone.
+    app.run("select.deselect", json!({})).unwrap();
+    cancel(&mut app);
+    drag(&mut app, &[[10.0, 10.0], [50.0, 40.0]], NONE);
+    assert_eq!(info_size(&app), Some([40.0, 30.0]));
+    crate::canvas::commit_crop(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.size, Size::new(40, 30));
+    assert_eq!(info_size(&app), None, "committed: no frame");
+    ensure_frame(&mut app);
+    assert_eq!(info_size(&app), None, "committed: the frame stays hidden");
+    // A press brings it back.
+    show_frame(&mut app);
+    assert_eq!(info_size(&app), Some([40.0, 30.0]), "the new frame is the cropped canvas");
+    // Leaving the tool: the panel shows the selection, whatever the frame.
+    app.ui.tool = Tool::Move;
+    ensure_frame(&mut app);
+    assert_eq!(info_size(&app), None);
 }

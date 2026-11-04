@@ -9,9 +9,68 @@ fn bad(message: impl Into<String>) -> EngineError {
 
 enum Part<'a> {
     Literal(&'a str),
-    Name,
-    Serial,
-    Date,
+    Name(NameCase),
+    Serial(usize),
+    Letter(bool),
+    Date(DateFormat),
+    Ext(bool),
+}
+
+#[derive(Clone, Copy)]
+enum NameCase {
+    AsIs,
+    Upper,
+    Title,
+}
+
+#[derive(Clone, Copy)]
+enum DateFormat {
+    Iso,
+    Mmddyy,
+    Mmdd,
+    Yyyymmdd,
+    Yymmdd,
+    Yyddmm,
+    Ddmmyy,
+}
+
+#[derive(Clone, Copy)]
+struct Date {
+    year: u32,
+    month: u32,
+    day: u32,
+}
+
+impl Date {
+    fn from_iso(value: &str) -> Option<Self> {
+        Some(Self { year: value.get(..4)?.parse().ok()?, month: value.get(5..7)?.parse().ok()?, day: value.get(8..10)?.parse().ok()? })
+    }
+
+    fn format(self, kind: DateFormat) -> String {
+        let (year, month, day, short) = (self.year, self.month, self.day, self.year % 100);
+        match kind {
+            DateFormat::Iso => format!("{year:04}-{month:02}-{day:02}"),
+            DateFormat::Mmddyy => format!("{month:02}{day:02}{short:02}"),
+            DateFormat::Mmdd => format!("{month:02}{day:02}"),
+            DateFormat::Yyyymmdd => format!("{year:04}{month:02}{day:02}"),
+            DateFormat::Yymmdd => format!("{short:02}{month:02}{day:02}"),
+            DateFormat::Yyddmm => format!("{short:02}{day:02}{month:02}"),
+            DateFormat::Ddmmyy => format!("{day:02}{month:02}{short:02}"),
+        }
+    }
+}
+
+/// Serial letters use the one-based count; recorded components pass the input index (#4579 by @FabioLissi).
+fn letters(mut serial: u64, upper: bool) -> String {
+    let mut bytes = Vec::new();
+    while serial > 0 {
+        serial -= 1;
+        let letter = b'a' + (serial % 26) as u8;
+        bytes.push(if upper { letter.to_ascii_uppercase() } else { letter });
+        serial /= 26;
+    }
+    bytes.reverse();
+    String::from_utf8(bytes).unwrap_or_default()
 }
 
 /// Photoshop's component identifiers and the structured native naming choices.
@@ -67,20 +126,6 @@ fn compatibility(params: &Value) -> Result<(bool, bool, bool)> {
     ))
 }
 
-/// Serial-letter conversion from #4579 by @FabioLissi, using the one-based input index.
-/// Adobe specifies that letters start at A independently of the numeric starting serial.
-fn letters(mut n: u64, upper: bool) -> String {
-    let mut out = Vec::new();
-    while n > 0 {
-        n -= 1;
-        let c = b'a' + (n % 26) as u8;
-        out.push(if upper { c.to_ascii_uppercase() } else { c });
-        n /= 26;
-    }
-    out.reverse();
-    String::from_utf8(out).unwrap_or_default()
-}
-
 /// Construct the entire filename in recorded order, adding a dot only for the final extension component.
 fn expand_components(parts: &[Value], name: &str, serial: u32, index: usize, ext: &str, date: chrono::NaiveDate) -> Result<String> {
     let mut out = String::new();
@@ -132,10 +177,25 @@ fn parse(template: &str) -> Result<Vec<Part<'_>>> {
         }
         let end = rest.find('}').ok_or_else(|| bad("naming: unclosed token"))?;
         parts.push(match &rest[1..end] {
-            "name" => Part::Name,
-            "serial" => Part::Serial,
-            "date" => Part::Date,
-            token => return Err(bad(format!("naming: unknown token {{{token}}}; use {{name}}, {{serial}} or {{date}}"))),
+            "name" => Part::Name(NameCase::AsIs),
+            "NAME" => Part::Name(NameCase::Upper),
+            "Name" => Part::Name(NameCase::Title),
+            "serial" => Part::Serial(3),
+            "letter" => Part::Letter(false),
+            "LETTER" => Part::Letter(true),
+            "date" => Part::Date(DateFormat::Iso),
+            "date:mmddyy" => Part::Date(DateFormat::Mmddyy),
+            "date:mmdd" => Part::Date(DateFormat::Mmdd),
+            "date:yyyymmdd" => Part::Date(DateFormat::Yyyymmdd),
+            "date:yymmdd" => Part::Date(DateFormat::Yymmdd),
+            "date:yyddmm" => Part::Date(DateFormat::Yyddmm),
+            "date:ddmmyy" => Part::Date(DateFormat::Ddmmyy),
+            "ext" => Part::Ext(false),
+            "EXT" => Part::Ext(true),
+            token => match token.strip_prefix("serial:").and_then(|value| value.parse::<usize>().ok()) {
+                Some(width) if (1..=4).contains(&width) => Part::Serial(width),
+                _ => return Err(bad(format!("naming: unknown token {{{token}}}"))),
+            },
         });
         rest = &rest[end + 1..];
     }
@@ -143,22 +203,43 @@ fn parse(template: &str) -> Result<Vec<Part<'_>>> {
     Ok(parts)
 }
 
-fn expand(parts: &[Part<'_>], name: &str, serial: u32, date: &str) -> String {
+fn expand(parts: &[Part<'_>], name: &str, ext: &str, serial: u32, date: Date) -> String {
     let mut out = String::new();
-    for part in parts {
+    for (index, part) in parts.iter().enumerate() {
         match part {
             Part::Literal(s) => out.push_str(s),
-            Part::Name => out.push_str(name),
-            Part::Serial => out.push_str(&format!("{serial:03}")),
-            Part::Date => out.push_str(date),
+            Part::Name(NameCase::AsIs) => out.push_str(name),
+            Part::Name(NameCase::Upper) => out.push_str(&name.to_uppercase()),
+            Part::Name(NameCase::Title) => {
+                let mut chars = name.chars();
+                if let Some(first) = chars.next() {
+                    out.extend(first.to_uppercase());
+                    out.push_str(&chars.as_str().to_lowercase());
+                }
+            }
+            Part::Serial(width) => out.push_str(&format!("{serial:0width$}")),
+            Part::Letter(upper) => out.push_str(&letters(u64::from(serial), *upper)),
+            Part::Date(kind) => out.push_str(&date.format(*kind)),
+            Part::Ext(upper) => {
+                // The reference app adds the separator only for the final extension component.
+                // A literal dot in the template already supplies that separator.
+                if !parts[index + 1..].iter().any(|part| !matches!(part, Part::Literal(""))) && !out.ends_with('.') {
+                    out.push('.');
+                }
+                if *upper {
+                    out.push_str(&ext.to_uppercase());
+                } else {
+                    out.push_str(ext);
+                }
+            }
         }
     }
     out
 }
 
 /// An absent or empty template preserves the old filename path exactly. An explicit template
-/// generates one component per input; the export format supplies the extension separately.
-pub(super) fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &Value) -> Result<Option<Vec<String>>> {
+/// determines the whole filename. Recorded components retain their separate format choice.
+pub fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &Value) -> Result<Option<Vec<String>>> {
     let structured = components(params)?;
     let compat = compatibility(params)?;
     let flat = match params.get("flatOutput") {
@@ -193,20 +274,17 @@ pub(super) fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &V
         return Err(bad("naming must be at most 255 bytes"));
     }
     let parts = parse(template)?;
-    let has_serial = parts.iter().any(|p| matches!(p, Part::Serial))
+    let has_serial = parts.iter().any(|p| matches!(p, Part::Serial(_) | Part::Letter(_)))
         || structured.is_some_and(|list| {
             list.iter().any(|p| p.get("component").and_then(Value::as_str).is_some_and(|kind| matches!(kind, "serial1" | "serial2" | "serial3" | "serial4")))
         });
     let timestamp = crate::analysis_cmds::now_iso();
-    let date = timestamp.get(..10).unwrap_or("");
+    let date = Date::from_iso(&timestamp).ok_or_else(|| bad("naming: the current UTC date is unavailable"))?;
     let calendar = if structured.is_some() {
-        Some(chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| bad("naming: current UTC date unavailable"))?)
+        Some(chrono::NaiveDate::parse_from_str(timestamp.get(..10).unwrap_or(""), "%Y-%m-%d").map_err(|_| bad("naming: current UTC date unavailable"))?)
     } else {
         None
     };
-    if date.is_empty() && parts.iter().any(|p| matches!(p, Part::Date)) {
-        return Err(bad("naming: the current UTC date is unavailable"));
-    }
     let mut outputs = Vec::with_capacity(inputs.len());
     for (index, BatchInput { path, rel_dir }) in inputs.iter().enumerate() {
         let serial = if has_serial {
@@ -218,11 +296,7 @@ pub(super) fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &V
         let name = if let (Some(components), Some(calendar)) = (structured, calendar) {
             expand_components(components, &stem(path), serial, index, &ext, calendar)?
         } else {
-            let base = expand(&parts, &stem(path), serial, date);
-            if base.is_empty() || base.ends_with(['.', ' ']) {
-                return Err(bad("naming must produce a nonempty filename stem without a trailing dot or space"));
-            }
-            format!("{base}.{ext}")
+            expand(&parts, &stem(path), &ext, serial, date)
         };
         if name.is_empty() || name.ends_with(['.', ' ']) {
             return Err(bad("naming must produce a nonempty filename stem without a trailing dot or space"));
@@ -236,8 +310,9 @@ pub(super) fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &V
         {
             return Err(bad("naming is incompatible with the requested platform"));
         }
-        // From subfolders ("Include All Subfolders"), each result keeps its subfolder.
-        outputs.push(join(&join(output, if flat { "" } else { rel_dir }), &name));
+        // Preserve the recorded structured routing; ordinary native templates use main's flat output.
+        let subfolder = if structured.is_some() && !flat { rel_dir.as_str() } else { "" };
+        outputs.push(join(&join(output, subfolder), &name));
     }
     // Renaming within the source folder could replace a later input before it is read. Resolve
     // existing paths so aliases such as `source/./001.png` cannot bypass the check. The default
@@ -246,7 +321,9 @@ pub(super) fn plan(inputs: &[BatchInput], output: &str, format: &str, params: &V
     {
         let sources: std::collections::HashSet<_> = inputs.iter().filter_map(|i| std::fs::canonicalize(&i.path).ok()).collect();
         for output in &outputs {
-            if std::fs::canonicalize(output).ok().is_some_and(|p| sources.contains(&p)) {
+            let identity = super::paths::destination_identity(std::path::Path::new(output))
+                .ok_or_else(|| bad(format!("naming output path cannot be resolved safely: {output}")))?;
+            if sources.contains(&identity) {
                 return Err(bad(format!("naming would replace an input file: {output}; choose a different destination or template")));
             }
         }
@@ -341,7 +418,19 @@ mod tests {
     #[test]
     fn substituted_names_are_literal_and_serials_do_not_wrap_or_truncate() {
         let parts = parse("{date}_{name}_{serial}").unwrap();
-        assert_eq!(expand(&parts, "photo{serial}", 7, "2026-10-13"), "2026-10-13_photo{serial}_007");
-        assert_eq!(expand(&parts, "photo", 1000, "2026-10-13"), "2026-10-13_photo_1000");
+        let date = Date { year: 2026, month: 10, day: 13 };
+        assert_eq!(expand(&parts, "photo{serial}", "png", 7, date), "2026-10-13_photo{serial}_007");
+        assert_eq!(expand(&parts, "photo", "png", 1000, date), "2026-10-13_photo_1000");
+        let parts = parse("{NAME}_{Name}_{serial:1}_{letter}{LETTER}_{date:mmddyy}.{EXT}").unwrap();
+        assert_eq!(expand(&parts, "my Photo", "png", 27, date), "MY PHOTO_My photo_27_aaAA_101326.PNG");
+    }
+
+    #[test]
+    fn extension_component_only_adds_a_dot_at_the_end() {
+        let date = Date { year: 2026, month: 11, day: 1 };
+        for (template, expected) in [("{name}{ext}", "a.png"), ("{name}{ext}{serial}", "apng001"), ("{name}{serial}", "a001"), ("{name}{ext}{ext}", "apng.png")]
+        {
+            assert_eq!(expand(&parse(template).unwrap(), "a", "png", 1, date), expected, "{template}");
+        }
     }
 }

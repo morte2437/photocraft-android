@@ -617,6 +617,54 @@ fn options_bar_fill_swatch_recolours_the_shape_just_drawn() {
     assert_eq!(shape(h.state()).fill, original.fill);
 }
 
+/// #8741: a shape paint swatch draws a rounded fill over its transparency checker, so the checker
+/// has to be rounded too. The square one painted light cells past the rounded corners, which read
+/// as specks on dark themes; the other colour swatches went to `checker_rounded` for the same
+/// reason in #3363. Both callers of the shared `swatch` are pinned: the Properties panel's
+/// Appearance row and the shape tools' options bar.
+fn assert_swatch_checkers_are_rounded(h: &Harness<'_, PhotocraftApp>, labels: [&str; 2]) {
+    let panel = h.ctx.global_style().visuals.panel_fill;
+    // the fill's own corners: a checker rounded less would still show past them
+    let radius = egui::CornerRadius::from(crate::theme::Tokens::get(&h.ctx).radius_sm);
+    for label in labels {
+        let swatch = h.get_by_label(label).rect();
+        let (mut square, mut rounded) = (Vec::new(), 0);
+        for c in &h.output().shapes {
+            // the harness's own panel background behind the widget is not the swatch's checker
+            if let egui::Shape::Rect(r) = &c.shape {
+                if !swatch.contains_rect(r.rect) {
+                    continue;
+                }
+                if r.corner_radius == egui::CornerRadius::ZERO && r.fill != panel {
+                    square.push(r.rect);
+                } else if r.corner_radius == radius && r.brush.is_some() {
+                    // `checker_rounded`: a textured rect rounded like the fill
+                    rounded += 1;
+                }
+            }
+        }
+        assert!(square.is_empty(), "{label}: square shapes inside the rounded swatch {swatch:?}: {square:?}");
+        assert_eq!(rounded, 1, "{label}: exactly one checker rounded like the fill inside the swatch {swatch:?}");
+    }
+}
+
+#[test]
+fn shape_paint_swatch_checker_keeps_to_the_rounded_corners() {
+    let shape = |a: &mut PhotocraftApp| {
+        a.run("shape.create", json!({"rect": [20,20,80,60], "fill": "#80808080", "stroke": {"width": 4, "color": "#ee335580"}})).unwrap();
+    };
+    // Properties panel (Appearance row)
+    let mut a = app("rgb", 8);
+    shape(&mut a);
+    let h = harness(a, true);
+    assert_swatch_checkers_are_rounded(&h, ["Set shape fill type", "Set shape stroke type"]);
+    // Options bar
+    let mut a = app("rgb", 8);
+    shape(&mut a);
+    let h = harness(a, false);
+    assert_swatch_checkers_are_rounded(&h, ["Fill color", "Stroke color"]);
+}
+
 fn test_gradient() -> photocraft_doc::Fill {
     photocraft_doc::Fill::Gradient {
         stops: vec![(0.0, photocraft_doc::Color::rgba(0.123456, 0.5, 0.75, 1.0)), (1.0, photocraft_doc::Color::rgba(0.9, 0.2, 0.1, 0.6))],

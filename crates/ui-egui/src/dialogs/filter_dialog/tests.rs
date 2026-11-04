@@ -133,6 +133,8 @@ fn same_target_ignores_parameters_but_nothing_else() {
         break_it(&mut other);
         assert!(!other.same_target(&base), "{other:?} must not pass as {base:?}");
         assert!(!base.same_target(&other));
+        // The canvas's display gate forgives the factor alone (#10474), nothing else.
+        assert_eq!(other.same_target_at_any_scale(&base), other.k != base.k, "{other:?}");
     }
 }
 
@@ -966,6 +968,13 @@ fn fixed_size_filters_preview_at_the_scale_they_apply() {
         ("filter.noise.dustAndScratches", json!({"radius": 4.0, "threshold": 0.0})),
         ("filter.noise.reduceNoise", json!({})),
         ("filter.other.custom", json!({"kernel": edge})),
+        // #10474: Minimum and Maximum work on whole-pixel radii (`round()` / `floor()`), so at
+        // k = 4 a typed 1.5 px radius previewed as 0.375 px = 0 px: the proxy showed the untouched
+        // document while OK writes a real 1.5 / 1 px effect. A radius under 2 px previews at k = 1.
+        ("filter.other.minimum", json!({"radius": 1.5, "preserve": "squareness"})),
+        ("filter.other.minimum", json!({"radius": 1.5, "preserve": "roundness"})),
+        ("filter.other.maximum", json!({"radius": 1.5, "preserve": "squareness"})),
+        ("filter.other.maximum", json!({"radius": 1.5, "preserve": "roundness"})),
         ("filter.video.deInterlace", json!({})),
         ("filter.stylize.traceContour", json!({})),
         ("filter.stylize.wind", json!({"method": "blast"})),
@@ -1038,6 +1047,32 @@ fn proxy_previews_scale_only_lengths() {
     assert_eq!(preview_factor("filter.pixelate.mosaic", &json!({"cellSize": "x"}), 4), 4);
     let (k, diff) = error("filter.pixelate.mosaic", json!({"cellSize": 10.0}));
     assert!(k == 2 && diff < 0.01, "Mosaic: {diff}");
+    // Roundness at a fractional radius: at 6.5 px, k = 3 reaches floor(2.17) = 2 proxy px along an
+    // axis (6 px), where k = 4 reached floor(1.63) = 1 (4 px), so the chosen factor previews closer
+    // to what OK applies than k = 4 did (#10474).
+    for cmd in ["filter.other.minimum", "filter.other.maximum"] {
+        let p = json!({"radius": 6.5, "preserve": "roundness"});
+        let (k, diff) = error(cmd, p.clone());
+        let applied = preview_document(&doc, Some(bg), cmd, &p, 1).unwrap();
+        let at_four = preview_document(&doc, Some(bg), cmd, &p, 4).unwrap();
+        let four = mean_abs(&every_kth(&applied, 4), &every_kth(&at_four, 1));
+        assert!(k == 3 && diff < four, "{cmd}: k = {k} differs by {diff}, k = 4 by {four}");
+    }
+    // Minimum and Maximum keep at least one proxy pixel of radius (#10474), and a large radius
+    // keeps a proxy instead of a full-size preview that costs minutes at radius 500. Both keep
+    // their whole-pixel radius within 1 px of OK's. Squareness rounds: 6 px is 2 proxy px at k = 3
+    // (6 px), not at k = 4 (8 px); 50 px is 17 at k = 3 (51 px), not 13 at k = 4 (52 px). Roundness's
+    // disc reaches floor(r) along an axis: 6 px is 2 at k = 3 (6 px), not 1 at k = 4 (4 px); 50 px
+    // is 25 at k = 2, not 12 at k = 4 or 16 at k = 3 (48 px).
+    let factors = |cmd: &str, preserve: &str| {
+        [0.2, 1.5, 2.5, 3.9, 6.0, 50.0, 500.0, 9999.0].map(|radius| preview_factor(cmd, &json!({"radius": radius, "preserve": preserve}), 4))
+    };
+    for cmd in ["filter.other.minimum", "filter.other.maximum"] {
+        assert_eq!(factors(cmd, "squareness"), [1, 1, 2, 3, 3, 3, 4, 4], "{cmd} squareness");
+        assert_eq!(factors(cmd, "roundness"), [1, 1, 2, 3, 3, 2, 4, 4], "{cmd} roundness");
+        assert_eq!(preview_factor(cmd, &json!({"radius": 6.0}), 4), 3, "{cmd}: Squareness is the default");
+        assert_eq!(preview_factor(cmd, &json!({"radius": "x"}), 4), 4, "{cmd}: a junk radius keeps the proxy");
+    }
     // Tree's and Picture Frame's sizes are relative, not pixels (and not shown as "px").
     assert!(!is_pixel_param_of("filter.render.tree", "size") && !is_pixel_param_of("filter.render.pictureFrame", "size"));
     assert!(is_pixel_param_of("filter.stylize.extrude", "size"));

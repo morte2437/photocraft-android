@@ -32,14 +32,18 @@ mod descriptors;
 mod events;
 mod fields;
 mod files;
+
+mod steps_artboard;
 mod steps_batch;
 mod steps_calculations;
 mod steps_channels;
+mod steps_direct_adjustments;
 mod steps_distort;
 mod steps_doc;
 mod steps_gallery;
 mod steps_image;
 mod steps_layer;
+mod steps_layer_style;
 mod steps_lookup;
 mod steps_make;
 mod steps_other;
