@@ -57,12 +57,16 @@ fn near(actual: &[f32], expected: &[f32]) {
     }
 }
 
+fn full_grid(w: f32, h: f32) -> Vec<Polyline> {
+    crop_overlay::turn_grid(w, h, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h)))
+}
+
 #[test]
 fn measured_frame_sizes_have_centred_48_point_cells() {
-    let grid = crop_overlay::turn_grid(329.0, 240.0);
+    let grid = full_grid(329.0, 240.0);
     near(&positions(&grid, true, 329.0), &[20.5, 68.5, 116.5, 164.5, 212.5, 260.5, 308.5]);
     near(&positions(&grid, false, 240.0), &[24.0, 72.0, 120.0, 168.0, 216.0]);
-    let grid = crop_overlay::turn_grid(711.0, 519.0);
+    let grid = full_grid(711.0, 519.0);
     near(&positions(&grid, true, 711.0), &[19.5, 67.5, 115.5, 163.5, 211.5, 259.5, 307.5, 355.5, 403.5, 451.5, 499.5, 547.5, 595.5, 643.5, 691.5]);
     near(&positions(&grid, false, 519.0), &[19.5, 67.5, 115.5, 163.5, 211.5, 259.5, 307.5, 355.5, 403.5, 451.5, 499.5]);
 }
@@ -72,7 +76,7 @@ fn default_turn_replaces_the_overlay_and_release_restores_each_show_mode() {
     for show in [OverlayShow::Always, OverlayShow::Auto, OverlayShow::Never] {
         let (mut app, ctx) = app(false, show);
         let p = turning(&mut app, &ctx);
-        let expected = if show == OverlayShow::Never { Vec::new() } else { crop_overlay::turn_grid(329.0, 240.0) };
+        let expected = if show == OverlayShow::Never { Vec::new() } else { full_grid(329.0, 240.0) };
         assert_eq!(crop_overlay::current_guides(&app, 329.0, 240.0), expected, "{show:?}");
         release(&mut app, &ctx, p);
         let expected = if show == OverlayShow::Always { crop_overlay::guides(CropOverlay::Triangle, 1, 329.0, 240.0) } else { Vec::new() };
@@ -115,9 +119,49 @@ fn straighten_line_keeps_the_selected_overlay() {
 #[test]
 fn invalid_sizes_are_empty_and_huge_frames_keep_bounded_guides() {
     for (w, h) in [(0.0, 240.0), (329.0, 0.0), (f32::NAN, 240.0), (329.0, f32::INFINITY)] {
-        assert!(crop_overlay::turn_grid(w, h).is_empty());
+        assert!(full_grid(w, h).is_empty());
     }
-    let grid = crop_overlay::turn_grid(1e6, 1e6);
-    assert!(grid.len() <= 192);
+    // A panned 1000-point viewport far outside the old centre-based cap.
+    let visible = egui::Rect::from_min_max(egui::pos2(900_000.0, 800_000.0), egui::pos2(901_000.0, 801_000.0));
+    let grid = crop_overlay::turn_grid(1e6, 1e6, visible);
+    assert_eq!(grid.len(), 42, "the visible extent must have actual guides, not just satisfy an upper bound");
+    let xs = positions(&grid, true, 1e6);
+    assert!((xs[0] - 900_032.0).abs() < 0.1 && (xs[xs.len() - 1] - 900_992.0).abs() < 0.1, "{xs:?}");
     assert!(grid.iter().flatten().flatten().all(|f| f.is_finite() && (0.0..=1.0).contains(f)));
+    let hostile = full_grid(1e6, 1e6);
+    assert!(!hostile.is_empty() && hostile.len() <= 8192);
+}
+
+#[test]
+fn a_zoomed_panned_view_is_covered_without_visiting_the_whole_frame() {
+    let (mut app, ctx) = app(false, OverlayShow::Always);
+    let p = turning(&mut app, &ctx);
+    app.last_canvas_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+    let c = crop_ui::corners(app.ui.crop_rect.unwrap(), crop_ui::angle(&app));
+    let at = [c[0][0] + 0.8 * (c[1][0] - c[0][0]) + 0.7 * (c[3][0] - c[0][0]), c[0][1] + 0.8 * (c[1][1] - c[0][1]) + 0.7 * (c[3][1] - c[0][1])];
+    control(&mut app, &ctx, "ui.set", json!({"zoom":100.0,"center":at}));
+    assert!(crop_ui::turning(&app).is_some());
+    let xf = photocraft_ui_egui::canvas::ViewXform::active(&app).unwrap();
+    let q = crop_ui::corners(app.ui.crop_rect.unwrap(), crop_ui::angle(&app)).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
+    let (u, v) = (q[1] - q[0], q[3] - q[0]);
+    assert!(u.y.abs() < 0.1 && v.x.abs() < 0.1, "the default-mode frame stays upright");
+    assert!(u.length() > 4608.0 && v.length() > 4608.0, "exercise a frame beyond the old centre cap");
+    let lines = crop_overlay::current_guides(&app, u.length(), v.length());
+    assert!(!lines.is_empty() && lines.len() < 50, "work is bounded by the visible viewport: {}", lines.len());
+    for (vertical, lo, hi) in [(true, xf.rect.left(), xf.rect.right()), (false, xf.rect.top(), xf.rect.bottom())] {
+        let mut positions: Vec<f32> = lines
+            .iter()
+            .filter(|l| (l[0][0] == l[1][0]) == vertical)
+            .map(|l| {
+                let screen = q[0] + u * l[0][0] + v * l[0][1];
+                if vertical { screen.x } else { screen.y }
+            })
+            .collect();
+        positions.sort_by(f32::total_cmp);
+        let first = *positions.first().unwrap();
+        let last = *positions.last().unwrap();
+        assert!(first >= lo - 0.1 && first - lo < 48.1 && last <= hi + 0.1 && hi - last < 48.1, "{positions:?}, viewport {lo}..{hi}");
+        assert!(positions.windows(2).all(|p| (p[1] - p[0] - 48.0).abs() < 0.1), "{positions:?}");
+    }
+    release(&mut app, &ctx, p);
 }

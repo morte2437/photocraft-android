@@ -9,7 +9,7 @@
 //! The state lives in `ToolOptions` (`crop_overlay`, `crop_overlay_show`,
 //! `crop_overlay_orientation`), which `ui.inspect` reports and `ui.set` drives.
 
-use egui::{Key, Modifiers};
+use egui::{Key, Modifiers, Rect, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::PhotocraftApp;
@@ -256,29 +256,71 @@ pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
     // Classic Mode and Straighten were not measured: only the default mode's turn
     // replaces the chosen composition overlay (#10931).
     if !o.crop_shield.classic_mode && crate::crop_ui::turning(app).is_some() {
-        return turn_grid(w, h);
+        let visible = visible_frame(app, w, h).unwrap_or_else(|| Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)));
+        return turn_grid(w, h, visible);
     }
     guides(o.crop_overlay, o.crop_overlay_orientation, w, h)
 }
 
-/// The temporary turning grid: 48 logical screen points between lines, centred
-/// on the frame. Unit-square coordinates retain the frame/view's orientation in
-/// both canvas paint paths. As with the other Grid, bound work for huge frames.
-pub fn turn_grid(w: f32, h: f32) -> Vec<Polyline> {
-    const SPACING: f32 = 48.0;
+/// The canvas's visible extent in the crop frame's own screen-point axes. The
+/// inverse basis also handles a flipped/rotated view and pixel aspect correction.
+fn visible_frame(app: &PhotocraftApp, w: f32, h: f32) -> Option<Rect> {
     if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
+        return None;
+    }
+    let xf = crate::canvas::ViewXform::active(app)?;
+    if !xf.rect.is_finite() || !xf.rect.is_positive() {
+        return None;
+    }
+    let q = crate::crop_ui::corners(app.ui.crop_rect?, crate::crop_ui::angle(app)).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
+    let (u, v) = (q[1] - q[0], q[3] - q[0]);
+    let det = f64::from(u.x) * f64::from(v.y) - f64::from(u.y) * f64::from(v.x);
+    if !det.is_finite() || det.abs() < f64::EPSILON {
+        return None;
+    }
+    let mut visible = Rect::NOTHING;
+    for p in [xf.rect.left_top(), xf.rect.right_top(), xf.rect.right_bottom(), xf.rect.left_bottom()] {
+        let d = p - q[0];
+        let x = (f64::from(d.x) * f64::from(v.y) - f64::from(d.y) * f64::from(v.x)) / det * f64::from(w);
+        let y = (f64::from(u.x) * f64::from(d.y) - f64::from(u.y) * f64::from(d.x)) / det * f64::from(h);
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        visible.extend_with(pos2(x.clamp(0.0, f64::from(w)) as f32, y.clamp(0.0, f64::from(h)) as f32));
+    }
+    Some(visible)
+}
+
+/// The temporary turning grid: 48 logical screen points between lines, centred
+/// on the frame. `visible` is in the frame's screen-point axes, before mapping
+/// back to its unit square. Generate only visible lines, however far the frame
+/// is zoomed or panned, rather than truncating around its offscreen centre.
+pub fn turn_grid(w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
+    const SPACING: f64 = 48.0;
+    // Covers 196,608 logical points per axis; bound hostile viewport dimensions,
+    // not the size of the projected document or the grid's distance from centre.
+    const MAX_VISIBLE_LINES: usize = 4096;
+    if !(w.is_finite() && h.is_finite() && visible.is_finite()) || w < 1.0 || h < 1.0 {
         return Vec::new();
     }
-    let axis = |len: f32, vertical: bool| {
-        // Keep the centre line and equal numbers on each side, excluding lines
-        // coincident with the outline. Cap before constructing the iterator.
-        let half = ((len / (2.0 * SPACING)).ceil() as usize).saturating_sub(1).min((GRID_MAX - 1) / 2);
-        (0..=2 * half).map(move |i| {
-            let f = 0.5 + (i as f32 - half as f32) * SPACING / len;
+    let visible = visible.intersect(Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)));
+    if !visible.is_positive() {
+        return Vec::new();
+    }
+    let axis = |len: f32, lo: f32, hi: f32, vertical: bool| {
+        let len = f64::from(len);
+        let mid = len * 0.5;
+        // Keep the centre-based phase, but index directly into the visible range.
+        // Lines coincident with the frame outline need not be drawn twice.
+        let first = ((f64::from(lo) - mid) / SPACING).ceil().max((-mid / SPACING).floor() + 1.0);
+        let last = ((f64::from(hi) - mid) / SPACING).floor().min((mid / SPACING).ceil() - 1.0);
+        let count = (last - first + 1.0).clamp(0.0, MAX_VISIBLE_LINES as f64) as usize;
+        (0..count).map(move |i| {
+            let f = ((mid + (first + i as f64) * SPACING) / len) as f32;
             if vertical { vec![[f, 0.0], [f, 1.0]] } else { vec![[0.0, f], [1.0, f]] }
         })
     };
-    axis(w, true).chain(axis(h, false)).collect()
+    axis(w, visible.min.x, visible.max.x, true).chain(axis(h, visible.min.y, visible.max.y, false)).collect()
 }
 
 /// O: the next overlay (the orientation starts over).
