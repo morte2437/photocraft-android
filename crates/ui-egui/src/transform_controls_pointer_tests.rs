@@ -96,6 +96,7 @@ fn corner_drag_scales_both_selected_layers_in_one_free_transform_step() {
 fn rotation_zone_uses_the_existing_transform_gesture() {
     let (mut app, ctx, layers) = fixture();
     let before = app.session.active().unwrap().doc.clone();
+    let old = layers.map(|id| bounds(&app, id));
     let steps = app.session.active().unwrap().history.past_len();
     // Fourteen points beyond the corner: outside its 12pt handle, inside the rotation band.
     pointer(&mut app, &ctx, "down", [814.0, 500.0]);
@@ -106,9 +107,24 @@ fn rotation_zone_uses_the_existing_transform_gesture() {
     assert_ne!(rotated.quad, initial);
     assert_eq!(rotated.layers, layers.map(|id| id.0));
     assert!((rotated.quad[1][1] - rotated.quad[0][1]).abs() > 1.0, "the upper edge rotates");
+    let preview = photocraft_algo::transform::Homography::rect_to_quad(rotated.rect, rotated.quad).unwrap();
+    let expected = old.map(|r| {
+        let points = [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]].map(|[x, y]| preview.apply(f64::from(x), f64::from(y)));
+        points
+            .into_iter()
+            .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, (x, y)| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)])
+    });
     enter(&mut app, &ctx);
     assert_one_transform(&app, steps);
     assert_ne!(app.session.active().unwrap().doc, before, "Enter commits the rotation to the document");
+    for ((id, previous), expected) in layers.into_iter().zip(old).zip(expected) {
+        assert!((expected[2] - expected[0] - f64::from(previous.width())).abs() > 2.0, "this fixture distinguishes rotation from translation");
+        let actual = bounds(&app, id);
+        for (actual, expected) in [actual.x0, actual.y0, actual.x1, actual.y1].into_iter().zip(expected) {
+            // The preview frame is continuous; committed raster bounds round to whole pixels.
+            assert!((f64::from(actual) - expected).abs() <= 1.0, "layer {id:?}: committed bound {actual} does not match preview {expected}");
+        }
+    }
 }
 
 #[test]
