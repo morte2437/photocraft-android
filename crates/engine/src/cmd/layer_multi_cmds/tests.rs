@@ -1506,6 +1506,7 @@ fn copy_dragging_linked_layers_relinks_the_copies() {
     assert_eq!(copies.len(), 2);
     let fresh = link_group(&s, copies[0]);
     assert!(fresh.is_some() && fresh != group && link_group(&s, copies[1]) == fresh, "the copied pair is linked to each other under a fresh group");
+    assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
 }
 
 /// #11217 review: copies of a linked pair stay linked to each other under a new group, not the
