@@ -1038,7 +1038,9 @@ fn dialog_set(app: &mut PhotocraftApp, p: &Value) -> Outcome {
         Some(_) if field == crate::actions::RESUME => err("the paused action token is read-only"),
         Some(_) if previewed => err("confirm or cancel the color picker first"),
         // A Color Picker's target is fixed when it opens: OK must set the field it previewed in.
-        Some(d) if matches!(field, "__dialog" | "__field") && crate::color_picker_ui::owns(&d.fields) => err("a Color Picker's target is fixed when it opens"),
+        Some(d) if matches!(field, "__colorPicker" | "__dialog" | "__field") && crate::color_picker_ui::owns(&d.fields) => {
+            err("a Color Picker's target is fixed when it opens")
+        }
         // A marker picks the handler OK runs: a dialog keeps the ones it was opened with.
         Some(d) if !d.fields.contains_key(field) && crate::dialogs::is_route_marker(field) => err(format!("`{field}` is set only by the dialog it belongs to")),
         Some(d) => {

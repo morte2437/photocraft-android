@@ -64,7 +64,7 @@ fn a_compositor_with_failed_pipelines_draws_without_panicking() {
 #[ignore = "stress test: builds many compositors"]
 fn parallel_compositor_builds_leave_the_shader_cache_intact() {
     let _lock = GPU_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let var = |name: &str, default: u32| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+    let var = |name: &str, default: u32| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok()).filter(|&n| n > 0).unwrap_or(default);
     let (rounds, builds) = (var("PC_BUILD_ROUNDS", 4), var("PC_BUILDS_PER_DEVICE", 8));
     for round in 0..rounds {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());

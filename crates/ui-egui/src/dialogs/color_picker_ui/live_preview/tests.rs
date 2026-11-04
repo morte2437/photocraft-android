@@ -3,7 +3,7 @@ use egui_kittest::Harness;
 use serde_json::{Map, Value, json};
 
 use super::*;
-use crate::color_picker_ui::{open_for_field, open_requested, request};
+use crate::color_picker_ui::{open_for_field, open_requested, request, request_field};
 use crate::crop_shield::ShieldColor;
 use crate::state::DialogKind;
 
@@ -315,6 +315,7 @@ fn a_pickers_target_stays_the_dialog_it_opened_on() {
     };
     assert_eq!(set(&mut app, "__dialog", json!(other)), Some(false));
     assert_eq!(set(&mut app, "__field", json!("opacity")), Some(false));
+    assert_eq!(set(&mut app, "__colorPicker", json!("cropShield")), Some(false), "nor can its OK go to the Crop shield");
     assert_eq!(set(&mut app, "color", json!("#336699")), Some(true), "the colour itself stays drivable");
     assert_eq!(fields(&app, fill)["color"], json!("#336699"));
 
@@ -323,4 +324,20 @@ fn a_pickers_target_stays_the_dialog_it_opened_on() {
     crate::dialogs::cancel(&mut app, other).unwrap();
     assert!(app.ui.dialogs.iter().any(|d| d.id == picker), "the picker stays with its own dialog");
     assert_eq!(fields(&app, fill)["color"], json!("#336699"), "and keeps previewing there");
+}
+
+/// Preferences › Apply, like OK, waits for an open colour picker: it would otherwise save the
+/// colour the picker previews and may still cancel.
+#[test]
+fn preferences_apply_waits_for_an_open_picker() {
+    let mut app = app();
+    let prefs = crate::prefs_ui::open_preferences(&mut app, "guidesGridAndSlices");
+    let before = app.session.prefs().guides_grid_and_slices.guide_color.clone();
+    let f = &mut app.ui.dialog_mut(prefs).unwrap().fields;
+    request_field(f, "/values/guidesGridAndSlices/guideColor", "Color Picker (Guide Color)");
+    open_requested(&mut app, prefs);
+    let picker = crate::color_picker_ui::top(&app).expect("the picker opens over Preferences");
+    pick(&mut app, picker, "#ff8000");
+    assert!(crate::prefs_ui::apply(&mut app, prefs).is_err(), "Apply refuses while the picker is open");
+    assert_eq!(app.session.prefs().guides_grid_and_slices.guide_color, before, "nothing is saved");
 }
