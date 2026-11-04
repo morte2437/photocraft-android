@@ -278,3 +278,20 @@ fn invalid_later_pointer_event_does_not_begin_a_transform() {
     assert_eq!(app.session.active().unwrap().doc, before);
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
 }
+
+/// The control entry must obey the same modal command gate before it creates a transform.
+#[test]
+fn modal_dialogs_do_not_start_move_transform_controls() {
+    for command in ["file.new", "edit.preferences.general"] {
+        let (mut app, ctx, _) = fixture();
+        let before = app.session.active().unwrap().doc.clone();
+        let steps = app.session.active().unwrap().history.past_len();
+        crate::menus::invoke(&mut app, &ctx, command, json!({})).unwrap();
+        assert_eq!(app.ui.dialogs.len(), 1, "{command} opened its modal");
+        pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+        assert!(app.ui.transform.is_none(), "{command} owns input before the Move handle entry");
+        assert_eq!(app.session.active().unwrap().doc, before);
+        assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+        assert_eq!(app.ui.dialogs.len(), 1, "the press leaves the modal open");
+    }
+}

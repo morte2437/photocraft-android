@@ -44,6 +44,9 @@ impl PhotocraftApp {
     /// Control-channel presses use document coordinates, but the canvas owns the screen-sized
     /// handle and rotation hit areas. Start the same session before forwarding the press.
     pub(crate) fn begin_move_transform_controls(&mut self, ctx: &egui::Context, x: f64, y: f64) {
+        if !crate::menus::modal_allows(self, "edit.freeTransform") {
+            return;
+        }
         let Some(xf) = ViewXform::active(self) else { return };
         let p = xf.to_screen(x as f32, y as f32);
         if p.is_finite() && xf.rect.contains(p) {
