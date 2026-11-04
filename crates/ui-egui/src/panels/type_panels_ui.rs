@@ -766,6 +766,7 @@ pub fn glyphs_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 // ------------------------------------------------------------------ spelling
 
+/// Refresh the opening layer when checking one layer; an absent opening receiver must not adopt the newly active layer.
 fn refresh_spelling(app: &mut PhotocraftApp) {
     let Some(d) = app.ui.type_panels.spell.clone() else { return };
     let mut p = json!({ "action": "list", "allLayers": d.all_layers, "ignore": d.ignore, "suggestions": 8 });
@@ -817,6 +818,7 @@ pub fn close_spelling(app: &mut PhotocraftApp) {
     }
 }
 
+/// Bind single-layer Change All to the listed item; all-layer corrections intentionally omit a layer restriction.
 fn spelling_change_all_params(item: &Value, word: &str, replace: &str, all_layers: bool) -> Value {
     let mut params = json!({"action":"changeAll", "word":word, "replace":replace, "allLayers":all_layers});
     if !all_layers {
@@ -825,6 +827,7 @@ fn spelling_change_all_params(item: &Value, word: &str, replace: &str, all_layer
     params
 }
 
+/// Render spelling navigation and corrections using the retained opening receiver and paused-action continuation.
 fn spelling_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let t = Tokens::get(ctx);
     let Some(d) = app.ui.type_panels.spell.clone() else { return };
@@ -995,6 +998,7 @@ mod tests {
     }
 
     #[test]
+    /// Single-layer Change All edits the listed text layer even after the host selects another layer.
     fn change_all_keeps_the_listed_layer_after_a_session_selection_change() {
         for all_layers in [false, true] {
             let mut app = app_with_text("Teh cat");
@@ -1023,6 +1027,7 @@ mod tests {
     }
 
     #[test]
+    /// Refreshing and toggling Check All Layers must retain the original single-layer receiver, including the absent-layer case.
     fn spelling_refresh_and_all_layers_toggles_keep_the_opening_layer() {
         let mut app = app_with_text("Teh cat");
         let original = app.session.active().unwrap().active_layer.unwrap();

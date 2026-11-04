@@ -53,6 +53,7 @@ impl Session {
         }
     }
 
+    /// Restore the next document state and its selection/visibility bookkeeping through the ordinary history path.
     pub fn redo(&mut self) -> bool {
         if self.active_job().is_some() {
             return false;

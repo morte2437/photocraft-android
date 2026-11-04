@@ -888,6 +888,7 @@ pub(crate) struct PausedPlaybacks {
 }
 
 impl PausedPlaybacks {
+    /// Allocate an opaque token retaining the action, resume position and captured authorization gate.
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
         self.paused
@@ -895,6 +896,7 @@ impl PausedPlaybacks {
         self.last
     }
 
+    /// Consume the continuation named by a numeric dialog token; malformed or expired tokens identify no playback.
     fn take(&mut self, token: &Value) -> Option<PausedPlayback> {
         token.as_u64().and_then(|token| self.paused.remove(&token))
     }

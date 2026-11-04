@@ -580,6 +580,7 @@ pub fn begin_playback(s: &mut Session, action: &Action) -> Result<Option<(usize,
     Ok(recording)
 }
 
+/// Unwind the playback stack and finish grouping only at the outer boundary, then restore suspended recording.
 pub fn finish_playback(s: &mut Session, recording: Option<(usize, usize)>, action: &Action, from: usize) {
     s.actions.playback_stack.pop();
     s.actions.playing = s.actions.playing.saturating_sub(1);

@@ -1158,6 +1158,7 @@ fn transferred_tiles_cannot_make_the_budget_check_underestimate_current() {
 }
 
 #[test]
+/// Clear History changes the state list without changing pixels and remains undoable where the operation permits it.
 fn clear_states_keeps_the_document_and_undo_brings_the_list_back() {
     let mut h = History::new(10);
     let mut cur = Arc::new(base());
@@ -1182,6 +1183,7 @@ fn clear_states_keeps_the_document_and_undo_brings_the_list_back() {
 }
 
 #[test]
+/// Finalizing a grouped action must not discard an accepted Clear merely because its captured history was empty.
 fn an_action_preserves_an_accepted_clear_over_an_empty_capture() {
     let mut captured = History::new(50);
     assert!(!captured.clear_states(), "ordinary empty Clear still refuses");

@@ -100,6 +100,7 @@ fn single_history_dialog_refuses_intervening_edit_or_document_switch() {
     }
 }
 
+/// Prepare a real paused spelling step with a known document and history boundary, under either grouping policy.
 fn paused_history_spelling(single: bool, gate: Option<Gate>) -> (PhotocraftApp, std::sync::Arc<photocraft_doc::Document>, usize) {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width":300,"height":100})).unwrap();
@@ -124,6 +125,7 @@ fn paused_history_spelling(single: bool, gate: Option<Gate>) -> (PhotocraftApp, 
 }
 
 #[test]
+/// Repeated corrections share one owned history entry; a rejected correction cannot lose earlier admitted edits.
 fn paused_spelling_repeated_changes_and_errors_keep_one_owned_history() {
     for single in [false, true] {
         let (mut app, before, past) = paused_history_spelling(single, None);
@@ -177,6 +179,7 @@ fn deny_second_spelling_change(id: &str, params: &Value) -> photocraft_engine::R
 }
 
 #[test]
+/// Reject a spelling continuation after document/history drift or captured-policy denial before any correction.
 fn paused_spelling_rejects_external_edit_switch_and_original_gate_before_change() {
     for single in [false, true] {
         for scenario in ["edit", "switch", "gate"] {
@@ -2243,6 +2246,7 @@ fn deny_blur(id: &str, _: &Value) -> photocraft_engine::Result<()> {
     if id == "filter.blur.gaussianBlur" { Err(photocraft_engine::EngineError::Other("blur denied".into())) } else { Ok(()) }
 }
 
+/// Permit the recorded small blur but reject an edited radius, so admission is tested against final dialog parameters.
 fn deny_wide_blur(id: &str, params: &Value) -> photocraft_engine::Result<()> {
     if id == "filter.blur.gaussianBlur" && params["radius"].as_f64().is_some_and(|radius| radius > 1.0) {
         Err(photocraft_engine::EngineError::Other("edited blur radius denied".into()))
@@ -2251,6 +2255,7 @@ fn deny_wide_blur(id: &str, params: &Value) -> photocraft_engine::Result<()> {
     }
 }
 
+/// Build a two-tone raster whose blur changes pixels, with a real action step configured to open its dialog.
 fn gated_blur_fixture(single: bool, background: bool) -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 16, "height": 16, "background": "#000000"})).unwrap();
@@ -2265,6 +2270,7 @@ fn gated_blur_fixture(single: bool, background: bool) -> PhotocraftApp {
     app
 }
 
+/// Simulate a temporary control gate: capture it at the pause and release the session gate before later confirmation.
 fn pause_gated_blur(app: &mut PhotocraftApp, gate: Option<Gate>) -> u64 {
     app.session.authorize = gate;
     let paused = play(app, &json!({"action": "Gated blur"})).unwrap();
@@ -2273,6 +2279,7 @@ fn pause_gated_blur(app: &mut PhotocraftApp, gate: Option<Gate>) -> u64 {
 }
 
 #[test]
+/// Denied edited parameters must change neither pixels nor history and must admit no background worker.
 fn a_paused_dialog_authorizes_edited_params_before_history_or_worker_admission() {
     for (single, background) in [(true, false), (true, true), (false, false)] {
         let mut app = gated_blur_fixture(single, background);
@@ -2297,6 +2304,7 @@ fn a_paused_dialog_authorizes_edited_params_before_history_or_worker_admission()
 }
 
 #[test]
+/// Allowed captured edits and unrelated manual dialogs retain their normal synchronous and worker behavior.
 fn an_allowed_paused_edit_and_an_ordinary_manual_dialog_still_run() {
     for (paused, background) in [(true, false), (true, true), (false, false)] {
         let mut app = gated_blur_fixture(true, background);
@@ -2318,6 +2326,7 @@ fn an_allowed_paused_edit_and_an_ordinary_manual_dialog_still_run() {
 }
 
 #[test]
+/// A paused action's captured permission cannot bypass a stricter live policy on confirmation.
 fn a_stricter_current_gate_still_denies_the_captured_dialog_edit() {
     for service in [false, true] {
         let mut app = gated_blur_fixture(true, true);
@@ -2342,6 +2351,7 @@ fn a_stricter_current_gate_still_denies_the_captured_dialog_edit() {
 }
 
 #[test]
+/// Spelling corrections consult live Session and automation-service policies before resuming the owned history.
 fn paused_spelling_checks_the_live_gate_before_resuming_history() {
     fn deny_correction(id: &str, p: &Value) -> photocraft_engine::Result<()> {
         if id == "edit.checkSpelling" && p["action"] == "changeAll" { Err(photocraft_engine::EngineError::Other("live spelling gate".into())) } else { Ok(()) }
@@ -2377,6 +2387,7 @@ fn paused_spelling_checks_the_live_gate_before_resuming_history() {
 }
 
 #[test]
+/// A changed authority context cancels both direct and nested tails while keeping the admitted prefix undoable.
 fn a_changed_live_gate_cannot_be_replaced_for_the_remaining_action() {
     fn deny_tail(id: &str, _: &Value) -> photocraft_engine::Result<()> {
         if id == "layer.renameLayer" { Err(photocraft_engine::EngineError::Other("live tail denied".into())) } else { Ok(()) }
@@ -2409,6 +2420,7 @@ fn a_changed_live_gate_cannot_be_replaced_for_the_remaining_action() {
 }
 
 #[test]
+/// Distinct captured/live gates fail before applying the dialog or starting a worker, even if the edit is allowed.
 fn a_changed_context_is_rejected_before_dialog_or_worker_admission() {
     fn allow_all(_: &str, _: &Value) -> photocraft_engine::Result<()> {
         Ok(())
@@ -2427,6 +2439,7 @@ fn a_changed_context_is_rejected_before_dialog_or_worker_admission() {
 }
 
 #[test]
+/// The same gate, a released temporary gate and a newly installed gate permit supported continuation paths.
 fn unchanged_and_released_gates_allow_the_action_tail() {
     for scenario in ["released", "same", "new"] {
         let mut app = gated_blur_fixture(true, false);
@@ -2443,6 +2456,8 @@ fn unchanged_and_released_gates_allow_the_action_tail() {
 }
 
 #[test]
+/// Distinct configured policies permit manual confirmation but cannot be combined for automated dispatch.
+/// The identical-gate automated control proves the supported composed-policy path still completes and undoes once.
 fn configured_gates_require_one_composed_policy_for_automated_resume() {
     fn deny_file_open(id: &str, _: &Value) -> photocraft_engine::Result<()> {
         if id == "file.open" { Err(photocraft_engine::EngineError::Other("file open denied".into())) } else { Ok(()) }
@@ -2486,6 +2501,7 @@ fn configured_gates_require_one_composed_policy_for_automated_resume() {
 }
 
 #[test]
+/// A policy change after the final spelling step must not discard completed edits when no tail remains to dispatch.
 fn a_changed_gate_after_the_last_spelling_step_keeps_completed_edits() {
     let (mut app, before, past) = paused_history_spelling(true, Some(deny_wide_blur));
     app.session.actions.list[0].steps.truncate(2);
@@ -2501,6 +2517,8 @@ fn a_changed_gate_after_the_last_spelling_step_keeps_completed_edits() {
 }
 
 #[test]
+/// Implicit layer-owned adjustments reject a receiver switch; explicit receivers change only their intended surface.
+/// An omitted target separately inherits the mask captured when its dialog opens.
 fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
     for targeting in ["implicit", "null", "explicit"] {
         for mask in [false, true] {
@@ -2568,6 +2586,7 @@ fn paused_adjustments_bind_implicit_pixel_and_mask_receivers() {
 }
 
 #[test]
+/// Document-owned alpha channels remain valid targets when the active layer changes during the pause.
 fn a_document_channel_adjustment_survives_an_active_layer_change() {
     let mut app = gated_blur_fixture(true, false);
     let a = app.session.active().unwrap().active_layer.unwrap();
@@ -2586,6 +2605,7 @@ fn a_document_channel_adjustment_survives_an_active_layer_change() {
 }
 
 #[test]
+/// A public Session layer switch invalidates an implicit receiver while explicit-layer playback remains usable.
 fn an_implicit_paused_filter_refuses_a_public_api_receiver_change() {
     for single in [false, true] {
         for explicit in [false, true] {
@@ -2620,6 +2640,7 @@ fn an_implicit_paused_filter_refuses_a_public_api_receiver_change() {
 }
 
 #[test]
+/// Changes to other selected layers do not invalidate the unchanged active receiver captured by a filter dialog.
 fn an_implicit_filter_keeps_its_receiver_when_only_other_selected_layers_change() {
     let mut app = gated_blur_fixture(true, false);
     let a = app.session.active().unwrap().active_layer.unwrap();
@@ -2645,6 +2666,7 @@ fn deny_displace_file(id: &str, params: &Value) -> photocraft_engine::Result<()>
 }
 
 #[test]
+/// Authorize a deferred displacement-map path before file access, worker admission or continuation history changes.
 fn a_deferred_displace_map_is_authorized_before_reading_or_resuming_history() {
     let mut app = recording_with_displace_child();
     app.background_jobs = true;

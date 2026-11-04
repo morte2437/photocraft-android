@@ -56,6 +56,7 @@ fn prefs_set(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
+/// Validate policy-changing resets before mutating either preferences or color settings.
 fn prefs_reset(s: &mut Session, p: &Value) -> Result<Value> {
     let path = p.get("path").or_else(|| p.get("section")).and_then(Value::as_str);
     if !path.is_some_and(|path| path == "colorSettings" || path.starts_with("colorSettings.")) {

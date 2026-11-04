@@ -179,10 +179,12 @@ pub(crate) fn begin_document_history(s: &mut Session, name: &str) {
     }
 }
 
+/// Finalize the per-document scope explicitly owned by Batch, including a completed prefix on failure.
 pub(crate) fn finish_document_history(s: &mut Session) {
     finish(s);
 }
 
+/// Finish an ordinary outer playback without closing a scope owned by the surrounding Batch.
 pub(super) fn finish_playback(s: &mut Session) {
     if s.action_history.as_ref().is_none_or(|group| !group.external) {
         finish(s);
@@ -326,6 +328,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    /// Keep the policy fixed until every clone of a paused continuation releases its lease, in either history mode.
     fn history_policy_stays_fixed_until_all_paused_continuations_are_released() {
         for single in [false, true] {
             let mut s = Session::new();
@@ -346,6 +349,7 @@ mod tests {
     }
 
     #[test]
+    /// Generic preference set/reset routes must preserve the same paused-policy guard as actions.setHistory.
     fn generic_preference_updates_cannot_change_a_paused_history_policy() {
         for single in [false, true] {
             let mut s = Session::new();
@@ -377,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    /// Rebinding a dialog retains its first edit while respecting an accepted Clear History boundary.
     fn idle_dialog_rebind_keeps_first_edit_and_clear_boundaries() {
         for single in [false, true] {
             for clear in [false, true] {
@@ -413,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    /// A dialog continuation cannot adopt another caller's active grouping scope.
     fn idle_dialog_rebind_never_takes_an_unrelated_parent_scope() {
         for single in [false, true] {
             let mut s = Session::new();

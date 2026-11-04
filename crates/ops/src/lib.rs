@@ -127,6 +127,7 @@ impl Default for History {
 }
 
 impl History {
+    /// Initialize history with the supplied document as its starting state and no active action visibility capture.
     pub fn new(max_states: usize) -> Self {
         Self {
             undo: VecDeque::new(),
@@ -250,6 +251,7 @@ impl History {
         self.visibility_capture = Some(Arc::new(prefix.to_vec()));
     }
 
+    /// Return the visibility prefix accumulated for the current grouped action, if capture is active.
     pub fn captured_visibility(&self) -> Option<&[LayerId]> {
         self.visibility_capture.as_deref().map(Vec::as_slice)
     }
@@ -627,6 +629,7 @@ impl History {
         }
     }
 
+    /// Apply an accepted Clear to an empty captured history as well as populated histories, preserving its boundary.
     fn clear_states_including_empty(&mut self) {
         let undo = std::mem::take(&mut self.undo);
         let redo = std::mem::take(&mut self.redo);

@@ -179,6 +179,7 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
+/// Run one source through its action and output pipeline while finalizing only that document's owned history scope.
 fn process_outputs<'a>(
     s: &Session,
     outputs: impl IntoIterator<Item = (&'a str, String)>,
@@ -483,6 +484,7 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
+/// Execute the selected source set with per-document action scopes and restore the caller's library on every exit.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
     let action_name = s
@@ -887,6 +889,7 @@ mod action_history_tests {
     }
 
     #[test]
+    /// Batch over open documents must preserve an enclosing action scope and finish its own document scopes.
     fn opened_document_batch_keeps_top_level_and_parent_history_boundaries() {
         for single in [false, true] {
             for parent in [false, true] {
@@ -939,6 +942,7 @@ mod action_history_tests {
     }
 
     #[test]
+    /// A Batch failure restores the library and leaves the caller's active history scope owned by the caller.
     fn opened_document_batch_error_restores_library_without_finishing_parent() {
         for parent in [false, true] {
             let mut s = Session::new();
@@ -989,6 +993,7 @@ mod action_history_tests {
     }
 
     #[test]
+    /// Cancellation after a completed edit retains an undoable prefix without leaving a Batch-owned scope open.
     fn cancelled_folder_batch_finalizes_its_completed_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let image = photocraft_codecs::Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgb, vec![255; 48]).unwrap();
