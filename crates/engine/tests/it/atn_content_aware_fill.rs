@@ -386,17 +386,22 @@ fn caf_current_layer_sampling_matches_distinct_multilayer_controls() {
             assert_eq!(after.layers.len(), 2);
             assert_eq!(after.selection, before.selection);
             assert_eq!(recorded.active().unwrap().active_layer, Some(source));
-            assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
+            // One `Action:` entry when the play changed the document, none when it didn't: a fill
+            // from the uniform layer alone can rewrite it with the same pixels (#10944).
+            let changed = usize::from(after != before);
+            assert_eq!(recorded.active().unwrap().history.past_len(), past + changed);
             let actual = after.layer(source).unwrap().surface().unwrap();
             assert_same_pixels(actual, expected, depth, "current multilayer");
             assert_eq!(actual.rgba(0, 0), before.layer(source).unwrap().surface().unwrap().rgba(0, 0));
             for layer in before.layers.iter().filter(|layer| layer.id != source) {
                 assert_eq!(after.layer(layer.id), Some(layer));
             }
-            assert!(recorded.undo());
-            assert_eq!(recorded.active().unwrap().doc, before);
-            assert!(recorded.redo());
-            assert_eq!(recorded.active().unwrap().doc, after);
+            if changed == 1 {
+                assert!(recorded.undo());
+                assert_eq!(recorded.active().unwrap().doc, before);
+                assert!(recorded.redo());
+                assert_eq!(recorded.active().unwrap().doc, after);
+            }
         }
         assert_ne!(native_centers[0], native_centers[1], "{depth}: fixture must distinguish layer-only from composite sampling");
     }
