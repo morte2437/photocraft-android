@@ -610,7 +610,7 @@ fn layer_via(s: &mut Session, cut: bool) -> Result<Value> {
             dup.name = doc.copy_name(&src.name);
             dup.locks = Default::default();
             let nid = doc.insert_above(Some(id), dup);
-            // The copy starts unlinked from its original, as in Photoshop (#11217).
+            // A lone copy joins its original's link group, as in the reference application (#11217).
             crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
             *active = Some(nid);
             Ok(nid)

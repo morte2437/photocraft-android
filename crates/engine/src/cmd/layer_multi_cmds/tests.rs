@@ -1473,15 +1473,16 @@ fn linked_pair() -> (Session, LayerId, LayerId, LayerId, Option<u64>) {
     (s, a, b, c, group)
 }
 
-/// #11217 review: a copy of one linked layer starts unlinked, as in Photoshop, so ⌥⌘T's box over
-/// the copy doesn't take the originals along. The originals stay linked.
+/// #11217: a copy of one linked layer alone joins its original's link group; copied together with
+/// an unlinked layer it is unlinked (both measured in the reference application). The originals
+/// stay linked.
 #[test]
-fn duplicating_one_linked_layer_leaves_the_copy_unlinked() {
+fn duplicating_one_linked_layer_keeps_the_copy_in_its_link_group() {
     let (mut s, a, b, c, group) = linked_pair();
-    // One layer (what ⌥⌘T duplicates), and with an unlinked layer beside it (several selected).
+    // One layer, and with an unlinked layer beside it (several selected).
     s.execute("layer.select", json!({"layer": a.0})).unwrap();
     let copy = LayerId(s.execute("layer.duplicate", json!({"inPlace": true})).unwrap()["layer"].as_u64().unwrap());
-    assert_eq!(link_group(&s, copy), None, "the copy is unlinked");
+    assert_eq!(link_group(&s, copy), group, "the lone copy joins the originals' link group");
     select_all(&mut s, &[a, c]);
     let r = s.execute("layer.duplicate", json!({})).unwrap();
     let copies: Vec<LayerId> = r["layers"].as_array().unwrap().iter().map(|v| LayerId(v.as_u64().unwrap())).collect();
@@ -1491,14 +1492,14 @@ fn duplicating_one_linked_layer_leaves_the_copy_unlinked() {
 }
 
 /// #11217 review: copy-dragging layers in the panel goes through `apply_move`, which must
-/// relink its copies the way Duplicate does: a lone copy unlinked, a copied pair linked to
-/// each other under a fresh group, never to the originals.
+/// relink its copies the way Duplicate does: a lone copy joins its original's link group, a
+/// copied pair is linked to each other under a fresh group, not to the originals.
 #[test]
 fn copy_dragging_linked_layers_relinks_the_copies() {
     let (mut s, a, b, c, group) = linked_pair();
     let r = s.execute("layer.moveTo", json!({"layer": a.0, "target": c.0, "position": "above", "copy": true})).unwrap();
     let copy = LayerId(r["layer"].as_u64().unwrap());
-    assert_eq!(link_group(&s, copy), None, "the copy-dragged copy is unlinked");
+    assert_eq!(link_group(&s, copy), group, "the lone copy-dragged copy joins the originals' link group");
     assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
 
     let r = s.execute("layer.moveTo", json!({"layers": [a.0, b.0], "target": c.0, "position": "above", "copy": true})).unwrap();
@@ -1529,16 +1530,16 @@ fn duplicating_a_linked_pair_links_the_copies_to_each_other() {
     assert_eq!((bounds(&s, a), bounds(&s, b)), (a0, b0));
 }
 
-/// #11217 review: Layer via Copy of one linked layer (no selection) starts unlinked too — the
-/// same rule as `layer.duplicate`, on its own code path in `layer_via`.
+/// #11217: Layer via Copy of one linked layer (no selection) joins its original's link group too
+/// (measured): the same rule as `layer.duplicate`, on its own code path in `layer_via`.
 #[test]
-fn layer_via_copy_of_one_linked_layer_leaves_the_copy_unlinked() {
+fn layer_via_copy_of_one_linked_layer_keeps_the_copy_in_its_link_group() {
     let (mut s, a, b, _, group) = linked_pair();
     let layers = doc(&s).layers.len();
     s.execute("layer.select", json!({"layer": a.0})).unwrap();
     let copy = LayerId(s.execute("layer.new.layerViaCopy", json!({})).unwrap()["layer"].as_u64().unwrap());
     assert_eq!(doc(&s).layers.len(), layers + 1, "only the active layer is copied");
-    assert_eq!(link_group(&s, copy), None, "the copy is unlinked");
+    assert_eq!(link_group(&s, copy), group, "the lone copy joins the originals' link group");
     assert_eq!((link_group(&s, a), link_group(&s, b)), (group, group), "the originals keep their links");
 }
 

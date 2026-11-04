@@ -297,13 +297,20 @@ pub fn duplicate_selected(s: &mut Session, in_place: bool, label: &str) -> Resul
     Ok(json!({"layers": out, "layer": active.map(|l| l.0)}))
 }
 
-/// Duplicates start outside their originals' link groups, as in Photoshop (#11217): a copy that
-/// joined the original's group would drag the originals along with it (⌥⌘T's box over the copy
-/// framed them too). Copies of several layers of one link group stay linked to each other, under
-/// a group of their own, as `layer_copy_cmds::adapt_copies` remaps copies landing in another
-/// document; a lone copy of a linked layer is unlinked. `copies` are the copies just inserted in
-/// `doc` (the layers in copied groups are remapped with them); the originals keep their groups.
+/// Link groups of fresh copies, as the reference application does (measured, #11217): a copy of
+/// one layer alone (Duplicate, Layer via Copy) joins its original's link group. With several
+/// layers copied, the copies of several layers of one link group are linked to each other under a
+/// group of their own, as `layer_copy_cmds::adapt_copies` remaps copies landing in another
+/// document, and a copy that is the only one from its link group is unlinked. `copies` are the
+/// copies just inserted in `doc` (the layers in copied groups are remapped with them); the
+/// originals keep their groups.
 pub(crate) fn relink_copies(doc: &mut Document, copies: &[LayerId]) -> Result<()> {
+    // One layer copied on its own keeps the link group it was copied with.
+    if let [only] = copies
+        && doc.layer(*only).is_some_and(|l| !matches!(l.content, LayerContent::Group(_)))
+    {
+        return Ok(());
+    }
     // Every copied layer with the link group it was copied with. An explicit stack rather than
     // recursion: documents can nest deeply.
     let mut linked: Vec<(LayerId, u64)> = Vec::new();
