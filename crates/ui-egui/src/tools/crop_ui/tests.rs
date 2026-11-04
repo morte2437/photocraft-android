@@ -109,6 +109,91 @@ fn picking_the_tool_frames_the_canvas_or_the_selection() {
     assert_eq!(app.ui.crop_rect, None);
 }
 
+/// #9730: the options bar's Reset puts the box back to its first frame, as an Undo step.
+#[test]
+fn reset_frames_the_canvas_again_and_can_be_undone() {
+    let mut app = app(SampleType::U8);
+    ensure_frame(&mut app);
+    assert!(!modified(&app), "the untouched default frame has nothing to reset");
+    reset(&mut app);
+    assert!(app.crop.undo.is_empty(), "so resetting it adds no step");
+
+    drag(&mut app, &[[50.0, 20.0], [80.0, 40.0], [120.0, 70.0]], NONE);
+    assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 120.0, 70.0]));
+    assert!(modified(&app));
+    reset(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 200.0, 100.0]));
+    assert!(!modified(&app) && app.crop.default_frame);
+    assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100), "nothing is cropped");
+
+    // The box's own Undo brings the drawn frame back, and Redo resets it again.
+    assert!(!shows_beyond_canvas(&app), "the reset frame is not being edited");
+    assert!(intercept(&mut app, "edit.undo").is_some());
+    assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 120.0, 70.0]));
+    assert!(shows_beyond_canvas(&app), "the drawn frame is being edited again: the canvas shows the pixels past it");
+    assert!(intercept(&mut app, "edit.redo").is_some());
+    assert_eq!(app.ui.crop_rect, Some([0.0, 0.0, 200.0, 100.0]));
+
+    // A turned default frame is a changed one too: Reset makes it upright.
+    app.ui.crop_angle = 0.3;
+    assert!(modified(&app));
+    reset(&mut app);
+    assert_eq!((app.ui.crop_angle, modified(&app)), (0.0, false));
+
+    // With a selection, the first frame is its bounds.
+    drag(&mut app, &[[50.0, 20.0], [80.0, 40.0], [120.0, 70.0]], NONE);
+    app.run("select.rect", json!({"x": 10, "y": 10, "width": 30, "height": 20})).unwrap();
+    reset(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([10.0, 10.0, 40.0, 30.0]));
+
+    // Another tool has no box to reset.
+    drag(&mut app, &[[60.0, 30.0], [100.0, 60.0]], NONE);
+    app.ui.tool = Tool::Brush;
+    assert!(!modified(&app));
+}
+
+/// Reset frames the canvas as a new frame is: held to the ratio preset picked in the bar.
+#[test]
+fn reset_holds_the_frame_to_the_ratio_preset() {
+    let mut app = app(SampleType::U8);
+    ensure_frame(&mut app);
+    drag(&mut app, &[[50.0, 20.0], [80.0, 40.0], [120.0, 70.0]], NONE);
+    let drawn = Some([50.0, 20.0, 120.0, 70.0]);
+    assert_eq!(app.ui.crop_rect, drawn);
+    // A 1:1 preset on the 200 x 100 canvas: the first frame is the largest square, centred.
+    app.ui.tool_options.crop_ratio = "1:1".into();
+    reset(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([50.0, 0.0, 150.0, 100.0]), "not the whole canvas, a 2:1 frame under a 1:1 preset");
+    assert!(!modified(&app) && app.crop.default_frame);
+    assert!(intercept(&mut app, "edit.undo").is_some());
+    assert_eq!(app.ui.crop_rect, drawn, "Undo brings the drawn frame back");
+}
+
+/// #9730: the Crop tool's options bar has a Reset button beside Cancel and Commit, live once
+/// the frame was changed.
+#[test]
+fn the_options_bar_reset_button_resets_a_changed_frame() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_max_steps(64).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        app
+    });
+    h.state_mut().ui.tool = Tool::Crop;
+    h.run_steps(8);
+    let button = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.get_by_role_and_label(egui::accesskit::Role::Button, "Reset").accesskit_node().is_disabled();
+    assert!(button(&h), "an untouched frame has nothing to reset");
+    h.state_mut().ui.crop_rect = Some([50.0, 20.0, 120.0, 70.0]);
+    h.state_mut().crop.default_frame = false;
+    h.run_steps(4);
+    assert!(!button(&h), "a changed frame can be reset");
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Reset").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.crop_rect, Some([0.0, 0.0, 200.0, 100.0]));
+    assert!(button(&h));
+}
+
 #[test]
 fn enter_on_the_selection_frame_crops_to_it_at_8_and_16_bit() {
     // #1789: selection, C, ↵ did nothing, as the untouched frame was always treated as a no-op.
