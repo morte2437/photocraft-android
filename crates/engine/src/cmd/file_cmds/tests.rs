@@ -3807,7 +3807,7 @@ fn named_batch_cycles_stop_before_the_test_ceiling() {
             let first = if route == "play-child" { ("actions.play".into(), json!({"action": "B"})) } else { ("file.automate.batch".into(), child) };
             let mut s = Session::new();
             if source == "open" {
-                s.execute("file.open", json!({"path": input})).unwrap();
+                s.execute("file.openAs", json!({"path": input})).unwrap();
             }
             s.actions.list = vec![
                 crate::actions_cmds::Action::new("A", vec![first]),
@@ -3841,7 +3841,7 @@ fn named_batch_limits_nesting_and_keeps_the_callers_state() {
         let params = json!({"action": "Invert", "source": source, "input": [input], "output": output, "format": "png"});
         let mut s = Session::new();
         if source == "open" {
-            s.execute("file.open", json!({"path": input})).unwrap();
+            s.execute("file.openAs", json!({"path": input})).unwrap();
         }
         s.actions.list.push(Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]));
         s.actions.playing = 16;
@@ -4052,7 +4052,7 @@ fn nested_batches_retain_partial_results() {
             params["naming"] = json!(naming);
         }
         if source == "open" {
-            s.execute("file.open", json!({"path": input})).unwrap();
+            s.execute("file.openAs", json!({"path": input})).unwrap();
             params["source"] = json!("open");
         }
         let result = s.execute("file.automate.batch", params).unwrap();
