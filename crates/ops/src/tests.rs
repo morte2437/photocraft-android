@@ -14,6 +14,31 @@ fn edit(h: &mut History, cur: &mut Arc<Document>, label: &str, f: impl FnOnce(&m
     h.record(label, before, LayerTarget::default());
 }
 
+/// A failed local transaction drops its visibility flags; a successful local purge keeps them.
+#[test]
+fn visibility_capture_follows_rollback_snapshot_and_purge() {
+    let mut doc = base();
+    doc.insert_above(None, Layer::raster("Second", doc.pixel_format()));
+    let ids = [doc.layers[0].id, doc.layers[1].id];
+    let mut cur = Arc::new(doc);
+    let mut history = History::default();
+    history.begin_visibility_capture(&[]);
+    edit(&mut history, &mut cur, "Prefix", |doc| doc.layer_mut(ids[0]).unwrap().visible = false);
+    history.add_current_visibility(&ids[..1]);
+    let prefix = cur.clone();
+    let checkpoint = history.clone();
+    edit(&mut history, &mut cur, "Failed part", |doc| doc.layer_mut(ids[1]).unwrap().visible = false);
+    history.add_current_visibility(&ids[1..]);
+    cur = history.rollback().unwrap().0;
+    assert_eq!(cur.as_ref(), prefix.as_ref());
+    assert_eq!(history.captured_visibility(), Some(ids[..1].as_ref()));
+    assert_eq!(checkpoint.captured_visibility(), Some(ids[..1].as_ref()), "a cloned snapshot is isolated");
+    edit(&mut history, &mut cur, "Successful part", |doc| doc.layer_mut(ids[1]).unwrap().visible = false);
+    history.add_current_visibility(&ids[1..]);
+    assert!(history.purge_last());
+    assert_eq!(history.captured_visibility(), Some(ids.as_ref()), "purging a local record keeps its actual change");
+}
+
 #[test]
 fn undo_redo_cycle() {
     let mut h = History::default();
@@ -1133,6 +1158,7 @@ fn transferred_tiles_cannot_make_the_budget_check_underestimate_current() {
 }
 
 #[test]
+/// Clear History changes the state list without changing pixels and remains undoable where the operation permits it.
 fn clear_states_keeps_the_document_and_undo_brings_the_list_back() {
     let mut h = History::new(10);
     let mut cur = Arc::new(base());
@@ -1154,6 +1180,34 @@ fn clear_states_keeps_the_document_and_undo_brings_the_list_back() {
     assert_eq!(h.entries(), entries);
     assert_eq!(h.redo_labels().collect::<Vec<_>>(), ["C"], "the redo state is back too");
     assert!(!h.is_cleared());
+}
+
+#[test]
+/// Finalizing a grouped action must not discard an accepted Clear merely because its captured history was empty.
+fn an_action_preserves_an_accepted_clear_over_an_empty_capture() {
+    let mut captured = History::new(50);
+    assert!(!captured.clear_states(), "ordinary empty Clear still refuses");
+    captured.preserve_action_clear(&History::new(50));
+    assert!(!captured.is_cleared(), "no boundary without an accepted Clear");
+    let mut later = captured.clone();
+    let original = Arc::new(base());
+    let mut current = original.clone();
+    edit(&mut later, &mut current, "Black source", |doc| doc.name = "black".into());
+    assert!(later.set_brush_source(1));
+    current = later.undo(current).unwrap().0;
+    assert!(Arc::ptr_eq(&current, &original));
+    assert!(later.clear_states(), "the live redo row makes Clear legitimate");
+    captured.preserve_action_clear(&later);
+    assert!(captured.is_cleared() && captured.can_undo());
+    assert_eq!(captured.undo_label(), Some(CLEAR_HISTORY_LABEL));
+    let Some(ActionBrushSource::Cleared(source)) = captured.preserve_action_brush_source(&later) else { panic!("the exact cleared source must survive") };
+    assert_eq!(source.doc.name, "black");
+    captured.set_cleared_brush_snapshot(7);
+    let restored = captured.undo(current.clone()).unwrap().0;
+    assert!(Arc::ptr_eq(&restored, &current), "Undo Clear restores the list, not pixels");
+    assert!(!captured.is_cleared());
+    assert_eq!(captured.brush_source_snapshot(), Some(7));
+    assert_eq!(captured.past_len(), 0);
 }
 
 #[test]

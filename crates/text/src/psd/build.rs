@@ -206,7 +206,7 @@ fn char_spans(layer: &TextLayer) -> Vec<(usize, i64)> {
 /// (`/11`). Photoshop reads the character style from here rather than from EngineData, and quit
 /// on a run holding only the auto-kern mode. `None` when `base` has no style dictionary or is
 /// larger than a template may be (it is copied once per run).
-fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32) -> Option<Vec<E>> {
+fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32, seed_empty: bool) -> Option<Vec<E>> {
     if !matches!(base.path(&["0", "0", "6"]), Some(E::Dict(_))) || !fits(base, &mut { TEMPLATE_NODES }) {
         return None;
     }
@@ -218,7 +218,7 @@ fn txt2_style_runs(layer: &TextLayer, base: &E, fonts: &mut Vec<E>, dpi: f32) ->
     let mut looked_up = std::collections::HashMap::new();
     for (ri, n) in spans {
         let s = runs.get(ri).map_or(&default, |r| &r.style);
-        let font = *looked_up.entry(postscript_for(s)).or_insert_with_key(|name| txt2_font(fonts, name));
+        let font = *looked_up.entry(postscript_for(s)).or_insert_with_key(|name| txt2_font(fonts, name, seed_empty));
         let mut run = base.clone();
         let style = run.get_mut("0")?.get_mut("0")?.get_mut("6")?;
         if let Some(font) = font {
@@ -347,8 +347,9 @@ fn txt2_style_agrees(s: &CharStyle, style: &E, fonts: &[E], k: f32) -> bool {
         return false;
     }
     // A mask beyond the 20 sets is ignored on import (`add_txt2_features`), so here too.
+    // Missing or invalid key 85 counts as 0 (the reader's default), not "any mask agrees".
     let sets = (0..20).filter(|n| feature(&format!("ss{:02}", n + 1)) == Some(true)).fold(0i64, |m, n| m | 1 << n);
-    style.get(TXT2_STYLISTIC_SETS).and_then(E::as_i64).filter(|m| (0..1 << 20).contains(m)).is_none_or(|m| m == sets)
+    style.get(TXT2_STYLISTIC_SETS).and_then(E::as_i64).filter(|m| (0..1 << 20).contains(m)).unwrap_or(0) == sets
 }
 
 /// EngineData's `FontCaps` code of a style: 0 normal, 1 small caps, 2 all caps.
@@ -522,13 +523,33 @@ fn td_restyled(entry: &E, layer: &TextLayer, fonts: &mut Vec<E>, dpi: f32) -> Op
     Some(entry)
 }
 
+/// A `Txt2` font-list entry (`<< /0 << /99 /CoolTypeFont /0 << /0 name /2 type >> >> >>`).
+fn txt2_font_entry(name: &str, kind: i64) -> E {
+    E::Dict(vec![(
+        "0".into(),
+        E::Dict(vec![
+            ("99".into(), E::Name("CoolTypeFont".into())),
+            ("0".into(), E::Dict(vec![("0".into(), E::String(name.to_string())), ("2".into(), E::Int(kind))])),
+        ]),
+    )])
+}
+
 /// The index of the PostScript font `name` in a `Txt2` font list (`<< /0 << /99 /CoolTypeFont
 /// /0 << /0 name /2 type >> >> >>` entries), appending it (shaped like the list's first entry)
-/// when missing. `None` for an empty list: there is no entry to shape a new one on.
-fn txt2_font(fonts: &mut Vec<E>, name: &str) -> Option<i64> {
+/// when missing. An empty list gets a seeded CoolTypeFont entry only when `seed_empty` is set —
+/// a PhotoCraft-native block (#10308); a file's own block keeps its `/0` as it was (#2374), so
+/// `None` there, as before.
+fn txt2_font(fonts: &mut Vec<E>, name: &str, seed_empty: bool) -> Option<i64> {
     let named = |f: &E| f.path(&["0", "0", "0"]).and_then(E::as_str) == Some(name);
     if let Some(i) = fonts.iter().position(named) {
         return i64::try_from(i).ok();
+    }
+    if fonts.is_empty() {
+        if !seed_empty {
+            return None;
+        }
+        fonts.push(txt2_font_entry(name, 0));
+        return Some(0);
     }
     let mut entry = fonts.first()?.clone();
     let font = entry.get_mut("0")?.get_mut("0")?;
@@ -546,13 +567,69 @@ fn txt2_font(fonts: &mut Vec<E>, name: &str) -> Option<i64> {
 /// `i32::MAX`, and sizing the array by it would make every save allocate gigabytes.
 pub const MAX_TEXT_INDEX: i32 = 0xFFFF;
 
-/// Whether the document `Txt2` block is needed for `objects`: only a non-Metrics auto-kern mode
+/// Whether `style` carries an OpenType setting that lives only in `Txt2` (EngineData has no field
+/// for stylistic sets or the [`TXT2_FEATURES`] flags). Defaults that match a plain style do not
+/// count: Contextual Alternates on (or absent), and the other flags off.
+fn txt2_only_opentype(style: &CharStyle) -> bool {
+    let on = |tag: &str| style.features.iter().any(|f| f.tag == tag && f.value > 0);
+    let off = |tag: &str| style.features.iter().any(|f| f.tag == tag && f.value == 0);
+    if (1..=20).any(|n| on(&format!("ss{n:02}"))) {
+        return true;
+    }
+    for (_, tag) in TXT2_FEATURES {
+        if tag == "calt" {
+            if off("calt") {
+                return true;
+            }
+        } else if on(tag) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the document `Txt2` block is needed for `objects`: a non-Metrics auto-kern mode
 /// (`Optical`) is exclusive to `Txt2` — EngineData's `AutoKerning` cannot distinguish Metrics from
-/// Optical — so a fresh document of ordinary Metrics text has nothing to put in the block.
-/// Writing Photoshop's empty `<< /0 << >> >>` stub anyway makes some readers (Photopea) fail
-/// (#3514); the export omits the block for such a document.
+/// Optical — and so are Stylistic Sets and the other [`TXT2_FEATURES`] flags (#10308). A fresh
+/// document of ordinary Metrics text with no such OpenType settings has nothing to put in the
+/// block. Writing Photoshop's empty `<< /0 << >> >>` stub anyway makes some readers (Photopea)
+/// fail (#3514); the export omits the block for such a document.
 pub fn needs_txt2(objects: &[(i32, &TextLayer)]) -> bool {
-    objects.iter().any(|(_, l)| l.char_runs().iter().any(|r| r.style.kerning == Kerning::Optical))
+    objects.iter().any(|(_, l)| l.char_runs().iter().any(|r| r.style.kerning == Kerning::Optical || txt2_only_opentype(&r.style)))
+}
+
+/// A `/53` SimplePaint dictionary (`<< /99 /SimplePaint /0 << >> >>`) for a fresh style run.
+fn simple_paint_dict() -> E {
+    E::Dict(vec![("99".into(), E::Name("SimplePaint".into())), ("0".into(), E::dict())])
+}
+
+/// A minimal `Txt2` style run Photoshop will read: the shape [`txt2_style_runs`] fills from a
+/// layer when the file has no template object to copy (a PhotoCraft-native document). Includes an
+/// empty `/53` SimplePaint dict so the fill colour can be written.
+fn minimal_txt2_style_run() -> E {
+    let style = E::Dict(vec![("0".into(), E::Int(0)), ("11".into(), E::Int(1)), ("53".into(), simple_paint_dict())]);
+    let data = E::Dict(vec![("0".into(), E::String(String::new())), ("6".into(), style)]);
+    E::Dict(vec![("0".into(), E::Dict(vec![("0".into(), data)])), ("1".into(), E::Int(1))])
+}
+
+/// A point-text object with a view naming frame `frame` and empty style runs, for a layer the
+/// file's block has no object for and no template to copy (#10308, #7698). Style runs are filled
+/// by [`txt2_style_runs`] next.
+fn fresh_point_text_object(frame: usize, text: &str) -> E {
+    let frame = i64::try_from(frame).unwrap_or(0);
+    let view = E::Dict(vec![("0".into(), E::Array(vec![E::Dict(vec![("0".into(), E::Int(frame))])]))]);
+    // One paragraph run per `\r`-terminated paragraph (lengths in UTF-16 code units), as
+    // `edited_object` refits them.
+    let paragraphs = text
+        .split_inclusive('\r')
+        .map(|p| E::Dict(vec![("0".into(), E::dict()), ("1".into(), E::Int(i64::try_from(p.encode_utf16().count()).unwrap_or(i64::MAX)))]))
+        .collect();
+    let model = E::Dict(vec![
+        ("0".into(), E::String(text.to_string())),
+        ("5".into(), E::Dict(vec![("0".into(), E::Array(paragraphs))])),
+        ("6".into(), E::Dict(vec![("0".into(), E::Array(vec![]))])),
+    ]);
+    E::Dict(vec![("0".into(), model), ("1".into(), view)])
 }
 
 /// The document's `Txt2` block for `objects`: `(TextIndex, layer)` pairs, one text object each
@@ -598,6 +675,11 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
     let td_fonts_before = td_fonts.len();
     let mut fonts: Vec<E> = prev.as_ref().and_then(|p| p.path(&["0", "1", "0"]).and_then(E::as_array)).map(<[E]>::to_vec).unwrap_or_default();
     let fonts_before = fonts.len();
+    // A PhotoCraft-native block: the document had no `Txt2` of its own (#10308). Only such a
+    // block gets the fresh point-text objects, minimal style runs, seeded font list and frame
+    // list below; a file's own block (Photoshop's, any era) is written as before (#2374, #7698).
+    let native = prev.is_none();
+    let seed_empty = native;
     // Looked up once per save, not per layer: a crafted block with many objects must not cost
     // a pass over all of them for every type layer.
     let all_stubs = prev_objects.iter().all(is_stub);
@@ -671,11 +753,15 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         // can't be refitted keeps the frame that object was drawn in.
         let fresh = (kept.is_none() && edited.is_none())
             .then(|| {
-                let template = template?;
+                // Without a template, only a PhotoCraft-native block gets a fresh object; a file's
+                // block keeps the stub it always got.
+                if template.is_none() && !native {
+                    return None;
+                }
                 let own = slot.and_then(|o| object_frame(o, true)).filter(|f| frame_count.is_some_and(|n| *f < n));
                 let frame = match own {
                     Some(f) => f,
-                    None if frame_count.is_some() && taken.contains(&at) => {
+                    None if (frame_count.is_some() || template.is_none()) && taken.contains(&at) => {
                         while taken.contains(&next_free) {
                             next_free += 1;
                         }
@@ -683,7 +769,12 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
                     }
                     None => at,
                 };
-                let object = new_object(template, frame, &text)?;
+                // Prefer a file object as template (#7698); otherwise a point-text object with a
+                // view naming its own frame so a PhotoCraft-native Txt2 still opens (#10308).
+                let object = match template {
+                    Some(template) => new_object(template, frame, &text)?,
+                    None => fresh_point_text_object(frame, &text),
+                };
                 taken.insert(frame);
                 frames_needed = frames_needed.max(frame.saturating_add(1));
                 Some(object)
@@ -695,11 +786,15 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         let mut model = object.get("0").cloned().filter(|m| matches!(m, E::Dict(_))).unwrap_or_else(E::dict);
         // A new or edited object takes the layer's own style: Photoshop reads the character style
         // from these runs, so the template's (or the old text's) would show, and come back on
-        // reopen. They are built on one of the object's own runs, every key Photoshop wrote kept.
-        let styled = (!unchanged && !is_stub(&object))
-            .then(|| model.path(&["6", "0"]).and_then(E::as_array).and_then(<[E]>::first).cloned())
-            .flatten()
-            .and_then(|base| txt2_style_runs(layer, &base, &mut fonts, dpi));
+        // reopen. They are built on one of the object's own runs, every key Photoshop wrote kept;
+        // without a template run, a minimal base is filled the same way (#10308).
+        let styled = (!unchanged)
+            .then(|| {
+                let file_base = (!is_stub(&object)).then(|| model.path(&["6", "0"]).and_then(E::as_array).and_then(<[E]>::first).cloned()).flatten();
+                let base = file_base.or_else(|| native.then(minimal_txt2_style_run))?;
+                txt2_style_runs(layer, &base, &mut fonts, dpi, seed_empty)
+            })
+            .flatten();
         let file_runs = reuse.then(|| model.path(&["6", "0"]).and_then(E::as_array)).flatten().and_then(|runs| with_modes(runs, &modes));
         let runs = styled.or(file_runs).unwrap_or_else(|| {
             modes
@@ -729,8 +824,15 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
         }
     }
     // The outer dictionary keeps whatever the block held (`/98` version, block extras, …), and
-    // `/1` whatever it holds beside the text objects.
-    let mut outer = prev.clone().unwrap_or_else(|| E::Dict(vec![("98".into(), E::Dict(vec![("0".into(), E::Int(14))])), ("0".into(), E::dict())]));
+    // `/1` whatever it holds beside the text objects. A PhotoCraft-native block gets a frame list
+    // (`/0 /8 /0`) so each object's view can name a frame (#10308, #7698); a file's block is never
+    // given a `/0` or a frame list it didn't have (#2374).
+    let mut outer = prev.clone().unwrap_or_else(|| {
+        E::Dict(vec![
+            ("98".into(), E::Dict(vec![("0".into(), E::Int(14))])),
+            ("0".into(), E::Dict(vec![("8".into(), E::Dict(vec![("0".into(), E::Array(vec![]))]))])),
+        ])
+    });
     pad_frames(&mut outer, slots.len().max(frames_needed));
     // A path layer's frame holds its path; a layer taken off its path loses its path frame. An
     // unchanged path leaves the file's frame as it was, and so does a frame the file already had
@@ -749,10 +851,18 @@ pub fn build_txt2_at(objects: &[(i32, &TextLayer)], previous: Option<&[u8]>, dpi
             }
         }
     }
+    // Write the font list whenever it grew. Create `/0/1` only in a PhotoCraft-native block;
+    // otherwise leave the file's `/0` alone (#2374).
     if fonts.len() != fonts_before
-        && let Some(list @ E::Dict(_)) = outer.get_mut("0").and_then(|v| v.get_mut("1"))
+        && let Some(doc @ E::Dict(_)) = outer.get_mut("0")
     {
-        list.set("0", E::Array(fonts));
+        match doc.get_mut("1") {
+            Some(list @ E::Dict(_)) => list.set("0", E::Array(fonts)),
+            _ if seed_empty => {
+                doc.set("1", E::Dict(vec![("0".into(), E::Array(fonts))]));
+            }
+            _ => {}
+        }
     }
     match outer.get_mut("1") {
         Some(objs @ E::Dict(_)) => objs.set("1", E::Array(slots)),

@@ -120,6 +120,60 @@ fn fresh_metrics_text_writes_no_txt2_block() {
     assert!(saves_txt2(Kerning::Optical), "Optical lives only in Txt2");
 }
 
+/// #10308: stylistic sets (and other Txt2-only OpenType flags) on a PhotoCraft-native document
+/// write a `Txt2` block and round-trip through save and reopen.
+#[test]
+fn fresh_stylistic_sets_round_trip_through_psd() {
+    use photocraft_doc::text::FontFeature;
+    let base = CharStyle { font_family: "Inter".into(), size_pt: 24.0, ..Default::default() };
+    let mut t = TextLayer {
+        text: "Hi".into(),
+        runs: vec![TextRun {
+            len: 2,
+            style: CharStyle { features: vec![FontFeature { tag: "ss01".into(), value: 1 }, FontFeature { tag: "ss05".into(), value: 1 }], ..base },
+        }],
+        ..Default::default()
+    };
+    t.sync_summary();
+    let mut doc = Document::new("k", photocraft_geom::Size::new(64, 32), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8);
+    let mut r = t.clone();
+    photocraft_text::TextEngine::new().render_layer(&mut r, doc.resolution_dpi, doc.pixel_format());
+    doc.layers.push(Layer::new("t", LayerContent::Text(r)));
+    let bytes = photocraft_io::export(&doc, "k.psd", &Default::default()).unwrap().bytes;
+    let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+    let txt2 =
+        file.global_blocks.iter().find(|b| &b.key == b"Txt2").and_then(|b| photocraft_text::psd::parse_txt2(&b.data)).expect("Txt2 written for stylistic sets");
+    let style = txt2
+        .path(&["1", "1"])
+        .and_then(E::as_array)
+        .and_then(|a| a.first())
+        .and_then(|o| o.path(&["0", "6", "0"]))
+        .and_then(E::as_array)
+        .and_then(|a| a.first())
+        .and_then(|r| r.path(&["0", "0", "6"]))
+        .expect("style run");
+    // Bits 0 and 4 → sets 1 and 5.
+    assert_eq!(style.get("85").and_then(E::as_i64), Some((1 << 0) | (1 << 4)));
+    assert_eq!(style.path(&["53", "99"]).and_then(E::as_str), Some("SimplePaint"), "paint stream tag");
+    assert_eq!(style.path(&["53", "0", "0"]).and_then(E::as_i64), Some(1), "fill colour type RGB");
+    assert!(style.path(&["53", "0", "1"]).and_then(E::as_array).is_some_and(|v| v.len() == 4), "fill colour values");
+    assert_eq!(style.get("0").and_then(E::as_i64), Some(0), "font index 0");
+    assert_eq!(
+        txt2.path(&["0", "1", "0"]).and_then(E::as_array).and_then(|a| a.first()).and_then(|f| f.path(&["0", "0", "0"])).and_then(E::as_str),
+        Some("Inter-Regular"),
+        "fresh Txt2 seeds a font entry"
+    );
+    assert!(txt2.path(&["0", "8", "0"]).and_then(E::as_array).is_some_and(|f| !f.is_empty()), "fresh Txt2 names a frame");
+    let back = photocraft_io::import("k.psd", &bytes).unwrap().document;
+    let LayerContent::Text(b) = &back.layers[0].content else { panic!("not text") };
+    let runs = b.char_runs();
+    assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), b.text.len(), "the runs cover the text");
+    for r in &runs {
+        let on = |tag: &str| r.style.features.iter().any(|f| f.tag == tag && f.value == 1);
+        assert!(on("ss01") && on("ss05"), "both sets on every character: {:?}", r.style.features);
+    }
+}
+
 /// Two imported layers can name the same Txt2 object; export must update the second
 /// preserved TySh pointer so each layer restores its own automatic kerning mode.
 #[test]

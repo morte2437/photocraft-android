@@ -9,7 +9,7 @@
 //! The state lives in `ToolOptions` (`crop_overlay`, `crop_overlay_show`,
 //! `crop_overlay_orientation`), which `ui.inspect` reports and `ui.set` drives.
 
-use egui::{Key, Modifiers};
+use egui::{Key, Modifiers, Rect, pos2, vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::PhotocraftApp;
@@ -247,13 +247,90 @@ fn golden_spiral() -> Polyline {
     pts.into_iter().map(|[x, y]| [(x / PHI).clamp(0.0, 1.0), y.clamp(0.0, 1.0)]).collect()
 }
 
-/// The guides the pending crop box shows now: none when the options say not to.
+/// Full-frame guides, or none when the options say not to. Canvas painting uses
+/// [`current_guides_for_frame`] to restrict the turning grid to its viewport.
 pub fn current_guides(app: &PhotocraftApp, w: f32, h: f32) -> Vec<Polyline> {
+    current_guides_visible(app, w, h, Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)))
+}
+
+/// Guides for the frame actually being painted. Use the caller's quad and clip:
+/// canvas navigation may not have written its local camera back to UI state yet.
+pub fn current_guides_for_frame(app: &PhotocraftApp, q: [egui::Pos2; 4], clip: Rect) -> Vec<Polyline> {
+    let (w, h) = (q[0].distance(q[1]), q[0].distance(q[3]));
+    let Some(visible) = visible_frame(q, clip, w, h) else { return Vec::new() };
+    current_guides_visible(app, w, h, visible)
+}
+
+fn current_guides_visible(app: &PhotocraftApp, w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
     let o = &app.ui.tool_options;
     if app.ui.tool != Tool::Crop || !o.crop_overlay_show.shows(app.crop.drag.is_some()) {
         return Vec::new();
     }
+    // Classic Mode and Straighten were not measured: only the default mode's turn
+    // replaces the chosen composition overlay (#10931).
+    if !o.crop_shield.classic_mode && crate::crop_ui::turning(app).is_some() {
+        return turn_grid(w, h, visible);
+    }
     guides(o.crop_overlay, o.crop_overlay_orientation, w, h)
+}
+
+/// The canvas's visible extent in the crop frame's own screen-point axes. The
+/// inverse basis also handles a flipped/rotated view and pixel aspect correction.
+fn visible_frame(q: [egui::Pos2; 4], clip: Rect, w: f32, h: f32) -> Option<Rect> {
+    if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
+        return None;
+    }
+    if !clip.is_finite() || !clip.is_positive() {
+        return None;
+    }
+    let (u, v) = (q[1] - q[0], q[3] - q[0]);
+    let det = f64::from(u.x) * f64::from(v.y) - f64::from(u.y) * f64::from(v.x);
+    if !det.is_finite() || det.abs() < f64::EPSILON {
+        return None;
+    }
+    let mut visible = Rect::NOTHING;
+    for p in [clip.left_top(), clip.right_top(), clip.right_bottom(), clip.left_bottom()] {
+        let d = p - q[0];
+        let x = (f64::from(d.x) * f64::from(v.y) - f64::from(d.y) * f64::from(v.x)) / det * f64::from(w);
+        let y = (f64::from(u.x) * f64::from(d.y) - f64::from(u.y) * f64::from(d.x)) / det * f64::from(h);
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        visible.extend_with(pos2(x.clamp(0.0, f64::from(w)) as f32, y.clamp(0.0, f64::from(h)) as f32));
+    }
+    Some(visible)
+}
+
+/// The temporary turning grid: 48 logical screen points between lines, centred
+/// on the frame. `visible` is in the frame's screen-point axes, before mapping
+/// back to its unit square. Generate only visible lines, however far the frame
+/// is zoomed or panned, rather than truncating around its offscreen centre.
+pub fn turn_grid(w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
+    const SPACING: f64 = 48.0;
+    // Covers 196,608 logical points per axis; bound hostile viewport dimensions,
+    // not the size of the projected document or the grid's distance from centre.
+    const MAX_VISIBLE_LINES: usize = 4096;
+    if !(w.is_finite() && h.is_finite() && visible.is_finite()) || w < 1.0 || h < 1.0 {
+        return Vec::new();
+    }
+    let visible = visible.intersect(Rect::from_min_size(egui::Pos2::ZERO, vec2(w, h)));
+    if !visible.is_positive() {
+        return Vec::new();
+    }
+    let axis = |len: f32, lo: f32, hi: f32, vertical: bool| {
+        let len = f64::from(len);
+        let mid = len * 0.5;
+        // Keep the centre-based phase, but index directly into the visible range.
+        // Lines coincident with the frame outline need not be drawn twice.
+        let first = ((f64::from(lo) - mid) / SPACING).ceil().max((-mid / SPACING).floor() + 1.0);
+        let last = ((f64::from(hi) - mid) / SPACING).floor().min((mid / SPACING).ceil() - 1.0);
+        let count = (last - first + 1.0).clamp(0.0, MAX_VISIBLE_LINES as f64) as usize;
+        (0..count).map(move |i| {
+            let f = ((mid + (first + i as f64) * SPACING) / len) as f32;
+            if vertical { vec![[f, 0.0], [f, 1.0]] } else { vec![[0.0, f], [1.0, f]] }
+        })
+    };
+    axis(w, visible.min.x, visible.max.x, true).chain(axis(h, visible.min.y, visible.max.y, false)).collect()
 }
 
 /// O: the next overlay (the orientation starts over).

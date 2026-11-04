@@ -1029,14 +1029,24 @@ fn discard_dialog_confirm(app: &mut PhotocraftApp, ctx: &egui::Context, choice: 
 fn dialog_set(app: &mut PhotocraftApp, p: &Value) -> Outcome {
     let (Some(id), Some(field)) = (u64_param(p, "dialog"), str_param(p, "field")) else { return err("need `dialog` and `field`") };
     let value = p.get("value").cloned().unwrap_or(Value::Null);
+    // A Color Picker previewing in this dialog owns its fields until its OK or Cancel: an edit now
+    // would be undone by the picker putting the dialog back as it was.
+    let previewed = crate::color_picker_ui::live_preview::previewed_dialogs(app).contains(&id);
     match app.ui.dialog_mut(id) {
         // A continuation belongs to the dialog that paused it, even when another
         // action has a valid token. Replacing it would resume or cancel that action.
         Some(_) if field == crate::actions::RESUME => err("the paused action token is read-only"),
+        Some(_) if previewed => err("confirm or cancel the color picker first"),
+        // A Color Picker's target is fixed when it opens: OK must set the field it previewed in.
+        Some(d) if matches!(field, "__colorPicker" | "__dialog" | "__field") && crate::color_picker_ui::owns(&d.fields) => {
+            err("a Color Picker's target is fixed when it opens")
+        }
         // A marker picks the handler OK runs: a dialog keeps the ones it was opened with.
         Some(d) if !d.fields.contains_key(field) && crate::dialogs::is_route_marker(field) => err(format!("`{field}` is set only by the dialog it belongs to")),
         Some(d) => {
             d.fields.insert(field.to_string(), value);
+            // A Color Picker's colour shows in its target dialog at once, as a drag would.
+            crate::color_picker_ui::live_preview::sync(app);
             ok(Value::Null)
         }
         None => err(format!("no dialog {id}")),

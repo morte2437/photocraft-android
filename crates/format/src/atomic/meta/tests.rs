@@ -4,7 +4,9 @@
 //! [`crate::atomic::atomic_write`] and can only run on Windows, so they are `#[cfg(windows)]`
 //! and are covered by the Windows CI job, not by a developer on a Mac.
 
+use super::{MoveReplacement2, recover_after_1177};
 use crate::atomic::atomic_write;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -307,4 +309,83 @@ mod windows {
         assert_eq!(std::fs::read(&p).unwrap(), b"bytes");
         assert_no_temp(&d.0);
     }
+}
+
+// ---------------------------------------------------------------- MOVE_REPLACEMENT_2 ladder (#11178)
+//
+// The Windows `ReplaceFileW` cannot be made to return `ERROR_UNABLE_TO_MOVE_REPLACEMENT_2` on
+// demand, so these exercise the recovery ladder with injected completion/restoration outcomes on
+// every platform: branch coverage of the ladder, not a reproduction of a real Windows incident.
+
+/// The ladder finishing the rename completes the save; the restoration is never attempted.
+#[test]
+fn the_move_replacement_2_ladder_completes_the_save_when_the_rename_works() {
+    let r = recover_after_1177(|| Ok(()), || panic!("restoration must not run after a completed save"), PathBuf::from("doc.bak"));
+    assert!(matches!(r, MoveReplacement2::Completed));
+}
+
+/// Completion fails but the original is restored to the destination: the caller keeps the plain
+/// completion error (which truthfully says the destination still holds the original), not a
+/// recovery report.
+#[test]
+fn the_move_replacement_2_ladder_restores_the_original_when_completion_fails() {
+    let r = recover_after_1177(|| Err(io::Error::new(io::ErrorKind::PermissionDenied, "locked")), || Ok(()), PathBuf::from("doc.bak"));
+    match r {
+        MoveReplacement2::Restored(e) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "the completion error stands"),
+        other => panic!("expected Restored, got {other:?}"),
+    }
+}
+
+/// Completion fails and the restoration fails too: the ladder must surface the unresolved state
+/// with the exact recovery location, so the caller can point the user at the surviving original
+/// instead of falsely promising an unchanged destination (#11178).
+#[test]
+fn the_move_replacement_2_ladder_keeps_the_recovery_location_when_both_renames_fail() {
+    let recovery = PathBuf::from("/tmp/doc.bak.pcsave.tmp");
+    let r = recover_after_1177(
+        || Err(io::Error::new(io::ErrorKind::PermissionDenied, "locked")),
+        || Err(io::Error::new(io::ErrorKind::PermissionDenied, "still locked")),
+        recovery.clone(),
+    );
+    match r {
+        MoveReplacement2::Unresolved { completion, restoration, recovery: got } => {
+            assert_eq!(got, recovery, "the exact backup path is carried out");
+            assert!(completion.to_string().contains("locked") && restoration.to_string().contains("locked"), "{completion}; {restoration}");
+        }
+        other => panic!("expected Unresolved, got {other:?}"),
+    }
+}
+
+/// The unresolved error names the recovery location and never carries the `UNCHANGED`
+/// reassurance, whose kind is deliberately not retryable so a permission retry cannot forget it.
+#[test]
+fn the_unresolved_recovery_error_names_the_backup_and_is_not_retried() {
+    let e = crate::atomic::unresolved_recovery_error(
+        Path::new("/docs/report.psd"),
+        &io::Error::new(io::ErrorKind::PermissionDenied, "locked"),
+        &io::Error::new(io::ErrorKind::PermissionDenied, "still locked"),
+        Path::new("/docs/.report.psd.9.pcsave.tmp"),
+    );
+    let msg = e.to_string();
+    assert!(msg.contains(".report.psd.9.pcsave.tmp"), "the backup path is named: {msg}");
+    assert!(msg.contains("recover"), "the user is told to recover the document: {msg}");
+    assert!(!msg.contains("the original file was not changed"), "no false reassurance: {msg}");
+    assert_ne!(e.kind(), io::ErrorKind::PermissionDenied, "the retry loop must stop, not pick a fresh backup name over the unresolved recovery");
+}
+
+/// When the restoration failed because the backup itself is gone, the error must not promise a
+/// recovery copy that does not exist (#11178).
+#[test]
+fn a_vanished_backup_is_reported_as_gone_rather_than_as_a_recovery_copy() {
+    let e = crate::atomic::unresolved_recovery_error(
+        Path::new("/docs/report.psd"),
+        &io::Error::new(io::ErrorKind::PermissionDenied, "locked"),
+        &io::Error::from_raw_os_error(2), // `ENOENT` / `ERROR_FILE_NOT_FOUND`: the backup is gone.
+        Path::new("/docs/.report.psd.9.pcsave.tmp"),
+    );
+    let msg = e.to_string();
+    assert!(msg.contains(".report.psd.9.pcsave.tmp") && msg.contains("no longer exists"), "the vanished backup is named: {msg}");
+    assert!(msg.contains("no file under that name"), "{msg}");
+    assert!(!msg.contains("survives at"), "no recovery promise for a vanished backup: {msg}");
+    assert!(!msg.contains("the original file was not changed"), "{msg}");
 }

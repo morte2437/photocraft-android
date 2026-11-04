@@ -182,6 +182,9 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
     if let Some(mapped) = super::steps_calculations::from_descriptor(d) {
         return mapped;
     }
+    if get_ref(d, "null").and_then(ref_class).as_deref() == Some("Path") {
+        return super::steps_type_path::from(d);
+    }
     if let Some(mapped) = super::steps_layer_style::create_from_descriptor(d) {
         return mapped;
     }
@@ -319,6 +322,9 @@ fn recorded_percent(opacity: f64) -> f64 {
 pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
     if id == "image.calculations" {
         return super::steps_calculations::to_descriptor(p);
+    }
+    if id == super::steps_type_path::COMMAND {
+        return super::steps_type_path::to(p);
     }
     if id == super::steps_layer_style::CREATE {
         return super::steps_layer_style::style_to(id, p);

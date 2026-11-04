@@ -819,7 +819,7 @@ fn handle_registry_and_tool_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
             app.ui.polygon.clear();
             app.ui.polygon_mode.clear();
             app.ui.polygon_doc = None;
-            crate::crop_ui::cancel(app);
+            crate::crop_ui::dismiss(app);
             return true;
         }
     }

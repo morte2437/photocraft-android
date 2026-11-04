@@ -360,7 +360,7 @@ fn exports_materialize_native_defaults_and_reject_unrepresentable_settings() {
     }
 }
 
-/// Imported actions produce the same pixels and Undo history as the specified native commands.
+/// Imported actions match native pixels with either grouped or per-step Undo and Redo.
 #[test]
 fn imported_group_d_playback_matches_direct_commands_across_modes_and_depths() {
     let items: Vec<_> = fixtures()
@@ -368,36 +368,50 @@ fn imported_group_d_playback_matches_direct_commands_across_modes_and_depths() {
         .map(|f| code_item(f.code, f.changed))
         .chain(["FndE", "Slrz", "Fct ", "Frgm"].map(|code| code_item(code, desc("null"))))
         .collect();
-    for (depth, mode) in [(8, "rgb"), (16, "rgb"), (32, "rgb"), (8, "gray"), (8, "cmyk"), (16, "lab")] {
-        let mut imported = load_items(items.clone());
-        imported.actions.list[0].disabled.insert(10);
-        imported.actions.list[0].dialogs.insert(0);
-        let steps = imported.actions.list[0].steps.clone();
-        let mut direct = Session::new();
-        for s in [&mut imported, &mut direct] {
-            prepare_pattern(s, depth, mode);
-        }
-        let before = pixels(&imported);
-        let history = imported.active().unwrap().history.past_len();
-        let result = imported.execute("actions.play", json!({"action":"A"})).unwrap();
-        assert!(result.get("failed").is_none(), "{depth}/{mode}: {result}");
-        assert_eq!(result["ran"], 11);
-        for (index, (id, params)) in steps.into_iter().enumerate() {
-            if index != 10 {
-                direct.execute(&id, params).unwrap();
+    for single_state in [true, false] {
+        for (depth, mode) in [(8, "rgb"), (16, "rgb"), (32, "rgb"), (8, "gray"), (8, "cmyk"), (16, "lab")] {
+            let mut imported = load_items(items.clone());
+            imported.execute("actions.setHistory", json!({"singleState": single_state})).unwrap();
+            imported.actions.list[0].disabled.insert(10);
+            imported.actions.list[0].dialogs.insert(0);
+            let steps = imported.actions.list[0].steps.clone();
+            let mut direct = Session::new();
+            for s in [&mut imported, &mut direct] {
+                prepare_pattern(s, depth, mode);
             }
+            let before = pixels(&imported);
+            let before_doc = imported.active().unwrap().doc.clone();
+            let history = imported.active().unwrap().history.past_len();
+            let result = imported.execute("actions.play", json!({"action":"A"})).unwrap();
+            assert!(result.get("failed").is_none(), "{depth}/{mode}: {result}");
+            assert_eq!(result["ran"], 11);
+            for (index, (id, params)) in steps.into_iter().enumerate() {
+                if index != 10 {
+                    direct.execute(&id, params).unwrap();
+                }
+            }
+            assert_eq!(pixels(&imported), pixels(&direct), "{depth}/{mode}");
+            let after_doc = imported.active().unwrap().doc.clone();
+            if single_state {
+                assert_eq!(imported.active().unwrap().history.past_len(), history + 1);
+            } else {
+                assert_eq!(imported.active().unwrap().history.past_len(), direct.active().unwrap().history.past_len());
+            }
+            let added = imported.active().unwrap().history.past_len() - history;
+            assert!(added > 0);
+            for _ in 0..added {
+                imported.execute("edit.undo", json!({})).unwrap();
+            }
+            assert_eq!(pixels(&imported), before, "{depth}/{mode} undo");
+            assert_eq!(imported.active().unwrap().doc.as_ref(), before_doc.as_ref(), "{depth}/{mode} undo");
+            for _ in 0..added {
+                imported.execute("edit.redo", json!({})).unwrap();
+            }
+            assert_eq!(imported.active().unwrap().doc.as_ref(), after_doc.as_ref(), "{depth}/{mode} redo");
+            let saved = saved_items(&mut imported);
+            assert!(!saved[10].enabled);
+            assert!(saved[0].with_dialog);
         }
-        assert_eq!(pixels(&imported), pixels(&direct), "{depth}/{mode}");
-        assert_eq!(imported.active().unwrap().history.past_len(), direct.active().unwrap().history.past_len());
-        let added = imported.active().unwrap().history.past_len() - history;
-        assert!(added > 0);
-        for _ in 0..added {
-            imported.execute("edit.undo", json!({})).unwrap();
-        }
-        assert_eq!(pixels(&imported), before, "{depth}/{mode} undo");
-        let saved = saved_items(&mut imported);
-        assert!(!saved[10].enabled);
-        assert!(saved[0].with_dialog);
     }
 }
 

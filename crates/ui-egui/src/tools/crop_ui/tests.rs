@@ -1217,6 +1217,128 @@ fn readout_shows_the_frame_size_while_drawing_or_resizing() {
     assert_eq!(frame_size([-f64::MAX, 0.0, f64::MAX, 1.0]), None);
 }
 
+/// Esc through the real shortcut handler.
+fn press_esc(app: &mut PhotocraftApp) {
+    let key = egui::Key::Escape;
+    let input = egui::RawInput {
+        focused: true,
+        events: vec![egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+        ..Default::default()
+    };
+    egui::Context::default().run_ui(input, |ui| crate::shortcuts::handle(app, ui.ctx())).textures_delta.clear();
+}
+
+#[test]
+fn esc_hides_the_frame_until_a_press() {
+    // #10370: Esc cancelled the crop but the next frame made the default frame again. It now hides
+    // the frame as a commit does: picking the tool again keeps it hidden, a press brings it back.
+    for classic in [false, true] {
+        let mut app = app(SampleType::U8);
+        app.ui.tool_options.crop_shield.classic_mode = classic;
+        ensure_frame(&mut app);
+        assert!(app.ui.crop_rect.is_some() && app.crop.default_frame);
+        // The untouched default frame: Esc hides it, and it stays hidden frame after frame.
+        press_esc(&mut app);
+        for _ in 0..3 {
+            ensure_frame(&mut app);
+            assert_eq!(app.ui.crop_rect, None, "classic={classic}");
+        }
+        // A press on the canvas draws a new frame.
+        drag(&mut app, &[[50.0, 20.0], [80.0, 40.0], [120.0, 70.0]], NONE);
+        assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 120.0, 70.0]));
+        // A drawn frame: Esc hides it too, and crops nothing.
+        press_esc(&mut app);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None);
+        assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100));
+        // Leaving the tool after Esc crops nothing, and back on it the frame stays hidden.
+        app.ui.tool = Tool::Brush;
+        ensure_frame(&mut app);
+        assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100), "classic={classic}");
+        app.ui.tool = Tool::Crop;
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None, "picking the tool again keeps it hidden");
+        // A press brings it back; the options bar's cancel hides it as well.
+        show_frame(&mut app);
+        assert!(app.ui.crop_rect.is_some() && app.crop.default_frame);
+        dismiss(&mut app);
+        ensure_frame(&mut app);
+        assert_eq!(app.ui.crop_rect, None);
+        // A plain cancel (stale document) does not hide it.
+        show_frame(&mut app);
+        cancel(&mut app);
+        ensure_frame(&mut app);
+        assert!(app.ui.crop_rect.is_some());
+    }
+}
+
+#[test]
+fn closing_a_dismissed_document_never_hides_the_next_tabs_frame() {
+    // A same-size tab that takes the closed document's index must still show its frame.
+    let mut app = app(SampleType::U8);
+    let doc = Document::with_background("other", Size::new(200, 100), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    app.session.add_document(doc, None);
+    assert!(app.session.set_active(0));
+    ensure_frame(&mut app);
+    press_esc(&mut app);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None);
+    assert!(app.session.close(0).is_some());
+    assert_eq!(app.session.active_index(), Some(0));
+    ensure_frame(&mut app);
+    assert!(app.ui.crop_rect.is_some() && app.crop.default_frame);
+}
+
+#[test]
+fn a_straighten_press_ends_the_dismissal() {
+    // Straighten takes the press before `begin_drag`; a click too short to level anything still
+    // ends the dismissal.
+    let mut app = app(SampleType::U8);
+    ensure_frame(&mut app);
+    press_esc(&mut app);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None);
+    app.crop.straighten.armed = true;
+    drag(&mut app, &[[50.0, 20.0], [50.5, 20.0]], NONE);
+    ensure_frame(&mut app);
+    assert!(app.ui.crop_rect.is_some());
+}
+
+#[test]
+fn undoing_a_crop_after_esc_brings_the_frame_back() {
+    // Esc crops nothing, so it adds no step; an Undo that changes the canvas size shows a frame for it.
+    let mut app = app(SampleType::U8);
+    ensure_frame(&mut app);
+    drag(&mut app, &[[20.0, 10.0], [70.0, 30.0], [120.0, 60.0]], NONE);
+    crate::canvas::commit_crop(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.size, Size::new(100, 50));
+    ensure_frame(&mut app);
+    let steps = app.session.active().unwrap().history.entries().len();
+    press_esc(&mut app);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None);
+    assert_eq!(app.session.active().unwrap().history.entries().len(), steps);
+    assert!(app.session.undo());
+    assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100));
+    ensure_frame(&mut app);
+    assert!(app.ui.crop_rect.is_some() && app.crop.default_frame);
+}
+
+#[test]
+fn an_undo_that_keeps_the_canvas_size_leaves_the_frame_hidden() {
+    // Only a size change brings the frame back: undoing an edit that keeps the size doesn't.
+    let mut app = app(SampleType::U8);
+    app.run("image.adjustments.invert", json!({})).unwrap();
+    ensure_frame(&mut app);
+    press_esc(&mut app);
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None);
+    assert!(app.session.undo());
+    assert_eq!(app.session.active().unwrap().doc.size, Size::new(200, 100));
+    ensure_frame(&mut app);
+    assert_eq!(app.ui.crop_rect, None);
+}
+
 /// #3145: the Info panel shows the pending frame's W × H while the Crop tool is active
 /// (between gestures too, and its own size when turned), and nothing for other tools.
 #[test]

@@ -680,10 +680,15 @@ fn artboard_edit_descriptor(background: i32, change_sizes: i32) -> Descriptor {
 fn artboard_background_edit_roundtrips_without_replaying_recorded_geometry() {
     for (kind, expected) in [(1, [1.0; 4]), (2, [0.0, 0.0, 0.0, 1.0]), (3, [0.0; 4]), (4, [0.25, 0.5, 0.75, 1.0])] {
         let mut s = artboard_fixture();
-        s.execute("layer.new.artboardFromGroup", json!({})).unwrap();
+        let initial_background = if kind == 1 { "black" } else { "white" };
+        s.execute("layer.new.artboardFromGroup", json!({"background":initial_background})).unwrap();
         Arc::make_mut(&mut s.active_mut().unwrap().doc).guides.horizontal.push(3.0);
         let before = s.active().unwrap().doc.clone();
         let id = s.active().unwrap().active_layer.unwrap();
+        assert_eq!(
+            before.layer(id).unwrap().artboard().unwrap().background,
+            if kind == 1 { photocraft_doc::ArtboardBackground::Black } else { photocraft_doc::ArtboardBackground::White }
+        );
         let history = s.active().unwrap().history.past_len();
         let d = artboard_edit_descriptor(kind, 8);
         assert_eq!(load(&mut s, &file("editArtboardEvent", d.clone()))["unsupported"], json!([]));
