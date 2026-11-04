@@ -324,9 +324,13 @@ pub fn document_opened(s: &mut Session) {
     fire_event(s, "openDocument");
 }
 
-/// After the shell saved document `index`: Save Document scripts and Image Assets.
-pub fn document_saved(s: &mut Session, index: usize) -> Option<Value> {
+/// After the shell saved document `doc`: Save Document scripts and Image Assets.
+/// The script runs first and may close or reorder tabs, so asset generation resolves the saved
+/// document's identity again: a script that closed a different tab must not skip its assets, and
+/// one that closed the saved document must not generate a replacement tab's (#11121).
+pub fn document_saved(s: &mut Session, doc: photocraft_doc::DocId) -> Option<Value> {
     fire_event(s, "saveDocument");
+    let index = s.documents().iter().position(|st| st.doc.id == doc)?;
     crate::web_cmds::on_saved(s, index)
 }
 

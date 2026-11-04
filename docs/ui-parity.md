@@ -49,9 +49,10 @@ Triangle and Curvature Pen (minus legacy Rounded Rectangle and Targeted Adjustme
 
 | Toolbar behaviour | Status | Evidence |
 |---|---|---|
-| Letter shortcuts, ⇧+letter cycles the group, "Use Shift Key for Tool Switch" (on by default, as in Photoshop) | done | `shortcuts.rs:413` |
+| Letter shortcuts, ⇧+letter cycles the group, "Use Shift Key for Tool Switch" (on by default, as in Photoshop) | done | `shortcuts.rs` `select_tool_by_key` |
+| Alt/Option-click a toolbar button cycles its flyout slot (including tools with no letter key) | done | `toolbar.rs` `next_slot_tool`; `type_flyout_tests.rs` `alt_click_cycles_the_tool_flyout_slot` |
 | Group remembers the last tool used | partial | L always resets to Lasso (#2608) |
-| Press-and-hold or click-drag opens the flyout | missing | right-click only (#2301) |
+| Press-and-hold or click-drag opens the flyout | done | `toolbar.rs`; right-click, long-press, press-drag |
 | Edit Toolbar customization | done | `edit.toolbar` |
 | Last selected tool restored after quitting and relaunching; temporary tool switches excluded | done | `tool_memory.rs`; `prefs_ui::tests::selected_tool_survives_a_restart_without_option_changes`, `selected_tool_excludes_temporary_switches` |
 

@@ -303,8 +303,10 @@ impl Para<'_> {
         let mut pos = self.indent_start + if line_index == 0 { self.first_indent } else { 0.0 };
         let mut trailing_tabs = 0.0f32;
         let mut trailing_growth = 0.0f32;
+        // Whether every slot after `j` is blank, from one reverse scan rather than one per slot.
+        let last_inked = slots.iter().rposition(|n| !n.blank);
         for (j, s) in slots.iter().enumerate() {
-            let rest_blank = slots[j + 1..].iter().all(|n| n.blank);
+            let rest_blank = last_inked.is_none_or(|k| k <= j);
             if s.blank && rest_blank {
                 trailing_growth += s.growth;
             }

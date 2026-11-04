@@ -138,9 +138,25 @@ pub const MAX_CANVAS_SIDE: u32 = 300_000;
 /// canvas with no content allocates nothing for its area.
 pub const MAX_CANVAS_PIXELS: u64 = MAX_CANVAS_SIDE as u64 * MAX_CANVAS_SIDE as u64;
 
+/// Byte budgets of a load in the browser build. A wasm32 instance has at most 4 GiB of linear
+/// memory, which the editor, the file's own bytes and the loaded document's composites share, so
+/// the desktop defaults (1 GiB a blob, 16 GiB in all) would let a small, highly compressible
+/// bundle exhaust it before any budget is reached.
+#[cfg(target_arch = "wasm32")]
+pub const BROWSER_MAX_BLOB_BYTES: usize = 512 << 20;
+/// See [`BROWSER_MAX_BLOB_BYTES`].
+#[cfg(target_arch = "wasm32")]
+pub const BROWSER_MAX_TOTAL_BYTES: u64 = 1 << 30;
+
 impl Default for LoadOptions {
     fn default() -> Self {
-        let limits = craft_pcraft_format::Limits::default();
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut limits = craft_pcraft_format::Limits::default();
+        #[cfg(target_arch = "wasm32")]
+        {
+            limits.max_blob_bytes = limits.max_blob_bytes.min(BROWSER_MAX_BLOB_BYTES);
+            limits.max_total_bytes = limits.max_total_bytes.min(BROWSER_MAX_TOTAL_BYTES);
+        }
         LoadOptions {
             max_manifest_bytes: limits.max_manifest_bytes,
             max_blob_bytes: limits.max_blob_bytes,

@@ -51,15 +51,30 @@ fn edit_tolerance(layer: &Layer, u: LenUnit, extent: f64) -> f32 {
 
 /// A number field that reports a value once committed (drag released, Enter, focus lost). `label` is its own
 /// label and the one stacked with it in the same column ("W" over "X"), which share a centre.
-/// `len` is the unit shown and its 100% extent (for percent); `name` is the field's accessible name.
+/// `len` is the unit shown, its 100% extent (for percent) and the length a percentage typed into a
+/// length field is a share of (`50%` in a px W is half the current width, as in Photoshop,
+/// #10784); `name` is the field's accessible name.
 // The explicit accessible name accompanies the existing numeric-field parameters.
 #[expect(clippy::too_many_arguments)]
-fn field(ui: &mut egui::Ui, id: &str, label: (&str, &str), name: &str, current: f32, width: f32, len: (LenUnit, f64), tol: f32) -> Option<f32> {
-    let (u, extent) = len;
+fn field(ui: &mut egui::Ui, id: &str, label: (&str, &str), name: &str, current: f32, width: f32, len: (LenUnit, f64, f64), tol: f32) -> Option<f32> {
+    let (u, extent, typed_pct) = len;
     stacked_label(ui, tl!(label.0), &[tl!(label.0), tl!(label.1)], LABEL_W, 2.0);
     let key = ui.make_persistent_id(("layer-props-field", id));
     let mut v = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or_else(|| u.shown(f64::from(current), extent));
-    let resp = widgets::value_field(ui, &mut v, -300_000.0..=300_000.0, u.unit.suffix(), width).accessible_name(tl!(name));
+    // A field showing percent keeps its own 100%, so a length typed into it converts as shown.
+    // Otherwise the current size, while the field is edited: clicking from W into a linked H
+    // commits W as H gains focus, and H's `50%` must take half the height W left. Only the size
+    // a commit was read against is kept, for the next frame: egui reads the text once more the
+    // frame after it commits, which against the new size would apply `50%` twice.
+    let pct_key = key.with("pct");
+    let typed_extent = if u.unit == photocraft_engine::prefs::Unit::Percent { extent } else { ui.data(|d| d.get_temp(pct_key)).unwrap_or(typed_pct) };
+    let units = widgets::FieldUnits { unit: u.unit, dpi: u.dpi, ppi: u.ppi };
+    let resp = widgets::value_field_len(ui, &mut v, -300_000.0..=300_000.0, u.unit.suffix(), width, units, typed_extent).accessible_name(tl!(name));
+    if resp.lost_focus() {
+        ui.data_mut(|d| d.insert_temp(pct_key, typed_extent));
+    } else {
+        ui.data_mut(|d| d.remove::<f64>(pct_key));
+    }
     if resp.dragged() || resp.has_focus() {
         ui.data_mut(|d| d.insert_temp(key, v));
         return None;
@@ -167,24 +182,24 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
             let w = ((ui.available_width() - 2.0 * (LABEL_W + LABEL_GAP) - LINK_W - 2.0 * LABEL_GAP) / 2.0).max(36.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
-                if let Some(v) = field(ui, "w", ("W", "X"), "Width", (bb[2] - bb[0]) as f32, w, (u, dw), tw) {
+                if let Some(v) = field(ui, "w", ("W", "X"), "Width", (bb[2] - bb[0]) as f32, w, (u, dw, bb[2] - bb[0]), tw) {
                     run.extend(transform_params(layer.id.0, bb, Some(v), None, linked, tw).map(|p| ("edit.transform".to_string(), p)));
                 }
                 if crate::icons::button(ui, if linked { "link" } else { "unlink" }, LINK_W, linked, tl!("Link width and height")).clicked() {
                     ui.data_mut(|d| d.insert_temp(link_key, !linked));
                 }
-                if let Some(v) = field(ui, "h", ("H", "Y"), "Height", (bb[3] - bb[1]) as f32, w, (u, dh), th) {
+                if let Some(v) = field(ui, "h", ("H", "Y"), "Height", (bb[3] - bb[1]) as f32, w, (u, dh, bb[3] - bb[1]), th) {
                     run.extend(transform_params(layer.id.0, bb, None, Some(v), linked, th).map(|p| ("edit.transform".to_string(), p)));
                 }
             });
             ui.add_space(ROW_GAP);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
-                if let Some(v) = field(ui, "x", ("X", "W"), "X", bb[0] as f32, w, (u, dw), 0.5) {
+                if let Some(v) = field(ui, "x", ("X", "W"), "X", bb[0] as f32, w, (u, dw, dw), 0.5) {
                     run.push(("layer.translate".into(), json!({"layer": layer.id.0, "dx": (v - bb[0] as f32).round() as i32, "dy": 0})));
                 }
                 ui.add_space(LINK_W + LABEL_GAP);
-                if let Some(v) = field(ui, "y", ("Y", "H"), "Y", bb[1] as f32, w, (u, dh), 0.5) {
+                if let Some(v) = field(ui, "y", ("Y", "H"), "Y", bb[1] as f32, w, (u, dh, dh), 0.5) {
                     run.push(("layer.translate".into(), json!({"layer": layer.id.0, "dx": 0, "dy": (v - bb[1] as f32).round() as i32})));
                 }
             });
@@ -346,6 +361,81 @@ mod tests {
         let at = |l: &str| centres.iter().find(|(s, _)| s == l).map(|(_, x)| *x).unwrap_or_else(|| panic!("no {l} label in {centres:?}"));
         assert!((at("W") - at("X")).abs() < 0.01, "W and X: {centres:?}");
         assert!((at("H") - at("Y")).abs() < 0.01, "H and Y: {centres:?}");
+    }
+
+    /// Types each `(name, text)` of `edits` in turn into the Transform field named `name` of an
+    /// 80 × 40 px rectangle shape at (10, 10) in a 200 × 120 document, with the rulers in `unit`,
+    /// and returns its path's [x, y, w, h] (a shape's path scales exactly, where resampled pixels
+    /// would blur its edge). Each edit is committed with Enter.
+    fn type_into_transform_fields(unit: photocraft_engine::prefs::Unit, edits: &[(&str, &str)]) -> [f64; 4] {
+        type_into_transform_fields_by(unit, edits, true)
+    }
+
+    /// [`type_into_transform_fields`], committing each edit with Enter when `enter`, or else by
+    /// clicking into the next field (the last edit still with Enter).
+    fn type_into_transform_fields_by(unit: photocraft_engine::prefs::Unit, edits: &[(&str, &str)], enter: bool) -> [f64; 4] {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.prefs.edit(|p| p.units_and_rulers.rulers = unit);
+        app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+        app.run("shape.create", json!({"kind": "rect", "rect": [10, 10, 80, 40], "fill": "#336699"})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        for (i, (name, text)) in edits.iter().enumerate() {
+            h.get_by_label(name).click();
+            h.run();
+            for c in text.chars() {
+                h.event(egui::Event::Text(c.to_string()));
+                h.run();
+            }
+            if enter || i + 1 == edits.len() {
+                h.key_press(egui::Key::Enter);
+                h.run_steps(3);
+            }
+        }
+        let st = h.state().session.active().unwrap();
+        let LayerContent::Shape(sh) = &st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("still a shape") };
+        let c = sh.path.control_bounds().unwrap();
+        [c.0, c.1, c.2 - c.0, c.3 - c.1].map(|v| (v * 100.0).round() / 100.0)
+    }
+
+    /// #10784: a percentage typed into a W or H showing a length is that share of the layer's
+    /// size, and into X or Y that share of the document, as in Photoshop; never that many pixels.
+    #[test]
+    fn transform_fields_take_a_typed_percentage() {
+        use photocraft_engine::prefs::Unit;
+        // Linked W/H: half the width halves the height too (typed live, `50` alone would be 50 px).
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%")]), [10.0, 10.0, 40.0, 20.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Height", "150%")]), [10.0, 10.0, 120.0, 60.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("X", "50%")]), [100.0, 10.0, 80.0, 40.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Y", "50%")]), [10.0, 60.0, 80.0, 40.0]);
+        // A second edit takes its percentage of the size the first one left.
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%"), ("Width", "50%")]), [10.0, 10.0, 20.0, 10.0]);
+        // Clicking into the linked H commits W as H takes the focus: H's `50%` is half the height
+        // W left (#10802 review), and the same from H into W.
+        assert_eq!(type_into_transform_fields_by(Unit::Pixels, &[("Width", "50%"), ("Height", "50%")], false), [10.0, 10.0, 20.0, 10.0]);
+        assert_eq!(type_into_transform_fields_by(Unit::Pixels, &[("Height", "50%"), ("Width", "50%")], false), [10.0, 10.0, 20.0, 10.0]);
+        // And with Enter between them.
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "50%"), ("Height", "50%")]), [10.0, 10.0, 20.0, 10.0]);
+        // In inches too (72 dpi: 80 px is 1.11 in).
+        assert_eq!(type_into_transform_fields(Unit::Inches, &[("Width", "50%")]), [10.0, 10.0, 40.0, 20.0]);
+        // A plain number and another length are unchanged.
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "60")]), [10.0, 10.0, 60.0, 30.0]);
+        assert_eq!(type_into_transform_fields(Unit::Pixels, &[("Width", "1in")]), [10.0, 10.0, 72.0, 36.0]);
+        // Rulers in percent show W as a share of the 200 px document; a typed length is that length.
+        assert_eq!(type_into_transform_fields(Unit::Percent, &[("Width", "40px")]), [10.0, 10.0, 40.0, 20.0]);
+        assert_eq!(type_into_transform_fields(Unit::Percent, &[("Width", "25")]), [10.0, 10.0, 50.0, 25.0]);
     }
 
     #[test]

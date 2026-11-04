@@ -527,6 +527,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("filter.blur.smartBlur", json!({"radius": 2.5, "threshold": 40, "quality": "medium", "mode": "overlayEdge"})),
         ("filter.other.offset", json!({"horizontal": 10, "vertical": -5, "undefinedAreas": "wrap"})),
         ("filter.blur.blur", json!({})),
+        ("filter.distort.shear", json!({"points": [[0,0], [0.5,0.25], [1,0]], "undefinedAreas": "repeat"})),
         ("filter.distort.pinch", json!({"amount": -30})),
         ("filter.distort.polarCoordinates", json!({"mode": "polarToRectangular"})),
         ("filter.distort.spherize", json!({"amount": -50, "mode": "verticalOnly"})),
@@ -754,6 +755,8 @@ fn every_mapped_command_exports_and_imports_back() {
         ("layer.createClippingMask", json!({})),
         ("layer.ungroupLayers", json!({})),
         ("layer.layerStyle.copyLayerStyle", json!({})),
+        ("layer.layerStyle.scaleEffects", json!({"scale": 200})),
+        ("layer.layerStyle.createLayer", json!({})),
         ("layer.layerStyle.pasteLayerStyle", json!({"allowGroups": true})),
         ("layer.setExpanded", json!({"all": true, "expanded": false})),
         ("layerComp.apply", json!({"comp": "Original"})),
@@ -6042,5 +6045,21 @@ fn a_move_to_an_ordinal_that_is_not_a_layer_is_kept() {
         assert!(layer.unsupported.is_empty(), "{o} on a layer");
         let channel = mapped_recording("move", desc("null").with("null", target()).with("T   ", ord("Chnl", o)));
         assert_eq!(channel.unsupported.len(), 1, "{o} on a channel was mapped: {:?}", channel.actions[0].steps);
+    }
+}
+
+/// Nonfinite recorded doubles remain unsupported before native parameters can be constructed.
+#[test]
+fn shear_nonfinite_coordinates_stay_kept() {
+    let point = |x, y| D::Descriptor(desc("Pnt ").with("Hrzn", D::Double(x)).with("Vrtc", D::Double(y)));
+    let finite = desc("null").with("ShrP", D::List(vec![point(-10000.0, -1000.0), point(10000.0, 1000.0)]));
+    assert!(matches!(steps_distort::shear_from(&finite), Mapped::Steps(_)), "finite coordinates still clamp and map");
+    for n in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for d in [
+            desc("null").with("ShrP", D::List(vec![point(n, 1.0), point(0.0, 128.0)])),
+            desc("null").with("ShrP", D::List(vec![point(0.0, 1.0), point(0.0, n)])),
+        ] {
+            assert!(matches!(steps_distort::shear_from(&d), Mapped::Unsupported { .. }), "{d:?}");
+        }
     }
 }

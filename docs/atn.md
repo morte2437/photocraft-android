@@ -18,7 +18,7 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
-## Supported events (168)
+## Supported events
 
 | Code | String ID | Label | PhotoCraft command(s) |
 |---|---|---|---|
@@ -99,7 +99,7 @@ the reference application.
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
 | `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
-| `Mk  ` | make | Make | `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape` |
+| `Mk  ` | make | Make | `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape` |
 | (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
 | (string ID only) | matchColor | Match Color | `image.adjustments.matchColor` |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
@@ -129,6 +129,7 @@ the reference application.
 | (string ID only) | removeBackground | Remove Background | `layer.removeBackground` |
 | `RmvB` | removeBlackMatte | Remove Black Matte | `layer.matting.removeBlackMatte` |
 | `RmvW` | removeWhiteMatte | Remove White Matte | `layer.matting.removeWhiteMatte` |
+| `Shr ` | shear | Shear | `filter.distort.shear` |
 | `Rset` | reset | Reset | `tools.defaultColors` |
 | `RvlA` | revealAll | Reveal All | `image.revealAll` |
 | `Rvrt` | revert | Revert | `file.revert` |
@@ -149,6 +150,7 @@ the reference application.
 | `Shw ` | show | Show | `layer.showLayers`, `layer.showOnly` |
 | `Smlr` | similar | Similar | `select.similar` |
 | (string ID only) | selectSky | Sky | `select.sky` |
+| (string ID only) | scaleEffectsEvent | Scale Effects | `layer.layerStyle.scaleEffects` |
 | `SmrB` | smartBlur | Smart Blur | `filter.blur.smartBlur` |
 | (string ID only) | smartSharpen | Smart Sharpen | `filter.sharpen.smartSharpen` |
 | `Smth` | smoothness | Smooth | `select.modify.smooth` |
@@ -245,6 +247,27 @@ inherited group state, and remains unavailable for Indexed Color documents.
 The separate `CropPhotos0001` helper remains a complete kept Photoshop step.
 Playback stops at that enabled helper before subsequent duplicate/crop steps can
 run. This covers the parent event, not complete recordings with generated helpers.
+
+### Layer Style menu recordings
+
+`scaleEffectsEvent` maps to `layer.layerStyle.scaleEffects` with the recorded `Scl `
+whole percentage in `#Prc`, from 1 through 1000. A missing recorded value is not
+given a guessed default. Native export makes its effective default of 100 explicit;
+fractional, out-of-range and unrepresented options refuse export.
+
+Create Layer(s) maps Make (`Mk  ` / `make`) to `layer.layerStyle.createLayer` when
+`null` is the `Lyr ` class reference and `Usng` is the `Lefx` property of the target
+layer (`Prpr.Lefx`, `Lyr .Ordn.Trgt`). It has no recorded operation settings.
+The existing native command creates the effect layers. The warning dialog is not
+an extra action parameter. Explicit native layer IDs have no measured export form.
+Malformed references stay complete kept steps, rather than creating a blank layer;
+ordinary layer creation still uses its layer-options object or class-only form.
+
+Both mappings retain descriptor identity, order and step flags while unchanged.
+A supported scale edit exports its new value canonically; damaged preservation
+metadata remains refused. These two rows are the implemented subset of #10723;
+the other menu recordings remain separate work. Playback reuses native history
+and rendering; this does not claim Photoshop pixel equivalence.
 
 ### Settings retained by mapped events
 
@@ -523,8 +546,6 @@ layer reference, `Ordn.Trgt`); mapping them needs only the event name.
 
 | Menu | Recorded step | Keys |
 |---|---|---|
-| Layer > Layer Style > Scale Effects | `scaleEffectsEvent` | `Scl ` percent, whole number 1..1000 (the dialog clamps) |
-| Layer > Layer Style > Create Layer(s) | Make, `null` = class `Lyr `, `Usng` = reference to the `Lefx` property of the target layer | none; the dialog first warns that some effects cannot be reproduced with layers (OK / Cancel) |
 | Layer > New > Frame from Layers | Make, `null` = class `framedGroupSection`, `From` = layer **by name**, `layerSectionStart`, `layerSectionEnd` long, `Nm  ` text | the dialog also shows width and height, which are not recorded |
 | Layer > New > Artboard from Layers | Make, `null` = class `artboardSection`, `From` = layer target, `layerSectionStart`, `layerSectionEnd`, `Nm  ` | |
 | Layer > New > Artboard | Make, `null` = class `artboardSection`, `layerSectionStart`, `layerSectionEnd`, `Nm  `, `artboardRect` (`Top `, `Left`, `Btom`, `Rght` doubles, pixels) | |
@@ -1469,7 +1490,7 @@ Nested values as recorded (defaults):
 
 ### Group C: The Distort filters (Pinch, Polar Coordinates, Shear, Spherize, Twirl, Wave, ZigZag)
 
-All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping is missing. Displace needs a displacement map file and is listed separately at the end.
+The seven Distort events below map to PhotoCraft's `filter.distort.*` commands for their documented supported forms, including complete Shear curves. Displace needs a displacement map file and is listed separately at the end.
 
 #### Pinch
 
@@ -1494,6 +1515,19 @@ All commands exist in PhotoCraft (`filter.distort.*`); only the `.atn` mapping i
 - Event: `Shr ` / `shear`
 - PhotoCraft command: `filter.distort.shear`
 - `shearPoints` is a list of curve points; keep their order and count.
+
+Supported for complete curves: import clamps finite grid coordinates to the measured ranges below,
+maps them to the native top-to-bottom position `(Vrtc - 1) / 127` and half-width offset `Hrzn / 64`,
+and preserves fractional recorded coordinates exactly on save. Both edge modes are supported.
+Only `ShrS` 0 and `ShrE` equal to the last point's index map; an omitted `ShrE` still defaults to 1.
+The adapter accepts 2..4096 points as an execution safety budget, not a measured Photoshop format
+maximum. This bounds point-vector allocation and the renderer's linear per-row curve search while
+allowing fractional scripted points. Larger recorded curves stay intact as kept steps, and native
+exports above that budget are refused before point conversion. No renderer performance is claimed.
+The budget covers adapter mapping and playback; input parsing and generic export copies remain outside it.
+Malformed settings, unknown keys, nonfinite values, and curves whose order or points the native
+renderer would change remain complete kept steps. Export refuses unrepresentable native options
+and mask targets. The native Shear renderer and its ordinary command behavior are unchanged.
 
 | Key | String ID | Type | Unit | Default | Allowed |
 |---|---|---|---|---|---|

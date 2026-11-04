@@ -1138,6 +1138,38 @@ fn right_click_on_a_pending_crop_opens_the_crop_menu_and_a_ratio_refits_the_fram
     assert!(h.state().ui.canvas_tool_menu.is_none());
 }
 
+/// The menu's Crop row, clicked with the mouse, crops; the Crop tool then shows no frame until
+/// the next press, so the applied crop doesn't look still pending.
+#[test]
+fn the_crop_row_crops_and_no_frame_shows_until_the_next_press() {
+    let mut app = crop_app();
+    app.ui.tool_options.crop_shield.classic_mode = false;
+    let mut h = harness(app);
+    // Tall enough for the whole menu, down to its last row.
+    h.set_size(vec2(1000.0, 1400.0));
+    draw_crop(h.state_mut());
+    h.run_steps(2);
+    let r = h.state().ui.crop_rect.unwrap();
+    let center = h.state().last_canvas_rect.center();
+    right_click(&mut h, center, Modifiers::NONE);
+    h.get_by_label("Crop").click();
+    h.run_steps(3);
+    let size = h.state().session.active().unwrap().doc.size;
+    assert_eq!((f64::from(size.width), f64::from(size.height)), ((r[2] - r[0]).round(), (r[3] - r[1]).round()), "cropped to the frame");
+    assert!(h.state().ui.canvas_tool_menu.is_none());
+    assert_eq!(h.state().ui.tool, Tool::Crop);
+    assert_eq!(h.state().ui.crop_rect, None, "no frame around the cropped image");
+    // A click on the canvas brings back a frame around the whole cropped image.
+    let center = h.state().last_canvas_rect.center();
+    h.event(egui::Event::PointerMoved(center));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: center, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: center, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().ui.crop_rect, Some([0.0, 0.0, f64::from(size.width), f64::from(size.height)]), "the click brings a frame back");
+}
+
 #[test]
 fn untouched_crop_frame_has_no_menu_and_a_pending_one_wins_over_the_pasteboard() {
     let mut h = harness(crop_app());

@@ -629,10 +629,7 @@ impl PhotocraftApp {
                     app.remember_stamp(doc, path);
                 }
                 // "Save Document" script events and File › Generate › Image Assets.
-                if hooks
-                    && let Some(i) = app.session.active_index()
-                    && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, i)
-                {
+                if hooks && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut app.session, doc) {
                     let files = r["files"].as_array().map_or(0, Vec::len);
                     asset_ok = files;
                     asset_dir = r["dir"].as_str().unwrap_or("").to_string();

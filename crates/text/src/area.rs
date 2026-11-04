@@ -249,13 +249,23 @@ impl AreaShape {
         let mid = y0 + (y1 - y0) * 0.5;
         let mut whole: Vec<(f32, f32)> = Vec::new();
         let mut ever: Vec<(f32, f32)> = Vec::new();
+        // A run of Combine / Join components is one union: gather its intervals and merge them
+        // once when the run ends. Folding each component into the growing result rewrote the
+        // whole list per component, quadratic for a shape of many disjoint components.
+        let (mut more_whole, mut more_ever) = (Vec::new(), Vec::new());
         for c in &self.comps {
             let inside = self.component_intervals(c, mid);
             let edges = self.swept(c, y0, y1);
             let w = boolean(&inside, &edges, |a, b| a && !b);
             let e = boolean(&inside, &edges, |a, b| a || b);
+            if matches!(c.op, PathOp::Combine | PathOp::Join) {
+                more_whole.extend(w);
+                more_ever.extend(e);
+                continue;
+            }
+            (whole, ever) = (union_all(whole, &mut more_whole), union_all(ever, &mut more_ever));
             (whole, ever) = match c.op {
-                PathOp::Combine | PathOp::Join => (boolean(&whole, &w, |a, b| a || b), boolean(&ever, &e, |a, b| a || b)),
+                PathOp::Combine | PathOp::Join => (whole, ever),
                 PathOp::Subtract => (boolean(&whole, &e, |a, b| a && !b), boolean(&ever, &w, |a, b| a && !b)),
                 PathOp::Intersect => (boolean(&whole, &w, |a, b| a && b), boolean(&ever, &e, |a, b| a && b)),
                 PathOp::Exclude => {
@@ -265,7 +275,7 @@ impl AreaShape {
                 }
             };
         }
-        whole.into_iter().filter(|(l, r)| r - l >= min_width).collect()
+        union_all(whole, &mut more_whole).into_iter().filter(|(l, r)| r - l >= min_width).collect()
     }
 
     /// The first baseline at or below `from` whose band `[b - ascent, b + descent]` has spans
@@ -306,6 +316,24 @@ pub fn path_bounds(path: &Path) -> Option<(f64, f64, f64, f64)> {
         return None;
     }
     path.control_bounds()
+}
+
+/// The union of the sorted, disjoint intervals `base` and the intervals in `more` (any order,
+/// drained), as [`boolean`] with `a || b` gives it: touching intervals join, empty ones vanish.
+fn union_all(base: Vec<(f32, f32)>, more: &mut Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+    if more.is_empty() {
+        return base;
+    }
+    let mut all: Vec<(f32, f32)> = base.into_iter().chain(more.drain(..)).filter(|(l, r)| l < r).collect();
+    all.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out: Vec<(f32, f32)> = Vec::with_capacity(all.len());
+    for (l, r) in all {
+        match out.last_mut() {
+            Some(last) if l <= last.1 => last.1 = last.1.max(r),
+            _ => out.push((l, r)),
+        }
+    }
+    out
 }
 
 /// Boolean combination of two sorted, disjoint interval lists, in one linear merge.
@@ -368,6 +396,27 @@ mod tests {
 
     fn close(a: (f32, f32), b: (f32, f32)) -> bool {
         (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01
+    }
+
+    #[test]
+    fn many_disjoint_components_union_like_the_pairwise_fold() {
+        // Within MAX_AREA_COMPONENTS: narrow columns, every other one overlapping its neighbour.
+        let cols: Vec<Subpath> = (0..2000)
+            .map(|i| {
+                let x = f64::from(i) * 3.0 + if i % 2 == 1 { -2.5 } else { 0.0 };
+                Subpath::polygon(&[(x, 0.0), (x + 1.0, 0.0), (x + 1.0, 100.0), (x, 100.0)]).with_op(PathOp::Combine)
+            })
+            .collect();
+        let a = AreaShape::new(&Path::new(cols), false).unwrap();
+        let got = a.spans(10.0, 20.0, 0.0);
+        // Each overlapping pair is one span: [3k, 3k + 1.5] for k = 0, 2, 4, ...
+        assert_eq!(got.len(), 1000);
+        for (k, &(l, r)) in got.iter().enumerate() {
+            let x = k as f32 * 6.0;
+            assert!((l - x).abs() < 1e-3 && (r - x - 1.5).abs() < 1e-3, "span {k}: {l}..{r}");
+        }
+        // An empty interval adds nothing, a touching one joins.
+        assert_eq!(union_all(vec![(0.0, 1.0)], &mut vec![(5.0, 5.0), (1.0, 2.0)]), [(0.0, 2.0)]);
     }
 
     #[test]
