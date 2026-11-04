@@ -179,6 +179,9 @@ fn type_shape_descriptor() -> Descriptor {
 /// Import Make events only when their geometry and options can be represented faithfully,
 /// including the exact target-text-to-content-layer references.
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
+    if get_ref(d, "null").and_then(ref_class).as_deref() == Some("Path") {
+        return super::steps_type_path::from(d);
+    }
     if let Some(mapped) = super::steps_layer_style::create_from_descriptor(d) {
         return mapped;
     }
@@ -314,6 +317,9 @@ fn recorded_percent(opacity: f64) -> f64 {
 /// Write a creation step, refusing native options the target descriptor cannot carry; Type to
 /// Shape exports only without native options.
 pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
+    if id == super::steps_type_path::COMMAND {
+        return super::steps_type_path::to(p);
+    }
     if id == super::steps_layer_style::CREATE {
         return super::steps_layer_style::style_to(id, p);
     }

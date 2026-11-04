@@ -619,6 +619,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("image.duplicate", json!({"mergedOnly": true})),
         ("layer.new.layer", json!({"name": "Ink", "opacity": 0.5, "mode": "Multiply"})),
         ("type.convertToShape", json!({})),
+        ("type.createWorkPath", json!({})),
         ("filter.blur.shapeBlur", json!({})),
         ("filter.blur.shapeBlur", json!({"radius": 10})),
         ("layer.new.group", json!({"name": "G"})),

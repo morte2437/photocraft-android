@@ -799,6 +799,7 @@ pub(super) const EVENTS: &[Event] = &[
         label: "Make",
         ids: &[
             "type.convertToShape",
+            "type.createWorkPath",
             "layer.new.layer",
             "layer.layerStyle.createLayer",
             "layer.new.group",
