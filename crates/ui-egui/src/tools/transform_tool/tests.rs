@@ -28,12 +28,17 @@ fn a_plain_click_far_outside_accepts_transform_but_a_rotation_drag_does_not() {
     let before = app.session.active().unwrap().history.past_len();
     let t = app.ui.transform.as_mut().unwrap();
     t.quad = t.quad.map(|[x, y]| [x + 6.0, y]);
-    let outside = [44.0, 44.0];
+    // A click outside the box on the image keeps it open; only the pasteboard commits (#11100).
     let none = egui::Modifiers::NONE;
+    let on_image = [44.0, 44.0];
+    assert!(pointer(&mut app, ToolEvent::Down { x: on_image[0], y: on_image[1], pressure: 1.0 }, none));
+    assert!(pointer(&mut app, ToolEvent::Up { x: on_image[0], y: on_image[1] }, none));
+    assert!(app.ui.transform.is_some(), "a click on the image does not commit");
+    let outside = [-12.0, 44.0];
     assert!(pointer(&mut app, ToolEvent::Down { x: outside[0], y: outside[1], pressure: 1.0 }, none));
     assert!(app.ui.transform.is_some(), "press alone does not accept");
     assert!(pointer(&mut app, ToolEvent::Up { x: outside[0], y: outside[1] }, none));
-    assert!(app.ui.transform.is_none(), "a release without a drag commits");
+    assert!(app.ui.transform.is_none(), "a release without a drag on the pasteboard commits");
     assert_eq!(app.session.active().unwrap().history.past_len(), before + 1, "one undo step for the transform");
     let st = app.session.active().unwrap();
     let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
