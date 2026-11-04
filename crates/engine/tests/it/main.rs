@@ -1,5 +1,6 @@
 //! The crate's integration tests, linked into one test binary.
 
+mod actions_single_history;
 mod affinity;
 mod artboard_export_names;
 mod atn_classic_gradient;

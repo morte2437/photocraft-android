@@ -18,6 +18,29 @@ layers and documents, newer and older events and files, and a measured reference
 map yet, with everything needed to implement them without
 the reference application.
 
+## Action playback history
+
+Actions create one history entry named `Action: <name>` by default. Nested plays
+share the outer action's entry, and a failing or Stop step keeps the completed
+prefix. A play with no document change adds no entry and preserves redo.
+`actions.setHistory {"singleState":false}` restores per-step history. The option
+is saved as `actions.createSingleHistoryState` in preferences and defaults to true
+when loading older preferences. It is separate from Playback Options' performance
+modes; the Playback Options dialog can use the same setting when #5212 lands.
+
+Step-dialog confirmation joins the original play only while its document and
+history still match the paused state. Cancel keeps the completed prefix; an
+intervening edit or document switch prevents the stale dialog from applying.
+Batch and droplets group each processed document independently under the action's
+name and use the same saved option.
+Existing non-linear History ordering and visibility options continue to apply.
+
+Explicit Clear History and Purge Histories steps keep their normal effects. Later
+edits form a grouped entry from that new boundary, without restoring discarded
+states. If an action explicitly chooses an intermediate row as the History Brush
+source, its pixels are retained as a named snapshot when grouping removes that
+row; the action still adds only one Undo entry.
+
 ## Supported events
 
 | Code | String ID | Label | PhotoCraft command(s) |

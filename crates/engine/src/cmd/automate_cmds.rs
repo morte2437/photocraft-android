@@ -435,6 +435,9 @@ fn run_droplet(s: &mut Session, p: &Value) -> Result<Value> {
         join(&first.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(), "droplet-output")
     });
     let mut bp = json!({"steps": steps, "input": inputs, "output": output, "format": opts.get("format").cloned().unwrap_or(json!("same"))});
+    if let Some(name) = v.get("action").and_then(|action| action.get("name")).or_else(|| v.get("name")) {
+        bp["action"] = name.clone();
+    }
     if let Some(q) = opts.get("quality") {
         bp["quality"] = q.clone();
     }
