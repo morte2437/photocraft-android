@@ -1,5 +1,5 @@
 //! Recorded Type > Create Work Path preserves its descriptor and uses native glyph outlines.
-use photocraft_doc::LayerContent;
+use photocraft_doc::{LayerContent, LayerId};
 use photocraft_engine::{
     Session,
     actions_cmds::Action,
@@ -74,9 +74,14 @@ fn playback_matches_native_path_and_preserves_text_with_undo_redo() {
         for depth in [8, 16, 32] {
             let mut recorded = Session::new();
             recorded.execute("file.new", json!({"width":160,"height":100,"depth":depth})).unwrap();
-            recorded.execute("type.create", json!({"x":20,"y":60,"text":"oil","size":36})).unwrap();
+            let other = recorded.execute("type.create", json!({"x":8,"y":35,"text":"o","size":24})).unwrap();
+            let other = LayerId(other["layer"].as_u64().unwrap());
+            let text = recorded.execute("type.create", json!({"x":90,"y":80,"text":"ill","size":30})).unwrap();
+            let text = LayerId(text["layer"].as_u64().unwrap());
+            recorded.select_layer(text).unwrap();
             let before = recorded.active().unwrap().doc.clone();
-            let text = recorded.active().unwrap().active_layer.unwrap();
+            let glyphs = before.layer(text).unwrap().surface().unwrap().content_bounds();
+            let other_glyphs = before.layer(other).unwrap().surface().unwrap().content_bounds();
             let past = recorded.active().unwrap().history.past_len();
             // Obtain the native result on this very document, then restore the starting state.
             recorded.execute(COMMAND, json!({})).unwrap();
@@ -98,6 +103,12 @@ fn playback_matches_native_path_and_preserves_text_with_undo_redo() {
             assert!(result.get("failed").is_none(), "{result}");
             let after = recorded.active().unwrap().doc.clone();
             assert_eq!(after.as_ref(), native.as_ref());
+            // Rendered glyph bounds are an independent oracle for the implicit active target.
+            let (x0, y0, x1, y1) = after.work_path.as_ref().unwrap().control_bounds().unwrap();
+            for (path, ink) in [(x0, glyphs.x0), (y0, glyphs.y0), (x1, glyphs.x1), (y1, glyphs.y1)] {
+                assert!((path - f64::from(ink)).abs() < 3.0, "path {path}, active glyph bound {ink}");
+            }
+            assert!(x0 > f64::from(other_glyphs.x1), "the other layer's glyphs must not supply the work path");
             assert!(matches!(after.layer(text).unwrap().content, LayerContent::Text(_)));
             assert_eq!(recorded.active().unwrap().history.past_len(), past + 1);
             assert!(recorded.undo());
