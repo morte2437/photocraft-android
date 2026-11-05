@@ -66,6 +66,7 @@ fn canvas_mips_preserve_opaque_pixels_and_partial_updates() {
     }
     // On the same device (see the top of the file).
     canvas_textures_the_gpu_refuses_leave_it_working(&gpu);
+    background_compositor_switch_preserves_pixels(&gpu);
     refused_viewport_page_work_is_caught(&gpu);
 }
 
@@ -199,6 +200,39 @@ fn partial_updates_match_a_full_rebuild_at_every_mip_level() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// A CPU-created texture stays valid when a newly built compositor updates only a damage rect.
+fn background_compositor_switch_preserves_pixels(gpu: &GpuCanvas) {
+    use photocraft_doc::{ColorMode, Document, Layer, LayerContent};
+    let mut doc = Document::new("background build", photocraft_geom::Size::new(64, 64), ColorMode::Rgb, SampleType::U8);
+    let mut layer = Layer::raster("pixels", doc.pixel_format());
+    if let LayerContent::Raster(surface) = &mut layer.content {
+        surface.fill_rect(Rect::new(0, 0, 64, 64), &[0.2, 0.4, 0.6, 1.0]);
+    }
+    doc.layers.push(layer);
+    let key = doc.id.0;
+    *gpu.compositor_build.lock().unwrap() = compositor_build::BuildState::Building;
+    let first = gpu.refresh(key, &doc, None, None);
+    assert_eq!(first.kind, "full");
+    assert_eq!(first.fallback, Some(CpuReason::CompositorBuilding));
+    assert!(gpu.compositor_failed().is_none());
+    let built = photocraft_gpu::Compositor::try_new_with_format(&gpu.rs.device, photocraft_gpu::Compositor::preferred_acc_format(&gpu.rs.adapter));
+    let Ok(comp) = built else { return };
+    *gpu.compositor_build.lock().unwrap() = compositor_build::BuildState::Ready(Box::new(comp));
+    let damage = Rect::new(8, 8, 16, 16);
+    if let LayerContent::Raster(surface) = &mut doc.layers[0].content {
+        surface.fill_rect(damage, &[0.8, 0.2, 0.1, 1.0]);
+    }
+    let second = gpu.refresh(key, &doc, Some(damage), None);
+    assert_eq!(second.kind, "gpu-rect", "{:?}", second.fallback);
+    let actual = read_mips(gpu, key).remove(0);
+    let expected = photocraft_compose::render(&doc, doc.bounds());
+    for (got, want) in actual.iter().zip(expected.px.iter()) {
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 0.02, "{got:?} != {want:?}");
         }
     }
 }

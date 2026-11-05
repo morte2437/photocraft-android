@@ -4537,6 +4537,8 @@ shape	Appearance	Apparence
 	Font size presets	Tailles de police prédéfinies
 	Leading presets	Interlignages prédéfinis
 	Tracking presets	Approches prédéfinies
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Entrée numérique non valide. Un entier compris entre {min}% et {max}% est requis. La valeur précédente a été insérée.
 	Color Aware	Selon la couleur
 	Decontaminate Colors	Décontaminer les couleurs

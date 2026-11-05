@@ -7,6 +7,40 @@ use super::{
     Compositor, DeviceHealth, DocId, Document, Fault, HashMap, Kernel, LayerContent, Plan, Rect, Role, TILE_SIZE, Unsupported, fx, plan, prefix, timing,
 };
 
+/// Classification of a synchronous compositor pipeline build failure.
+///
+/// Only a recognized shader compiler diagnostic is considered deterministic. Every other
+/// error, including generic validation, internal, and out-of-memory errors, is conservative
+/// and must be treated as transient or unknown by callers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildFailureKind {
+    /// A known compiler diagnostic means the same shader is expected to fail on relaunch.
+    DeterministicShaderCompilation,
+    /// The failure may depend on device state, resource pressure, or driver behavior.
+    TransientOrUnknown,
+}
+
+/// A pipeline build error with a conservative retry classification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildFailure {
+    pub kind: BuildFailureKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for BuildFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for BuildFailure {}
+
+fn classify_build_diagnostic(diagnostic: &str) -> BuildFailureKind {
+    // FXC's X3507 diagnostic is a concrete shader compilation failure observed when
+    // compiling generated compositor shaders. Do not classify generic validation text.
+    if diagnostic.contains("X3507") { BuildFailureKind::DeterministicShaderCompilation } else { BuildFailureKind::TransientOrUnknown }
+}
+
 impl Compositor {
     /// Create a compositor with the default accumulation format ([`ACC_FORMAT`]).
     pub fn new(device: &wgpu::Device) -> Self {
@@ -26,9 +60,45 @@ impl Compositor {
     /// to the CPU compositor. Where errors only arrive asynchronously (WebGPU), creation is assumed
     /// to have worked.
     pub fn try_new_with_format(device: &wgpu::Device, acc_format: wgpu::TextureFormat) -> Result<Self, Unsupported> {
-        match first_error(device, || Self::build(device, acc_format)) {
+        match first_error(device, || Self::build(device, acc_format, false)) {
             ((comp, None), None) => Ok(comp),
             ((_, Some(e)), _) | (_, Some(e)) => Err(Unsupported(format!("couldn't build the compositor's pipelines: {e}"))),
+        }
+    }
+
+    /// Build pipelines using a dedicated Rayon pool instead of the process-wide pool.
+    ///
+    /// This keeps shader compilation from occupying workers needed by CPU compositing.
+    /// If the pool cannot be created, pipeline enumeration runs sequentially on the calling
+    /// thread. The outer and per-pipeline wgpu error scopes are kept on their respective
+    /// build threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn try_new_with_format_threads(device: &wgpu::Device, acc_format: wgpu::TextureFormat, threads: usize) -> Result<Self, Unsupported> {
+        Self::try_new_with_format_threads_classified(device, acc_format, threads).map_err(|e| Unsupported(e.message))
+    }
+
+    /// Build the compositor pipelines with an explicit failure classification for callers
+    /// that cache deterministic failures across launches. Only recognized shader compiler
+    /// diagnostics are marked deterministic; all other wgpu errors are transient or unknown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn try_new_with_format_threads_classified(device: &wgpu::Device, acc_format: wgpu::TextureFormat, threads: usize) -> Result<Self, BuildFailure> {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).thread_name(|index| format!("photocraft-gpu-build-{index}")).build();
+        let built = match pool {
+            Ok(pool) => pool.install(|| first_error(device, || Self::build(device, acc_format, false))),
+            Err(e) => {
+                log::warn!("GPU compositor: couldn't create dedicated build pool; building sequentially: {e}");
+                first_error(device, || Self::build(device, acc_format, true))
+            }
+        };
+        match built {
+            ((comp, None), None) => Ok(comp),
+            ((_, Some(e)), None) => {
+                let kind = classify_build_diagnostic(&e.to_string());
+                Err(BuildFailure { kind, message: format!("couldn't build the compositor's pipelines: {e}") })
+            }
+            (_, Some(e)) => {
+                Err(BuildFailure { kind: BuildFailureKind::TransientOrUnknown, message: format!("couldn't build the compositor's pipelines: {e}") })
+            }
         }
     }
 
@@ -36,7 +106,7 @@ impl Compositor {
     /// `Rgba16Float` on adapters that can't render to `Rgba32Float` (e.g. some Intel Vulkan drivers),
     /// which otherwise panics at render-pipeline creation. See `Compositor::preferred_acc_format`.
     pub fn new_with_format(device: &wgpu::Device, acc_format: wgpu::TextureFormat) -> Self {
-        let (comp, error) = Self::build(device, acc_format);
+        let (comp, error) = Self::build(device, acc_format, false);
         if let Some(e) = error {
             log::error!("GPU compositor: couldn't build its pipelines: {e}");
         }
@@ -54,7 +124,7 @@ impl Compositor {
     /// while the cache still held it, and dropping the device then aborted the process. So each
     /// job has its own vertex entry point and fragment shaders ([`build_jobs`]), and builds of
     /// several compositors take turns.
-    fn build(device: &wgpu::Device, acc_format: wgpu::TextureFormat) -> (Self, Option<wgpu::Error>) {
+    fn build(device: &wgpu::Device, acc_format: wgpu::TextureFormat, sequential: bool) -> (Self, Option<wgpu::Error>) {
         static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _building = BUILDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pc_compose"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
@@ -98,7 +168,7 @@ impl Compositor {
         };
         // Effect maps render to R32Float / R16Float, which some adapters (e.g. GL without float
         // render targets) can't: then layer effects use the CPU compositor and the rest stays here.
-        let built = fx::par_map(jobs, |job| {
+        let build_one = |job: super::kit::BuildJob| {
             job.keys
                 .into_iter()
                 .map(|key| {
@@ -106,7 +176,8 @@ impl Compositor {
                     (key, built, error)
                 })
                 .collect::<Vec<_>>()
-        });
+        };
+        let built: Vec<_> = if sequential { jobs.into_iter().map(build_one).collect() } else { fx::par_map(jobs, build_one) };
         let built = built.into_iter().flatten();
         let (mut pipelines, mut maps) = (HashMap::new(), Vec::new());
         let (mut error, mut map_error) = (None, None);
@@ -546,5 +617,18 @@ impl Compositor {
     /// render to carry it.
     pub fn take_gpu_timing(&mut self) -> Option<timing::GpuTiming> {
         self.timer.as_mut().and_then(timing::GpuTimer::take)
+    }
+}
+
+#[cfg(test)]
+mod build_failure_tests {
+    use super::{BuildFailureKind, classify_build_diagnostic};
+
+    #[test]
+    fn only_concrete_shader_compiler_diagnostic_is_deterministic() {
+        assert_eq!(classify_build_diagnostic("error X3507: loop control variable must be integer"), BuildFailureKind::DeterministicShaderCompilation);
+        assert_eq!(classify_build_diagnostic("Validation Error: invalid bind group"), BuildFailureKind::TransientOrUnknown);
+        assert_eq!(classify_build_diagnostic("out of memory"), BuildFailureKind::TransientOrUnknown);
+        assert_eq!(classify_build_diagnostic("shader compilation failed"), BuildFailureKind::TransientOrUnknown);
     }
 }

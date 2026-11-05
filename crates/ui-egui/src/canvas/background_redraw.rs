@@ -111,6 +111,9 @@ pub(crate) struct Redraw {
     stop: Arc<AtomicBool>,
     started_ms: f64,
     fallback: Option<crate::render_path::CpuReason>,
+    /// Time spent on the failed GPU composite attempts that led to this redraw (ms), recorded once
+    /// when it ends.
+    gpu_attempt_ms: f64,
     /// The state the blocks are drawn from, and what the texels depend on besides it.
     doc: Arc<Document>,
     display: u64,
@@ -286,6 +289,7 @@ pub(crate) fn start(
     visible: Rect,
     region: Rect,
     fallback: Option<crate::render_path::CpuReason>,
+    gpu_attempt_ms: f64,
 ) {
     let all = blocks(doc.bounds());
     let display_key = display.as_deref().map_or(0, |d| d.texture_key);
@@ -293,15 +297,21 @@ pub(crate) fn start(
     // Taken again when a running redraw continues: the edit (or Memory Usage) may have changed it.
     let cap = keep_cap(app, doc.id);
     app.kept.trim(cap);
-    let (mut pending, since, fallback, mut keep) = match app.redraws.remove(&doc.id) {
+    let (mut pending, since, fallback, gpu_attempt_ms, mut keep) = match app.redraws.remove(&doc.id) {
         Some(mut old) if old.blocks == all => {
             // Blocks drawn from another state aren't part of this one's composite.
             let same = old.display == display_key && old.text_gamma == gamma && (Arc::ptr_eq(&old.doc, &doc) || *old.doc == *doc);
             let (collected, bytes) =
                 if same && old.collected_bytes <= cap { (std::mem::take(&mut old.collected), old.collected_bytes) } else { (vec![None; all.len()], 0) };
-            (std::mem::take(&mut old.pending), (old.started_ms, old.drawn), fallback.or_else(|| old.fallback.take()), (collected, bytes, cap))
+            (
+                std::mem::take(&mut old.pending),
+                (old.started_ms, old.drawn),
+                fallback.or_else(|| old.fallback.take()),
+                gpu_attempt_ms + old.gpu_attempt_ms,
+                (collected, bytes, cap),
+            )
         }
-        _ => (vec![false; all.len()], (crate::gpu_canvas::now_ms(), 0), fallback, (vec![None; all.len()], 0, cap)),
+        _ => (vec![false; all.len()], (crate::gpu_canvas::now_ms(), 0), fallback, gpu_attempt_ms, (vec![None; all.len()], 0, cap)),
     };
     for (p, b) in pending.iter_mut().zip(&all) {
         *p |= !b.intersect(&region).is_empty();
@@ -328,14 +338,14 @@ pub(crate) fn start(
         }
         keep = (vec![None; all.len()], 0, keep.2);
     }
-    spawn(app, ctx, Spawn { doc, display, display_key, text_gamma: gamma, format, visible, blocks: all, pending, since, fallback, keep });
+    spawn(app, ctx, Spawn { doc, display, display_key, text_gamma: gamma, format, visible, blocks: all, pending, since, fallback, gpu_attempt_ms, keep });
 }
 
 /// After an edit drew its own damage: continue document `doc.id`'s redraw, if one is running, on
 /// the edited document, so blocks still to come don't bring back what was there before it.
 pub(crate) fn restart(app: &mut PhotocraftApp, ctx: &egui::Context, gpu: &GpuCanvas, doc: Arc<Document>, display: Option<Arc<CanvasDisplay>>, visible: Rect) {
     if app.redraws.contains_key(&doc.id) {
-        start(app, ctx, gpu, doc, display, visible, Rect::EMPTY, None);
+        start(app, ctx, gpu, doc, display, visible, Rect::EMPTY, None, 0.0);
     }
 }
 
@@ -384,6 +394,7 @@ pub(crate) fn poll(app: &mut PhotocraftApp, gpu: &GpuCanvas, doc: DocId) {
     }
     let ms = crate::gpu_canvas::now_ms() - r.started_ms;
     app.perf.record("background", r.drawn, ms, 0.0);
+    app.perf.record_gpu_attempt(r.gpu_attempt_ms);
     crate::notices::slow_cpu_refresh(app, doc.0, ms, r.fallback.as_ref());
 }
 
@@ -455,6 +466,7 @@ struct Spawn {
     /// When it started and the pixels uploaded so far.
     since: (f64, u64),
     fallback: Option<crate::render_path::CpuReason>,
+    gpu_attempt_ms: f64,
     /// Blocks collected for [`Kept`], their bytes, and the cap.
     keep: (Vec<Option<Vec<u8>>>, u64, u64),
 }
@@ -471,6 +483,7 @@ fn spawn(app: &mut PhotocraftApp, ctx: &egui::Context, s: Spawn) {
         pending,
         since: (started_ms, drawn),
         fallback,
+        gpu_attempt_ms,
         keep: (collected, collected_bytes, cap),
     } = s;
     let id = doc.id;
@@ -512,6 +525,7 @@ fn spawn(app: &mut PhotocraftApp, ctx: &egui::Context, s: Spawn) {
             stop,
             started_ms,
             fallback,
+            gpu_attempt_ms,
             doc: kept_doc,
             display: display_key,
             text_gamma,

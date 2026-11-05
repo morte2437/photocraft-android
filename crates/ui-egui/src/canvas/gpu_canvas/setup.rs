@@ -32,6 +32,8 @@ pub struct Refresh {
     /// Pixels refreshed.
     pub px: u64,
     pub composite_ms: f64,
+    /// Time spent on a failed GPU composite attempt before CPU fallback.
+    pub gpu_attempt_ms: f64,
     pub upload_ms: f64,
     /// Layer tiles the wgpu compositor uploaded.
     pub uploads: u64,

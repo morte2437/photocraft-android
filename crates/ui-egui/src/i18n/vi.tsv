@@ -4006,6 +4006,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Font size presets	Cỡ chữ đặt sẵn
 	Leading presets	Giãn dòng đặt sẵn
 	Tracking presets	Khoảng cách chữ đặt sẵn
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Giá trị số không hợp lệ. Cần một số nguyên từ {min}% đến {max}%. Đã chèn giá trị trước đó.
 	Clear Selection	Xóa vùng chọn
 	Color Aware	Nhận biết màu

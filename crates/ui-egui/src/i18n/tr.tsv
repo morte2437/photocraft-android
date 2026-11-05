@@ -4229,6 +4229,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Font size presets	Yazı tipi boyutu hazır ayarları
 	Leading presets	Satır aralığı hazır ayarları
 	Tracking presets	İzleme hazır ayarları
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Geçersiz sayısal giriş. {min}% ile {max}% arasında bir tam sayı gerekiyor. Önceki değer eklendi.
 	Color Aware	Renge Duyarlı
 	Decontaminate Colors	Renkleri Arındır

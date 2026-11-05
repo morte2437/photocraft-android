@@ -3182,6 +3182,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Font size presets	字号预设
 	Leading presets	行距预设
 	Tracking presets	字距调整预设
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	数值输入无效。需要介于 {min}% 和 {max}% 之间的整数。已插入先前的值。
 	Clear Selection	清除选区
 	Color Aware	颜色识别

@@ -39,6 +39,7 @@ pub use photocraft_gpu::{DeviceHealth, Fault};
 
 mod budget;
 mod callback;
+mod compositor_build;
 mod doc_textures;
 mod pages;
 mod perf;
@@ -53,8 +54,8 @@ use budget::detect_video_memory;
 #[cfg(all(test, target_os = "linux"))]
 use budget::nvidia_video_memory;
 pub use budget::{
-    DEFER_PX, MIN_GPU_BUDGET, OVER_BUDGET, OVER_CANVAS_BUDGET, REFRESH_DEFERRED, REFRESH_OVER_BUDGET, canvas_budget, canvas_texture_bytes, memory_budget,
-    physical_memory, video_memory, vram_share,
+    COMPOSITOR_BUILDING, DEFER_PX, MIN_GPU_BUDGET, OVER_BUDGET, OVER_CANVAS_BUDGET, REFRESH_DEFERRED, REFRESH_OVER_BUDGET, canvas_budget, canvas_texture_bytes,
+    memory_budget, physical_memory, video_memory, vram_share,
 };
 #[cfg(test)]
 use budget::{NVIDIA_VENDOR, bounded_output, drm_video_memory, parse_nvidia_smi};
@@ -171,6 +172,8 @@ pub struct GpuCanvas {
     /// Camera Raw's preview pass, built the first time the dialog asks (#6419).
     camera_raw: crate::camera_raw_gpu::Slot,
     camera_raw_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    compositor_build: compositor_build::Slot,
+    compositor_completion: compositor_build::Completion,
 }
 
 /// Whether `regenerate_mips` builds each level in a scratch texture and copies it back: on
@@ -228,7 +231,61 @@ impl GpuCanvas {
             rs.target_format,
             vram.map_or_else(|| "unknown".to_owned(), |b| format!("{} MB", b >> 20))
         );
-        Self { rs: rs.clone(), tile, high, health, vram, canvas_budget: budget, camera_raw: Default::default(), camera_raw_started: Default::default() }
+        Self {
+            rs: rs.clone(),
+            tile,
+            high,
+            health,
+            vram,
+            canvas_budget: budget,
+            camera_raw: Default::default(),
+            camera_raw_started: Default::default(),
+            compositor_build: Default::default(),
+            compositor_completion: Default::default(),
+        }
+    }
+
+    /// Start compositor compilation off the UI thread on native hardware.
+    pub fn start_compositor(&self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.rs.adapter.get_info().device_type != wgpu::DeviceType::Cpu && std::env::var_os("PHOTOCRAFT_CPU_COMPOSE").is_none() {
+            compositor_build::start(
+                &self.rs.device,
+                photocraft_gpu::Compositor::preferred_acc_format(&self.rs.adapter),
+                ctx,
+                &self.compositor_build,
+                &self.compositor_completion,
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+    }
+
+    /// Key the memo to this device, application and shader compiler.
+    pub fn compositor_memo_key(&self, compiler: &str) -> crate::gpu_memo::MemoKey {
+        let info = self.rs.adapter.get_info();
+        crate::gpu_memo::MemoKey {
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            shader_fingerprint: photocraft_gpu::shader_fingerprint(),
+            adapter_name: info.name,
+            vendor: info.vendor,
+            device: info.device,
+            driver: info.driver,
+            driver_info: info.driver_info,
+            backend: format!("{:?}", info.backend),
+            shader_compiler: compiler.into(),
+        }
+    }
+
+    /// Use a known deterministic failure without recompiling the same shaders.
+    pub fn remember_compositor_failure(&self, error: &str) {
+        *self.compositor_build.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            compositor_build::BuildState::Failed(photocraft_gpu::Unsupported(format!("remembered from an earlier launch: {error}")));
+    }
+
+    /// Take the background build result once, independently of compositor adoption.
+    pub fn take_compositor_completion(&self) -> Option<Result<(), (String, bool)>> {
+        self.compositor_completion.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 
     /// The device's health flag (shared with the wgpu compositor and the paint callback).
@@ -402,6 +459,28 @@ impl GpuCanvas {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn simulate_compositor_build(&self) {
+        *self.compositor_build.lock().unwrap() = compositor_build::BuildState::Building;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn simulate_compositor_completion(&self, success: bool) -> bool {
+        let (state, outcome) = if success {
+            let Ok(comp) = photocraft_gpu::Compositor::try_new_with_format(&self.rs.device, photocraft_gpu::Compositor::preferred_acc_format(&self.rs.adapter))
+            else {
+                return false;
+            };
+            (compositor_build::BuildState::Ready(Box::new(comp)), Ok(()))
+        } else {
+            let message = "simulated build failure".to_string();
+            (compositor_build::BuildState::Failed(photocraft_gpu::Unsupported(message.clone())), Err((message, false)))
+        };
+        *self.compositor_build.lock().unwrap() = state;
+        *self.compositor_completion.lock().unwrap() = Some(outcome);
+        true
+    }
+
     /// Why the compositor couldn't be built, once it couldn't (see [`GpuCanvas::composite`]).
     fn compositor_failed(&self) -> Option<String> {
         let r = self.rs.renderer.read();
@@ -421,6 +500,9 @@ impl GpuCanvas {
         if e.0 == OVER_CANVAS_BUDGET {
             let (bytes, budget) = self.canvas_fit(doc).unwrap_or_default();
             return CpuReason::CanvasTooLarge { bytes, budget };
+        }
+        if e.0 == COMPOSITOR_BUILDING {
+            return CpuReason::CompositorBuilding;
         }
         if self.compositor_failed().is_some_and(|f| f == e.0) {
             return CpuReason::CompositorBuild(e.0);
@@ -623,6 +705,22 @@ impl GpuCanvas {
         if let Some(e) = &res.compositor_failed {
             return Err(e.clone());
         }
+        {
+            let mut state = self.compositor_build.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match std::mem::replace(&mut *state, compositor_build::BuildState::Adopted) {
+                compositor_build::BuildState::Building => {
+                    *state = compositor_build::BuildState::Building;
+                    return Err(photocraft_gpu::Unsupported(COMPOSITOR_BUILDING.into()));
+                }
+                compositor_build::BuildState::Ready(comp) => res.compositor = Some(*comp),
+                compositor_build::BuildState::Failed(error) => {
+                    res.compositor_failed = Some(error.clone());
+                    return Err(error);
+                }
+                compositor_build::BuildState::NotStarted => *state = compositor_build::BuildState::NotStarted,
+                compositor_build::BuildState::Adopted => (),
+            }
+        }
         let mut comp = match res.compositor.take() {
             Some(c) => c,
             None => match photocraft_gpu::Compositor::try_new_with_format(device, photocraft_gpu::Compositor::preferred_acc_format(&self.rs.adapter)) {
@@ -809,8 +907,12 @@ impl GpuCanvas {
                 out.gpu = stats.gpu_time;
                 return out;
             }
-            Err(e) => out.fallback = Some(self.reason(doc, e)),
+            Err(e) => {
+                out.gpu_attempt_ms = now_ms() - t0;
+                out.fallback = Some(self.reason(doc, e));
+            }
         }
+        let t0 = now_ms();
         let px = region.width() as u64 * region.height() as u64;
         if defer && px >= DEFER_PX && self.prepare_texture(key, doc).is_some() {
             out.kind = REFRESH_DEFERRED;

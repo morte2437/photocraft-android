@@ -4175,6 +4175,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Font size presets	フォントサイズのプリセット
 	Leading presets	行送りのプリセット
 	Tracking presets	トラッキングのプリセット
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	無効な数値です。{min}% から {max}% までの整数が必要です。以前の値が挿入されました。
 	Clear Selection	選択範囲をクリア
 	Color Aware	カラー認識

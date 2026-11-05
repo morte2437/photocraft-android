@@ -141,6 +141,7 @@ mod paging;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod readback;
 mod setup;
+pub use setup::{BuildFailure, BuildFailureKind};
 mod textures;
 
 #[cfg(test)]
@@ -166,6 +167,21 @@ pub use readback::{ReadbackError, render_bands, render_to_vec, render_to_vec_sta
 use textures::TexKind;
 use textures::{CachedPattern, FxEntry, FxKey, ResKey, Resident, Tex};
 pub use textures::{ChunkOut, Stats};
+
+/// Stable fingerprint of the compositor WGSL source, for invalidating cached build failures.
+/// Uses 64-bit FNV-1a over the exact embedded source bytes.
+pub fn shader_fingerprint() -> u64 {
+    fnv1a(SHADER.as_bytes())
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x00000100000001b3);
+    }
+    hash
+}
 
 #[cfg(test)]
 mod tests;

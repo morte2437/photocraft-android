@@ -133,7 +133,11 @@ pub fn clipboard_unreadable(app: &mut PhotocraftApp) {
 /// `ms`. The canvas doesn't respond while it runs, so once per document say why it was slow and
 /// which edits will do it again (#1015).
 pub fn slow_cpu_refresh(app: &mut PhotocraftApp, doc: u64, ms: f64, reason: Option<&crate::render_path::CpuReason>) {
-    if ms.is_nan() || ms < SLOW_CPU_REFRESH_MS || app.ui.slow_refresh_noticed.contains(&doc) {
+    if matches!(reason, Some(crate::render_path::CpuReason::CompositorBuilding))
+        || ms.is_nan()
+        || ms < SLOW_CPU_REFRESH_MS
+        || app.ui.slow_refresh_noticed.contains(&doc)
+    {
         return;
     }
     app.ui.slow_refresh_noticed.push(doc);
@@ -413,6 +417,14 @@ mod tests {
             Services { is_wayland: true, load_prefs: Some(Box::new(move || saved.lock().unwrap_or_else(|e| e.into_inner()).clone())), ..Default::default() };
         let app = PhotocraftApp::new(Session::new(), services);
         assert!(app.ui.notices.is_empty());
+    }
+
+    #[test]
+    fn preparing_compositor_does_not_warn_about_large_documents() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        slow_cpu_refresh(&mut app, 1, 60_000.0, Some(&crate::render_path::CpuReason::CompositorBuilding));
+        assert!(app.ui.notices.is_empty());
+        assert!(app.ui.slow_refresh_noticed.is_empty());
     }
 
     #[test]

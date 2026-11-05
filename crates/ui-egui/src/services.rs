@@ -475,6 +475,11 @@ pub struct Services {
     /// the web (see `prefs_ui`).
     pub load_prefs: Option<LoadTextFn>,
     pub save_prefs: Option<SaveTextFn>,
+    /// Load/save the bounded deterministic GPU compositor failure memo (native only).
+    pub load_gpu_memo: Option<LoadTextFn>,
+    pub save_gpu_memo: Option<SaveTextFn>,
+    /// Compiler identity included in GPU memo keys (for example `fxc` or `dxc:<path>`).
+    pub shader_compiler: Option<String>,
     /// Photoshop's live keyboard shortcut set, imported once at first launch (`kys_import`).
     pub photoshop_shortcuts: Option<PhotoshopShortcutsFn>,
     pub system_theme: Option<SystemThemeFn>,

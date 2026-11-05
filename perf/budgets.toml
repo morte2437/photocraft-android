@@ -767,6 +767,28 @@ bench = "perf_scenarios"
 row = "zoomed-out reduced composite of the huge document with one painted layer"
 enforce = false  # tracked only
 
+# ---- #9157: background compositor startup ------------------------------------------------------
+
+[[scenario]]
+id = "B2a"
+title = "First document: UI-thread time to first pixels"
+issue = 9157
+bench = "perf_scenarios"
+row = "first document: UI-thread time to first pixels"
+metric = "p95"
+budget_ms = 100
+enforce = false  # nightly Metal baseline not recorded yet
+
+[[scenario]]
+id = "B2b"
+title = "First document: GPU compositor ready"
+issue = 9157
+bench = "perf_scenarios"
+row = "first document: GPU compositor ready"
+metric = "p95"
+budget_ms = 2000
+enforce = false  # informational until a nightly Metal baseline exists
+
 [[scenario]]
 id = "P80"
 title = "App frame: full CPU refresh of a 24 MP document"

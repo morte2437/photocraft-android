@@ -3718,6 +3718,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Font size presets	글꼴 크기 사전 설정
 	Leading presets	행간 사전 설정
 	Tracking presets	자간 사전 설정
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	잘못된 숫자 입력입니다. {min}%에서 {max}% 사이의 정수가 필요합니다. 이전 값이 입력되었습니다.
 	Clear Selection	선택 영역 지우기
 	Color Aware	색상 인식

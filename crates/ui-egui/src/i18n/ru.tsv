@@ -4698,6 +4698,8 @@ shape	Appearance	Оформление
 	Font size presets	Наборы размеров шрифта
 	Leading presets	Наборы интерлиньяжа
 	Tracking presets	Наборы трекинга
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Недопустимое числовое значение. Требуется целое число от {min}% до {max}%. Вставлено предыдущее значение.
 	Color Aware	С учетом цвета
 	Decontaminate Colors	Очистить цвета

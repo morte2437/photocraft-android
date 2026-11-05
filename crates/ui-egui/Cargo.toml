@@ -8,6 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 craft-print = { workspace = true }
 craft-ui = { workspace = true }
 photocraft-geom = { workspace = true }

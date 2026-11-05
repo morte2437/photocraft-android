@@ -3529,6 +3529,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Font size presets	Schriftgrößen-Vorgaben
 	Leading presets	Zeilenabstand-Vorgaben
 	Tracking presets	Laufweiten-Vorgaben
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Ungültige Zahleneingabe. Es ist eine ganze Zahl zwischen {min}% und {max}% erforderlich. Der vorherige Wert wurde eingesetzt.
 	Clear Selection	Auswahl löschen
 	Color Aware	Farbbezogen

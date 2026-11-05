@@ -322,9 +322,13 @@ impl Bench {
 
     /// Reports a row. `splits` (one per sample, or none) adds the command / refresh split.
     fn record(&mut self, name: &str, s: &Session, samples: &[f64], splits: &[Split], result: Res<()>) {
+        self.record_with_gpu_bytes(name, samples, splits, result, self.gpu_bytes(s));
+    }
+
+    fn record_with_gpu_bytes(&mut self, name: &str, samples: &[f64], splits: &[Split], result: Res<()>, gpu_bytes: Option<u64>) {
         match result {
             Ok(()) => {
-                let mut r = row(name, samples, self.sampler.peak(), self.gpu_bytes(s));
+                let mut r = row(name, samples, self.sampler.peak(), gpu_bytes);
                 let mut split = String::new();
                 if !splits.is_empty() && splits.len() == samples.len() {
                     let cmd: Vec<f64> = splits.iter().map(|x| x.cmd_ms).collect();
@@ -404,7 +408,12 @@ struct Sizes {
     /// A huge document with one painted layer, refreshed zoomed out (#1015, #9330). The row name
     /// leaves out the size because `--quick` uses a smaller one.
     huge_doc: (u32, u32),
+    /// The new document whose compositor builds in the background.
+    first_document: (u32, u32),
 }
+
+/// The most `--reps` a run takes: each sample is kept, and a mistyped count must not allocate for them all.
+const MAX_REPS: usize = 10_000;
 
 const FULL: Sizes = Sizes {
     layered: (5472, 3648),
@@ -418,6 +427,7 @@ const FULL: Sizes = Sizes {
     a4: (2480, 3508),
     huge_new: (78_740, 39_370),
     huge_doc: (30_000, 30_000),
+    first_document: (1920, 1080),
 };
 
 const QUICK: Sizes = Sizes {
@@ -432,6 +442,7 @@ const QUICK: Sizes = Sizes {
     a4: (1240, 1754),
     huge_new: (20_000, 10_000),
     huge_doc: (8_000, 8_000),
+    first_document: (640, 480),
 };
 
 /// The layered document of #209: a background, six pixel layers with a drop shadow and a stroke,
@@ -498,7 +509,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let quick = args.iter().any(|a| a == "--quick");
     let sz = if quick { &QUICK } else { &FULL };
-    let reps: usize = arg(&args, "--reps").and_then(|v| v.parse().ok()).unwrap_or(if quick { 7 } else { 15 }).max(1);
+    let reps: usize = arg(&args, "--reps").and_then(|v| v.parse().ok()).unwrap_or(if quick { 7 } else { 15 }).clamp(1, MAX_REPS);
     let gpu = if args.iter().any(|a| a == "--cpu") { None } else { canvas() };
     let no_reuse = args.iter().any(|a| a == "--no-composite-reuse");
     if no_reuse && let Some((canvas, _)) = &gpu {
@@ -526,7 +537,7 @@ fn main() {
     // A panic in one group (a crash the scenario found) is reported against the row that was
     // running, and the other groups still run.
     type Group = fn(&mut Bench, &Sizes);
-    let groups: [(&str, Group); 8] = [
+    let groups: [(&str, Group); 9] = [
         ("layered", layered_scenarios),
         ("many layers", many_layer_scenarios),
         ("full-canvas layers", full_canvas_layer_scenarios),
@@ -534,6 +545,7 @@ fn main() {
         ("long operations", job_scenarios),
         ("algorithms", algorithm_scenarios),
         ("huge document", huge_document_scenarios),
+        ("first document", first_document_scenarios),
         ("redraw area", redraw_area_scenarios),
     ];
     let use_gpu = b.gpu.is_some();
@@ -580,6 +592,79 @@ fn main() {
         if let Err(e) = write_report(&out, &rep) {
             eprintln!("{e}");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Startup costs when a new canvas builds its compositor in the background, as the app does.
+fn first_document_scenarios(b: &mut Bench, sz: &Sizes) {
+    let (w, h) = sz.first_document;
+    const FIRST: &str = "first document: UI-thread time to first pixels";
+    const READY: &str = "first document: GPU compositor ready";
+    let Some((_, rs)) = b.gpu.as_ref() else {
+        println!("GPU compositor startup scenarios skipped: no GPU canvas");
+        return;
+    };
+    let rs = rs.clone();
+    if rs.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu {
+        println!("GPU compositor startup scenarios skipped: software adapter");
+        return;
+    }
+    for name in [FIRST, READY] {
+        if !b.wanted(name) {
+            continue;
+        }
+        b.current = Some(name.into());
+        b.sampler.reset();
+        let mut samples = Vec::with_capacity(b.reps);
+        let mut failure = None;
+        for _ in 0..b.reps {
+            let canvas = GpuCanvas::new(&rs);
+            let ctx = egui::Context::default();
+            let started = Instant::now();
+            canvas.start_compositor(&ctx);
+            let mut session = Session::new();
+            if let Err(e) = exec(&mut session, "file.new", json!({"width": w, "height": h, "background": "white"})) {
+                failure = Some(e);
+                break;
+            }
+            let first_ms = if name == FIRST {
+                let Some(doc) = session.active().map(|d| &d.doc) else {
+                    failure = Some("file.new did not create a document".into());
+                    break;
+                };
+                canvas.refresh(doc.id.0, doc, None, None);
+                Some(started.elapsed().as_secs_f64() * 1000.0)
+            } else {
+                None
+            };
+            // Wait before starting the next sample so builds cannot overlap or replace resources.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                if let Some(result) = canvas.take_compositor_completion() {
+                    if let Err((message, _)) = result {
+                        failure = Some(format!("GPU compositor build failed: {message}"));
+                    }
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    failure = Some("timed out waiting for GPU compositor build".into());
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if failure.is_some() {
+                break;
+            }
+            samples.push(first_ms.unwrap_or_else(|| started.elapsed().as_secs_f64() * 1000.0));
+        }
+        if let Some(error) = failure {
+            println!("{name:<52} ERROR {error}");
+            b.errors.push((name.into(), error));
+            break;
+        } else {
+            // Each sample owns a separate canvas that has already been dropped.
+            b.record_with_gpu_bytes(name, &samples, &[], Ok(()), None);
         }
     }
 }

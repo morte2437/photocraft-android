@@ -341,6 +341,41 @@ pub fn prefs_file() -> Option<PathBuf> {
     config_dir().map(|d| d.join("preferences.json"))
 }
 
+fn gpu_memo_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("gpu-compositor.json"))
+}
+
+fn load_gpu_memo_text() -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(gpu_memo_file()?).ok()?;
+    let cap = photocraft_ui_egui::gpu_memo::MAX_GPU_MEMO_BYTES;
+    let mut bytes = Vec::new();
+    file.take((cap + 1) as u64).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > cap {
+        log::info!("ignoring oversized GPU compositor memo");
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn shader_compiler_identity() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let exe = std::env::current_exe().ok();
+        let exe_dir = exe.as_deref().and_then(Path::parent);
+        match crate::gpu_startup::dx12_compiler(std::env::var("WGPU_DX12_COMPILER").ok().as_deref(), exe_dir) {
+            eframe::wgpu::Dx12Compiler::Fxc => "fxc".into(),
+            eframe::wgpu::Dx12Compiler::DynamicDxc { dxc_path } => format!("dxc:{dxc_path}"),
+            eframe::wgpu::Dx12Compiler::StaticDxc => "static-dxc".into(),
+            eframe::wgpu::Dx12Compiler::Auto => "auto".into(),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        String::new()
+    }
+}
+
 /// The brush preset store (one file per preset group plus tip bitmaps; see
 /// `photocraft_engine::preset_store`).
 pub fn presets_dir() -> Option<PathBuf> {
@@ -791,6 +826,14 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         load_prefs: Some(Box::new(|| std::fs::read_to_string(prefs_file()?).ok())),
         photoshop_shortcuts: Some(Box::new(|| crate::photoshop_settings::live_keyboard_shortcuts(&|k| std::env::var_os(k)))),
         save_prefs: Some(Box::new(|text: &str| write_atomic(&prefs_file().ok_or("no config directory")?, text.as_bytes()))),
+        load_gpu_memo: Some(Box::new(load_gpu_memo_text)),
+        save_gpu_memo: Some(Box::new(|text: &str| {
+            if text.len() > photocraft_ui_egui::gpu_memo::MAX_GPU_MEMO_BYTES {
+                return Err("GPU compositor memo exceeds 64 KiB".into());
+            }
+            write_atomic(&gpu_memo_file().ok_or("no config directory")?, text.as_bytes())
+        })),
+        shader_compiler: Some(shader_compiler_identity()),
         system_theme: crate::appearance::service(),
         append_text: Some(Box::new(|path: &str, text: &str| {
             use std::io::Write;

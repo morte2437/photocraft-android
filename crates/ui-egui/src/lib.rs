@@ -33,6 +33,7 @@ pub(crate) mod edit_session;
 pub mod file_dialog;
 pub mod file_open;
 pub mod frame_stages;
+pub mod gpu_memo;
 pub mod gpu_status;
 pub mod home_recent_ui;
 pub mod i18n;
