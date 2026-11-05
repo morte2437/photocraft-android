@@ -1,0 +1,103 @@
+{
+  "schema": 1,
+  "name": "invalid-then-correct",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "30 px"
+      },
+      "expect": {
+        "preview": {
+          "vertical": [
+            30,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "far"
+      },
+      "expect": {
+        "invalid": true,
+        "preview": {
+          "vertical": [
+            30,
+            20
+          ]
+        },
+        "vertical": [
+          10,
+          20
+        ]
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "rejected": true,
+        "invalid": true,
+        "editing": true,
+        "history": 2,
+        "editCommands": 0
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "40 px"
+      },
+      "expect": {
+        "invalid": false,
+        "preview": {
+          "vertical": [
+            40,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "rejected": false,
+        "vertical": [
+          40,
+          20
+        ],
+        "history": 3,
+        "editCommands": 1
+      }
+    }
+  ]
+}

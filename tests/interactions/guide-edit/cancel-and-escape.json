@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "name": "cancel-and-escape",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "30 px"
+      },
+      "expect": {
+        "preview": {
+          "vertical": [
+            30,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "cancel"
+      },
+      "expect": {
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": null,
+        "editing": false
+      }
+    },
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "40 px"
+      },
+      "expect": {
+        "preview": {
+          "vertical": [
+            40,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "escape"
+      },
+      "expect": {
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": null,
+        "editing": false
+      }
+    }
+  ]
+}

@@ -1308,7 +1308,10 @@ fn paint_primary_overlays(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut
     if app.ui.extras.grid && app.ui.view.extras {
         crate::rulers::draw_grid(app, painter, xf, doc);
     }
-    if app.ui.view.shows(app.ui.view.show.canvas_guides) || crate::guide_layout_ui::preview(app, doc).is_some() {
+    if app.ui.view.shows(app.ui.view.show.canvas_guides)
+        || crate::guide_layout_ui::preview(app, doc).is_some()
+        || crate::new_guide_ui::edit_preview(app, doc).is_some()
+    {
         crate::rulers::draw_guides(app, painter, xf, doc);
     }
     // The selection's ants go over the grid and guides, as in Photoshop (#10671).
