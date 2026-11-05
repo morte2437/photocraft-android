@@ -956,6 +956,92 @@ fn layers_moved_together_keep_their_order_on_the_new_board() {
     assert!(children(&s, a).is_empty());
 }
 
+/// A square `r` of `rgba` on top of `board`'s stack, clipped to the layer below it.
+fn clipped_square(s: &mut Session, board: LayerId, r: Rect, rgba: [f32; 4]) -> LayerId {
+    let id = add_square(s, r, rgba);
+    s.execute("layer.moveTo", json!({"layer": id.0, "target": board.0, "position": "into"})).unwrap();
+    s.execute("layer.setProps", json!({"layer": id.0, "clipped": true})).unwrap();
+    id
+}
+
+fn clipped(s: &Session, id: LayerId) -> bool {
+    doc(s).layer(id).unwrap().clipped
+}
+
+fn green_at(s: &Session, x: i32, y: i32) -> bool {
+    let px = photocraft_compose::render(doc(s), Rect::new(x, y, x + 1, y + 1)).px[0];
+    px[0] < 0.01 && px[1] > 0.99 && px[3] > 0.99
+}
+
+/// A clipping group moves between boards as one (#10512 follow-up): the base dragged onto board B
+/// takes the layers clipped to it along, in order, directly above it and still clipped. Left on
+/// board A, they were released and covered the whole board. One step for Undo.
+#[test]
+fn a_clipping_base_moved_onto_another_artboard_takes_its_clipped_layers() {
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        let (red, a, b) = nest_boards(&mut s);
+        // Two green layers covering board A, clipped to the red square.
+        let c1 = clipped_square(&mut s, a, Rect::new(10, 10, 50, 50), [0.0, 1.0, 0.0, 1.0]);
+        let c2 = clipped_square(&mut s, a, Rect::new(10, 10, 50, 50), [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(children(&s, a), vec![red, c1, c2], "{depth}");
+        assert!(green_at(&s, 15, 15) && !green_at(&s, 40, 40), "{depth}: green only over red");
+        let steps = s.active().unwrap().history.past_len();
+        let r = s.execute("layer.translate", json!({"layer": red.0, "dx": 190, "dy": 10, "nest": true})).unwrap();
+        assert_eq!(r, json!({"nested": [red.0, c1.0, c2.0]}), "{depth}");
+        assert_eq!(children(&s, b), vec![red, c1, c2], "{depth}: directly above their base, in order");
+        assert!(children(&s, a).is_empty(), "{depth}");
+        assert!(!clipped(&s, red) && clipped(&s, c1) && clipped(&s, c2), "{depth}: still clipped");
+        assert!(!green_at(&s, 40, 40), "{depth}: board A isn't covered");
+        assert!(red_at(&s, 205, 25), "{depth}: the green, left at A's spot, isn't over red on B");
+        assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "{depth}: one step");
+
+        s.undo();
+        assert_eq!(children(&s, a), vec![red, c1, c2], "{depth}");
+        assert!(clipped(&s, c1) && clipped(&s, c2), "{depth}");
+        assert!(green_at(&s, 15, 15), "{depth}");
+    }
+}
+
+/// A clipped layer goes where its base goes (#10512 follow-up). Dragged off its board on its own,
+/// it stays on it, clipped: it shows only over its base, which hasn't moved, as Photoshop's
+/// clipping masks keep a clipped layer with its base. Dragged together with its base, it follows
+/// the base, as when the base is dragged alone.
+#[test]
+fn a_clipped_layer_goes_where_its_base_goes() {
+    let mut s = session(8);
+    let (red, a, b) = nest_boards(&mut s);
+    let c = clipped_square(&mut s, a, Rect::new(10, 10, 30, 30), [0.0, 1.0, 0.0, 1.0]);
+    let r = s.execute("layer.translate", json!({"layer": c.0, "dx": 190, "dy": 10, "nest": true})).unwrap();
+    assert_eq!(r, Value::Null, "nothing changes board");
+    assert_eq!(children(&s, a), vec![red, c]);
+    assert!(clipped(&s, c));
+    // Moved back over its base; then both are dragged onto board B together.
+    s.execute("layer.translate", json!({"layer": c.0, "dx": -190, "dy": -10})).unwrap();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("layer.select", json!({"layer": c.0, "mode": "add"})).unwrap();
+    let r = s.execute("layer.translate", json!({"dx": 190, "dy": 10, "nest": true})).unwrap();
+    assert_eq!(r, json!({"nested": [red.0, c.0]}));
+    assert_eq!(children(&s, b), vec![red, c]);
+    assert!(clipped(&s, c));
+    assert!(green_at(&s, 205, 25), "the clipped layer still shows over its base");
+}
+
+/// When any layer of a clipping group can't change board (Prevent Auto-Nesting on a clipped
+/// layer here), the whole group stays where it is, clipped, rather than splitting.
+#[test]
+fn a_clipping_group_with_a_locked_layer_stays_whole() {
+    let mut s = session(8);
+    let (red, a, _b) = nest_boards(&mut s);
+    let c = clipped_square(&mut s, a, Rect::new(10, 10, 30, 30), [0.0, 1.0, 0.0, 1.0]);
+    s.execute("layer.select", json!({"layer": c.0})).unwrap();
+    s.execute("layer.lockLayers", json!({"artboard": true})).unwrap();
+    let r = s.execute("layer.translate", json!({"layer": red.0, "dx": 190, "dy": 10, "nest": true})).unwrap();
+    assert_eq!(r, Value::Null);
+    assert_eq!(children(&s, a), vec![red, c]);
+    assert!(clipped(&s, c));
+}
+
 /// Where `id`'s pixels are. Its own name: main's tests (#10489) already have a `content`.
 fn pixel_bounds(s: &Session, id: LayerId) -> Rect {
     doc(s).layer(id).unwrap().surface().unwrap().content_bounds()

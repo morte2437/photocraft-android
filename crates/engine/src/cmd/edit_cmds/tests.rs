@@ -1600,8 +1600,8 @@ fn paste_on_the_same_artboard_or_off_the_boards_is_unchanged() {
     let doc = &s.active().unwrap().doc;
     let on_b = doc.artboards().iter().find(|x| x.1 == "B").map(|x| x.0);
     let inside = doc.layer(on_b.unwrap()).unwrap().id;
-    assert!(board_shift(&clip, doc, Some(inside), &json!({"clampToCanvas": false})).is_none());
-    assert!(board_shift(&clip, doc, Some(inside), &json!({})).is_some());
+    assert!(board_shift(&clip, doc, Some(inside), &json!({"clampToCanvas": false}), true).is_none());
+    assert!(board_shift(&clip, doc, Some(inside), &json!({}), true).is_some());
 }
 
 /// A copied layer taken whole (a group here) is moved onto the other board the same way.
@@ -1803,4 +1803,107 @@ fn a_clipped_paste_joining_a_board_stays_clipped_only_over_a_layer() {
     };
     assert_eq!(paste_on(&mut s, sb), (Some(sb), true), "S holds a layer to clip to");
     assert_eq!(paste_on(&mut s, eb), (Some(eb), false), "E is empty");
+}
+
+/// A layer copied off every board and pasted with a layer on board B selected goes above B, at
+/// the top level, where it shows (#10538 follow-up): the clip has no source board, so it isn't
+/// moved onto B, and inside B, beside the selected layer, B hid it. Content centred on B (pasted
+/// at the view centre there) still goes inside B, by the rule a paste with B itself selected
+/// follows.
+#[test]
+fn a_paste_from_off_the_boards_beside_a_layer_on_a_board_stays_visible() {
+    let (mut s, _red, _a, b) = two_boards();
+    s.execute("select.deselectLayers", json!({})).unwrap();
+    let loose = s.execute("layer.new.layer", json!({"name": "Loose"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(loose).unwrap().surface_mut().unwrap().fill_rect(Rect::new(60, 60, 70, 70), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.active().unwrap().doc.artboard_of(loose), None);
+    let on_b = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.moveTo", json!({"layer": on_b.0, "target": b.0, "position": "into"})).unwrap();
+    s.execute("layer.select", json!({"layer": loose.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board, None, "copied off every board");
+    // Hidden, so only the paste can show at its spot.
+    s.execute("layer.setProps", json!({"layer": loose.0, "visible": false})).unwrap();
+    s.execute("layer.select", json!({"layer": on_b.0})).unwrap();
+    let r = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(r["offset"], json!([0, 0]));
+    assert_eq!(board_of_active(&s), None, "not inside B, which would hide it");
+    let st = s.active().unwrap();
+    let top: Vec<LayerId> = st.doc.layers.iter().map(|l| l.id).collect();
+    let at = |id: LayerId| top.iter().position(|x| *x == id);
+    assert_eq!(at(st.active_layer.unwrap()), at(b).map(|i| i + 1), "directly above B");
+    let px = photocraft_compose::render(&st.doc, Rect::new(65, 65, 66, 66)).px[0];
+    assert!(px[0] > 0.99 && px[1] < 0.01, "the paste shows");
+    // Centred on B, it lands inside B, beside the selected layer.
+    s.execute("layer.select", json!({"layer": on_b.0})).unwrap();
+    s.execute("edit.paste", json!({"center": [220.0, 40.0]})).unwrap();
+    assert_eq!(board_of_active(&s), Some(b));
+    assert_eq!(active_bounds(&s), Rect::new(215, 35, 225, 45));
+}
+
+/// Paste into a mask on another artboard lands where a layer paste does (#10538 follow-up): at
+/// the same spot on the board, moved by the offset between the boards' origins, for Paste and
+/// Paste in Place alike. `paste_offset` alone left it at the old spot on board A (in place) or in
+/// the middle of the view.
+#[test]
+fn paste_into_a_mask_on_another_artboard_keeps_the_place_on_the_board() {
+    for (cmd, params) in [
+        ("edit.paste", json!({"target": "mask"})),
+        ("edit.paste", json!({"target": "mask", "center": [500.0, 500.0]})),
+        ("edit.pasteSpecial.pasteInPlace", json!({"target": "mask"})),
+    ] {
+        let (mut s, red, _a, b) = two_boards();
+        s.execute("layer.select", json!({"layer": red.0})).unwrap();
+        s.execute("edit.copy", json!({})).unwrap();
+        let lum = luminosity(&s, red, 15, 15);
+        let m = s.execute("layer.new.layer", json!({"name": "m"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+        s.execute("layer.moveTo", json!({"layer": m.0, "target": b.0, "position": "into"})).unwrap();
+        s.execute("layer.select", json!({"layer": m.0})).unwrap();
+        s.execute("layer.layerMask.hideAll", json!({})).unwrap();
+        let r = s.execute(cmd, params.clone()).unwrap();
+        assert_eq!(r["offset"], json!([190, 10]), "{cmd} {params}: moved by B's origin minus A's");
+        assert!((mask_at(&s, m, 205, 25) - lum).abs() < 2.0 / 255.0, "{cmd} {params}: the same spot on B");
+        assert_eq!(mask_at(&s, m, 15, 15), 0.0, "{cmd} {params}: not at the old spot on A");
+    }
+}
+
+/// Paste in Place into an alpha channel with a layer on another artboard selected keeps the
+/// document position (#11441 review): the channel covers the whole document and belongs to no
+/// board, so the selected layer's board doesn't shift it.
+#[test]
+fn paste_in_place_into_an_alpha_channel_ignores_the_selected_layers_board() {
+    let (mut s, red, _a, b) = two_boards();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let lum = luminosity(&s, red, 15, 15);
+    let m = s.execute("layer.new.layer", json!({"name": "m"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.moveTo", json!({"layer": m.0, "target": b.0, "position": "into"})).unwrap();
+    s.execute("layer.select", json!({"layer": m.0})).unwrap();
+    s.execute("channel.new", json!({})).unwrap();
+    let r = s.execute("edit.pasteSpecial.pasteInPlace", json!({"target": {"channel": 0}})).unwrap();
+    assert_eq!(r["offset"], json!([0, 0]), "not moved to B");
+    let c = &s.active().unwrap().doc.channels[0].surface;
+    assert!((c.sample_channel(15, 15, 0) - lum).abs() < 2.0 / 255.0, "at the copied spot");
+}
+
+/// Paste into the mask of a position-locked artboard itself takes the board's shift too
+/// (#11441 review): the lock keeps a new layer off the board, but a mask paste adds no layer and
+/// mask edits don't check position locks, so it lands at the same spot on the board, not at the
+/// old spot on board A.
+#[test]
+fn paste_into_a_position_locked_artboards_own_mask_keeps_the_place_on_the_board() {
+    let (mut s, red, _a, b) = two_boards();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    let lum = luminosity(&s, red, 15, 15);
+    s.execute("layer.select", json!({"layer": b.0})).unwrap();
+    s.execute("layer.layerMask.hideAll", json!({})).unwrap();
+    s.execute("layer.lockLayers", json!({"position": true})).unwrap();
+    let r = s.execute("edit.paste", json!({"target": "mask"})).unwrap();
+    assert_eq!(r["offset"], json!([190, 10]), "moved by B's origin minus A's");
+    assert!((mask_at(&s, b, 205, 25) - lum).abs() < 2.0 / 255.0, "the same spot on B");
 }
