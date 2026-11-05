@@ -1874,6 +1874,44 @@ fn large_tips_render_the_same_in_parallel_and_serially() {
     }
 }
 
+/// The general loop (sampled tips, per-tip textures) paints the same pixels on the thread pool
+/// and serially, at 8-bit, 16-bit and float depth.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn general_loop_strokes_render_the_same_in_parallel_and_serially_at_every_depth() {
+    let tip = GrayTile::from_fn(16, 16, |x, y| if (x + y) % 3 == 0 { 1.0 } else { 0.4 });
+    let mut textured = BrushSettings { size: 120.0, hardness: 0.3, ..brush() };
+    textured.texture = Texture { enabled: true, pattern: Pattern::Tile(tip.clone()), each_tip: true, ..Default::default() };
+    let strokes = [BrushSettings { size: 120.0, tip: TipShape::Sampled(tip), color: [0.9, 0.2, 0.1, 1.0], ..brush() }, textured];
+    let full = Rect::new(0, 0, 400, 200);
+    let formats = [PixelFormat::RGBA8, PixelFormat::RGBA8.with_sample(SampleType::U16), PixelFormat::RGBA32F];
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::render::set_parallel_min_pixels(crate::render::DEFAULT_PARALLEL_MIN_PIXELS);
+        }
+    }
+    let _restore = Restore;
+    for fmt in formats {
+        for (i, b) in strokes.iter().enumerate() {
+            let render = |parallel_from: usize| -> Vec<f32> {
+                crate::render::set_parallel_min_pixels(parallel_from);
+                let mut s = Surface::new(fmt);
+                s.fill_rect(full, &[0.5, 0.5, 0.5, 1.0]);
+                render_stroke(&mut s, b, &line(80.0, 320.0, 100.0), None, false, 1.0);
+                s.read_region(full)
+            };
+            let parallel = render(0);
+            let serial = render(usize::MAX);
+            assert_eq!(parallel.len(), serial.len());
+            let diff = parallel.iter().zip(&serial).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+            assert_eq!(diff, 0, "stroke {i} at {fmt:?}: {diff} pixels differ between the parallel and the serial render");
+            // Colour channels only: the opaque background's alpha (1.0) is always 0.5 away from 0.5.
+            assert!(parallel.as_chunks::<4>().0.iter().any(|px| px[..3].iter().any(|v| (*v - 0.5).abs() > 0.1)), "stroke {i} at {fmt:?} painted something");
+        }
+    }
+}
+
 /// A CMYK document with its own profile: blend modes other than Normal convert each pixel through
 /// that profile, which is active per thread, so a stroke composited in parallel gives the pixels the
 /// serial path gives (the workers enter the caller's CMYK space too).
