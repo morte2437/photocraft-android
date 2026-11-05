@@ -25,8 +25,18 @@ share the outer action's entry, and a failing or Stop step keeps the completed
 prefix. A play with no document change adds no entry and preserves redo.
 `actions.setHistory {"singleState":false}` restores per-step history. The option
 is saved as `actions.createSingleHistoryState` in preferences and defaults to true
-when loading older preferences. It is separate from Playback Options' performance
-modes; the Playback Options dialog can use the same setting when #5212 lands.
+when loading older preferences.
+
+The Actions panel menu's **Playback Options…** (enabled with nothing selected) sets it together
+with the performance mode: Accelerated (default), Step by Step, or Pause For 1 to 60 whole
+seconds, saved as `actions.performance` (`accelerated` / `step` / `pause`) and
+`actions.pauseSeconds` and set by `actions.setPlayback`. Measured 2026-11-05: one Play plays the
+whole action in every mode; Step by Step waits about 1.15 s between steps and Pause For adds its
+seconds to that, with no wait before the first step or after the last; with the history option on
+it is still one `Action: <name>` state. PhotoCraft waits 1 s plus Pause For's seconds and redraws
+between steps; Esc and the panel's Stop button end the play there keeping the applied steps (the
+reference application's Stop does the same). Agents, the CLI and Batch always play at once.
+Pause For Audio Annotation (Mac only) is not offered.
 
 Step-dialog confirmation joins the original play only while its document and
 history still match the paused state. Cancel keeps the completed prefix; an
@@ -1058,7 +1068,7 @@ Item, Insert Stop, Insert Conditional, Insert Path; Action Options, Playback Opt
 Recording; Clear All Actions, Reset Actions, Load Actions, Replace Actions, Save Actions; the bundled sets
 (Commands, Frames, Image Effects, LAB Black & White Technique, Production, Star Trails, Text Effects,
 Textures, Video Actions); Close, Close Tab Group. Playback Options: Accelerated, Step by Step, Pause For
-1..60 seconds.
+1..60 seconds, Create a single history state (see Action playback history).
 
 How two menu entries record: **Insert Menu Item** records the chosen menu command's own event with no
 descriptor (Image > Image Size gives an `imageSize` step without settings; playback opens its dialog).
