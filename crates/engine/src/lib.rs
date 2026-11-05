@@ -31,6 +31,7 @@ pub mod layer_place;
 pub mod layer_style;
 pub mod link_watch;
 pub mod malloc_tuning;
+pub mod memory;
 pub mod new_layer;
 mod param_check;
 mod pixels;

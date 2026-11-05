@@ -47,6 +47,16 @@ fn before_composite_decode() {
 #[cfg(not(test))]
 fn before_composite_decode() {}
 
+/// The codec limits a flat import uses: the caller's decoded-pixel allowance lowers the codec's
+/// default cap; 0 keeps the defaults.
+fn decode_limits(opts: &crate::ImportOptions) -> codecs::Limits {
+    let mut limits = codecs::Limits::default();
+    if opts.flat_max_pixel_bytes > 0 {
+        limits.max_alloc = limits.max_alloc.min(opts.flat_max_pixel_bytes);
+    }
+    limits
+}
+
 /// Decodes a flat image into a single-layer document; a TIFF with Photoshop layer data opens
 /// layered (see [`crate::tiff_layers`]).
 pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
@@ -71,7 +81,8 @@ pub(crate) fn import_flat_with_options(
     if format == Some(Format::Tiff) {
         return import_tiff_page_with_options(name, bytes, None, opts, ctl);
     }
-    let img = codecs::decode_as(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes)?;
+    let limits = decode_limits(opts);
+    let img = codecs::decode_as_with(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes, &codecs::DecodeOptions { limits, ..Default::default() })?;
     // A palette BMP, PNG or GIF opens in Indexed Color mode with its colour table, as in
     // Photoshop (#3802, #4804, #7886). A GIF is always palette-based: the first frame's table.
     let palette = match format {
@@ -311,7 +322,7 @@ pub fn import_tiff_page_with_options(
     // Extra samples (alpha and spot channels) are only available from a whole-image decode.
     if bands.extra_samples() > 0 {
         drop(bands);
-        return import_tiff_with_extras(name, bytes, page, ctl);
+        return import_tiff_with_extras(name, bytes, page, opts, ctl);
     }
     tiff_to_document(name, bands.upright(), crate::memory::available, BAND_BYTES, ctl)
 }
@@ -396,9 +407,15 @@ fn tiff_admission(
 
 /// A flat TIFF page with extra samples, decoded whole: the composite becomes the layer, the
 /// extra samples its channels.
-fn import_tiff_with_extras(name: &str, bytes: &[u8], page: Option<usize>, ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
+fn import_tiff_with_extras(
+    name: &str,
+    bytes: &[u8],
+    page: Option<usize>,
+    opts: &crate::ImportOptions,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<ImportResult, IoError> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
-    let keep = codecs::DecodeOptions { keep_orientation: true, ..Default::default() };
+    let keep = codecs::DecodeOptions { keep_orientation: true, limits: decode_limits(opts) };
     let (img, orientation) = match page {
         None => (codecs::decode_with(bytes, &keep)?, codecs::tiff_orientation(bytes)),
         Some(p) => (codecs::decode_tiff_page(bytes, p, &keep)?, codecs::tiff_page_orientation(bytes, p)),

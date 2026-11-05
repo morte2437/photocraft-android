@@ -48,6 +48,8 @@ mod setup;
 mod shaders;
 mod texels;
 
+#[cfg(all(test, windows))]
+use budget::detect_video_memory;
 #[cfg(all(test, target_os = "linux"))]
 use budget::nvidia_video_memory;
 pub use budget::{
@@ -56,8 +58,6 @@ pub use budget::{
 };
 #[cfg(test)]
 use budget::{NVIDIA_VENDOR, bounded_output, drm_video_memory, parse_nvidia_smi};
-#[cfg(all(test, windows))]
-use budget::{detect_physical_memory, detect_video_memory};
 use callback::CanvasCallback;
 #[cfg(test)]
 use callback::{filter_mode, map_doc_px, tile_screen_aabb};
@@ -65,6 +65,8 @@ use doc_textures::init_buffer;
 #[cfg(test)]
 use doc_textures::{mip_count, mip_damage};
 pub use perf::{GpuInfo, Perf, backend_name, now_ms};
+#[cfg(all(test, windows))]
+use photocraft_engine::memory::detect_physical_memory;
 pub use resources::CanvasStyle;
 use resources::{DocTextures, Resources, identity_lut_bytes, lut_bind_group};
 #[cfg(test)]

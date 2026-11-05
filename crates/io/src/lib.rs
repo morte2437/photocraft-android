@@ -484,6 +484,65 @@ fn is_psd_input(name: &str, bytes: &[u8]) -> bool {
     is_psd(bytes) || (PSD_EXTS.iter().any(|e| has_extension(name, e)) && photocraft_codecs::detect(bytes).is_none())
 }
 
+/// How an import bounds its pixel memory before decoding pixels, for a caller that must fit
+/// several imports into one memory budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportPreflight {
+    /// PSD/PSB: the import's own layer/mask/merged preflight, lowered by
+    /// [`ImportOptions::psd_max_pixel_bytes`].
+    Psd,
+    /// TIFF: a layered page uses [`ImportOptions::psd_max_pixel_bytes`]; a flat page is decoded
+    /// in bands, so the caller bounds its whole canvas from the page's header
+    /// ([`photocraft_codecs::tiff_info`]).
+    Tiff,
+    /// A flat raster decoded into one image, bounded by
+    /// [`ImportOptions::flat_max_pixel_bytes`].
+    Flat,
+    /// Affinity, OpenRaster, Krita, XCF, PDN, SVG, camera raw and `.pcraft` files: this build has
+    /// no header-only estimate of their pixel memory before decoding.
+    Unbounded,
+}
+
+/// Which [`ImportPreflight`] applies to importing `name` and `bytes`.
+///
+/// The order matches [`import_stages`]; keep the two in step.
+pub fn import_preflight(name: &str, bytes: &[u8]) -> ImportPreflight {
+    if has_extension(name, photocraft_format::EXTENSION) || photocraft_format::is_pcraft(bytes) {
+        return ImportPreflight::Unbounded;
+    }
+    if is_psd(bytes) {
+        return ImportPreflight::Psd;
+    }
+    if affinity::is_affinity(bytes) || affinity::has_extension(name) {
+        return ImportPreflight::Unbounded;
+    }
+    if ora::is_ora(bytes) || has_extension(name, "ora") {
+        return ImportPreflight::Unbounded;
+    }
+    if kra::is_kra(bytes) || (kra::EXTENSIONS.iter().any(|e| has_extension(name, e)) && photocraft_codecs::detect(bytes).is_none()) {
+        return ImportPreflight::Unbounded;
+    }
+    if xcf::is_xcf(bytes) || (has_extension(name, "xcf") && photocraft_codecs::detect(bytes).is_none()) {
+        return ImportPreflight::Unbounded;
+    }
+    if xcf::is_gzipped_xcf(name, bytes) {
+        return ImportPreflight::Unbounded;
+    }
+    if has_extension(name, "pdn") || bytes.starts_with(b"PDN3") {
+        return ImportPreflight::Unbounded;
+    }
+    if raw::is_raw(bytes) {
+        return ImportPreflight::Unbounded;
+    }
+    if is_svg_input(name, bytes) {
+        return ImportPreflight::Unbounded;
+    }
+    if is_psd_input(name, bytes) {
+        return ImportPreflight::Psd;
+    }
+    if photocraft_codecs::detect(bytes) == Some(photocraft_codecs::Format::Tiff) { ImportPreflight::Tiff } else { ImportPreflight::Flat }
+}
+
 /// Imports a file. PSD/PSB, Affinity containers and camera raws are detected by magic; everything
 /// else is decoded with `photocraft-codecs`.
 pub fn import(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
@@ -524,6 +583,9 @@ pub struct ImportOptions {
     /// lower the default cap; 0 uses the adaptive budget. Does not cover metadata or
     /// smart-filter caches.
     pub psd_max_pixel_bytes: u64,
+    /// Decoded-pixel allowance for a flat raster (the buffer a codec decodes into). May lower
+    /// the codec's default cap; 0 uses it. PSD/PSB and layered TIFF use `psd_max_pixel_bytes`.
+    pub flat_max_pixel_bytes: u64,
     /// Explicit one-shot authorization for imports that exceed the soft budget but fit within the hard budget.
     pub psd_high_memory_approved: bool,
     /// Optional estimate limit for high-memory approval. When set, approval only applies if
@@ -537,6 +599,7 @@ impl Default for ImportOptions {
             max_group_depth: photocraft_doc::MAX_GROUP_DEPTH,
             demosaic: raw::Demosaic::default(),
             psd_max_pixel_bytes: 0,
+            flat_max_pixel_bytes: 0,
             psd_high_memory_approved: false,
             psd_approved_estimate: None,
         }
@@ -1249,8 +1312,24 @@ pub fn merged_composite(file: &PsdFile) -> Result<Vec<[f32; 4]>, IoError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImportOptions, import, import_for_open, is_psd_input, is_svg_input};
+    use super::{ImportOptions, ImportPreflight, import, import_for_open, import_preflight, is_psd_input, is_svg_input};
     use photocraft_psd::{Compression, Version, testgen};
+
+    /// The callers that fit several imports into one budget choose their option from this
+    /// classification, so it has to follow the same dispatch as [`super::import`].
+    #[test]
+    fn import_preflight_classifies_each_dispatched_format() {
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+        assert_eq!(import_preflight("x.png", png), ImportPreflight::Flat);
+        assert_eq!(import_preflight("x.psd", b"8BPS\0\0"), ImportPreflight::Psd);
+        assert_eq!(import_preflight("x.tif", b"II*\0"), ImportPreflight::Tiff);
+        assert_eq!(import_preflight("x.ora", b"PK\x03\x04"), ImportPreflight::Unbounded);
+        assert_eq!(import_preflight("x.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), ImportPreflight::Unbounded);
+        assert_eq!(import_preflight("x.pcraft", b"PCF1"), ImportPreflight::Unbounded);
+        assert_eq!(import_preflight("x.afphoto", b"Affinity"), ImportPreflight::Unbounded);
+        // A Photoshop extension whose bytes are a readable flat image follows the image.
+        assert_eq!(import_preflight("misnamed.psd", png), ImportPreflight::Flat);
+    }
 
     /// Verifies a valid PSD remains editable after import.
     #[test]

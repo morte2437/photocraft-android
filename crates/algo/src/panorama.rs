@@ -40,9 +40,9 @@ use crate::transform::Homography;
 
 mod blend;
 
-pub use blend::{Geometry, Photometric, RoiImage, blend_levels, multiband, photometric, seam_labels};
+pub use blend::{BAND_BUDGET, Geometry, Photometric, RoiImage, band_bytes_bound, blend_levels, multiband, photometric, seam_labels, try_multiband_batched};
 #[cfg(test)]
-use blend::{expand, multiband_batched, push_pull, reduce};
+use blend::{band_cost, expand, push_pull, reduce};
 
 /// Photomerge layouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -929,7 +929,7 @@ mod tests {
                     .collect()
             })
             .collect();
-        let (out, cov) = multiband(w, h, &imgs, &wts, 4);
+        let (out, cov) = multiband(w, h, &imgs, &wts, 4).unwrap();
         let row: Vec<f32> = (0..w).map(|x| out[20 * w + x]).collect();
         assert!((row[2] - 0.3).abs() < 0.02 && (row[w - 3] - 0.7).abs() < 0.02, "{row:?}");
         let max_jump = row.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0f32, f32::max);
