@@ -31,7 +31,9 @@ pub mod web;
 pub use crate::cicp::Cicp;
 pub use crate::codecs::exr_cryptomatte::{cryptomatte_id, cryptomatte_key, cryptomatte_preview_color};
 pub use crate::codecs::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
-pub use crate::codecs::png::{PngPalette, PngRows, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo};
+pub use crate::codecs::png::{
+    PngExtras, PngHeader, PngPalette, PngRowSink, PngRows, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo,
+};
 pub use crate::codecs::tiff::{
     PhotoshopTags as TiffPhotoshopTags, TiffBands, photoshop_tags as tiff_photoshop_tags, writes_little_endian as tiff_writes_little_endian,
 };
@@ -115,6 +117,26 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         _ => img.meta.exif.as_deref().map_or(1, exif_orientation),
     };
     finish_decode(img, o, opts)
+}
+
+/// Decodes a PNG a group of rows at a time, for a caller that builds its own pixel storage and
+/// never needs the whole decoded image. `begin` gets the [`PngHeader`] once and returns whether to go on, then `rows(y0, data)`
+/// gets whole rows `y0..` (`group` of them, fewer in the last call; native-endian) in final order, holding exactly the
+/// samples [`decode`] would return. The result is the metadata, complete once the file is read.
+///
+/// `Ok(None)`, with no row delivered, means the rows can't be had in final order (an
+/// interlaced or animated PNG) or `begin` returned false: use [`decode_as_with`]. Damaged files fail as [`decode_as_with`]
+/// fails them, possibly after some rows. The limits are checked before the first row; the
+/// orientation is not applied, so [`PngExtras::orientation`] other than 1 is for the caller to
+/// handle (or to fall back to [`decode_as_with`], which turns the image upright).
+pub fn decode_png_rows<E: From<CodecError>>(
+    bytes: &[u8],
+    opts: &DecodeOptions,
+    group: u32,
+    begin: &mut dyn FnMut(&PngHeader) -> Result<bool, E>,
+    rows: &mut PngRowSink<'_, E>,
+) -> Result<Option<PngExtras>, E> {
+    png::decode_rows(bytes, &opts.limits, group, begin, rows)
 }
 
 /// The upright pixel size [`decode`] would return, read from the file's header without decoding

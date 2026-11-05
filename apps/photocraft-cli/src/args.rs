@@ -123,6 +123,9 @@ pub(crate) struct InfoArgs {
     /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
     #[arg(long)]
     pub(crate) approve_high_memory: bool,
+    /// Also list every text run and paragraph run, anti-aliasing and full layer-effect settings
+    #[arg(long)]
+    pub(crate) detail: bool,
 }
 
 /// Open a file (or start a new document), run engine commands in order, save the result

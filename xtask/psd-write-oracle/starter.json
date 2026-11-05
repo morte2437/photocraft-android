@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "corpus_revision": "f5b1178cab15309e05b7b504545df3c701f6d8fd",
+  "cases": [
+    {
+      "id": "control-1",
+      "base": "text/antialias-none.psd",
+      "base_sha256": "8d03faba9e0c0bf8b416669eababff8060bd2601c89932769088401da241f62c",
+      "target": {
+        "kind": "Type"
+      },
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "unchanged",
+          "path": "/text/antialias"
+        }
+      ]
+    },
+    {
+      "id": "control-2",
+      "base": "text/paragraph-justify-left.psd",
+      "base_sha256": "15f2e504f7c06bcc6df4ec1e17215babf300230af5575e18221705c86da383c0",
+      "target": {
+        "kind": "Type"
+      },
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "unchanged",
+          "path": "/text/antialias"
+        }
+      ]
+    },
+    {
+      "id": "control-3",
+      "base": "text/tracking-plus200.psd",
+      "base_sha256": "110e0c73f1dba131eaae97ac828001f347e957a2a0e4b81eb9b146af3c211829",
+      "target": {
+        "kind": "Type"
+      },
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "unchanged",
+          "path": "/text/antialias"
+        }
+      ]
+    },
+    {
+      "id": "text-antialias-crisp",
+      "base": "text/antialias-none.psd",
+      "base_sha256": "8d03faba9e0c0bf8b416669eababff8060bd2601c89932769088401da241f62c",
+      "target": {
+        "kind": "Type"
+      },
+      "commands": [
+        {
+          "command": "type.antiAlias.crisp",
+          "params": {}
+        }
+      ],
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "changed_to",
+          "path": "/text/antialias",
+          "value": "Crisp"
+        }
+      ]
+    },
+    {
+      "id": "paragraph-justify-all",
+      "base": "text/paragraph-justify-left.psd",
+      "base_sha256": "15f2e504f7c06bcc6df4ec1e17215babf300230af5575e18221705c86da383c0",
+      "target": {
+        "kind": "Type"
+      },
+      "commands": [
+        {
+          "command": "type.setStyle",
+          "params": {
+            "align": "justifyAll"
+          }
+        }
+      ],
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "changed_to",
+          "path": "/text/paragraphs/0/style/align",
+          "value": "JustifyAll"
+        }
+      ]
+    },
+    {
+      "id": "tracking-split",
+      "base": "text/tracking-plus200.psd",
+      "base_sha256": "110e0c73f1dba131eaae97ac828001f347e957a2a0e4b81eb9b146af3c211829",
+      "target": {
+        "kind": "Type"
+      },
+      "commands": [
+        {
+          "command": "type.setStyle",
+          "params": {
+            "range": [
+              1,
+              3
+            ],
+            "tracking": -60
+          }
+        }
+      ],
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "changed_to",
+          "path": "/text/runs/1/style/tracking",
+          "value": -60.0
+        }
+      ]
+    },
+    {
+      "id": "text-drop-shadow",
+      "base": "text/antialias-none.psd",
+      "base_sha256": "8d03faba9e0c0bf8b416669eababff8060bd2601c89932769088401da241f62c",
+      "target": {
+        "kind": "Type"
+      },
+      "commands": [
+        {
+          "command": "layer.layerStyle.dropShadow",
+          "params": {
+            "distance": 17
+          }
+        }
+      ],
+      "checks": [
+        {
+          "op": "unchanged",
+          "path": "/text/text"
+        },
+        {
+          "op": "changed_to",
+          "path": "/effects/data/0/DropShadow/distance",
+          "value": 17.0
+        }
+      ]
+    }
+  ]
+}

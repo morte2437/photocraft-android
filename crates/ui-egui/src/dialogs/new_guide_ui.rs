@@ -53,6 +53,7 @@ pub(crate) fn color_label(name: &str) -> &'static str {
     }
 }
 
+/// Accept the named guide colours and the explicit custom-colour choice.
 fn is_color_name(name: &str) -> bool {
     name == CUSTOM || GUIDE_COLORS.iter().any(|(n, ..)| *n == name)
 }
@@ -65,10 +66,12 @@ fn custom_color(f: &Map<String, Value>) -> String {
         .map_or_else(|| "#4affff".to_string(), str::to_string)
 }
 
+/// Identify the specialized New Guide or Edit Selected Guides dialog fields.
 pub fn owns(fields: &Map<String, Value>) -> bool {
     fields.contains_key(MARK)
 }
 
+/// Read the ruler unit used for guide positions without an explicit suffix.
 fn ruler_unit(app: &PhotocraftApp) -> Unit {
     app.session.prefs().units_and_rulers.rulers
 }
@@ -145,9 +148,15 @@ pub fn open_edit(app: &mut PhotocraftApp) -> Result<u64, String> {
     f.insert(INITIAL_COLOR.into(), json!(if color == CUSTOM { custom.clone() } else { color.clone() }));
     f.insert("color".into(), json!(color));
     f.insert("customColor".into(), json!(custom));
-    Ok(app.ui.open_dialog(DialogKind::Command, f))
+    let id = app.ui.open_dialog(DialogKind::Command, f.clone());
+    if let Err(error) = crate::guide_edit::begin(app, id, &f) {
+        app.ui.close_dialog(id);
+        return Err(error);
+    }
+    Ok(id)
 }
 
+/// Edit the dialog fields and show validation errors without changing the live guide.
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let mut orientation = f.get("orientation").and_then(Value::as_str).unwrap_or("horizontal").to_string();
     let mut position = f.get("position").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -212,10 +221,11 @@ pub fn params(app: &PhotocraftApp, f: &Map<String, Value>) -> Value {
     }
 }
 
+/// Dispatch New Guide or guarded guide editing, retaining typed fields on a retryable error.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
     let params = params(app, f);
     if f.contains_key(EDIT) {
-        return confirm_edit(app, f, &params);
+        return confirm_edit(app, f);
     }
     match app.run(COMMAND, params.clone()) {
         Ok(result) => {
@@ -244,27 +254,39 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
 
 /// Edit Selected Guides' OK: the edited guide stays selected (at the end of the other list if it
 /// turned). A refused edit reopens the dialog, as New Guide does.
-fn confirm_edit(app: &mut PhotocraftApp, f: &Map<String, Value>, params: &Value) -> Result<Value, String> {
-    match app.run(EDIT_COMMAND, params.clone()) {
-        Ok(result) => {
-            let (from, to) = (params["orientation"] == "vertical", params["newOrientation"] == "vertical");
-            let index = if from == to {
-                params["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+fn confirm_edit(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
+    let (params, result) = match crate::guide_edit::finish(app, f) {
+        Ok(Some(applied)) => applied,
+        Ok(None) => return Ok(Value::Null),
+        Err(error) => {
+            if crate::guide_edit::retryable(app) {
+                let mut again = f.clone();
+                again.insert("__error".into(), json!(error));
+                let id = app.ui.open_dialog(DialogKind::Command, again);
+                if let Some(draft) = app.guide_edit.as_mut() {
+                    draft.dialog = id;
+                }
             } else {
-                app.session.active().map(|st| if to { st.doc.guides.vertical.len() } else { st.doc.guides.horizontal.len() }.saturating_sub(1))
-            };
-            if let Some(i) = index {
-                crate::guide_select::select(app, to, i);
+                app.guide_edit = None;
             }
-            Ok(result)
+            return Err(error);
         }
-        Err(e) => {
-            let mut again = f.clone();
-            again.insert("__error".into(), json!(e));
-            app.ui.open_dialog(DialogKind::Command, again);
-            Err(e)
-        }
+    };
+    let (from, to) = (params["orientation"] == "vertical", params["newOrientation"] == "vertical");
+    let index = if from == to {
+        params["index"].as_u64().and_then(|i| usize::try_from(i).ok())
+    } else {
+        app.session.active().map(|st| if to { st.doc.guides.vertical.len() } else { st.doc.guides.horizontal.len() }.saturating_sub(1))
+    };
+    if let Some(i) = index {
+        crate::guide_select::select(app, to, i);
     }
+    Ok(result)
+}
+
+/// The validated draft shown on the canvas, without changing the document or its history.
+pub fn edit_preview<'a>(app: &'a PhotocraftApp, doc: &photocraft_doc::Document) -> Option<&'a photocraft_doc::Guides> {
+    crate::guide_edit::preview(app, doc)
 }
 
 #[cfg(test)]

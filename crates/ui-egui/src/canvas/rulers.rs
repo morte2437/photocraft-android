@@ -216,7 +216,8 @@ pub fn draw_guides(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
     let drag = app.guide_drag;
     let g = &app.session.prefs().guides_grid_and_slices;
     let preview = crate::guide_layout_ui::preview(app, doc);
-    let guides = preview.as_ref().map(|(guides, _)| guides).unwrap_or(&doc.guides);
+    let edit = crate::new_guide_ui::edit_preview(app, doc);
+    let guides = edit.or_else(|| preview.as_ref().map(|(guides, _)| guides)).unwrap_or(&doc.guides);
     let (guide, style) =
         (preview.as_ref().map(|(_, color)| *color).unwrap_or_else(|| pref_color(&g.guide_color, Color32::from_rgb(74, 255, 255))), g.guide_style);
     let line = |vertical: bool, pos: f64, color: Color32| {
@@ -226,12 +227,12 @@ pub fn draw_guides(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
     // A guide given a colour in New Guide keeps it; the rest use the preference colour (or, while
     // New Guide Layout previews, the colour it will set). The selected guide is Photoshop's blue.
     let own = |vertical: bool, p: f64| {
-        if crate::guide_select::is_selected(app, vertical, p) {
+        if edit.is_none() && crate::guide_select::is_selected(app, vertical, p) {
             return crate::guide_select::SELECTED_COLOR;
         }
         guides.color(vertical, p).map_or(guide, |[r, g, b]| Color32::from_rgb(r, g, b))
     };
-    if app.ui.extras.guides || preview.is_some() {
+    if app.ui.extras.guides || preview.is_some() || edit.is_some() {
         for (vertical, list) in [(true, &guides.vertical), (false, &guides.horizontal)] {
             for (i, p) in list.iter().enumerate() {
                 if drag.is_some_and(|d| d.vertical == vertical && d.index == Some(i)) {

@@ -228,3 +228,63 @@ fn pngsuite_corpus_matches_oracle() {
     eprintln!("pngsuite: {checked} files compared");
     assert!(checked > 100, "{}: only {checked} PNGs compared: run `cargo xtask corpus --all`", dir.display());
 }
+
+/// Row-by-row decoding gives `decode`'s pixels and metadata for every PngSuite file it takes (all
+/// but the interlaced ones), and fails where `decode` fails.
+#[cfg(feature = "corpus")]
+#[test]
+fn pngsuite_corpus_rows_match_the_whole_decode() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/pngsuite");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        panic!("{} is missing: run `cargo xtask corpus --all`", dir.display());
+    };
+    let opts = DecodeOptions { keep_orientation: true, ..Default::default() };
+    let (mut streamed, mut refused, mut skipped) = (0, 0, 0);
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("png") {
+            continue;
+        }
+        let bytes = std::fs::read(&p).unwrap();
+        // The importer only streams files `detect` takes for PNG.
+        if detect(&bytes) != Some(Format::Png) {
+            skipped += 1;
+            continue;
+        }
+        let whole = decode_with(&bytes, &opts);
+        let (mut data, mut header) = (Vec::new(), None);
+        let rows = decode_png_rows::<CodecError>(
+            &bytes,
+            &opts,
+            256,
+            &mut |h| {
+                header = Some(*h);
+                Ok(true)
+            },
+            &mut |_, r| {
+                data.extend_from_slice(r);
+                Ok(())
+            },
+        );
+        match (whole, rows) {
+            (Ok(img), Ok(Some(x))) => {
+                let h = header.unwrap();
+                assert_eq!((img.width(), img.height(), img.layout(), img.sample_type()), (h.width, h.height, h.layout, h.sample), "{}", p.display());
+                assert!(img.data() == data, "{}: pixels", p.display());
+                assert_eq!(
+                    (&img.icc, &img.meta.exif, &img.meta.text, &img.meta.xmp, &img.warnings),
+                    (&x.icc, &x.meta.exif, &x.meta.text, &x.meta.xmp, &x.warnings),
+                    "{}",
+                    p.display()
+                );
+                assert_eq!(img.meta.dpi, x.meta.dpi, "{}", p.display());
+                streamed += 1;
+            }
+            (Ok(_), Ok(None)) => refused += 1,
+            (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{}", p.display()),
+            (a, b) => panic!("{}: whole {:?}, rows {:?}", p.display(), a.map(|_| ()), b.map(|r| r.map(|_| ()))),
+        }
+    }
+    eprintln!("pngsuite: {streamed} streamed, {refused} refused (interlaced), {skipped} skipped (not detected as PNG)");
+    assert!(streamed > 100, "only {streamed} PNGs streamed: run `cargo xtask corpus --all`");
+}

@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "name": "preview-commit-undo-redo",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "set",
+        "field": "position",
+        "value": "25%"
+      },
+      "expect": {
+        "vertical": [
+          10,
+          20
+        ],
+        "preview": {
+          "vertical": [
+            100,
+            20
+          ]
+        },
+        "history": 2,
+        "editCommands": 0
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "vertical": [
+          100,
+          20
+        ],
+        "history": 3,
+        "editCommands": 1,
+        "editing": false,
+        "preview": null
+      }
+    },
+    {
+      "event": {
+        "op": "undo"
+      },
+      "expect": {
+        "vertical": [
+          10,
+          20
+        ],
+        "redo": true
+      }
+    },
+    {
+      "event": {
+        "op": "redo"
+      },
+      "expect": {
+        "vertical": [
+          100,
+          20
+        ],
+        "redo": false
+      }
+    }
+  ]
+}

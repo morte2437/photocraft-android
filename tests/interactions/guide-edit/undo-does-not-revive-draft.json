@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "name": "undo-does-not-revive-draft",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "command",
+        "id": "view.moveGuide",
+        "params": {
+          "orientation": "vertical",
+          "index": 0,
+          "position": 15
+        }
+      },
+      "expect": {
+        "vertical": [
+          15,
+          20
+        ],
+        "preview": null
+      }
+    },
+    {
+      "event": {
+        "op": "undo"
+      },
+      "expect": {
+        "vertical": [
+          10,
+          20
+        ],
+        "redo": true,
+        "preview": null
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "rejected": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "redo": true,
+        "history": 2,
+        "editCommands": 0
+      }
+    }
+  ]
+}

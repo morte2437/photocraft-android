@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "name": "deleted-index-reused",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "command",
+        "id": "view.deleteGuide",
+        "params": {
+          "orientation": "vertical",
+          "index": 0
+        }
+      },
+      "expect": {
+        "vertical": [
+          20
+        ],
+        "preview": null,
+        "invalid": true
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "rejected": true,
+        "vertical": [
+          20
+        ],
+        "history": 3,
+        "editCommands": 0,
+        "editing": false
+      }
+    }
+  ]
+}
