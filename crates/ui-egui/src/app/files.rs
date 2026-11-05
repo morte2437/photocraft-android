@@ -13,15 +13,22 @@ impl PhotocraftApp {
         let mut r = self.session.prefs().file_handling.recent_files.clone();
         r.retain(|p| p != path);
         r.insert(0, path.to_string());
+        let evicted: Vec<String> = if r.len() > cap { r[cap..].to_vec() } else { Vec::new() };
         r.truncate(cap);
         self.ui.recent_files = r.clone();
         self.session.prefs.edit(|p| p.file_handling.recent_files = r);
+        let mut cache = self.thumbnail_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.invalidate(path);
+        for evicted_path in evicted {
+            cache.invalidate(&evicted_path);
+        }
     }
 
     /// File › Open Recent › Clear Recent File List.
     pub fn clear_recent(&mut self) {
         self.ui.recent_files.clear();
         self.session.prefs.edit(|p| p.file_handling.recent_files.clear());
+        self.thumbnail_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
     }
 
     /// Take one file off the recent list (the Home screen's × or Remove from Recent, #2691). The
@@ -29,6 +36,7 @@ impl PhotocraftApp {
     pub fn remove_recent(&mut self, path: &str) {
         self.ui.recent_files.retain(|p| p != path);
         self.session.prefs.edit(|p| p.file_handling.recent_files.retain(|r| r != path));
+        self.thumbnail_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).invalidate(path);
     }
 
     /// How many recent files to remember ("Recent File List Contains", 0–100).
@@ -660,6 +668,7 @@ impl PhotocraftApp {
             // A copy written over the document's own file is this app's change too.
             self.remember_stamp(doc, path);
         }
+        self.thumbnail_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).invalidate(path);
         self.ui.status_error = false;
         let what = crate::i18n::fmt(tl!("Saved {name}"), &[("name", file_open::display_name(path).as_str())]);
         notices::io_warnings(self, &what, warnings);

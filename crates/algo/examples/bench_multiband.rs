@@ -77,7 +77,7 @@ fn run() -> Result<(), String> {
     let mut samples_ms = Vec::with_capacity(o.reps);
     for _ in 0..o.reps {
         let t0 = Instant::now();
-        let output = panorama::multiband(cw, ch, &rois, &wts, levels);
+        let output = panorama::multiband(cw, ch, &rois, &wts, levels).map_err(|e| format!("multiband: {e}"))?;
         samples_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
         std::hint::black_box(&output);
     }

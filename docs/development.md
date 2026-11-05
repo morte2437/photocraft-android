@@ -169,6 +169,7 @@ By default PhotoCraft's own crates log at `info` and everything else at `warn`. 
 
 | Variable | Effect |
 |---|---|
+| `PHOTOCRAFT_GPU=1` (or `=0`) | Headless CLI: prefer GPU composition and flat export (0 to disable, empty to unset). Explicit `--gpu`/`--no-gpu` CLI flags override this variable. `file.export.quickExport` composites and encodes inside the engine, which has no renderer, so it always runs on the CPU; `run --gpu` prints a one-time warning when a step uses it |
 | `PHOTOCRAFT_CONTROL_PORT` | Same as `--control <port>`; also the port for `photocraft-cli serve --port` and `mcp --bridge` when the flag is absent. Empty is unset |
 | `PHOTOCRAFT_NO_PRINT` | Set to anything but `0`: `file.print` / `file.printOneCopy` refuse to spool (`dryRun` still works). CI sets it, with `LPDEST=photocraft-no-such-printer` as a second net; set both when running the panic hunt or fuzzers locally |
 | `RUST_LOG` | Log levels for standard error and the log file (see [Logs](#logs)) |
@@ -267,6 +268,17 @@ ln -s photocraft-<version>-linux-x86_64.AppImage photocraft-cli
 ```
 
 The `--cli` selector is removed; all remaining arguments, stdin, stdout, stderr and the exit status are passed through. CLI launches skip desktop integration. The symlink form uses the AppImage runtime's `ARGV0`; the normal AppImage name launches the GUI.
+
+### GPU rendering
+
+PhotoCraft CLI supports optional native GPU acceleration for flat exports and composition in `convert`, `run`, `batch`, `serve`, and headless `mcp`:
+
+- `--gpu`: Opt into GPU acceleration. Prefers a hardware adapter, performs bounded multi-band readback, and automatically falls back to CPU if an unsupported document feature (such as unsupported blend modes or layered saves) is encountered or if the GPU device becomes unavailable.
+- `--no-gpu`: Explicitly disable GPU rendering and use CPU composition (the default).
+- `PHOTOCRAFT_GPU`: Environment variable equivalent when neither flag is supplied (`1` enables GPU, `0` disables it). An empty or whitespace-only value is treated as unset (defaulting to CPU). Any other value is rejected with a usage error naming the variable. Explicit `--gpu` or `--no-gpu` flags always override the environment variable.
+- **Backend scope and limitations**: GPU acceleration applies to flat exports (e.g. PNG, JPEG, WebP, flat TIFF). Layered/native saves (`.pcraft`, PSD, TIFF with layers) and embedded thumbnail generation remain CPU operations.
+- **Diagnostics and protocol safety**: GPU initialization status, adapter information, and deduplicated fallback warnings are written to standard error. Standard output (JSON lines in `run`, MCP protocol frames, etc.) is never polluted with diagnostics.
+- **Bridge MCP**: When `photocraft-cli mcp` is bridged to a running desktop app (`--bridge`), explicit `--gpu` / `--no-gpu` flags are rejected because the desktop process controls rendering. `PHOTOCRAFT_GPU` is ignored in bridge mode to prevent ambient environment variables from disrupting live bridges.
 
 `actions.json` holds the steps of a recorded action: `[["<id>", {…}], …]`, `[{"command": "<id>", "params": {…}}, …]` or bare ids, as a list or wrapped in `{"actions": …}` or `{"steps": …}`; a droplet file works too. It can also be an Actions set (the Actions panel's `actions.json`, `{"actions": [{"name": …, "steps": […]}, …]}`): `--action <name>` picks the action to play (optional when the set holds one), and the whole set is loaded for each file, so a step that plays another action of the set works. `batch` refuses an `--out` folder that is the `--in` folder, since the results would replace the originals, unless `--in-place` is given. `run` prints one JSON line per command result.
 

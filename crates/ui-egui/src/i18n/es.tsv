@@ -1896,6 +1896,7 @@
 	Soften	Suavizar
 	Source	Origen
 	Source: set	Origen: establecido
+	Source: {name}	Origen: {name}
 	Sponge Tool	Herramienta Esponja
 	Spot Healing Brush Tool	Herramienta Pincel corrector puntual
 	Spread	Extensión
@@ -4249,6 +4250,7 @@ navigator	Zoom	Zoom
 	Automatically Check for Updates	Buscar actualizaciones automáticamente
 	Paints from the History panel's source state	Pinta a partir del estado de origen del panel Historia
 	Sets the source for the history brush	Establece el origen del pincel de historia
+	The History Brush source was deleted: set a new source in the History panel	Se eliminó el origen del pincel de historia: establece un nuevo origen en el panel Historia
 	Highlight Mode	Modo de luces
 	Highlight Color	Color de luces
 	Highlight Opacity	Opacidad de luces
@@ -4446,3 +4448,12 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Pause For	Pausa de
 	seconds	segundos
 	Create a single history state	Crear un solo estado de historia
+	Drag to move the active shape's path or the Work Path	Arrastre para mover el trazado de la forma activa o el trazado de trabajo
+	Generator enabled	Generador activado
+	This Layer:	Esta capa:
+	Move Up	Mover arriba
+	Move Down	Mover abajo
+	On your computer	En su ordenador
+	New file	Nuevo archivo
+	Learn	Aprender
+	Website	Sitio web

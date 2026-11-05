@@ -1973,6 +1973,7 @@
 	Soften	柔化
 	Source	源
 	Source: set	源：已设置
+	Source: {name}	源：{name}
 	Sponge Tool	海绵工具
 	Spot Healing Brush Tool	污点修复画笔工具
 	Spread	扩展
@@ -2993,6 +2994,7 @@ curves	Smooth	平滑
 	Automatically Check for Updates	自动检查更新
 	Paints from the History panel's source state	从历史记录面板的源状态绘画
 	Sets the source for the history brush	设置历史记录画笔的源
+	The History Brush source was deleted: set a new source in the History panel	历史记录画笔的源已被删除：请在“历史记录”面板中设置新的源
 	Highlight Mode	高光模式
 	Highlight Color	高光颜色
 	Highlight Opacity	高光不透明度
@@ -3220,3 +3222,14 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Pause For	暂停
 	seconds	秒
 	Create a single history state	创建单个历史记录状态
+	Drag to move the active shape's path or the Work Path	拖动以移动当前形状的路径或工作路径
+	Generator enabled	启用生成器
+	Move Up	上移
+	Move Down	下移
+	Grid view	网格视图
+	List view	列表视图
+	On your computer	在您的计算机上
+	New file	新建文件
+	Learn	学习
+	No recent files	没有最近使用的文件
+	Website	网站

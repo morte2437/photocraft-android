@@ -1904,6 +1904,7 @@
 	Soften	Adoucir
 	Source	Source
 	Source: set	Source : définie
+	Source: {name}	Source : {name}
 	Sponge Tool	Outil Éponge
 	Spot Healing Brush Tool	Outil Correcteur localisé
 	Spread	Grossissement
@@ -3343,6 +3344,7 @@ curves	Smooth	Lisser
 	Automatically Check for Updates	Rechercher automatiquement des mises à jour
 	Paints from the History panel's source state	Peint à partir de l'état source du panneau Historique
 	Sets the source for the history brush	Définit la source du pinceau d'historique
+	The History Brush source was deleted: set a new source in the History panel	La source du pinceau d'historique a été supprimée : définissez une nouvelle source dans le panneau Historique
 	Highlight Mode	Mode des tons clairs
 	Highlight Color	Couleur des tons clairs
 	Highlight Opacity	Opacité des tons clairs
@@ -4570,3 +4572,11 @@ shape	Appearance	Apparence
 	Pause For	Pause de
 	seconds	secondes
 	Create a single history state	Créer un seul état d'historique
+	Generator enabled	Générateur activé
+	Move Up	Déplacer vers le haut
+	Move Down	Déplacer vers le bas
+	Hidden	Masqué
+	On your computer	Sur votre ordinateur
+	New file	Nouveau fichier
+	Learn	Apprendre
+	Website	Site web

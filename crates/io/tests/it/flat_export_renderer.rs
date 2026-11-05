@@ -26,6 +26,8 @@ fn synthetic_doc() -> Document {
 #[derive(Default)]
 struct RecordingRenderer {
     diagnostics: Vec<String>,
+    /// How many times `render_bands` was called.
+    renders: usize,
 }
 
 impl BandRenderer for RecordingRenderer {
@@ -37,6 +39,7 @@ impl BandRenderer for RecordingRenderer {
         ctl: &Interrupt<'_>,
         sink: &mut dyn FnMut(RenderBand) -> Result<(), IoError>,
     ) -> Result<(), RenderError> {
+        self.renders += 1;
         let mut cpu = CpuRenderer;
         cpu.render_bands(doc, rect, band_rows, ctl, sink)
     }
@@ -132,11 +135,8 @@ fn single_layer_and_cmyk_exports_report_that_the_renderer_was_not_used() {
     let mut renderer = RecordingRenderer::default();
     let mut warnings = Vec::new();
     document_to_image_with_renderer(&single, &mut warnings, Some(&mut renderer)).expect("single-layer export");
-    let diagnostics = renderer.drain_diagnostics();
-    assert!(
-        diagnostics.iter().any(|d| d.contains("single-layer") && d.contains("CPU")),
-        "a requested renderer that is bypassed must report why: {diagnostics:?}"
-    );
+    assert!(warnings.iter().any(|d| d.contains("single-layer") && d.contains("CPU")), "a requested renderer that is bypassed must report why: {warnings:?}");
+    assert_eq!(renderer.renders, 0, "the native copy never calls the renderer");
 
     // A CMYK composite mixed on ink values likewise returns before the renderer branch.
     let mut cmyk = Document::with_background("cmyk", Size::new(32, 32), ColorMode::Cmyk, SampleType::U8, Color::WHITE);
@@ -303,8 +303,9 @@ fn renderer_preview_is_8bit_rgba_while_saved_export_keeps_depth() {
     s.fill_rect(Rect::new(8, 8, 56, 40), &[0.2, 0.4, 0.8, 0.5]);
     doc.layers.push(Layer::new("top", LayerContent::Raster(s)));
 
-    let mut preview_renderer = CpuRenderer;
+    let mut preview_renderer = RecordingRenderer::default();
     let preview = export_preview_png_with_renderer(&doc, Some(&mut preview_renderer)).expect("preview export");
+    assert!(preview_renderer.renders > 0, "the preview must render through the supplied renderer");
     let img = photocraft_codecs::decode(&preview.bytes).expect("decode preview");
     assert_eq!((img.width(), img.height()), (64, 48));
     assert_eq!(img.layout(), photocraft_codecs::ChannelLayout::Rgba, "a preview is always RGBA");
@@ -436,4 +437,68 @@ fn unknown_export_format_is_rejected() {
     // `export` takes a name or bare extension; an unknown one fails before any codec runs.
     let export_err = photocraft_io::export(&doc, "invalid_unknown_extension_xyz", &opts);
     assert!(export_err.is_err());
+}
+
+/// A renderer that fails retryably on its first call and, as it does, requests cancellation, so
+/// the complete CPU retry that follows cannot succeed. It queues pushed diagnostics for the test.
+struct FailThenCancelRenderer {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    diagnostics: Vec<String>,
+}
+
+impl BandRenderer for FailThenCancelRenderer {
+    fn render_bands(
+        &mut self,
+        _doc: &Document,
+        _rect: Rect,
+        _band_rows: i32,
+        _ctl: &Interrupt<'_>,
+        _sink: &mut dyn FnMut(RenderBand) -> Result<(), IoError>,
+    ) -> Result<(), RenderError> {
+        self.cancel.store(true, Ordering::SeqCst);
+        Err(RenderError::Device("forced device loss".into()))
+    }
+
+    fn drain_diagnostics(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    fn push_diagnostic(&mut self, diagnostic: String) {
+        self.diagnostics.push(diagnostic);
+    }
+}
+
+#[test]
+fn a_failed_cpu_retry_keeps_the_fallback_reason_on_the_renderer() {
+    let doc = synthetic_doc();
+    let opts = ExportOptions::default();
+    for streamed in [false, true] {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = flag.clone();
+        let cancel = move || seen.load(Ordering::SeqCst);
+        let ctl = Interrupt::cancel_only(&cancel);
+        let mut renderer = FailThenCancelRenderer { cancel: flag, diagnostics: Vec::new() };
+        let res = if streamed {
+            export_png_streamed_with_renderer(&doc, &opts, &ctl, 0, Some(&mut renderer))
+        } else {
+            export_flat_with_renderer(&doc, Format::Png, &opts, &ctl, Some(&mut renderer))
+        };
+        assert!(matches!(res, Err(IoError::Cancelled)), "the CPU retry is cancelled (streamed: {streamed}): {res:?}");
+        let diagnostics = renderer.drain_diagnostics();
+        assert!(
+            diagnostics.iter().any(|d| d.contains("custom renderer unavailable") && d.contains("falling back to CPU")),
+            "the fallback reason must survive the failed retry (streamed: {streamed}): {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn single_layer_notice_reaches_the_export_warnings_without_renderer_diagnostics() {
+    // `FailingRenderer` keeps the default no-op `push_diagnostic`, like any renderer that ignores it.
+    let single = Document::with_background("single", Size::new(24, 24), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    let mut renderer = FailingRenderer::new(usize::MAX, "device");
+    let res = export_flat_with_renderer(&single, Format::Png, &ExportOptions::default(), &Interrupt::NONE, Some(&mut renderer)).expect("single-layer export");
+    assert!(res.warnings.iter().any(|w| w.contains("single-layer") && w.contains("CPU")), "{:?}", res.warnings);
+    let res = export_png_streamed_with_renderer(&single, &ExportOptions::default(), &Interrupt::NONE, 0, Some(&mut renderer)).expect("streamed single layer");
+    assert!(res.warnings.iter().any(|w| w.contains("single-layer") && w.contains("CPU")), "{:?}", res.warnings);
 }

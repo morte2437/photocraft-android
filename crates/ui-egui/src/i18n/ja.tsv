@@ -1949,6 +1949,7 @@
 	Soften	ぼかし
 	Source	ソース
 	Source: set	ソース: 設定済み
+	Source: {name}	ソース: {name}
 	Sponge Tool	スポンジツール
 	Spot Healing Brush Tool	スポット修復ブラシツール
 	Spread	スプレッド
@@ -4011,6 +4012,7 @@ curves	Smooth	スムーズ
 	Automatically Check for Updates	アップデートを自動的に確認
 	Paints from the History panel's source state	ヒストリーパネルのソース状態からペイントします
 	Sets the source for the history brush	ヒストリーブラシのソースを設定します
+	The History Brush source was deleted: set a new source in the History panel	ヒストリーブラシのソースが削除されました: ヒストリーパネルで新しいソースを設定してください
 	Highlight Mode	ハイライトモード
 	Highlight Color	ハイライトカラー
 	Highlight Opacity	ハイライト不透明度
@@ -4211,3 +4213,15 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Pause For	一時停止
 	seconds	秒
 	Create a single history state	単一のヒストリー状態を作成
+	Drag to move the active shape's path or the Work Path	ドラッグして、アクティブなシェイプのパスまたは作業用パスを移動
+	Generator enabled	自動生成を有効にする
+	This Layer:	現在のレイヤー:
+	Move Up	上へ移動
+	Move Down	下へ移動
+	Grid view	グリッド表示
+	List view	リスト表示
+	On your computer	このコンピューター上
+	New file	新規ファイル
+	Learn	学ぶ
+	No recent files	最近使ったファイルはありません
+	Website	Web サイト

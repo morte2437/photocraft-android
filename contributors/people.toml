@@ -308,3 +308,7 @@ sync_github_name = true
 real_name = "Simone Recchia"
 display_name = "Simone Recchia"
 sync_github_name = false
+
+[people.davidvhk]
+real_name = "David Vanhoucke"
+sync_github_name = true

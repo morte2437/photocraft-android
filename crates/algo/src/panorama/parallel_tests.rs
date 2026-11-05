@@ -284,13 +284,13 @@ fn reduce_and_expand_match_the_serial_code() {
     for (n, &(w, h)) in SIZES.iter().enumerate() {
         for ch in [1usize, 3, 4] {
             let src = noise(w * h * ch, n as u64 * 7 + ch as u64);
-            let (nw, nh, got) = reduce(w, h, ch, &src);
+            let (nw, nh, got) = reduce(w, h, ch, &src).unwrap();
             let (rw, rh, want) = ref_reduce(w, h, ch, &src);
             assert_eq!((nw, nh), (rw, rh));
             assert_eq!(bits(&got), bits(&want), "reduce {w}x{h}x{ch}");
             // Expand back to the original size and to sizes that are not twice the source's.
             for (ew, eh) in [(w, h), (2 * nw, 2 * nh), (2 * nw - 1, 2 * nh + 1), (w + 3, h + 5)] {
-                let got = expand(nw, nh, ch, &want, ew, eh);
+                let got = expand(nw, nh, ch, &want, ew, eh).unwrap();
                 let want_up = ref_expand(nw, nh, ch, &want, ew, eh);
                 assert_eq!(bits(&got), bits(&want_up), "expand {nw}x{nh}x{ch} to {ew}x{eh}");
             }
@@ -311,7 +311,7 @@ fn push_pull_matches_the_serial_code() {
                 };
                 let px = noise(w * h * ch, 100 + n as u64);
                 let (mut got, mut want) = (px.clone(), px);
-                push_pull(w, h, ch, &mut got, &wt);
+                push_pull(w, h, ch, &mut got, &wt).unwrap();
                 ref_push_pull(w, h, ch, &mut want, &wt);
                 assert_eq!(bits(&got), bits(&want), "push_pull {w}x{h}x{ch} variant {variant}");
             }
@@ -350,7 +350,7 @@ fn multiband_matches_the_serial_code() {
         for ch in [1usize, 3] {
             let (imgs, wts) = rois(w, h, ch, n as u64 * 31 + ch as u64);
             for levels in [1usize, 2, 3, 5, 7] {
-                let got = multiband(w, h, &imgs, &wts, levels);
+                let got = multiband(w, h, &imgs, &wts, levels).unwrap();
                 let want = ref_multiband(w, h, &imgs, &wts, levels);
                 assert_eq!(bits(&got.0), bits(&want.0), "colours {w}x{h}x{ch} levels {levels}");
                 assert_eq!(bits(&got.1), bits(&want.1), "coverage {w}x{h}x{ch} levels {levels}");
@@ -358,7 +358,7 @@ fn multiband_matches_the_serial_code() {
         }
     }
     // No images at all, and zero levels.
-    assert_eq!(multiband(9, 7, &[], &[], 3).0.len(), ref_multiband(9, 7, &[], &[], 3).0.len());
+    assert_eq!(multiband(9, 7, &[], &[], 3).unwrap().0.len(), ref_multiband(9, 7, &[], &[], 3).0.len());
 }
 
 /// Batching the bands (#7758) changes when they are built, not the result. Budgets from none
@@ -374,7 +374,7 @@ fn multiband_batches_match_the_serial_code() {
             for levels in [1usize, 3, 5] {
                 let want = ref_multiband(w, h, &imgs, &wts, levels);
                 for &budget in &budgets {
-                    let got = multiband_batched(w, h, &imgs, &wts, levels, budget);
+                    let got = try_multiband_batched(w, h, &imgs, &wts, levels, budget, None).unwrap();
                     assert_eq!(bits(&got.0), bits(&want.0), "colours {w}x{h}x{ch} levels {levels} budget {budget}");
                     assert_eq!(bits(&got.1), bits(&want.1), "coverage {w}x{h}x{ch} levels {levels} budget {budget}");
                 }
@@ -388,15 +388,60 @@ fn multiband_batches_match_the_serial_code() {
 #[test]
 fn multiband_hashes_recorded_from_the_serial_code() {
     let (imgs, wts) = rois(97, 61, 3, 5);
-    let (px, cov) = multiband(97, 61, &imgs, &wts, 5);
+    let (px, cov) = multiband(97, 61, &imgs, &wts, 5).unwrap();
     assert_eq!(fnv(&[&px, &cov]), 0xf89a5726082ebb6c, "97x61 rgb, 5 levels");
     let (imgs, wts) = rois(130, 70, 1, 9);
-    let (px, cov) = multiband(130, 70, &imgs, &wts, 7);
+    let (px, cov) = multiband(130, 70, &imgs, &wts, 7).unwrap();
     assert_eq!(fnv(&[&px, &cov]), 0xb7d7ddc59d201730, "130x70 grey, 7 levels");
     let wt = weights(65, 41, 3);
     let mut px = noise(65 * 41 * 3, 4);
-    push_pull(65, 41, 3, &mut px, &wt);
+    push_pull(65, 41, 3, &mut px, &wt).unwrap();
     assert_eq!(fnv(&[&px]), 0x50ea36a84ca9a68f, "push_pull 65x41 rgb");
-    let (nw, nh, r) = reduce(65, 41, 3, &px);
-    assert_eq!(fnv(&[&r, &expand(nw, nh, 3, &r, 65, 41)]), 0x51823acfb4206dd8, "reduce + expand 65x41 rgb");
+    let (nw, nh, r) = reduce(65, 41, 3, &px).unwrap();
+    assert_eq!(fnv(&[&r, &expand(nw, nh, 3, &r, 65, 41).unwrap()]), 0x51823acfb4206dd8, "reduce + expand 65x41 rgb");
+}
+
+#[test]
+fn multiband_rejects_single_band_larger_than_budget() {
+    let (w, h, ch) = (97, 61, 3);
+    let (imgs, wts) = rois(w, h, ch, 42);
+    let err = try_multiband_batched(w, h, &imgs, &wts, 3, 100, Some(100)).unwrap_err();
+    assert!(matches!(err, photocraft_raster::AllocationError::NotEnoughMemory { bytes } if bytes > 100));
+}
+
+/// [`band_bytes_bound`] covers the cost the batching estimates for any ROI, offsets and levels.
+#[test]
+fn band_bytes_bound_covers_the_band_cost() {
+    for (n, &(w, h)) in [(1usize, 1usize), (5, 3), (40, 30), (97, 61), (130, 70), (201, 129)].iter().enumerate() {
+        for ch in [1usize, 3, 4] {
+            let (imgs, _) = rois(w, h, ch, n as u64 + 3);
+            for levels in [0usize, 1, 2, 3, 5, 7] {
+                for im in &imgs {
+                    let cost = band_cost(im, w, h, ch, levels);
+                    let bound = band_bytes_bound(im.w, im.h, ch, levels, w, h);
+                    assert!(bound >= cost, "{w}x{h}x{ch} levels {levels} roi {}x{} at ({}, {}): bound {bound} < cost {cost}", im.w, im.h, im.x0, im.y0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn multiband_checks_later_images_and_zero_limit() {
+    let small = RoiImage { x0: 0, y0: 0, w: 1, h: 1, ch: 1, px: vec![1.0], alpha: vec![1.0] };
+    let large = RoiImage { x0: 0, y0: 0, w: 20, h: 20, ch: 1, px: vec![1.0; 400], alpha: vec![1.0; 400] };
+    let limit = band_cost(&small, 40, 40, 1, 1);
+    let expected = band_cost(&large, 40, 40, 1, 1);
+    assert!(expected > limit);
+    let err = try_multiband_batched(40, 40, &[small.clone(), large], &[vec![1.0], vec![1.0; 400]], 1, usize::MAX, Some(limit)).unwrap_err();
+    assert!(matches!(err, photocraft_raster::AllocationError::NotEnoughMemory { bytes } if bytes == expected));
+    let err = try_multiband_batched(40, 40, &[small], &[vec![1.0]], 1, usize::MAX, Some(0)).unwrap_err();
+    assert!(matches!(err, photocraft_raster::AllocationError::NotEnoughMemory { .. }));
+}
+
+#[test]
+fn pyramid_planes_reject_size_overflow() {
+    assert!(matches!(reduce(usize::MAX, 3, 3, &[]), Err(photocraft_raster::AllocationError::SizeOverflow)));
+    assert!(matches!(expand(1, 1, 3, &[0.0; 3], usize::MAX, 2), Err(photocraft_raster::AllocationError::SizeOverflow)));
+    assert!(matches!(push_pull(usize::MAX, 3, 3, &mut [], &[]), Err(photocraft_raster::AllocationError::SizeOverflow)));
 }

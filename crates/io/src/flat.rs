@@ -47,6 +47,16 @@ fn before_composite_decode() {
 #[cfg(not(test))]
 fn before_composite_decode() {}
 
+/// The codec limits a flat import uses: the caller's decoded-pixel allowance lowers the codec's
+/// default cap; 0 keeps the defaults.
+fn decode_limits(opts: &crate::ImportOptions) -> codecs::Limits {
+    let mut limits = codecs::Limits::default();
+    if opts.flat_max_pixel_bytes > 0 {
+        limits.max_alloc = limits.max_alloc.min(opts.flat_max_pixel_bytes);
+    }
+    limits
+}
+
 /// Decodes a flat image into a single-layer document; a TIFF with Photoshop layer data opens
 /// layered (see [`crate::tiff_layers`]).
 pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
@@ -71,7 +81,8 @@ pub(crate) fn import_flat_with_options(
     if format == Some(Format::Tiff) {
         return import_tiff_page_with_options(name, bytes, None, opts, ctl);
     }
-    let img = codecs::decode_as(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes)?;
+    let limits = decode_limits(opts);
+    let img = codecs::decode_as_with(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes, &codecs::DecodeOptions { limits, ..Default::default() })?;
     // A palette BMP, PNG or GIF opens in Indexed Color mode with its colour table, as in
     // Photoshop (#3802, #4804, #7886). A GIF is always palette-based: the first frame's table.
     let palette = match format {
@@ -311,7 +322,7 @@ pub fn import_tiff_page_with_options(
     // Extra samples (alpha and spot channels) are only available from a whole-image decode.
     if bands.extra_samples() > 0 {
         drop(bands);
-        return import_tiff_with_extras(name, bytes, page, ctl);
+        return import_tiff_with_extras(name, bytes, page, opts, ctl);
     }
     tiff_to_document(name, bands.upright(), crate::memory::available, BAND_BYTES, ctl)
 }
@@ -396,9 +407,15 @@ fn tiff_admission(
 
 /// A flat TIFF page with extra samples, decoded whole: the composite becomes the layer, the
 /// extra samples its channels.
-fn import_tiff_with_extras(name: &str, bytes: &[u8], page: Option<usize>, ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
+fn import_tiff_with_extras(
+    name: &str,
+    bytes: &[u8],
+    page: Option<usize>,
+    opts: &crate::ImportOptions,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<ImportResult, IoError> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
-    let keep = codecs::DecodeOptions { keep_orientation: true, ..Default::default() };
+    let keep = codecs::DecodeOptions { keep_orientation: true, limits: decode_limits(opts) };
     let (img, orientation) = match page {
         None => (codecs::decode_with(bytes, &keep)?, codecs::tiff_orientation(bytes)),
         Some(p) => (codecs::decode_tiff_page(bytes, p, &keep)?, codecs::tiff_page_orientation(bytes, p)),
@@ -704,6 +721,11 @@ pub fn document_to_image_with_renderer(doc: &Document, warnings: &mut Vec<String
     document_to_image_for_with_renderer(doc, warnings, true, false, &Interrupt::NONE, renderer)
 }
 
+/// Reported in the export's own warnings (not through the renderer's diagnostics, which a custom
+/// renderer may ignore) when a single plain layer is copied natively although a renderer was given.
+const NATIVE_COPY_CPU_NOTICE: &str =
+    "custom renderer unsupported: a single-layer export copies the document's own pixels with the CPU path; falling back to CPU";
+
 fn document_to_image_for_with_renderer(
     doc: &Document,
     warnings: &mut Vec<String>,
@@ -713,6 +735,9 @@ fn document_to_image_for_with_renderer(
     renderer: Option<&mut dyn BandRenderer>,
 ) -> Result<Image, IoError> {
     let src = FlatSource::new(doc, warnings, cmyk_target, lab_target)?;
+    if renderer.is_some() && src.native.is_some() {
+        warnings.push(NATIVE_COPY_CPU_NOTICE.into());
+    }
     let (w, h) = (doc.size.width, doc.size.height);
     // The single layer's alpha is dropped up front when it is opaque. A composite is rendered
     // with alpha, dropped afterwards, in place, when every pixel turned out opaque.
@@ -767,8 +792,15 @@ pub fn export_preview_png_with_renderer(doc: &Document, renderer: Option<&mut dy
                 // Keep the fallback reason in this export's warnings only. Move this attempt's
                 // queued diagnostics into its retry result too: leaving either on the renderer
                 // would leak them into a later successful GPU export. If the retry fails, `?`
-                // returns early and they stay with the renderer for the caller.
-                let mut cpu_result = export_preview_png_with_renderer(doc, None)?;
+                // returns the CPU error and the fallback reason is queued on the renderer for the caller.
+                let mut cpu_result = match export_preview_png_with_renderer(doc, None) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        // Keep the reason the CPU retry happened queued on the renderer, so the caller reports it next to the CPU error.
+                        r.push_diagnostic(fallback_warning);
+                        return Err(e);
+                    }
+                };
                 cpu_result.warnings.extend(r.drain_diagnostics());
                 cpu_result.warnings.push(fallback_warning);
                 return Ok(cpu_result);
@@ -904,11 +936,6 @@ impl<'a> FlatSource<'a> {
         if let Some(s) = self.native {
             // Native path: keep model and depth. The surface's encoded samples are the codec's raw
             // native-endian samples, copied a band of rows at a time (alpha dropped when opaque).
-            if let Some(r) = renderer.as_mut() {
-                r.push_diagnostic(
-                    "custom renderer unsupported: a single-layer export copies the document's own pixels with the CPU path; falling back to CPU".into(),
-                );
-            }
             let ch = fmt.channels();
             let bps = fmt.sample.bytes();
             let keep = (ch - 1) * bps;
@@ -1151,10 +1178,20 @@ pub fn export_flat_with_renderer(
                 // Keep the fallback reason in this export's warnings only. Move this attempt's
                 // queued diagnostics into its retry result too: leaving either on the renderer
                 // would leak them into a later successful GPU export. If the retry fails, `?`
-                // returns early and they stay with the renderer for the caller.
+                // returns the CPU error and the fallback reason is queued on the renderer for the caller.
                 // A cancelled export stops before compositing the document again.
-                ctl.check().map_err(|_| IoError::Cancelled)?;
-                let mut cpu_result = export_flat_with_renderer(doc, format, opts, ctl, None)?;
+                if ctl.check().is_err() {
+                    r.push_diagnostic(fallback_warning);
+                    return Err(IoError::Cancelled);
+                }
+                let mut cpu_result = match export_flat_with_renderer(doc, format, opts, ctl, None) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        // Keep the reason the CPU retry happened queued on the renderer, so the caller reports it next to the CPU error.
+                        r.push_diagnostic(fallback_warning);
+                        return Err(e);
+                    }
+                };
                 cpu_result.warnings.extend(r.drain_diagnostics());
                 cpu_result.warnings.push(fallback_warning);
                 return Ok(cpu_result);
@@ -1298,10 +1335,20 @@ pub fn export_png_streamed_with_renderer(
                 // Keep the fallback reason in this export's warnings only. Move this attempt's
                 // queued diagnostics into its retry result too: leaving either on the renderer
                 // would leak them into a later successful GPU export. If the retry fails, `?`
-                // returns early and they stay with the renderer for the caller.
+                // returns the CPU error and the fallback reason is queued on the renderer for the caller.
                 // A cancelled export stops before streaming the PNG again.
-                ctl.check().map_err(|_| IoError::Cancelled)?;
-                let mut cpu_result = export_png_streamed_with_renderer(doc, opts, ctl, rows, None)?;
+                if ctl.check().is_err() {
+                    r.push_diagnostic(fallback_warning);
+                    return Err(IoError::Cancelled);
+                }
+                let mut cpu_result = match export_png_streamed_with_renderer(doc, opts, ctl, rows, None) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        // Keep the reason the CPU retry happened queued on the renderer, so the caller reports it next to the CPU error.
+                        r.push_diagnostic(fallback_warning);
+                        return Err(e);
+                    }
+                };
                 cpu_result.warnings.extend(r.drain_diagnostics());
                 cpu_result.warnings.push(fallback_warning);
                 return Ok(cpu_result);
@@ -1357,6 +1404,9 @@ fn stream_png_with_renderer(
     let cmyk_target = format.caps().layouts.iter().any(|layout| layout.is_cmyk());
     let lab_target = format.caps().layouts.iter().any(|layout| layout.is_lab());
     let src = FlatSource { rows, ..FlatSource::new(doc, &mut warnings, cmyk_target, lab_target)? };
+    if renderer.is_some() && src.native.is_some() {
+        warnings.push(NATIVE_COPY_CPU_NOTICE.into());
+    }
     let mut encode = opts.encode.clone();
     let mut late = Vec::new();
     if encode.png_interlaced {

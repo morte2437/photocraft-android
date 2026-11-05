@@ -1964,6 +1964,7 @@
 	Soften	Změkčení
 	Source	Zdroj
 	Source: set	Zdroj: nastaven
+	Source: {name}	Zdroj: {name}
 	Sponge Tool	Nástroj houba
 	Spot Healing Brush Tool	Nástroj bodový retušovací štětec
 	Spread	Rozprostření
@@ -3953,6 +3954,7 @@ navigator	Zoom	Zvětšení
 	Automatically Check for Updates	Automaticky kontrolovat aktualizace
 	Paints from the History panel's source state	Maluje ze zdrojového stavu panelu Historie
 	Sets the source for the history brush	Nastaví zdroj pro štětec historie
+	The History Brush source was deleted: set a new source in the History panel	Zdroj štětce historie byl smazán: nastavte nový zdroj v panelu Historie
 	Highlight Mode	Režim světel
 	Highlight Color	Barva světel
 	Highlight Opacity	Krytí světel
@@ -4281,3 +4283,13 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Pause For	Pozastavit na
 	seconds	sekund
 	Create a single history state	Vytvořit jeden stav historie
+	Drag to move the active shape's path or the Work Path	Tažením přesunete cestu aktivního tvaru nebo pracovní cestu
+	Generator enabled	Generátor zapnut
+	This Layer:	Tato vrstva:
+	Move Up	Přesunout nahoru
+	Move Down	Přesunout dolů
+	On your computer	V tomto počítači
+	New file	Nový soubor
+	Learn	Učit se
+	No recent files	Žádné nedávné soubory
+	Website	Web

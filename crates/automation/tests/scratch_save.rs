@@ -56,6 +56,12 @@ fn native_save_refuses_previews_rendered_from_unreadable_scratch() {
     file.sync_all().unwrap();
 
     let on = photocraft_io::ExportOptions { pcraft_full_composite: true, ..Default::default() };
+    // A flat export refused after its provisional result (the unreadable tile is only noticed
+    // while reading) keeps that result's renderer notes queued for the caller.
+    let mut renderer = QueuedDiagnosticsRenderer(Vec::new());
+    let err = photocraft_io::export_with_renderer(&doc, "png", &on, &Interrupt::NONE, Some(&mut renderer)).unwrap_err();
+    assert!(matches!(err, IoError::Unsupported(_)), "{err:?}");
+    assert!(renderer.0.iter().any(|d| d.contains("single-layer export copies")), "refused export must re-queue its notes: {:?}", renderer.0);
     // Refused while rendering the previews, before the bundle is assembled.
     let err = files::save_bytes(&doc, "Scratch.pcraft", None, &on).unwrap_err();
     assert!(matches!(err, AutomationError::Io(_)), "{err:?}");

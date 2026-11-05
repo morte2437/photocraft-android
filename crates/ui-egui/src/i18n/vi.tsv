@@ -2726,6 +2726,7 @@ shape	Appearance	Diện mạo
 	Smart Filters	Các bộ lọc thông minh
 	Soft	Mềm
 	Source: set	Nguồn: bộ
+	Source: {name}	Nguồn: {name}
 	Square, 12 x 12	Vuông, 12 x 12
 	Square, 5 x 5	Vuông, 5 x 5
 	Studio (Dark)	Studio (Tối)
@@ -3804,6 +3805,7 @@ curves	Smooth	Làm mượt
 	Automatically Check for Updates	Tự động kiểm tra bản cập nhật
 	Paints from the History panel's source state	Vẽ từ trạng thái nguồn của bảng Lịch sử
 	Sets the source for the history brush	Đặt nguồn cho cọ lịch sử
+	The History Brush source was deleted: set a new source in the History panel	Nguồn của cọ lịch sử đã bị xóa: đặt nguồn mới trong bảng Lịch sử
 	Highlight Mode	Chế độ vùng sáng
 	Highlight Color	Màu vùng sáng
 	Highlight Opacity	Độ mờ vùng sáng
@@ -4042,3 +4044,13 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Pause For	Tạm dừng trong
 	seconds	giây
 	Create a single history state	Tạo một trạng thái lịch sử duy nhất
+	Generator enabled	Đã bật bộ tạo
+	Move Up	Di chuyển lên
+	Move Down	Di chuyển xuống
+	Grid view	Chế độ xem lưới
+	List view	Chế độ xem danh sách
+	On your computer	Trên máy tính của bạn
+	New file	Tệp mới
+	Learn	Học hỏi
+	No recent files	Không có tệp gần đây
+	Website	Trang web

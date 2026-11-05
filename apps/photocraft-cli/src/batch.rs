@@ -10,7 +10,7 @@ use crate::{
     CliError, Result,
     actions::load_actions_file,
     args::{BatchArgs, DropletArgs},
-    output::warn_all,
+    output::{warn_all, warn_dedup},
 };
 
 /// Whether `a` and `b` name the same existing folder, however they are spelt (relative, with a
@@ -51,7 +51,8 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     let (in_dir, out_dir) = (a.in_dir.as_path(), a.out.as_path());
     let (actions, mut set, warnings) = load_actions_file(&a.actions, a.action.as_deref())?;
     set.iter_mut().for_each(strip_shell_steps);
-    warn_all(err, &warnings);
+    let mut seen_warnings = std::collections::HashSet::<String>::new();
+    warn_dedup(err, &warnings, &mut seen_warnings);
     let opts = ExportOptions::from(&a.export);
     // Results are saved as `<out>/<stem>.<ext>`, so an `--out` that is the `--in` folder would
     // replace the originals (#492).
@@ -109,17 +110,20 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
     }
     std::fs::create_dir_all(out_dir)?;
     let mut failures = Vec::new();
+    let policy = crate::gpu::GpuPolicy::from_args(&a.gpu).map_err(CliError::Other)?;
+    let mut renderer = policy.create_renderer();
     for (input, target) in inputs.iter().zip(targets) {
         let input = Path::new(&input.path);
         // The selected format encodes the bytes, whatever extension `--naming` gives the file.
         // Without --format, a file PhotoCraft only opens (.kra, raw, …) is saved as PSD, the
         // same format `--naming`'s {ext} plans.
         let ext = format.map_or_else(|| photocraft_engine::file_cmds::batch_same_format(&input.to_string_lossy()), str::to_owned);
+        let mut h = Headless::trusted_local();
+        h.set_renderer(renderer.take());
         let r = (|| -> Result<Vec<String>> {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let mut h = Headless::trusted_local();
             // Steps that play another action find it in the set; the session's playback stack
             // stops an action that calls itself.
             h.session.actions.list = set.clone();
@@ -140,15 +144,30 @@ pub(crate) fn batch(a: &BatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> 
             let r = h.save(None, Some(&target), Some(&ext), &opts)?;
             Ok(serde_json::from_value(r["warnings"].clone()).unwrap_or_default())
         })();
+        let diags = h.drain_diagnostics();
+        // Release the item's GPU caches before the renderer moves on to the next file.
+        if h.session.active_index().is_some() {
+            let _ = h.close(None);
+        }
+        if let Some(recovered) = h.take_renderer() {
+            renderer = Some(recovered);
+        }
         match r {
             Ok(ws) => {
                 ok += 1;
                 let _ = writeln!(out, "ok    {} -> {}", input.display(), target.display());
+                // Each file's own export warnings (e.g. transparency composited over white) are
+                // reported for that file, even when an earlier file had the same warning.
                 warn_all(err, &ws);
+                // A fallback diagnostic can also be in this file's export warnings; report it
+                // once, through the per-file warnings above, not twice.
+                let pending: Vec<String> = diags.into_iter().filter(|d| !ws.contains(d)).collect();
+                warn_dedup(err, &pending, &mut seen_warnings);
             }
             Err(e) => {
                 failed += 1;
                 let _ = writeln!(err, "FAIL  {}: {e}", input.display());
+                warn_dedup(err, &diags, &mut seen_warnings);
                 failures.push((input.to_string_lossy().into_owned(), e.to_string()));
                 if a.stop_on_error {
                     break;
@@ -265,5 +284,81 @@ mod batch_action_set_tests {
             assert_eq!((info["width"].as_u64(), info["height"].as_u64()), (Some(6), Some(8)), "{action}: rotated once, the unchecked step skipped");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use photocraft_doc::{Color, ColorMode, Document, Rect, SampleType, Size};
+    use photocraft_io::{BandRenderer, IoError, RenderBand, RenderError};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RecordingRenderer {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl BandRenderer for RecordingRenderer {
+        fn render_bands(
+            &mut self,
+            doc: &Document,
+            rect: Rect,
+            band_rows: i32,
+            ctl: &photocraft_raster::Interrupt<'_>,
+            sink: &mut dyn FnMut(RenderBand) -> Result<(), IoError>,
+        ) -> Result<(), RenderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            photocraft_io::CpuRenderer.render_bands(doc, rect, band_rows, ctl, sink)
+        }
+    }
+
+    #[test]
+    fn batch_loop_recovers_renderer_after_error_on_first_item() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut renderer: Option<Box<dyn BandRenderer>> = Some(Box::new(RecordingRenderer { calls: calls.clone() }));
+
+        let tmp = std::env::temp_dir().join(format!("pc-batch-regress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let bad_file = tmp.join("01_bad.png");
+        std::fs::write(&bad_file, b"not a valid png or document file").unwrap();
+
+        let good_file = tmp.join("02_good.pcraft");
+        let mut good_doc = Document::with_background("test", Size::new(32, 32), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        let extra_layer = good_doc.layers[0].clone();
+        good_doc.layers.push(extra_layer);
+        photocraft_automation::files::save(&good_doc, &good_file, None, &Default::default(), None).unwrap();
+
+        let target_dir = tmp.join("out");
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        let inputs = [bad_file, good_file];
+        let opts = ExportOptions::default();
+
+        for (idx, input) in inputs.iter().enumerate() {
+            let mut h = Headless::trusted_local();
+            h.set_renderer(renderer.take());
+            let r = (|| -> Result<Vec<String>> {
+                h.open(input)?;
+                let target = target_dir.join(format!("{idx}.png"));
+                let r = h.save(None, Some(&target), Some("png"), &opts)?;
+                Ok(serde_json::from_value(r["warnings"].clone()).unwrap_or_default())
+            })();
+            if let Some(recovered) = h.take_renderer() {
+                renderer = Some(recovered);
+            }
+            if idx == 0 {
+                assert!(r.is_err(), "first corrupt item must fail");
+            } else {
+                assert!(r.is_ok(), "second valid item must succeed: {:?}", r);
+            }
+        }
+
+        assert!(renderer.is_some(), "renderer must be preserved across batch items");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "renderer must have been invoked on the second item");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
