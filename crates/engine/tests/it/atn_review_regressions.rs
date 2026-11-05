@@ -799,7 +799,18 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     let mut elements = dpx.clone();
     elements[770..772].copy_from_slice(&2u16.to_be_bytes());
     elements.extend_from_slice(b"distinct second DPX element payload");
+    let dds = small_image(photocraft_codecs::Format::Dds);
+    let mut slices = dds.clone();
+    slices[24..28].copy_from_slice(&2u32.to_le_bytes());
+    let mut second = dds[128..].to_vec();
+    second[0] ^= 0xff;
+    slices.extend(second);
     let rgb = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, [32, 64, 128].repeat(4)).unwrap();
+    let mut options = photocraft_codecs::EncodeOptions::default();
+    options.dds.mipmaps = true;
+    let mut mipmaps = photocraft_codecs::encode(&rgb, photocraft_codecs::Format::Dds, &options).unwrap();
+    let flags = u32::from_le_bytes(mipmaps[8..12].try_into().unwrap());
+    mipmaps[8..12].copy_from_slice(&(flags & !0x0002_0000).to_le_bytes());
     let fits = photocraft_codecs::encode(&rgb, photocraft_codecs::Format::Fits, &Default::default()).unwrap();
     let mut hdu = fits.clone();
     hdu[..80].fill(b' ');
@@ -830,7 +841,16 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     table.resize(table.len().div_ceil(2880) * 2880, b' ');
     table.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
     table.resize(table.len().div_ceil(2880) * 2880, 0);
-    let mut cases = vec![("gif", animated), ("dpx", elements), ("fits", hdus), ("fits", cubes), ("fits", table), ("tiff", tiff_with_separate_mask())];
+    let mut cases = vec![
+        ("gif", animated),
+        ("dpx", elements),
+        ("dds", slices),
+        ("dds", mipmaps),
+        ("fits", hdus),
+        ("fits", cubes),
+        ("fits", table),
+        ("tiff", tiff_with_separate_mask()),
+    ];
     for alpha in [false, true] {
         cases.push(("tiff", tiff_with_aux_channels(photocraft_codecs::MAX_EXTRA_SAMPLES + 1, alpha)));
     }
@@ -856,7 +876,7 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
         assert!(std::path::Path::new(result["files"][0].as_str().unwrap()).is_file());
         assert_eq!(std::fs::read(&input).unwrap(), multiple);
     }
-    for (extension, bytes) in [("gif", still), ("dpx", dpx), ("fits", fits), ("tiff", small_image(photocraft_codecs::Format::Tiff))] {
+    for (extension, bytes) in [("gif", still), ("dpx", dpx), ("dds", dds), ("fits", fits), ("tiff", small_image(photocraft_codecs::Format::Tiff))] {
         let input = dir.path().join(format!("still.{extension}"));
         std::fs::write(&input, bytes).unwrap();
         let result = Session::new().execute("file.automate.batch", json!({"input":[input],"destination":"saveAndClose","steps":[]})).unwrap();

@@ -46,9 +46,11 @@ fn le32(b: &[u8], at: usize) -> Result<u32, CodecError> {
     Ok(u32::from_le_bytes(bytes))
 }
 
-/// The reader opens only the top mip; rewriting cannot retain independently authored lower levels.
+/// The reader opens only the top mip and first slice; rewriting cannot retain the other levels or slices.
 pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
-    Ok(le32(bytes, 28)? > 1)
+    let depth = le32(bytes, 24)?;
+    let mips = le32(bytes, 28)?;
+    Ok(depth > 1 || mips > 1)
 }
 
 /// A FourCC as text when it is printable, else as the number legacy writers store there.

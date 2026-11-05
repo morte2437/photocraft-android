@@ -21,8 +21,8 @@ pub(super) fn from(d: &Descriptor) -> Mapped {
             p["shapeOriginType"] = json!(9);
         }
         // Reconstructing also rejects duplicate fields, unknown settings and nested metadata
-        // that this command could not write back without loss.
-        (to("filter.blur.shapeBlur", &p)?.items == d.items).then_some(p)
+        // that this command could not write back without loss, including the outer name and class.
+        (to("filter.blur.shapeBlur", &p)? == *d).then_some(p)
     };
     mapped().map_or(Mapped::Unsupported { harmless: false }, |p| step("filter.blur.shapeBlur", p))
 }

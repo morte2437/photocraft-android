@@ -346,6 +346,25 @@ fn shape_ids_persist_and_old_preferences_without_ids_still_load() {
     assert!(reopened.presets.shapes.iter().flat_map(|g| &g.items).all(|shape| shape.id.is_none()));
 }
 
+/// Outer descriptor metadata and its encoding stay whole when the native mapper cannot reproduce them.
+#[test]
+fn noncanonical_shape_outer_metadata_stays_on_the_preserved_path() {
+    for (name, class_id) in [
+        (UnicodeString::new_nul("Recorded shape"), Id::new("null")),
+        (UnicodeString(vec![0xd800, 0]), Id::new("null")),
+        (UnicodeString::default(), Id::new("otherOuterClass")),
+        (UnicodeString::default(), Id::Str(b"null".to_vec())),
+    ] {
+        let mut d = descriptor();
+        d.name = name;
+        d.class_id = class_id;
+        let imported = atn_cmds::import(&encoded(d.clone())).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, atn_cmds::PHOTOSHOP_STEP);
+        let (out, _) = atn_cmds::export("Shapes", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+}
+
 /// Neither unknown recording settings nor portable native geometry may be dropped during export.
 #[test]
 fn unrepresented_shape_fields_stay_whole_and_native_geometry_refuses_atn_export() {

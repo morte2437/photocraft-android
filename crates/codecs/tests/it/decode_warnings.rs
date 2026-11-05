@@ -308,6 +308,29 @@ fn warnings_survive_orientation() {
     assert_eq!(img.convert(ChannelLayout::Rgba, SampleType::U16).warnings, img.warnings);
 }
 
+/// A flagless depth still declares slices the flat reader and writer cannot retain.
+#[test]
+fn dds_depth_probe_refuses_unretained_slices_without_volume_flags() {
+    let single = encode(&solid(COLOURS[0]), Format::Dds, &Default::default()).unwrap();
+    let expected = decode(&single).unwrap();
+    let mut second = single[128..].to_vec();
+    second[0] ^= 0xff;
+    for depth in [0u32, 1, 2, 3] {
+        let mut bytes = single.clone();
+        bytes[24..28].copy_from_slice(&depth.to_le_bytes());
+        for _ in 1..depth {
+            bytes.extend_from_slice(&second);
+        }
+        let flags = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let caps = u32::from_le_bytes(bytes[112..116].try_into().unwrap());
+        assert_eq!(flags & 0x0080_0000, 0);
+        assert_eq!(caps & 0x0020_0000, 0);
+        // Decoding remains permissive for preview; only source replacement is refused.
+        assert_eq!(decode(&bytes).unwrap().data(), expected.data());
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), depth > 1);
+    }
+}
+
 /// Header-only inspection protects unretained source payloads while allowing stills and thumbnails.
 #[test]
 fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
