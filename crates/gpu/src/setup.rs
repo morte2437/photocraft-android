@@ -217,6 +217,11 @@ impl Compositor {
         self.page
     }
 
+    /// The chunk side cells are tiled in.
+    pub fn chunk_size(&self) -> u32 {
+        self.chunk
+    }
+
     /// Test hook: the next `n` layer page textures fail as if the device were out of memory
     /// (a real one can't be forced), so the fallback paths of #6563 can be tested.
     #[doc(hidden)]
@@ -488,6 +493,24 @@ impl Compositor {
     /// Why the device can't be used (`None` while healthy or unwatched).
     pub fn fault(&self) -> Option<Fault> {
         self.health.as_ref().and_then(DeviceHealth::fault)
+    }
+
+    /// The accumulation texture format used by this compositor.
+    pub fn acc_format(&self) -> wgpu::TextureFormat {
+        self.acc_format
+    }
+
+    /// The device health monitor if one was attached with [`Compositor::set_health`].
+    pub fn health(&self) -> Option<&DeviceHealth> {
+        self.health.as_ref()
+    }
+
+    /// Clear all resident layer pages, effect maps, pattern textures and lower-stack composites.
+    pub fn reset_cache(&mut self) {
+        self.residents.clear();
+        self.fx.clear();
+        self.patterns.clear();
+        self.prefix.clear();
     }
 
     /// Measure how long the GPU spends executing each [`Compositor::render`], with timestamp

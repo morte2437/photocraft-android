@@ -17,7 +17,7 @@
 //!   `doc.importDataSets {path, delimiter?, index?}` (#3216: the same treatment for the export
 //!   and CSV half of #2810), `doc.save {path?, format?, quality?, index?}`, `doc.inspect {index?}`,
 //!   `doc.render {index?, maxSide?, path?}` (writes a PNG to `path`, else
-//!   returns it base64-encoded), `doc.select {index}`, `doc.close {index?}`
+//!   returns it base64-encoded; adds `warnings` when a renderer fell back), `doc.select {index}`, `doc.close {index?}`
 //! - `batch {steps: [{command, params?, wait?} | {method, params?}], stopOnError?}`
 //! - `methods`: this list.
 
@@ -221,16 +221,24 @@ impl Headless {
                     }
                 };
                 let png = self.render_png(index_of(&p)?, max)?;
-                match str_of(&p, "path") {
+                // A GPU to CPU fallback is reported with this reply, not on the next save.
+                let warnings = self.drain_diagnostics();
+                let mut reply = match str_of(&p, "path") {
                     Some(path) => {
                         self.write_render(&PathBuf::from(path), &png)?;
-                        Ok(json!({"path": path, "bytes": png.len()}))
+                        json!({"path": path, "bytes": png.len()})
                     }
-                    None => Ok(json!({
+                    None => json!({
                         "mime": "image/png",
                         "base64": base64::engine::general_purpose::STANDARD.encode(&png),
-                    })),
+                    }),
+                };
+                if !warnings.is_empty()
+                    && let Some(object) = reply.as_object_mut()
+                {
+                    object.insert("warnings".into(), json!(warnings));
                 }
+                Ok(reply)
             }
             "doc.select" => {
                 let i = index_of(&p)?.ok_or_else(|| bad("doc.select needs `index`"))?;

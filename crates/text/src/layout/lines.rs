@@ -20,6 +20,8 @@ struct KernSlot {
     run: usize,
     /// Byte offset in the paragraph text.
     start: usize,
+    /// Paragraph-text byte range represented by this visual cluster.
+    text_range: std::ops::Range<usize>,
     first: Option<u32>,
     last: Option<u32>,
     font: parley::FontData,
@@ -53,6 +55,8 @@ struct KernCursor {
     run: usize,
     /// Slot of the cluster each glyph of the run belongs to.
     glyph_slot: Vec<usize>,
+    /// Layer-text byte range represented by each glyph, parallel to `glyph_slot`.
+    glyph_range: Vec<std::ops::Range<usize>>,
     /// Glyphs emitted so far.
     emitted: usize,
     /// First slot whose kerning isn't applied yet.
@@ -136,6 +140,7 @@ fn collect_kern_slots(line: &Line<'_>, para: &Para<'_>) -> Vec<KernSlot> {
             slots.push(KernSlot {
                 run: run.index(),
                 start: c.text_range().start,
+                text_range: c.text_range(),
                 first,
                 last,
                 font: run.font().clone(),
@@ -193,18 +198,24 @@ fn kern_cursors(line: &Line<'_>, slots: &[KernSlot]) -> Vec<KernCursor> {
             continue;
         }
         let base = slots.iter().position(|s| s.run == run.index()).unwrap_or(0);
-        cursors.push(KernCursor { run: run.index(), glyph_slot: glyph_slots(run, base), emitted: 0, applied: base });
+        let (glyph_slot, glyph_range) = glyph_mapping(run, base, slots);
+        cursors.push(KernCursor { run: run.index(), glyph_slot, glyph_range, emitted: 0, applied: base });
     }
     cursors
 }
 
 /// For each glyph of `run`, the slot of its cluster (the run's clusters start at slot `base`).
-fn glyph_slots(run: &Run<'_, RunBrush>, base: usize) -> Vec<usize> {
+fn glyph_mapping(run: &Run<'_, RunBrush>, base: usize, slots: &[KernSlot]) -> (Vec<usize>, Vec<std::ops::Range<usize>>) {
     let mut g2s = Vec::new();
+    let mut ranges = Vec::new();
     for (ci, c) in run.visual_clusters().enumerate() {
-        g2s.extend(c.glyphs().map(|_| base + ci));
+        let range = slots.get(base + ci).map(|s| s.text_range.clone()).unwrap_or_else(|| c.text_range());
+        for _ in c.glyphs() {
+            g2s.push(base + ci);
+            ranges.push(range.clone());
+        }
     }
-    g2s
+    (g2s, ranges)
 }
 
 /// Distributes `slack` between the clusters of the line from `c0` (and their glyphs from `g0`);
@@ -495,6 +506,7 @@ impl Para<'_> {
         let mut pen = gr.offset();
         let mut cursor = state.cursors.iter_mut().find(|c| c.run == run.index());
         for g in gr.glyphs() {
+            let source_range = cursor.as_deref().and_then(|c| c.glyph_range.get(c.emitted)).cloned().unwrap_or_default();
             if let Some(c) = cursor.as_deref_mut() {
                 c.before_glyph(lc.kern_px, &mut state.extra);
             }
@@ -506,6 +518,7 @@ impl Para<'_> {
                 style: gr.style().brush.0,
                 orient: GlyphOrient::Horizontal,
             });
+            out.glyph_ranges.push(self.map_offset(source_range.start)..self.map_offset(source_range.end));
             if let Some(v) = &vm {
                 let upright = class == 1 || (class == 2 && !plain.contains(&g.id));
                 state.vinfo.push(VGlyph {

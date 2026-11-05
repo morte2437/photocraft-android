@@ -48,7 +48,7 @@ mod strokes;
 mod tabs;
 mod textures;
 pub(super) mod tile_overlay;
-pub(super) mod tool_cursor;
+pub mod tool_cursor;
 pub mod tool_feedback;
 mod tool_input;
 mod transform_controls;

@@ -10,9 +10,13 @@ use std::sync::Arc;
 use egui::{CursorIcon, CustomCursorImage, Painter, Pos2, Stroke, Vec2, vec2};
 
 use crate::canvas::ViewXform;
+use crate::state::Tool;
 
 mod hand;
+mod pen;
 mod zoom;
+
+pub use pen::{PenVariant, pen_rasterization_count, reset_pen_rasterization_count};
 
 /// The largest cursor bitmap (physical pixels; points on macOS, see [`native_scale`]); a larger tip
 /// paints its outline instead, with a small OS crosshair at the hotspot, and that outline trails
@@ -40,6 +44,12 @@ struct Cached {
     shape: Shape,
     scale: f32,
     image: CustomCursorImage,
+}
+
+/// Pen variants retain at most one bitmap each; large brush bitmaps stay in the single-entry cache.
+#[derive(Clone, Default)]
+struct PenCache {
+    entries: [Option<(f32, CustomCursorImage)>; 6],
 }
 
 /// The image is sticky in egui's platform output. Clear it every pass, including when a
@@ -202,7 +212,7 @@ fn scaled_wayland(ctx: &egui::Context) -> bool {
 /// macOS, so there the bitmap scales only with the UI zoom (the monitor's density would enlarge it
 /// a second time on Retina displays); Windows, X11 and Wayland take physical pixels. (The macOS
 /// sizing is from @jerrykimo's #968.)
-pub(crate) fn native_scale(ctx: &egui::Context) -> f32 {
+pub fn native_scale(ctx: &egui::Context) -> f32 {
     if cfg!(target_os = "macos") { ctx.zoom_factor() } else { ctx.pixels_per_point() }
 }
 
@@ -282,6 +292,48 @@ fn zoom_with(ctx: &egui::Context, out: bool, bitmap: bool) -> CursorIcon {
         return CursorIcon::None;
     }
     if out { CursorIcon::ZoomOut } else { CursorIcon::ZoomIn }
+}
+
+/// Direct rasterization of a Pen tool cursor bitmap, for benchmarks and visual verification.
+pub fn rasterize_pen(variant: PenVariant, scale: f32) -> Option<CustomCursorImage> {
+    pen::rasterize(variant, scale)
+}
+
+/// The Pen tool's pointer: its toolbar icon with the nib/apex on the cursor hotspot. Uses an OS
+/// cursor bitmap where supported so its movement tracks hardware input without waiting for canvas
+/// frames (#9122); returns `None` when unsupported or unrasterizable so the caller can paint the fallback.
+pub fn pen(ctx: &egui::Context, tool: Tool) -> Option<CursorIcon> {
+    let variant = PenVariant::from_tool(tool)?;
+    if !native(ctx) {
+        return None;
+    }
+    let scale = native_scale(ctx);
+    let image = cached_pen_image(ctx, variant, scale)?;
+    ctx.set_cursor_image(Some(image));
+    Some(CursorIcon::None)
+}
+
+/// Reuse the latest bitmap per Pen variant and replace only the entry whose scale changed.
+fn cached_pen_image(ctx: &egui::Context, variant: PenVariant, scale: f32) -> Option<CustomCursorImage> {
+    let id = egui::Id::unique("photocraft-pen-cursor-cache");
+    let idx = variant as usize;
+    if let Some(image) = ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<PenCache>(id)
+            .entries
+            .get(idx)
+            .and_then(Option::as_ref)
+            .filter(|(cached_scale, _)| *cached_scale == scale)
+            .map(|(_, image)| image.clone())
+    }) {
+        return Some(image);
+    }
+    let image = pen::rasterize(variant, scale)?;
+    ctx.data_mut(|d| {
+        if let Some(slot) = d.get_temp_mut_or_default::<PenCache>(id).entries.get_mut(idx) {
+            *slot = Some((scale, image.clone()));
+        }
+    });
+    Some(image)
 }
 
 fn show(painter: &Painter, at: Pos2, shape: Shape) -> CursorIcon {

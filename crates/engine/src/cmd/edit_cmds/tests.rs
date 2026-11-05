@@ -17,7 +17,16 @@ fn new_clipboard_document_rejects_an_unrepresentable_origin() {
     let mut s = Session::new();
     let mut surface = Surface::new(PixelFormat::RGBA8);
     surface.write_pixel(i32::MIN, 0, &[1.0, 0.0, 0.0, 1.0]);
-    s.clipboard = Some(Clip { svg: None, components: None, surface, bounds: Rect::from_xywh(i32::MIN, 0, 1, 1), layers: None, resolution: None, source: None });
+    s.clipboard = Some(Clip {
+        svg: None,
+        components: None,
+        surface,
+        bounds: Rect::from_xywh(i32::MIN, 0, 1, 1),
+        layers: None,
+        resolution: None,
+        source: None,
+        board: None,
+    });
     let result = new_from_clipboard(&mut s);
     assert!(result.unwrap_err().to_string().contains("clipboard origin"));
     assert!(s.execute("file.newFromClipboard", json!({})).is_err());
@@ -58,6 +67,7 @@ fn paste_centers_clipboard_bounds_near_coordinate_limits() {
             layers: None,
             resolution: None,
             source: None,
+            board: None,
         };
         let (dx, dy) = paste_offset(&clip, DocId(1), Rect::new(0, 0, 20, 20), &json!({}), false);
         assert_eq!(i64::from(origin) + i64::from(dx), 9);
@@ -240,7 +250,8 @@ fn external_clip_session(w: i32, h: i32, cw: i32, ch: i32) -> Session {
     s.execute("file.new", json!({"width": w, "height": h})).unwrap();
     let mut surface = Surface::new(PixelFormat::RGBA8);
     surface.fill_rect(Rect::new(0, 0, cw, ch), &[1.0, 0.0, 0.0, 1.0]);
-    s.clipboard = Some(Clip { svg: None, components: None, surface, bounds: Rect::new(0, 0, cw, ch), layers: None, resolution: None, source: None });
+    s.clipboard =
+        Some(Clip { svg: None, components: None, surface, bounds: Rect::new(0, 0, cw, ch), layers: None, resolution: None, source: None, board: None });
     s
 }
 
@@ -304,6 +315,7 @@ fn paste_offset_clamp_survives_extreme_coordinates() {
         layers: None,
         resolution: None,
         source: None,
+        board: None,
     };
     let (dx, dy) = paste_offset(&clip, DocId(1), Rect::new(i32::MIN, i32::MIN, i32::MIN + 4, i32::MIN + 4), &json!({}), false);
     assert_eq!((dx, dy), (i32::MIN, i32::MIN), "an unrepresentable shift saturates instead of wrapping");
@@ -1453,13 +1465,13 @@ fn lift_reference(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Clip {
     };
     let mut out = Surface::new(with_alpha);
     if area.is_empty() {
-        return Clip { svg: None, components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None };
+        return Clip { svg: None, components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None, board: None };
     }
     let px = lift_region(src, sel, area, with_alpha.channels()).unwrap();
     out.try_write_region(area, &px).unwrap();
     out.prune();
     let bounds = out.content_bounds();
-    Clip { svg: None, components: None, surface: out, bounds, layers: None, resolution: None, source: None }
+    Clip { svg: None, components: None, surface: out, bounds, layers: None, resolution: None, source: None, board: None }
 }
 
 fn noise(fmt: PixelFormat, r: Rect, seed: u32) -> Surface {
@@ -1525,4 +1537,270 @@ fn copy_shares_whole_tiles_with_the_layer() {
         let shared = src.tiles().filter(|(c, t)| clip.surface.tile(**c).is_some_and(|o| std::sync::Arc::ptr_eq(o, t))).count();
         assert_eq!(shared, src.tile_count(), "every tile is shared");
     }
+}
+
+/// Board "A" at (10, 10, 50, 50) holding a red square at (10..30)², and an empty board "B" at
+/// (200, 20, 240, 60), B active.
+fn two_boards() -> (Session, LayerId, LayerId, LayerId) {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80})).unwrap();
+    let red = s.execute("layer.new.layer", json!({"name": "Red"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(red).unwrap().surface_mut().unwrap().fill_rect(Rect::new(10, 10, 30, 30), &[1.0, 0.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let a = s.execute("layer.new.artboardFromLayers", json!({"name": "A"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.artboard.set", json!({"width": 40, "height": 40})).unwrap();
+    let b = s.execute("layer.new.artboard", json!({"rect": [200, 20, 40, 40], "name": "B"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    (s, red, a, b)
+}
+
+fn board_of_active(s: &Session) -> Option<LayerId> {
+    let st = s.active().unwrap();
+    st.doc.artboard_of(st.active_layer.unwrap())
+}
+
+/// #8788: pixels copied on one artboard and pasted with another board (or a layer on it) selected
+/// land at the same spot on that board, inside it, instead of at their old spot on the first board
+/// (where the second board hid them) or in the middle of the view. Paste and Paste in Place alike.
+#[test]
+fn paste_into_another_artboard_keeps_the_place_on_the_board() {
+    for (cmd, params) in [("edit.paste", json!({})), ("edit.paste", json!({"center": [500.0, 500.0]})), ("edit.pasteSpecial.pasteInPlace", json!({}))] {
+        let (mut s, red, a, b) = two_boards();
+        s.execute("layer.select", json!({"layer": red.0})).unwrap();
+        s.execute("edit.copy", json!({})).unwrap();
+        s.execute("layer.select", json!({"layer": b.0})).unwrap();
+        let r = s.execute(cmd, params.clone()).unwrap();
+        assert_eq!(r["offset"], json!([190, 10]), "{cmd} {params}: moved by B's origin minus A's");
+        assert_eq!(board_of_active(&s), Some(b), "{cmd} {params}: the pasted layer is on board B");
+        assert_eq!(active_bounds(&s), Rect::new(200, 20, 220, 40), "{cmd} {params}: the same spot on B");
+        // The original stays on A.
+        assert_eq!(s.active().unwrap().doc.artboard_of(red), Some(a));
+    }
+}
+
+/// Paste within the same board, or with no board on the paste side, behaves as before; so does
+/// Paste Into, which centres on the selection.
+#[test]
+fn paste_on_the_same_artboard_or_off_the_boards_is_unchanged() {
+    let (mut s, red, a, _b) = two_boards();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    // Same board: in place.
+    let r = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(r["offset"], json!([0, 0]));
+    assert_eq!(board_of_active(&s), Some(a));
+    // The Background is on no board: the usual rules (in place, here).
+    let bg = s.active().unwrap().doc.layers[0].id;
+    s.execute("layer.select", json!({"layer": bg.0})).unwrap();
+    assert_eq!(s.execute("edit.paste", json!({})).unwrap()["offset"], json!([0, 0]));
+    // Paste Into's `clampToCanvas: false` keeps its own centring.
+    let clip = s.clipboard.clone().unwrap();
+    let doc = &s.active().unwrap().doc;
+    let on_b = doc.artboards().iter().find(|x| x.1 == "B").map(|x| x.0);
+    let inside = doc.layer(on_b.unwrap()).unwrap().id;
+    assert!(board_shift(&clip, doc, Some(inside), &json!({"clampToCanvas": false})).is_none());
+    assert!(board_shift(&clip, doc, Some(inside), &json!({})).is_some());
+}
+
+/// A copied layer taken whole (a group here) is moved onto the other board the same way.
+#[test]
+fn a_whole_layer_pasted_into_another_artboard_keeps_its_place() {
+    let (mut s, red, _a, b) = two_boards();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    let g = s.execute("layer.groupLayers", json!({"name": "G"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.select", json!({"layer": g.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.clipboard.as_ref().unwrap().layers.is_some(), "a group is copied whole");
+    s.execute("layer.select", json!({"layer": b.0})).unwrap();
+    s.execute("edit.paste", json!({})).unwrap();
+    let st = s.active().unwrap();
+    let pasted = st.active_layer.unwrap();
+    assert_eq!(st.doc.artboard_of(pasted), Some(b));
+    let inner = st.doc.layer(pasted).unwrap().children().unwrap()[0].surface().unwrap().content_bounds();
+    assert_eq!(inner, Rect::new(200, 20, 220, 40));
+}
+
+/// Copy Merged takes the board under the middle of the copied area; a copied board itself, or a
+/// selection of layers on two boards, has no source board.
+#[test]
+fn the_source_board_of_merged_board_and_mixed_copies() {
+    let (mut s, red, a, b) = two_boards();
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    s.execute("edit.copyMerged", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board.map(|x| x.0), Some(a));
+    s.execute("select.deselect", json!({})).unwrap();
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board, None, "a copied board");
+    let on_b = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.moveTo", json!({"layer": on_b.0, "target": b.0, "position": "into"})).unwrap();
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(on_b).unwrap().surface_mut().unwrap().fill_rect(Rect::new(205, 25, 210, 30), &[0.0, 0.0, 1.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("layer.select", json!({"layer": on_b.0, "mode": "add"})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board, None, "layers on two boards");
+}
+
+/// With a pixel selection, Copy takes the active layer only, even with several layers selected,
+/// so its source board is the active layer's (#10538 review): other selected layers on another
+/// board don't cancel it.
+#[test]
+fn a_selection_copy_takes_the_active_layers_board_whatever_else_is_selected() {
+    let (mut s, red, a, b) = two_boards();
+    let on_b = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.moveTo", json!({"layer": on_b.0, "target": b.0, "position": "into"})).unwrap();
+    s.execute("layer.select", json!({"layer": on_b.0})).unwrap();
+    s.execute("layer.select", json!({"layer": red.0, "mode": "add"})).unwrap();
+    assert_eq!(s.active().unwrap().active_layer, Some(red));
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board.map(|x| x.0), Some(a), "the active layer's board");
+}
+
+/// Copy Merged finds the board under the true middle of the copied area: two boards meeting at
+/// x = 10, and an area 9..11 wide whose middle (10) is on the right one (#10538 review).
+#[test]
+fn copy_merged_uses_the_true_middle_of_the_area() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 20})).unwrap();
+    let left = s.execute("layer.new.artboard", json!({"rect": [0, 0, 10, 20], "name": "L"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    let right = s.execute("layer.new.artboard", json!({"rect": [10, 0, 10, 20], "name": "R"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    assert_ne!(left, right);
+    s.execute("select.rect", json!({"x": 9, "y": 5, "width": 2, "height": 2})).unwrap();
+    s.execute("edit.copyMerged", json!({})).unwrap();
+    let clip = s.clipboard.as_ref().unwrap();
+    assert_eq!((clip.bounds.x0, clip.bounds.x1), (9, 11));
+    assert_eq!(clip.board.map(|x| x.0), Some(right), "the middle, x = 10, is on R");
+}
+
+/// With a locked board itself selected, a paste goes above the board rather than into it, so it
+/// isn't moved to the board's spot either (#10538 review): it keeps the usual paste placement.
+#[test]
+fn paste_with_a_locked_artboard_selected_is_not_moved_onto_it() {
+    let (mut s, red, _a, b) = two_boards();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.execute("layer.select", json!({"layer": b.0})).unwrap();
+    s.execute("layer.lockLayers", json!({"all": true})).unwrap();
+    let r = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(r["offset"], json!([0, 0]), "not moved by the boards' offset");
+    assert_eq!(board_of_active(&s), None, "above the locked board, not in it");
+}
+
+/// A merged clip whose middle is on its source board lands inside the destination board after
+/// the shift too: both use the true middle of the area (#10538 review). Boards R (10..20) and D
+/// (30..40); the clip spans 9..11 (middle 10, on R) and moves by 20 to 29..31 (middle 30, on D).
+#[test]
+fn a_shifted_merged_clip_is_placed_inside_the_destination_board() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 50, "height": 20})).unwrap();
+    s.execute("layer.new.artboard", json!({"rect": [0, 0, 10, 20], "name": "L"})).unwrap();
+    let r = s.execute("layer.new.artboard", json!({"rect": [10, 0, 10, 20], "name": "R"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    let d = s.execute("layer.new.artboard", json!({"rect": [30, 0, 10, 20], "name": "D"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("select.rect", json!({"x": 9, "y": 5, "width": 2, "height": 2})).unwrap();
+    s.execute("edit.copyMerged", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board.map(|x| x.0), Some(r));
+    s.execute("select.deselect", json!({})).unwrap();
+    s.execute("layer.select", json!({"layer": d.0})).unwrap();
+    let out = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(out["offset"], json!([20, 0]));
+    assert_eq!(board_of_active(&s), Some(d), "inside board D");
+}
+
+/// A pasted layer centred just left of a board stays off it (#10538 review): the placement
+/// middle rounds down, so content spanning -4..3 (middle -0.5) is left of a board starting at
+/// x = 0. Truncating toward zero put it at 0, and the board took it in and clipped it.
+#[test]
+fn content_centred_just_left_of_a_board_is_not_placed_in_it() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 20})).unwrap();
+    let b = s.execute("layer.new.artboard", json!({"rect": [0, 0, 20, 20], "name": "B"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    let place = |s: &mut Session, r: Rect| {
+        s.edit("place", |doc, active| {
+            let fmt = doc.pixel_format();
+            let mut l = Layer::raster("L", fmt);
+            l.surface_mut().unwrap().fill_rect(r, &[1.0, 0.0, 0.0, 1.0]);
+            let id = crate::layer_place::insert_new(doc, Some(b), l, crate::layer_place::Place::Auto);
+            *active = Some(id);
+            Ok(doc.artboard_of(id))
+        })
+        .unwrap()
+    };
+    assert_eq!(place(&mut s, Rect::new(-4, 5, 3, 10)), None, "middle -0.5: left of B");
+    assert_eq!(place(&mut s, Rect::new(-3, 5, 4, 10)), Some(b), "middle 0.5: on B");
+    assert_eq!(crate::layer_place::centre(Rect::new(-4, -4, 3, 3)), (-1, -1));
+    assert_eq!(crate::layer_place::centre(Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX)), (-1, -1));
+}
+
+/// In a document without artboards nothing changes (#10538 review): Paste in the same document
+/// keeps the canvas position, and the clip has no source board.
+#[test]
+fn paste_in_a_document_without_artboards_keeps_the_canvas_position() {
+    let mut s = session();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert_eq!(s.clipboard.as_ref().unwrap().board, None);
+    let r = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(r["offset"], json!([0, 0]));
+    assert_eq!(active_bounds(&s), Rect::new(10, 10, 50, 30));
+}
+
+/// Pasting onto a smaller board keeps the same offset from the board's origin; what falls past
+/// the smaller board's edge is clipped by it, as anything on a board is (#10538 review).
+#[test]
+fn paste_onto_a_smaller_artboard_keeps_the_offset_and_the_board_clips_the_rest() {
+    let (mut s, red, _a, _b) = two_boards();
+    // Board S at (300, 20), 10×10: smaller than the 20×20 red square.
+    let small = s.execute("layer.new.artboard", json!({"rect": [300, 20, 10, 10], "name": "S"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    s.execute("layer.select", json!({"layer": small.0})).unwrap();
+    let r = s.execute("edit.paste", json!({})).unwrap();
+    assert_eq!(r["offset"], json!([290, 10]), "S's origin minus A's");
+    assert_eq!(board_of_active(&s), Some(small));
+    assert_eq!(active_bounds(&s), Rect::new(300, 20, 320, 40), "the layer keeps all its pixels");
+    let px = |x: i32, y: i32| photocraft_compose::render(&s.active().unwrap().doc, Rect::new(x, y, x + 1, y + 1)).px[0];
+    assert!(px(305, 25)[0] > 0.99 && px(305, 25)[1] < 0.01, "shown inside S");
+    assert!(!(px(315, 35)[0] > 0.99 && px(315, 35)[1] < 0.01), "clipped past S's edge");
+}
+
+/// A pasted layer that joins a board keeps its own clipping while the board already holds a layer
+/// it can clip to, and drops it on an empty board (#10538 review): a clipped group copied whole
+/// from board A and pasted onto smaller boards S (holding a layer) and E (empty).
+#[test]
+fn a_clipped_paste_joining_a_board_stays_clipped_only_over_a_layer() {
+    let (mut s, red, a, _b) = two_boards();
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    let g = s.execute("layer.groupLayers", json!({"name": "G"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    let base = s.execute("layer.new.layer", json!({"name": "Base"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.moveTo", json!({"layer": base.0, "target": g.0, "position": "below"})).unwrap();
+    s.edit("clip", |doc, _| {
+        doc.layer_mut(g).unwrap().clipped = true;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.active().unwrap().doc.artboard_of(g), Some(a));
+    let small = |s: &mut Session, x: i32, name: &str| {
+        s.execute("layer.new.artboard", json!({"rect": [x, 20, 10, 10], "name": name})).unwrap()["layer"].as_u64().map(LayerId).unwrap()
+    };
+    let (sb, eb) = (small(&mut s, 300, "S"), small(&mut s, 400, "E"));
+    let held = s.execute("layer.new.layer", json!({"name": "Held"})).unwrap()["layer"].as_u64().map(LayerId).unwrap();
+    s.execute("layer.moveTo", json!({"layer": held.0, "target": sb.0, "position": "into"})).unwrap();
+    s.execute("layer.select", json!({"layer": g.0})).unwrap();
+    s.execute("edit.copy", json!({})).unwrap();
+    assert!(s.clipboard.as_ref().unwrap().layers.is_some(), "the group is copied whole");
+    let paste_on = |s: &mut Session, board: LayerId| {
+        s.execute("layer.select", json!({"layer": board.0})).unwrap();
+        s.execute("edit.paste", json!({})).unwrap();
+        let st = s.active().unwrap();
+        let id = st.active_layer.unwrap();
+        (st.doc.artboard_of(id), st.doc.layer(id).unwrap().clipped)
+    };
+    assert_eq!(paste_on(&mut s, sb), (Some(sb), true), "S holds a layer to clip to");
+    assert_eq!(paste_on(&mut s, eb), (Some(eb), false), "E is empty");
 }

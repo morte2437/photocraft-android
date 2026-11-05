@@ -73,6 +73,8 @@ mod psd_import;
 pub use psd_budget::{DEFAULT_PSD_IMPORT_PIXEL_BYTES, PsdMemoryEstimate, estimate as estimate_psd_memory};
 pub mod psd_thumbnail;
 pub mod raw;
+pub mod renderer;
+pub use renderer::{BandRenderer, CpuRenderer, RenderBand, RenderError};
 pub mod slices_map;
 pub mod smart_map;
 pub mod svg;
@@ -91,7 +93,8 @@ use photocraft_psd::{PsdError, PsdFile};
 
 pub use adjust_map::ADJUSTMENT_KEYS;
 pub use flat::{
-    DEFAULT_LOSSY_WEBP_QUALITY, apply_file_encoding, document_to_image, file_encoding, import_gif_frames, import_tiff_page, import_tiff_page_with_options,
+    DEFAULT_LOSSY_WEBP_QUALITY, apply_file_encoding, document_to_image, document_to_image_with_renderer, export_flat, export_flat_with_renderer,
+    export_png_streamed_with_renderer, export_preview_png_with_renderer, file_encoding, import_gif_frames, import_tiff_page, import_tiff_page_with_options,
     import_webp_frames, tga_alpha_channel_to_transparency, tga_default_bits,
 };
 pub use psd_export::{PsdExportOptions, document_to_psd, document_to_psd_with};
@@ -156,6 +159,19 @@ pub enum IoError {
     /// A background import or save was cancelled ([`import_with`], [`export_with`]).
     #[error("cancelled")]
     Cancelled,
+    /// A band renderer failed to produce pixels.
+    #[error("renderer error: {0}")]
+    Render(RenderError),
+}
+
+impl From<RenderError> for IoError {
+    fn from(e: RenderError) -> Self {
+        match e {
+            RenderError::Cancelled => IoError::Cancelled,
+            RenderError::Sink(io) => *io,
+            other => IoError::Render(other),
+        }
+    }
 }
 
 /// Result of [`import`].
@@ -908,7 +924,18 @@ pub fn export(doc: &Document, name_or_ext: &str, opts: &ExportOptions) -> Result
 /// layered TIFF, in coarse steps for the other formats) and checks it between stages. A cancelled
 /// export fails with [`IoError::Cancelled`]; otherwise the bytes are exactly [`export`]'s.
 pub fn export_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<ExportResult, IoError> {
-    let r = checked_stages(doc, name_or_ext, opts, ctl)?;
+    export_with_renderer(doc, name_or_ext, opts, ctl, None)
+}
+
+/// [`export_with`] with an optional custom [`BandRenderer`] for flat formats.
+pub fn export_with_renderer(
+    doc: &Document,
+    name_or_ext: &str,
+    opts: &ExportOptions,
+    ctl: &photocraft_raster::Interrupt,
+    renderer: Option<&mut dyn BandRenderer>,
+) -> Result<ExportResult, IoError> {
+    let r = checked_stages(doc, name_or_ext, opts, ctl, renderer)?;
     let bytes = r.encoded.into_bytes()?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(1.0);
@@ -921,20 +948,26 @@ pub fn export_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl:
 /// [`export_with`] checks it) before this returns: the model holds the encoded channels, never a
 /// reference to the document's tiles. Reports progress up to `1.0` once the result is ready.
 pub fn encode_with(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<EncodedExport, IoError> {
-    let r = checked_stages(doc, name_or_ext, opts, ctl)?;
+    let r = checked_stages(doc, name_or_ext, opts, ctl, None)?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
     ctl.progress(1.0);
     Ok(r)
 }
 
-/// [`export_stages`] refused when the document's scratch was, or became, unreadable while its
-/// pixels were read (previews included): their placeholders must never be saved.
-fn checked_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<EncodedExport, IoError> {
+/// [`export_stages_with_renderer`] refused when the document's scratch was, or became, unreadable
+/// while its pixels were read (previews included): their placeholders must never be saved.
+fn checked_stages(
+    doc: &Document,
+    name_or_ext: &str,
+    opts: &ExportOptions,
+    ctl: &photocraft_raster::Interrupt,
+    renderer: Option<&mut dyn BandRenderer>,
+) -> Result<EncodedExport, IoError> {
     ctl.check().map_err(|_| IoError::Cancelled)?;
     photocraft_compose::discard_unreadable_pixel_caches();
     doc.scratch_health().map_err(IoError::Unsupported)?;
     let scratch_generation = photocraft_raster::spill::read_error_generation();
-    let r = export_stages(doc, name_or_ext, opts, ctl)?;
+    let r = export_stages_with_renderer(doc, name_or_ext, opts, ctl, renderer)?;
     photocraft_raster::spill::check_since(scratch_generation).map_err(IoError::Unsupported)?;
     doc.scratch_health().map_err(IoError::Unsupported)?;
     ctl.check().map_err(|_| IoError::Cancelled)?;
@@ -960,7 +993,13 @@ const PCRAFT_FULL_COMPOSITE_PIXELS: u64 = 1 << 26;
 /// before its bytes are assembled: about 2.7 s of 3.0 s for a 24 MP, 5-layer RGB/8 document.
 const PSD_MODEL_DONE: f32 = 0.9;
 
-fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &photocraft_raster::Interrupt) -> Result<EncodedExport, IoError> {
+fn export_stages_with_renderer(
+    doc: &Document,
+    name_or_ext: &str,
+    opts: &ExportOptions,
+    ctl: &photocraft_raster::Interrupt,
+    renderer: Option<&mut dyn BandRenderer>,
+) -> Result<EncodedExport, IoError> {
     let ext = extension(name_or_ext);
     if ext == "pdn" {
         return Err(IoError::Unsupported("PDN is import-only; save as .pcraft to preserve all layers and blend modes".into()));
@@ -977,10 +1016,20 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         ));
     }
     if ext == "ora" {
-        return ora::export(doc).map(EncodedExport::from);
+        let mut res = ora::export(doc)?;
+        if let Some(r) = renderer {
+            res.warnings.push("OpenRaster export uses CPU compositor; GPU rendering applies to flat formats".into());
+            res.warnings.extend(r.drain_diagnostics());
+        }
+        return Ok(res.into());
     }
     if ext == "pdf" {
-        return pdf::export(doc).map(EncodedExport::from);
+        let mut res = pdf::export(doc)?;
+        if let Some(r) = renderer {
+            res.warnings.push("PDF export uses CPU compositor; GPU rendering applies to flat formats".into());
+            res.warnings.extend(r.drain_diagnostics());
+        }
+        return Ok(res.into());
     }
     if ext == photocraft_format::EXTENSION {
         let doc = named_for_file(doc, name_or_ext);
@@ -1035,13 +1084,22 @@ fn export_stages(doc: &Document, name_or_ext: &str, opts: &ExportOptions, ctl: &
         }
         // Never write a header the reader would refuse (e.g. a zero-sized canvas).
         file.header.validate()?;
+        if let Some(r) = renderer {
+            warnings.push("PSD/PSB layered export uses CPU compositor; GPU rendering applies to flat formats".into());
+            warnings.extend(r.drain_diagnostics());
+        }
         return Ok(EncodedExport { encoded: Encoded::Psd(Box::new(file)), warnings });
     }
     let format = photocraft_codecs::from_extension(&ext).ok_or_else(|| IoError::UnknownFormat(name_or_ext.to_string()))?;
     if format == photocraft_codecs::Format::Tiff && opts.tiff_layers && tiff_layers::would_write_layers(doc) {
-        return tiff_layers::export_layered(doc, opts, ctl).map(EncodedExport::from);
+        let mut res = tiff_layers::export_layered(doc, opts, ctl)?;
+        if let Some(r) = renderer {
+            res.warnings.push("TIFF layered export uses CPU compositor; GPU rendering applies to flat formats".into());
+            res.warnings.extend(r.drain_diagnostics());
+        }
+        return Ok(res.into());
     }
-    flat::export_flat_with(doc, format, opts, ctl).map(EncodedExport::from)
+    flat::export_flat_with_renderer(doc, format, opts, ctl, renderer).map(EncodedExport::from)
 }
 
 /// The flattened document at its canvas size, in 8-bit RGBA like a `.pcraft` file's two previews,
