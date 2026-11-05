@@ -70,7 +70,11 @@ fn sample_pixels(s: &Session, all_layers: bool, window: Option<Rect>) -> Result<
             surf.read_rgba_into(area, &mut px);
             Ok((area, px))
         }
-        _ => Ok((area, photocraft_compose::render(&d.doc, area).into_px())),
+        _ => {
+            // The composite allocates inside compose; report a failure at its boundary.
+            crate::allocation::checkpoint("sampling pixels for a selection")?;
+            Ok((area, photocraft_compose::render(&d.doc, area).into_px()))
+        }
     }
 }
 
@@ -540,21 +544,31 @@ fn crop_mask(m: &[f32], pw: usize, pad: usize, w: usize, h: usize) -> Vec<f32> {
     out
 }
 
+/// Pushes a pixel onto the grow frontier, reporting an allocation failure instead of aborting.
+fn try_push(stack: &mut Vec<usize>, i: usize) -> Result<()> {
+    crate::allocation::try_push(stack, i, "growing a selection")
+}
+
 /// Grow (contiguous) / Similar (anywhere): pixels whose colour lies within
 /// tolerance of any selected pixel (indexed via ColorMatcher BVH).
 fn grow_similar(s: &mut Session, p: &Value, contiguous: bool) -> Result<Value> {
     let tol = f(p, "tolerance", 32.0) / 255.0;
     let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", false), None)?;
     let (_, m) = current_mask(&s.active().ok_or(EngineError::NoDocument)?.doc);
-    let matcher = sel::ColorMatcher::new(px.iter().zip(&m).filter_map(|(q, v)| (*v >= 0.5).then_some(*q)), tol);
+    let matcher =
+        sel::ColorMatcher::new(px.iter().zip(&m).filter_map(|(q, v)| (*v >= 0.5).then_some(*q)), tol).map_err(|message| EngineError::Other(message.into()))?;
     if matcher.is_empty() {
         return Err(EngineError::Other("selection is empty".into()));
     }
     let (w, h) = (area.width() as usize, area.height() as usize);
-    let mut out: Vec<f32> = m.iter().map(|v| if *v >= 0.5 { 1.0 } else { 0.0 }).collect();
+    let mut out = crate::allocation::filled(m.len(), 0.0f32, "growing a selection")?;
+    for (o, v) in out.iter_mut().zip(&m) {
+        *o = if *v >= 0.5 { 1.0 } else { 0.0 };
+    }
     if contiguous {
-        // Frontier stack: only push selected pixels adjacent to at least one unselected pixel
-        let mut stack = Vec::new();
+        // Frontier stack: only push selected pixels adjacent to at least one unselected pixel.
+        // Every push goes through `try_push` so a canvas-sized stack fails instead of aborting.
+        let mut stack: Vec<usize> = Vec::new();
         for y in 0..h {
             for x in 0..w {
                 let i = y * w + x;
@@ -564,7 +578,7 @@ fn grow_similar(s: &mut Session, p: &Value, contiguous: bool) -> Result<Value> {
                 let has_unselected_neighbor =
                     (x > 0 && out[i - 1] == 0.0) || (x + 1 < w && out[i + 1] == 0.0) || (y > 0 && out[i - w] == 0.0) || (y + 1 < h && out[i + w] == 0.0);
                 if has_unselected_neighbor {
-                    stack.push(i);
+                    try_push(&mut stack, i)?;
                 }
             }
         }
@@ -574,7 +588,7 @@ fn grow_similar(s: &mut Session, p: &Value, contiguous: bool) -> Result<Value> {
             for j in n.into_iter().flatten() {
                 if out[j] == 0.0 && matcher.matches(px[j]) {
                     out[j] = 1.0;
-                    stack.push(j);
+                    try_push(&mut stack, j)?;
                 }
             }
         }

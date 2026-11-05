@@ -80,6 +80,20 @@ fn selection_sampling_allocation_failure_keeps_the_selection() {
 }
 
 #[test]
+fn selection_sampling_all_layers_reports_a_failed_composite_and_keeps_the_selection() {
+    let mut s = session();
+    s.execute("select.rect", json!({"x": 5, "y": 5, "width": 4, "height": 4})).unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let history = s.active().unwrap().history.entries();
+    // Sample All Layers renders the composite: the failure is reported there, before the mask.
+    crate::allocation::fail_next_for_test();
+    let err = s.execute("select.similar", json!({"sampleAllLayers": true})).unwrap_err().to_string();
+    assert!(err.contains("not enough memory for sampling pixels for a selection"), "{err}");
+    assert_eq!(*s.active().unwrap().doc, *before);
+    assert_eq!(s.active().unwrap().history.entries(), history);
+}
+
+#[test]
 fn modify_rejects_oversized_canvases_before_reading_the_mask() {
     let mut s = Session::new();
     let mut doc = photocraft_doc::Document::new(
@@ -672,6 +686,36 @@ fn grow_and_similar_multi_color_does_not_select_intermediate_hull() {
     s.execute("select.grow", json!({"tolerance": 5})).unwrap();
     assert_eq!(coverage(&s, 10, 10), 1.0, "contiguous red rect should be grown");
     assert_eq!(coverage(&s, 30, 10), 0.0, "disconnected blue rect must not be grown");
+}
+
+#[test]
+fn grow_and_similar_report_a_failed_mask_allocation_and_keep_the_selection() {
+    for cmd in ["select.grow", "select.similar"] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+        s.execute("select.rect", json!({"x": 6, "y": 6, "width": 4, "height": 4})).unwrap();
+        // The first fallible allocation samples the layer; the second is the canvas-sized result.
+        crate::allocation::fail_after_for_test(1);
+        let err = s.execute(cmd, json!({"tolerance": 5})).unwrap_err().to_string();
+        assert!(err.contains("not enough memory for growing a selection"), "{cmd}: {err}");
+        assert_eq!(coverage(&s, 7, 7), 1.0, "{cmd}: the selection must be untouched");
+        assert_eq!(coverage(&s, 20, 20), 0.0, "{cmd}: the selection must be untouched");
+    }
+}
+
+#[test]
+fn grow_reports_a_failed_frontier_push_mid_traversal_and_keeps_the_selection() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+    s.execute("select.rect", json!({"x": 6, "y": 6, "width": 4, "height": 4})).unwrap();
+    // Two buffer allocations (sample, result), then the 12 ring pixels of the 4x4 selection seed the
+    // frontier; three more clean pushes happen while flood-filling outwards before the next one fails.
+    crate::allocation::fail_after_for_test(2 + 12 + 3);
+    let err = s.execute("select.grow", json!({"tolerance": 5})).unwrap_err().to_string();
+    assert!(err.contains("not enough memory for growing a selection"), "{err}");
+    assert_eq!(coverage(&s, 7, 7), 1.0, "the selection must be untouched");
+    assert_eq!(coverage(&s, 20, 20), 0.0, "the flood fill must not have been committed");
+    assert_eq!(coverage(&s, 11, 7), 0.0, "the flood fill must not have been committed");
 }
 
 #[test]
