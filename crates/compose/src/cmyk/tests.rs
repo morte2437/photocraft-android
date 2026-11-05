@@ -2008,3 +2008,49 @@ fn adjustment_layers_keep_the_special_fill_rule() {
         assert_routes_agree(&d);
     }
 }
+
+/// A one-pixel 32-bit CMYK document: a raster `base` backdrop and an Invert adjustment layer in
+/// `blend` at `fill`; `clipped`, when given, is a fully covering clipped Normal raster that
+/// replaces the adjusted inks exactly.
+fn special_fill_doc(base: Cmyka, blend: BlendMode, fill: f32, clipped: Option<Cmyka>) -> Document {
+    let format = PixelFormat { mode: ColorMode::Cmyk, sample: SampleType::F32, alpha: true };
+    let pixel = Rect::new(0, 0, 1, 1);
+    let mut d = Document::new("fill", Size::new(1, 1), ColorMode::Cmyk, SampleType::F32);
+    let mut backdrop = Layer::raster("base", format);
+    backdrop.surface_mut().unwrap().fill_rect(pixel, &base);
+    d.layers.push(backdrop);
+    let mut adjust = adjustment(Adjustment::Invert);
+    adjust.blend = blend;
+    adjust.fill_opacity = fill;
+    d.layers.push(adjust);
+    if let Some(ink) = clipped {
+        let mut clip = Layer::raster("clip", format);
+        clip.surface_mut().unwrap().fill_rect(pixel, &ink);
+        clip.clipped = true;
+        d.layers.push(clip);
+    }
+    d
+}
+
+/// Zero Fill leaves the backdrop bit-exact in all of the special eight. Linear Burn and Linear
+/// Light used to round trip through brightness (0.7 came back as 0.70000005).
+#[test]
+fn adjustment_zero_fill_keeps_backdrop_inks_exact() {
+    let base = [0.1, 0.4, 0.7, 0.3, 1.0];
+    for mode in SEPARABLE.iter().copied().filter(|m| crate::psblend::fill_is_special(*m)) {
+        let d = special_fill_doc(base, mode, 0.0, None);
+        assert!(supports(&d));
+        assert_eq!(render1(&d, 0, 0), base, "{mode:?}");
+    }
+}
+
+/// Two F32 inks can share one brightness; zero Fill keeps the backdrop's, not the source's.
+#[test]
+fn adjustment_zero_fill_preserves_colliding_brightness() {
+    let base = [f32::from_bits(0x3dcccccc), 0.4, 0.7, 0.3, 1.0];
+    let source = [f32::from_bits(0x3dcccccd), 0.4, 0.7, 0.3, 1.0];
+    assert_ne!(base[0], source[0]);
+    assert_eq!(1.0 - base[0], 1.0 - source[0]);
+    let d = special_fill_doc(base, BlendMode::Difference, 0.0, Some(source));
+    assert_eq!(render1(&d, 0, 0), base);
+}
