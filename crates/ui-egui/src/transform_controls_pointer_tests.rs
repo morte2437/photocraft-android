@@ -438,3 +438,37 @@ fn move_pointer_still_reaches_the_liquify_workspace() {
     assert_eq!(app.session.active().unwrap().doc, before);
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
 }
+
+/// A sampling dialog owns its release without leaving an earlier transform drag armed.
+#[test]
+fn color_picker_release_ends_an_existing_transform_handle_drag() {
+    let (mut app, ctx, layers) = fixture();
+    let before = app.session.active().unwrap().doc.clone();
+    let old = layers.map(|id| bounds(&app, id));
+    let steps = app.session.active().unwrap().history.past_len();
+    pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+    let initial = app.ui.transform.as_ref().unwrap().quad;
+    pointer(&mut app, &ctx, "move", [700.0, 440.0]);
+    let preview = app.ui.transform.as_ref().unwrap().quad;
+    assert_ne!(preview, initial);
+    accepted(&mut app, &ctx, "ui.dialog.open", json!({"kind": "colorPicker"}));
+    let dialog = crate::color_picker_ui::top(&app).unwrap();
+    pointer(&mut app, &ctx, "down", [200.0, 150.0]);
+    pointer(&mut app, &ctx, "move", [220.0, 160.0]);
+    assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["color"], "#ff0000");
+    pointer(&mut app, &ctx, "up", [999.0, 690.0]);
+    assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["color"], "#ff0000", "release does not resample");
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, preview, "dialog-owned coordinates do not update the preview");
+    assert_eq!(app.session.active().unwrap().doc, before);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+    accepted(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog": dialog}));
+    pointer(&mut app, &ctx, "move", [650.0, 410.0]);
+    pointer(&mut app, &ctx, "up", [650.0, 410.0]);
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, preview, "later input needs a new press");
+    enter(&mut app, &ctx);
+    assert_one_transform(&app, steps);
+    for (id, previous) in layers.into_iter().zip(old) {
+        let scaled = bounds(&app, id);
+        assert!(scaled.width() < previous.width() && scaled.height() < previous.height());
+    }
+}
