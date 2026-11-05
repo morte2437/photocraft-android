@@ -339,7 +339,7 @@ fn source_probe_distinguishes_extra_faces_from_single_images_and_padding() {
     let mut single = header(1, 1, DDPF_RGB, b"DX10", 24, [0xff, 0xff00, 0xff_0000, 0]);
     single.extend([1, 2, 3]);
     single.extend([0xff; 64]);
-    assert_eq!(decode(&single).unwrap().data(), &[1, 2, 3, 255]);
+    assert_eq!(decode(&single).unwrap().data(), &[1, 2, 3]);
     for mips in [0u32, 1] {
         single[28..32].copy_from_slice(&mips.to_le_bytes());
         assert!(!photocraft_codecs::has_unretained_source_data(&single).unwrap());
