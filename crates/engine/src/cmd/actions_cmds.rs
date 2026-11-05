@@ -978,7 +978,9 @@ fn set_playback(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let performance = match p.get("performance") {
         None => None,
-        Some(v) => Some(v.as_str().and_then(crate::prefs::PlaybackPerformance::parse).ok_or_else(|| bad(CMD, "performance must be accelerated, step or pause"))?),
+        Some(v) => {
+            Some(v.as_str().and_then(crate::prefs::PlaybackPerformance::parse).ok_or_else(|| bad(CMD, "performance must be accelerated, step or pause"))?)
+        }
     };
     let range = crate::prefs::Actions::PAUSE_SECONDS;
     let seconds = match p.get("seconds") {
