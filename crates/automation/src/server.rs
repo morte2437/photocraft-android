@@ -9,7 +9,8 @@ use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock as Content};
-use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_router};
+use rmcp::service::RequestContext;
+use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt, tool, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -870,7 +871,7 @@ impl PhotocraftMcp {
     }
 
     #[tool(description = "Save the document. `.pcraft` is the lossless native format (incremental); other extensions \
-        (psd, png, jpg, tif, webp, exr, …) export. Without `path` only a PSD, PSB or .pcraft document is written back to its own         file. `pcraftFullComposite` requests `composite/full.png`, which may be omitted; check the manifest's `full_composite` member. Returns warnings about anything the format cannot hold.")]
+        (psd, png, jpg, tif, webp, exr, …) export. Without `path` only a PSD, PSB or .pcraft document is written back to its own file. `pcraftFullComposite` requests `composite/full.png`, which may be omitted; check the manifest's `full_composite` member. Returns warnings about anything the format cannot hold.")]
     async fn doc_save(&self, Parameters(p): Parameters<SaveParams>) -> Result<CallToolResult, McpError> {
         self.save_impl(p).await
     }
@@ -984,9 +985,11 @@ impl PhotocraftMcp {
 
     #[tool(description = "Run an engine command by id with JSON params (see command_list). Returns the command's JSON result. \
         Long commands (filters, Content-Aware Fill/Scale, Photomerge, brush import) wait to finish unless `wait` is false: \
-        then they run as a background job and the result is {job: id} (see jobs_list, jobs_cancel).")]
-    async fn command_run(&self, Parameters(p): Parameters<RunParams>) -> Result<CallToolResult, McpError> {
-        self.run_command(p.id, p.params.unwrap_or_else(|| json!({})), p.wait.unwrap_or(true)).await
+        then they run as a background job and the result is {job: id} (see jobs_list, jobs_cancel). Headless, a waited \
+        long command reports progress and cancelling the request cancels it; other calls are served meanwhile.")]
+    async fn command_run(&self, Parameters(p): Parameters<RunParams>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let mut waiter = Waiter::new(Some(context));
+        to_result(self.step(p.id, p.params.unwrap_or_else(|| json!({})), p.wait.unwrap_or(true), &mut waiter, (0, 1)).await)
     }
 
     #[tool(description = "List background jobs: running ones with progress (0-1), message and elapsed time, then the last few \
@@ -1004,49 +1007,8 @@ impl PhotocraftMcp {
     #[tool(description = "Run several engine commands in one call, in order (fewer round trips). Returns {completed, failed, \
         results:[{ok, result|error}]}; stops at the first error unless stop_on_error is false. \
         Not an atomic transaction: earlier successful steps stay applied (no rollback).")]
-    async fn command_batch(&self, Parameters(p): Parameters<BatchParams>) -> Result<CallToolResult, McpError> {
-        if p.steps.len() > MAX_BATCH_STEPS {
-            return Ok(fail(format!("batch contains {} steps; maximum is {MAX_BATCH_STEPS}", p.steps.len())));
-        }
-        let stop = p.stop_on_error.unwrap_or(true);
-        let steps: Vec<Value> =
-            p.steps.into_iter().map(|s| json!({"command": s.id, "params": s.params.unwrap_or_else(|| json!({})), "wait": s.wait.unwrap_or(true)})).collect();
-        let args = json!({"steps": steps, "stopOnError": stop});
-        // The reply travels as escaped JSON text, so steps are charged their escaped size.
-        if let Some(r) = self.headless_op(move |h| h.batch_with_budget(&args, BatchReplyBudget::escaped())).await {
-            return to_result(r);
-        }
-        let Some(b) = self.bridge_client() else {
-            return Ok(no_backend());
-        };
-        let mut results = Vec::new();
-        let mut failed = 0;
-        let mut reply_budget = BatchReplyBudget::escaped();
-        for s in &steps {
-            let response = b.call("engine.execute", s.clone()).await;
-            let was_error = response.is_err();
-            let result = match response {
-                Ok(value) => json!({"ok": true, "result": value}),
-                Err(error) => {
-                    let mut obj = json!({"ok": false, "error": error.to_string()});
-                    attach_memory_error_details(&mut obj, &error);
-                    obj
-                }
-            };
-            if let Err(error) = reply_budget.charge(&result) {
-                failed += 1;
-                results.push(json!({"ok": false, "error": format!("batch response budget exceeded; current step may have completed: {error}")}));
-                break;
-            }
-            results.push(result);
-            if was_error {
-                failed += 1;
-                if stop {
-                    break;
-                }
-            }
-        }
-        Ok(ok_json(&json!({"completed": results.len() - failed, "failed": failed, "results": results})))
+    async fn command_batch(&self, Parameters(p): Parameters<BatchParams>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        self.batch(p, Waiter::new(Some(context))).await
     }
 
     // ----- live-GUI tools (bridge mode) -----
@@ -1121,14 +1083,59 @@ fn bridge_only_headless(name: &str) -> Result<CallToolResult, McpError> {
 
 impl PhotocraftMcp {
     async fn run_command(&self, id: String, params: Value, wait: bool) -> Result<CallToolResult, McpError> {
-        let (id2, params2) = (id.clone(), params.clone());
-        if let Some(r) = self.headless_op(move |h| h.command_start(&id2, params2, wait)).await {
-            return to_result(r);
+        to_result(self.step(id, params, wait, &mut Waiter::new(None), (0, 1)).await)
+    }
+
+    /// Run one command in either backend; `at` is its place in a batch, for progress.
+    async fn step(&self, id: String, params: Value, wait: bool, waiter: &mut Waiter, at: (usize, usize)) -> Result<Value, AutomationError> {
+        let none = || Err(AutomationError::Other("internal error: no headless session or app bridge".into()));
+        match &*self.backend {
+            Backend::Headless(_) if wait => self.headless_wait(id, params, waiter, at).await.unwrap_or_else(none),
+            Backend::Headless(_) => self.headless_op(move |h| h.command_start(&id, params, false)).await.unwrap_or_else(none),
+            Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params, "wait": wait})).await,
         }
-        let Some(b) = self.bridge_client() else {
-            return Ok(no_backend());
-        };
-        to_result(b.call("engine.execute", json!({"command": id, "params": params, "wait": wait})).await)
+    }
+
+    async fn batch(&self, p: BatchParams, mut waiter: Waiter) -> Result<CallToolResult, McpError> {
+        if p.steps.len() > MAX_BATCH_STEPS {
+            return Ok(fail(format!("batch contains {} steps; maximum is {MAX_BATCH_STEPS}", p.steps.len())));
+        }
+        let stop = p.stop_on_error.unwrap_or(true);
+        let total = p.steps.len();
+        let mut results = Vec::new();
+        let mut failed = 0;
+        // The reply travels as escaped JSON text, so steps are charged their escaped size.
+        let mut reply_budget = BatchReplyBudget::escaped();
+        for (i, s) in p.steps.into_iter().enumerate() {
+            // A cancelled request runs no further steps; the client no longer reads the reply.
+            if waiter.is_cancelled() {
+                break;
+            }
+            let response = self.step(s.id, s.params.unwrap_or_else(|| json!({})), s.wait.unwrap_or(true), &mut waiter, (i, total)).await;
+            let was_error = response.is_err();
+            let result = match response {
+                Ok(value) => json!({"ok": true, "result": value}),
+                Err(error) => {
+                    let mut obj = json!({"ok": false, "error": error.to_string()});
+                    attach_memory_error_details(&mut obj, &error);
+                    obj
+                }
+            };
+            if let Err(error) = reply_budget.charge(&result) {
+                failed += 1;
+                results.push(json!({"ok": false, "error": format!("batch response budget exceeded; current step may have completed: {error}")}));
+                break;
+            }
+            results.push(result);
+            if was_error {
+                failed += 1;
+                if stop {
+                    break;
+                }
+            }
+            waiter.report((i + 1) as f64, total as f64, "").await;
+        }
+        Ok(ok_json(&json!({"completed": results.len() - failed, "failed": failed, "results": results})))
     }
 
     /// `jobs.list` / `jobs.cancel` in either backend; `read` picks the bridge's retry rule.
@@ -1251,6 +1258,8 @@ mod conventions;
 mod progress;
 mod transport;
 
+use progress::Waiter;
+
 /// Used by the render helper in tests and the CLI.
 pub fn render_document_png(doc: &photocraft_doc::Document, max_side: u32) -> Result<Vec<u8>, AutomationError> {
     files::render_png(doc, max_side)
@@ -1336,10 +1345,7 @@ mod tests {
             [(json!({"radius":"big"}), "radius"), (json!({"radus":3}), "radus"), (json!({"radius":5000}), "radius"), (json!({"radius":-4}), "radius")]
         {
             for wait in [true, false] {
-                let result = mcp
-                    .command_run(Parameters(RunParams { id: "filter.blur.gaussianBlur".into(), params: Some(params.clone()), wait: Some(wait) }))
-                    .await
-                    .unwrap();
+                let result = mcp.run_command("filter.blur.gaussianBlur".into(), params.clone(), wait).await.unwrap();
                 assert_eq!(result.is_error, Some(true));
                 let error = &result.content.first().and_then(|c| c.as_text()).unwrap().text;
                 assert!(error.contains("filter.blur.gaussianBlur") && error.contains(key), "{error}");
@@ -1366,7 +1372,7 @@ mod tests {
         let step = |id: &str, params: Value| RunParams { id: id.into(), params: Some(params), wait: None };
         let mut steps: Vec<RunParams> = (0..MAX_BATCH_STEPS - 1).map(|_| step("command.list", json!({}))).collect();
         steps.push(step("file.new", json!({"width": 8, "height": 8})));
-        let result = mcp.command_batch(Parameters(BatchParams { steps, stop_on_error: Some(false) })).await.unwrap();
+        let result = mcp.batch(BatchParams { steps, stop_on_error: Some(false) }, Waiter::new(None)).await.unwrap();
         assert_ne!(result.is_error, Some(true), "{:?}", result.content.first().and_then(|c| c.as_text()).map(|t| &t.text[..200.min(t.text.len())]));
         let text = &result.content.first().and_then(|c| c.as_text()).unwrap().text;
         let reply: Value = serde_json::from_str(text).unwrap();
@@ -1376,6 +1382,134 @@ mod tests {
         assert_eq!(reply["failed"], 1);
         let docs = mcp.headless_op(|h| Ok(h.session.documents().len())).await.unwrap().unwrap();
         assert_eq!(docs, 0, "the step after the budget ran out did not run");
+    }
+
+    /// Cancellation notifications only cancel the token: the handler remains alive while
+    /// its blocking start waits for the session lock.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_queued_commands_never_start() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let mcp = PhotocraftMcp::headless();
+        mcp.headless_op(|h| h.command_run("file.new", json!({"width": 8, "height": 8}))).await.unwrap().unwrap();
+        let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        let Backend::Headless(session) = &*mcp.backend else { panic!("headless") };
+        let session = session.clone();
+        let (locked, acquired) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _held = session.lock().unwrap();
+            locked.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        acquired.recv().unwrap();
+
+        let (mut input, server_in) = tokio::io::duplex(65536);
+        let (server_out, output) = tokio::io::duplex(65536);
+        let server = tokio::spawn(mcp.clone().serve_io(server_in, server_out));
+        let mut lines = BufReader::new(output).lines();
+        async fn send(input: &mut tokio::io::DuplexStream, value: Value) {
+            input.write_all(format!("{value}\n").as_bytes()).await.unwrap();
+        }
+        send(&mut input, json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}}})).await;
+        lines.next_line().await.unwrap().unwrap();
+        send(&mut input, json!({"jsonrpc":"2.0", "method":"notifications/initialized"})).await;
+        for (id, command, params) in [(2, "layer.new.layer", json!({})), (3, "filter.blur.gaussianBlur", json!({"radius": 10}))] {
+            send(
+                &mut input,
+                json!({"jsonrpc":"2.0", "id":id, "method":"tools/call", "params":{"name":"command_run", "arguments":{"id":command, "params":params}}}),
+            )
+            .await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        for id in [2, 3] {
+            send(&mut input, json!({"jsonrpc":"2.0", "method":"notifications/cancelled", "params":{"requestId":id}})).await;
+        }
+        send(&mut input, json!({"jsonrpc":"2.0", "id":4, "method":"ping"})).await;
+        loop {
+            let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            if reply["id"] == 4 {
+                break;
+            }
+        }
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        // Let both blocked starts acquire the mutex before inspecting their effects.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let (after, jobs) = mcp.headless_op(|h| Ok((h.inspect(None)?, h.session.jobs_with_recent()))).await.unwrap().unwrap();
+        assert_eq!(after, before);
+        assert!(jobs.is_empty(), "cancelled queued job started: {jobs:?}");
+        drop(input);
+        server.await.unwrap().unwrap();
+    }
+
+    /// rmcp may drop a cancelled request's future without polling it again; its job must still
+    /// stop and leave the document unchanged (#8129).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_a_waited_command_cancels_its_job() {
+        let mcp = PhotocraftMcp::headless();
+        mcp.headless_op(|h| {
+            h.command_run("file.new", json!({"width": 6000, "height": 6000}))?;
+            h.command_run("filter.noise.addNoise", json!({"amount": 50}))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        let mut waiter = Waiter::new(None);
+        let waited = mcp.headless_wait("filter.blur.gaussianBlur".into(), json!({"radius": 1000}), &mut waiter, (0, 1));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(100), waited).await.is_err(), "the blur ended before it was dropped");
+        let t = std::time::Instant::now();
+        loop {
+            let (running, cancelled) =
+                mcp.headless_op(|h| Ok((h.session.has_jobs(), h.session.jobs_with_recent().iter().any(|j| j.state == "cancelled")))).await.unwrap().unwrap();
+            if !running {
+                assert!(cancelled, "the job ended without being cancelled");
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 30, "the dropped job kept running");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap(), before);
+    }
+
+    /// Dropped while its start still waits for the session lock (held here as a long synchronous
+    /// command would): the job that starts afterwards is cancelled too, not left running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wait_dropped_before_its_job_starts_cancels_the_job() {
+        let mcp = PhotocraftMcp::headless();
+        mcp.headless_op(|h| {
+            h.command_run("file.new", json!({"width": 6000, "height": 6000}))?;
+            h.command_run("filter.noise.addNoise", json!({"amount": 50}))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let before = mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap();
+        let Backend::Headless(session) = &*mcp.backend else { panic!("headless") };
+        let (session, (locked, is_locked)) = (session.clone(), std::sync::mpsc::channel());
+        let holder = std::thread::spawn(move || {
+            let _held = session.lock().unwrap();
+            locked.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        });
+        is_locked.recv().unwrap();
+        let mut waiter = Waiter::new(None);
+        let waited = mcp.headless_wait("filter.blur.gaussianBlur".into(), json!({"radius": 1000}), &mut waiter, (0, 1));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), waited).await.is_err(), "the start waits for the lock");
+        holder.join().unwrap();
+        let t = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let (started, running) = mcp.headless_op(|h| Ok((!h.session.jobs_with_recent().is_empty(), h.session.has_jobs()))).await.unwrap().unwrap();
+            if started && !running {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 30, "the job kept running");
+        }
+        let cancelled = mcp.headless_op(|h| Ok(h.session.jobs_with_recent().iter().any(|j| j.state == "cancelled"))).await.unwrap().unwrap();
+        assert!(cancelled, "the job ended without being cancelled");
+        assert_eq!(mcp.headless_op(|h| h.inspect(None)).await.unwrap().unwrap(), before);
     }
 
     #[tokio::test(flavor = "multi_thread")]
