@@ -59,21 +59,26 @@ fn file_bytes_within(p: &Value, cmd: &str, what: &str, max: u64) -> Result<(Vec<
 }
 
 /// The preset names in use, for naming new presets.
-struct UniqueNames {
-    /// Every name in use, ASCII-lowercased.
+pub(crate) struct UniqueNames {
+    /// Every name in use, normalized according to the comparison mode.
     taken: std::collections::HashSet<String>,
-    /// The next number to try for each repeated name (lowercased).
+    /// The next number to try for each normalized repeated name.
     next: std::collections::HashMap<String, usize>,
+    exact: bool,
 }
 
 impl UniqueNames {
-    fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
-        UniqueNames { taken: names.into_iter().map(str::to_ascii_lowercase).collect(), next: std::collections::HashMap::new() }
+    pub(crate) fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        UniqueNames { taken: names.into_iter().map(str::to_ascii_lowercase).collect(), next: std::collections::HashMap::new(), exact: false }
     }
 
-    /// A name not in use (case-insensitive): `name`, `name 2`, `name 3`… It is in use from then on.
-    fn unique(&mut self, name: &str) -> String {
-        let key = name.to_ascii_lowercase();
+    pub(crate) fn new_exact<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        UniqueNames { taken: names.into_iter().map(str::to_string).collect(), next: std::collections::HashMap::new(), exact: true }
+    }
+
+    /// A name not in use under the selected comparison mode: `name`, `name 2`, `name 3`… It is in use from then on.
+    pub(crate) fn unique(&mut self, name: &str) -> String {
+        let key = if self.exact { name.to_string() } else { name.to_ascii_lowercase() };
         if self.taken.insert(key.clone()) {
             return name.to_string();
         }
@@ -348,6 +353,14 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
         None => "Imported Gradients".to_string(),
     };
     let grads = photocraft_psd::grd::parse(&bytes).map_err(|e| bad(cmd, format!("not a readable gradient file (.grd): {e}")))?;
+    // Same default as the group insertion below and the documented contract (#10640).
+    let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
+    let mut taken =
+        UniqueNames::new_exact(s.presets.gradients.iter().filter(|g| !replace || g.name != group).flat_map(|g| g.items.iter().map(|i| i.name.as_str())));
+    let original_names: Vec<String> =
+        grads.iter().enumerate().map(|(i, g)| if g.name.trim().is_empty() { format!("Gradient {}", i + 1) } else { g.name.trim().to_string() }).collect();
+    let mut reserved = taken.taken.clone();
+    reserved.extend(original_names.iter().cloned());
     let mut warnings = Vec::new();
     let mut items = Vec::new();
     let (mut noise, mut midpoints) = (0, false);
@@ -365,6 +378,15 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
             opacity.clear();
         }
         let name = if g.name.trim().is_empty() { format!("Gradient {}", i + 1) } else { g.name.trim().to_string() };
+        let name = if taken.taken.insert(name.clone()) {
+            name
+        } else {
+            std::mem::swap(&mut taken.taken, &mut reserved);
+            let unique = taken.unique(&name);
+            std::mem::swap(&mut taken.taken, &mut reserved);
+            taken.taken.insert(unique.clone());
+            unique
+        };
         items.push(GradientPreset { name, stops, opacity });
     }
     if noise > 0 {
@@ -379,7 +401,7 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
     let names: Vec<String> = items.iter().map(|g| g.name.clone()).collect();
     let st = &mut s.presets;
     // As with brushes: a new group beside one of the same name unless `replace` (#10640).
-    let group = if p.get("replace").and_then(Value::as_bool).unwrap_or(false) {
+    let group = if replace {
         st.gradients.retain(|g| g.name != group);
         group
     } else {
@@ -500,6 +522,104 @@ mod tests {
             assert!(s.execute("brush.presets.importAbr", p.clone()).is_err(), "{p}");
         }
         assert_eq!(s.tools.presets.len(), n);
+    }
+
+    #[test]
+    fn duplicate_gradient_names_remain_independently_selectable() {
+        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        let gradients: Vec<_> = [0.2, 0.8]
+            .into_iter()
+            .map(|red| GrdGradient {
+                name: "Duplicate".into(),
+                stops: vec![
+                    GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([red, 0.0, 0.0]) },
+                    GrdStop { location: 1.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 1.0, 1.0]) },
+                ],
+                ..Default::default()
+            })
+            .collect();
+        let data = photocraft_paint::tile::b64_encode(&write(&gradients));
+        let mut s = Session::new();
+        // Re-importing over the group replaces it (`replace`, #10640), so it keeps the same names.
+        for _ in 0..2 {
+            let result = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Duplicates", "replace": true})).unwrap();
+            assert_eq!(result["imported"], json!(["Duplicate", "Duplicate 2"]));
+        }
+        s.execute("gradient.presets.select", json!({"preset": "Duplicate"})).unwrap();
+        let first = s.presets.gradient.clone();
+        s.execute("gradient.presets.select", json!({"preset": "Duplicate 2"})).unwrap();
+        assert_ne!(first.stops, s.presets.gradient.stops);
+        let mut saved = s.presets.to_json(&s);
+        let groups = saved["gradients"].as_array_mut().unwrap();
+        let group = groups.iter_mut().find(|g| g["name"] == "Duplicates").unwrap();
+        group["items"][1]["name"] = json!("Duplicate");
+        s.load_presets_json(saved);
+        let restored = s.presets.gradients.iter().find(|g| g.name == "Duplicates").unwrap();
+        assert_eq!(restored.items[1].name, "Duplicate 2");
+        assert_eq!(s.presets.gradient.name, "Duplicate 2");
+        let result = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Other", "replace": false})).unwrap();
+        assert_eq!(result["imported"], json!(["Duplicate 3", "Duplicate 4"]));
+    }
+
+    /// Re-importing without `replace` (the default) adds a sibling group, so its presets must get
+    /// names distinct from the existing group's, keeping name-only selection unambiguous.
+    #[test]
+    fn default_gradient_reimport_keeps_names_unique_across_sibling_groups() {
+        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        let gradients = vec![GrdGradient {
+            name: "Sunset".into(),
+            stops: vec![
+                GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 0.0, 0.0]) },
+                GrdStop { location: 1.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 1.0, 1.0]) },
+            ],
+            ..Default::default()
+        }];
+        let data = photocraft_paint::tile::b64_encode(&write(&gradients));
+        let mut s = Session::new();
+        let first = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Sky"})).unwrap();
+        assert_eq!(first["imported"], json!(["Sunset"]));
+        let second = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Sky"})).unwrap();
+        assert_eq!(second["group"], json!("Sky (2)"));
+        assert_eq!(second["imported"], json!(["Sunset 2"]));
+        // Explicit `replace` drops the same-named group, so the original name is free again.
+        let third = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Sky", "replace": true})).unwrap();
+        assert_eq!(third["group"], json!("Sky"));
+        assert_eq!(third["imported"], json!(["Sunset"]));
+    }
+
+    #[test]
+    fn gradient_import_preserves_original_and_case_distinct_names() {
+        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        let gradients: Vec<_> = ["Foo", "Foo", "Foo 2", "FOO"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| GrdGradient {
+                name: name.into(),
+                stops: vec![
+                    GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([i as f32 / 4.0, 0.0, 0.0]) },
+                    GrdStop { location: 1.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 1.0, 1.0]) },
+                ],
+                ..Default::default()
+            })
+            .collect();
+        let mut s = Session::new();
+        let result = s
+            .execute(
+                "gradient.presets.importGrd",
+                json!({
+                    "data": photocraft_paint::tile::b64_encode(&write(&gradients)), "group": "Names"
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["imported"], json!(["Foo", "Foo 3", "Foo 2", "FOO"]));
+        for (name, red) in [("Foo", 0.0), ("Foo 3", 0.25), ("Foo 2", 0.5), ("FOO", 0.75)] {
+            s.execute("gradient.presets.select", json!({"preset": name})).unwrap();
+            let current = s.presets.gradient.clone();
+            assert_eq!(current.name, name);
+            assert_eq!(current.stops[0].1, crate::presets::gradients::StopColor::Rgb([red, 0.0, 0.0]));
+        }
+        let mut tools = UniqueNames::new(["Foo"]);
+        assert_eq!(tools.unique("FOO"), "FOO 2");
     }
 
     #[test]
