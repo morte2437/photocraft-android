@@ -21,16 +21,33 @@ pub fn downsample(s: &Surface, k: u32) -> Surface {
     let (x0, x1) = (b.x0.div_euclid(k), b.x1.div_euclid(k) + i32::from(b.x1.rem_euclid(k) != 0));
     let (y0, y1) = (b.y0.div_euclid(k), b.y1.div_euclid(k) + i32::from(b.y1.rem_euclid(k) != 0));
     let w = x1.saturating_sub(x0).max(0) as usize;
-    let mut row = vec![0u8; w * bpp];
-    for oy in y0..y1 {
-        let src = s.to_interleaved(Rect::new(x0.saturating_mul(k), oy.saturating_mul(k), x1.saturating_mul(k), oy.saturating_mul(k).saturating_add(1)));
-        for (i, px) in row.chunks_exact_mut(bpp).enumerate() {
-            // Saturated edges (a surface at the i32 limits) can make `src` shorter than expected.
-            if let Some(from) = (i * k as usize * bpp).checked_add(bpp).and_then(|end| src.get(i * k as usize * bpp..end)) {
-                px.copy_from_slice(from);
+    // Rows are read in parallel, a chunk at a time, so the scratch stays small.
+    const CHUNK_ROWS: i32 = 64;
+    let mut chunk = Vec::new();
+    let mut y = y0;
+    while y < y1 {
+        let end = y.saturating_add(CHUNK_ROWS).min(y1);
+        chunk.clear();
+        chunk.resize(w * (end - y) as usize * bpp, 0u8);
+        let fill = |(row, oy): (&mut [u8], i32)| {
+            let src = s.to_interleaved(Rect::new(x0.saturating_mul(k), oy.saturating_mul(k), x1.saturating_mul(k), oy.saturating_mul(k).saturating_add(1)));
+            for (i, px) in row.chunks_exact_mut(bpp).enumerate() {
+                // Saturated edges (a surface at the i32 limits) can make `src` shorter than expected.
+                if let Some(from) = (i * k as usize * bpp).checked_add(bpp).and_then(|end| src.get(i * k as usize * bpp..end)) {
+                    px.copy_from_slice(from);
+                }
             }
+        };
+        let rows = (w * bpp).max(1);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+            chunk.par_chunks_mut(rows).zip(y..end).for_each(fill);
         }
-        out.write_interleaved(Rect::new(x0, oy, x1, oy + 1), &row);
+        #[cfg(target_arch = "wasm32")]
+        chunk.chunks_mut(rows).zip(y..end).for_each(fill);
+        out.write_interleaved(Rect::new(x0, y, x1, end), &chunk);
+        y = end;
     }
     out
 }

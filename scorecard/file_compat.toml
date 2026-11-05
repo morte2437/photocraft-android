@@ -122,7 +122,7 @@ id = "FILE-215-17"
 target = "CMYK/RGB documents preview spot inks; spot plates export (TIFF extra samples, PDF)"
 status = "partial"
 issue = 215
-note = "TIFF: spot channels written and read as extra samples with DisplayInfo (1077) ink colour and solidity, ink stored 0 = solid (#7415). PSD: spot planes stored and read 0 = solid as Photoshop does, identifiers in 1053; PhotoCraft 0.1.0–0.16.0 PSDs (straight planes) keep their ink. Missing: spot ink preview in RGB/CMYK documents (compose multichannel.rs:1 previews Multichannel only) and PDF Separation"
+note = "TIFF: spot channels written and read as extra samples with DisplayInfo (1077) ink colour and solidity, ink stored 0 = solid (#7415). PSD: spot planes stored and read 0 = solid as Photoshop does, identifiers in 1053; PhotoCraft 0.1.0–0.16.0 PSDs (straight planes) keep their ink. RGB/CMYK documents preview visible spot channels as inks printed over the canvas composite (compose multichannel::overprint, the Multichannel formula, in Channels panel order; ui-egui canvas/channel_view.rs), open with spot eyes on, and print them in the PSD thumbnail (multichannel::thumbnail_with_inks); flatten, export and the merged image stay free of them (#10249). Missing: PDF Separation"
 
 [[item]]
 id = "FILE-215-18"

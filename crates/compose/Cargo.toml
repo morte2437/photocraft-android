@@ -13,6 +13,7 @@ photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-vector = { workspace = true }
+photocraft-cms = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { workspace = true }
@@ -21,7 +22,6 @@ rayon = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
 photocraft-paint = { workspace = true }
-photocraft-cms = { workspace = true }
 
 [[bench]]
 name = "compose"

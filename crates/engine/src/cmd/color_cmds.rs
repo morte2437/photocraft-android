@@ -397,16 +397,16 @@ impl ColorState {
     pub fn display_transform_for(&self, doc: &Document, display: Option<u32>) -> Result<Arc<Transform>> {
         let src = self.canvas_display_for(doc, display)?.source.clone();
         let dst = self.monitor_for(display);
-        let pv = self.proof(doc.id);
-        let proof = pv.enabled.then(|| (pv.setup.profile.content_hash(), pv.setup.intent, pv.setup.bpc, pv.setup.simulate_paper));
+        // Borrowed: the canvas asks per frame, and the default proof state allocates a profile.
+        let pv = self.proof_ref(doc.id).filter(|pv| pv.enabled);
+        let proof = pv.map(|pv| (pv.setup.profile.content_hash(), pv.setup.intent, pv.setup.bpc, pv.setup.simulate_paper));
         let key = (src.content_hash(), dst.content_hash(), proof);
         if let Some(t) = self.display_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return Ok(t.clone());
         }
-        let t = if pv.enabled {
-            Transform::proof(&src, &pv.setup.profile, &dst, pv.setup.intent, pv.setup.bpc, pv.setup.simulate_paper)
-        } else {
-            Transform::new(&src, &dst, crate::display_color::DISPLAY_INTENT, crate::display_color::DISPLAY_BPC)
+        let t = match pv {
+            Some(pv) => Transform::proof(&src, &pv.setup.profile, &dst, pv.setup.intent, pv.setup.bpc, pv.setup.simulate_paper),
+            None => Transform::new(&src, &dst, crate::display_color::DISPLAY_INTENT, crate::display_color::DISPLAY_BPC),
         }
         .map_err(cms_err)?;
         let t = Arc::new(t);

@@ -143,7 +143,7 @@ fn a_channel_overlay_follows_a_size_changing_preview() {
             canvas_view(&mut app, ui, 0, Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), view.clone(), true);
         });
         output.textures_delta.clear();
-        let overlay = crate::channel_view::ensure(&mut app, &ctx, 0).expect("the channel overlay");
+        let overlay = crate::channel_view::ensure(&mut app, &ctx, 0, None).expect("the channel overlay");
         let mesh = output
             .shapes
             .iter()
@@ -1729,7 +1729,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 app.ui.tool = Tool::Brush;
                 let ctx = egui::Context::default();
                 ctx.input_mut(|i| i.max_texture_side = 256);
-                let tex = crate::channel_view::ensure(&mut app, &ctx, 0).unwrap();
+                let tex = crate::channel_view::ensure(&mut app, &ctx, 0, None).unwrap();
                 ctx.tex_manager().write().take_delta().clear();
                 let revision = app.session.documents()[0].revision;
                 let steps = app.session.documents()[0].history.past_len();
@@ -1740,7 +1740,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                     tool_event(&mut app, ToolEvent::Move { x, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
                     let shown = display_doc(&mut app, 0).0;
                     assert!(shown.layer(layer).unwrap().mask.as_ref().unwrap().value(x as i32, 30) < 0.1);
-                    assert_eq!(crate::channel_view::ensure(&mut app, &ctx, 0), Some(tex));
+                    assert_eq!(crate::channel_view::ensure(&mut app, &ctx, 0, None), Some(tex));
                     let mut delta = ctx.tex_manager().write().take_delta();
                     let uploads = delta.set.get(&tex).unwrap_or_else(|| panic!("{depth}-bit {mode}: live mask texture must upload before release at {x}"));
                     assert_eq!(uploads.len(), 1);
@@ -1765,7 +1765,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                     assert_eq!(app.session.documents()[0].revision, revision);
                     assert_eq!(app.session.documents()[0].history.past_len(), steps);
                     assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
-                    crate::channel_view::ensure(&mut app, &ctx, 0);
+                    crate::channel_view::ensure(&mut app, &ctx, 0, None);
                     assert!(ctx.tex_manager().write().take_delta().set.is_empty(), "idle frame does not upload");
                 }
                 tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, egui::Modifiers::NONE);
@@ -1773,7 +1773,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 assert_eq!(st.history.past_len(), steps + 1);
                 assert!(st.doc.layer(layer).unwrap().mask.as_ref().unwrap().value(50, 30) < 0.1);
                 assert_eq!(st.doc.layer(layer).unwrap().content, original.content);
-                crate::channel_view::ensure(&mut app, &ctx, 0);
+                crate::channel_view::ensure(&mut app, &ctx, 0, None);
                 let mut delta = ctx.tex_manager().write().take_delta();
                 // The commit takes the live stroke's pixels, which the texture already shows: at
                 // most a partial upload, never the whole mask again.
@@ -1781,7 +1781,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 delta.clear();
                 app.session.undo();
                 assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
-                crate::channel_view::ensure(&mut app, &ctx, 0);
+                crate::channel_view::ensure(&mut app, &ctx, 0, None);
                 let mut delta = ctx.tex_manager().write().take_delta();
                 let upload = &delta.set.get(&tex).unwrap()[0];
                 let egui::ImageData::Color(image) = &upload.image;
@@ -1826,14 +1826,14 @@ fn channel_views_show_live_targets_and_discarded_strokes() {
         app.run("tools.setBrush", json!({"brush": {"size": 12, "hardness": 1.0, "smoothing": {"amount": 0.0}}})).unwrap();
         app.ui.tool = Tool::Brush;
         let ctx = egui::Context::default();
-        let tex = crate::channel_view::ensure(&mut app, &ctx, 0).unwrap();
+        let tex = crate::channel_view::ensure(&mut app, &ctx, 0, None).unwrap();
         ctx.tex_manager().write().take_delta().clear();
         let original = app.session.documents()[0].doc.clone();
         let steps = app.session.documents()[0].history.past_len();
         tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         let shown = display_doc(&mut app, 0).0;
-        crate::channel_view::ensure(&mut app, &ctx, 0);
+        crate::channel_view::ensure(&mut app, &ctx, 0, None);
         let mut delta = ctx.tex_manager().write().take_delta();
         let upload = &delta.set.get(&tex).expect("live channel upload")[0];
         let pos = upload.pos.expect("partial channel upload");
@@ -1872,7 +1872,7 @@ fn channel_views_show_live_targets_and_discarded_strokes() {
         // document revision did not change. There is no committed damage rectangle to use.
         app.drag = None;
         app.live_stroke = None;
-        crate::channel_view::ensure(&mut app, &ctx, 0);
+        crate::channel_view::ensure(&mut app, &ctx, 0, None);
         let mut delta = ctx.tex_manager().write().take_delta();
         let upload = &delta.set.get(&tex).unwrap()[0];
         assert!(upload.pos.is_none(), "discarding a preview refreshes the view");
