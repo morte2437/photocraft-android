@@ -6,6 +6,7 @@
 //! are shown as errors (status bar + notice); import warnings as a notice.
 
 use crate::{PhotocraftApp, notices};
+use photocraft_doc::DocId;
 use photocraft_engine::file_cmds::{is_template, untitled_name};
 
 /// A request from the operating system, delivered by the platform shell through
@@ -33,7 +34,8 @@ pub enum DropTarget {
     Elsewhere,
 }
 
-/// A file dropped on the canvas, waiting its turn to be placed.
+/// A file dropped on the canvas, waiting its turn to be placed in the document it was dropped on
+/// (queued with its [`DocId`] in `drop_places`).
 pub(crate) enum DropPlace {
     /// Destination captured when the file is dropped, before a later pointer move.
     At { source: Box<DropPlace>, frame: Option<photocraft_doc::LayerId> },
@@ -42,6 +44,41 @@ pub(crate) enum DropPlace {
     /// Read by the shell itself (the browser reads dropped files asynchronously): its name and
     /// contents, delivered through [`Services::place_inbox`](crate::Services::place_inbox).
     Bytes(String, Vec<u8>),
+}
+
+impl DropPlace {
+    /// The file contents held while it waits for its document (a path drop holds none yet).
+    fn queued_bytes(&self) -> usize {
+        match self {
+            Self::At { source, .. } => source.queued_bytes(),
+            Self::File(_) => 0,
+            Self::Bytes(_, bytes) => bytes.len(),
+        }
+    }
+
+    /// Whether it holds its file's contents while it waits (a browser drop); a path drop is read
+    /// only when its turn comes.
+    fn holds_bytes(&self) -> bool {
+        match self {
+            Self::At { source, .. } => source.holds_bytes(),
+            Self::File(_) => false,
+            Self::Bytes(..) => true,
+        }
+    }
+}
+
+/// The most browser drops, each holding its whole file, that can wait for their document to come
+/// back in view. Path drops hold only their path and aren't counted: dropping a folder's worth of
+/// files on the canvas places them all.
+const MAX_QUEUED_DROPS: usize = 32;
+/// The most dropped file contents kept in memory while they wait: a browser drop carries its whole
+/// file, and anything queued on a document in another tab stays until it is back in view.
+const MAX_QUEUED_DROP_BYTES: usize = 256 * 1024 * 1024;
+
+/// Whether the drop queue takes a browser drop of `incoming` bytes when it holds `queued` of them
+/// and `bytes` in all.
+fn queue_takes_drop(queued: usize, bytes: usize, incoming: usize) -> bool {
+    queued < MAX_QUEUED_DROPS && bytes.saturating_add(incoming) <= MAX_QUEUED_DROP_BYTES
 }
 
 /// `warnings` from an import, plus one for each font family the active document's type uses that
@@ -247,6 +284,11 @@ impl PhotocraftApp {
         });
     }
 
+    /// Show "Couldn't place <name>: <error>" as an error (status bar + notice).
+    pub fn place_failed(&mut self, name: &str, err: &str) {
+        self.failed(crate::i18n::fmt(tl!("Couldn't place {name}: {error}"), &[("name", name), ("error", err)]));
+    }
+
     /// Log `msg` and show it as an error (status bar + notice).
     fn failed(&mut self, msg: String) {
         log::warn!("{msg}");
@@ -272,7 +314,9 @@ impl PhotocraftApp {
         for f in files {
             let name = dropped_name(&f);
             if target == DropTarget::Canvas && !crate::preset_files_ui::is_preset_file(&name) {
-                self.drop_places.push_back(DropPlace::At { source: Box::new(DropPlace::File(f)), frame });
+                if let Some(doc) = self.session.active().map(|st| st.doc.id) {
+                    self.queue_drop(doc, DropPlace::At { source: Box::new(DropPlace::File(f)), frame });
+                }
                 continue;
             }
             match self.open_dropped_file(&f, &name, slot) {
@@ -295,8 +339,12 @@ impl PhotocraftApp {
         let at = self.services.cursor_pos.as_mut().and_then(|f| f(ctx));
         let canvas = self.drop_target(ctx, at) == DropTarget::Canvas;
         let places: Vec<bool> = names.iter().map(|n| canvas && !crate::preset_files_ui::is_preset_file(n)).collect();
-        if places.contains(&true) && self.ui.transform.is_some() {
-            crate::transform_tool::commit(self);
+        if places.contains(&true) {
+            // The shell reads the files after this returns: they go to this document even if the
+            // tab changes before they arrive.
+            if self.ui.transform.is_some() {
+                crate::transform_tool::commit(self);
+            }
         }
         places
     }
@@ -337,9 +385,27 @@ impl PhotocraftApp {
 
     /// Place the next file dropped on the canvas and start Free Transform on it, once no other
     /// transform is in progress (so several files are placed and transformed one after another).
+    /// With background jobs on, a file is placed by a job: the next one waits until that job has
+    /// landed and its Free Transform has been applied (see `jobs_ui::finish_place`).
+    ///
+    /// Each file goes into the document it was dropped on, never into whichever one is active now:
+    /// files dropped on a document in another tab wait until it is back in view, and are discarded
+    /// (with a message) when it is closed.
     pub(crate) fn place_next_dropped(&mut self, ctx: &egui::Context) {
-        while self.ui.transform.is_none() {
-            let Some(next) = self.drop_places.pop_front() else { return };
+        // Leave the closed-document notice up for this frame: starting the next queued placement
+        // would clear the status bar. The next frame retries the queue, so ask for one at once:
+        // another document's files would otherwise wait for the next input event.
+        if self.discard_drops_of_closed_documents() {
+            if !self.drop_places.is_empty() {
+                ctx.request_repaint();
+            }
+            return;
+        }
+        while self.ui.transform.is_none() && self.jobs.place.is_none() && self.session.active_job().is_none() {
+            let Some(active) = self.session.active().map(|st| st.doc.id) else { return };
+            let Some((_, next)) = self.drop_places.iter().position(|(doc, _)| *doc == active).and_then(|i| self.drop_places.remove(i)) else {
+                return;
+            };
             let (next, frame) = match next {
                 DropPlace::At { source, frame } => (*source, Some(frame)),
                 next => (next, None),
@@ -372,6 +438,8 @@ impl PhotocraftApp {
                 }
             };
             match placed {
+                // Running in the background: Free Transform starts when the layer has landed.
+                Ok(started) if crate::jobs_ui::track_place(self, &name, &started) => return,
                 Ok(result) => {
                     if result.get("frame").and_then(serde_json::Value::as_u64).is_some() {
                         continue;
@@ -380,18 +448,66 @@ impl PhotocraftApp {
                         self.ui.status = e;
                     }
                 }
-                Err(e) => self.failed(crate::i18n::fmt(tl!("Couldn't place {name}: {error}"), &[("name", &name), ("error", &e)])),
+                Err(e) => self.place_failed(&name, &e),
             }
         }
     }
 
+    /// Queue the web drops onto the canvas that the shell has read since the last frame
+    /// ([`Services::place_inbox`](crate::Services::place_inbox)), for the document they were
+    /// dropped on.
+    pub(crate) fn queue_web_places(&mut self) {
+        let arrived: Vec<(DocId, String, Vec<u8>)> =
+            self.services.place_inbox.as_ref().map(|q| std::mem::take(&mut *q.lock().unwrap_or_else(|e| e.into_inner()))).unwrap_or_default();
+        for (doc, name, bytes) in arrived {
+            self.queue_drop(doc, DropPlace::Bytes(name, bytes));
+        }
+    }
+
+    /// Queue a canvas drop for the document it was dropped on, keeping the file contents it holds
+    /// bounded: files dropped on a document in another tab wait here, and a browser drop carries
+    /// its whole file. A path drop holds no contents, so any number of them queue.
+    fn queue_drop(&mut self, doc: DocId, place: DropPlace) {
+        let held = self.drop_places.iter().filter(|(_, p)| p.holds_bytes()).count();
+        let bytes = self.drop_places.iter().fold(0usize, |sum, (_, p)| sum.saturating_add(p.queued_bytes()));
+        if place.holds_bytes() && !queue_takes_drop(held, bytes, place.queued_bytes()) {
+            self.ui.status = tl!("Dropped files weren't placed: too many are waiting for their document.").into();
+            self.ui.status_error = true;
+            return;
+        }
+        self.drop_places.push_back((doc, place));
+    }
+
+    /// Drop the queued files whose document has been closed, saying so. True when one was dropped
+    /// (the caller lets the notice stand).
+    fn discard_drops_of_closed_documents(&mut self) -> bool {
+        if self.drop_places.is_empty() {
+            return false;
+        }
+        let before = self.drop_places.len();
+        let open: Vec<DocId> = self.session.documents().iter().map(|st| st.doc.id).collect();
+        self.drop_places.retain(|(doc, _)| open.contains(doc));
+        let discarded = self.drop_places.len() < before;
+        if discarded {
+            self.ui.status = tl!("Dropped files weren't placed: their document was closed.").into();
+            self.ui.status_error = false;
+        }
+        discarded
+    }
+
     /// Place a file's bytes as a smart object layer (File › Place; `linked`: Place Linked, to that
-    /// path), for files that weren't read from a path the command can read.
+    /// path), for files that weren't read from a path the command can read. With background jobs
+    /// on it starts a job (`{"job", "pending": true}`; see [`crate::jobs_ui::track_place`]).
     pub(crate) fn place_bytes(&mut self, name: &str, bytes: Vec<u8>, linked: Option<String>) -> Result<serde_json::Value, String> {
         self.place_bytes_with(name, bytes, linked, &serde_json::json!({}))
     }
+
     fn place_bytes_with(&mut self, name: &str, bytes: Vec<u8>, linked: Option<String>, params: &serde_json::Value) -> Result<serde_json::Value, String> {
-        let r = photocraft_engine::file_cmds::place_bytes(&mut self.session, name, bytes, linked, params).map_err(|e| e.to_string());
+        let r = if self.background_jobs {
+            crate::jobs_ui::start_place_bytes(self, name, bytes, linked, params)
+        } else {
+            photocraft_engine::file_cmds::place_bytes(&mut self.session, name, bytes, linked, params).map_err(|e| e.to_string())
+        };
         self.sync_views();
         r
     }

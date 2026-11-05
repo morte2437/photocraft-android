@@ -70,6 +70,17 @@ pub(crate) struct OpenBatch {
     opened: Vec<usize>,
 }
 
+/// A file being placed in the background (File › Place, or a file dropped on the canvas): Free
+/// Transform starts on its layer when the job lands, and the files dropped after it follow.
+#[derive(Clone, Debug)]
+pub struct PlaceJob {
+    pub job: JobId,
+    /// Display name (the file name).
+    pub name: String,
+    /// The document it lands in: Free Transform starts only while that one is in view.
+    pub doc: DocId,
+}
+
 /// The job command of a background save.
 pub const SAVE_JOB: &str = "file.save";
 
@@ -165,6 +176,9 @@ pub struct JobsUi {
     pub focus: Option<JobId>,
     /// The job the latest [`run`] started (the control channel waits on it).
     pub(crate) last_started: Option<JobId>,
+    /// The file being placed in the background, if any. One at a time: files dropped meanwhile
+    /// wait in the app's drop queue.
+    pub place: Option<PlaceJob>,
     /// Cached read-only canvas image of the current folder Batch input.
     batch_preview_texture: Option<(JobId, u64, egui::TextureHandle)>,
 }
@@ -186,6 +200,62 @@ pub fn run(app: &mut PhotocraftApp, id: &str, params: Value) -> Result<Value, St
             Ok(json!({"job": job.0, "pending": true}))
         }
     }
+}
+
+/// Place a file's bytes in the background (File › Place for a file with no path to read, a dropped
+/// file read by the browser): like [`run`] for `file.placeEmbedded`, the result is
+/// `{"job": id, "pending": true}` and the layer lands when [`tick`] applies the job. `linked`
+/// makes it Place Linked to that path. Hand the result to [`track_place`].
+pub(crate) fn start_place_bytes(app: &mut PhotocraftApp, name: &str, bytes: Vec<u8>, linked: Option<String>, params: &Value) -> Result<Value, String> {
+    if app.jobs.place.is_some() {
+        return Err(tl!("A file is still being placed; try again when it has finished.").into());
+    }
+    match app.session.start_place_bytes(name, bytes, linked, params.clone()).map_err(|e| e.to_string())? {
+        Started::Done(v) => Ok(v),
+        Started::Job(job) => {
+            app.jobs.last_started = Some(job);
+            // The status bar's progress readout names the job; clear any old message.
+            app.ui.status.clear();
+            app.ui.status_error = false;
+            Ok(json!({"job": job.0, "pending": true}))
+        }
+    }
+}
+
+/// Follow the place that `started` (the result of [`run`] or [`start_place_bytes`] for the file
+/// `name`) began in the background: when it lands, Free Transform starts on its layer and the
+/// next dropped file is placed (see `on_event`). False when it already ran (nothing to follow).
+pub(crate) fn track_place(app: &mut PhotocraftApp, name: &str, started: &Value) -> bool {
+    let job = started.get("pending").and_then(Value::as_bool).filter(|pending| *pending).and_then(|_| started.get("job")?.as_u64());
+    let (Some(job), Some(doc)) = (job, app.session.active().map(|st| st.doc.id)) else { return false };
+    app.jobs.place = Some(PlaceJob { job: JobId(job), name: crate::file_open::display_name(name), doc });
+    true
+}
+
+/// A background place ended: start Free Transform on the layer it made, or report why not, then
+/// go on with the files dropped meanwhile.
+fn finish_place(app: &mut PhotocraftApp, ctx: &egui::Context, place: PlaceJob, outcome: JobOutcome) {
+    app.sync_views();
+    match outcome {
+        JobOutcome::Done(result) => {
+            // The tab can change while the file is placed: the box opens only on the document it
+            // was placed in, and never over another one. An image placed into a frame has none.
+            if app.ui.transform.is_none()
+                && result.get("frame").and_then(Value::as_u64).is_none()
+                && app.session.active().is_some_and(|st| st.doc.id == place.doc)
+                && let Err(e) = crate::transform_tool::begin_placed(app, ctx)
+            {
+                app.ui.status = e;
+            }
+        }
+        JobOutcome::Failed(err) => app.place_failed(&place.name, &err),
+        JobOutcome::Cancelled if app.session.documents().iter().any(|st| st.doc.id == place.doc) => {
+            app.ui.status = crate::i18n::fmt(tl!("Cancelled placing {name}"), &[("name", &place.name)]);
+            app.ui.status_error = false;
+        }
+        JobOutcome::Cancelled => {}
+    }
+    app.place_next_dropped(ctx);
 }
 
 /// Open a file in the background: a tab appears at once and shows the progress; the document
@@ -507,6 +577,12 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
     }
     // Camera Raw's open-time re-develop and its final step.
     if crate::camera_raw_ui::on_redevelop_event(app, &e) {
+        return;
+    }
+    if app.jobs.place.as_ref().is_some_and(|p| p.job == e.id)
+        && let Some(place) = app.jobs.place.take()
+    {
+        finish_place(app, ctx, place, e.outcome);
         return;
     }
     if e.command == SAVE_JOB
@@ -845,7 +921,13 @@ pub fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
         Some(j) => j,
         None => {
             let Some(j) = app.session.active_job() else { return };
-            if j.command == "file.automate.batch" || j.elapsed_ms < DIALOG_DELAY_MS || app.jobs.saves.iter().any(|s| s.job == j.id) {
+            // A save shows its progress in the tab and the status bar; so does a place, which
+            // leaves the view free to zoom and pan while the file is decoded.
+            let place = place_uses_status_bar(
+                &j.command,
+                !app.ui.view.hides_chrome() && app.ui.panels.status_bar && job_in_view(app).is_some_and(|shown| shown.id == j.id),
+            );
+            if j.command == "file.automate.batch" || j.elapsed_ms < DIALOG_DELAY_MS || place || app.jobs.saves.iter().any(|s| s.job == j.id) {
                 return;
             }
             j
@@ -1008,6 +1090,7 @@ pub fn inspect(app: &PhotocraftApp) -> Value {
         "running": app.session.jobs(),
         "opening": app.jobs.opens.iter().map(|o| json!({"job": o.job.0, "name": o.name, "path": o.path})).collect::<Vec<_>>(),
         "saving": app.jobs.saves.iter().map(|s| json!({"job": s.job.0, "path": s.path})).collect::<Vec<_>>(),
+        "placing": app.jobs.place.as_ref().map(|p| json!({"job": p.job.0, "name": p.name})),
         "focus": app.jobs.focus.map(|j| j.0),
         "background": app.background_jobs,
     })
@@ -1020,3 +1103,20 @@ pub fn bytes(b: &[u8]) -> OpenSource {
 
 #[cfg(test)]
 mod tests;
+
+/// Placements keep the canvas accessible when progress and Cancel are visible in the status bar.
+fn place_uses_status_bar(command: &str, status_bar_visible: bool) -> bool {
+    status_bar_visible && matches!(command, "file.placeEmbedded" | "file.placeLinked")
+}
+
+#[cfg(test)]
+mod place_progress_tests {
+    #[test]
+    fn placement_modal_depends_on_command_and_visible_progress() {
+        for command in ["file.placeEmbedded", "file.placeLinked"] {
+            assert!(super::place_uses_status_bar(command, true));
+            assert!(!super::place_uses_status_bar(command, false));
+        }
+        assert!(!super::place_uses_status_bar("filter.blur", true));
+    }
+}

@@ -348,10 +348,32 @@ fn resize(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>)
 /// clips it (and rounds it at 8 and 16 bits) as Photoshop does; the smaller scale goes first, so
 /// the intermediate image is never larger than the result.
 fn resize_with_budget(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>, budget: usize) -> Surface {
+    resize_controlled(s, sx, sy, filter, canvas, budget, &photocraft_raster::Interrupt::NONE)
+}
+
+/// Resize with cancellation between passes and bounded groups of output bands.
+/// A cancelled operation returns no partially resized surface.
+pub fn resize_surface_with_interrupt(
+    s: &Surface,
+    sx: f64,
+    sy: f64,
+    filter: Resample,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<Surface, photocraft_raster::Cancelled> {
+    ctl.check()?;
+    let out = resize_controlled(s, sx, sy, filter, None, READ_BUDGET, ctl);
+    ctl.check()?;
+    Ok(out)
+}
+
+fn resize_controlled(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: Option<Rect>, budget: usize, ctl: &photocraft_raster::Interrupt) -> Surface {
     let mut cur: Option<Surface> = None;
     let mut canvas = canvas;
     for p in plan(filter, sx, sy) {
-        let next = resize_pass(cur.as_ref().unwrap_or(s), p, canvas, budget);
+        if ctl.cancelled() {
+            return Surface::new(s.format());
+        }
+        let next = resize_pass(cur.as_ref().unwrap_or(s), p, canvas, budget, ctl);
         canvas = canvas.map(|c| scaled_rect(c, p.sx, p.sy));
         cur = Some(next);
     }
@@ -368,7 +390,7 @@ fn resize_with_budget(s: &Surface, sx: f64, sy: f64, filter: Resample, canvas: O
 
 /// One pass. With `canvas`, the content and the canvas repeat their edge outwards (see
 /// [`resize_surface_in_canvas`]).
-fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> Surface {
+fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize, ctl: &photocraft_raster::Interrupt) -> Surface {
     let Pass { sx, sy, kx, ky } = pass;
     let edge = canvas.map(|c| s.content_bounds().union(&c)).filter(|a| !a.is_empty());
     let fmt = s.format();
@@ -484,6 +506,9 @@ fn resize_pass(s: &Surface, pass: Pass, canvas: Option<Rect>, budget: usize) -> 
     #[cfg(target_arch = "wasm32")]
     let group = 1;
     for chunk in bands.chunks(group) {
+        if ctl.cancelled() {
+            return Surface::new(fmt);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let parts: Vec<(Rect, Vec<f32>)> = {
             use rayon::prelude::*;

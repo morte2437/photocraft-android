@@ -1084,6 +1084,22 @@ impl Session {
         self.start_open_inner(name, source, true, false, None, None, background)
     }
 
+    /// Place a file's bytes in the background, like `file.placeEmbedded` (`linked`: `file.placeLinked`
+    /// to that path) for bytes that have no path to read: decode, flatten and fit on a worker, then
+    /// insert the layer as one undo step when [`Session::poll_jobs`] applies it. `name` names the
+    /// layer and the file; `params` are the command's (`scale`, `center`, `fit`, `smartObject`).
+    /// The job's result is the command's: `{layer, frame, scale, bounds, smartObject}`. The active
+    /// document is locked meanwhile, so this is refused while another job runs on it. Runs inline
+    /// on wasm.
+    pub fn start_place_bytes(&mut self, name: &str, bytes: Vec<u8>, linked: Option<String>, params: Value) -> Result<Started> {
+        let input = crate::file_cmds::PlaceInput::new(self, name, bytes, linked, &params)?;
+        let (command, label) = (input.command(), input.job_label());
+        if let Some(conflict) = self.job_conflict(command, true) {
+            return Err(EngineError::Other(conflict));
+        }
+        self.start_job(command, json!({"name": name}), &label, true, move |ctx| crate::file_cmds::prepare_place(input, ctx), crate::file_cmds::apply_place)
+    }
+
     /// Decodes a file in a job and optionally holds damaged PSD content for
     /// interactive confirmation while leaving headless opens non-interactive.
     // Keep the worker and apply closures together with their execution options.

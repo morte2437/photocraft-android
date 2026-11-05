@@ -15,6 +15,7 @@ use photocraft_ui_egui::{FileDialogAnswer, FileDialogRequest, PhotocraftApp, Ser
 use wasm_bindgen::JsCast as _;
 
 type Inbox = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+type PlaceInbox = photocraft_ui_egui::PlaceInbox;
 
 /// Everything File › Open reads: PhotoCraft, Photoshop, OpenRaster, Krita and Affinity documents, flat images, and
 /// Photoshop brushes (.abr), gradients (.grd), layer styles (.asl) and swatches (.aco, .act, .ase), which go to the preset libraries.
@@ -95,7 +96,7 @@ pub fn start() {
                     PhotocraftApp::install_type_reset_hooks(&cc.egui_ctx);
                     PhotocraftApp::setup_context(&cc.egui_ctx, ThemeKind::Pro);
                     let inbox: Inbox = Arc::default();
-                    let place_inbox: Inbox = Arc::default();
+                    let place_inbox: PlaceInbox = Arc::default();
                     let served: Served = Arc::default();
                     load_font_manifest(served.clone(), cc.egui_ctx.clone());
                     let (session, warnings) = crate::preset_bridge::session(presets.clone());
@@ -344,7 +345,7 @@ struct WebShell {
     /// Dropped files to open as documents.
     inbox: Inbox,
     /// Dropped files to place on the active document's canvas.
-    place_inbox: Inbox,
+    place_inbox: PlaceInbox,
     /// Read by the `beforeunload` listener ([`guard_unload`]).
     unsaved: Arc<AtomicBool>,
     served: Served,
@@ -431,16 +432,22 @@ impl eframe::App for WebShell {
             // Decided now, where the drop landed: on the document's canvas the files are placed
             // as layers (as on the desktop), elsewhere opened.
             let places = self.app.dropped_on_canvas(ctx, &names);
-            let files: Vec<_> = dropped.into_iter().zip(names).zip(places).collect();
+            let target_doc = self.app.session.active().map(|st| st.doc.id);
+            let files: Vec<_> = dropped.into_iter().zip(names).zip(places).map(|((f, name), place)| (f, name, place, target_doc)).collect();
             let (inbox, place_inbox) = (self.inbox.clone(), self.place_inbox.clone());
             let ctx = ctx.clone();
             // One after another, so they open or place in the order they were dropped.
             wasm_bindgen_futures::spawn_local(async move {
-                for ((f, name), place) in files {
+                for (f, name, place, target_doc) in files {
                     match f.bytes_async().await {
                         Ok(bytes) => {
-                            let queue = if place { &place_inbox } else { &inbox };
-                            queue.lock().unwrap_or_else(PoisonError::into_inner).push((name, bytes));
+                            if place {
+                                if let Some(doc) = target_doc {
+                                    place_inbox.lock().unwrap_or_else(PoisonError::into_inner).push((doc, name, bytes));
+                                }
+                            } else {
+                                inbox.lock().unwrap_or_else(PoisonError::into_inner).push((name, bytes));
+                            }
                             ctx.request_repaint();
                         }
                         Err(e) => log::error!("couldn't read dropped file {name}: {e}"),
@@ -484,7 +491,7 @@ impl eframe::App for WebShell {
     }
 }
 
-fn services(inbox: Inbox, place_inbox: Inbox, cursor_pos: photocraft_ui_egui::CursorPosFn) -> Services {
+fn services(inbox: Inbox, place_inbox: PlaceInbox, cursor_pos: photocraft_ui_egui::CursorPosFn) -> Services {
     Services {
         screen_pick: screen_color_service(),
         import: Some(Box::new(|name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions| {

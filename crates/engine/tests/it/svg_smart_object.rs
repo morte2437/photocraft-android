@@ -62,3 +62,41 @@ fn re_placing_at_another_scale_re_renders_the_vector_source() {
     assert!(alpha(&surf, 268, 60) > 0.99 && alpha(&surf, 271, 60) < 0.01);
     assert!(red(&surf, 150, 81) < 0.02 && red(&surf, 150, 75) > 0.98 && red(&surf, 150, 87) > 0.98);
 }
+
+/// Placed through a background job, an SVG is rendered at its placement scale on the worker and
+/// lands exactly as the inline place does: still sharp, not a resampled raster.
+#[test]
+fn an_svg_placed_as_a_job_is_as_sharp_as_the_inline_place() {
+    use photocraft_engine::jobs::Started;
+    let dir = std::env::temp_dir().join(format!("photocraft-svg-place-job-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("logo.svg");
+    std::fs::write(&path, SVG).unwrap();
+    let params = json!({"path": path.to_string_lossy(), "scale": 1000});
+    let new_doc = || {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 400, "height": 400, "background": "white"})).unwrap();
+        s
+    };
+    let mut inline = new_doc();
+    let want = inline.execute("file.placeEmbedded", params.clone()).unwrap();
+
+    let mut s = new_doc();
+    let Started::Job(id) = s.start("file.placeEmbedded", params).unwrap() else { panic!("expected a background job") };
+    let mut got = s.wait_job(id).unwrap();
+    // Layer ids come from a counter shared by every session: the rest of the result must match.
+    let mut want = want;
+    assert!(got.as_object_mut().and_then(|o| o.remove("layer")).is_some() && want.as_object_mut().and_then(|o| o.remove("layer")).is_some());
+    assert_eq!(got, want);
+    assert_eq!(got["bounds"], json!([100.0, 150.0, 300.0, 250.0]), "{got}");
+    let doc = s.active().unwrap().doc.clone();
+    let layer = doc.layers.last().unwrap();
+    assert!(matches!(layer.content, LayerContent::Smart(_)));
+    let surf = layer.surface().expect("rendered");
+    assert!(alpha(surf, 200, 148) < 0.01 && alpha(surf, 200, 151) > 0.99, "a pixel-exact top edge");
+    assert!(red(surf, 200, 192) < 0.02, "the thin line is a crisp band: {}", red(surf, 200, 192));
+    assert!(red(surf, 200, 187) > 0.98 && red(surf, 200, 198) > 0.98);
+    let region = Rect::new(90, 140, 310, 260);
+    let inline_doc = inline.active().unwrap().doc.clone();
+    assert_eq!(surf.read_region(region), inline_doc.layers.last().unwrap().surface().unwrap().read_region(region), "same pixels as the inline place");
+}
