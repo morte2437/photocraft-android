@@ -146,18 +146,23 @@ fn edited_shape_params(s: &Session, previous: &Value, patch: &Value) -> Result<V
         (Value::Object(old), Value::Object(new)) => old.extend(new.clone()),
         (slot, new) => *slot = new.clone(),
     }
-    // An explicit path wins. Otherwise a different selector needs fresh geometry; a radius-only
-    // edit keeps the saved path even when the original preset library is unavailable.
-    let selector_changed = if let Some(id) = patch.get("shapeId") {
-        Some(id) != previous.get("shapeId")
+    // A changed selector replaces incompatible stored selectors and geometry. Explicit fields
+    // in the patch still win; radius-only edits and echoed selectors keep portable geometry.
+    let clear: &[&str] = if let Some(id) = patch.get("shapeId") {
+        if Some(id) != previous.get("shapeId") { &["shapeName", "shapePath"] } else { &[] }
+    } else if let Some(name) = patch.get("shapeName") {
+        if Some(name) != previous.get("shapeName") { &["shapeId", "shapePath"] } else { &[] }
+    } else if patch.get("shape").is_some() && patch.get("shapePath").is_none() {
+        &["shapeId", "shapeName", "shapePath"]
     } else {
-        previous.get("shapeId").is_none() && patch.get("shapeName").is_some_and(|name| Some(name) != previous.get("shapeName"))
+        &[]
     };
-    if selector_changed
-        && patch.get("shapePath").is_none()
-        && let Value::Object(map) = &mut params
-    {
-        map.remove("shapePath");
+    if let Value::Object(map) = &mut params {
+        for key in clear {
+            if patch.get(*key).is_none() {
+                map.remove(*key);
+            }
+        }
     }
     crate::filters_ext::resolve_shape_path(s, "filter.blur.shapeBlur", &mut params)?;
     Ok(params)
