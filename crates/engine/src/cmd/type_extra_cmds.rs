@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, explicit_layer, layer_param};
 use crate::type_cmds::{
-    check_text_unlocked, format_targets, has_format_target, is_auto_named, layer_name, refresh_at, replace_text, style_paragraphs, style_range,
+    check_text_unlocked, format_targets, has_format_target, is_auto_named, layer_name, refresh_at, replace_text, style_paragraphs, style_range, typed_name,
     with_text_targets,
 };
 use crate::{EngineError, Result, Session};
@@ -76,16 +76,19 @@ fn has_defaults(s: &Session) -> std::result::Result<(), String> {
 pub(crate) fn with_text<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut TextLayer, f32) -> Result<R>) -> Result<R> {
     let id = layer_param(s, p)?;
     check_text_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+    let typed = typed_name(s, id);
     s.edit(label, |doc, _| {
         let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-        let auto_named = is_auto_named(l);
+        let auto_named = is_auto_named(l, typed.as_deref());
         let LayerContent::Text(t) = &mut l.content else {
             return Err(EngineError::Other(format!("layer {} is {} {} layer, not a type layer", id.0, l.content.article(), l.content.kind_name())));
         };
+        // Only a text change renames: a style or layout edit keeps a copy's "Title copy" (#9023).
+        let old_text = auto_named.then(|| t.text.clone());
         let r = f(t, dpi)?;
         refresh_at(dpi, format, t);
-        let name = auto_named.then(|| layer_name(&t.text));
+        let name = old_text.is_some_and(|old| old != t.text).then(|| layer_name(&t.text));
         if let Some(n) = name {
             l.name = n;
         }

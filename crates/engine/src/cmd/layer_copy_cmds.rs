@@ -191,7 +191,12 @@ fn copy_to_document(s: &mut Session, p: &Value) -> Result<Value> {
         }
         copies.layers.push(l);
     }
+    // A name other than the copy's own was typed (#9023).
+    let mut typed = None;
     if let (Some(name), [l]) = (p.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()), copies.layers.as_mut_slice()) {
+        if l.name != name {
+            typed = Some(name.to_string());
+        }
         l.name = name.to_string();
     }
     // Measure in source space: destination refresh may clip a shape before it is moved.
@@ -238,6 +243,9 @@ fn copy_to_document(s: &mut Session, p: &Value) -> Result<Value> {
         s.set_active(src);
     }
     let new = edited?;
+    if let (Some(name), [id]) = (typed, new.as_slice()) {
+        crate::type_cmds::note_typed_name(s, *id, &name);
+    }
     let last = new.last().copied();
     crate::layer_multi_cmds::reselect(s, new.clone(), last);
     Ok(json!({"document": dest, "layers": new.iter().map(|l| l.0).collect::<Vec<_>>(), "offset": [dx, dy]}))
@@ -271,11 +279,16 @@ pub(crate) fn duplicate_to_new_document(s: &mut Session, p: &Value) -> Result<Va
     nd.icc_profile.clone_from(&sdoc.icc_profile);
     nd.patterns.clone_from(&sdoc.patterns);
     nd.global_light = sdoc.global_light;
+    // A name other than the copy's own was typed (#9023).
+    let mut typed = None;
     for id in &ids {
         let mut l = sdoc.layer(*id).ok_or(EngineError::NoLayer(*id))?.duplicate();
         if ids.len() == 1
             && let Some(name) = p.get("name").and_then(Value::as_str).filter(|n| !n.is_empty())
         {
+            if l.name != name {
+                typed = Some(name.to_string());
+            }
             l.name = name.to_string();
         }
         nd.layers.push(l);
@@ -293,6 +306,9 @@ pub(crate) fn duplicate_to_new_document(s: &mut Session, p: &Value) -> Result<Va
     }
     let new_ids: Vec<LayerId> = nd.layers.iter().map(|l| l.id).collect();
     let index = s.add_document(nd, None);
+    if let (Some(name), [id]) = (typed, new_ids.as_slice()) {
+        crate::type_cmds::note_typed_name(s, *id, &name);
+    }
     crate::layer_multi_cmds::reselect(s, new_ids.clone(), new_ids.last().copied());
     let mut out = json!({"document": index, "layers": new_ids.iter().map(|l| l.0).collect::<Vec<_>>()});
     if let [one] = new_ids.as_slice()

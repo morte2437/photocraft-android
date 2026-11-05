@@ -569,10 +569,13 @@ fn build() -> Vec<CommandSpec> {
                 }
                 let id = layer_param(s, p)?;
                 let add_copy = layer_panel_option(s, "addCopyToCopiedLayersAndGroups", true);
+                // The dialog offers Duplicate Layer's own name: only a different one was typed (#9023).
+                let mut typed = None;
                 let nid = s.edit("Duplicate Layer", |doc, active| {
                     let mut dup = layer_copy(doc, id, add_copy)?;
-                    if let Some(name) = &name {
+                    if let Some(name) = name.as_ref().filter(|n| **n != dup.name) {
                         dup.name.clone_from(name);
+                        typed = Some(name.clone());
                     }
                     let nid = doc.insert_above(Some(id), dup);
                     // A lone copy joins its original's link group, as in the reference application (#11217).
@@ -583,6 +586,9 @@ fn build() -> Vec<CommandSpec> {
                     *active = Some(nid);
                     Ok(nid)
                 })?;
+                if let Some(name) = typed {
+                    crate::type_cmds::note_typed_name(s, nid, &name);
+                }
                 Ok(json!({ "layer": nid.0 }))
             }
         ),
@@ -724,6 +730,10 @@ fn build() -> Vec<CommandSpec> {
                     }
                     Ok(())
                 })?;
+                // The Layers panel's in-place rename: a name the user typed (#9023).
+                if let (Some(name), [id]) = (p.get("name").and_then(Value::as_str), ids.as_slice()) {
+                    crate::type_cmds::note_typed_name(s, *id, name);
+                }
                 Ok(Value::Null)
             }
         ),

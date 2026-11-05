@@ -671,26 +671,34 @@ pub(crate) fn check_text_unlocked(doc: &Document, id: LayerId) -> Result<()> {
 fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&mut TextLayer, f32, &mut Option<String>) -> Result<R>) -> Result<R> {
     let id = layer_id(s, p)?;
     check_text_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+    let typed = typed_name(s, id);
+    let mut named = None;
     let (r, damage) = s.edit(label, |doc, _| {
         let (dpi, format) = (doc.resolution_dpi, doc.pixel_format());
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
-        let auto_named = is_auto_named(l);
+        let auto_named = is_auto_named(l, typed.as_deref());
         let LayerContent::Text(t) = &mut l.content else {
             return Err(EngineError::Other(format!("layer {} is {} {} layer, not a type layer", id.0, l.content.article(), l.content.kind_name())));
         };
         let before = t.cache.as_ref().map(|c| c.tile_bounds());
+        // Only a text change renames: a style or layout edit keeps a copy's "Title copy" (#9023).
+        let old_text = auto_named.then(|| t.text.clone());
         let mut rename = None;
         let r = f(t, dpi, &mut rename)?;
         refresh_at(dpi, format, t);
         // Only this layer's pixels changed: the canvas recomposites their old and new area
         // instead of the whole document (#124). Unknown old pixels mean a full refresh.
         let damage = before.zip(t.cache.as_ref().map(|c| c.tile_bounds())).map(|(a, b)| a.union(&b));
-        let name = rename.or_else(|| auto_named.then(|| layer_name(&t.text)));
+        named.clone_from(&rename);
+        let name = rename.or_else(|| old_text.is_some_and(|old| old != t.text).then(|| layer_name(&t.text)));
         if let Some(n) = name {
             l.name = n;
         }
         Ok((r, damage))
     })?;
+    if let Some(n) = named {
+        note_typed_name(s, id, &n);
+    }
     if let Some(d) = damage {
         s.hint_damage(d);
     }
@@ -789,9 +797,33 @@ fn shown_style_params<'a>(t: &TextLayer, p: &'a Value) -> Result<std::borrow::Co
 }
 
 /// Whether a type layer still has the name it got from its text, so the name follows edits to
-/// the text. A layer renamed to anything else keeps its name (#483).
-pub(crate) fn is_auto_named(l: &Layer) -> bool {
-    matches!(&l.content, LayerContent::Text(t) if l.name == layer_name(&t.text))
+/// the text. A layer renamed to anything else keeps its name (#483). A duplicate's name ("Title
+/// copy", "Title copy 2") still comes from its text, so the copy is renamed after its new text
+/// as Photoshop does, unless the user typed that name (`typed`, #9023).
+pub(crate) fn is_auto_named(l: &Layer, typed: Option<&str>) -> bool {
+    let LayerContent::Text(t) = &l.content else { return false };
+    let auto = layer_name(&t.text);
+    // Duplicate Layer names a copy of "Title copy" "Title copy 2", not "Title copy copy".
+    l.name == auto || (typed != Some(l.name.as_str()) && copy_root(&l.name).is_some_and(|root| root == copy_root(&auto).unwrap_or(&auto)))
+}
+
+/// The name the user last gave layer `id` in the active document, if any (see
+/// [`crate::DocState::typed_names`]).
+pub(crate) fn typed_name(s: &Session, id: LayerId) -> Option<String> {
+    s.active().and_then(|d| d.typed_names.get(&id)).cloned()
+}
+
+/// Records that the user named layer `id` of the active document `name` (#9023).
+pub(crate) fn note_typed_name(s: &mut Session, id: LayerId, name: &str) {
+    if let Some(d) = s.active_mut() {
+        d.typed_names.insert(id, name.to_string());
+    }
+}
+
+/// The name a Duplicate Layer copy was made from: "Title" for "Title copy" or "Title copy 2".
+fn copy_root(name: &str) -> Option<&str> {
+    let (root, rest) = name.rsplit_once(" copy")?;
+    (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))).then_some(root)
 }
 
 /// The name a type layer gets from its text: its first non-empty line, at most 40 characters.
@@ -919,13 +951,17 @@ pub fn specs() -> Vec<CommandSpec> {
             journal: true,
             run: |s, p| {
                 let mut t = new_text_layer(s, p, "type.create")?;
-                let name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| layer_name(&t.text));
+                let given = p.get("name").and_then(Value::as_str).map(str::to_string);
+                let name = given.clone().unwrap_or_else(|| layer_name(&t.text));
                 let id = s.edit("New Type Layer", |doc, active| {
                     refresh(doc, &mut t);
                     let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Text(t)), crate::layer_place::Place::AutoEditable);
                     *active = Some(id);
                     Ok(id)
                 })?;
+                if let Some(given) = given {
+                    note_typed_name(s, id, &given);
+                }
                 let bounds = s.active().and_then(|d| d.doc.layer(id)).and_then(|l| l.surface()).map(|c| c.content_bounds());
                 let mut out = json!({ "layer": id.0, "bounds": bounds.map(|r| [r.x0, r.y0, r.x1, r.y1]) });
                 if let Some(LayerContent::Text(t)) = s.active().and_then(|d| d.doc.layer(id)).map(|l| &l.content) {
