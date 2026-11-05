@@ -21,6 +21,7 @@ mod background_layer_consistency;
 mod brush_smoothing;
 mod camera_raw_exposure_clamp;
 mod camera_raw_noise_clamp;
+mod canvas_artboard_crop;
 mod clipping_semantics;
 mod close_document;
 mod command_lookup;
