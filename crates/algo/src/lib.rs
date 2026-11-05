@@ -1046,6 +1046,10 @@ pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: 
     #[cfg(target_arch = "wasm32")]
     let threads = 1u64;
     let tile = auto_tile(params, bounds).max(1) as u64;
+    // Each worker holds one tile's windows at a time, so no more workers than tiles hold them
+    // at once (a 24 MP image at a 1024 px tile has 24 tiles, fewer than 32 threads).
+    let tiles = u64::from(area.width()).div_ceil(tile).saturating_mul(u64::from(area.height()).div_ceil(tile)).max(1);
+    let threads = threads.min(tiles);
     let floats = (channels as u64).saturating_mul(4);
     // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
     let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);

@@ -41,6 +41,30 @@ fn shape_blur_admission_counts_prefix_sums_and_the_retained_kernel() {
     assert_eq!(working_bytes(&FilterParams::CustomShapeBlur { radius, kernel: None }, area, area, 4), working_bytes(&plain, area, area, 4));
 }
 
+/// Only as many workers as there are tiles hold a tile's windows at once: a 24 MP Shape Blur
+/// at radius 500 (24 tiles of 1024 px) counts 24 workers' windows, not one per thread.
+#[test]
+fn radius_filter_admission_counts_no_more_workers_than_tiles() {
+    let area = Rect::new(0, 0, 6000, 4000);
+    let plain = FilterParams::ShapeBlur { radius: 500.0, shape: BlurShape::Heart };
+    let Halo::Radius(reach) = plain.halo_for(area) else { panic!("Shape Blur has a radius halo") };
+    let tile = auto_tile(&plain, area) as u64;
+    let tiles = 6000u64.div_ceil(tile) * 4000u64.div_ceil(tile);
+    let workers = (rayon::current_num_threads().max(1) as u64).min(tiles);
+    let window = tile + 2 * reach as u64;
+    let windows = (area.size().area() * 16).min(RESULT_BUDGET as u64) * 3 + (window * window + tile * tile * 3) * 16 * workers;
+    let prefix = (window + 1) * (window + 1) * 4 * 8 * workers;
+    assert_eq!(working_bytes(&plain, area, area, 4), windows + prefix);
+    // One tile: one worker, whatever the thread count.
+    let small = Rect::new(0, 0, 200, 200);
+    let one = FilterParams::ShapeBlur { radius: 10.0, shape: BlurShape::Circle };
+    let Halo::Radius(r) = one.halo_for(small) else { panic!("Shape Blur has a radius halo") };
+    let t = auto_tile(&one, small) as u64;
+    let w = t + 2 * r as u64;
+    let single = (small.size().area() * 16).min(RESULT_BUDGET as u64) * 3 + (w * w + t * t * 3) * 16 + (w + 1) * (w + 1) * 4 * 8;
+    assert_eq!(working_bytes(&one, small, small, 4), single);
+}
+
 fn fmt(s: SampleType) -> PixelFormat {
     PixelFormat::new(ColorMode::Rgb, s, true)
 }
