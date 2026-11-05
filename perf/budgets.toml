@@ -42,6 +42,12 @@ quick_args = ["--quick", "--cpu", "--group", "layered"]
 note = "the layered #209 rows on the forced CPU compositor (#9330); run with perf_scenarios so the machine class keeps the GPU"
 
 [[bench]]
+name = "flat_open_bench"
+package = "photocraft-ui-egui"
+quick_args = ["--quick"]
+note = "opening ordinary JPEG/PNG files (24 and 36 MP, 8/16-bit, alpha, EXIF orientation) phase by phase, each case in its own process for its peak memory (#10259)"
+
+[[bench]]
 name = "interactive_bench"
 package = "photocraft-ui-egui"
 args = ["--reps", "5"]
@@ -789,4 +795,42 @@ title = "Fill a 2 % selection on a full-canvas 24 MP layer + refresh"
 issue = 9329
 bench = "perf_scenarios"
 row = "fill a 2 % selection on a full-canvas 24 MP layer + refresh"
+enforce = false  # new; no baseline yet
+
+# ---- #10259: opening ordinary JPEG/PNG files (track only) -------------------------------------
+
+[[scenario]]
+id = "P83"
+title = "Open a 36 MP JPEG (RGB 8-bit): import (decode + tiles) (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP JPEG RGB8: import"
+budget_ms = 300
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P84"
+title = "Open a 36 MP PNG (RGB 8-bit): import (decode + tiles) (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP PNG RGB8: import"
+budget_ms = 400
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P85"
+title = "Open a 36 MP PNG (RGB 16-bit): import (decode + tiles) (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP PNG RGB16: import"
+budget_ms = 700
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P86"
+title = "Open a 36 MP JPEG (RGB 8-bit): import + session admission + first composite (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP JPEG RGB8: editable"
+budget_ms = 500
 enforce = false  # new; no baseline yet

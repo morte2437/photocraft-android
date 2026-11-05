@@ -63,7 +63,8 @@ Filesystem capabilities are implemented. General tool and method capabilities re
 
 The five shared core tools are `command_list`, `command_run`, `command_batch`, `doc_inspect`
 and `render_preview`. Existing documented tools, including `doc_render_preview`, remain
-listed. `photocraft://document` and `photocraft://commands` expose live JSON. Headless
-long commands that are waited on report progress and stop when the request is cancelled, and
-direct headless Render Video does too, using the granted write root; see
+listed. `photocraft://document` and `photocraft://commands` expose live JSON. Long commands
+that are waited on report progress and stop when the request is cancelled, headless and in
+bridge mode (where they may also outlast the bridge's reply timeout), and direct headless
+Render Video does too, using the granted write root; see
 [`docs/mcp.md`](../../../docs/mcp.md) for arguments, cleanup and transport behavior.

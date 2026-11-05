@@ -164,3 +164,39 @@ async fn a_timed_out_call_is_not_retried() {
     assert!(!error.contains("may have completed"), "a read timeout never claims an applied edit: {error}");
     assert_eq!(requests.lock().unwrap().len(), 1, "a timed-out call is not resent");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_dropped_before_its_reply_does_not_reuse_its_connection() {
+    // Connection 1 never answers. A call dropped while waiting on it (a cancelled MCP wait) must
+    // close it: on the same socket the next request would queue behind the unanswered one.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = std::sync::Arc::clone(&accepted);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let silent = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            tokio::spawn(async move {
+                authenticate(&mut socket).await;
+                let (read, mut write) = socket.into_split();
+                let mut lines = BufReader::new(read).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let Ok(request) = serde_json::from_str::<Value>(&line) else { continue };
+                    if !silent {
+                        let reply = json!({"id": request["id"], "ok": true, "result": {"served": true}});
+                        if write.write_all(format!("{reply}\n").as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let bridge = BridgeClient::new(&addr, CONTROL_TOKEN).unwrap().with_timeout(Duration::from_secs(30));
+    let dropped = tokio::time::timeout(Duration::from_millis(300), bridge.call_read("jobs.list", json!({}))).await;
+    assert!(dropped.is_err(), "the silent connection answered: {dropped:?}");
+    let next = tokio::time::timeout(Duration::from_secs(10), bridge.call("jobs.cancel", json!({"job": 7}))).await;
+    assert_eq!(next.expect("the next call waited on the dropped call's connection").unwrap()["served"], true);
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2, "the next call opened a fresh connection");
+}

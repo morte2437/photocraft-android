@@ -417,6 +417,10 @@ fn mix_adjusted(l: &Layer, base: &mut CmykBuffer, adjusted: &CmykBuffer, cx: &Ct
     let opacity = l.opacity * l.fill_opacity;
     let special = fill_special && l.fill_opacity < 1.0 && super::psblend::fill_is_special(l.blend);
     let fill = l.fill_opacity.clamp(0.0, 1.0);
+    if special && fill <= 0.0 {
+        // Zero Fill is the backdrop: keep its inks without a brightness round trip.
+        return;
+    }
     let coverage = if special { l.opacity } else { opacity };
     let rect = base.rect;
     let w = (rect.width() as usize).max(1);
