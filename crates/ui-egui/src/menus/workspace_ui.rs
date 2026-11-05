@@ -588,6 +588,8 @@ mod tests {
                     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
                     app.run("prefs.set", json!({"path": "interface.theme", "value": theme.id()})).unwrap();
                     app.ui.theme = theme;
+                    // The workspace's docks, not the Home screen (which draws none).
+                    app.session.edit_prefs(|p| p.general.auto_show_home_screen = false);
                     app.ui.panels.menu_bar = false;
                     app.ui.panels.rail = false;
                     app
