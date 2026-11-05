@@ -53,3 +53,6 @@ pub(super) mod type_transform;
 pub mod vector_ui;
 pub mod warp_preview;
 pub mod zoom_tool;
+
+#[cfg(test)]
+mod crop_options_labels_tests;

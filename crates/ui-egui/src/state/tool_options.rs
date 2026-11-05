@@ -150,6 +150,11 @@ pub struct ToolOptions {
     pub move_target: String,
     #[serde(default)]
     pub move_show_transform: bool,
+    /// Transform options bar: Toggle Reference Point. Off by default, as in Photoshop: the point
+    /// isn't drawn and isn't a handle, so a drag from the middle of the box moves the content;
+    /// transforms still turn and scale about it (#11098).
+    #[serde(default)]
+    pub transform_reference_point: bool,
     /// Last interpolation selected in the Transform options bar; unset follows General's default.
     #[serde(default)]
     pub transform_interpolation: Option<photocraft_engine::prefs::Interpolation>,
@@ -165,7 +170,7 @@ pub struct ToolOptions {
     pub crop_custom_ratio_height: f32,
     #[serde(default = "yes")]
     pub crop_delete: bool,
-    /// Crop options bar › Fill: false = Background (Default), true = Content-Aware Fill (the area a
+    /// Crop options bar › Fill: false = Background (default), true = Content-Aware Fill (the area a
     /// rotated or extending crop uncovers is filled from its surroundings, #3823).
     #[serde(default)]
     pub crop_content_aware: bool,
@@ -454,6 +459,7 @@ impl Default for ToolOptions {
             move_auto_select: true,
             move_target: default_move_target(),
             move_show_transform: false,
+            transform_reference_point: false,
             transform_interpolation: None,
             crop_ratio: String::new(),
             crop_custom_ratio_width: 0.0,

@@ -3983,6 +3983,8 @@ curves	Smooth	Εξομάλυνση
 	Step {step} is waiting for its dialog	Το βήμα {step} περιμένει το παράθυρο διαλόγου του
 @plural	{n} action|{n} actions	{n} ενέργεια|{n} ενέργειες
 	Background (Default)	Φόντο (προεπιλογή)
+	Background (default)	Φόντο (προεπιλογή)
+	Transparent (default)	Διαφανές (προεπιλογή)
 	Include All Subfolders	Συμπερίληψη όλων των υποφακέλων
 	Auto Add/Delete	Αυτόματη προσθήκη/διαγραφή
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Μην ενεργοποιείτε επίσης τον κατοπτρισμό στις ρυθμίσεις εκτύπωσης: οι δύο αναστροφές αλληλοαναιρούνται.
@@ -4222,6 +4224,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Χρώμα στάσης
 	Shapes can't use patterns yet	Τα σχήματα δεν μπορούν ακόμη να χρησιμοποιούν μοτίβα
 	Edit Brush…	Επεξεργασία πινέλου…
+
+# Action Stop message (#8386)
+	Message	Μήνυμα
+# Playback Options (#5212)
+	Playback Options…	Επιλογές αναπαραγωγής…
+	Playback Options	Επιλογές αναπαραγωγής
+	Accelerated	Επιταχυνόμενη
+	Step by Step	Βήμα προς βήμα
+	Pause For:	Παύση για:
+	Pause For	Παύση για
+	seconds	δευτερόλεπτα
+	Create a single history state	Δημιουργία μίας κατάστασης ιστορικού
 	Generator enabled	Ενεργοποίηση γεννήτριας
 	Drag to move the active shape's path or the Work Path	Σύρετε για μετακίνηση της διαδρομής του ενεργού σχήματος ή της διαδρομής εργασίας
 	Move Up	Μετακίνηση επάνω

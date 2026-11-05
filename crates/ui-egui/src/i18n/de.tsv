@@ -3298,6 +3298,8 @@ curves	Smooth	Glätten
 	Step {step} is waiting for its dialog	Schritt {step} wartet auf seinen Dialog
 @plural	{n} action|{n} actions	{n} Aktion|{n} Aktionen
 	Background (Default)	Hintergrund (Standard)
+	Background (default)	Hintergrund (Standard)
+	Transparent (default)	Transparent (Standard)
 	Content-Aware Fill	Inhaltsbasiert füllen
 	Include All Subfolders	Alle Unterordner einschließen
 	Auto Add/Delete	Autom. hinzuf./löschen
@@ -3416,6 +3418,7 @@ curves	Smooth	Glätten
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} ist vom System reserviert und kann nicht zugewiesen werden.
 	Low-Latency Drawing (vsync off, applies at next launch)	Zeichnen mit geringer Latenz (ohne VSync, gilt ab dem nächsten Start)
 	Reference point location	Position des Referenzpunkts
+	Toggle reference point	Referenzpunkt ein-/ausblenden
 	Free Transform is still being applied; try again when it has finished.	Frei transformieren wird noch angewendet; versuchen Sie es erneut, wenn es fertig ist.
 	The transform couldn't be applied.	Die Transformation konnte nicht angewendet werden.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Die Ebenen brauchen {needed} GPU-Speicher; das Budget lässt ihnen {budget}.
@@ -3553,6 +3556,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Solid Color	Volltonfarbe
 	Tint Color	Tönungsfarbe
 	Edit Brush…	Pinsel bearbeiten…
+
+# Action Stop message (#8386)
+	Message	Meldung
+# Playback Options (#5212)
+	Playback Options…	Wiedergabeoptionen…
+	Playback Options	Wiedergabeoptionen
+	Accelerated	Beschleunigt
+	Step by Step	Schrittweise
+	Pause For:	Pause für:
+	Pause For	Pause für
+	seconds	Sekunden
+	Create a single history state	Einen einzigen Protokollobjekt-Status erstellen
 	Generator enabled	Generator aktiviert
 	This Layer:	Diese Ebene:
 	Move Up	Nach oben

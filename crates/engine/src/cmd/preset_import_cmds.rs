@@ -34,28 +34,48 @@ pub const MAX_ABR_FILE_BYTES: u64 = photocraft_psd::abr::MAX_TOTAL_BYTES as u64;
 
 /// File bytes from `data` (base64) or `path`, plus a default group name.
 pub(crate) fn file_bytes(p: &Value, cmd: &str, what: &str) -> Result<(Vec<u8>, String)> {
-    file_bytes_within(p, cmd, what, MAX_FILE_BYTES)
+    file_bytes_limited(p, cmd, what, MAX_FILE_BYTES)
 }
 
-/// [`file_bytes`] with a size cap of `max` bytes.
-fn file_bytes_within(p: &Value, cmd: &str, what: &str, max: u64) -> Result<(Vec<u8>, String)> {
+/// Load preset bytes with a format-specific limit; `data` takes precedence over `path`.
+/// Inline base64 returns an empty group name; a file returns its filename stem.
+/// The encoded-length check bounds base64 allocation, then decoded length is checked exactly.
+/// File reads are capped at `max_bytes + 1` so growth after the metadata check is still rejected.
+/// This helper does not authorize paths; automation callers must enforce their workspace policy.
+pub(crate) fn file_bytes_limited(p: &Value, cmd: &str, what: &str, max_bytes: u64) -> Result<(Vec<u8>, String)> {
     if let Some(d) = p.get("data") {
         let s = d.as_str().ok_or_else(|| bad(cmd, "`data` must be a base64 string"))?;
-        if s.len() as u64 > max / 3 * 4 + 4 {
+        if s.len() as u64 > max_bytes / 3 * 4 + 4 {
             return Err(bad(cmd, "`data` is too large"));
         }
         let bytes = photocraft_paint::tile::b64_decode(s).ok_or_else(|| bad(cmd, "`data` is not valid base64"))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(bad(cmd, "`data` is too large"));
+        }
         return Ok((bytes, String::new()));
     }
     let path =
         p.get("path").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(cmd, format!("give `path` ({what}) or `data` (base64)")))?;
     let len = std::fs::metadata(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?.len();
-    if len > max {
+    if len > max_bytes {
         return Err(bad(cmd, format!("{path}: file too large ({len} bytes)")));
     }
-    let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let file = std::fs::File::open(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = read_preset_bytes(file, cmd, path, max_bytes)?;
     let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     Ok((bytes, stem))
+}
+
+/// Bound the actual stream independently of metadata, which can become stale before reading.
+/// One extra byte distinguishes an exact-limit file from an oversized or growing input.
+fn read_preset_bytes(reader: impl std::io::Read, cmd: &str, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes).map_err(|error| EngineError::Other(format!("{path}: {error}")))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(bad(cmd, format!("{path}: file too large")));
+    }
+    Ok(bytes)
 }
 
 /// The preset names in use, for naming new presets.
@@ -106,7 +126,7 @@ fn import_abr(s: &mut Session, p: &Value) -> Result<Value> {
         move |ctx| {
             ctx.progress(0.0, "Importing brushes");
             let p = &params;
-            let (bytes, stem) = file_bytes_within(p, cmd, ".abr file", MAX_ABR_FILE_BYTES)?;
+            let (bytes, stem) = file_bytes_limited(p, cmd, ".abr file", MAX_ABR_FILE_BYTES)?;
             let group = match p.get("group") {
                 Some(v) => v.as_str().map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(cmd, "`group` must be a non-empty string"))?.to_string(),
                 None if !stem.is_empty() => stem,
@@ -414,6 +434,27 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    /// A growing stream must fail the actual-read check after at most cap + 1 bytes;
+    /// the exact-limit control stays valid, including a zero-byte budget.
+    #[test]
+    fn preset_stream_limit_does_not_depend_on_metadata() {
+        for cap in [0_u64, 2] {
+            let mut exact = std::io::Cursor::new(vec![7; cap as usize]);
+            assert_eq!(super::read_preset_bytes(&mut exact, "test", "fixture", cap).unwrap(), vec![7; cap as usize]);
+            let mut growing = std::io::Cursor::new(vec![7; 32]);
+            let error = super::read_preset_bytes(&mut growing, "test", "fixture", cap).unwrap_err();
+            assert!(error.to_string().contains("file too large"), "{error}");
+            assert_eq!(growing.position(), cap + 1, "the reader must not consume the rest of a growing source");
+        }
+    }
+    #[test]
+    fn decoded_preset_data_cannot_exceed_its_format_budget() {
+        // Both payloads have four encoded characters: checking base64 length alone is insufficient.
+        let at_limit = serde_json::json!({"data": "AQI="});
+        let over_limit = serde_json::json!({"data": "AQID"});
+        assert_eq!(super::file_bytes_limited(&at_limit, "test", "preset", 2).unwrap().0, [1, 2]);
+        assert!(super::file_bytes_limited(&over_limit, "test", "preset", 2).is_err());
+    }
     use super::*;
     use photocraft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v6, write_v12};
     use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as DV};
@@ -795,16 +836,16 @@ mod tests {
         let path = dir.join("cap.abr");
         std::fs::write(&path, [0u8; 10]).unwrap();
         let p = json!({"path": path.to_string_lossy()});
-        assert!(file_bytes_within(&p, "t", "f", 10).is_ok());
-        assert!(file_bytes_within(&p, "t", "f", 9).is_err(), "a file over the cap is refused before reading");
+        assert!(file_bytes_limited(&p, "t", "f", 10).is_ok());
+        assert!(file_bytes_limited(&p, "t", "f", 9).is_err(), "a file over the cap is refused before reading");
         // A sparse file between the two caps: refused as a .grd, which is checked before reading.
         let big = dir.join("big.grd");
         std::fs::File::create(&big).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
         let err = Session::new().execute("gradient.presets.importGrd", json!({"path": big.to_string_lossy()})).unwrap_err();
         assert!(err.to_string().contains("too large"), "{err}");
         let data = json!({"data": "A".repeat(16)});
-        assert!(file_bytes_within(&data, "t", "f", 12).is_ok());
-        assert!(file_bytes_within(&data, "t", "f", 8).is_err());
+        assert!(file_bytes_limited(&data, "t", "f", 12).is_ok());
+        assert!(file_bytes_limited(&data, "t", "f", 8).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

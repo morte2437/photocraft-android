@@ -3985,6 +3985,8 @@ curves	Smooth	Згладити
 	Step {step} is waiting for its dialog	Крок {step} очікує на свій діалог
 @plural	{n} action|{n} actions	{n} операція|{n} операції|{n} операцій
 	Background (Default)	Фон (типовий)
+	Background (default)	Фон (типовий)
+	Transparent (default)	Прозорий (типовий)
 	Include All Subfolders	Включити всі вкладені папки
 	Auto Add/Delete	Автододавання/видалення
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Не вмикайте також дзеркальне відображення в параметрах друку: два відображення скасовують одне одного.
@@ -4233,6 +4235,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Колір контрольної точки
 	Shapes can't use patterns yet	Фігури поки не можуть використовувати візерунки
 	Edit Brush…	Редагувати пензель…
+
+# Action Stop message (#8386)
+	Message	Повідомлення
+# Playback Options (#5212)
+	Playback Options…	Параметри відтворення…
+	Playback Options	Параметри відтворення
+	Accelerated	Прискорене
+	Step by Step	Покрокове
+	Pause For:	Пауза на:
+	Pause For	Пауза на
+	seconds	с
+	Create a single history state	Створювати один стан історії
 	Drag to move the active shape's path or the Work Path	Перетягніть, щоб перемістити контур активної фігури або робочий контур
 	Generator enabled	Генератор увімкнено
 	Move Up	Перемістити вгору

@@ -1085,16 +1085,37 @@ impl Default for Integrations {
     }
 }
 
+choice!(
+    /// Playback Options › Performance: how fast a person's Play runs an action's steps.
+    PlaybackPerformance { Accelerated = "accelerated", StepByStep = "step", Pause = "pause" } default Accelerated
+);
+
 /// Actions panel Playback Options. These are saved independently of an action library.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Actions {
     pub create_single_history_state: bool,
+    /// Accelerated, Step by Step or Pause For. Agents and headless playback always run at once.
+    pub performance: PlaybackPerformance,
+    /// Pause For's whole seconds between steps, 1 to 60 (the dialog keeps it while another mode
+    /// is chosen, as the reference application does).
+    pub pause_seconds: u8,
 }
 
 impl Default for Actions {
     fn default() -> Self {
-        Self { create_single_history_state: true }
+        Self { create_single_history_state: true, performance: PlaybackPerformance::Accelerated, pause_seconds: 1 }
+    }
+}
+
+impl Actions {
+    /// Shortest and longest Pause For, in seconds.
+    pub const PAUSE_SECONDS: std::ops::RangeInclusive<u8> = 1..=60;
+
+    /// Pause For's seconds, within [`Self::PAUSE_SECONDS`] also when a hand-edited file holds
+    /// another number.
+    pub fn pause_seconds(&self) -> u8 {
+        self.pause_seconds.clamp(*Self::PAUSE_SECONDS.start(), *Self::PAUSE_SECONDS.end())
     }
 }
 

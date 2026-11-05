@@ -3200,6 +3200,8 @@ curves	Smooth	Tasoita
 	Step {step} is waiting for its dialog	Vaihe {step} odottaa valintaikkunaansa
 @plural	{n} action|{n} actions	{n} toiminto|{n} toimintoa
 	Background (Default)	Tausta (oletus)
+	Background (default)	Tausta (oletus)
+	Transparent (default)	Läpinäkyvä (oletus)
 	Content-Aware Fill	Sisältötietoinen täyttö
 # Batch / Image Processor
 	Include All Subfolders	Sisällytä kaikki alikansiot
@@ -4774,3 +4776,15 @@ cameraRaw	White Balance: As Shot	Valkotasapaino: kuvauksen mukainen
 	The path was discarded	Polku hylättiin
 	The path was kept as the Work Path	Polku säilytettiin työpolkuna
 	Edit Brush…	Muokkaa sivellintä…
+
+# Action Stop message (#8386)
+	Message	Viesti
+# Playback Options (#5212)
+	Playback Options…	Toistoasetukset…
+	Playback Options	Toistoasetukset
+	Accelerated	Kiihdytetty
+	Step by Step	Vaihe kerrallaan
+	Pause For:	Tauko:
+	Pause For	Tauko
+	seconds	sekuntia
+	Create a single history state	Luo yksi historiatila

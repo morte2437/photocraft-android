@@ -144,6 +144,16 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
     Ok(img)
 }
 
+/// Inspect APNG's declared images, including a separate default image, without decoding pixels.
+pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+    let limits = Limits::default();
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: limits.alloc_usize() });
+    decoder.set_ignore_text_chunk(true);
+    let reader = decoder.read_info().map_err(map_png_err)?;
+    let info = reader.info();
+    Ok(info.animation_control.is_some_and(|a| u64::from(a.num_frames) + u64::from(info.frame_control.is_none()) > 1))
+}
+
 /// The size and pixel format the rows of [`decode_rows`] come in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PngHeader {

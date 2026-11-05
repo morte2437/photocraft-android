@@ -1,6 +1,8 @@
 use super::convert::{UniqueNames, export, import_with_encoding};
 use super::{Action, DEFAULT_SET, EngineError, Result, Session, Value, bad, json};
 
+/// Load a set and retarget its own action references once, preserving foreign qualifications
+/// even when the caller changes the imported set's name or action names collide.
 pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "actions.load";
     if s.actions.recording.is_some() || s.actions.playing > 0 {
@@ -14,6 +16,7 @@ pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let (bytes, _) = crate::preset_import_cmds::file_bytes(p, cmd, ".atn file")?;
     let mut imp = import_with_encoding(&bytes, encoding).map_err(|e| bad(cmd, e))?;
+    let original_set = imp.set.clone();
     match p.get("set") {
         None | Some(Value::Null) => {}
         Some(Value::String(n)) if !n.trim().is_empty() => {
@@ -48,13 +51,21 @@ pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
         names.push(name);
         added.push(a);
     }
-    // Play and Conditional steps call actions by name: follow the renames in the actions just
+    // Play, Conditional and Batch steps call actions by name: follow the renames in the actions just
     // loaded, each target looked up once by the name the file gave it.
     for a in &mut added {
         for (id, params) in &mut a.steps {
+            // A qualified Batch reference belongs to the file's original set, not to a
+            // foreign set which happens to have the destination override's name.
+            if id == "file.automate.batch" && params.get("set").and_then(Value::as_str) == Some(original_set.as_str()) {
+                params["set"] = json!(imp.set);
+            } else if id == "file.automate.batch" && params.get("set").is_some_and(|set| !set.is_null()) {
+                continue;
+            }
             let keys: &[&str] = match id.as_str() {
                 "actions.play" => &["action"],
                 "actions.conditional" => &["then", "else"],
+                "file.automate.batch" => &["action"],
                 _ => &[],
             };
             for key in keys {

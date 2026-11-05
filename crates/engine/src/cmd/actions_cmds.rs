@@ -15,7 +15,7 @@
 //! step, because the outer `actions.play` id would otherwise hide a recorded `file.*` command from
 //! the top-level check.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -144,7 +144,7 @@ pub(crate) fn recorded_params(s: &Session, id: &str, mut p: Value) -> Value {
 }
 
 /// Resolve the recorded visibility target identically in engine and shell playback, and drop
-/// the `.atn` event a Filter Gallery step remembers for Save Actions: the command, its journal
+/// the `.atn` event or Custom descriptor remembered for Save Actions: the command, its journal
 /// entry (Last Filter), a smart filter and the step's dialog never see it.
 pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
     let mut p = p.clone();
@@ -169,6 +169,11 @@ pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
         && let Some(object) = p.as_object_mut()
     {
         object.remove(crate::atn_cmds::RECORDED_EVENT);
+    }
+    if id == "filter.other.custom"
+        && let Some(object) = p.as_object_mut()
+    {
+        object.remove("__atnCustom");
     }
     if id == "layer.setProps"
         && let Some(target) = p.get("_actionLayer")
@@ -271,48 +276,156 @@ pub fn playback_plan(s: &Session, p: &Value) -> Result<(Action, usize)> {
     Ok((action, from))
 }
 
-/// The actions that `steps` call through Play Action steps and the branches of Conditional steps,
-/// followed transitively, in list order, so a droplet can run without the Actions panel that made
-/// it (#2794, #6804). Index references in `steps` and in the copies become names, which resolve
-/// without the rest of the list. A target that doesn't resolve is left alone: it fails at
-/// playback, as it would have before.
+/// Capture transitive Play Action, Conditional and Batch dependencies for a standalone droplet
+/// (#2794, #6804). Ordinary references become names; normalized copies keep source-list order.
+/// A named Batch with its own action list selects an untouched source copy at an exported index,
+/// after the ordinary copies. Inline embedded bodies retain their own references. Missing
+/// targets remain deferred failures, as before.
 pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Action> {
-    fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut Vec<(usize, usize)>) {
-        for (id, params) in steps.iter_mut() {
-            match id.as_str() {
-                "actions.play" => {
-                    let Ok(i) = resolve(list, params, "actions.play") else { continue };
-                    if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
-                        obj.insert("action".into(), json!(action.name));
+    /// Resolve in the current namespace before capture rewrites the reference.
+    fn target(list: &[Action], params: &Value, id: &str) -> Result<usize> {
+        if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, id) }
+    }
+    /// Visit calls in the current namespace, leaving embedded inline Batch scopes untouched.
+    fn visit_calls(steps: &mut [(String, Value)], f: &mut impl FnMut(&str, &mut Value, bool)) {
+        let mut pending: Vec<_> = steps.iter_mut().rev().map(|(id, params)| (id.clone(), params)).collect();
+        while let Some((id, params)) = pending.pop() {
+            let scoped = id == "file.automate.batch" && params.get("calledActions").is_some_and(|v| !v.is_null());
+            if id == "file.automate.batch" {
+                let inline = if params.get("steps").is_some() { Some("steps") } else { params.get("action").is_some_and(Value::is_array).then_some("action") };
+                if let Some(key) = inline {
+                    if scoped {
+                        continue;
                     }
-                    queue.push((i, depth));
-                }
-                // Conditional branches only take names, so there is nothing to rewrite.
-                "actions.conditional" => {
-                    for key in ["then", "else"] {
-                        let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
-                        if let Some(i) = list.iter().position(|a| a.name == name) {
-                            queue.push((i, depth));
+                    // A present invalid `steps` still wins over `action`, just as at runtime.
+                    let Some(steps) = params.get_mut(key).and_then(Value::as_array_mut) else { continue };
+                    for step in steps.iter_mut().rev() {
+                        let call = match step {
+                            Value::Array(a) => {
+                                let Some(id) = a.first().and_then(Value::as_str).map(str::to_owned) else { continue };
+                                a.get_mut(1).map(|params| (id, params))
+                            }
+                            Value::Object(o) => {
+                                let Some(id) = o.get("command").or_else(|| o.get("id")).and_then(Value::as_str).map(str::to_owned) else { continue };
+                                o.get_mut("params").map(|params| (id, params))
+                            }
+                            // String steps and omitted params use `{}`, with no action target.
+                            _ => None,
+                        };
+                        if let Some(call) = call {
+                            pending.push(call);
                         }
                     }
+                    continue;
                 }
-                _ => {}
             }
+            f(&id, params, scoped);
         }
     }
-    let mut queue = Vec::new();
-    targets(list, steps, 1, &mut queue);
+    /// Capture ordinary calls transitively, but retain an untouched source for scoped named Batch.
+    fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut VecDeque<(usize, usize)>, scoped: &mut BTreeSet<usize>) {
+        if depth > 16 {
+            return;
+        }
+        visit_calls(steps, &mut |id, params, own_actions| match id {
+            "actions.play" | "file.automate.batch" => {
+                let Ok(i) = target(list, params, id) else { return };
+                // The reference is rewritten by `remap` once the exported list is known.
+                if own_actions {
+                    scoped.insert(i);
+                } else {
+                    queue.push_back((i, depth));
+                }
+            }
+            "actions.conditional" => {
+                for key in ["then", "else"] {
+                    let Some(name) = params.get(key).and_then(Value::as_str) else { continue };
+                    if let Some(i) = list.iter().position(|a| a.name == name) {
+                        queue.push_back((i, depth));
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+    let mut queue = VecDeque::new();
+    let mut scoped = BTreeSet::new();
+    targets(list, steps, 1, &mut queue, &mut scoped);
     let mut found = std::collections::BTreeMap::new();
-    while let Some((i, depth)) = queue.pop() {
-        // Playback stops at 16 levels, so deeper calls never run.
+    // Visit shallow calls first, so a deeper path cannot hide a reachable dependency.
+    while let Some((i, depth)) = queue.pop_front() {
         if depth > 16 || found.contains_key(&i) {
             continue;
         }
         let Some(mut action) = list.get(i).cloned() else { continue };
-        targets(list, &mut action.steps, depth + 1, &mut queue);
+        // Disabled steps never play, so the actions they call are not dependencies.
+        for (step, call) in action.steps.iter_mut().enumerate() {
+            if !action.disabled.contains(&step) {
+                targets(list, std::slice::from_mut(call), depth + 1, &mut queue, &mut scoped);
+            }
+        }
         found.insert(i, action);
     }
-    found.into_values().collect()
+    // Where each captured source action lands in the exported list (source order).
+    let exported: std::collections::BTreeMap<usize, usize> = found.keys().enumerate().map(|(at, &i)| (i, at)).collect();
+    let mut found: Vec<_> = found.into_values().collect();
+    let names: Vec<String> = found.iter().map(|a| a.name.clone()).collect();
+    let mut originals = Vec::new();
+    let mut slots = std::collections::BTreeMap::new();
+    for i in scoped {
+        if let Some(action) = list.get(i) {
+            slots.insert(i, found.len() + originals.len());
+            originals.push(action.clone());
+        }
+    }
+    // A named Batch selects from the caller before switching to its embedded list. Its source
+    // must keep raw references, even when normal Play needs a normalized copy of the same action.
+    let final_len = found.len() + originals.len();
+    let mut remap = |id: &str, params: &mut Value, scoped: bool| {
+        if !matches!(id, "actions.play" | "file.automate.batch") {
+            return;
+        }
+        if scoped
+            && let Ok(i) = target(list, params, id)
+            && let Some(slot) = slots.get(&i)
+        {
+            params["action"] = json!(slot);
+            // The pinned source slot identifies its set; a numeric Batch choice cannot carry a named set.
+            if let Some(object) = params.as_object_mut() {
+                object.remove("set");
+            }
+            return;
+        }
+        // An ordinary call becomes the captured action's name, which reads well and resolves to
+        // it while the name is unique in the exported list. Two captured actions of one name (in
+        // different sets) would both resolve to the first, so such a call keeps its exported index.
+        if !scoped && let Ok(i) = target(list, params, id) {
+            let Some(name) = list.get(i).map(|a| a.name.clone()) else { return };
+            match exported.get(&i) {
+                Some(&at) if names.iter().filter(|n| **n == name).count() > 1 => {
+                    params["action"] = json!(at);
+                    if let Some(object) = params.as_object_mut() {
+                        object.remove("set");
+                    }
+                }
+                _ => params["action"] = json!(name),
+            }
+            return;
+        }
+        // Appended source copies must not make an originally missing numeric target valid.
+        if let Some(i) = params.get("action").and_then(num).and_then(|i| usize::try_from(i).ok())
+            && i >= list.len()
+            && i < final_len
+        {
+            params["action"] = json!(final_len);
+        }
+    };
+    visit_calls(steps, &mut remap);
+    for action in &mut found {
+        visit_calls(&mut action.steps, &mut remap);
+    }
+    found.extend(originals);
+    found
 }
 
 fn always(_: &Session) -> std::result::Result<(), String> {
@@ -531,6 +644,7 @@ pub fn saves_smart_contents(s: &Session, id: &str) -> bool {
     id == "file.save" && s.is_enabled(SAVE_CONTENTS)
 }
 
+/// Run enabled steps from `from`, retaining child results when nested work fails.
 fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<Value>) {
     let mut ran = 0u64;
     let mut failed = None;
@@ -539,6 +653,8 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
             failed = Some(json!({"step": i, "id": id, "error": format!("action playback exceeded the {}-step limit", MAX_PLAYBACK_STEPS)}));
             break;
         }
+        let effective = crate::file_cmds::batch_open_params(s, id, params);
+        let params = effective.as_ref().unwrap_or(params);
         if let Some(auth) = s.authorize
             && let Err(e) = auth(id, params)
         {
@@ -552,7 +668,10 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
         match playback_params(s, id, params).and_then(|p| if saves_smart_contents(s, id) { s.execute(SAVE_CONTENTS, json!({})) } else { s.execute(id, p) }) {
             Ok(value) => {
                 if let Some(error) = nested_failure(id, &value) {
-                    failed = Some(json!({"step": i, "id": id, "error": error}));
+                    // Like Scripts, retain the child result so partial Batch outputs remain visible.
+                    let mut failure = json!({"step": i, "id": id, "error": error});
+                    failure["result"] = value;
+                    failed = Some(failure);
                     break;
                 }
                 ran += 1;
@@ -602,9 +721,43 @@ pub fn restore_recording(s: &mut Session, idx: usize, action: &str, from: usize)
     s.journal.push(("actions.play".into(), params));
 }
 
-/// Nested playback returns a structured failure even though the command itself succeeded.
+/// What stops the caller of a Batch even where per-file errors don't (a direct Batch in a script
+/// or a CLI command list): the script ran out of steps inside it, it was cancelled, or its
+/// requested error log could not be written.
+pub fn batch_stop(value: &Value) -> Option<String> {
+    if let Some(error) = value.get("scriptLimitError").and_then(Value::as_str) {
+        return Some(error.to_string());
+    }
+    if value.get("cancelled") == Some(&Value::Bool(true)) {
+        return Some("Batch was cancelled".into());
+    }
+    value.get("errorLogError").and_then(Value::as_str).map(|error| format!("Batch error log failed: {error}"))
+}
+
+/// Nested playback and Batch return structured failures even though the command succeeded.
 /// Promote it to the caller's failed step so no later parent steps run after a child fails.
+/// Batch text summarizes counts and the first failure; its full result retains every file outcome.
 pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
+    if id == "file.scripts.browse" && value.get("ok") == Some(&Value::Bool(false)) {
+        let error = value
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|results| results.iter().find_map(|result| result.get("error").and_then(Value::as_str)))
+            .unwrap_or("unknown error");
+        return Some(format!("script failed: {error}"));
+    }
+    if id == "file.automate.batch" {
+        let errors = value.get("errors").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        let Some(first) = errors.first() else {
+            // Every input succeeded, yet the run was stopped or its requested log is missing:
+            // later parent steps must not run as if the Batch had finished.
+            return batch_stop(value);
+        };
+        let error = first.get("error")?.as_str()?;
+        let file = first.get("file").or_else(|| first.get("document")).and_then(Value::as_str).unwrap_or("unknown input");
+        let saved = value.get("files").and_then(Value::as_array).map_or(0, Vec::len);
+        return Some(format!("Batch: {} file(s) failed, {saved} saved; first failure `{file}`: {error}", errors.len()));
+    }
     (id == "actions.play" || id == "actions.conditional").then(|| value.get("failed")).flatten().map(|failure| {
         format!(
             "action `{}` step {} failed: {}",
@@ -771,7 +924,7 @@ fn toggle(s: &mut Session, p: &Value) -> Result<Value> {
 /// Prefix of the persisted shortcut override that plays a named action (`actions.play:<name>`).
 pub const PLAY_SHORTCUT_PREFIX: &str = "actions.play:";
 
-/// Rename an action in place. Nested `actions.play` steps and `actions.conditional` branches
+/// Rename an action in place. Nested `actions.play` steps, named Batch steps and `actions.conditional` branches
 /// that call it by name, and its function-key binding, follow the new name so nothing silently
 /// stops working.
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
@@ -791,11 +944,18 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("actions.rename", "an action with this name already exists"));
     }
     let pending = s.actions.recording.map_or(s.journal.len(), |(start, _)| start);
+    // A loaded library can hold two actions of one name (in different sets): a call follows the
+    // rename only if it resolved to this action before it, so one reaching the other stays put.
+    let before = s.actions.list.clone();
+    let by_name = resolve(&before, &json!({"action": old}), "actions.rename").ok() == Some(idx);
     let calls = s.actions.list.iter_mut().flat_map(|a| a.steps.iter_mut()).chain(s.journal.iter_mut().skip(pending));
     for (id, params) in calls {
         let keys: &[&str] = match id.as_str() {
-            "actions.play" => &["action"],
-            "actions.conditional" => &["then", "else"],
+            "actions.play" if by_name => &["action"],
+            "actions.conditional" if by_name => &["then", "else"],
+            // A named Batch selects from the caller's list, by name alone or within its set;
+            // explicit `steps` run instead of any named action, so those are left alone.
+            "file.automate.batch" if params.get("steps").is_none() && crate::file_cmds::batch_action(&before, params).ok() == Some(idx) => &["action"],
             _ => &[],
         };
         for key in keys {
@@ -843,7 +1003,7 @@ pub(crate) fn history_policy_in_use(s: &Session) -> bool {
     s.actions.playing != 0 || s.action_history.is_some() || s.paused_action_history.iter().any(|lease| lease.strong_count() != 0)
 }
 
-/// Kept separate from Playback Options' performance modes until #5212 provides that dialog.
+/// Create a single history state alone; `actions.setPlayback` sets it with the performance mode.
 fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
     not_playing(s, "actions.setHistory")?;
     if history_policy_in_use(s) {
@@ -852,6 +1012,49 @@ fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
     let enabled = p.get("singleState").and_then(Value::as_bool).ok_or_else(|| bad("actions.setHistory", "singleState must be a boolean"))?;
     s.edit_prefs(|prefs| prefs.actions.create_single_history_state = enabled);
     Ok(json!({"singleState":enabled}))
+}
+
+/// Playback Options: `performance`, Pause For's whole `seconds` (1 to 60) and `singleState`, each
+/// optional, all validated before any is stored, and saved in preferences. `{}` reads them.
+fn set_playback(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "actions.setPlayback";
+    not_playing(s, CMD)?;
+    if !p.is_object() {
+        return Err(bad(CMD, "params must be an object"));
+    }
+    let performance = match p.get("performance") {
+        None => None,
+        Some(v) => {
+            Some(v.as_str().and_then(crate::prefs::PlaybackPerformance::parse).ok_or_else(|| bad(CMD, "performance must be accelerated, step or pause"))?)
+        }
+    };
+    let range = crate::prefs::Actions::PAUSE_SECONDS;
+    let seconds = match p.get("seconds") {
+        None => None,
+        Some(v) => Some(
+            v.as_u64()
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| range.contains(n))
+                .ok_or_else(|| bad(CMD, format!("seconds must be a whole number from {} to {}", range.start(), range.end())))?,
+        ),
+    };
+    let single = match p.get("singleState") {
+        None => None,
+        Some(v) => Some(v.as_bool().ok_or_else(|| bad(CMD, "singleState must be a boolean"))?),
+    };
+    if single.is_some_and(|single| single != s.prefs().actions.create_single_history_state) && history_policy_in_use(s) {
+        return Err(bad(CMD, "cannot change action history settings during playback"));
+    }
+    if performance.is_some() || seconds.is_some() || single.is_some() {
+        s.edit_prefs(|prefs| {
+            let a = &mut prefs.actions;
+            a.performance = performance.unwrap_or(a.performance);
+            a.pause_seconds = seconds.unwrap_or(a.pause_seconds);
+            a.create_single_history_state = single.unwrap_or(a.create_single_history_state);
+        });
+    }
+    let a = &s.prefs().actions;
+    Ok(json!({"performance": a.performance.name(), "seconds": a.pause_seconds(), "singleState": a.create_single_history_state}))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -864,6 +1067,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r##"{"singleState":bool} → {singleState}. Persist Create a single history state (default true). Playback Options can use this setting without changing its performance mode."##,
             enabled: always,
             run: set_history,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.setPlayback",
+            label: "Playback Options",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"performance":"accelerated"|"step"|"pause"?, "seconds":1..60?, "singleState":bool?} → {performance, seconds, singleState}. The Actions panel menu's Playback Options, saved in preferences (`actions.performance`, `actions.pauseSeconds`, `actions.createSingleHistoryState`). Step by Step and Pause For pace a person's Play in the app, about one second between steps plus Pause For's whole seconds; actions.play from agents, the CLI and Batch always runs at once. Omitted keys keep their value; {} reads them. Every value is checked before any is stored."##,
+            enabled: always,
+            run: set_playback,
             journal: false,
         },
         CommandSpec {
@@ -971,6 +1184,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod playback_tests;
 
 #[cfg(test)]
 mod security_tests {

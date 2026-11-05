@@ -26,6 +26,22 @@ pub(crate) fn decode_page(bytes: &[u8], page: Option<usize>, limits: &Limits) ->
     Ok(img)
 }
 
+/// Inspect the selected directory's sample classification without decoding any pixels.
+/// Mirror document import: inspect bands first, then the default whole-image route when
+/// auxiliary channels are present. Preparation reads metadata, not strips or tiles.
+pub(crate) fn has_unretained_samples(bytes: &[u8], offset: u64) -> Result<bool, CodecError> {
+    let file = File::parse(bytes).ok_or_else(|| err("not a TIFF or BigTIFF header"))?;
+    let dir = file.ifd(offset).ok_or_else(|| err("image directory cut off"))?;
+    let bands = prepare(&file, &dir, &Limits::banded(), cfg!(target_pointer_width = "32"))?;
+    if bands.extras_over_limit > 0 || bands.extras_dropped > 0 {
+        return Ok(true);
+    }
+    if bands.lay.extra_at.is_empty() {
+        return Ok(false);
+    }
+    Ok(prepare(&file, &dir, &Limits::default(), true)?.extras_dropped > 0)
+}
+
 /// The file, page `page`'s directory (`None`: the default page) and the
 /// [`DecodeWarning::MorePages`] the page opens with when the file holds more.
 fn open_page(bytes: &[u8], page: Option<usize>) -> Result<(File<'_>, Ifd, Option<DecodeWarning>), CodecError> {

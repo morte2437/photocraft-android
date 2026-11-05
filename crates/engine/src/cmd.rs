@@ -1217,7 +1217,7 @@ fn build() -> Vec<CommandSpec> {
         (
             "colorLookup",
             "Color Lookup…",
-            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":json} (file: .cube/.3dl/.look path; data: file text + "fileName")"##,
+            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
         ),
     ];
     for &(kind, label, params) in ADJ {
@@ -1228,7 +1228,7 @@ fn build() -> Vec<CommandSpec> {
             label,
             menu: &["Layer", "New Adjustment Layer"],
             shortcut: None,
-            params: Box::leak(format!(r#"{params} + {{{NEW_LAYER_PATH},"opacity":0..1=1}}"#).into_boxed_str()),
+            params: Box::leak(format!(r#"{params} + {{{NEW_LAYER_PATH},"opacity":0..1=1,"name":str?=the adjustment's name + number,"mode":blend mode name="normal" (not Pass Through),"clipToPrevious":bool=false}}"#).into_boxed_str()),
             enabled: has_doc,
             run: |s, p| {
                 let kind = p.get("__kind").and_then(Value::as_str).unwrap_or("invert").to_string();

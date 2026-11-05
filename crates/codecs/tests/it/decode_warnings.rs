@@ -307,3 +307,205 @@ fn warnings_survive_orientation() {
     }
     assert_eq!(img.convert(ChannelLayout::Rgba, SampleType::U16).warnings, img.warnings);
 }
+
+/// A flagless depth still declares slices the flat reader and writer cannot retain.
+#[test]
+fn dds_depth_probe_refuses_unretained_slices_without_volume_flags() {
+    let single = encode(&solid(COLOURS[0]), Format::Dds, &Default::default()).unwrap();
+    let expected = decode(&single).unwrap();
+    let mut second = single[128..].to_vec();
+    second[0] ^= 0xff;
+    for depth in [0u32, 1, 2, 3] {
+        let mut bytes = single.clone();
+        bytes[24..28].copy_from_slice(&depth.to_le_bytes());
+        for _ in 1..depth {
+            bytes.extend_from_slice(&second);
+        }
+        let flags = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let caps = u32::from_le_bytes(bytes[112..116].try_into().unwrap());
+        assert_eq!(flags & 0x0080_0000, 0);
+        assert_eq!(caps & 0x0020_0000, 0);
+        // Decoding remains permissive for preview; only source replacement is refused.
+        assert_eq!(decode(&bytes).unwrap().data(), expected.data());
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), depth > 1);
+    }
+}
+
+/// Header-only inspection protects unretained source payloads while allowing stills and thumbnails.
+#[test]
+fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
+    use photocraft_codecs::has_unretained_source_data;
+    let frames: Vec<_> = COLOURS.iter().take(2).map(|&c| solid(c)).collect();
+    for (bytes, multiple) in [
+        (gif(1), false),
+        (gif(2), true),
+        (apng(0, false, false), false),
+        (apng(1, false, false), false),
+        (apng(1, false, true), true),
+        (apng(2, true, false), true),
+        (animated_webp(&frames[..1]), false),
+        (animated_webp(&frames), true),
+        (tiff(&[(0, SampleType::U8)]), false),
+        (tiff(&[(0, SampleType::U8), (2, SampleType::U8)]), true),
+        (tiff(&[(0, SampleType::U8), (1, SampleType::U8)]), false),
+        (tiff(&[(4, SampleType::U8)]), false),
+        (tiff(&[(0, SampleType::U8), (4, SampleType::U8)]), true),
+        (tiff(&[(4, SampleType::U8), (0, SampleType::U8)]), true),
+        (tiff(&[(0, SampleType::U8), (1, SampleType::U8), (4, SampleType::U8)]), true),
+    ] {
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), multiple);
+    }
+    // A GIF whose blocks break off before the trailer after one frame may hide later frames:
+    // the probe refuses it instead of reporting a still.
+    let one = gif(1);
+    assert!(has_unretained_source_data(&one[..one.len() - 1]).is_err(), "trailer cut off");
+    let two = gif(2);
+    let mut broken = gif(1);
+    broken.pop();
+    broken.push(0x99);
+    broken.extend_from_slice(&two[two.len() - 10..]);
+    assert!(has_unretained_source_data(&broken).is_err(), "junk block after the first frame");
+    assert!(has_unretained_source_data(&two[..two.len() - 1]).unwrap(), "two frames seen, trailer cut off");
+    let image = solid(COLOURS[0]);
+    for mipmaps in [false, true] {
+        let mut options = EncodeOptions::default();
+        options.dds.mipmaps = mipmaps;
+        let bytes = encode(&image, Format::Dds, &options).unwrap();
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), mipmaps);
+        if mipmaps {
+            let mut flagless = bytes;
+            let flags = u32::from_le_bytes(flagless[8..12].try_into().unwrap());
+            flagless[8..12].copy_from_slice(&(flags & !0x0002_0000).to_le_bytes());
+            decode(&flagless).unwrap();
+            // Microsoft DDS_HEADER: readers cannot rely on DDSD_MIPMAPCOUNT being set.
+            assert!(has_unretained_source_data(&flagless).unwrap());
+        }
+    }
+    let dpx = encode(&image, Format::Dpx, &Default::default()).unwrap();
+    for little in [false, true] {
+        let mut bytes = dpx.clone();
+        if little {
+            bytes[..4].copy_from_slice(b"XPDS");
+            for at in [4, 772, 776, 780, 808, 812] {
+                bytes[at..at + 4].reverse();
+            }
+            for at in [768, 770, 804, 806] {
+                bytes[at..at + 2].reverse();
+            }
+        }
+        assert!(!has_unretained_source_data(&bytes).unwrap());
+        for count in [2u16, 8] {
+            bytes[770..772].copy_from_slice(&if little { count.to_le_bytes() } else { count.to_be_bytes() });
+            assert!(has_unretained_source_data(&bytes).unwrap());
+        }
+        bytes[770..772].fill(0);
+        assert!(has_unretained_source_data(&bytes).is_err());
+        assert!(has_unretained_source_data(&bytes[..771]).is_err());
+    }
+    let one = encode(&image, Format::Ico, &Default::default()).unwrap();
+    assert!(!has_unretained_source_data(&one).unwrap());
+    let mut multiple = one[..6].to_vec();
+    multiple[4..6].copy_from_slice(&2u16.to_le_bytes());
+    let mut entry = one[6..22].to_vec();
+    let offset = u32::from_le_bytes(entry[12..16].try_into().unwrap()) + 16;
+    entry[12..16].copy_from_slice(&offset.to_le_bytes());
+    multiple.extend_from_slice(&entry);
+    multiple.extend_from_slice(&entry);
+    multiple.extend_from_slice(&one[22..]);
+    decode(&multiple).unwrap();
+    assert!(has_unretained_source_data(&multiple).unwrap());
+    assert!(has_unretained_source_data(b"\x89PNG\r\n\x1a\n").is_err());
+}
+
+/// FITS RGB planes form one image; other cubes and later image HDUs would be discarded.
+#[test]
+fn fits_additional_images_probe_distinguishes_color_planes_and_hdus() {
+    let hdu = |primary: bool, axes: &[usize]| {
+        let mut cards = vec![
+            if primary { "SIMPLE  = T".to_string() } else { "XTENSION= 'IMAGE'".to_string() },
+            "BITPIX  = 8".into(),
+            format!("NAXIS   = {}", axes.len() + 2),
+            "NAXIS1  = 1".into(),
+            "NAXIS2  = 1".into(),
+        ];
+        cards.extend(axes.iter().enumerate().map(|(index, n)| format!("NAXIS{}  = {n}", index + 3)));
+        cards.push("END".into());
+        let mut bytes = Vec::new();
+        for card in cards.drain(..) {
+            bytes.extend_from_slice(format!("{card:<80}").as_bytes());
+        }
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, b' ');
+        bytes.extend((0..axes.iter().product::<usize>()).map(|i| i as u8 + 1));
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, 0);
+        bytes
+    };
+    for (axes, multiple) in [(vec![1], false), (vec![2], true), (vec![3], false), (vec![4], true), (vec![1, 3], true), (vec![3, 1], false)] {
+        let bytes = hdu(true, &axes);
+        let image = decode(&bytes).unwrap();
+        assert_eq!(image.warnings.iter().any(|w| matches!(w, DecodeWarning::MorePages { .. })), multiple);
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), multiple);
+    }
+    let mut bytes = hdu(true, &[1]);
+    bytes.extend(hdu(false, &[1]));
+    decode(&bytes).unwrap();
+    assert!(has_unretained_source_data(&bytes).unwrap());
+    let mut incomplete = hdu(true, &[1]);
+    incomplete.extend_from_slice(b"XTENSION= 'IMAGE'");
+    assert!(has_unretained_source_data(&incomplete).is_err());
+}
+
+/// Tables and extension heaps are source data even though the flat image decoder skips them.
+#[test]
+fn fits_source_probe_preserves_nonimage_payload_and_allows_empty_extensions() {
+    let primary = encode(&solid(COLOURS[0]), Format::Fits, &Default::default()).unwrap();
+    for (kind, rows, heap, unretained) in
+        [("BINTABLE", 1, 0, true), ("TABLE", 1, 0, true), ("OTHER", 1, 0, true), ("BINTABLE", 0, 4, true), ("BINTABLE", 0, 0, false)]
+    {
+        let mut bytes = primary.clone();
+        for card in [
+            format!("XTENSION= '{kind}'"),
+            "BITPIX  = 8".into(),
+            "NAXIS   = 2".into(),
+            "NAXIS1  = 4".into(),
+            format!("NAXIS2  = {rows}"),
+            format!("PCOUNT  = {heap}"),
+            "GCOUNT  = 1".into(),
+            "TFIELDS = 1".into(),
+            "TTYPE1  = 'DATA'".into(),
+            "TFORM1  = '4B'".into(),
+            "END".into(),
+        ] {
+            bytes.extend_from_slice(format!("{card:<80}").as_bytes());
+        }
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, b' ');
+        bytes.extend(std::iter::repeat_n(0xa5, rows * 4 + heap));
+        bytes.resize(bytes.len().div_ceil(2880) * 2880, 0);
+        assert_eq!(decode(&bytes).unwrap().data(), decode(&primary).unwrap().data());
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), unretained, "{kind} rows={rows} heap={heap}");
+    }
+    let mut heap = primary.clone();
+    let end = heap.as_chunks::<80>().0.iter().position(|c| c.starts_with(b"END ")).unwrap() * 80;
+    heap[end..end + 160].fill(b' ');
+    heap[end..end + 11].copy_from_slice(b"PCOUNT  = 1");
+    heap[end + 80..end + 83].copy_from_slice(b"END");
+    heap[2880 + (W * H * 3) as usize] = 0xa5;
+    decode(&heap).unwrap();
+    assert!(has_unretained_source_data(&heap).unwrap());
+    for data in [false, true] {
+        let mut bytes = Vec::new();
+        for card in ["SIMPLE  = T", "BITPIX  = 8", if data { "NAXIS   = 1" } else { "NAXIS   = 0" }, "NAXIS1  = 2", "END"] {
+            bytes.extend_from_slice(format!("{card:<80}").as_bytes());
+        }
+        bytes.resize(2880, b' ');
+        if data {
+            bytes.extend_from_slice(&[0x11, 0x22]);
+            bytes.resize(5760, 0);
+        }
+        let mut image = primary.clone();
+        image[..80].fill(b' ');
+        image[..17].copy_from_slice(b"XTENSION= 'IMAGE'");
+        bytes.extend(image);
+        decode(&bytes).unwrap();
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), data, "empty primary versus skipped one-dimensional payload");
+    }
+}

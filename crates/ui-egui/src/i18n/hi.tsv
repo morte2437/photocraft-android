@@ -628,3 +628,18 @@ cameraRaw	Yellow	पीला
 @plural	{n} action file loaded|{n} action files loaded	{n} एक्शन फ़ाइल लोड हुई|{n} एक्शन फ़ाइलें लोड हुईं
 	{set} from {file} replaced the one from {earlier}	{file} के सेट {set} ने {earlier} वाले सेट की जगह ले ली
 @plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} फ़ाइल लोड नहीं हो सकी: {errors}|{n} फ़ाइलें लोड नहीं हो सकीं: {errors}
+	Toggle reference point	संदर्भ बिंदु दिखाएँ/छिपाएँ
+
+# Action Stop message (#8386)
+	Message	संदेश
+	Continue	जारी रखें
+	Stop	रोकें
+# Playback Options (#5212)
+	Playback Options…	प्लेबैक विकल्प…
+	Playback Options	प्लेबैक विकल्प
+	Accelerated	त्वरित
+	Step by Step	चरण दर चरण
+	Pause For:	इतने समय रुकें:
+	Pause For	इतने समय रुकें
+	seconds	सेकंड
+	Create a single history state	एक ही इतिहास स्थिति बनाएँ

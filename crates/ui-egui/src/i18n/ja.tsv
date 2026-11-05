@@ -3901,6 +3901,8 @@ curves	Smooth	スムーズ
 	Step {step} is waiting for its dialog	ステップ {step} はダイアログを待っています
 @plural	{n} action|{n} actions	アクション {n} 個
 	Background (Default)	背景（既定）
+	Background (default)	背景（既定）
+	Transparent (default)	透明（既定）
 	Include All Subfolders	すべてのサブフォルダーを含める
 	Forward Warp	前方ワープ
 	Twirl Clockwise	時計回りに渦巻き
@@ -4199,6 +4201,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	分岐点のカラー
 	Shapes can't use patterns yet	シェイプではまだパターンを使用できません
 	Edit Brush…	ブラシを編集…
+
+# Action Stop message (#8386)
+	Message	メッセージ
+# Playback Options (#5212)
+	Playback Options…	再生オプション…
+	Playback Options	再生オプション
+	Accelerated	高速
+	Step by Step	ステップ単位
+	Pause For:	一時停止：
+	Pause For	一時停止
+	seconds	秒
+	Create a single history state	単一のヒストリー状態を作成
 	Drag to move the active shape's path or the Work Path	ドラッグして、アクティブなシェイプのパスまたは作業用パスを移動
 	Generator enabled	自動生成を有効にする
 	This Layer:	現在のレイヤー:

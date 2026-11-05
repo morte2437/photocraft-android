@@ -101,7 +101,8 @@ pub fn selective_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adj
 }
 
 /// Color Lookup from params: `"lut"` (a built-in look id or `"none"`), `"file"` (a .cube / .3dl /
-/// .look path, native only) or `"data"` (the file's text, with `"fileName"` naming its format),
+/// .look path, native only) or `"data"` (file text, or base64 with `"dataEncoding":"base64"`).
+/// `"lutFormat":"cube|3dl|look"` can supply the format when the file name doesn't identify it.
 /// `"interpolation":"trilinear|tetrahedral"`, `"dither":bool`. The table is embedded in the
 /// layer, as Photoshop does. Unspecified fields keep `base`'s values; a key of the wrong type is an
 /// error.
@@ -112,6 +113,17 @@ pub fn lookup_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adjust
             (name.clone(), lut.clone(), *size, *tetrahedral, *dither, source.clone())
         }
         _ => (String::new(), None, 0, false, false, None),
+    };
+    let encoding = opt_str(CMD, p, "dataEncoding")?.unwrap_or("text");
+    if !matches!(encoding, "text" | "base64") {
+        return Err(bad(CMD, "`dataEncoding` must be \"text\" or \"base64\""));
+    }
+    let format = match opt_str(CMD, p, "lutFormat")? {
+        None => None,
+        Some("cube") => Some(photocraft_cms::lutfile::Format::Cube),
+        Some("3dl") => Some(photocraft_cms::lutfile::Format::ThreeDl),
+        Some("look") => Some(photocraft_cms::lutfile::Format::Look),
+        Some(_) => return Err(bad(CMD, "`lutFormat` must be \"cube\", \"3dl\" or \"look\"")),
     };
     // The parsed table, its label and (for a file) the file as loaded, which a PSD save embeds.
     let mut loaded: Option<(photocraft_cms::lutfile::LutFile, String, Option<LutSource>)> = None;
@@ -130,13 +142,20 @@ pub fn lookup_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adjust
     let file_name = opt_str(CMD, p, "fileName")?;
     if let Some(text) = opt_str(CMD, p, "data")? {
         let file_name = file_name.unwrap_or("lut.cube");
-        let f = photocraft_cms::lutfile::parse(file_name, text.as_bytes()).map_err(|e| bad(CMD, e.0))?;
-        loaded = Some((f, base_name(file_name), Some(lut_source(file_name, text.as_bytes().to_vec()))));
+        let bytes = if encoding == "base64" {
+            photocraft_paint::tile::b64_decode(text).ok_or_else(|| bad(CMD, "`data` is not valid base64"))?
+        } else {
+            text.as_bytes().to_vec()
+        };
+        let format = format.unwrap_or_else(|| photocraft_cms::lutfile::Format::detect(file_name, &bytes));
+        let f = photocraft_cms::lutfile::parse_as(format, &bytes).map_err(|e| bad(CMD, e.0))?;
+        loaded = Some((f, base_name(file_name), Some(lut_source(format, bytes))));
     }
     if let Some(path) = opt_str(CMD, p, "file")?.filter(|s| !s.is_empty()) {
         let bytes = read_file(path).ok_or_else(|| bad(CMD, format!("can't read {path}")))?;
-        let f = photocraft_cms::lutfile::parse(path, &bytes).map_err(|e| bad(CMD, format!("{path}: {}", e.0)))?;
-        loaded = Some((f, base_name(path), Some(lut_source(path, bytes))));
+        let format = format.unwrap_or_else(|| photocraft_cms::lutfile::Format::detect(path, &bytes));
+        let f = photocraft_cms::lutfile::parse_as(format, &bytes).map_err(|e| bad(CMD, format!("{path}: {}", e.0)))?;
+        loaded = Some((f, base_name(path), Some(lut_source(format, bytes))));
     }
     if let Some((f, label, src)) = loaded {
         if !f.domain_is_default() {
@@ -169,8 +188,8 @@ pub fn lookup_from_params(p: &Value, base: Option<&Adjustment>) -> Result<Adjust
 }
 
 /// A loaded LUT file, tagged with the format [`photocraft_cms::lutfile::parse`] read it as.
-fn lut_source(file_name: &str, bytes: Vec<u8>) -> LutSource {
-    let format = match photocraft_cms::lutfile::Format::detect(file_name, &bytes) {
+fn lut_source(format: photocraft_cms::lutfile::Format, bytes: Vec<u8>) -> LutSource {
+    let format = match format {
         photocraft_cms::lutfile::Format::Cube => LutFormat::Cube,
         photocraft_cms::lutfile::Format::ThreeDl => LutFormat::ThreeDl,
         photocraft_cms::lutfile::Format::Look => LutFormat::Look,

@@ -136,7 +136,7 @@ pub(super) fn transform_to(id: &str, p: &Value) -> Option<Descriptor> {
 }
 
 /// `Clcn` (Apply Image / Calculations blending) ↔ `image.applyImage`'s `blending`.
-const CALC_BLEND: &[(&str, &str)] = &[
+pub(super) const CALC_BLEND: &[(&str, &str)] = &[
     ("Nrml", "normal"),
     ("Mltp", "multiply"),
     ("Scrn", "screen"),
@@ -246,7 +246,13 @@ pub(super) fn apply_image_to(_: &str, p: &Value) -> Option<Descriptor> {
     if !source.is_object() || not_name("layer") || not_name("channel") {
         return None;
     }
-    let mut items = vec![apply_image_channel(jstr(&source, "channel").unwrap_or("composite"))?];
+    let channel = jstr(&source, "channel").unwrap_or("composite");
+    // Without a layer, transparency is the active layer's (`channel_cmds::refs::source`); `Mrgd`
+    // would replay the merged transparency instead, and that layer has no name to record here.
+    if channel.eq_ignore_ascii_case("transparency") && jstr(&source, "layer").is_none() {
+        return None;
+    }
+    let mut items = vec![apply_image_channel(channel)?];
     match jstr(&source, "layer") {
         Some("merged") | None => items.push(ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code("Mrgd") }),
         Some(name) => items.push(ReferenceItem::Name { class: class("Lyr "), name: UnicodeString::new_nul(name) }),

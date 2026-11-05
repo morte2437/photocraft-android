@@ -37,6 +37,9 @@ const KEYS: [&str; 5] = ["crop_ratio", "crop_width", "crop_height", "crop_resolu
 /// One entry of the preset dropdown (and of the Crop tool's canvas menu).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Choice {
+    /// The temporary "Selection" entry (#10872): the untouched frame came from a selection's
+    /// bounds. Picking it changes nothing; it labels the frame the crop is still showing.
+    Selection,
     /// A built-in key (`crop_ratio` value, size preset or Front Image), see [`crop_size::chosen`].
     Builtin(String),
     /// A saved crop preset, by name.
@@ -132,13 +135,24 @@ fn button_label(o: &ToolOptions, builtin: &[(String, &'static str)], users: &[(S
     tl!(label).to_string()
 }
 
+/// Whether the preset dropdown shows its temporary "Selection" entry (#10872): the frame is the
+/// untouched default one and it came from a selection's bounds. Editing the frame clears
+/// `default_frame`, so the entry goes away; Photoshop shows it checked while it stands.
+pub(crate) fn shows_selection(app: &PhotocraftApp) -> bool {
+    app.crop.default_frame && app.crop.frame_from_selection
+}
+
 /// The options bar's preset dropdown: the built-in entries ([`crop_size::dropdown_options`]), the
 /// saved crop presets before Front Image, then New Crop Preset… and Delete Crop Preset….
 pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let builtin = crop_size::dropdown_options();
     let users = user_presets(app);
+    // The temporary "Selection" entry stands above Ratio while the untouched frame is the
+    // selection's and no ratio presets it (#10872); a picked ratio takes the check mark instead.
+    let selection_entry = shows_selection(app) && app.ui.tool_options.crop_ratio.is_empty();
     let o = &app.ui.tool_options;
-    let label = button_label(o, &builtin, &users);
+    // The closed control names the entry that is checked: "Selection" while it stands.
+    let label = if selection_entry { tl!("Selection").to_string() } else { button_label(o, &builtin, &users) };
     let current_user = current_user(app);
     let can_new = savable(o).is_some();
     let mut chosen: Option<Choice> = None;
@@ -146,14 +160,17 @@ pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let combo =
         craft_ui::ComboBox::from_id_salt("crop-ratio").selected_text(label).width(140.0).height(420.0).icon(crate::widgets::chevron_icon).show_ui(ui, |ui| {
             crate::press_menu::above_parent_ui(parent_layer, ui);
+            if selection_entry && ui.selectable_label(true, tl!("Selection")).clicked() {
+                chosen = Some(Choice::Selection);
+            }
             let (before, after): (Vec<_>, Vec<_>) = builtin.iter().partition(|(k, _)| k != crop_size::FRONT);
             for (k, l) in &before {
-                if ui.selectable_label(current_user.is_none() && *k == o.crop_ratio, tl!(l)).clicked() {
+                if ui.selectable_label(!selection_entry && current_user.is_none() && *k == o.crop_ratio, tl!(l)).clicked() {
                     chosen = Some(Choice::Builtin(k.clone()));
                 }
             }
             for (name, _) in &users {
-                if ui.selectable_label(current_user.as_deref() == Some(name), name.as_str()).clicked() {
+                if ui.selectable_label(!selection_entry && current_user.as_deref() == Some(name), name.as_str()).clicked() {
                     chosen = Some(Choice::User(name.clone()));
                 }
             }
@@ -179,6 +196,13 @@ pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 /// What picking a dropdown entry does; the Crop tool's canvas menu picks through it too.
 pub(crate) fn apply_choice(app: &mut PhotocraftApp, choice: Choice) {
     match choice {
+        // Measured in the reference application (#10872): choosing it keeps the frame but makes
+        // it a live crop with free Ratio, as an edit does, so the entry goes away.
+        Choice::Selection => {
+            app.ui.tool_options.crop_ratio.clear();
+            crop_size::select_custom_ratio(&mut app.ui.tool_options);
+            crate::crop_ui::take_selection_frame(app);
+        }
         Choice::Builtin(k) => {
             app.ui.tool_options.crop_ratio = k;
             // A size preset or Front Image fills W x H x Resolution (#2443).

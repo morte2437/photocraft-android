@@ -171,6 +171,7 @@ impl PhotocraftApp {
             dialog_edits: Default::default(),
             color_picker_live: Vec::new(),
             pending_after_prompt: None,
+            after_transform_commit: None,
             tone_hist: None,
             doc_hist: None,
             doc_hist_preview: None,

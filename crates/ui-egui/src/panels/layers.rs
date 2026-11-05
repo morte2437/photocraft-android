@@ -271,7 +271,7 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 ui.scroll_with_delta(vec2(0.0, delta));
                 ctx.request_repaint();
             }
-            let filter = crate::layer_filter_ui::Filter::of_app(app);
+            let filter = crate::layer_filter_ui::Filter::with_selection(app, &doc, &selection);
             let fx_collapsed = app.session.active().map(|d| d.fx_collapsed.clone()).unwrap_or_default();
             crate::layer_row_ui::begin(ui.ctx());
             // The drawn rows, top to bottom (#1721): the space between them and below the last

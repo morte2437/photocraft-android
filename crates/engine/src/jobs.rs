@@ -1502,6 +1502,7 @@ impl Session {
         if !(params.is_object() || params.is_null()) {
             return Err(EngineError::BadParams { cmd: id.to_string(), msg: "params must be a JSON object".into() });
         }
+        let params = crate::file_cmds::batch_open_params(self, id, &params).unwrap_or(params);
         // Untrusted sessions gate every command, including the ones a command runs on its own
         // behalf (`file.automate.conditionalModeChange` runs `image.mode.*`), before any side
         // effect.
@@ -1593,6 +1594,13 @@ impl Session {
             self.hint_before = None;
         }
         let pending = self.jobs.pending.take();
+        // Shape Blur by an installed shape's id or name records the geometry it ran with, as the
+        // filter's own prepared params carry it: the journal (Last Filter, recorded actions)
+        // replays where that shape is not installed. The run resolved it already, so it can't fail.
+        let mut params = params;
+        if r.is_ok() {
+            let _ = crate::filters_ext::resolve_shape_path(self, id, &mut params);
+        }
         let out = match (r, pending) {
             (Err(e), Some(job)) => {
                 job.ctx.cancel();

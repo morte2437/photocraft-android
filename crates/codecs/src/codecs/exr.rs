@@ -128,12 +128,20 @@ fn part_info(index: usize, header: &exr::meta::header::Header) -> ExrPartInfo {
         // U32 channels (Arnold ID buffers) are listed as F32: exact up to 2^24.
         exr::meta::attribute::SampleType::F32 | exr::meta::attribute::SampleType::U32 => SampleType::F32,
     };
+    let display = &header.shared_attributes.display_window;
     ExrPartInfo {
         index,
         name: header.own_attributes.layer_name.as_ref().map(|n| n.to_string()),
         view: header.own_attributes.view_name.as_ref().map(|v| v.to_string()),
         width: w,
         height: h,
+        data_window: (header.own_attributes.layer_position.0, header.own_attributes.layer_position.1, w, h),
+        display_window: (
+            display.position.0,
+            display.position.1,
+            u32::try_from(display.size.0).unwrap_or(u32::MAX),
+            u32::try_from(display.size.1).unwrap_or(u32::MAX),
+        ),
         deep: header.deep,
         tiled: matches!(header.blocks, exr::meta::BlockDescription::Tiles(_)),
         channels: header.channels.list.iter().map(|c| ExrChannelInfo { name: c.name.to_string(), sample: sample(c.sample_type) }).collect(),

@@ -506,6 +506,12 @@ pub enum FilterParams {
         radius: f32,
         shape: BlurShape,
     },
+    /// A custom shape's coverage kernel, resolved by the caller before rendering.
+    CustomShapeBlur {
+        radius: f32,
+        #[serde(skip)]
+        kernel: Option<std::sync::Arc<Image>>,
+    },
 
     // ---- Blur Gallery ----
     /// Centre fractions, angle degrees, focus/transition as fractions of the bounds' shorter side.
@@ -685,7 +691,7 @@ impl FilterParams {
             FilterParams::ReduceNoise { .. } => "Reduce Noise",
             FilterParams::SmartBlur { .. } => "Smart Blur",
             FilterParams::LensBlur { .. } => "Lens Blur",
-            FilterParams::ShapeBlur { .. } => "Shape Blur",
+            FilterParams::ShapeBlur { .. } | FilterParams::CustomShapeBlur { .. } => "Shape Blur",
             FilterParams::TiltShift { .. } => "Tilt-Shift",
             FilterParams::IrisBlur { .. } => "Iris Blur",
             FilterParams::FieldBlur { .. } => "Field Blur",
@@ -730,7 +736,7 @@ fn halo_ext(p: &FilterParams) -> Halo {
         // The kernels clamp the radius to 100 px: size the source window by what they use.
         FilterParams::SmartBlur { radius, .. } => r(radius.min(100.0)),
         FilterParams::LensBlur { radius, .. } => r(radius.min(100.0)),
-        FilterParams::ShapeBlur { radius, .. } => r(shape_blur::radius(*radius)),
+        FilterParams::ShapeBlur { radius, .. } | FilterParams::CustomShapeBlur { radius, .. } => r(shape_blur::radius(*radius)),
         FilterParams::TiltShift { blur, .. } => r(gallery::reach(*blur)),
         FilterParams::IrisBlur { pins } => r(gallery::reach(pins.iter().map(|p| p.blur).fold(0.0, f32::max))),
         FilterParams::FieldBlur { pins } => r(gallery::reach(pins.iter().map(|p| p.blur).fold(0.0, f32::max))),
@@ -920,6 +926,10 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
             },
         ),
         FilterParams::ShapeBlur { radius, shape } => blur2::shape_blur(src, out, ctx, *radius, *shape),
+        FilterParams::CustomShapeBlur { radius, kernel } => kernel
+            .as_ref()
+            .and_then(|mask| shape_blur::Prepared::custom(*radius, mask, &photocraft_raster::Interrupt::NONE))
+            .map_or_else(Vec::new, |prepared| prepared.run(src, out, ctx)),
         FilterParams::TiltShift { blur, center_x, center_y, angle, focus, transition } => {
             gallery::tilt_shift(src, out, ctx, *blur, (*center_x, *center_y), *angle, *focus, *transition)
         }
@@ -1036,10 +1046,14 @@ pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: 
     #[cfg(target_arch = "wasm32")]
     let threads = 1u64;
     let tile = auto_tile(params, bounds).max(1) as u64;
+    // Each worker holds one tile's windows at a time, so no more workers than tiles hold them
+    // at once (a 24 MP image at a 1024 px tile has 24 tiles, fewer than 32 threads).
+    let tiles = u64::from(area.width()).div_ceil(tile).saturating_mul(u64::from(area.height()).div_ceil(tile)).max(1);
+    let threads = threads.min(tiles);
     let floats = (channels as u64).saturating_mul(4);
     // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
     let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);
-    match params.halo_for(bounds) {
+    let windows = match params.halo_for(bounds) {
         Halo::Bounds => base.saturating_add(bounds.union(&area).size().area().saturating_mul(floats)),
         Halo::Radius(r) => {
             let side = tile.saturating_add((r.max(0) as u64).saturating_mul(2));
@@ -1047,7 +1061,22 @@ pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: 
                 side.saturating_mul(side).saturating_add(tile.saturating_mul(tile).saturating_mul(3)).saturating_mul(floats).saturating_mul(threads),
             )
         }
-    }
+    };
+    windows.saturating_add(shape_blur_bytes(params, bounds, tile, channels as u64, threads))
+}
+
+/// What Shape Blur holds beyond the float windows: each worker's f64 prefix sums over its
+/// halo-expanded tile, and for a custom shape the kernel mask kept for the whole run plus its
+/// prepared coverage runs (at most [`shape_blur::max_spans`], 20 bytes each).
+fn shape_blur_bytes(params: &FilterParams, bounds: Rect, tile: u64, channels: u64, threads: u64) -> u64 {
+    let (FilterParams::ShapeBlur { .. } | FilterParams::CustomShapeBlur { .. }) = params else { return 0 };
+    let Halo::Radius(r) = params.halo_for(bounds) else { return 0 };
+    let side = tile.min(2048).saturating_add((r.max(0) as u64).saturating_mul(2)).saturating_add(1);
+    let prefix = side.saturating_mul(side).saturating_mul(channels).saturating_mul(8).saturating_mul(threads);
+    let FilterParams::CustomShapeBlur { kernel: Some(mask), .. } = params else { return prefix };
+    let size = (mask.rect.width() as usize).max(mask.rect.height() as usize);
+    let spans = (shape_blur::max_spans(size) as u64).saturating_mul(20);
+    prefix.saturating_add((mask.data.len() as u64).saturating_mul(4)).saturating_add(spans)
 }
 
 /// [`apply`] / [`apply_in`] with an explicit tile size (tests use it to check tile independence).
@@ -1123,7 +1152,11 @@ fn apply_tiled_with_impl(
     }
     // The public tile override must not create a zero-step loop or an
     // unbounded scratch buffer for these checked filters. Automatic tiles are unchanged.
-    let tile = if matches!(params, FilterParams::ShapeBlur { .. } | FilterParams::UnsharpMask { .. }) { tile.clamp(1, 2048) } else { tile };
+    let tile = if matches!(params, FilterParams::ShapeBlur { .. } | FilterParams::CustomShapeBlur { .. } | FilterParams::UnsharpMask { .. }) {
+        tile.clamp(1, 2048)
+    } else {
+        tile
+    };
     let fmt = surface.format();
     let ctx = Ctx { bounds, mode: fmt.mode, alpha: fmt.alpha };
     // Prepare the immutable sample transforms once for all output tiles. If the
@@ -1163,6 +1196,13 @@ fn apply_tiled_with_impl(
     }
     // Shape rasterization depends only on params, not on a tile's pixels.
     let shape = match params {
+        FilterParams::CustomShapeBlur { radius, kernel } => {
+            if ctl.cancelled() {
+                return None;
+            }
+            let prepared = shape_blur::Prepared::custom(*radius, kernel.as_ref()?, ctl)?;
+            Some(prepared)
+        }
         FilterParams::ShapeBlur { radius, shape } => {
             if ctl.cancelled() {
                 return None;
@@ -1239,7 +1279,7 @@ fn apply_tiled_with_impl(
         };
         let Some(mut data) = (match (&shape, &radial) {
             _ if gallery.is_some() => gallery.as_ref().map(|g| g.run(src, *t, &ctx)),
-            (Some(shape), _) => shape.checked_run(src, *t, &ctx),
+            (Some(shape), _) => shape.checked_run(src, *t, &ctx, ctl),
             (None, Some(plan)) => match plan.filter(src, *t, &ctx, ctl) {
                 Some(data) => Some(data),
                 None if ctl.cancelled() => None,

@@ -191,9 +191,17 @@ pub fn form_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                     let mut s = s.clone();
                     match choices.get(&k).and_then(Value::as_array) {
                         Some(opts) => {
-                            let opts: Vec<(String, String)> = opts.iter().filter_map(Value::as_str).map(|o| (o.to_string(), label(o))).collect();
+                            // Action and set names are the user's own text, never catalogue entries.
+                            let action_names = matches!(k.as_str(), "action" | "set")
+                                && matches!(f.get("__command").and_then(Value::as_str), Some("file.automate.batch" | "file.automate.createDroplet"));
+                            let opts: Vec<(String, String)> =
+                                opts.iter().filter_map(Value::as_str).map(|o| (o.to_string(), if action_names { o.to_string() } else { label(o) })).collect();
                             let refs: Vec<(String, &str)> = opts.iter().map(|(a, b)| (a.clone(), b.as_str())).collect();
-                            crate::widgets::dropdown(ui, &format!("form-{k}"), &label(&k), &mut s, &refs, 200.0);
+                            if action_names {
+                                crate::widgets::dropdown_literal(ui, &format!("form-{k}"), &label(&k), &mut s, &refs, 200.0);
+                            } else {
+                                crate::widgets::dropdown(ui, &format!("form-{k}"), &label(&k), &mut s, &refs, 200.0);
+                            }
                         }
                         None => {
                             if file_info && matches!(k.as_str(), "description" | "keywords" | "copyright") {
@@ -260,6 +268,7 @@ fn default_dir(app: &PhotocraftApp) -> String {
     app.session.active().and_then(|d| d.path.as_deref()).and_then(|p| p.rfind(['/', '\\']).map(|i| p[..i].to_string())).unwrap_or_else(|| ".".into())
 }
 
+/// Handle menu commands that need a shell action or a parameter dialog before execution.
 pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if id == "file.closeAll" || id == "file.closeOthers" {
         // Keep the remaining document's view (views are index-aligned with documents).
@@ -500,20 +509,21 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             let Some(action) = crate::actions::selected_action(app) else {
                 return Some(Err("record an action in the Actions panel first".into()));
             };
-            let steps = crate::actions::action_steps(action);
-            let name = action.name.clone();
-            dialog(
-                app,
-                json!({
-                    "action": name, "steps": steps, "source": "folder", "input": dir,
-                    "includeSubfolders": false, "__labels": subfolders_label(),
-                    "output": format!("{dir}/batch"), "format": "same", "quality": null,
-                    "__batchQuality": 8, "naming": "", "startingSerial": 1,
-                    "stopOnError": false, "errorLog": "",
-                    "__order": ["action", "source", "input", "includeSubfolders", "output", "format", "naming", "startingSerial", "quality", "stopOnError", "errorLog"]
-                }),
-                json!({"format": ["same", "png", "jpg", "psd", "tiff", "webp"], "source": ["folder", "open"]}),
-            )
+            let (name, set) = (action.name.clone(), action.set.clone());
+            let (names, sets) = crate::actions::action_form_choices(app);
+            let mut fields = json!({
+                "action": name, "source": "folder", "input": dir,
+                "includeSubfolders": false, "__labels": subfolders_label(),
+                "output": format!("{dir}/batch"), "format": "same", "quality": null,
+                "__batchQuality": 8, "naming": "", "startingSerial": 1,
+                "stopOnError": false, "errorLog": "",
+                "__order": ["set", "action", "source", "input", "includeSubfolders", "output", "format", "naming", "startingSerial", "quality", "stopOnError", "errorLog"]
+            });
+            // The Set dropdown picks between same-named actions; an action outside any set has none.
+            if let Some(set) = set {
+                fields["set"] = json!(set);
+            }
+            dialog(app, fields, json!({"set": sets, "action": names, "format": ["same", "png", "jpg", "psd", "tiff", "webp"], "source": ["folder", "open"]}))
         }
         // Channel workflow dialogs (see channels_panel.rs for the channel references).
         "select.saveSelection" | "select.loadSelection" | "image.applyImage" | "image.calculations" => {

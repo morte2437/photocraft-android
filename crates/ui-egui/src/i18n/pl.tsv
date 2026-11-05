@@ -3899,6 +3899,8 @@ curves	Smooth	Wygładź
 	Step {step} is waiting for its dialog	Krok {step} czeka na swoje okno dialogowe
 @plural	{n} action|{n} actions	{n} operacja|{n} operacje|{n} operacji
 	Background (Default)	Tło (domyślne)
+	Background (default)	Tło (domyślne)
+	Transparent (default)	Przezroczyste (domyślne)
 	Include All Subfolders	Uwzględnij wszystkie podfoldery
 	Auto Add/Delete	Automatyczne dodawanie/usuwanie
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nie włączaj też odbicia lustrzanego w ustawieniach druku: oba odbicia wzajemnie się znoszą.
@@ -4141,6 +4143,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Kolor punktu
 	Shapes can't use patterns yet	Kształty nie mogą jeszcze używać wzorków
 	Edit Brush…	Edytuj pędzel…
+
+# Action Stop message (#8386)
+	Message	Komunikat
+# Playback Options (#5212)
+	Playback Options…	Opcje odtwarzania…
+	Playback Options	Opcje odtwarzania
+	Accelerated	Przyspieszone
+	Step by Step	Krok po kroku
+	Pause For:	Wstrzymaj na:
+	Pause For	Wstrzymaj na
+	seconds	s
+	Create a single history state	Utwórz jeden stan historii
 	Generator enabled	Generator włączony
 	Move Up	Przesuń w górę
 	Move Down	Przesuń w dół

@@ -186,20 +186,143 @@ fn extra_samples_past_the_cap_are_reported() {
     let spp = 3 + EXTRAS;
     let px: Vec<u8> = (0..w * h * spp).map(|i| (i % spp) as u8).collect();
     let d = strips(w as u32, h as u32, 8, spp as u16, 2, h as u32, &px).tag(338, SHORT, &[0; EXTRAS]);
-    let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
+    let bytes = build(true, false, &[d], &[0]).bytes;
+    let img = decode_ok(&bytes);
     assert_eq!(img.layout(), ChannelLayout::Rgb);
     assert_eq!(img.meta.extra_samples.len(), MAX_EXTRA_SAMPLES);
     assert_eq!(img.meta.extra_samples.last().map(|e| e.data[0]), Some((3 + MAX_EXTRA_SAMPLES - 1) as u8));
     assert_eq!(img.warnings, vec![DecodeWarning::ExtraSamplesOverLimit { format: Format::Tiff, count: 4 }]);
+    assert!(has_unretained_source_data(&bytes).unwrap());
     let text = img.warnings[0].to_string();
     assert!(text.contains("4 extra TIFF file channels") && text.contains("past the first 16"), "{text}");
     // At the cap exactly, nothing is left out.
     let spp = 3 + MAX_EXTRA_SAMPLES;
     let px: Vec<u8> = (0..w * h * spp).map(|i| (i % spp) as u8).collect();
     let d = strips(w as u32, h as u32, 8, spp as u16, 2, h as u32, &px).tag(338, SHORT, &[0; MAX_EXTRA_SAMPLES]);
-    let img = decode_ok(&build(true, false, &[d], &[0]).bytes);
+    let bytes = build(true, false, &[d], &[0]).bytes;
+    let img = decode_ok(&bytes);
     assert_eq!(img.meta.extra_samples.len(), MAX_EXTRA_SAMPLES);
     assert!(img.warnings.is_empty(), "{:?}", img.warnings);
+    assert!(!has_unretained_source_data(&bytes).unwrap());
+}
+
+/// The guard follows decoder classification, including non-first, repeated or missing alpha tags.
+#[test]
+fn source_sample_cap_matches_the_decoder_at_layout_and_alpha_boundaries() {
+    for (photo, color) in [(1u16, 1usize), (2, 3), (5, 4), (8, 3), (9, 3)] {
+        for extras in [MAX_EXTRA_SAMPLES - 1, MAX_EXTRA_SAMPLES, MAX_EXTRA_SAMPLES + 1] {
+            for kind in 0..7 {
+                let alpha = matches!(kind, 1..=3);
+                let spp = color + extras + usize::from(alpha);
+                let px: Vec<_> = (0..spp).map(|i| i as u8 + 1).collect();
+                let mut kinds = vec![0; spp - color];
+                if alpha {
+                    kinds[if kind == 2 { 1 } else { 0 }] = 2;
+                }
+                if kind == 3 {
+                    kinds[1] = 1;
+                }
+                if kind == 4 {
+                    kinds.push(2);
+                }
+                let mut dir = strips(1, 1, 8, spp as u16, photo, 1, &px);
+                if kind != 5 {
+                    dir = dir.tag(338, SHORT, &kinds);
+                }
+                if kind == 6 {
+                    dir = dir.tag(338, SHORT, &vec![2; spp - color]);
+                }
+                let bytes = build(true, false, &[dir], &[0]).bytes;
+                let image = decode(&bytes);
+                let guarded = has_unretained_source_data(&bytes);
+                match image {
+                    Ok(image) => {
+                        let dropped = image.warnings.iter().any(|w| matches!(w, DecodeWarning::ExtraSamplesOverLimit { .. }));
+                        assert_eq!(guarded.unwrap(), dropped, "photo={photo} extras={extras} alpha tags={kind}");
+                        if kind <= 3 {
+                            assert_eq!(dropped, extras > MAX_EXTRA_SAMPLES);
+                        }
+                    }
+                    Err(_) if kind >= 4 => assert!(guarded.is_err(), "unsupported tags remain refused"),
+                    Err(error) => panic!("supported photo={photo} extras={extras} tags={kind}: {error}"),
+                }
+            }
+        }
+    }
+}
+
+/// Independent compressed zero rows satisfy the decoder's file-size safety bound. Inspection
+/// follows import's default budget without allocating or decoding the declared whole image.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn source_sample_guard_follows_whole_aux_and_banded_plain_budget_routes() {
+    for (size, bits, extras, guarded) in [(16384u32, 8u16, MAX_EXTRA_SAMPLES, true), (32768, 32, 0, false)] {
+        let samples = 3 + extras;
+        let entries = if extras == 0 { 11u16 } else { 12 };
+        let bits_at = 8 + 2 + usize::from(entries) * 12 + 4;
+        let kinds_at = bits_at + samples * 2;
+        let offsets_at = kinds_at + extras * 2;
+        let counts_at = offsets_at + size as usize * 4;
+        let data_at = counts_at + size as usize * 4;
+        let sample = if bits == 32 { SampleType::F32 } else { SampleType::U8 };
+        let mut image = Image::from_raw(size, 1, ChannelLayout::Rgb, sample, vec![0; size as usize * 3 * sample.bytes()]).unwrap();
+        image.meta.extra_samples = (0..extras).map(|_| ExtraSample { kind: 0, data: vec![0; size as usize * sample.bytes()] }).collect();
+        let encoded = encode(&image, Format::Tiff, &EncodeOptions { tiff_compression: TiffCompression::Deflate, ..Default::default() }).unwrap();
+        decode_ok(&encoded);
+        assert_eq!(&encoded[..2], b"II");
+        let first = u32::from_le_bytes(encoded[4..8].try_into().unwrap()) as usize;
+        let n = u16::from_le_bytes(encoded[first..first + 2].try_into().unwrap()) as usize;
+        let field = |tag: u16| {
+            let at = (0..n).map(|i| first + 2 + i * 12).find(|&at| u16::from_le_bytes(encoded[at..at + 2].try_into().unwrap()) == tag).unwrap();
+            assert_eq!(u32::from_le_bytes(encoded[at + 4..at + 8].try_into().unwrap()), 1);
+            u32::from_le_bytes(encoded[at + 8..at + 12].try_into().unwrap()) as usize
+        };
+        let row = &encoded[field(273)..field(273) + field(279)];
+        let mut tags = vec![
+            (256u16, 4u16, 1u32, size),
+            (257, 4, 1, size),
+            (258, 3, samples as u32, bits_at as u32),
+            (259, 3, 1, field(259) as u32),
+            (262, 3, 1, 2),
+            (273, 4, size, offsets_at as u32),
+            (277, 3, 1, samples as u32),
+            (278, 4, 1, 1),
+            (279, 4, size, counts_at as u32),
+            (284, 3, 1, 1),
+            (339, 3, 1, if bits == 32 { 3 } else { 1 }),
+        ];
+        if extras > 0 {
+            tags.push((338, 3, extras as u32, kinds_at as u32));
+        }
+        tags.sort_unstable_by_key(|t| t.0);
+        let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+        bytes.extend_from_slice(&entries.to_le_bytes());
+        for (tag, ty, count, value) in tags {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&ty.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..samples {
+            bytes.extend_from_slice(&bits.to_le_bytes());
+        }
+        for _ in 0..extras {
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+        }
+        for index in 0..size {
+            bytes.extend_from_slice(&((data_at + index as usize * row.len()) as u32).to_le_bytes());
+        }
+        for _ in 0..size {
+            bytes.extend_from_slice(&(row.len() as u32).to_le_bytes());
+        }
+        assert_eq!(bytes.len(), data_at);
+        for _ in 0..size {
+            bytes.extend_from_slice(row);
+        }
+        assert!(bytes.len() < 32 << 20);
+        assert_eq!(has_unretained_source_data(&bytes).unwrap(), guarded);
+    }
 }
 
 #[test]
@@ -453,6 +576,63 @@ fn the_chain_walk_is_capped() {
     let info = tiff_info(&b.bytes).unwrap();
     assert_eq!((info.pages.len(), info.complete), (10_000, false));
     assert_eq!(decode_ok(&b.bytes).warnings, [DecodeWarning::MorePages { total: None }]);
+}
+
+/// A partial child walk remains usable for decoding, but cannot authorize destructive saves.
+#[test]
+fn incomplete_subifd_lists_and_depth_are_reported() {
+    for (little, big) in ORDERS {
+        let ty = if big { IFD8 } else { IFD };
+        for depth in [4usize, 5] {
+            let dirs: Vec<_> = (0..=depth)
+                .map(|i| {
+                    let dir = gray_page(
+                        2,
+                        2,
+                        i as u8,
+                        Some(if i == 0 {
+                            0
+                        } else if i == depth {
+                            4
+                        } else {
+                            1
+                        }),
+                    );
+                    if i < depth { dir.sub_ifds(ty, &[i + 1]) } else { dir }
+                })
+                .collect();
+            let b = build(little, big, &dirs, &[0]);
+            assert_eq!(tiff_info(&b.bytes).unwrap().complete, depth == 4);
+            decode_ok(&b.bytes);
+            if depth == 4 {
+                assert!(has_unretained_source_data(&b.bytes).unwrap());
+            } else {
+                assert!(has_unretained_source_data(&b.bytes).is_err());
+            }
+        }
+        for count in [0usize, 1, 256, 257] {
+            let b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, ty, &vec![0; count])], &[0]);
+            assert_eq!(tiff_info(&b.bytes).unwrap().complete, count <= 256, "null child slots {count}");
+            decode_ok(&b.bytes);
+        }
+        for invalid in [SHORT, u16::MAX] {
+            let b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, invalid, &[0])], &[0]);
+            assert!(!tiff_info(&b.bytes).unwrap().complete);
+            assert!(has_unretained_source_data(&b.bytes).is_err());
+            decode_ok(&b.bytes);
+        }
+        let b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, ty, &[0]).tag(330, ty, &[0])], &[0]);
+        assert!(!tiff_info(&b.bytes).unwrap().complete, "duplicate child declarations");
+        let mut b = build(little, big, &[gray_page(2, 2, 9, None).tag(330, ty, &[0, 0])], &[0]);
+        let (entry, ..) = find_entry(&b, little, big, 0, 330).unwrap();
+        let offset = b.bytes.len() as u64 - 1;
+        let value = if little { offset.to_le_bytes() } else { offset.to_be_bytes() };
+        let (field, width) = if big { (entry + 12, 8) } else { (entry + 8, 4) };
+        b.bytes[field..field + width].copy_from_slice(if little { &value[..width] } else { &value[8 - width..] });
+        assert!(!tiff_info(&b.bytes).unwrap().complete, "truncated child list");
+        assert!(has_unretained_source_data(&b.bytes).is_err());
+        decode_ok(&b.bytes);
+    }
 }
 
 #[test]

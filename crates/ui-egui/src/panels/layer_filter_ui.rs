@@ -72,22 +72,30 @@ impl Filter {
 
     /// Returns [`Filter::of`] for `app`'s settings, with the active document's missing linked
     /// files while the panel filters by Smart Object, and `board_rows` set to the rows of the
-    /// artboards that hold the active document's selected layers while it filters by Artboard,
-    /// and `empty` set while it filters by Empty or Not Empty.
-    pub fn of_app(app: &PhotocraftApp) -> Self {
+    /// artboards in `doc` that hold `selection` while it filters by Artboard, and `empty` set
+    /// while it filters by Empty or Not Empty. The Layers panel passes the document and the
+    /// selection it already read for the frame.
+    pub fn with_selection(app: &PhotocraftApp, doc: &Document, selection: &[LayerId]) -> Self {
         let mut f = Self::of(&app.ui);
         if f.by == FilterBy::SmartObject {
             f.missing = app.session.missing_links();
         }
-        if f.by == FilterBy::Artboard
-            && let Some(d) = app.session.active()
-        {
-            f.board_rows = board_rows(&d.doc, &d.selected_layers());
+        if f.by == FilterBy::Artboard {
+            f.board_rows = board_rows(doc, selection);
         }
         if f.by == FilterBy::Attribute {
             f.empty = attribute::empty_layers(app, f.attribute);
         }
         f
+    }
+
+    /// Returns [`Filter::with_selection`] for the active document and its selected layers, or
+    /// [`Filter::of`] with no artboard rows when no document is open.
+    pub fn of_app(app: &PhotocraftApp) -> Self {
+        match app.session.active() {
+            Some(d) => Self::with_selection(app, &d.doc, &d.selected_layers()),
+            None => Self::of(&app.ui),
+        }
     }
 
     /// Whether the panel is filtered. Like Photoshop, Effect, Mode, Attribute and Color always

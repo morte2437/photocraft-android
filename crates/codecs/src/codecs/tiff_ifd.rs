@@ -188,7 +188,13 @@ impl<'a> File<'a> {
             let count = if self.big { self.u64_at(e.checked_add(4)?)? } else { u64::from(self.u32_at(e.checked_add(4)?)?) };
             let field = e.checked_add(if self.big { 12 } else { 8 })?;
             // Unknown types are skipped, as the specification says.
-            let Some(size) = type_size(ty) else { continue };
+            let Some(size) = type_size(ty) else {
+                // Keep an unreadable child declaration visible to the completeness check.
+                if tag == TAG_SUB_IFDS {
+                    entries.push(Entry { tag, ty, count, value_at: field });
+                }
+                continue;
+            };
             let fits = count.checked_mul(size).is_some_and(|len| len <= inline);
             let value_at = if fits {
                 field
@@ -273,12 +279,27 @@ impl<'a> File<'a> {
     }
 
     /// SubIFD offsets of a directory (tag 330 as LONG, IFD, LONG8 or IFD8).
-    fn sub_ifds(&self, ifd: &Ifd) -> Vec<u64> {
-        let Some(e) = ifd.get(TAG_SUB_IFDS) else { return Vec::new() };
-        if !matches!(e.ty, 4 | 13 | 16 | 18) {
-            return Vec::new();
+    fn sub_ifds(&self, ifd: &Ifd) -> (Vec<u64>, bool) {
+        let mut entries = ifd.entries.iter().filter(|e| e.tag == TAG_SUB_IFDS);
+        let Some(e) = entries.next() else { return (Vec::new(), true) };
+        let mut complete = entries.next().is_none() && e.count <= MAX_SUBIFDS;
+        if e.count == 0 {
+            return (Vec::new(), complete);
         }
-        (0..e.count.min(MAX_SUBIFDS)).map_while(|i| self.uint(e, i)).filter(|&o| o != 0).collect()
+        if !matches!(e.ty, 4 | 13 | 16 | 18) {
+            return (Vec::new(), false);
+        }
+        let mut children = Vec::new();
+        for i in 0..e.count.min(MAX_SUBIFDS) {
+            let Some(at) = self.uint(e, i) else {
+                complete = false;
+                break;
+            };
+            if at != 0 {
+                children.push(at);
+            }
+        }
+        (children, complete)
     }
 }
 
@@ -338,8 +359,8 @@ pub struct TiffInfo {
     pub little_endian: bool,
     /// Main-chain directories in file order, each followed by its SubIFDs (depth first).
     pub pages: Vec<TiffPage>,
-    /// `false` when the walk stopped early: an unreadable directory, a cycle, or more than
-    /// 10 000 directories. The pages listed up to that point are still valid.
+    /// `false` for unreadable directories or child lists, cycles, or directory/depth/count limits.
+    /// The pages listed up to that point are still valid.
     pub complete: bool,
 }
 
@@ -422,10 +443,14 @@ impl Walk<'_, '_> {
             };
             let index = self.pages.len();
             self.pages.push(describe(self.f, &ifd, parent));
+            let (children, complete) = self.f.sub_ifds(&ifd);
+            self.complete &= complete;
             if depth < MAX_SUB_DEPTH {
-                for sub in self.f.sub_ifds(&ifd) {
+                for sub in children {
                     self.chain(sub, Some(index), depth + 1);
                 }
+            } else if !children.is_empty() {
+                self.complete = false;
             }
             at = ifd.next;
         }

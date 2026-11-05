@@ -106,15 +106,15 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
             let Some(action) = crate::actions::selected_action(app) else {
                 return Some(Err("record an action in the Actions panel first".into()));
             };
-            let steps = crate::actions::action_steps(action);
-            let name = action.name.clone();
-            form(
-                app,
-                id,
-                tl!("Create Droplet"),
-                json!({"path": format!("{dir}/{name}.pcdroplet"), "name": name, "steps": steps, "output": format!("{dir}/droplet-output"), "format": "same"}),
-                json!({"format": ["same", "png", "jpg", "psd", "tiff"]}),
-            )
+            let (name, set) = (action.name.clone(), action.set.clone());
+            let (names, sets) = crate::actions::action_form_choices(app);
+            let mut fields =
+                json!({"path": format!("{dir}/{name}.pcdroplet"), "name": name, "action": name, "output": format!("{dir}/droplet-output"), "format": "same"});
+            // The Set dropdown picks between same-named actions; an action outside any set has none.
+            if let Some(set) = set {
+                fields["set"] = json!(set);
+            }
+            form(app, id, tl!("Create Droplet"), fields, json!({"set": sets, "action": names, "format": ["same", "png", "jpg", "psd", "tiff"]}))
         }
         "file.scripts.statistics" => json!({"dialog": crate::stack_dialog::open_statistics(app)}),
         "file.scripts.browse" => {

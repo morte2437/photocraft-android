@@ -4196,6 +4196,8 @@ navigator	Zoom	Zoom
 	Step {step} is waiting for its dialog	El paso {step} está esperando su cuadro de diálogo
 @plural	{n} action|{n} actions	{n} acción|{n} acciones
 	Background (Default)	Fondo (predeterminado)
+	Background (default)	Fondo (predeterminado)
+	Transparent (default)	Transparente (predeterminado)
 	Include All Subfolders	Incluir todas las subcarpetas
 	Auto Add/Delete	Añadir/eliminar automáticamente
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	No actives también Imagen especular en Ajustes de impresión: las dos inversiones se anulan.
@@ -4434,6 +4436,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Color de la parada
 	Shapes can't use patterns yet	Las formas aún no pueden usar motivos
 	Edit Brush…	Editar pincel…
+
+# Action Stop message (#8386)
+	Message	Mensaje
+# Playback Options (#5212)
+	Playback Options…	Opciones de reproducción…
+	Playback Options	Opciones de reproducción
+	Accelerated	Acelerada
+	Step by Step	Paso a paso
+	Pause For:	Pausa de:
+	Pause For	Pausa de
+	seconds	segundos
+	Create a single history state	Crear un solo estado de historia
 	Drag to move the active shape's path or the Work Path	Arrastre para mover el trazado de la forma activa o el trazado de trabajo
 	Generator enabled	Generador activado
 	This Layer:	Esta capa:

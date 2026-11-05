@@ -3246,6 +3246,8 @@ curves	Smooth	Сгладить
 	Step {step} is waiting for its dialog	Шаг {step} ожидает своего диалога
 @plural	{n} action|{n} actions	{n} операция|{n} операции|{n} операций
 	Background (Default)	Фон (по умолчанию)
+	Background (default)	Фон (по умолчанию)
+	Transparent (default)	Прозрачный (по умолчанию)
 	Content-Aware Fill	Заливка с учётом содержимого
 	Include All Subfolders	Включить все вложенные папки
 	Auto Add/Delete	Автодобавление/удаление
@@ -4719,6 +4721,18 @@ shape	Appearance	Оформление
 	Stop Color	Цвет контрольной точки
 	Shapes can't use patterns yet	Фигуры пока не могут использовать узоры
 	Edit Brush…	Изменить кисть…
+
+# Action Stop message (#8386)
+	Message	Сообщение
+# Playback Options (#5212)
+	Playback Options…	Параметры воспроизведения…
+	Playback Options	Параметры воспроизведения
+	Accelerated	Ускоренное
+	Step by Step	Пошаговое
+	Pause For:	Пауза на:
+	Pause For	Пауза на
+	seconds	с
+	Create a single history state	Создавать одно состояние истории
 	Drag to move the active shape's path or the Work Path	Перетащите, чтобы переместить контур активной фигуры или рабочий контур
 	Generator enabled	Генератор включён
 	Hidden	Скрыто

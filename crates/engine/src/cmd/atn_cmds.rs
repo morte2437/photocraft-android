@@ -34,6 +34,8 @@ mod fields;
 mod files;
 
 mod steps_artboard;
+mod steps_batch;
+mod steps_calculations;
 mod steps_channels;
 mod steps_content_aware;
 mod steps_direct_adjustments;
@@ -44,14 +46,15 @@ mod steps_gradient;
 mod steps_image;
 mod steps_layer;
 mod steps_layer_style;
+mod steps_lookup;
 mod steps_make;
 mod steps_type_path;
-
-mod steps_stylize;
 
 mod steps_other;
 mod steps_render;
 mod steps_selection;
+mod steps_shape_blur;
+mod steps_stylize;
 mod tables;
 
 #[cfg(test)]

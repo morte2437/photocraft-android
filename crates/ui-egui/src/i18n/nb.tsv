@@ -3199,6 +3199,8 @@ curves	Smooth	Jevn ut
 	Step {step} is waiting for its dialog	Trinn {step} venter på dialogen sin
 @plural	{n} action|{n} actions	{n} handling|{n} handlinger
 	Background (Default)	Bakgrunn (standard)
+	Background (default)	Bakgrunn (standard)
+	Transparent (default)	Gjennomsiktig (standard)
 	Content-Aware Fill	Innholdsbasert fyll
 # Batch / Image Processor
 	Include All Subfolders	Ta med alle undermapper
@@ -4773,3 +4775,15 @@ cameraRaw	White Balance: As Shot	Hvitbalanse: som fotografert
 	The path was discarded	Banen ble forkastet
 	The path was kept as the Work Path	Banen ble beholdt som arbeidsbane
 	Edit Brush…	Rediger pensel…
+
+# Action Stop message (#8386)
+	Message	Melding
+# Playback Options (#5212)
+	Playback Options…	Avspillingsalternativer…
+	Playback Options	Avspillingsalternativer
+	Accelerated	Akselerert
+	Step by Step	Trinn for trinn
+	Pause For:	Pause i:
+	Pause For	Pause i
+	seconds	sekunder
+	Create a single history state	Opprett én historikktilstand

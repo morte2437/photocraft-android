@@ -4042,6 +4042,8 @@ curves	Smooth	Vloeiend maken
 	Step {step} is waiting for its dialog	Stap {step} wacht op zijn dialoogvenster
 @plural	{n} action|{n} actions	{n} handeling|{n} handelingen
 	Background (Default)	Achtergrond (standaard)
+	Background (default)	Achtergrond (standaard)
+	Transparent (default)	Transparant (standaard)
 	Include All Subfolders	Alle submappen opnemen
 	Auto Add/Delete	Automatisch toevoegen/verwijderen
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Schakel niet ook Spiegelbeeld in bij de afdrukinstellingen: de twee spiegelingen heffen elkaar op.
@@ -4279,6 +4281,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Kleur van het punt
 	Shapes can't use patterns yet	Vormen kunnen nog geen patronen gebruiken
 	Edit Brush…	Penseel bewerken…
+
+# Action Stop message (#8386)
+	Message	Bericht
+# Playback Options (#5212)
+	Playback Options…	Afspeelopties…
+	Playback Options	Afspeelopties
+	Accelerated	Versneld
+	Step by Step	Stap voor stap
+	Pause For:	Pauzeren gedurende:
+	Pause For	Pauzeren gedurende
+	seconds	seconden
+	Create a single history state	Eén historiestatus maken
 	Generator enabled	Generator ingeschakeld
 	Move Up	Omhoog
 	Move Down	Omlaag

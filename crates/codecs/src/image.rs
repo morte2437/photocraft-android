@@ -349,6 +349,10 @@ pub struct ExrPartInfo {
     pub view: Option<String>,
     pub width: u32,
     pub height: u32,
+    /// Absolute data-window bounds: x, y, width and height.
+    pub data_window: (i32, i32, u32, u32),
+    /// Absolute display-window bounds: x, y, width and height.
+    pub display_window: (i32, i32, u32, u32),
     /// True for `deepscanline`/`deeptile` parts; those are composited by the deep
     /// decoder ([`crate::decode_deep_exr`]), not decoded part by part.
     pub deep: bool,

@@ -3294,6 +3294,8 @@ curves	Smooth	Haluskan
 	Step {step} is waiting for its dialog	Langkah {step} menunggu dialognya
 @plural	{n} action|{n} actions	{n} tindakan
 	Background (Default)	Background (Default)
+	Background (default)	Background (Default)
+	Transparent (default)	Transparan (bawaan)
 	Content-Aware Fill	Isi Content-Aware
 	Include All Subfolders	Sertakan semua subfolder
 	Auto Add/Delete	Tambah/Hapus Otomatis
@@ -3545,6 +3547,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Solid Color	Warna Solid
 	Tint Color	Warna Tint
 	Edit Brush…	Edit Kuas…
+
+# Action Stop message (#8386)
+	Message	Pesan
+# Playback Options (#5212)
+	Playback Options…	Opsi pemutaran…
+	Playback Options	Opsi pemutaran
+	Accelerated	Dipercepat
+	Step by Step	Langkah demi langkah
+	Pause For:	Jeda selama:
+	Pause For	Jeda selama
+	seconds	detik
+	Create a single history state	Buat satu status riwayat
 	Generator enabled	Generator aktif
 	Move Up	Pindah ke atas
 	Move Down	Pindah ke bawah

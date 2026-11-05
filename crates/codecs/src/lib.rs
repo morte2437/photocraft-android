@@ -215,6 +215,38 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
     crate::codecs::webp::is_animated(bytes)
 }
 
+/// Inspect declared source data which a flat decode and save cannot retain: additional frames,
+/// TIFF pages, masks or unretained channels, ICO entries, DDS mip levels, slices, faces or arrays,
+/// DPX elements and FITS HDU payloads.
+/// Pixels are not decoded; derived TIFF thumbnails do not require preservation here.
+/// Other formats return false; this does not establish preservation of other format-specific data.
+pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {
+    match detect(bytes) {
+        Some(Format::Gif) => via_image::gif_has_more_frames(bytes).ok_or_else(|| CodecError::malformed(Format::Gif, "cannot inspect every frame")),
+        Some(Format::Png) => png::has_additional_images(bytes),
+        Some(Format::WebP) => Ok(webp_is_animated(bytes)),
+        Some(Format::Tiff) => {
+            let info = tiff_info(bytes)?;
+            if !info.complete {
+                return Err(CodecError::malformed(Format::Tiff, "cannot inspect every source image directory"));
+            }
+            let retained = info.default_page();
+            if info.pages.iter().enumerate().any(|(index, page)| Some(index) != retained && page.kind != TiffPageKind::ReducedResolution) {
+                return Ok(true);
+            }
+            retained.and_then(|index| info.pages.get(index)).map_or(Ok(false), |page| tiff::has_unretained_samples(bytes, page.ifd_offset))
+        }
+        Some(Format::Ico) => {
+            let count = bytes.get(4..6).and_then(|b| <[u8; 2]>::try_from(b).ok()).ok_or_else(|| CodecError::malformed(Format::Ico, "truncated image count"))?;
+            Ok(u16::from_le_bytes(count) > 1)
+        }
+        Some(Format::Dds) => dds::has_additional_images(bytes),
+        Some(Format::Dpx) => dpx::has_additional_images(bytes),
+        Some(Format::Fits) => fits::has_additional_images(bytes),
+        _ => Ok(false),
+    }
+}
+
 /// The Orientation (1–8) of the page [`decode`] opens from a TIFF or BigTIFF file; 1 when it is
 /// absent, malformed or out of range.
 pub fn tiff_orientation(bytes: &[u8]) -> u16 {

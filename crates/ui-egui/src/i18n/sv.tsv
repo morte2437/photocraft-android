@@ -3197,6 +3197,8 @@ curves	Smooth	Jämna ut
 	Step {step} is waiting for its dialog	Steg {step} väntar på sin dialogruta
 @plural	{n} action|{n} actions	{n} åtgärd|{n} åtgärder
 	Background (Default)	Bakgrund (standard)
+	Background (default)	Bakgrund (standard)
+	Transparent (default)	Genomskinlig (standard)
 	Content-Aware Fill	Innehållsmedveten fyllning
 # Batch / Image Processor
 	Include All Subfolders	Ta med alla undermappar
@@ -4771,3 +4773,15 @@ cameraRaw	White Balance: As Shot	Vitbalans: som tagen
 	The path was discarded	Banan kasserades
 	The path was kept as the Work Path	Banan behölls som arbetsbana
 	Edit Brush…	Redigera pensel…
+
+# Action Stop message (#8386)
+	Message	Meddelande
+# Playback Options (#5212)
+	Playback Options…	Uppspelningsalternativ…
+	Playback Options	Uppspelningsalternativ
+	Accelerated	Accelererad
+	Step by Step	Steg för steg
+	Pause For:	Paus i:
+	Pause For	Paus i
+	seconds	sekunder
+	Create a single history state	Skapa ett enda historikläge

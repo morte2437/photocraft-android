@@ -214,12 +214,15 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         painter.rect_filled(r, 0.0, Color32::WHITE);
         painter.rect_stroke(r, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Inside);
     }
-    // Reference point (Photoshop's crosshair circle).
-    let c = scr(t.pivot);
-    painter.circle_stroke(c, 5.0, Stroke::new(1.0, Color32::WHITE));
-    painter.circle_stroke(c, 5.0, Stroke::new(0.5, Color32::BLACK));
-    painter.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::WHITE));
-    painter.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::WHITE));
+    // Reference point (Photoshop's crosshair circle): only with Toggle Reference Point on, or
+    // while an ⌥-click is dragging it (#11098).
+    if app.ui.tool_options.transform_reference_point || pv.gesture.is_some_and(|g| g.hit == Hit::Pivot) {
+        let c = scr(t.pivot);
+        painter.circle_stroke(c, 5.0, Stroke::new(1.0, Color32::WHITE));
+        painter.circle_stroke(c, 5.0, Stroke::new(0.5, Color32::BLACK));
+        painter.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], Stroke::new(1.0, Color32::WHITE));
+        painter.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::WHITE));
+    }
     if let Some(at) = painter.ctx().pointer_hover_pos().filter(|p| xf.rect.contains(*p)) {
         let p = xf.to_doc(at);
         let tol = HANDLE_PX / f64::from(xf.zoom.max(0.01));
@@ -241,6 +244,13 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
 /// path, Content-Aware Scale or a type layer's Warp Text, which leave the selection alone.
 fn carries_selection(app: &PhotocraftApp, t: &TransformSession) -> bool {
     !t.selection && !crate::frame_tool::frame_transform(t) && t.path.is_none() && t.content_aware.is_none() && !(t.warp.is_some() && warps_type(app))
+}
+
+/// Applying the open box moves the selection outline: Transform Selection's own box, or a box
+/// that [carries the selection along](carries_selection). A path, Content-Aware Scale or Warp Text
+/// leaves it where it is, so its edges stay snap targets.
+pub(crate) fn moves_selection(app: &PhotocraftApp, t: &TransformSession) -> bool {
+    t.selection || carries_selection(app, t)
 }
 
 /// A transform of `document` is open that carries its selection along (#5297): the canvas traces

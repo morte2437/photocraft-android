@@ -2939,6 +2939,8 @@ curves	Smooth	平滑
 	Step {step} is waiting for its dialog	步骤 {step} 正在等待其对话框
 @plural	{n} action|{n} actions	{n} 个动作
 	Background (Default)	背景（默认）
+	Background (default)	背景（默认）
+	Transparent (default)	透明（默认）
 	Content-Aware Fill	内容识别填充
 	Include All Subfolders	包含所有子文件夹
 	Auto Add/Delete	自动添加/删除
@@ -3061,6 +3063,7 @@ curves	Smooth	平滑
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} 由系统保留，无法指定。
 	Low-Latency Drawing (vsync off, applies at next launch)	低延迟绘画（关闭垂直同步，下次启动时生效）
 	Reference point location	参考点位置
+	Toggle reference point	切换参考点
 	Free Transform is still being applied; try again when it has finished.	自由变换仍在应用中；请在完成后重试。
 	The transform couldn't be applied.	无法应用变换。
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	其图层需要 {needed} GPU 内存；预算只留给它们 {budget}。
@@ -3207,6 +3210,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Solid Color	纯色
 	Tint Color	色调颜色
 	Edit Brush…	编辑画笔…
+
+# Action Stop message (#8386)
+	Message	信息
+# Playback Options (#5212)
+	Playback Options…	回放选项…
+	Playback Options	回放选项
+	Accelerated	加速
+	Step by Step	逐步
+	Pause For:	暂停：
+	Pause For	暂停
+	seconds	秒
+	Create a single history state	创建单个历史记录状态
 	Drag to move the active shape's path or the Work Path	拖动以移动当前形状的路径或工作路径
 	Generator enabled	启用生成器
 	Move Up	上移

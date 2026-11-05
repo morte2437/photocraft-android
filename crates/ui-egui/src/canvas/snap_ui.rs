@@ -39,6 +39,9 @@ pub enum Gesture {
     /// Default crop mode, a drag inside an upright box: the image moves under it, so the frame
     /// moves the other way over the document and its edges and centre snap ([`crop_image`]).
     CropImage,
+    /// The Free Transform reference point: snaps only to the box's corners, edge midpoints and
+    /// centre (as placed when the drag began, however the box is turned).
+    Pivot { anchors: [[f64; 2]; 9] },
 }
 
 /// Snapping state of the drag in progress.
@@ -157,25 +160,10 @@ fn quad_rect(q: &[[f64; 2]; 4]) -> [f64; 4] {
     [xs.clone().fold(f64::MAX, f64::min), ys.clone().fold(f64::MAX, f64::min), xs.fold(f64::MIN, f64::max), ys.fold(f64::MIN, f64::max)]
 }
 
-/// Is `p` inside the quad (even-odd)?
-fn in_quad(q: &[[f64; 2]; 4], p: [f64; 2]) -> bool {
-    let mut inside = false;
-    for i in 0..4 {
-        let (a, b) = (q[i], q[(i + 3) % 4]);
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
-/// Near a Free Transform corner or edge handle (within its grab radius)?
-fn near_handle(q: &[[f64; 2]; 4], p: [f64; 2], tol: f64) -> bool {
-    (0..4).any(|i| {
-        let (a, b) = (q[i], q[(i + 1) % 4]);
-        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
-        [a, mid].iter().any(|h| (h[0] - p[0]).hypot(h[1] - p[1]) <= tol)
-    })
+/// The nine reference point locations of a Free Transform box: corners, edge midpoints, centre.
+fn box_anchors(q: &[[f64; 2]; 4]) -> [[f64; 2]; 9] {
+    let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    [q[0], q[1], q[2], q[3], mid(q[0], q[1]), mid(q[1], q[2]), mid(q[2], q[3]), mid(q[3], q[0]), mid(mid(q[0], q[2]), mid(q[1], q[3]))]
 }
 
 /// Photoshop: holding Ctrl (Windows) / Control (macOS) *during* a drag temporarily turns snapping
@@ -215,20 +203,28 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
     let moves_layer = crate::canvas::command_moves_layer(app, tool, p, mods);
     let crop_tol = crate::crop_ui::tolerance(app);
     let gesture = if let Some(t) = &app.ui.transform {
-        let corner = match crate::transform_tool::hit(t, p, crate::transform_tool::handle_tolerance(app)) {
-            crate::transform_tool::Hit::Corner(index) => {
-                t.quad.get(index).map(|&point| (Gesture::TransformCorner { index, point }, crate::transform_tool::moving_layers(t)))
-            }
+        use crate::transform_tool::Hit;
+        let h = crate::transform_tool::box_hit(app, t, p, crate::transform_tool::handle_tolerance(app));
+        let corner = match h {
+            Hit::Corner(index) => t.quad.get(index).map(|&point| (Gesture::TransformCorner { index, point }, crate::transform_tool::moving_layers(t))),
             _ => None,
         };
+        let pivot = || Some((Gesture::Pivot { anchors: box_anchors(&t.quad) }, crate::transform_tool::moving_layers(t)));
         if t.mode == crate::state::TransformMode::Distort {
             corner
-        } else if near_handle(&t.quad, p, crate::transform_tool::handle_tolerance(app)) {
-            corner.or_else(|| Some((Gesture::Point, crate::transform_tool::moving_layers(t))))
-        } else if in_quad(&t.quad, p) {
-            Some((Gesture::TransformMove { rect: quad_rect(&t.quad) }, crate::transform_tool::moving_layers(t)))
         } else {
-            None
+            // Classify the press as `transform_tool::pointer` does: a handle or the reference point
+            // (dragged, or Alt-pressed anywhere off the handles) snaps itself; only a press inside
+            // the box moves it and snaps its bounds. Snapping the box's bounds while the reference
+            // point was dragged held the point still and drew lines at edges the box never reached.
+            match h {
+                Hit::Corner(_) => corner,
+                Hit::Edge(_) => Some((Gesture::Point, crate::transform_tool::moving_layers(t))),
+                Hit::Pivot => pivot(),
+                Hit::Inside | Hit::Outside if mods.alt => pivot(),
+                Hit::Inside => Some((Gesture::TransformMove { rect: quad_rect(&t.quad) }, crate::transform_tool::moving_layers(t))),
+                Hit::Outside => None,
+            }
         }
     } else if tool == Tool::Move && crate::rulers::guide_at(app, p[0], p[1]).is_some() {
         Some((Gesture::Guide, Vec::new()))
@@ -279,7 +275,7 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         None
     };
     let Some((gesture, exclude)) = gesture else { return };
-    let mut targets = if snap_on(app) { build(app, &exclude, false) } else { SnapTargets::default() };
+    let mut targets = if snap_on(app) && !matches!(gesture, Gesture::Pivot { .. }) { build(app, &exclude, false) } else { SnapTargets::default() };
     if app.ui.transform.as_ref().is_some_and(|t| t.mode == crate::state::TransformMode::Distort) {
         // Explicit Distort fits corners to guides; preserve free placement near layer edges.
         targets = targets.filtered(|k| k == SnapKind::Guide);
@@ -288,8 +284,12 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         // A guide never snaps to itself (or other guides).
         targets = targets.filtered(|k| k != SnapKind::Guide);
     }
-    if matches!(gesture, Gesture::SelectionMove { .. }) || (matches!(gesture, Gesture::Move { .. }) && crate::move_ui::moves_selected_pixels_with(app, tool)) {
-        // A moving selection never snaps back to where it started.
+    if matches!(gesture, Gesture::SelectionMove { .. })
+        || (matches!(gesture, Gesture::TransformMove { .. }) && app.ui.transform.as_ref().is_some_and(|t| crate::transform_tool::moves_selection(app, t)))
+        || (matches!(gesture, Gesture::Move { .. }) && crate::move_ui::moves_selected_pixels_with(app, tool))
+    {
+        // A moving selection, or a transform that takes the selection along, never snaps back to
+        // where it started. A path's box leaves the selection put: its edges stay targets.
         targets = targets.filtered(|k| k != SnapKind::Selection);
     }
     let smart = if snap_on(app) && matches!(gesture, Gesture::Move { .. } | Gesture::CropImage) && smart_on(app) {
@@ -324,6 +324,16 @@ fn pixel_round(app: &PhotocraftApp, p: [f64; 2]) -> [f64; 2] {
 fn apply(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64; 2] {
     let tol = tolerance(app);
     let Some(snap) = app.prefs_rt.snap.as_ref() else { return p };
+    if let Gesture::Pivot { anchors } = &snap.gesture {
+        // The reference point's own pull, as in the reference application: to the box's nine
+        // points only (not to guides, layers or the canvas), with View > Snap off or Ctrl held too.
+        let nearest = anchors.iter().map(|a| ((a[0] - p[0]).hypot(a[1] - p[1]), *a)).min_by(|a, b| a.0.total_cmp(&b.0));
+        app.prefs_rt.snap_lines.clear();
+        return match nearest {
+            Some((d, a)) if d <= tol => a,
+            _ => p,
+        };
+    }
     if !snap_on(app) || snap.disabled {
         app.prefs_rt.snap_lines.clear();
         return p;
@@ -337,6 +347,8 @@ fn apply(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) -> [f64; 2
         }
         Gesture::TransformCorner { .. } => snap.targets.snap_point(p, tol),
         Gesture::Guide => snap.targets.snap_point(p, tol),
+        // Handled above.
+        Gesture::Pivot { .. } => (p, Vec::new()),
         Gesture::Move { rect } | Gesture::TransformMove { rect } | Gesture::SelectionMove { rect } | Gesture::DrawMove { rect } => {
             let d = [p[0] - snap.start[0], p[1] - snap.start[1]];
             let moved = [rect[0] + d[0], rect[1] + d[1], rect[2] + d[0], rect[3] + d[1]];

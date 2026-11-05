@@ -28,12 +28,17 @@ fn a_plain_click_far_outside_accepts_transform_but_a_rotation_drag_does_not() {
     let before = app.session.active().unwrap().history.past_len();
     let t = app.ui.transform.as_mut().unwrap();
     t.quad = t.quad.map(|[x, y]| [x + 6.0, y]);
-    let outside = [44.0, 44.0];
+    // A click outside the box on the image keeps it open; only the pasteboard commits (#11100).
     let none = egui::Modifiers::NONE;
+    let on_image = [44.0, 44.0];
+    assert!(pointer(&mut app, ToolEvent::Down { x: on_image[0], y: on_image[1], pressure: 1.0 }, none));
+    assert!(pointer(&mut app, ToolEvent::Up { x: on_image[0], y: on_image[1] }, none));
+    assert!(app.ui.transform.is_some(), "a click on the image does not commit");
+    let outside = [-12.0, 44.0];
     assert!(pointer(&mut app, ToolEvent::Down { x: outside[0], y: outside[1], pressure: 1.0 }, none));
     assert!(app.ui.transform.is_some(), "press alone does not accept");
     assert!(pointer(&mut app, ToolEvent::Up { x: outside[0], y: outside[1] }, none));
-    assert!(app.ui.transform.is_none(), "a release without a drag commits");
+    assert!(app.ui.transform.is_none(), "a release without a drag on the pasteboard commits");
     assert_eq!(app.session.active().unwrap().history.past_len(), before + 1, "one undo step for the transform");
     let st = app.session.active().unwrap();
     let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
@@ -612,20 +617,23 @@ fn another_tool_or_layer_applies_a_transform_committed_in_the_background() {
 }
 
 /// #5667: New Layer while a dropped file is in Free Transform applies the transform first. When
-/// the commit runs in the background the command is refused until it has landed, then runs: the
-/// place (which takes the move into its step) and the new layer each stay their own step, in
-/// that order.
+/// the commit runs in the background a click waits for it to land, then runs (#9974): the place
+/// (which takes the move into its step) and the new layer each stay their own step, in that
+/// order. A script is refused instead, as it needs an answer now.
 #[test]
 fn new_layer_applies_the_open_transform() {
+    let (mut script, ..) = moved_place();
+    script.automation_input = true;
+    let err = script.run("layer.new.layer", json!({})).unwrap_err();
+    assert!(err.contains("Free Transform is still being applied"), "a script is refused while the commit runs: {err}");
+
     let (mut app, placed, frame, steps) = moved_place();
     let layers = app.session.active().unwrap().doc.layers.len();
-    let err = app.run("layer.new.layer", json!({})).unwrap_err();
-    assert!(err.contains("Free Transform is still being applied"), "refused while the commit runs: {err}");
+    app.run("layer.new.layer", json!({})).unwrap();
     assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "no layer yet");
     land_jobs(&mut app);
     assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "the box ended");
     assert_eq!(frame_of(&app, placed), Some(frame.translate(8, 0)), "applied as it showed, not the original");
-    app.run("layer.new.layer", json!({})).unwrap();
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.layers.len(), layers + 1);
     assert_eq!(st.history.past_len(), steps + 2, "the place with its move, then New Layer");
@@ -633,6 +641,26 @@ fn new_layer_applies_the_open_transform() {
     app.session.undo();
     assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "one undo takes back the new layer");
     assert_eq!(frame_of(&app, placed), Some(frame.translate(8, 0)), "the transform stays");
+}
+
+/// #9974: only a click waits for the commit. A control request (authorized, not automation
+/// input) needs its answer now, and a second click while one waits is refused, not queued.
+#[test]
+fn only_one_click_waits_for_the_commit() {
+    let (mut control, ..) = moved_place();
+    control.session.authorize = Some(|_, _| Ok(()));
+    let layers = control.session.active().unwrap().doc.layers.len();
+    let err = control.run("layer.new.layer", json!({})).unwrap_err();
+    assert!(err.contains("Free Transform is still being applied"), "a control request is refused: {err}");
+    land_jobs(&mut control);
+    assert_eq!(control.session.active().unwrap().doc.layers.len(), layers, "and nothing runs later");
+
+    let (mut app, ..) = moved_place();
+    let layers = app.session.active().unwrap().doc.layers.len();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert!(app.run("layer.new.layer", json!({})).is_err(), "a second click is refused");
+    land_jobs(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the waiting click ran once");
 }
 
 /// #5665, the report's second case through the UI with background jobs on, as in the desktop
@@ -774,6 +802,11 @@ fn the_nearest_handle_wins_on_a_small_box() {
     assert_eq!(hit(&s, [8.0, -1.0], 12.0), Hit::Edge(0));
     assert_eq!(hit(&s, [8.0, 8.0], 12.0), Hit::Pivot);
     assert_eq!(hit(&s, [40.0, 40.0], 12.0), Hit::Outside);
+    // A reference point on a handle wins the press, as in the reference application (#5153).
+    s.pivot = [0.0, 0.0];
+    assert_eq!(hit(&s, [0.0, 0.0], 12.0), Hit::Pivot);
+    assert_eq!(hit(&s, [1.0, 1.0], 12.0), Hit::Pivot);
+    assert_eq!(hit(&s, [16.0, 17.0], 12.0), Hit::Corner(2));
 }
 
 #[test]
@@ -3629,4 +3662,23 @@ fn several_layers_reuse_the_transform_interpolation_preference() {
     let transform = app.ui.transform.as_ref().unwrap();
     assert_eq!(transform.layers.len(), 2);
     assert_eq!(transform.interpolation, "nearest");
+}
+
+/// #9974: the click waiting for the commit acts on the layer selected when it was made: no other
+/// layer can be picked while the commit runs (the engine refuses document commands meanwhile).
+#[test]
+fn a_waiting_new_layer_click_keeps_the_layer_it_was_made_on() {
+    let (mut app, placed, ..) = moved_place();
+    let below = app.session.active().unwrap().doc.layers.iter().map(|l| l.id).find(|id| *id != placed).unwrap();
+    let before: Vec<_> = app.session.active().unwrap().doc.layers.iter().map(|l| l.id).collect();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let err = app.run("layer.select", json!({"layer": below.0})).unwrap_err();
+    assert!(err.contains("still running"), "{err}");
+    land_jobs(&mut app);
+    let st = app.session.active().unwrap();
+    let order: Vec<_> = st.doc.layers.iter().map(|l| l.id).collect();
+    let new = *order.iter().find(|id| !before.contains(id)).expect("the new layer");
+    let at = |id| order.iter().position(|l| *l == id).unwrap();
+    assert_eq!(at(new), at(placed) + 1, "the new layer sits right above the layer selected at the click: {order:?}");
+    assert_eq!(st.active_layer, Some(new));
 }

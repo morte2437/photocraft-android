@@ -26,24 +26,26 @@ mod info;
 mod open;
 mod paths;
 mod processing;
+mod raw_open;
 mod save;
 
 pub use batch_naming::plan as plan_batch_names;
-#[cfg(test)]
-pub(crate) use batch_run::MAX_SUBFOLDER_DEPTH;
 use batch_run::batch;
 pub use batch_run::same_format as batch_same_format;
 use batch_run::same_format;
 #[cfg(not(target_arch = "wasm32"))]
 pub use batch_run::validate_flat_outputs;
 pub use batch_run::{BatchInput, OutputClaims, encode_batch_error_log, list_images_tree};
-pub(crate) use batch_run::{batch_inputs, batch_keeps_step, batch_save_point, process_files};
+#[cfg(test)]
+pub(crate) use batch_run::{MAX_SUBFOLDER_DEPTH, list_files_tree};
+pub(crate) use batch_run::{batch_action, batch_inputs, batch_keeps_step, batch_save_point, process_files};
 pub use export::{LayerExportReport, SkippedExportLayer, bake_cube, export_layers_report_with, export_layers_with};
 use export::{color_lookup_tables, layers_to_files, push_unique};
 use info::file_info;
 pub use info::{CAMERA_FIELDS, camera_data, read_file_info, write_file_info};
 #[cfg(test)]
 use info::{exposure_text, find_element};
+pub(crate) use open::{BatchOpen, batch_open_notice, batch_open_params, remember_batch_open};
 pub use open::{PLACE_EMBEDDED, open_bytes_as, open_bytes_as_with_options, place_bytes, raw_defaults};
 use open::{approve_memory, close_all, close_others, open_as, place, revert};
 pub(crate) use open::{import, import_with_options, tag_exr_colorspace};
@@ -64,6 +66,7 @@ pub use save::{
 };
 
 mod batch_naming;
+pub(crate) use batch_naming::COMPONENTS as BATCH_NAMING_COMPONENTS;
 
 // ---------- predicates ----------
 
@@ -337,7 +340,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; Save/Save As marks the result),"source":"folder|open"="folder" (open: run on live open documents),"input":folder|[paths] (folder source),"includeSubfolders":bool=false (up to 32 levels and 100000 files, outputs are flat under output),"output":folder (optional for open source),"format":"same|png|jpg|psd|tiff|…"="same","naming":string? (tokens: {name}/{NAME}/{Name}, {serial}/{serial:1..4}, {letter}/{LETTER}, {date} and date formats, {ext}/{EXT}; the naming template determines the whole filename),"startingSerial":1..4294967295=1,"stopOnError":bool=false,"errorLog":path? (blank disables it),"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"calledActions":[{"name","steps"}…]?} → {files, errors, stopped?, skipped?, errorLog?, documents?} (folder batches report per-file job progress and support cancellation)"##,
+            r##"{"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"set":str? (for a named action),"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; a Save, Save As or Save a Copy step marks the document written to output, in this command's format and options: as the save found it if it was closed or another document is active at the end, else as the action leaves it; with no such step, the active document at the end),"source":"folder|open"="folder" (open runs on live documents),"input":folder|[paths] (folder source),"errorLog":path? (blank disables it),"suppressOpenOptions":bool=false (use caller RAW defaults and fully supported prior XMP without a dialog; unsupported prior settings or unanswerable profile questions fail the input),"suppressWarnings":bool=false (apply caller opening policy without profile questions; import diagnostics remain in notices),"overrideOpen":bool=false (execute action Open steps with the current input path, retaining other Open options; without an executed Open the input fails),"includeNonImages":bool=false (folder inputs report unsupported files as per-file errors instead of skipping them; arrays are unchanged),"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; ordinary outputs are flat; namingComponents can retain subfolders when flatOutput is false),"destination":"folder|saveAndClose"="folder" (Save and Close writes the same source path/format; rejects already-open sources and changed result document identity),"output":folder? (required only for folder; omit for Save and Close),"format":"same|png|jpg|psd|tiff|…"="same" (Save and Close requires same),"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"namingComponents":[{"component":choice}|{"text":str}]? (up to six; the exact filename, with no automatic extension),"compatibility":{"macintosh":bool,"windows":bool,"unix":bool}?,"flatOutput":bool=false (structured naming only; put every result directly under output, dropping its subfolder path; duplicate output names make later results error entries),"overrideSaveAs":bool? (recorded routing; requires a directly represented Save configuration),"stopOnError":bool=false (report the first failed input and stop; earlier outputs remain saved),"naming":string? (blank keeps source names; {name}/{NAME}/{Name}, {serial}/{serial:1..4}, {letter}/{LETTER}, {date} and date formats, {ext}/{EXT}; template determines the whole filename),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool? (Folder default false; Save and Close default true, with false refused when TIFF layer data would be lost),"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"calledActions":[{"name","steps"}…]? (internal action references; default: the session's; a named source is selected from the caller)} → {files, errors, stopped?, skipped?, errorLog?, documents?} (structured naming, includeNonImages and Save and Close refuse duplicate results; ordinary native templates keep the later result)"##,
             native,
             batch
         ),

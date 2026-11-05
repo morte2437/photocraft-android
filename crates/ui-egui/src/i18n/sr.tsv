@@ -3862,6 +3862,8 @@ layerLabel	No Color	Bez boje
 	Color Table	Tabela boja
 	Conditional Mode Change	Uslovna promena režima
 	Background (Default)	Pozadina (podrazumevano)
+	Background (default)	Pozadina (podrazumevano)
+	Transparent (default)	Providno (podrazumevano)
 	Content-Aware Fill	Popuna prema sadržaju
 	Convert to Linked	Pretvori u povezani
 	Convert to Profile	Pretvori u profil
@@ -4601,6 +4603,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Boja tačke
 	Shapes can't use patterns yet	Oblici još ne mogu da koriste šare
 	Edit Brush…	Uredi četkicu…
+
+# Action Stop message (#8386)
+	Message	Poruka
+# Playback Options (#5212)
+	Playback Options…	Opcije reprodukcije…
+	Playback Options	Opcije reprodukcije
+	Accelerated	Ubrzano
+	Step by Step	Korak po korak
+	Pause For:	Pauza od:
+	Pause For	Pauza od
+	seconds	sekundi
+	Create a single history state	Napravi jedno stanje istorije
 	Generator enabled	Generator je omogućen
 	This Layer:	Ovaj sloj:
 	Move Up	Pomeri nagore

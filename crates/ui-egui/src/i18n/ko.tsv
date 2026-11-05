@@ -3489,6 +3489,8 @@ curves	Smooth	매끄럽게
 	Step {step} is waiting for its dialog	{step}단계가 대화 상자를 기다리고 있습니다
 @plural	{n} action|{n} actions	액션 {n}개
 	Background (Default)	배경(기본값)
+	Background (default)	배경(기본값)
+	Transparent (default)	투명(기본값)
 	Include All Subfolders	모든 하위 폴더 포함
 	Auto Add/Delete	자동 추가/삭제
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	인쇄 설정에서도 이미지 반전을 켜지 마세요. 두 번 반전하면 원래대로 돌아갑니다.
@@ -3607,6 +3609,7 @@ curves	Smooth	매끄럽게
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut}은(는) 시스템에서 예약되어 할당할 수 없습니다.
 	Low-Latency Drawing (vsync off, applies at next launch)	저지연 그리기(수직 동기화 끔, 다음 실행 시 적용)
 	Reference point location	기준점 위치
+	Toggle reference point	기준점 표시/숨기기
 	Free Transform is still being applied; try again when it has finished.	자유 변형을 아직 적용하는 중입니다. 완료된 후 다시 시도하세요.
 	The transform couldn't be applied.	변형을 적용할 수 없습니다.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	레이어에 GPU 메모리 {needed}가 필요하지만 예산은 {budget}만 남겨 둡니다.
@@ -3742,6 +3745,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	정지점 색상
 	Shapes can't use patterns yet	모양에는 아직 패턴을 사용할 수 없습니다
 	Edit Brush…	브러시 편집…
+
+# Action Stop message (#8386)
+	Message	메시지
+# Playback Options (#5212)
+	Playback Options…	재생 옵션…
+	Playback Options	재생 옵션
+	Accelerated	가속
+	Step by Step	단계별
+	Pause For:	일시 정지:
+	Pause For	일시 정지
+	seconds	초
+	Create a single history state	단일 작업 내역 상태 만들기
 	Drag to move the active shape's path or the Work Path	드래그하여 활성 모양의 패스 또는 작업 패스 이동
 	Generator enabled	생성기 활성화
 	Move Up	위로 이동

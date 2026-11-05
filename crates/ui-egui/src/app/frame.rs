@@ -251,6 +251,8 @@ impl PhotocraftApp {
         // once, not only after the next pick.
         self.sync_recent_fonts();
         paint_mouse::sync_tool_brush(self);
+        // Step by Step and Pause For: play an action's next step once its wait is over (Esc ends it).
+        crate::actions::playback::tick(self, &ctx);
         // A unit typed into a value field (`1in` in a px field) converts at the active document's
         // resolution, as in Photoshop.
         let ppi = self.session.prefs().units_and_rulers.point_size.per_inch();

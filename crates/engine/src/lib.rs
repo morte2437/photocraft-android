@@ -190,6 +190,12 @@ pub(crate) fn active_layer_of(s: &Session) -> std::result::Result<&photocraft_do
 #[derive(Default)]
 pub struct Session {
     docs: Vec<DocState>,
+    /// Override Open belongs only to one Batch scratch session, never to caller preferences.
+    pub(crate) batch_open: Option<file_cmds::BatchOpen>,
+    /// Import diagnostics retained by a Batch scratch that suppresses only profile prompts.
+    pub(crate) batch_open_notices: Option<Vec<Value>>,
+    /// Frozen RAW workflow settings for one noninteractive Batch input.
+    pub(crate) batch_raw_open: Option<prefs::RawDefaults>,
     /// Admitted document identities in opening order, independent of visual-tab reordering.
     open_document_order: Vec<photocraft_doc::DocId>,
     active: Option<usize>,

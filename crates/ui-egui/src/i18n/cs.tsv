@@ -3900,6 +3900,8 @@ navigator	Zoom	Zvětšení
 	Step {step} is waiting for its dialog	Krok {step} čeká na svůj dialog
 @plural	{n} action|{n} actions	{n} akce|{n} akce|{n} akcí
 	Background (Default)	Pozadí (výchozí)
+	Background (default)	Pozadí (výchozí)
+	Transparent (default)	Průhledné (výchozí)
 	Include All Subfolders	Zahrnout všechny podsložky
 	Auto Add/Delete	Automaticky přidat/odstranit
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nezapínejte současně zrcadlení v nastavení tisku: obě převrácení se navzájem zruší.
@@ -4015,6 +4017,7 @@ navigator	Zoom	Zvětšení
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} je vyhrazena systémem a nelze ji přiřadit.
 	Low-Latency Drawing (vsync off, applies at next launch)	Kreslení s nízkou latencí (bez vertikální synchronizace, platí po dalším spuštění)
 	Reference point location	Umístění referenčního bodu
+	Toggle reference point	Zobrazit/skrýt referenční bod
 	Free Transform is still being applied; try again when it has finished.	Volná transformace se stále použije; zkuste to znovu, až skončí.
 	The transform couldn't be applied.	Transformaci nelze použít.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Vrstvy potřebují {needed} paměti GPU; rozpočet jim ponechává {budget}.
@@ -4268,6 +4271,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Barva zarážky
 	Shapes can't use patterns yet	Tvary zatím nemohou používat vzorky
 	Edit Brush…	Upravit štětec…
+
+# Action Stop message (#8386)
+	Message	Zpráva
+# Playback Options (#5212)
+	Playback Options…	Možnosti přehrávání…
+	Playback Options	Možnosti přehrávání
+	Accelerated	Zrychlené
+	Step by Step	Krok za krokem
+	Pause For:	Pozastavit na:
+	Pause For	Pozastavit na
+	seconds	sekund
+	Create a single history state	Vytvořit jeden stav historie
 	Drag to move the active shape's path or the Work Path	Tažením přesunete cestu aktivního tvaru nebo pracovní cestu
 	Generator enabled	Generátor zapnut
 	This Layer:	Tato vrstva:

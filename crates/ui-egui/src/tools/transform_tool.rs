@@ -48,7 +48,7 @@ pub(crate) use draw::draw_handle_cursor;
 use draw::scale_values;
 #[cfg(test)]
 pub(crate) use draw::{Readout, live_readout, styled_frame};
-pub(crate) use draw::{carries_selection_of, selection_ants};
+pub(crate) use draw::{carries_selection_of, moves_selection, selection_ants};
 pub use draw::{draw_content, draw_overlay};
 #[cfg(test)]
 use draw::{front_vertices, handle_anchor};
@@ -59,7 +59,7 @@ use options_bar::{
     set_size_unit, size_pct, size_shown, size_unit, warp_grid_id,
 };
 pub use options_bar::{options_bar, reset_warp};
-pub(crate) use pointer::{Gesture, Hit, hit, rotate_cursor_dir};
+pub(crate) use pointer::{Gesture, Hit, box_hit, hit, rotate_cursor_dir};
 #[cfg(test)]
 use pointer::{accepts_outside_click, carry_pivot, near_rotate_corner, point_on_quad, rotation_degrees};
 pub use pointer::{cursor, pointer};
@@ -244,6 +244,16 @@ pub const HANDLE_PX: f64 = 12.0;
 /// [`HANDLE_PX`] in document pixels at the current zoom.
 pub fn handle_tolerance(app: &PhotocraftApp) -> f64 {
     HANDLE_PX / app.point_zoom().max(0.01) as f64
+}
+
+/// End a handle drag whose release a modal sampler consumed, preserving the transform. Its snapping
+/// ends too, so the canvas stops drawing the drag's alignment lines.
+pub(crate) fn release_handle_drag(app: &mut PhotocraftApp) {
+    if let Some(preview) = app.transform_preview.as_mut() {
+        preview.gesture = None;
+    }
+    app.prefs_rt.snap = None;
+    app.prefs_rt.snap_lines.clear();
 }
 
 /// The box as one undo step restores it.

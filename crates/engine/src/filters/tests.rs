@@ -536,3 +536,15 @@ fn displace_on_a_smart_object_embeds_its_map() {
     let LayerContent::Smart(sm) = &d.doc.layer(d.active_layer.unwrap()).unwrap().content else { panic!("not a smart object") };
     assert_eq!(first_value(&sm.smart_filters[1].params), 0.0, "the black map, not the passed-back white one");
 }
+
+/// A filter that yields nothing without a cancellation (a custom Shape Blur kernel it could not
+/// allocate or accept) reports a failure; only a cancelled job reports `Cancelled`.
+#[test]
+fn filter_without_output_is_cancelled_only_when_the_job_was() {
+    assert!(matches!(filter_output(None, true), Err(EngineError::Cancelled)));
+    let failure = filter_output(None, false).unwrap_err();
+    assert!(!matches!(failure, EngineError::Cancelled), "{failure:?}");
+    assert!(failure.to_string().contains("could not prepare"), "{failure}");
+    let surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+    assert!(filter_output(Some(surface), true).is_ok());
+}

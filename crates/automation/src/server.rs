@@ -350,7 +350,8 @@ pub struct MenuParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UiSetParams {
-    /// Fields for the control method `ui.set`: tool, panels, dock, dockTabs, dockWidth, colorPanel
+    /// Fields for the control method `ui.set`: tool, moveShowTransform (bool, the Move tool's
+    /// Show Transform Controls option), panels, dock, dockTabs, dockWidth, colorPanel
     /// ({background: bool} picks which swatch the Color panel edits), maskTarget,
     /// vectorMaskTarget, filterMaskTarget (paint the active smart object's filter mask), selectionMode, zoom, center, rotation (view angle in degrees), fit, theme (pro, proMedium, studio,
     /// studioLight, classic, solarizedDark, adwaita, adwaitaDark, breezeLight, breezeDark, softLight, softDark), brushSection, brushTab,

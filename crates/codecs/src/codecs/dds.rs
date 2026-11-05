@@ -31,6 +31,7 @@ const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
 const DDPF_LUMINANCE: u32 = 0x2_0000;
 const DDSCAPS2_CUBEMAP: u32 = 0x200;
+const DDSCAPS2_CUBEMAP_FACES: u32 = 0xfc00;
 const DDSCAPS2_VOLUME: u32 = 0x20_0000;
 const DIMENSION_TEXTURE2D: u32 = 3;
 const MISC_TEXTURECUBE: u32 = 0x4;
@@ -44,6 +45,16 @@ fn unsupported(reason: impl Into<String>) -> CodecError {
 fn le32(b: &[u8], at: usize) -> Result<u32, CodecError> {
     let bytes = b.get(at..at + 4).and_then(|s| <[u8; 4]>::try_from(s).ok()).ok_or_else(|| bad("truncated header"))?;
     Ok(u32::from_le_bytes(bytes))
+}
+
+/// Header-declared extra subresources cannot survive a single-image rewrite, even without presence flags.
+pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+    let depth = le32(bytes, 24)?;
+    let mips = le32(bytes, 28)?;
+    let faces = (le32(bytes, 112)? & DDSCAPS2_CUBEMAP_FACES).count_ones();
+    let dx10 = le32(bytes, 80)? & DDPF_FOURCC != 0 && bytes.get(84..88) == Some(b"DX10");
+    let (cube, array) = if dx10 { (le32(bytes, 136)? & MISC_TEXTURECUBE != 0, le32(bytes, 140)?) } else { (false, 0) };
+    Ok(depth > 1 || mips > 1 || faces > 1 || cube || array > 1)
 }
 
 /// A FourCC as text when it is printable, else as the number legacy writers store there.

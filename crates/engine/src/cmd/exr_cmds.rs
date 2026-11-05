@@ -39,6 +39,7 @@ fn selected(p: &Value, prefix: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Open the selected EXR parts and view, retaining their Batch source identity.
 fn open_exr_parts(s: &mut Session, p: &Value) -> Result<Value> {
     let path = crate::file_cmds::str_param(p, "path", "file.openExrParts")?.to_string();
     let view = p.get("view").and_then(Value::as_str).unwrap_or("both");
@@ -55,6 +56,8 @@ fn open_exr_parts(s: &mut Session, p: &Value) -> Result<Value> {
     let mut r = photocraft_io::exr_parts::import(&stem(&path), &bytes, &sel).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     crate::file_cmds::tag_exr_colorspace(s, &path, &mut r.document);
     let (i, color) = s.open_document(r.document, Some(path.clone()));
+    crate::file_cmds::remember_batch_open(s);
+    super::file_cmds::batch_open_notice(s, &path, &r.warnings, &color);
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }
 

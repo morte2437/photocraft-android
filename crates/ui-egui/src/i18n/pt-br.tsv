@@ -4082,6 +4082,8 @@ layerLabel	No Color	Sem cor
 	Step {step} is waiting for its dialog	A etapa {step} está aguardando sua caixa de diálogo
 @plural	{n} action|{n} actions	{n} ação|{n} ações
 	Background (Default)	Plano de fundo (padrão)
+	Background (default)	Plano de fundo (padrão)
+	Transparent (default)	Transparente (padrão)
 	Include All Subfolders	Incluir todas as subpastas
 	Auto Add/Delete	Adicionar/excluir automaticamente
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Não ative também a imagem espelhada nas configurações de impressão: as duas inversões se anulam.
@@ -4449,6 +4451,18 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	Cor da parada
 	Shapes can't use patterns yet	Formas ainda não podem usar padrões
 	Edit Brush…	Editar pincel…
+
+# Action Stop message (#8386)
+	Message	Mensagem
+# Playback Options (#5212)
+	Playback Options…	Opções de reprodução…
+	Playback Options	Opções de reprodução
+	Accelerated	Acelerada
+	Step by Step	Passo a passo
+	Pause For:	Pausar por:
+	Pause For	Pausar por
+	seconds	segundos
+	Create a single history state	Criar um único estado de histórico
 	Drag to move the active shape's path or the Work Path	Arraste para mover o demarcador da forma ativa ou o demarcador de trabalho
 	Generator enabled	Gerador ativado
 	Move Up	Mover para cima

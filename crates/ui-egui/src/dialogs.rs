@@ -296,8 +296,10 @@ fn command_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: 
         _ if crate::disk_change_prompt::owns(fields) => crate::disk_change_prompt::body(ui, fields),
         _ if crate::replace_prompt::owns(fields) => crate::replace_prompt::body(ui, fields),
         _ if crate::preset_group_prompt::owns(fields) => crate::preset_group_prompt::body(ui, fields),
+        _ if crate::actions::owns_stop_message(fields) => crate::actions::stop_message_body(ui, fields),
         _ if crate::actions::owns_insert_stop(fields) => crate::actions::insert_stop_body(ui, fields),
         _ if crate::actions::owns_new_set(fields) => crate::actions::new_set_body(ui, fields),
+        _ if crate::actions::playback::owns(fields) => crate::actions::playback::body(ui, fields),
         _ if crate::new_layer_ui::owns(fields) => crate::new_layer_ui::body(ui, fields),
         _ if crate::mask_trash_prompt::owns(fields) => crate::mask_trash_prompt::body(ui, fields),
         _ if crate::rasterize_prompt::owns(fields) => crate::rasterize_prompt::body(ui, fields),
@@ -435,7 +437,10 @@ fn button_row(
 ) -> (Option<bool>, bool) {
     let mut outcome: Option<bool> = None;
     let mut apply_requested = false;
-    if matches!(d.kind, DialogKind::About | DialogKind::Error) {
+    if d.kind == DialogKind::Command && crate::actions::owns_stop_message(fields) {
+        // A Stop step's message: Continue and Stop, or Stop alone.
+        outcome = crate::actions::stop_message_buttons(ui, fields, interactive);
+    } else if matches!(d.kind, DialogKind::About | DialogKind::Error) {
         // ↩ is OK too, as on every other dialog (#4872), from the frame after the
         // alert appeared: the ↩ that raised it (committing a locked layer's Free
         // Transform, say) must not close it again at once.
@@ -858,8 +863,10 @@ const ROUTES: &[fn(&Fields) -> bool] = &[
     crate::shape_dialog::owns,
     crate::delete_layer_prompt::owns,
     crate::disk_change_prompt::owns,
+    crate::actions::owns_stop_message,
     crate::actions::owns_insert_stop,
     crate::actions::owns_new_set,
+    crate::actions::playback::owns,
     crate::new_layer_ui::owns,
     crate::new_group_ui::owns,
     crate::mask_trash_prompt::owns,
@@ -1028,8 +1035,10 @@ fn confirm_command(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, String> 
         _ if crate::disk_change_prompt::owns(&d.fields) => crate::disk_change_prompt::confirm(app, &d.fields),
         _ if crate::replace_prompt::owns(&d.fields) => crate::replace_prompt::confirm(app),
         _ if crate::preset_group_prompt::owns(&d.fields) => crate::preset_group_prompt::confirm(app, &d.fields),
+        _ if crate::actions::owns_stop_message(&d.fields) => crate::actions::stop_message_confirm(app, &d.fields),
         _ if crate::actions::owns_insert_stop(&d.fields) => crate::actions::insert_stop_confirm(app, &d.fields),
         _ if crate::actions::owns_new_set(&d.fields) => crate::actions::new_set_confirm(app, &d.fields),
+        _ if crate::actions::playback::owns(&d.fields) => crate::actions::playback::confirm(app, &d.fields),
         _ if crate::new_layer_ui::owns(&d.fields) => crate::new_layer_ui::confirm(app, &d.fields),
         _ if crate::mask_trash_prompt::owns(&d.fields) => crate::mask_trash_prompt::confirm(app, &d.fields),
         _ if crate::rasterize_prompt::owns(&d.fields) => crate::rasterize_prompt::confirm(app, &d.fields),

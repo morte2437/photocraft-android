@@ -1502,13 +1502,13 @@ pub fn export_flat_with_renderer(
                 strip_xmp(&mut img.meta, opts);
                 let mut img = prepare_flat(img, format, &mut warnings)?;
                 if format == Format::Tga {
-                    img = tga_image(doc, img, opts.tga_bits, &mut warnings)?;
+                    img = tga_image(doc, img, opts.tga_bits, opts.preserve_alpha, &mut warnings)?;
                 }
                 if format == Format::Dds {
                     img = dds_image(doc, img, &mut warnings)?;
                 }
                 if format == Format::Tiff {
-                    warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency));
+                    warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency, opts.preserve_alpha)?);
                 }
                 // Drain only once encoding succeeded: if it fails, the queued diagnostics stay
                 // with the renderer for the caller to report alongside the error.
@@ -1552,13 +1552,13 @@ pub fn export_flat_with_renderer(
     strip_xmp(&mut img.meta, opts);
     let mut img = prepare_flat(img, format, &mut warnings)?;
     if format == Format::Tga {
-        img = tga_image(doc, img, opts.tga_bits, &mut warnings)?;
+        img = tga_image(doc, img, opts.tga_bits, opts.preserve_alpha, &mut warnings)?;
     }
     if format == Format::Dds {
         img = dds_image(doc, img, &mut warnings)?;
     }
     if format == Format::Tiff {
-        warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency));
+        warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency, opts.preserve_alpha)?);
     }
     encode_image(&img, format, opts, warnings)
 }
@@ -1821,7 +1821,7 @@ pub fn tga_default_bits(doc: &Document) -> TgaBits {
 /// never premultiplied or cleared under a zero alpha: Targa alphas often hold data such as a
 /// game texture's specular mask. Grayscale Targas have no alpha channel in Photoshop and are left
 /// as they are.
-fn tga_image(doc: &Document, img: Image, bits: Option<TgaBits>, warnings: &mut Vec<String>) -> Result<Image, IoError> {
+fn tga_image(doc: &Document, img: Image, bits: Option<TgaBits>, preserve_alpha: bool, warnings: &mut Vec<String>) -> Result<Image, IoError> {
     if !img.layout().is_rgb() {
         if let Some(bits) = bits {
             warnings.push(format!("{}-bit Targa applies to RGB images; the grayscale image is written as it is", bits.bits()));
@@ -1830,6 +1830,9 @@ fn tga_image(doc: &Document, img: Image, bits: Option<TgaBits>, warnings: &mut V
     }
     let alphas: Vec<&AlphaChannel> = doc.channels.iter().filter(|c| c.spot.is_none()).collect();
     let bits = bits.unwrap_or(if !alphas.is_empty() || img.layout().has_alpha() { TgaBits::Bits32 } else { TgaBits::Bits24 });
+    if preserve_alpha && bits == TgaBits::Bits24 && (!alphas.is_empty() || img.layout().has_alpha()) {
+        return Err(IoError::Unsupported("Save and Close cannot preserve alpha in a 24-bit Targa; use 32 bits or a separate output folder".into()));
+    }
     match (bits, alphas.as_slice()) {
         (TgaBits::Bits24, alphas) => {
             if !alphas.is_empty() {

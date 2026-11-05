@@ -14,6 +14,7 @@
 
 use photocraft_doc::{FillRule, PathOp};
 use photocraft_geom::Rect;
+use photocraft_raster::Interrupt;
 
 /// Coverage below this is f32 round-off in the cell prefix sum, not area: it is well under half
 /// a 16-bit step (7.6e-6), so 8- and 16-bit output is unchanged by dropping it.
@@ -88,6 +89,12 @@ impl Rasterizer {
     /// [`Self::add_component`] without restoring the edge order: callers adding many components
     /// sort once at the end with [`Self::sort_edges`].
     pub(crate) fn push_component(&mut self, polys: &[Vec<(f64, f64)>], op: PathOp, rule: FillRule) {
+        let _ = self.push_component_with(polys, op, rule, &Interrupt::NONE);
+    }
+
+    /// Adds one component, polling cancellation while converting polygon segments to edges.
+    pub(crate) fn push_component_with(&mut self, polys: &[Vec<(f64, f64)>], op: PathOp, rule: FillRule, ctl: &Interrupt) -> Option<()> {
+        ctl.check().ok()?;
         let comp = self.comps.len() as u32;
         self.comps.push(Component { op, rule });
         if op != PathOp::Combine && comp != 0 {
@@ -99,6 +106,9 @@ impl Rasterizer {
                 continue;
             }
             for i in 0..n {
+                if i % 256 == 0 {
+                    ctl.check().ok()?;
+                }
                 let (a, b) = (poly[i], poly[(i + 1) % n]);
                 if !(a.0.is_finite() && a.1.is_finite() && b.0.is_finite() && b.1.is_finite()) {
                     continue;
@@ -123,6 +133,7 @@ impl Rasterizer {
                 self.edges.push(Edge { x0: p.0, y0: p.1, y1: q.1, dir, comp, dxdy });
             }
         }
+        Some(())
     }
 
     /// Pixel bounds of everything that may be covered (`None` = nothing; the whole plane
@@ -176,30 +187,42 @@ impl Rasterizer {
     /// Coverage (`0..=1`) of every pixel of `rect`, row-major. Rows are rendered in parallel
     /// strips on native targets.
     pub fn render(&self, rect: Rect) -> Vec<f32> {
+        self.render_with(rect, &Interrupt::NONE).unwrap_or_default()
+    }
+
+    /// [`Self::render`] with cancellation checked before allocation and on every scanline.
+    pub fn render_with(&self, rect: Rect, ctl: &Interrupt) -> Option<Vec<f32>> {
+        ctl.check().ok()?;
         let w = rect.width() as usize;
         let h = rect.height() as usize;
         let mut out = vec![0.0f32; w * h];
         if w == 0 || h == 0 {
-            return out;
+            return Some(out);
         }
         #[cfg(not(target_arch = "wasm32"))]
         const STRIP: usize = 32;
         #[cfg(not(target_arch = "wasm32"))]
         if h > STRIP && w * h > 64 * 1024 {
             use rayon::prelude::*;
-            out.par_chunks_mut(w * STRIP).enumerate().for_each(|(i, chunk)| {
+            out.par_chunks_mut(w * STRIP).enumerate().try_for_each(|(i, chunk)| {
                 let y0 = rect.y0 + (i * STRIP) as i32;
                 let rows = chunk.len() / w;
-                self.render_into(Rect::new(rect.x0, y0, rect.x1, y0 + rows as i32), chunk);
-            });
-            return out;
+                self.render_into_with(Rect::new(rect.x0, y0, rect.x1, y0 + rows as i32), chunk, ctl)
+            })?;
+            return Some(out);
         }
-        self.render_into(rect, &mut out);
-        out
+        self.render_into_with(rect, &mut out, ctl)?;
+        Some(out)
     }
 
     /// Renders `rect` into `out` (`rect.width() * rect.height()` values), sequentially.
     pub fn render_into(&self, rect: Rect, out: &mut [f32]) {
+        let _ = self.render_into_with(rect, out, &Interrupt::NONE);
+    }
+
+    /// Sequential scanline renderer; cancellation discards the caller's partial buffer.
+    fn render_into_with(&self, rect: Rect, out: &mut [f32], ctl: &Interrupt) -> Option<()> {
+        ctl.check().ok()?;
         let w = rect.width() as usize;
         let mut st = RowState::new(self.comps.len(), w);
         // Edges are sorted by y0; `next` is the first edge not yet activated.
@@ -207,6 +230,8 @@ impl Rasterizer {
         let mut next = self.edges.partition_point(|e| e.y0 < top);
         st.active.extend((0..next).filter(|&i| self.edges[i].y1 > top));
         for (row, y) in (rect.y0..rect.y1).enumerate() {
+            ctl.progress(row as f32 / rect.height().max(1) as f32);
+            ctl.check().ok()?;
             let (ya, yb) = (f64::from(y), f64::from(y) + 1.0);
             st.active.retain(|&i| self.edges[i].y1 > ya);
             while next < self.edges.len() && self.edges[next].y0 < yb {
@@ -260,6 +285,7 @@ impl Rasterizer {
             let mut next_sub = 0usize;
             let cuts = std::mem::take(&mut st.cuts);
             for c in cuts.windows(2) {
+                ctl.check().ok()?;
                 let (a, b) = (c[0], c[1]);
                 while next_sub < st.active.len() && self.edges[st.active[next_sub]].y0 < b {
                     let ei = st.active[next_sub];
@@ -282,6 +308,8 @@ impl Rasterizer {
                 *o = if sum >= RESIDUE { sum.min(1.0) } else { 0.0 };
             }
         }
+        ctl.check().ok()?;
+        Some(())
     }
 
     /// Accumulates the sub-band `[a, b)` of the current row.

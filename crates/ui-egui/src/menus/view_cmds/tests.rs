@@ -332,6 +332,93 @@ fn batch_menu_requires_a_recorded_action() {
     assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["action"], "Invert");
 }
 
+/// Two actions of one name in sets A and B (a loaded library): the Batch form lists the name once
+/// and both sets, starts on the selected action's set, and runs that set's action.
+#[test]
+fn batch_menu_runs_the_selected_sets_action_among_same_named_ones() {
+    let (mut app, ctx) = app_with(0);
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.90cw")] {
+        let mut action = photocraft_engine::actions_cmds::Action::new("Retouch", vec![(step.into(), json!({}))]);
+        action.set = Some(set.into());
+        list.push(action);
+    }
+    app.session.actions.list = list;
+    app.ui.actions.selected = Some(1);
+    let id = menu(&mut app, &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["action"], json!(["Retouch"]));
+    assert_eq!(fields["__choices"]["set"], json!(["A", "B"]));
+    assert_eq!((&fields["action"], &fields["set"]), (&json!("Retouch"), &json!("B")));
+    fields.insert("input".into(), json!([input.clone()]));
+    fields.insert("output".into(), json!(output));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved = std::fs::read_dir(&output).unwrap().next().unwrap().unwrap().path();
+    let image = photocraft_io::import("out.png", &std::fs::read(saved).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2), "set B's action (a rotation) ran");
+}
+
+/// Choosing a different action changes the output; cancelled or deleted choices write nothing.
+#[test]
+fn batch_menu_runs_the_action_chosen_in_the_form() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let (mut app, _) = app_with(0);
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    app.session.actions.list = vec![
+        photocraft_engine::actions_cmds::Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]),
+        photocraft_engine::actions_cmds::Action::new("RotateRGB", vec![("image.imageRotation.90cw".into(), json!({}))]),
+    ];
+    app.ui.actions.selected = Some(0);
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                crate::dialogs::show(app, ui.ctx());
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    let ctx = h.ctx.clone();
+    let id = menu(h.state_mut(), &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut h.state_mut().ui.dialog_mut(id).unwrap().fields;
+    assert!(!fields.contains_key("steps"));
+    fields.insert("input".into(), json!([input]));
+    fields.insert("output".into(), json!(output));
+    h.run_steps(4);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Action").click();
+    h.run_steps(2);
+    h.get_by_label("RotateRGB").click();
+    h.run_steps(2);
+    assert_eq!(h.state_mut().ui.dialog_mut(id).unwrap().fields["action"], "RotateRGB");
+    let result = crate::dialogs::confirm(h.state_mut(), id).unwrap();
+    assert_eq!(result["errors"], json!([]));
+    let image = photocraft_io::import("source.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2));
+
+    let cancelled = dir.path().join("cancelled");
+    let id = menu(h.state_mut(), &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("output".into(), json!(cancelled.to_string_lossy()));
+    crate::dialogs::cancel(h.state_mut(), id).unwrap();
+    assert!(!cancelled.exists());
+
+    let id = menu(h.state_mut(), &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut h.state_mut().ui.dialog_mut(id).unwrap().fields;
+    fields.insert("action".into(), json!("RotateRGB"));
+    fields.insert("output".into(), json!(cancelled.to_string_lossy()));
+    h.state_mut().session.actions.list.retain(|action| action.name != "RotateRGB");
+    assert!(crate::dialogs::confirm(h.state_mut(), id).unwrap_err().contains("no action named"));
+    assert!(!cancelled.exists());
+}
+
 #[test]
 fn engine_commands_open_their_dialogs() {
     let (mut app, ctx) = app_with(2);
