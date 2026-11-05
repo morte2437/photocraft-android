@@ -128,7 +128,7 @@ fn render_descriptors_load_and_save_without_losing_values() {
     let center = [0.40000000596046; 2];
     let mut cases = vec![("Fbrs", None, fibers(16, 4, 123)), ("LnsF", Some("lensFlare"), flare(100, center, "Zm"))];
     for seed in [i32::MIN, -1, 0, i32::MAX] {
-        cases.push(("Fbrs", None, fibers(-23, i32::MAX, seed)));
+        cases.push(("Fbrs", None, fibers(64, 1, seed)));
     }
     for lens in ["Zm", "Nkn", "Nkn1", "PnVs"] {
         cases.push(("LnsF", Some("lensFlare"), flare(280, [5.0, -5.0], lens)));
@@ -181,15 +181,19 @@ fn render_defaults_seeds_and_brightness_bounds_are_explicit() {
 /// Unknown enums, malformed types and unmeasured extra fields stay visibly unsupported.
 #[test]
 fn unsupported_render_descriptors_keep_their_bytes_and_flags() {
-    for descriptor in [
+    let cases = [
         desc("null").with("Lns ", enm("Lns ", "Bad!")),
         desc("null").with("Lns ", enm("Other", "Zm")),
         desc("null").with("Brgh", D::Double(100.0)),
         desc("null").with("FlrC", D::Descriptor(desc("Other"))),
         desc("null").with("FlrC", D::Descriptor(desc("Pnt ").with("Hrzn", px(0.4)))),
         desc("null").with("futureSetting", D::Boolean(true)),
-    ] {
-        let mut original = atn::parse(&file(AtnEvent::Code(*b"LnsF"), descriptor.clone())).unwrap();
+    ]
+    .into_iter()
+    .map(|d| (*b"LnsF", d))
+    .chain([i32::MIN, -1, 0, i32::MAX].map(|seed| (*b"Fbrs", fibers(-23, i32::MAX, seed))));
+    for (event, descriptor) in cases {
+        let mut original = atn::parse(&file(AtnEvent::Code(event), descriptor.clone())).unwrap();
         original.actions[0].items[0].enabled = false;
         original.actions[0].items[0].with_dialog = true;
         original.actions[0].items[0].dialog_options = 2;

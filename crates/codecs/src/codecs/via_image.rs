@@ -246,7 +246,7 @@ fn gif_first_frame(b: &[u8]) -> Option<(u32, u32)> {
 
 /// Counts a GIF's frames (image descriptors) by walking its blocks, without decompressing any.
 /// The total is unknown when the blocks end before the trailer or break off.
-fn gif_more_frames(b: &[u8]) -> Option<DecodeWarning> {
+pub(crate) fn gif_more_frames(b: &[u8]) -> Option<DecodeWarning> {
     let (frames, total) = gif_walk(b, |_| true);
     (frames > 1).then_some(DecodeWarning::MoreFrames { total })
 }

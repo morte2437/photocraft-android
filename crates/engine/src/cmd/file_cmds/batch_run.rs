@@ -1,5 +1,5 @@
 use super::open::import_at_raw_ppi;
-use super::paths::{extension, file_name, join, list_images, read_file, stem, write_file};
+use super::paths::{extension, file_name, join, list_files, list_images, read_file, stem, write_file};
 use super::processing::parse_steps;
 use super::save::{SaveOpts, encode, save_doc, save_doc_as};
 use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
@@ -35,28 +35,44 @@ pub(crate) const MAX_SUBFOLDER_FILES: usize = 100_000;
 /// subfolders, each tagged with its relative folder. `output` (when inside the input folder, as
 /// the dialog's default `<input>/batch` is) is not walked, so a rerun doesn't process its results.
 pub(crate) fn batch_inputs_tree(p: &Value, cmd: &str, output: &str) -> Result<Vec<BatchInput>> {
+    collect_inputs(p, cmd, output, false)
+}
+
+/// Collect folder inputs with Batch's explicit unsupported-file policy; arrays keep their order.
+fn collect_inputs(p: &Value, cmd: &str, output: &str, include_non_images: bool) -> Result<Vec<BatchInput>> {
     let recurse = match p.get("includeSubfolders") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "\"includeSubfolders\" must be true or false".into() }),
     };
     match p.get("input").or_else(|| p.get("files")) {
-        Some(Value::String(dir)) if recurse => list_images_tree(dir, output, cmd),
+        Some(Value::String(dir)) if recurse => list_files_tree(dir, output, cmd, include_non_images),
+        Some(Value::String(dir)) if include_non_images => {
+            Ok(list_files(dir, true)?.into_iter().map(|path| BatchInput { path, rel_dir: String::new() }).collect())
+        }
         _ => Ok(batch_inputs(p, cmd)?.into_iter().map(|path| BatchInput { path, rel_dir: String::new() }).collect()),
     }
 }
 
-/// The images under `dir` and its subfolders: each folder's files sorted by name, then its
+/// The selected files under `dir` and its subfolders: each folder's files sorted by name, then its
 /// subfolders in name order (depth first). Bounded by [`MAX_SUBFOLDER_DEPTH`] and
 /// [`MAX_SUBFOLDER_FILES`]; a folder reached twice (a symlink loop) is walked once, and `skip`
-/// (the output folder) is left out. An unreadable reached folder is an error.
+/// (the output folder) is left out.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInput>> {
+pub(crate) fn list_files_tree(dir: &str, skip: &str, cmd: &str, include_non_images: bool) -> Result<Vec<BatchInput>> {
     use std::path::{Path, PathBuf};
-    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let canon = |p: &Path| std::fs::canonicalize(p).map_err(|error| EngineError::Other(format!("{}: {error}", p.display())));
     let root = Path::new(dir);
-    let root_canon = canon(root).ok_or_else(|| EngineError::Other(format!("{dir}: cannot open the folder")))?;
-    let skip = if skip.is_empty() { None } else { canon(Path::new(skip)) };
+    let root_canon = canon(root)?;
+    let skip = if skip.is_empty() {
+        None
+    } else {
+        match std::fs::canonicalize(skip) {
+            Ok(path) => Some(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(EngineError::Other(format!("{skip}: {error}"))),
+        }
+    };
     let mut seen = std::collections::HashSet::new();
     seen.insert(root_canon);
     let mut out = Vec::new();
@@ -64,29 +80,34 @@ pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInp
     let mut stack: Vec<(PathBuf, String, usize)> = vec![(root.to_path_buf(), String::new(), 0)];
     while let Some((folder, rel, depth)) = stack.pop() {
         let shown = folder.to_string_lossy().into_owned();
-        // Fail before writing any output if a reached input folder cannot be read.
-        let files = list_images(&shown)?;
+        // A reached unreadable folder fails before any output is written.
+        let files = list_files(&shown, include_non_images)?;
         if out.len().saturating_add(files.len()) > MAX_SUBFOLDER_FILES {
-            return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("{dir} holds more than {MAX_SUBFOLDER_FILES} images with its subfolders") });
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("{dir} holds more than {MAX_SUBFOLDER_FILES} files with its subfolders") });
         }
         out.extend(files.into_iter().map(|path| BatchInput { path, rel_dir: rel.clone() }));
         if depth >= MAX_SUBFOLDER_DEPTH {
             continue;
         }
-        let rd = std::fs::read_dir(&folder).map_err(|e| EngineError::Other(format!("{shown}: {e}")))?;
+        let rd = std::fs::read_dir(&folder).map_err(|error| EngineError::Other(format!("{shown}: {error}")))?;
         let mut subs: Vec<(String, PathBuf)> = Vec::new();
         for entry in rd {
-            let path = entry.map_err(|e| EngineError::Other(format!("{shown}: {e}")))?.path();
-            if path.is_dir()
+            let path = entry.map_err(|error| EngineError::Other(format!("{shown}: {error}")))?.path();
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue, // Broken links are not inputs.
+                Err(error) => return Err(EngineError::Other(format!("{}: {error}", path.display()))),
+            };
+            if metadata.is_dir()
                 && let Some(name) = path.file_name()
             {
-                subs.push((name.to_string_lossy().into_owned(), path.clone()));
+                subs.push((name.to_string_lossy().into_owned(), path));
             }
         }
         subs.sort();
         // Pushed in reverse so the stack pops them in name order.
         for (name, sub) in subs.into_iter().rev() {
-            let c = canon(&sub).ok_or_else(|| EngineError::Other(format!("{}: cannot resolve the subfolder", sub.display())))?;
+            let c = canon(&sub)?;
             if skip.as_ref() == Some(&c) || !seen.insert(c) {
                 continue;
             }
@@ -98,8 +119,13 @@ pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInp
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn list_images_tree(dir: &str, _skip: &str, _cmd: &str) -> Result<Vec<BatchInput>> {
+pub(crate) fn list_files_tree(dir: &str, _skip: &str, _cmd: &str, _include_non_images: bool) -> Result<Vec<BatchInput>> {
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
+}
+
+/// Image-only tree traversal shared with native Batch consumers.
+pub fn list_images_tree(dir: &str, skip: &str, cmd: &str) -> Result<Vec<BatchInput>> {
+    list_files_tree(dir, skip, cmd, false)
 }
 
 /// Opens each input in a scratch session, runs `f` on it and saves it to `output` as `format`
@@ -221,7 +247,7 @@ fn process_outputs<'a>(
         f(scratch, out).map_err(FileFailure::from)
     };
     for (path, out) in outputs {
-        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None }, &run);
+        let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None, input: None }, &run);
         match r {
             Ok(()) => {
                 written.record(&out, path);
@@ -233,12 +259,22 @@ fn process_outputs<'a>(
     json!({"files": files, "errors": errors})
 }
 
+type PrepareInput<'a> = &'a dyn Fn(&mut Session, &str) -> Result<()>;
+
+struct InputPolicy<'a> {
+    prepare: PrepareInput<'a>,
+    notices: &'a std::cell::RefCell<Vec<Value>>,
+}
+
 struct ProcessOptions<'a> {
     format: Option<&'a str>,
     written: Option<&'a OutputClaims>,
     ctx: Option<&'a crate::jobs::JobCtx>,
+    input: Option<&'a InputPolicy<'a>>,
 }
 
+/// Open and process one scratch input, collecting opening diagnostics even on failure.
+/// All destination writes retain the worker's cancellation checkpoint.
 fn process_one(
     raw_ppi: f64,
     path: &str,
@@ -250,46 +286,60 @@ fn process_one(
     if let Some(written) = options.written {
         written.check(out).map_err(EngineError::Other)?;
     }
-    let bytes = read_file(path)?;
     let mut scratch = Session::new();
-    let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
-    scratch.add_document(doc, Some(path.to_string()));
-    if let Some(ctx) = options.ctx {
-        ctx.publish_batch_preview(path, scratch.active().map(|state| state.doc.clone()));
-    }
-    let saved_by_action = f(&mut scratch, out)?;
-    if saved_by_action {
-        // The action's saved snapshot is already written: a cancel or Esc arriving now stops the
-        // inputs after this one, not this result.
-        return Ok(());
-    }
-    if let Some(ctx) = options.ctx {
-        ctx.check()?;
-        if ctx.batch_interrupt_requested() {
-            return Err(EngineError::Cancelled.into());
-        }
-    }
-    let d = scratch.active().ok_or(EngineError::NoDocument)?;
-    if let Some(format) = options.format {
-        let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
-        if let Some(ctx) = options.ctx {
-            save_batch_doc(&d.doc, out, &ext, save, ctx)?;
+    let result = (|| -> std::result::Result<(), FileFailure> {
+        if let Some(input) = options.input {
+            (input.prepare)(&mut scratch, path)?;
         } else {
-            save_doc_as(&d.doc, out, &ext, save)?;
+            let bytes = read_file(path)?;
+            let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+            scratch.add_document(doc, Some(path.to_string()));
         }
-    } else {
-        save_doc(&d.doc, out, save)?;
+        if let Some(ctx) = options.ctx {
+            ctx.publish_batch_preview(path, scratch.active().map(|state| state.doc.clone()));
+        }
+        let saved_by_action = f(&mut scratch, out)?;
+        if saved_by_action {
+            // The action's saved snapshot is already written: a cancel or Esc arriving now stops the
+            // inputs after this one, not this result.
+            return Ok(());
+        }
+        if let Some(ctx) = options.ctx {
+            ctx.check()?;
+            if ctx.batch_interrupt_requested() {
+                return Err(EngineError::Cancelled.into());
+            }
+        }
+        let d = scratch.active().ok_or(EngineError::NoDocument)?;
+        let warnings = if let Some(format) = options.format {
+            let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+            if let Some(ctx) = options.ctx { save_batch_doc(&d.doc, out, &ext, save, ctx)? } else { save_doc_as(&d.doc, out, &ext, save)? }
+        } else {
+            save_doc(&d.doc, out, save)?
+        };
+        record_export_warnings(&mut scratch, out, warnings);
+        Ok(())
+    })();
+    if let Some(input) = options.input {
+        input.notices.borrow_mut().extend(scratch.batch_open_notices.take().unwrap_or_default());
     }
-    Ok(())
+    result
 }
 
 /// Encode before the Batch write checkpoint. Esc accepted during an action or encode therefore
 /// leaves the current destination untouched; the worker owns the write once the checkpoint passes.
-fn save_batch_doc(doc: &Document, out: &str, format: &str, save: SaveOpts, ctx: &crate::jobs::JobCtx) -> Result<()> {
-    let (bytes, _) = encode(doc, format, save)?;
+fn save_batch_doc(doc: &Document, out: &str, format: &str, save: SaveOpts, ctx: &crate::jobs::JobCtx) -> Result<Vec<String>> {
+    let (bytes, warnings) = encode(doc, format, save)?;
     ctx.batch_before_write()?;
     write_file(out, &bytes)?;
-    Ok(())
+    Ok(warnings)
+}
+
+/// Keep encoder diagnostics beside the existing per-file opening notices, including snapshots.
+fn record_export_warnings(scratch: &mut Session, out: &str, warnings: Vec<String>) {
+    if !warnings.is_empty() {
+        scratch.batch_open_notices.get_or_insert_with(Vec::new).push(json!({"file": out, "warnings": warnings}));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -380,7 +430,7 @@ pub fn validate_flat_outputs(outputs: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
-/// Keep ordinary worker controls while named playback retains nested results.
+/// Exercise the native runner without recorded opening or collision-policy overrides.
 #[cfg(test)]
 pub(super) fn process_batch_outputs(
     raw_ppi: f64,
@@ -391,19 +441,30 @@ pub(super) fn process_batch_outputs(
     ctx: &crate::jobs::JobCtx,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
 ) -> Result<Value> {
-    process_batch_outputs_with_results(raw_ppi, outputs, format, save, policy, ctx, &|scratch, out| f(scratch, out).map_err(FileFailure::from))
+    process_batch_outputs_with(BatchRun { raw_ppi, format, save, policy, input: None, check_duplicates: false }, outputs, ctx, &|scratch, out| {
+        f(scratch, out).map_err(FileFailure::from)
+    })
 }
 
-/// Retain child payloads through the existing progress, interrupt and write checkpoints.
-fn process_batch_outputs_with_results(
+struct BatchRun<'a> {
     raw_ppi: f64,
-    outputs: Vec<(String, String)>,
-    format: &str,
+    format: &'a str,
     save: SaveOpts,
-    policy: &BatchPolicy,
+    policy: &'a BatchPolicy,
+    input: Option<&'a InputPolicy<'a>>,
+    check_duplicates: bool,
+}
+
+/// Share background progress, interruption and write ordering across native and recorded inputs.
+/// Recorded opening and destination policy vary without replacing those lifecycle checks.
+fn process_batch_outputs_with(
+    config: BatchRun<'_>,
+    outputs: Vec<(String, String)>,
     ctx: &crate::jobs::JobCtx,
     f: &dyn Fn(&mut Session, &str) -> std::result::Result<bool, FileFailure>,
 ) -> Result<Value> {
+    let BatchRun { raw_ppi, format, save, policy, input, check_duplicates } = config;
+    let mut written = OutputClaims::default();
     let total = outputs.len();
     let mut files = Vec::new();
     let mut errors = Vec::new();
@@ -420,7 +481,17 @@ fn process_batch_outputs_with_results(
             break;
         }
         ctx.progress(index as f32 / total.max(1) as f32, &format!("{} of {total}: {}", index + 1, file_name(path)));
-        let result = process_one(raw_ppi, path, out, save, ProcessOptions { format: Some(format), written: None, ctx: Some(ctx) }, f);
+        let result = process_one(
+            raw_ppi,
+            path,
+            out,
+            save,
+            ProcessOptions { format: Some(format), written: check_duplicates.then_some(&written), ctx: Some(ctx), input },
+            f,
+        );
+        if result.is_ok() {
+            written.record(out, path);
+        }
         // An input that failed on its own (not because it was stopped) stays a failure with its
         // reason, even when a cancel or Esc lands while it runs.
         let failure = result.as_ref().err().filter(|error| !matches!(&error.error, EngineError::Cancelled)).map(|error| error.value("file", path));
@@ -529,7 +600,6 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
-/// Resolve a named set reference or an ordinary action name/index.
 pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
     const CMD: &str = "file.automate.batch";
     if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
@@ -544,49 +614,64 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
     crate::actions_cmds::resolve(list, p, CMD)
 }
 
+/// Apply the selected file-error policy while retaining per-file results for direct callers.
+/// Resolve explicit or named steps, then run folder work on scratch documents or edit live tabs.
+/// Named actions carry their recursion context and both routes normalize recorded parameters.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
-    let (mut steps, action) = match p.get("steps").or_else(|| p.get("action").filter(|value| value.is_array())) {
-        Some(steps) => (parse_steps(steps)?, None),
-        None => {
-            // Select from the caller before using an embedded library for internal calls.
-            let index = batch_action(&s.actions.list, p)?;
-            let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": index}))?;
-            (action.enabled_steps().map(|(_, step)| step.clone()).collect(), Some(action.name))
-        }
+    let quiet_raw = match p.get("suppressOpenOptions") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "suppressOpenOptions must be a boolean".into() }),
     };
-    let action_name = s
-        .action_history
-        .as_ref()
-        .map(|group| group.name.clone())
-        .or_else(|| s.actions.playback_stack.first().cloned())
-        .or_else(|| action.clone())
-        .or_else(|| p.get("action").and_then(Value::as_str).map(str::to_string))
-        .or_else(|| p.get("action").and_then(|action| action.get("name")).and_then(Value::as_str).map(str::to_string))
-        .unwrap_or_else(|| "Batch".into());
-    // Each result goes to the destination folder, which overrides the action's recorded Save /
-    // Save As steps: they only mark the result.
-    steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
-    if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
-        return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
+    let quiet_profiles = match p.get("suppressWarnings") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "suppressWarnings must be a boolean".into() }),
+    };
+    let override_open = match p.get("overrideOpen") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "overrideOpen must be a boolean".into() }),
+    };
+    // Save and Close destination adapted from #10026 (@edaldridgePersonal, b96be5300cfa).
+    let save_and_close = match p.get("destination") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) if value == "folder" => false,
+        Some(Value::String(value)) if value == "saveAndClose" => true,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "destination must be folder or saveAndClose".into() }),
+    };
+    let save_close_tiff_layers = if save_and_close {
+        match p.get("tiffLayers") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "tiffLayers must be a boolean".into() }),
+        }
+    } else {
+        false
+    };
+    if save_and_close {
+        if p.get("output").is_some_and(|v| !v.is_null()) {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close writes each source; omit output".into() });
+        }
+        if p.get("format").is_some_and(|v| !v.is_null() && v.as_str() != Some("same")) {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close requires the source format (same)".into() });
+        }
     }
+    let include_non_images = match p.get("includeNonImages") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "includeNonImages must be a boolean".into() }),
+    };
     let policy = BatchPolicy::parse(p, cmd)?;
     let source = match p.get("source") {
         None | Some(Value::Null) => "folder",
-        Some(Value::String(source)) if matches!(source.as_str(), "folder" | "open") => source.as_str(),
-        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "\"source\" must be \"folder\" or \"open\"".into() }),
+        Some(Value::String(value)) if matches!(value.as_str(), "folder" | "open") => value.as_str(),
+        _ => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "source must be folder or open".into() }),
     };
-    let output = if source == "folder" {
-        str_param(p, "output", cmd)?.to_string()
-    } else {
-        match p.get("output") {
-            None | Some(Value::Null) => String::new(),
-            Some(Value::String(path)) => path.clone(),
-            Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "\"output\" must be a folder path".into() }),
-        }
-    };
-    let inputs = if source == "folder" { batch_inputs_tree(p, cmd, &output)? } else { Vec::new() };
-    let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
+    if source == "open" && (save_and_close || override_open || quiet_raw || quiet_profiles || include_non_images) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: "recorded folder-opening and Save and Close options require a folder source".into() });
+    }
     // Steps that call another action play it from the caller's actions; the playback stack comes
     // along so an action that batches itself is caught as a recursive call.
     let list = match p.get("calledActions") {
@@ -601,16 +686,76 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             list
         }
     };
+    let mut called_name = None;
+    let mut steps = if let Some(st) = p.get("steps") {
+        parse_steps(st)?
+    } else if let Some(act) = p.get("action").filter(|v| v.is_array()) {
+        parse_steps(act)?
+    } else {
+        // The caller selects the source; calledActions supplies only its internal namespace.
+        let index = batch_action(&s.actions.list, p)?;
+        let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": index}))?;
+        called_name = Some(action.name.clone());
+        action.enabled_steps().map(|(_, (id, params))| (id.clone(), params.clone())).collect()
+    };
+    let action_name = s
+        .action_history
+        .as_ref()
+        .map(|group| group.name.clone())
+        .or_else(|| s.actions.playback_stack.first().cloned())
+        .or_else(|| called_name.clone())
+        .or_else(|| p.get("action").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| p.get("action").and_then(|action| action.get("name")).and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| "Batch".into());
+    // Preserve the current Save snapshots and view-step policy while adding named actions.
+    steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
+    if let Some(value) = p.get("overrideSaveAs").filter(|v| !v.is_null()) {
+        let override_save = value.as_bool().ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "overrideSaveAs must be a boolean".into() })?;
+        let has_save = steps.iter().any(|(id, _)| batch_save_point(id));
+        if save_and_close && override_save {
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close does not represent Override Save As".into() });
+        }
+        if !save_and_close && override_save != has_save {
+            return Err(EngineError::BadParams {
+                cmd: cmd.into(),
+                msg: if override_save {
+                    "this recorded Batch requires a Save step in its action".into()
+                } else {
+                    "Batch cannot follow action Save destinations without Override Save As".into()
+                },
+            });
+        }
+    }
+    if let Some((id, _)) = steps.iter().find(|(id, _)| !batch_save_point(id) && crate::commands::find(id).is_none()) {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
+    }
+    let output = if save_and_close || source == "open" {
+        match p.get("output") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(path)) => path.clone(),
+            Some(_) => return Err(EngineError::BadParams { cmd: cmd.into(), msg: "output must be a folder path".into() }),
+        }
+    } else {
+        str_param(p, "output", cmd)?.to_string()
+    };
+    let inputs = if source == "folder" { collect_inputs(p, cmd, &output, include_non_images)? } else { Vec::new() };
+    if save_and_close
+        && inputs.iter().any(|input| s.documents().iter().any(|doc| doc.path.as_deref().is_some_and(|path| super::paths::same_file(&input.path, path))))
+    {
+        return Err(EngineError::BadParams { cmd: cmd.into(), msg: "Save and Close cannot overwrite a source already open in this session".into() });
+    }
+    let check_folder_format = include_non_images && p.get("input").or_else(|| p.get("files")).is_some_and(Value::is_string);
+    let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
     // decoded and saved even with no steps) to the playback tree it is in and
     // hands the count on, so nested batches cannot multiply past the limit. A top-level named
     // action starts fresh; standalone explicit steps retain their existing behavior.
-    let input_count = if source == "open" { s.documents().len() } else { inputs.len() };
-    let named = action.is_some();
+    let named = called_name.is_some();
     let mut playback_steps = 0;
     if s.actions.playing > 0 || named {
         let spent = if s.actions.playing > 0 { s.actions.playback_steps } else { 0 };
-        playback_steps = spent.saturating_add((steps.len().max(1) as u64).saturating_mul(input_count as u64));
+        playback_steps =
+            spent.saturating_add((steps.len().max(1) as u64).saturating_mul(if source == "open" { s.documents().len() } else { inputs.len() } as u64));
         if playback_steps > crate::actions_cmds::MAX_PLAYBACK_STEPS {
             return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the action playback step limit".into() });
         }
@@ -618,19 +763,17 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             s.actions.playback_steps = playback_steps;
         }
     }
-    let mut actions = crate::actions_cmds::ActionState {
+    let mut playback_stack = s.actions.playback_stack.clone();
+    playback_stack.extend(called_name);
+    let actions = crate::actions_cmds::ActionState {
         list,
-        playing: s.actions.playing,
-        playback_stack: s.actions.playback_stack.clone(),
+        playing: if named { s.actions.playing.saturating_add(1) } else { s.actions.playing },
+        playback_stack,
         playback_steps,
         script_depth: s.actions.script_depth,
         script_steps: s.actions.script_steps,
         ..Default::default()
     };
-    if let Some(name) = action {
-        actions.playing = actions.playing.saturating_add(1);
-        actions.playback_stack.push(name);
-    }
     if source == "open" {
         let save = SaveOpts::from_params(s, p, cmd)?;
         // A caller's recording index belongs to its original library, not an embedded namespace.
@@ -641,12 +784,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             None
         };
-        // Change only playback context, retaining the live recorder and script counters.
+        // Swap only execution context, retaining the recorder, revision and script counters.
         let previous_playing = std::mem::replace(&mut s.actions.playing, actions.playing);
         let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
         let previous_steps = std::mem::replace(&mut s.actions.playback_steps, actions.playback_steps);
         let previous_list = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list));
-        // A top-level Batch owns its document scope; an enclosing action keeps its scope.
         let owns_history = s.action_history.is_none() && s.prefs().actions.create_single_history_state;
         if owns_history {
             crate::actions_cmds::begin_document_history(s, &action_name);
@@ -655,11 +797,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         if owns_history {
             crate::actions_cmds::finish_document_history(s);
         }
-        if let Some(list) = previous_list {
-            s.actions.list = list;
-        }
         s.actions.playing = previous_playing;
         s.actions.playback_stack = previous_stack;
+        if let Some(previous) = previous_list {
+            s.actions.list = previous;
+        }
         if previous_playing == 0 {
             s.actions.playback_steps = previous_steps;
         }
@@ -668,29 +810,38 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         }
         return result;
     }
-    let names = batch_naming::plan(&inputs, &output, &format, p)?;
-    let save = SaveOpts::from_params(s, p, cmd)?;
+    let check_duplicates = recorded_output_guard(p);
+    let names = if save_and_close { None } else { batch_naming::plan(&inputs, &output, &format, p)? };
+    let mut save = SaveOpts::from_params(s, p, cmd)?;
+    if save_and_close {
+        save.tiff_layers = save_close_tiff_layers;
+        save.preserve_alpha = true;
+    }
     let authorize = s.authorize;
-    let raw_ppi = s.prefs().raw_defaults.resolution;
+    let raw_ppi = super::open::raw_open_resolution(s);
     let action_prefs = s.prefs().actions.clone();
-    let outputs: Vec<(String, String)> = match names {
-        Some(names) => inputs.iter().map(|input| input.path.clone()).zip(names).collect(),
-        None => inputs
-            .iter()
-            .map(|input| {
-                let ext = if format == "same" { same_format(&input.path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
-                let out = join(&output, &format!("{}.{ext}", stem(&input.path)));
-                (input.path.clone(), out)
-            })
-            .collect(),
+    let prefs = s.prefs.clone();
+    let color_settings = s.color.settings.clone();
+    let raw_settings = s.batch_raw_open.as_ref().unwrap_or(&s.prefs().raw_defaults).clone();
+    let script_count = s.actions.script_steps;
+    let outputs: Vec<(String, String)> = if save_and_close {
+        inputs.iter().map(|input| (input.path.clone(), input.path.clone())).collect()
+    } else {
+        match names {
+            Some(names) => inputs.iter().map(|input| input.path.clone()).zip(names).collect(),
+            None => inputs
+                .iter()
+                .map(|input| {
+                    let ext = if format == "same" { same_format(&input.path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                    (input.path.clone(), join(&output, &format!("{}.{ext}", stem(&input.path))))
+                })
+                .collect(),
+        }
     };
     #[cfg(not(target_arch = "wasm32"))]
     validate_flat_outputs(&outputs)?;
-    validate_error_log(&policy, outputs.iter().map(|(input, _)| input.clone()), outputs.iter().map(|(_, output)| output.clone()))?;
-    // Each input runs in its own scratch session, so what the played steps spend is carried from
-    // one input to the next (failed or not) and back to this session, not restarted per input.
+    validate_error_log(&policy, outputs.iter().map(|(path, _)| path.clone()), outputs.iter().map(|(_, path)| path.clone()))?;
     let was_playing = s.actions.playing > 0;
-    let was_script = s.actions.script_depth > 0;
     #[cfg(test)]
     let history_observer = s.batch_history_observer;
     crate::jobs::run(
@@ -699,22 +850,99 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         false,
         move |ctx| {
             let carried = std::cell::Cell::new(playback_steps);
-            let carried_script = std::cell::Cell::new(actions.script_steps);
-            let run = |scratch: &mut Session, out: &str| {
+            let script_steps = std::cell::Cell::new(script_count);
+            let notices = std::cell::RefCell::new(Vec::new());
+            let prepare = |scratch: &mut Session, path: &str| -> Result<()> {
+                #[cfg(not(target_arch = "wasm32"))]
+                if check_folder_format && !super::paths::openable_name(path) {
+                    return Err(EngineError::Other(format!("unsupported Batch folder input: {path}")));
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = check_folder_format;
+                if quiet_profiles || quiet_raw {
+                    scratch.prefs = prefs.clone();
+                    scratch.color.settings = color_settings.clone();
+                    if quiet_profiles {
+                        scratch.color.settings.ask_on_mismatch = false;
+                        scratch.color.settings.ask_on_missing = false;
+                    }
+                    scratch.authorize = authorize;
+                    if quiet_raw {
+                        scratch.batch_raw_open = Some(raw_settings.clone());
+                    }
+                    scratch.batch_open_notices = Some(Vec::new());
+                }
+                if override_open {
+                    scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
+                } else {
+                    let bytes = read_file(path)?;
+                    if quiet_profiles || quiet_raw {
+                        super::open::open_bytes_as(scratch, &file_name(path), &bytes, None, Some(path.to_string()))?;
+                    } else {
+                        let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+                        scratch.add_document(doc, Some(path.to_string()));
+                    }
+                }
+                Ok(())
+            };
+            let input = InputPolicy { prepare: &prepare, notices: &notices };
+            let run = |scratch: &mut Session, out: &str| -> std::result::Result<bool, FileFailure> {
+                let source_id = scratch.active().map(|state| state.doc.id);
+                let source_path = scratch
+                    .batch_open
+                    .as_ref()
+                    .map(|binding| binding.path.clone())
+                    .or_else(|| scratch.active().and_then(|state| state.path.clone()))
+                    .unwrap_or_default();
+                let encode_format = if format == "same" { same_format(&source_path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                if save_and_close
+                    && !extension(out).is_some_and(|ext| {
+                        matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora")
+                            || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
+                    })
+                {
+                    return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")).into());
+                }
+                // Check the actual result, including a saved snapshot after Close, before either write path.
+                let validate_result = |scratch: &Session, doc: &Document| -> Result<()> {
+                    if scratch.batch_open.as_ref().is_some_and(|binding| binding.sources.is_empty()) {
+                        return Err(EngineError::Other("Override Open requires an executed Open step for this input".into()));
+                    }
+                    if !save_and_close {
+                        return Ok(());
+                    }
+                    let from_source = scratch.batch_open.as_ref().map_or(source_id == Some(doc.id), |binding| binding.sources.contains(&doc.id));
+                    if !from_source {
+                        return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
+                    }
+                    // All recorded Opens passed their gates before inspecting the original source,
+                    // including when this result is a saved snapshot whose document has been closed.
+                    preserve_source(out)?;
+                    let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
+                    if tiff {
+                        if !matches!(
+                            doc.pixel_format().mode,
+                            photocraft_color::ColorMode::Rgb | photocraft_color::ColorMode::Grayscale | photocraft_color::ColorMode::Cmyk
+                        ) || doc.mode == photocraft_color::ColorMode::Multichannel
+                        {
+                            return Err(EngineError::Other("Save and Close cannot preserve this TIFF color mode".into()));
+                        }
+                        if !save.tiff_layers && super::save::tiff_would_write_layers(doc) {
+                            return Err(EngineError::Other("Save and Close would flatten TIFF layer data; keep tiffLayers enabled".into()));
+                        }
+                    }
+                    Ok(())
+                };
                 scratch.authorize = authorize;
                 scratch.actions = actions.clone();
                 scratch.actions.playback_steps = carried.get();
-                scratch.actions.script_steps = carried_script.get();
+                scratch.actions.script_steps = script_steps.get();
                 scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
                 let owns_history = scratch.action_history.is_none() && scratch.prefs().actions.create_single_history_state;
                 if owns_history {
                     crate::actions_cmds::begin_document_history(scratch, &action_name);
                 }
                 let result = (|| -> std::result::Result<bool, FileFailure> {
-                    // A recorded save marks a result. If the action later closes or switches
-                    // documents, write the saved snapshot instead of the new active document.
-                    let source = scratch.active().and_then(|state| state.path.as_deref()).unwrap_or("").to_string();
-                    let encode_format = if format == "same" { same_format(&source) } else { format.trim_start_matches('.').to_ascii_lowercase() };
                     let mut saved: Option<Arc<Document>> = None;
                     for (id, params) in &steps {
                         ctx.check()?;
@@ -722,29 +950,39 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             return Err(EngineError::Cancelled.into());
                         }
                         if batch_save_point(id) {
-                            let state = scratch.active_mut().ok_or(EngineError::NoDocument)?;
-                            saved = Some(state.doc.clone());
-                            // The destination save is performed by Batch; subsequent recorded
-                            // Close steps see Save / Save As as saved, but Save a Copy as changed.
+                            let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
+                            saved = Some(st.doc.clone());
+                            // Batch performs the action's Save / Save As (to its destination), so the
+                            // document is saved there as far as the steps after it see: a Close recorded
+                            // without a save policy (`"save":"ask"`) then closes it. A Save a Copy leaves
+                            // the document as changed as it was.
                             if id != "file.saveACopy" {
-                                state.saved_revision = state.revision;
+                                st.saved_revision = st.revision;
                             }
                             continue;
                         }
                         let params = crate::actions_cmds::playback_params(scratch, id, params)?;
-                        let result = scratch.execute(id, params)?;
-                        ctx.publish_batch_preview(&source, scratch.active().map(|state| state.doc.clone()));
-                        if let Some(error) = crate::actions_cmds::nested_failure(id, &result) {
-                            return Err(FileFailure { error: EngineError::Other(error), result: Some(result) });
+                        let r = scratch.execute(id, params)?;
+                        ctx.publish_batch_preview(&source_path, scratch.active().map(|state| state.doc.clone()));
+                        // A failed step inside a called action makes this file an error, not a saved result.
+                        if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
+                            return Err(FileFailure { error: EngineError::Other(error), result: Some(r) });
                         }
                     }
+                    // While the saved document is still open the steps after the save reach the result too
+                    // (#3058), so it is saved after the action as usual. Closed after its save, or with another
+                    // document left active, it is written as the save found it.
                     match saved {
-                        Some(doc) if scratch.active().is_none_or(|active| active.doc.id != doc.id) => {
-                            ctx.check()?;
-                            save_batch_doc(&doc, out, &encode_format, save, ctx)?;
+                        Some(doc) if scratch.active().is_none_or(|d| d.doc.id != doc.id) => {
+                            validate_result(scratch, &doc)?;
+                            let warnings = save_batch_doc(&doc, out, &encode_format, save, ctx)?;
+                            record_export_warnings(scratch, out, warnings);
                             Ok(true)
                         }
-                        _ => Ok(false),
+                        _ => {
+                            validate_result(scratch, &scratch.active().ok_or(EngineError::NoDocument)?.doc)?;
+                            Ok(false)
+                        }
                     }
                 })();
                 if owns_history {
@@ -755,22 +993,40 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     observe(scratch);
                 }
                 carried.set(scratch.actions.playback_steps);
-                carried_script.set(scratch.actions.script_steps);
+                script_steps.set(scratch.actions.script_steps);
                 result
             };
-            let result = process_batch_outputs_with_results(raw_ppi, outputs, &format, save, &policy, ctx, &run);
-            Ok((result, carried.get(), carried_script.get()))
+            let mut result = process_batch_outputs_with(
+                BatchRun { raw_ppi, format: &format, save, policy: &policy, input: Some(&input), check_duplicates },
+                outputs,
+                ctx,
+                &run,
+            )?;
+            let notices = notices.into_inner();
+            if !notices.is_empty() {
+                result["notices"] = json!(notices);
+            }
+            Ok((result, carried.get(), script_steps.get()))
         },
         move |s, (result, carried, script_steps)| {
             if was_playing {
                 s.actions.playback_steps = carried;
             }
-            if was_script {
-                s.actions.script_steps = script_steps;
+            s.actions.script_steps = script_steps;
+            if let (Some(notices), Some(imports)) = (&mut s.batch_open_notices, result.get("notices").and_then(Value::as_array)) {
+                notices.extend(imports.iter().cloned());
             }
-            result
+            Ok(result)
         },
     )
+}
+
+/// Preserve the recorded/structured collision policy while ordinary native Batch keeps
+/// current main's later-file-wins behavior. The validated request uses this in both source modes.
+fn recorded_output_guard(p: &Value) -> bool {
+    p.get("destination").and_then(Value::as_str) == Some("saveAndClose")
+        || p.get("includeNonImages").and_then(Value::as_bool) == Some(true)
+        || p.get("namingComponents").is_some_and(|value| !value.is_null())
 }
 
 /// Source: Opened Files runs on the live documents, so edits remain in their histories.
@@ -824,11 +1080,18 @@ fn batch_open_documents(
     let mut errors = Vec::new();
     let mut stopped = None;
     let mut done = 0;
+    let mut written = OutputClaims::default();
+    let check_duplicates = recorded_output_guard(p);
     for (index, (id, name, path)) in originals.iter().enumerate() {
         // The document a recorded Save / Save As marked as saved, with its earlier saved
         // revision: when Batch then writes nothing, it reads as changed again.
         let mut marked: Option<(u64, u64)> = None;
         let result = (|| -> std::result::Result<(), FileFailure> {
+            // A rejected destination cannot edit the next document either.
+            if check_duplicates && let Some(paths) = &planned {
+                let out = paths.get(index).ok_or_else(|| EngineError::Other("batch output plan is incomplete".into()))?;
+                written.check(out).map_err(EngineError::Other)?;
+            }
             let position = s.documents().iter().position(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?;
             s.set_active(position);
             let mut saved: Option<Arc<Document>> = None;
@@ -860,6 +1123,7 @@ fn batch_open_documents(
             };
             let ext = if format == "same" { same_format(path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
             save_doc_as(&doc, out, &ext, save)?;
+            written.record(out, path);
             files.push(out.clone());
             Ok(())
         })();
@@ -894,6 +1158,39 @@ fn batch_open_documents(
     }
     result["documents"] = json!(originals.len());
     Ok(result)
+}
+
+/// Check source structure once at the common pre-write seam, after Open authorization and ownership.
+fn preserve_source(path: &str) -> Result<()> {
+    let bytes = read_file(path)?;
+    if photocraft_codecs::has_unretained_source_data(&bytes).map_err(|e| EngineError::Other(format!("cannot inspect source data: {e}")))? {
+        return Err(EngineError::Other("Save and Close cannot preserve additional source data; save to a separate output folder".into()));
+    }
+    if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::OpenExr) {
+        preserve_exr(&bytes)?;
+    }
+    Ok(())
+}
+
+/// Only a single flat, unprefixed RGB(A) source can be preserved by the EXR writer.
+fn preserve_exr(bytes: &[u8]) -> Result<()> {
+    let parts = photocraft_codecs::exr_info(bytes, &Default::default()).map_err(|e| EngineError::Other(format!("cannot inspect EXR source: {e}")))?;
+    if parts.len() != 1
+        || parts.first().is_none_or(|p| {
+            p.data_window != (0, 0, p.width, p.height)
+                || p.display_window != p.data_window
+                || p.deep
+                || p.view.is_some()
+                || !(3..=4).contains(&p.channels.len())
+                || p.channels.iter().any(|c| !matches!(c.name.as_str(), "R" | "G" | "B" | "A"))
+                || ["R", "G", "B"].iter().any(|name| !p.channels.iter().any(|c| c.name == *name))
+        })
+    {
+        return Err(EngineError::Other(
+            "Save and Close cannot preserve this EXR's parts or channels, or its data/display windows; save to a separate output folder".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

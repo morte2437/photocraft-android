@@ -1015,7 +1015,7 @@ fn shape_blur_radius_boundaries_keep_their_value_without_running_large_kernels()
 }
 
 #[test]
-fn shape_blur_keeps_custom_assets_and_invalid_radius_forms_whole() {
+fn shape_blur_keeps_unrepresented_assets_and_invalid_radius_forms_whole() {
     let custom = Descriptor::new("customShape").with("Nm  ", D::Text(UnicodeString::new_nul("Star"))).with("Idnt", D::Text(UnicodeString::new_nul("asset-id")));
     for descriptor in [
         radius_descriptor(4.0),
@@ -1023,7 +1023,8 @@ fn shape_blur_keeps_custom_assets_and_invalid_radius_forms_whole() {
         radius_descriptor(f64::NAN),
         radius_descriptor(f64::INFINITY),
         Descriptor::new("shapeBlur").with("Rds ", D::UnitFloat { unit: *b"#Prc", value: 10.0 }),
-        radius_descriptor(10.0).with("customShape", D::Descriptor(custom)).with("keyOriginType", D::Integer(9)),
+        // Origin 9 is supported by ID; other origin forms must remain whole.
+        radius_descriptor(10.0).with("customShape", D::Descriptor(custom)).with("keyOriginType", D::Integer(8)),
         radius_descriptor(10.0).with("extra", D::Boolean(true)),
     ] {
         let mut s = Session::new();

@@ -232,3 +232,80 @@ fn direct_36mp_image_with_small_output_is_not_rejected() {
     let result = shape_blur(&src, Rect::new(3000, 3000, 3001, 3001), &ctx, 5.0, BlurShape::Circle);
     assert_eq!(result, vec![0.25; 4]);
 }
+
+/// An asymmetric weighted kernel detects mirroring independently of span accumulation.
+#[test]
+fn custom_shape_coverage_matches_point_convolution_without_mirroring() {
+    let mask = Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.0, 0.25, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0] };
+    let prepared = crate::shape_blur::Prepared::custom(1.0, &mask).unwrap();
+    for (channels, alpha) in [(1, false), (4, true)] {
+        let src = image(Rect::new(-2, -2, 5, 5), channels, alpha);
+        let ctx = Ctx { bounds: src.rect, mode: ColorMode::Rgb, alpha };
+        let out = Rect::new(-3, -3, 6, 6);
+        let actual = prepared.run(&src, out, &ctx);
+        let mut expected = Vec::new();
+        for y in out.y0..out.y1 {
+            for x in out.x0..out.x1 {
+                let mut sums = vec![0.0f64; channels];
+                for ky in 0..3 {
+                    for kx in 0..3 {
+                        let weight = f64::from(mask.data[ky * 3 + kx]);
+                        let (sx, sy) = (x + 1 - kx as i32, y + 1 - ky as i32);
+                        let a = if alpha { src.get(sx, sy, channels - 1) } else { 1.0 };
+                        for (c, sum) in sums.iter_mut().enumerate() {
+                            let v = src.get(sx, sy, c);
+                            *sum += f64::from(if alpha && c + 1 < channels { v * a } else { v }) * weight;
+                        }
+                    }
+                }
+                let mut px: Vec<f32> = sums.iter().map(|sum| (sum / 1.75) as f32).collect();
+                unpremul_px(&mut px, alpha);
+                expected.extend(px);
+            }
+        }
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() < 1e-6, "{a} != {e}");
+        }
+    }
+    // The top-left kernel corner, rather than its mirror, receives the impulse.
+    let mut src = Image { rect: Rect::new(0, 0, 7, 7), ch: 1, data: vec![0.0; 49] };
+    src.data[3 * 7 + 3] = 1.0;
+    let ctx = Ctx { bounds: src.rect, mode: ColorMode::Grayscale, alpha: false };
+    let out = prepared.run(&src, src.rect, &ctx);
+    assert!((out[2 * 7 + 2] - 1.0 / 1.75).abs() < 1e-6);
+    assert_eq!(out[4 * 7 + 4], 0.0);
+}
+
+/// The custom path must agree with the existing square blur, including tiled boundaries.
+#[test]
+fn custom_square_preserves_builtin_result_and_tile_boundaries() {
+    let rect = Rect::new(-3, -2, 17, 14);
+    let src = image(rect, 4, true);
+    let ctx = Ctx { bounds: rect, mode: ColorMode::Rgb, alpha: true };
+    let mask = Image { rect: Rect::new(0, 0, 7, 7), ch: 1, data: vec![1.0; 49] };
+    let p = FilterParams::CustomShapeBlur { radius: 2.5, kernel: Some(std::sync::Arc::new(mask)) };
+    let actual = kernel(&p, &src, rect, &ctx);
+    let expected = shape_blur(&src, rect, &ctx, 2.5, BlurShape::Square);
+    exact(&actual, &expected);
+    let mut surface = Surface::new(PixelFormat { mode: ColorMode::Rgb, sample: SampleType::F32, alpha: true });
+    surface.write_region(rect, &src.data);
+    let tiled = apply_tiled(&surface, &p, rect, rect, None, 5, Some(rect));
+    let ordinary = apply_tiled(&surface, &FilterParams::ShapeBlur { radius: 2.5, shape: BlurShape::Square }, rect, rect, None, 5, Some(rect));
+    exact(&tiled.read_region(rect), &ordinary.read_region(rect));
+}
+
+/// Oversized and invalid kernel metadata must be rejected before proportional allocation.
+#[test]
+fn invalid_custom_kernels_are_refused_without_allocating_their_declared_size() {
+    for mask in [
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![0.0; 9] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![f32::NAN; 9] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.1; 9] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 4, data: vec![1.0; 36] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.0] },
+        Image { rect: Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX), ch: 1, data: vec![] },
+    ] {
+        assert!(crate::shape_blur::Prepared::custom(1.0, &mask).is_none());
+    }
+}

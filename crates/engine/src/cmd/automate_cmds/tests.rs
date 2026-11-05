@@ -780,3 +780,102 @@ fn scripts_nested_deeper_than_the_limit_fail() {
     assert!(r.to_string().contains("nested more than"), "{r}");
     assert_eq!(s.actions.script_depth, 0, "the depth is released");
 }
+
+/// Embedded Batch lists own their references; a named source is still selected from the caller.
+#[test]
+fn droplets_preserve_batch_action_namespaces() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("droplet-scopes");
+    let input = images(&dir, 1, 40, 20).remove(0);
+    for kind in ["inline", "named", "named-set", "mixed", "mixed-two", "caller-null"] {
+        let mut maker = Session::new();
+        let mut source = Action::new("Source", vec![("actions.play".into(), json!({"action": 1})), ("file.close".into(), json!({}))]);
+        source.disabled.insert(1);
+        source.dialogs.insert(0);
+        source.set = Some("Captured".into());
+        maker.actions.list = vec![Action::new("Gap", Vec::new()), Action::new("Outside", Vec::new()), source.clone()];
+        let embedded = vec![
+            Action::new("LocalGap", Vec::new()),
+            Action::new("Inside", vec![("image.imageRotation.90cw".into(), json!({}))]),
+            Action::new("Outside", Vec::new()),
+        ];
+        let inner = format!("{dir}/{kind}-inner");
+        let mut batch = json!({"input": [input], "output": inner, "format": "png", "calledActions": embedded});
+        if kind == "inline" || kind == "caller-null" {
+            batch["steps"] = json!([["actions.play", {"action": 1}]]);
+        } else {
+            batch["action"] = json!("Source");
+            if kind == "named-set" {
+                batch["set"] = json!("Captured");
+            }
+        }
+        if kind == "caller-null" {
+            maker.actions.list[1].steps.push(("image.imageRotation.90cw".into(), json!({})));
+            batch["calledActions"] = Value::Null;
+        }
+        let mut steps = Vec::new();
+        if kind.starts_with("mixed") {
+            steps.push(json!(["actions.play", {"action": "Source"}]));
+        }
+        steps.push(json!(["file.automate.batch", batch]));
+        let other = format!("{dir}/{kind}-other");
+        if kind == "mixed-two" {
+            let mut second = batch.clone();
+            second["output"] = json!(other);
+            second["calledActions"][1]["steps"] = json!([]);
+            steps.push(json!(["file.automate.batch", second]));
+        }
+        let path = maker
+            .execute(
+                "file.automate.createDroplet",
+                json!({"path": format!("{dir}/{kind}"), "steps": steps, "format": "png", "output": format!("{dir}/{kind}-out"), "shim": false}),
+            )
+            .unwrap()["path"]
+            .clone();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path.as_str().unwrap()).unwrap()).unwrap();
+        if kind == "inline" {
+            assert_eq!(saved["action"]["steps"][0][1], batch, "embedded inline steps are unchanged");
+            assert!(saved.get("calledActions").is_none(), "embedded references do not capture enclosing actions");
+        } else if kind != "caller-null" {
+            let captured: Vec<Action> = serde_json::from_value(saved["calledActions"].clone()).unwrap();
+            assert_eq!(captured.last(), Some(&source), "one untouched source retains its references and flags");
+            assert_eq!(captured.len(), if kind.starts_with("mixed") { 3 } else { 1 });
+        }
+        let r = Session::new().execute("file.automate.runDroplet", json!({"droplet": path, "input": [input]})).unwrap();
+        assert_eq!(r["errors"], json!([]), "{kind}: {r}");
+        let out = photocraft_codecs::decode(&std::fs::read(format!("{inner}/img0.png")).unwrap()).unwrap();
+        assert_eq!(out.dimensions(), (20, 40), "{kind}");
+        if kind == "mixed-two" {
+            assert_eq!(photocraft_codecs::decode(&std::fs::read(format!("{other}/img0.png")).unwrap()).unwrap().dimensions(), (40, 20));
+        }
+    }
+}
+
+/// Untouched scoped variants count toward the existing 4096-record playback limit.
+#[test]
+fn droplet_scoped_variants_keep_the_existing_action_limit() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("droplet-scope-limit");
+    let input = images(&dir, 1, 2, 1).remove(0);
+    for count in [4095, 4096] {
+        let mut maker = Session::new();
+        maker.actions.list = (0..count).map(|i| Action::new(format!("A{i}"), Vec::new())).collect();
+        let mut steps: Vec<_> = (0..count).map(|i| json!(["actions.play", {"action": i}])).collect();
+        steps.push(
+            json!(["file.automate.batch", {"action": 0, "calledActions": [], "input": [input], "output": format!("{dir}/{count}-inner"), "format": "png"}]),
+        );
+        let output = format!("{dir}/{count}-out");
+        let path = maker
+            .execute("file.automate.createDroplet", json!({"path": format!("{dir}/{count}"), "steps": steps, "output": output, "format": "png", "shim": false}))
+            .unwrap()["path"]
+            .clone();
+        let result = Session::new().execute("file.automate.runDroplet", json!({"droplet": path, "input": [input]}));
+        if count == 4095 {
+            assert_eq!(result.unwrap()["errors"], json!([]));
+            assert!(std::path::Path::new(&output).exists());
+        } else {
+            assert!(result.unwrap_err().to_string().contains("4096"));
+            assert!(!std::path::Path::new(&output).exists());
+        }
+    }
+}

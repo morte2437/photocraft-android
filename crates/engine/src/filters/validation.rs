@@ -158,6 +158,12 @@ pub(crate) fn validate_params(id: &str, params: &Value) -> Result<()> {
             (rule.accepts(value), rule.expected())
         } else {
             match key.as_str() {
+                "shapeId" | "shapeName" if id == "filter.blur.shapeBlur" => (value.as_str().is_some_and(|s| !s.is_empty()), "a nonempty string".into()),
+                "shapePath" if id == "filter.blur.shapeBlur" => (
+                    crate::vector_cmds::parse_path(value).is_ok_and(|path| !path.is_empty() && path.control_bounds().is_some()),
+                    "a nonempty vector path".into(),
+                ),
+                "shapeOriginType" if id == "filter.blur.shapeBlur" => (value.as_i64() == Some(9), "the recorded custom-shape origin 9".into()),
                 "layer" => (value.as_u64().is_some() || value.is_string(), "an unsigned layer id or layer name".into()),
                 "coalesce" => (value.is_string(), "a string".into()),
                 "target" => (

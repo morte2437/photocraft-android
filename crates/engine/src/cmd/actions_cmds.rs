@@ -144,7 +144,7 @@ pub(crate) fn recorded_params(s: &Session, id: &str, mut p: Value) -> Value {
 }
 
 /// Resolve the recorded visibility target identically in engine and shell playback, and drop
-/// the `.atn` event a Filter Gallery step remembers for Save Actions: the command, its journal
+/// the `.atn` event or Custom descriptor remembered for Save Actions: the command, its journal
 /// entry (Last Filter), a smart filter and the step's dialog never see it.
 pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
     let mut p = p.clone();
@@ -169,6 +169,11 @@ pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
         && let Some(object) = p.as_object_mut()
     {
         object.remove(crate::atn_cmds::RECORDED_EVENT);
+    }
+    if id == "filter.other.custom"
+        && let Some(object) = p.as_object_mut()
+    {
+        object.remove("__atnCustom");
     }
     if id == "layer.setProps"
         && let Some(target) = p.get("_actionLayer")
@@ -626,6 +631,8 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
             failed = Some(json!({"step": i, "id": id, "error": format!("action playback exceeded the {}-step limit", MAX_PLAYBACK_STEPS)}));
             break;
         }
+        let effective = crate::file_cmds::batch_open_params(s, id, params);
+        let params = effective.as_ref().unwrap_or(params);
         if let Some(auth) = s.authorize
             && let Err(e) = auth(id, params)
         {

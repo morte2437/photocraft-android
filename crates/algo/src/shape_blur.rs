@@ -18,11 +18,49 @@ pub(crate) fn radius(r: f32) -> f32 {
 
 pub(crate) struct Prepared {
     spans: Spans,
+    weights: Option<Vec<f64>>,
 }
 
 impl Prepared {
     pub(crate) fn new(r: f32, shape: BlurShape) -> Self {
-        Self { spans: Spans::new(radius(r), shape_inside(shape)) }
+        Self { spans: Spans::new(radius(r), shape_inside(shape)), weights: None }
+    }
+
+    /// Coverage of a custom shape, centred in a (2 ceil(radius) + 1) square.
+    pub(crate) fn custom(r: f32, mask: &Image) -> Option<Self> {
+        let ri = radius(r).ceil() as i32;
+        let size = usize::try_from(ri.checked_mul(2)?.checked_add(1)?).ok()?;
+        if mask.ch != 1
+            || mask.rect.width() as usize != size
+            || mask.rect.height() as usize != size
+            || mask.data.len() != size.checked_mul(size)?
+            || mask.data.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return None;
+        }
+        let mut rows = Vec::new();
+        let mut weights = Vec::new();
+        let mut count = 0.0;
+        for (y, row) in mask.data.chunks_exact(size).enumerate() {
+            rows.try_reserve(size).ok()?;
+            weights.try_reserve(size).ok()?;
+            let mut x = 0;
+            while let Some(&coverage) = row.get(x) {
+                let start = x;
+                x += 1;
+                while row.get(x) == Some(&coverage) {
+                    x += 1;
+                }
+                if coverage > 0.0 {
+                    // Convolution samples source(x-offset), so an impulse draws the selected
+                    // kernel in its original orientation rather than a mirrored shape.
+                    rows.push((ri - y as i32, ri - x as i32 + 1, ri - start as i32));
+                    weights.push(f64::from(coverage));
+                    count += (x - start) as f64 * f64::from(coverage);
+                }
+            }
+        }
+        (count > 0.0).then_some(Self { spans: Spans { rows, count }, weights: Some(weights) })
     }
 
     pub(crate) fn run(&self, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
@@ -76,7 +114,7 @@ impl Prepared {
     fn accumulate_row(&self, prefix: &Prefix, src: &Image, out: Rect, y: i32, acc: &mut [f64]) -> Option<()> {
         let x = i64::from(out.x0) - i64::from(src.rect.x0);
         acc.fill(0.0);
-        for &(dy, a, b) in &self.spans.rows {
+        for (index, &(dy, a, b)) in self.spans.rows.iter().enumerate() {
             let yy = i64::from(y) - i64::from(src.rect.y0) + i64::from(dy);
             let Ok(yy) = usize::try_from(yy) else {
                 continue;
@@ -85,7 +123,8 @@ impl Prepared {
                 continue;
             }
             let row = prefix.row(yy)?;
-            prefix.add_window(row, acc, x + i64::from(a), x + i64::from(b) + 1, out.width() as i64)?;
+            let weight = self.weights.as_ref().and_then(|w| w.get(index)).copied().unwrap_or(1.0);
+            prefix.add_window(row, acc, x + i64::from(a), x + i64::from(b) + 1, out.width() as i64, weight)?;
         }
         Some(())
     }
@@ -131,7 +170,7 @@ impl Prefix {
     }
 
     /// Add the `[lo, hi)` window difference of `row` for `acc.len() / n` output pixels.
-    fn add_window(&self, row: &[f64], acc: &mut [f64], lo: i64, hi: i64, end: i64) -> Option<()> {
+    fn add_window(&self, row: &[f64], acc: &mut [f64], lo: i64, hi: i64, end: i64, weight: f64) -> Option<()> {
         let (n, w) = (self.n, self.w);
         let row_len = acc.len();
         if lo >= 0 && hi + end <= w as i64 {
@@ -140,7 +179,7 @@ impl Prefix {
             let low = row.get(start_lo..start_lo.checked_add(row_len)?)?;
             let high = row.get(start_hi..start_hi.checked_add(row_len)?)?;
             for ((acc, hi), lo) in acc.iter_mut().zip(high).zip(low) {
-                *acc += hi - lo;
+                *acc += if weight == 1.0 { hi - lo } else { (hi - lo) * weight };
             }
         } else {
             // Direct kernel callers may omit the halo or request pixels outside src.
@@ -149,7 +188,7 @@ impl Prefix {
                 let low = (lo + i as i64).clamp(0, w as i64) as usize * n;
                 let high = (hi + i as i64).clamp(0, w as i64) as usize * n;
                 for ((acc, hi), lo) in px.iter_mut().zip(row.get(high..high + n)?).zip(row.get(low..low + n)?) {
-                    *acc += hi - lo;
+                    *acc += if weight == 1.0 { hi - lo } else { (hi - lo) * weight };
                 }
             }
         }

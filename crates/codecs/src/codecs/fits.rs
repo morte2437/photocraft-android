@@ -211,6 +211,49 @@ fn data_len(h: &Header, bitpix: i64) -> Result<u64, CodecError> {
         .ok_or_else(|| err("data size overflows"))
 }
 
+/// Inspect every HDU without decoding pixels: one gray plane or three RGB planes are retained,
+/// while other cubes, image extensions, tables and other data-bearing HDUs cannot survive a flat save.
+/// Incomplete or over-limit walks fail closed rather than treating an unchecked suffix as safe.
+pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+    let mut start = 0;
+    let mut image_seen = false;
+    for index in 0..MAX_HDUS {
+        let h = parse_header(bytes, start)?;
+        if index == 0 && h.get("SIMPLE").is_none() {
+            return Err(err("missing SIMPLE"));
+        }
+        let ax = axes(&h)?;
+        let size = data_len(&h, h.int("BITPIX").unwrap_or(8))?;
+        let image_hdu = index == 0 || h.string("XTENSION") == Some("IMAGE");
+        if h.logical("ZIMAGE") {
+            return Ok(true);
+        }
+        if !image_hdu && size > 0 {
+            return Ok(true);
+        }
+        if image_hdu && ax.len() >= 2 && ax[..2].iter().all(|n| *n > 0) {
+            let planes = ax.iter().skip(2).try_fold(1u64, |n, axis| n.checked_mul(*axis)).ok_or_else(|| err("plane count overflows"))?;
+            let retained = planes == 1 || (ax.get(2) == Some(&3) && planes == 3);
+            if image_seen || !retained || h.int("GCOUNT").unwrap_or(1) > 1 || h.int("PCOUNT").unwrap_or(0) > 0 {
+                return Ok(true);
+            }
+            image_seen = true;
+        } else if size > 0 {
+            return Ok(true);
+        }
+        let padded = size.div_ceil(BLOCK as u64).checked_mul(BLOCK as u64).ok_or_else(|| err("data size overflows"))?;
+        let next = usize::try_from(padded).ok().and_then(|size| h.data_start.checked_add(size)).ok_or_else(|| err("data size overflows"))?;
+        if next > bytes.len() {
+            return Err(err("truncated HDU data"));
+        }
+        if next == bytes.len() {
+            return Ok(false);
+        }
+        start = next;
+    }
+    Err(err("too many HDUs to inspect every source image"))
+}
+
 /// Finds the image HDU: the primary one when it has at least two axes, else the first `IMAGE`
 /// extension. Returns its header and the primary header (for its descriptive cards).
 fn find_image(b: &[u8]) -> Result<(Header, Option<Header>), CodecError> {

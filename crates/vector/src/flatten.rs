@@ -2,6 +2,7 @@
 
 use photocraft_doc::{Path, Subpath};
 use photocraft_geom::Point;
+use photocraft_raster::Interrupt;
 
 /// A flattened subpath.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -145,12 +146,14 @@ pub(crate) const MAX_PATH_POINTS: usize = 1 << 20;
 
 /// How much to coarsen the curves of `subpaths` at `tol` so the whole path stays within
 /// [`MAX_PATH_POINTS`]: the share of each curve's pieces to keep (1 = all of them).
-fn piece_scale<'a>(subpaths: impl IntoIterator<Item = &'a Subpath>, tol: f64) -> f64 {
+fn piece_scale<'a>(subpaths: impl IntoIterator<Item = &'a Subpath>, tol: f64, ctl: &Interrupt) -> Option<f64> {
     // Subpath starts and straight segments take one point each and cannot be coarsened.
     let (mut fixed, mut curves) = (0usize, 0usize);
     for s in subpaths {
+        ctl.check().ok()?;
         fixed = fixed.saturating_add(1);
         for seg in s.segments() {
+            ctl.check().ok()?;
             if is_line(&seg) {
                 fixed = fixed.saturating_add(1);
             } else {
@@ -159,22 +162,24 @@ fn piece_scale<'a>(subpaths: impl IntoIterator<Item = &'a Subpath>, tol: f64) ->
         }
     }
     let total = fixed.saturating_add(curves);
-    if total <= MAX_PATH_POINTS { 1.0 } else { MAX_PATH_POINTS as f64 / total as f64 }
+    Some(if total <= MAX_PATH_POINTS { 1.0 } else { MAX_PATH_POINTS as f64 / total as f64 })
 }
 
 /// Flattens one subpath. Closed subpaths do not repeat the first point at the end. A hostile
 /// subpath is flattened more coarsely so it stays within a bounded number of points.
 pub fn flatten_subpath(s: &Subpath, tol: f64) -> Polyline {
-    flatten_scaled(s, tol, piece_scale([s], tol))
+    let ctl = &Interrupt::NONE;
+    flatten_scaled(s, tol, piece_scale([s], tol, ctl).unwrap_or(1.0), ctl).unwrap_or_default()
 }
 
 /// [`flatten_subpath`] keeping the share `scale` of each curve's pieces (at least one).
-fn flatten_scaled(s: &Subpath, tol: f64, scale: f64) -> Polyline {
+fn flatten_scaled(s: &Subpath, tol: f64, scale: f64, ctl: &Interrupt) -> Option<Polyline> {
     let mut out = Polyline { closed: s.closed, ..Default::default() };
     if let Some(k) = s.knots.first() {
         out.push((k.anchor.x, k.anchor.y), true);
     }
     for seg in &s.segments() {
+        ctl.check().ok()?;
         if is_line(seg) {
             out.push((seg[3].x, seg[3].y), true);
             continue;
@@ -182,6 +187,9 @@ fn flatten_scaled(s: &Subpath, tol: f64, scale: f64) -> Polyline {
         let n = pieces(seg, tol);
         let n = if scale < 1.0 { ((n as f64 * scale) as usize).max(1) } else { n };
         for j in 1..=n {
+            if j % 256 == 0 {
+                ctl.check().ok()?;
+            }
             out.push(eval(seg, j as f64 / n as f64), j == n);
         }
     }
@@ -193,14 +201,19 @@ fn flatten_scaled(s: &Subpath, tol: f64, scale: f64) -> Polyline {
             out.knot[0] = true;
         }
     }
-    out
+    Some(out)
 }
 
 /// Flattens every subpath (see [`flatten_subpath`]); a hostile path is flattened more coarsely
 /// so the whole path stays within a bounded number of points.
 pub fn flatten_path(p: &Path, tol: f64) -> Vec<Polyline> {
-    let scale = piece_scale(&p.subpaths, tol);
-    p.subpaths.iter().map(|s| flatten_scaled(s, tol, scale)).collect()
+    flatten_path_with(p, tol, &Interrupt::NONE).unwrap_or_default()
+}
+
+/// [`flatten_path`] with cancellation checks during point budgeting and tessellation.
+pub fn flatten_path_with(p: &Path, tol: f64, ctl: &Interrupt) -> Option<Vec<Polyline>> {
+    let scale = piece_scale(&p.subpaths, tol, ctl)?;
+    p.subpaths.iter().map(|s| flatten_scaled(s, tol, scale, ctl)).collect()
 }
 
 #[cfg(test)]
@@ -303,6 +316,6 @@ mod tests {
         assert_eq!(flatten_subpath(&path.subpaths[0], 0.01).pts.len(), points);
         // Ordinary paths are flattened exactly as before.
         let circle = shapes::ellipse(0.0, 0.0, 200.0, 200.0);
-        assert_eq!(flatten_path(&circle, 0.01)[0], flatten_scaled(&circle.subpaths[0], 0.01, 1.0));
+        assert_eq!(flatten_path(&circle, 0.01)[0], flatten_scaled(&circle.subpaths[0], 0.01, 1.0, &Interrupt::NONE).unwrap());
     }
 }

@@ -1207,7 +1207,7 @@ fn build() -> Vec<CommandSpec> {
         (
             "colorLookup",
             "Color Lookup…",
-            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":json} (file: .cube/.3dl/.look path; data: file text + "fileName")"##,
+            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
         ),
     ];
     for &(kind, label, params) in ADJ {

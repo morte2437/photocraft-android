@@ -23,6 +23,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
+chrono = { workspace = true }
 photocraft-paint = { workspace = true }
 photocraft-algo = { workspace = true }
 photocraft-text = { workspace = true }
@@ -45,7 +46,6 @@ semver = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "3"
-chrono = { workspace = true }
 
 # `file_cmds::same_file` on Windows: the volume serial number and file index, so a hard link to a
 # file is that file (std's `MetadataExt::file_index` is unstable).

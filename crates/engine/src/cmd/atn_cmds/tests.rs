@@ -3,6 +3,17 @@ use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
 use photocraft_psd::descriptor::{Descriptor, Id, ReferenceItem, UnicodeString, Value as D};
 use serde_json::json;
 
+/// A wire key has one mapper; distinct wire aliases may still name the same command.
+#[test]
+fn event_wire_keys_are_unique() {
+    let mut codes = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    for event in EVENTS {
+        assert!(event.code.is_empty() || codes.insert(event.code), "duplicate ATN code {}", event.code);
+        assert!(event.name.is_empty() || names.insert(event.name), "duplicate ATN name {}", event.name);
+    }
+}
+
 #[test]
 fn blend_modes_accept_photoshop_string_ids_and_export_canonical_ids() {
     for (string_id, char_id, label) in [
@@ -67,6 +78,168 @@ fn item(event: &str, label: &str, d: Option<Descriptor>) -> AtnItem {
 
 fn b64(bytes: &[u8]) -> String {
     photocraft_paint::tile::b64_encode(bytes)
+}
+
+fn color_lookup_case() -> Value {
+    let bytes = b"LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    let d = desc("null")
+        .with("lookupType", enm("colorLookupType", "3DLUT"))
+        .with("Nm  ", text("identity.cube"))
+        .with("Dthr", D::Boolean(false))
+        .with("profile", D::RawData(Vec::new()))
+        .with("LUTFormat", enm("LUTFormatType", "LUTFormatCUBE"))
+        .with("LUT3DFileData", D::RawData(Vec::new()))
+        .with("LUT3DFileName", text("identity.cube"));
+    json!({"data":b64(bytes),"dataEncoding":"base64","lutFormat":"cube","fileName":"identity.cube","dither":false,"__atnColorLookup":b64(&d.to_bytes())})
+}
+
+/// Keep the starting counter nested in naming rules, as recorded by the Batch dialog.
+fn batch_descriptor(component: &str) -> Descriptor {
+    let rules = desc("fileNamingRules")
+        .with("fileNamingComponents", D::List(vec![D::Descriptor(desc("fileNamingComponent").with("component", enm("fileNamingComponent", component)))]))
+        .with("Strt", D::Integer(7))
+        .with("Mcnt", D::Boolean(true))
+        .with("Win ", D::Boolean(false))
+        .with("unix", D::Boolean(true));
+    desc("Btch")
+        .with("null", path_value("/input"))
+        .with("Fldr", D::Boolean(false))
+        .with(
+            "Usng",
+            D::Reference(vec![
+                ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul("Child") },
+                ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul("S") },
+            ]),
+        )
+        .with("T   ", path_value("/output"))
+        .with("Ovrd", D::Boolean(false))
+        .with("fileNamingRules", D::Descriptor(rules))
+}
+
+/// Preserve the recorded template in the generic registry round-trip witness.
+fn batch_case() -> Value {
+    json!({"input":"/input","output":"/output","action":"Child","set":"S","flatOutput":true,"includeSubfolders":false,"overrideSaveAs":false,"stopOnError":true,"includeNonImages":true,
+        "namingComponents":[{"component":"serial3"}],"startingSerial":7,"compatibility":{"macintosh":true,"windows":false,"unix":true},
+        "__atnBatch":b64(&batch_descriptor("threeDigit").to_bytes())})
+}
+
+/// Save and Close replaces the folder path while retaining its recorded naming metadata.
+fn batch_save_and_close_case() -> Value {
+    let mut d = batch_descriptor("threeDigit");
+    d.items.retain(|(key, _)| !key.is("T   "));
+    let d = d.with("SvAn", D::Boolean(true));
+    let mut p = batch_case();
+    p.as_object_mut().unwrap().remove("output");
+    p.as_object_mut().unwrap().remove("flatOutput");
+    p["destination"] = json!("saveAndClose");
+    p["__atnBatch"] = json!(b64(&d.to_bytes()));
+    p
+}
+
+/// Destination changes retain exact descriptors and reject ambiguous output/override settings.
+#[test]
+fn batch_save_and_close_round_trips_without_folder_defaults() {
+    let p = batch_save_and_close_case();
+    let d = super::steps_batch::batch_to("file.automate.batch", &p).unwrap();
+    let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(d.clone()))])])).unwrap();
+    let imported = import(&bytes).unwrap();
+    assert!(imported.unsupported.is_empty());
+    assert_eq!(imported.actions[0].steps[0].1, p);
+    let (out, skipped) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d.clone()));
+    for bad in [d.clone().with("T   ", path_value("/other")), {
+        let mut bad = d.clone();
+        bad.items.retain(|(key, _)| !key.is("Ovrd"));
+        bad.with("Ovrd", D::Boolean(true))
+    }] {
+        let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(bad.clone()))])])).unwrap();
+        let imported = import(&bytes).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, PHOTOSHOP_STEP);
+        let (out, _) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(bad));
+    }
+}
+
+/// Each documented component and portability flag must survive native conversion and save.
+#[test]
+fn batch_all_documented_components_and_compatibility_flags_round_trip() {
+    for &(wire, native) in crate::file_cmds::BATCH_NAMING_COMPONENTS {
+        let d = batch_descriptor(wire);
+        let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(d.clone()))])])).unwrap();
+        let imported = import(&bytes).unwrap();
+        assert!(imported.unsupported.is_empty(), "{wire}");
+        let p = &imported.actions[0].steps[0].1;
+        assert_eq!(p["namingComponents"], json!([{"component":native}]));
+        assert_eq!(p["startingSerial"], 7);
+        assert_eq!(p["stopOnError"], true);
+        assert_eq!(p["includeNonImages"], true);
+        assert_eq!(p["compatibility"], json!({"macintosh":true,"windows":false,"unix":true}));
+        let (out, skipped) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+}
+
+/// Batch's Open binding round-trips, but richer Open descriptors must remain whole.
+#[test]
+fn batch_override_open_and_unrepresented_open_settings_round_trip() {
+    for enabled in [false, true] {
+        let mut p = batch_case();
+        p.as_object_mut().unwrap().remove("__atnBatch");
+        p["overrideOpen"] = json!(enabled);
+        p["suppressWarnings"] = json!(enabled);
+        p["suppressOpenOptions"] = json!(enabled);
+        let a = Action::new("Driver", vec![("file.automate.batch".into(), p)]);
+        let (bytes, skipped) = export("S", &[&a], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let loaded = import(&bytes).unwrap();
+        assert_eq!(loaded.actions[0].steps[0].1["overrideOpen"], enabled);
+        assert_eq!(loaded.actions[0].steps[0].1["suppressWarnings"], enabled);
+        assert_eq!(loaded.actions[0].steps[0].1["suppressOpenOptions"], enabled);
+        let (again, skipped) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(atn::parse(&again).unwrap().actions[0].items[0].descriptor, atn::parse(&bytes).unwrap().actions[0].items[0].descriptor);
+    }
+    let rich = desc("null").with("null", path_value("/recorded.png")).with("unrepresentedOpenSetting", D::Boolean(true));
+    let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Opn ", "Open", Some(rich.clone()))])])).unwrap();
+    let loaded = import(&bytes).unwrap();
+    assert_eq!(loaded.actions[0].steps[0].0, PHOTOSHOP_STEP);
+    let (again, _) = export("S", &[&loaded.actions[0]], &[], false).unwrap();
+    assert_eq!(atn::parse(&again).unwrap().actions[0].items[0].descriptor, Some(rich));
+    assert!(super::steps_doc::open_to("file.openAs", &json!({"path":"/recorded.png","as":"png"})).is_none());
+}
+
+/// Unsupported modes and misplaced fields must not lose data through a partial conversion.
+#[test]
+fn batch_unknown_components_wrong_start_placement_and_unsupported_modes_stay_whole() {
+    let mut cases = vec![batch_descriptor("unknownComponent")];
+    for (key, value) in [("Strt", D::Integer(3)), ("OvrO", D::Integer(1)), ("SvAn", D::Boolean(true)), ("Log ", path_value("/log"))] {
+        cases.push(batch_descriptor("Nm  ").with(key, value));
+    }
+    let mut odd = batch_descriptor("Nm  ");
+    odd.items.push((Id::new("Fldr"), D::Boolean(true))); // Duplicate keys cannot disappear on save.
+    cases.push(odd);
+    for d in cases {
+        let bytes = photocraft_paint::tile::b64_decode(&set_of("S", vec![("Driver", vec![item("Btch", "Batch", Some(d.clone()))])])).unwrap();
+        let imported = import(&bytes).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, PHOTOSHOP_STEP);
+        let (out, _) = export("S", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+    let mut p = batch_case();
+    p["target"] = json!("mask");
+    assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
+    for key in ["stopOnError", "includeNonImages"] {
+        for value in [Value::Null, json!(false), json!("yes")] {
+            let mut p = batch_case();
+            p[key] = value;
+            assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
+        }
+        let mut p = batch_case();
+        p.as_object_mut().unwrap().remove(key);
+        assert!(super::steps_batch::batch_to("file.automate.batch", &p).is_none());
+    }
 }
 
 /// A set with a mapped filter, an adjustment layer, selection steps, a layer by name, a Stop,
@@ -533,6 +706,13 @@ fn every_mapped_command_exports_and_imports_back() {
         ("filter.noise.addNoise", json!({"amount": 12.5, "distribution": "gaussian", "monochromatic": true, "seed": 7})),
         ("filter.noise.median", json!({"radius": 2})),
         ("filter.stylize.emboss", json!({"angle": 135, "height": 3, "amount": 100})),
+        ("image.calculations", json!({"source1":{"channel":{"color":"red"}},"source2":{"channel":{"color":"green"}},"blending":"add","scale":1,"offset":0})),
+        ("image.adjustments.colorLookup", color_lookup_case()),
+        ("file.automate.batch", batch_case()),
+        ("file.automate.batch", batch_save_and_close_case()),
+        ("filter.other.custom", json!({"kernel":[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],"scale":1,"offset":0})),
+        ("filter.render.fibers", json!({"variance":64,"strength":1,"seed":-1})),
+        ("filter.blur.shapeBlur", json!({"radius":5,"shapeName":"Recorded Square","shapeId":"original-fixture-square","shapeOriginType":9})),
         ("filter.blur.motionBlur", json!({"angle": 45, "distance": 20})),
         ("filter.blur.smartBlur", json!({"radius": 2.5, "threshold": 40, "quality": "medium", "mode": "overlayEdge"})),
         ("filter.other.offset", json!({"horizontal": 10, "vertical": -5, "undefinedAreas": "wrap"})),

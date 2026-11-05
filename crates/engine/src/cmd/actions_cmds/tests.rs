@@ -1400,3 +1400,61 @@ fn record_keeps_an_empty_loaded_sets_exact_name() {
     assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
     assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }
+
+/// Extra source copies cannot turn deferred missing indices into valid action calls.
+#[test]
+fn scoped_source_slots_do_not_bind_previously_missing_references() {
+    let list = vec![
+        Action::new("Leaf", Vec::new()),
+        Action::new("Shared", vec![("actions.play".into(), json!({"action": 0}))]),
+        Action::new("Bad", vec![("actions.play".into(), json!({"action": 3}))]),
+    ];
+    let mut steps = vec![
+        ("actions.play".into(), json!({"action": "Shared"})),
+        ("file.automate.batch".into(), json!({"action": "Shared", "calledActions": []})),
+        ("actions.play".into(), json!({"action": "Bad"})),
+    ];
+    for id in ["actions.play", "file.automate.batch"] {
+        for action in [json!(3), json!(3.25), json!(-1), json!("Missing"), json!(null)] {
+            steps.push((id.into(), json!({"action": action})));
+            if id == "file.automate.batch" {
+                steps.push((id.into(), json!({"action": action, "calledActions": []})));
+            }
+        }
+    }
+    let called = called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 4);
+    assert_eq!(called.last(), list.get(1), "the raw source keeps its own indices");
+    for (id, params) in &steps[3..] {
+        assert!(resolve(&called, params, id).is_err(), "{id}: {params}");
+    }
+    let bad = called.iter().find(|a| a.name == "Bad").unwrap();
+    assert!(resolve(&called, &bad.steps[0].1, "actions.play").is_err());
+    // A scoped source runs its raw references in the embedded namespace. An index beyond
+    // the caller's library can therefore be valid there, even after capture adds a source copy.
+    let list =
+        vec![Action::new("Source", vec![("actions.play".into(), json!({"action": 3}))]), Action::new("Other", Vec::new()), Action::new("Last", Vec::new())];
+    let embedded = vec![
+        Action::new("Gap0", Vec::new()),
+        Action::new("Gap1", Vec::new()),
+        Action::new("Gap2", Vec::new()),
+        Action::new("Child", vec![("layer.new.layer".into(), json!({"name": "embedded child"}))]),
+    ];
+    let mut steps = vec![
+        ("actions.play".into(), json!({"action": 0})),
+        ("actions.play".into(), json!({"action": 1})),
+        ("actions.play".into(), json!({"action": 2})),
+        ("file.automate.batch".into(), json!({"source": "open", "action": "Source", "calledActions": embedded})),
+    ];
+    let called = called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 4);
+    assert_eq!(called.last(), list.first(), "the scoped source keeps its embedded index");
+    assert!(resolve(&called, &called[0].steps[0].1, "actions.play").is_err(), "the ordinary source still has a missing target");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    session.actions.list = called;
+    let (id, params) = steps.last().unwrap();
+    let result = session.execute(id, params.clone()).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(session.active().unwrap().doc.layers.iter().any(|layer| layer.name == "embedded child"));
+}

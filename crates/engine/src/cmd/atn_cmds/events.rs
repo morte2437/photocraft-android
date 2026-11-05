@@ -275,16 +275,22 @@ fn target_only_to(_: &str, p: &Value) -> Option<Descriptor> {
 
 const SHAPE_BLUR: &[F] = &[F("Rds ", "radius", Kind::Px)];
 
-/// Map the radius-only Shape Blur form; keep custom assets or extra keys unsupported.
+/// Dispatch the radius-only and installed custom-shape forms through one event.
 fn shape_blur_from(d: &Descriptor) -> Mapped {
+    if d.get("customShape").is_some() {
+        return super::steps_shape_blur::from(d);
+    }
     let unsupported = Mapped::Unsupported { harmless: false };
     let Some(p) = fields_from(d, SHAPE_BLUR) else { return unsupported };
     let p = Value::Object(p);
     if shape_blur_to("filter.blur.shapeBlur", &p).is_some_and(|expected| d.items == expected.items) { step("filter.blur.shapeBlur", p) } else { unsupported }
 }
 
-/// Write an optional finite 5–1000 pixel radius, refusing explicit shapes and other options.
-fn shape_blur_to(_: &str, p: &Value) -> Option<Descriptor> {
+/// Keep both represented forms; arbitrary native geometry and other options still refuse export.
+fn shape_blur_to(id: &str, p: &Value) -> Option<Descriptor> {
+    if ["shapeName", "shapeId", "shapeOriginType"].iter().any(|key| p.get(*key).is_some()) {
+        return super::steps_shape_blur::to(id, p);
+    }
     if !params(p, &["radius"]) {
         return None;
     }
@@ -658,6 +664,14 @@ pub(super) const EVENTS: &[Event] = &[
     // Adjustments (Image › Adjustments).
     Event {
         code: "",
+        name: "colorLookup",
+        label: "Color Lookup",
+        ids: &["image.adjustments.colorLookup"],
+        from: super::steps_lookup::from,
+        to: super::steps_lookup::to,
+    },
+    Event {
+        code: "",
         name: "adaptCorrect",
         label: "Shadows/Highlights",
         ids: &["image.adjustments.shadowsHighlights"],
@@ -799,6 +813,7 @@ pub(super) const EVENTS: &[Event] = &[
         name: "make",
         label: "Make",
         ids: &[
+            "image.calculations",
             "type.convertToShape",
             "type.createWorkPath",
             "layer.new.layer",
@@ -1114,6 +1129,14 @@ pub(super) const EVENTS: &[Event] = &[
     Event { code: "save", name: "save", label: "Save", ids: &["file.save", "file.saveAs", "file.saveACopy"], from: save_from, to: save_to },
     ev!("Rvrt", "revert", "Revert", "file.revert", &[]),
     Event { code: "Ply ", name: "play", label: "Play", ids: &["actions.play"], from: play_from, to: play_to },
+    Event {
+        code: "Btch",
+        name: "batch",
+        label: "Batch",
+        ids: &["file.automate.batch"],
+        from: super::steps_batch::batch_from,
+        to: super::steps_batch::batch_to,
+    },
     Event { code: "", name: "applyComp", label: "Apply Layer Comp", ids: &["layerComp.apply"], from: apply_comp_from, to: apply_comp_to },
     Event { code: "Stop", name: "stop", label: "Stop", ids: &[STOP_MESSAGE], from: stop_from, to: stop_to },
 ];
@@ -1137,6 +1160,7 @@ const LEGACY_CODES: &[(&str, &str)] = &[
 /// reference application reports `IntW` and `Dstr` as `interfaceWhite` and `distort` at run time.
 const NAME_ALIASES: &[(&str, &str)] = &[("interfaceWhite", "intersectWith"), ("distort", "distribute")];
 
+/// Match populated event identifiers, retaining legacy code aliases on import.
 pub(super) fn event_for(item: &AtnEvent) -> Option<&'static Event> {
     let id = item.id();
     let by_name = |name: &str| EVENTS.iter().find(|e| !e.name.is_empty() && e.name == name);

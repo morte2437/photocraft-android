@@ -136,7 +136,7 @@ pub(super) fn transform_to(id: &str, p: &Value) -> Option<Descriptor> {
 }
 
 /// `Clcn` (Apply Image / Calculations blending) ↔ `image.applyImage`'s `blending`.
-const CALC_BLEND: &[(&str, &str)] = &[
+pub(super) const CALC_BLEND: &[(&str, &str)] = &[
     ("Nrml", "normal"),
     ("Mltp", "multiply"),
     ("Scrn", "screen"),
