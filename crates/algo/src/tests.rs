@@ -16,6 +16,31 @@ fn relight_admission_tracks_the_document_dependent_working_set() {
     assert!(working_bytes(&params, tiny, tiny, 4) < 64 << 20, "{}", working_bytes(&params, tiny, tiny, 4));
 }
 
+/// Shape Blur admits each worker's f64 prefix sums over its halo-expanded tile, and a custom
+/// shape also the kernel mask it keeps for the whole run and its worst-case coverage runs.
+#[test]
+fn shape_blur_admission_counts_prefix_sums_and_the_retained_kernel() {
+    let area = Rect::new(0, 0, 4096, 4096);
+    let radius = 100.0f32;
+    let plain = FilterParams::ShapeBlur { radius, shape: BlurShape::Circle };
+    let Halo::Radius(reach) = plain.halo_for(area) else { panic!("Shape Blur has a radius halo") };
+    let threads = rayon::current_num_threads().max(1) as u64;
+    let tile = auto_tile(&plain, area) as u64;
+    let window = tile + 2 * reach as u64;
+    // The float windows every radius filter admits (4 channels of f32), then the f64 prefix sums.
+    let windows = (area.size().area() * 16).min(RESULT_BUDGET as u64) * 3 + (window * window + tile * tile * 3) * 16 * threads;
+    let prefix = (window + 1) * (window + 1) * 4 * 8 * threads;
+    assert_eq!(working_bytes(&plain, area, area, 4), windows + prefix);
+
+    let size = (2 * shape_blur::radius(radius).ceil() as usize + 1) as i32;
+    let mask = Image { rect: Rect::new(0, 0, size, size), ch: 1, data: vec![1.0; (size * size) as usize] };
+    let custom = FilterParams::CustomShapeBlur { radius, kernel: Some(std::sync::Arc::new(mask)) };
+    let kernel = (size * size) as u64 * 4 + shape_blur::max_spans(size as usize) as u64 * 20;
+    assert_eq!(working_bytes(&custom, area, area, 4), working_bytes(&plain, area, area, 4) + kernel);
+    // Unresolved, it holds no kernel yet.
+    assert_eq!(working_bytes(&FilterParams::CustomShapeBlur { radius, kernel: None }, area, area, 4), working_bytes(&plain, area, area, 4));
+}
+
 fn fmt(s: SampleType) -> PixelFormat {
     PixelFormat::new(ColorMode::Rgb, s, true)
 }

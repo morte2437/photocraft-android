@@ -1401,6 +1401,50 @@ fn record_keeps_an_empty_loaded_sets_exact_name() {
     assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }
 
+/// Two actions of one name in different sets (a loaded library): renaming the second by index
+/// leaves the unqualified calls, which reach the first, and a Batch with explicit steps alone;
+/// only the Batch qualified with the second's set follows. Renaming the first moves them all.
+#[test]
+fn rename_leaves_calls_that_reach_a_same_named_action_in_another_set() {
+    let calls = || {
+        vec![
+            ("file.automate.batch".into(), json!({"action": "Target", "input": [], "output": "/out"})),
+            ("file.automate.batch".into(), json!({"action": "Target", "set": "B", "input": [], "output": "/out"})),
+            ("file.automate.batch".into(), json!({"action": "Target", "set": "B", "steps": [["image.adjustments.invert", {}]], "input": [], "output": "/out"})),
+            ("actions.play".into(), json!({"action": "Target"})),
+            ("actions.conditional".into(), json!({"if": "documentIsOpen", "then": "Target", "else": "Target"})),
+        ]
+    };
+    let session = || {
+        let mut s = Session::new();
+        for set in ["A", "B"] {
+            let mut target = Action::new("Target", vec![("image.adjustments.invert".into(), json!({}))]);
+            target.set = Some(set.into());
+            s.actions.list.push(target);
+        }
+        s.actions.list.push(Action::new("Caller", calls()));
+        s
+    };
+    let mut s = session();
+    s.execute("actions.rename", json!({"action": 1, "name": "Renamed"})).unwrap();
+    let caller = &s.actions.list[2].steps;
+    assert_eq!(caller[0].1["action"], "Target", "an unqualified Batch reaches set A's action");
+    assert_eq!(caller[1].1["action"], "Renamed", "the Batch qualified with set B follows");
+    assert_eq!(caller[2].1["action"], "Target", "explicit steps are left alone");
+    assert_eq!(caller[3].1["action"], "Target", "a nested Play reaches set A's action");
+    assert_eq!((&caller[4].1["then"], &caller[4].1["else"]), (&json!("Target"), &json!("Target")));
+    assert_eq!(crate::file_cmds::batch_action(&s.actions.list, &caller[0].1).unwrap(), 0);
+    assert_eq!(crate::file_cmds::batch_action(&s.actions.list, &caller[1].1).unwrap(), 1);
+
+    let mut s = session();
+    s.execute("actions.rename", json!({"action": 0, "name": "Renamed"})).unwrap();
+    let caller = &s.actions.list[2].steps;
+    assert_eq!(caller[0].1["action"], "Renamed");
+    assert_eq!(caller[1].1["action"], "Target", "the Batch qualified with set B still names B's action");
+    assert_eq!(caller[3].1["action"], "Renamed");
+    assert_eq!((&caller[4].1["then"], &caller[4].1["else"]), (&json!("Renamed"), &json!("Renamed")));
+}
+
 /// A saved named Batch step follows a renamed action, by name alone or within its own set;
 /// a Batch naming the same action in another set and an inline Batch stay as they were.
 #[test]

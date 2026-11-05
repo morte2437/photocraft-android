@@ -967,6 +967,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                         if ctx.batch_interrupt_requested() {
                             return Err(EngineError::Cancelled.into());
                         }
+                        // A recorded Save is a step too: Batch writes the output for it.
+                        charge_script_step(scratch)?;
                         if batch_save_point(id) {
                             let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
                             saved = Some(st.doc.clone());
@@ -980,7 +982,6 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             continue;
                         }
                         let params = crate::actions_cmds::playback_params(scratch, id, params)?;
-                        charge_script_step(scratch)?;
                         let r = scratch.execute(id, params)?;
                         ctx.publish_batch_preview(&source_path, scratch.active().map(|state| state.doc.clone()));
                         // A failed step inside a called action makes this file an error, not a saved result.
@@ -1032,6 +1033,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                 s.actions.playback_steps = carried;
             }
             s.actions.script_steps = script_steps;
+            let mut result = result;
+            mark_script_limit(s, &mut result);
             if let (Some(notices), Some(imports)) = (&mut s.batch_open_notices, result.get("notices").and_then(Value::as_array)) {
                 notices.extend(imports.iter().cloned());
             }
@@ -1115,6 +1118,8 @@ fn batch_open_documents(
             s.set_active(position);
             let mut saved: Option<Arc<Document>> = None;
             for (command, params) in steps {
+                // A recorded Save is a step too: Batch writes the output for it.
+                charge_script_step(s)?;
                 if batch_save_point(command) {
                     let state = s.active_mut().ok_or(EngineError::NoDocument)?;
                     saved = Some(state.doc.clone());
@@ -1128,7 +1133,6 @@ fn batch_open_documents(
                     continue;
                 }
                 let params = crate::actions_cmds::playback_params(s, command, params)?;
-                charge_script_step(s)?;
                 let response = s.execute(command, params)?;
                 if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
                     return Err(FileFailure { error: EngineError::Other(error), result: Some(response) });
@@ -1177,6 +1181,7 @@ fn batch_open_documents(
         result["errorLogError"] = json!(error);
     }
     result["documents"] = json!(originals.len());
+    mark_script_limit(s, &mut result);
     Ok(result)
 }
 
@@ -1192,6 +1197,17 @@ fn charge_script_step(s: &mut Session) -> Result<()> {
     }
     s.actions.script_steps += 1;
     Ok(())
+}
+
+/// A file that failed once the script's step budget is spent failed because of it, and every
+/// later script step would fail the same way: the result says so, so a script running this
+/// Batch directly stops with that error (`batch_stop`) instead of reporting success.
+fn mark_script_limit(s: &Session, result: &mut Value) {
+    let max = crate::automate_cmds::MAX_SCRIPT_STEPS;
+    let failed = result.get("errors").and_then(Value::as_array).is_some_and(|errors| !errors.is_empty());
+    if s.actions.script_depth > 0 && s.actions.script_steps >= max && failed {
+        result["scriptLimitError"] = json!(format!("the script ran more than {max} steps in all (scripts calling scripts)"));
+    }
 }
 
 /// Check source structure once at the common pre-write seam, after Open authorization and ownership.

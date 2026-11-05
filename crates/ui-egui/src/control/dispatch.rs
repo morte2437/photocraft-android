@@ -1320,7 +1320,22 @@ fn parse_pointer_event(i: usize, e: &Value) -> std::result::Result<PointerSample
 
 /// Whether a modal tool, picker or context menu took the event instead of the canvas.
 fn pointer_event_intercepted(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
-    pointer_eyedropper_took(app, ctx, g, s) || color_range_took(app, g, s) || (g.secondary && secondary_menu_took(app, ctx, g, s))
+    let took = pointer_eyedropper_took(app, ctx, g, s) || color_range_took(app, g, s) || (g.secondary && secondary_menu_took(app, ctx, g, s));
+    if took && matches!(s.ev, ToolEvent::Up { .. }) && !g.secondary && !g.middle {
+        release_taken_drag(app, g);
+    }
+    took
+}
+
+/// A sampler (Color Picker, Curves/Levels or Properties eyedroppers, Curves ⌘-click, Color
+/// Range) took the primary release: a transform handle drag or Move drag begun before it
+/// ends, so later moves can't resume either without a new press. The Move drag ends where it
+/// last was, since the release's coordinates belong to the sampler.
+fn release_taken_drag(app: &mut PhotocraftApp, g: &PointerGesture) {
+    crate::tools::transform_tool::release_handle_drag(app);
+    if let Some([x, y]) = app.drag.as_ref().map(|d| d.points.last().map_or(d.start, |p| [p[0], p[1]])) {
+        tool_event(app, ToolEvent::Up { x, y }, g.mods);
+    }
 }
 
 fn pointer_eyedropper_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
@@ -1328,14 +1343,7 @@ fn pointer_eyedropper_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &Poi
     let down = matches!(s.ev, ToolEvent::Down { .. });
     // With the Color Picker on top the image is its eyedropper, as for the mouse.
     if crate::color_picker_ui::top(app).is_some() {
-        if matches!(s.ev, ToolEvent::Up { .. }) {
-            crate::tools::transform_tool::release_handle_drag(app);
-            // A drag begun before the picker opened ends where it last was (the release's
-            // coordinates are the picker's), so later moves can't resume it without a press.
-            if let Some([x, y]) = app.drag.as_ref().map(|d| d.points.last().map_or(d.start, |p| [p[0], p[1]])) {
-                tool_event(app, ToolEvent::Up { x, y }, g.mods);
-            }
-        } else {
+        if !matches!(s.ev, ToolEvent::Up { .. }) {
             crate::color_picker_ui::sample_at(app, x, y);
         }
         return true;

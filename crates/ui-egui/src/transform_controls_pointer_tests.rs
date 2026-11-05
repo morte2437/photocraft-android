@@ -533,6 +533,37 @@ fn color_picker_release_clears_the_handle_drags_snap_lines() {
     assert!(app.prefs_rt.snap.is_none());
 }
 
+/// Every sampler that takes the primary release ends a transform handle drag begun before it,
+/// not only the Color Picker: the Curves eyedroppers and Color Range too. A move after the
+/// sampler closes needs a new press.
+#[test]
+fn other_samplers_releases_end_an_existing_transform_handle_drag() {
+    for sampler in ["curves", "colorRange"] {
+        let (mut app, ctx, _) = fixture();
+        pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+        pointer(&mut app, &ctx, "move", [700.0, 440.0]);
+        let preview = app.ui.transform.as_ref().unwrap().quad;
+        let dialog = match sampler {
+            "curves" => {
+                let id = crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
+                let d = app.ui.dialog_mut(id).unwrap();
+                let base = crate::filter_dialog::params_of(&d.fields);
+                d.fields.insert("__curvePicker".into(), json!("black"));
+                d.fields.insert("__curvePickerBase".into(), base);
+                assert!(crate::adjust_dialog::picker_armed(&app), "{sampler}");
+                id
+            }
+            _ => crate::color_range_ui::open(&mut app),
+        };
+        pointer(&mut app, &ctx, "down", [200.0, 150.0]);
+        pointer(&mut app, &ctx, "up", [999.0, 690.0]);
+        assert_eq!(app.ui.transform.as_ref().unwrap().quad, preview, "{sampler}: the sampler's coordinates do not move the box");
+        app.ui.dialogs.retain(|d| d.id != dialog);
+        pointer(&mut app, &ctx, "move", [650.0, 410.0]);
+        assert_eq!(app.ui.transform.as_ref().unwrap().quad, preview, "{sampler}: later moves need a new press");
+    }
+}
+
 /// The Color Picker takes the release of an ordinary Move drag: the drag ends where it last was, and
 /// moving after the picker closes needs a new press.
 #[test]

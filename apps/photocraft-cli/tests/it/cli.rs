@@ -404,6 +404,32 @@ fn run_continues_after_batch_file_errors_and_keeps_partial_results() {
     std::fs::remove_dir_all(d).unwrap();
 }
 
+/// A direct Batch whose error log can't be written stops the command list before export, also
+/// when a file failed as well (per-file errors alone would let it go on).
+#[test]
+fn run_stops_when_a_direct_batch_cannot_write_its_error_log() {
+    let d = tmp("run-batch-log-fails");
+    let bad = d.join("bad.png");
+    let out = d.join("result.png");
+    std::fs::write(&bad, b"not a PNG").unwrap();
+    // The folder itself as the log path: the log write fails.
+    let params = json!({"input":[bad],"output":d.join("batch"),"format":"png","steps":[],"errorLog":d}).to_string();
+    let result = bin()
+        .args(["run", "--new", r#"{"width":8,"height":8}"#])
+        .args(["--cmd", "file.automate.batch", "--params", &params])
+        .args(["--cmd", "document.inspect", "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(1), "stdout: {}\nstderr: {error}", String::from_utf8_lossy(&result.stdout));
+    assert!(error.contains("error log"), "{error}");
+    let rows: Vec<Value> = String::from_utf8_lossy(&result.stdout).lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert!(rows.iter().all(|row| row["command"] != "document.inspect"), "later commands must not run");
+    assert!(!out.exists(), "a stopped command list must not export");
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 #[test]
 fn run_continues_after_successful_action_and_exports() {
     let d = tmp("run-successful-action");

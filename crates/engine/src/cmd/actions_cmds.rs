@@ -704,6 +704,19 @@ pub fn restore_recording(s: &mut Session, idx: usize, action: &str, from: usize)
     s.journal.push(("actions.play".into(), params));
 }
 
+/// What stops the caller of a Batch even where per-file errors don't (a direct Batch in a script
+/// or a CLI command list): the script ran out of steps inside it, it was cancelled, or its
+/// requested error log could not be written.
+pub fn batch_stop(value: &Value) -> Option<String> {
+    if let Some(error) = value.get("scriptLimitError").and_then(Value::as_str) {
+        return Some(error.to_string());
+    }
+    if value.get("cancelled") == Some(&Value::Bool(true)) {
+        return Some("Batch was cancelled".into());
+    }
+    value.get("errorLogError").and_then(Value::as_str).map(|error| format!("Batch error log failed: {error}"))
+}
+
 /// Nested playback and Batch return structured failures even though the command succeeded.
 /// Promote it to the caller's failed step so no later parent steps run after a child fails.
 /// Batch text summarizes counts and the first failure; its full result retains every file outcome.
@@ -721,10 +734,7 @@ pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
         let Some(first) = errors.first() else {
             // Every input succeeded, yet the run was stopped or its requested log is missing:
             // later parent steps must not run as if the Batch had finished.
-            if value.get("cancelled") == Some(&Value::Bool(true)) {
-                return Some("Batch was cancelled".into());
-            }
-            return value.get("errorLogError").and_then(Value::as_str).map(|error| format!("Batch error log failed: {error}"));
+            return batch_stop(value);
         };
         let error = first.get("error")?.as_str()?;
         let file = first.get("file").or_else(|| first.get("document")).and_then(Value::as_str).unwrap_or("unknown input");
@@ -917,14 +927,18 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("actions.rename", "an action with this name already exists"));
     }
     let pending = s.actions.recording.map_or(s.journal.len(), |(start, _)| start);
-    let old_set = s.actions.list.get(idx).and_then(|a| a.set.clone());
+    // A loaded library can hold two actions of one name (in different sets): a call follows the
+    // rename only if it resolved to this action before it, so one reaching the other stays put.
+    let before = s.actions.list.clone();
+    let by_name = resolve(&before, &json!({"action": old}), "actions.rename").ok() == Some(idx);
     let calls = s.actions.list.iter_mut().flat_map(|a| a.steps.iter_mut()).chain(s.journal.iter_mut().skip(pending));
     for (id, params) in calls {
         let keys: &[&str] = match id.as_str() {
-            "actions.play" => &["action"],
-            "actions.conditional" => &["then", "else"],
-            // A named Batch selects from the caller's list, by name alone or within its set.
-            "file.automate.batch" if params.get("set").is_none_or(|set| set.is_null() || set.as_str() == old_set.as_deref()) => &["action"],
+            "actions.play" if by_name => &["action"],
+            "actions.conditional" if by_name => &["then", "else"],
+            // A named Batch selects from the caller's list, by name alone or within its set;
+            // explicit `steps` run instead of any named action, so those are left alone.
+            "file.automate.batch" if params.get("steps").is_none() && crate::file_cmds::batch_action(&before, params).ok() == Some(idx) => &["action"],
             _ => &[],
         };
         for key in keys {

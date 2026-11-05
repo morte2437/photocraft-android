@@ -135,8 +135,9 @@ fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
         }
         match s.execute(id, params.clone()) {
             Ok(r) => {
-                // Direct Batch calls report file errors successfully to scripts. Called actions still fail the script.
-                let failure = if id == "file.automate.batch" { None } else { crate::actions_cmds::nested_failure(id, &r) };
+                // Direct Batch calls report file errors successfully to scripts, but running out of
+                // script steps, a cancel or a failed error log stops it. Called actions still fail it.
+                let failure = if id == "file.automate.batch" { crate::actions_cmds::batch_stop(&r) } else { crate::actions_cmds::nested_failure(id, &r) };
                 match failure {
                     Some(error) => {
                         results.push(json!({"command": id, "result": r, "error": error}));

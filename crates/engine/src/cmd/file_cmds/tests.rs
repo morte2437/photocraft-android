@@ -4145,6 +4145,94 @@ fn batch_steps_inside_a_script_count_against_its_step_limit() {
     }
 }
 
+/// A recorded Save is a step too: with the script's budget spent, a Save-only Batch writes
+/// nothing, in both sources, and its result says the script ran out of steps.
+#[test]
+fn a_save_only_batch_writes_nothing_once_the_script_steps_are_spent() {
+    let dir = tmp("batch-script-save-only");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    for source in ["open", "folder"] {
+        let mut s = session(4, 4, 8);
+        s.actions.script_depth = 1;
+        s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS;
+        let out = join(&dir, &format!("out-{source}"));
+        let mut p = json!({"source": source, "output": out, "format": "png", "steps": [["file.save", {}]]});
+        if source == "folder" {
+            p["input"] = json!([input]);
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        assert_eq!(result["files"], json!([]), "{source}: {result}");
+        assert!(result["errors"][0]["error"].as_str().unwrap_or_default().contains("steps in all"), "{source}: {result}");
+        assert!(result["scriptLimitError"].is_string(), "{source}: {result}");
+        let written = std::fs::read_dir(&out).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(written, 0, "{source}: nothing may be written past the budget");
+    }
+}
+
+/// A direct Batch in a script that spends the script's last step makes the script fail there
+/// instead of reporting `ok: true` with the exhaustion hidden as a per-file error.
+#[test]
+fn a_direct_batch_that_spends_the_script_budget_fails_the_script() {
+    let dir = tmp("batch-script-budget-browse");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    for source in ["open", "folder"] {
+        let mut s = session(4, 4, 8);
+        // A nested script: the outer one has already spent all but two steps.
+        s.actions.script_depth = 1;
+        s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS - 2;
+        let mut batch = json!({"source": source, "output": join(&dir, &format!("out-{source}")), "format": "png",
+            "steps": [["image.adjustments.invert", {}], ["image.adjustments.invert", {}]]});
+        if source == "folder" {
+            batch["input"] = json!([input]);
+        }
+        let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch]]})).unwrap();
+        assert_eq!(r["ok"], false, "{source}: {r}");
+        assert!(r["results"][0]["error"].as_str().unwrap_or_default().contains("steps in all"), "{source}: {r}");
+        assert!(r["results"][0]["result"]["errors"].as_array().is_some_and(|e| !e.is_empty()), "{source}: {r}");
+    }
+}
+
+/// Per-file errors from a direct Batch stay script results, but a cancel or an error log that
+/// could not be written stops the script, also when files failed as well.
+#[test]
+fn a_direct_batch_in_a_script_stops_it_when_cancelled_or_its_log_fails() {
+    let dir = tmp("batch-script-stop");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    let missing = join(&dir, "missing.png");
+    let next = json!(["layer.new.layer", {}]);
+
+    // Ordinary per-file errors: the script goes on.
+    let mut s = session(4, 4, 8);
+    let layers = doc(&s).layers.len();
+    let batch = json!({"input": [missing.clone()], "output": join(&dir, "out-plain"), "steps": []});
+    let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch], next.clone()]})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(doc(&s).layers.len(), layers + 1, "{r}");
+
+    // A failed error log next to a failed file: the script stops at the Batch.
+    let mut s = session(4, 4, 8);
+    let layers = doc(&s).layers.len();
+    let batch = json!({"input": [missing], "output": join(&dir, "out-log"), "steps": [], "errorLog": dir.clone()});
+    let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch], next.clone()]})).unwrap();
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(r["results"][0]["error"].as_str().unwrap_or_default().contains("error log"), "{r}");
+    assert_eq!(doc(&s).layers.len(), layers, "the step after the Batch must not run: {r}");
+
+    // A cancel: the script stops at the Batch.
+    let mut s = session(4, 4, 8);
+    let ctx = crate::jobs::JobCtx::new();
+    s.set_inline_job_ctx(Some(ctx.clone()));
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+    s.authorize = Some(cancel_at_marker);
+    let layers = doc(&s).layers.len();
+    let batch = json!({"input": [input], "output": join(&dir, "out-cancel"), "steps": [["layer.renameLayer", {"name": "Cancel here"}]]});
+    let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch], next]})).unwrap();
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = None);
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["results"][0]["error"], "Batch was cancelled", "{r}");
+    assert_eq!(doc(&s).layers.len(), layers, "the step after the Batch must not run: {r}");
+}
+
 /// Two spellings of one destination through a symlinked folder are one output claim.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
