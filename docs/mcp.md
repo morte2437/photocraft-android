@@ -137,18 +137,22 @@ for ten minutes. List/read responses include the MCP 2026-07-28 result/cache fie
 
 ## Progress and cancellation
 
-Headless `command_run` (and each `command_batch` step) that waits, the default, runs a
-job-capable command (filters, Content-Aware Fill/Scale, Photomerge, …) as a background job
-and returns its result when the job ends. Meanwhile the session serves other calls
-(`doc_inspect`, `jobs_list`, …), and the running job shows in `jobs_list`. With
-`_meta.progressToken`, the call sends `notifications/progress` with the job's progress (0–1,
-`total` 1; for a batch, finished steps plus the current step's fraction, `total` the step
-count) and the job's `message`, increasing strictly and at most ten per second.
-`notifications/cancelled`, or the client dropping the request, cancels the job: the document
-stays unchanged and a cancelled batch runs no further step. A job that already finished
-before the cancellation arrived stays applied. Commands that are not jobs still run to the
-end. Bridge mode still waits on the app's reply (#8130); a bridge `command_batch` reports
-finished steps as progress and sends no further step once the request is cancelled.
+`command_run` (and each `command_batch` step) that waits, the default, runs a job-capable
+command (filters, Content-Aware Fill/Scale, Photomerge, …) as a background job and returns its
+result when the job ends. Meanwhile the server serves other calls (`doc_inspect`, `jobs_list`,
+…), and the running job shows in `jobs_list`. With `_meta.progressToken`, the call sends
+`notifications/progress` with the job's progress (0–1, `total` 1; for a batch, finished steps
+plus the current step's fraction, `total` the step count) and the job's `message`, increasing
+strictly and at most ten per second. `notifications/cancelled`, or the client dropping the
+request, cancels the job: the document stays unchanged and a cancelled batch runs no further
+step. A job that already finished before the cancellation arrived stays applied. Commands that
+are not jobs still run to the end.
+
+Headless, the session runs the job itself (#8129). In bridge mode (#8130) the app runs it: the
+server starts it with `engine.execute {wait: false}` (sent once, never resent) and polls
+`jobs.list`, so a job may run past the bridge's 55s reply timeout. A command that is not a job,
+a UI command id and a lost reply to the start still fail at that timeout; see
+[MCP bridge](control-protocol.md#mcp-bridge) for the limits.
 
 A direct headless `command_run` of `file.export.renderVideo` reports frame counts when
 `_meta.progressToken` is present (a string or number). Notifications increase strictly,
