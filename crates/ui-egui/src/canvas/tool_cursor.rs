@@ -12,6 +12,7 @@ use egui::{CursorIcon, CustomCursorImage, Painter, Pos2, Stroke, Vec2, vec2};
 use crate::canvas::ViewXform;
 use crate::state::Tool;
 
+mod bucket;
 mod hand;
 mod pen;
 mod zoom;
@@ -38,6 +39,9 @@ enum Shape {
     Zoom { out: bool },
     Outline { rings: Arc<[Vec<Vec2>]>, centre: bool },
 }
+
+/// The visible canvas crosshair used by the Gradient tool and other standard crosshair tools.
+const STANDARD_CROSSHAIR: Shape = Shape::Crosshair { length: 8.0, gap: 2.0 };
 
 #[derive(Clone)]
 struct Cached {
@@ -80,12 +84,21 @@ impl egui::plugin::Plugin for CursorLifecycle {
     }
 }
 
+/// The bucket artwork and its exact fill crosshair move as one native cursor or painted image.
+pub(crate) fn bucket(painter: &Painter, at: Pos2) -> Result<CursorIcon, String> {
+    bucket::show(painter, at)
+}
+
 pub(crate) fn circle(painter: &Painter, at: Pos2, radius: f32, centre: bool) -> CursorIcon {
     show(painter, at, Shape::Circle { radius, centre })
 }
 
 pub(crate) fn crosshair(painter: &Painter, at: Pos2, length: f32, gap: f32) -> CursorIcon {
     show(painter, at, Shape::Crosshair { length, gap })
+}
+
+pub(crate) fn standard_crosshair(painter: &Painter, at: Pos2) -> CursorIcon {
+    show(painter, at, STANDARD_CROSSHAIR.clone())
 }
 
 pub(crate) fn outline(painter: &Painter, at: Pos2, rings: Vec<Vec<Vec2>>, centre: bool) -> CursorIcon {

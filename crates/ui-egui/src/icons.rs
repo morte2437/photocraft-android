@@ -47,6 +47,18 @@ pub fn image(name: &str, size: f32, tint: Color32) -> egui::Image<'static> {
     egui::Image::new(white_icons().source(name)).fit_to_exact_size(Vec2::splat(size)).tint(tint)
 }
 
+/// Rasterize the same styled SVG used by the toolbar for a composed native cursor.
+pub(crate) fn rasterize(name: &str, side: u32) -> Result<egui::ColorImage, String> {
+    if !white_icons().contains(name) {
+        return Err(format!("Cursor icon {name:?} is missing"));
+    }
+    let egui::ImageSource::Bytes { bytes, .. } = white_icons().source(name) else {
+        return Err(format!("Cursor icon {name:?} has no embedded SVG bytes"));
+    };
+    egui_extras::image::load_svg_bytes_with_size(&bytes, egui::load::SizeHint::Width(side), &Default::default())
+        .map_err(|error| format!("Could not rasterize cursor icon {name:?}: {error}"))
+}
+
 /// Paint an icon centred in `rect`.
 pub fn paint(ui: &egui::Ui, rect: Rect, name: &str, size: f32, tint: Color32) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(size));

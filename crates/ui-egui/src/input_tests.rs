@@ -1006,20 +1006,56 @@ fn eyedropper_and_alt_sampling_show_a_pipette() {
     assert_eq!(precise(&mut h), (egui::CursorIcon::Crosshair, desktop));
 }
 
-/// The Paint Bucket shows a bucket instead of the crosshair (#3968); Precise Other Cursors keeps
-/// the crosshair.
+/// The bucket and fill target share one pointer bitmap or one painted image, and Precise Other Cursors hides both.
 #[test]
 fn paint_bucket_shows_a_bucket_cursor() {
+    fn cursor_area_visible(h: &Harness<'static, PhotocraftApp>, id: &str) -> bool {
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique(id));
+        h.ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer))
+    }
+
     let mut h = harness();
     let p = h.state().last_canvas_rect.center();
     h.state_mut().ui.tool = crate::state::Tool::PaintBucket;
     h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "the bucket replaces the pointer");
+
+    let output = h.output();
+    if cfg!(not(target_arch = "wasm32")) {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Crosshair, "the bitmap keeps a visible fallback");
+        let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the unified bucket bitmap");
+        let [hot_x, hot_y] = cursor.hotspot;
+        let hot_pixel = (usize::from(hot_y) * usize::from(cursor.size[0]) + usize::from(hot_x)) * 4 + 3;
+        assert_eq!(cursor.rgba[hot_pixel], 0, "the Gradient-style crosshair leaves its exact bitmap hotspot open");
+        let side = usize::from(cursor.size[0]);
+        assert!(
+            cursor.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, pixel)| {
+                let x = (i % side) as u16;
+                let y = (i / side) as u16;
+                pixel[3] > 200 && x + 2 < hot_x && y + 2 < hot_y
+            }),
+            "the bucket artwork is opaque above-left of the same hotspot"
+        );
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "native cursor has no frame-painted icon overlay");
+        assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "native cursor does not create a painted cursor Area");
+    } else {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None, "the painted image hides the OS arrow");
+        assert!(cursor_area_visible(&h, "pc-tool-cursor"), "scaled or web cursor uses one unified image Area");
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "the old icon overlay is absent");
+    }
+    assert_eq!(h.ctx.pointer_latest_pos(), Some(p), "the click target stays at the cursor hotspot");
+
     h.state_mut().run("prefs.set", json!({"values": {"cursors.other": "precise"}})).unwrap();
-    h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Crosshair, "Precise keeps the crosshair");
+    let precise = h.output();
+    assert_eq!(precise.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
+    assert_eq!(
+        precise.platform_output.cursor_image.is_some(),
+        cfg!(not(target_arch = "wasm32")),
+        "Precise uses its crosshair bitmap on native and the system cursor on web"
+    );
+    assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "Precise omits the bucket artwork");
+    assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "Precise omits the painted bucket image");
 }
 
 #[test]

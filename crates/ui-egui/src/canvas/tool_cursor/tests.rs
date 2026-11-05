@@ -10,11 +10,30 @@ fn alpha(image: &CustomCursorImage, x: u16, y: u16) -> u8 {
     image.rgba[(usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4 + 3]
 }
 
+fn rgba_at(image: &CustomCursorImage, x: u16, y: u16) -> [u8; 4] {
+    let offset = (usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4;
+    image.rgba[offset..offset + 4].try_into().unwrap()
+}
+
 fn frame(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
     let mut output = ctx.run_ui(Default::default(), draw);
     // These tests inspect cursor output without a renderer.
     output.textures_delta.clear();
     output
+}
+
+#[cfg(target_os = "linux")]
+fn collect_meshes(shape: &egui::Shape, meshes: &mut Vec<(egui::TextureId, egui::Rect)>) {
+    match shape {
+        egui::Shape::Mesh(mesh) => meshes.push((mesh.texture_id, mesh.calc_bounds())),
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_meshes(shape, meshes);
+            }
+        }
+        egui::Shape::Noop => {}
+        other => panic!("unexpected non-image cursor fallback primitive: {other:?}"),
+    }
 }
 
 #[test]
@@ -46,6 +65,161 @@ fn precise_and_tip_centre_crosshairs_have_distinct_hotspots() {
     assert!(alpha(&precise, x + 5, y) > 230);
     let solid = rasterize(&Shape::Crosshair { length: 6.0, gap: 0.0 }, 1.0).unwrap();
     assert!(alpha(&solid, solid.hotspot[0], solid.hotspot[1]) > 230);
+}
+
+#[test]
+fn bucket_bitmap_keeps_the_svg_above_left_of_its_exact_crosshair_hotspot() {
+    for scale in [1.0, 1.25, 2.0] {
+        let image = super::bucket::rasterize(scale).unwrap();
+        let expected_x = (26.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
+        let expected_y = (25.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
+        assert_eq!(image.hotspot, [expected_x as u16, expected_y as u16], "bucket box target at {scale}x");
+        let gradient_cross = rasterize(&STANDARD_CROSSHAIR, scale).unwrap();
+        assert_eq!(alpha(&image, image.hotspot[0], image.hotspot[1]), 0, "Gradient-style open center at {scale}x");
+
+        let side = usize::from(image.size[0]);
+        let has_bucket_art = image.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, p)| {
+            let x = (i % side) as u16;
+            let y = (i / side) as u16;
+            p[3] > 200 && x + 2 < image.hotspot[0] && y + 2 < image.hotspot[1]
+        });
+        assert!(has_bucket_art, "opaque bucket art remains above-left of the hotspot at {scale}x");
+
+        for arm in [1, 5, 8] {
+            let arm = (arm as f32 * scale).round() as u16;
+            assert_eq!(
+                rgba_at(&image, image.hotspot[0] + arm, image.hotspot[1]),
+                rgba_at(&gradient_cross, gradient_cross.hotspot[0] + arm, gradient_cross.hotspot[1]),
+                "right arm matches the Gradient crosshair at {scale}x"
+            );
+            assert_eq!(
+                rgba_at(&image, image.hotspot[0], image.hotspot[1] + arm),
+                rgba_at(&gradient_cross, gradient_cross.hotspot[0], gradient_cross.hotspot[1] + arm),
+                "lower arm matches the Gradient crosshair at {scale}x"
+            );
+        }
+    }
+}
+
+#[test]
+fn bucket_rasterization_reports_invalid_scales_and_missing_artwork() {
+    for scale in [0.0, f32::NAN, f32::INFINITY] {
+        let error = super::bucket::rasterize(scale).unwrap_err();
+        assert!(error.contains("Invalid Paint Bucket cursor scale"), "{scale}: {error}");
+    }
+    let error = crate::icons::rasterize("missing-paint-bucket", 22).unwrap_err();
+    assert!(error.contains("Cursor icon \"missing-paint-bucket\" is missing"), "{error}");
+}
+
+#[test]
+fn bucket_cursor_errors_preserve_the_concise_rasterization_message_across_frames() {
+    let ctx = egui::Context::default();
+    ctx.set_zoom_factor(100.0);
+    let mut errors = Vec::new();
+    for _ in 0..2 {
+        let output = frame(&ctx, |ui| {
+            let scale = if native(ui.ctx()) { native_scale(ui.ctx()) } else { ui.ctx().pixels_per_point() };
+            let expected = super::bucket::rasterize(scale).unwrap_err();
+            let error = super::bucket(ui.painter(), egui::pos2(100.0, 100.0)).unwrap_err();
+            assert_eq!(error, expected, "the dialog and status receive only the original rasterization error");
+            assert_eq!(error.lines().count(), 1, "diagnostic backtraces belong in the log");
+            errors.push(error);
+        });
+        assert!(output.platform_output.cursor_image.is_none(), "a failed rasterization never installs a cursor");
+    }
+    assert_eq!(errors[0], errors[1], "the cached failure stays stable across frames");
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_bucket_cursor_error_leaves_the_status_bar_when_the_cursor_recovers() {
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    let ctx = egui::Context::default();
+    ctx.set_zoom_factor(100.0);
+    frame(&ctx, |ui| {
+        crate::canvas::paint_bucket_cursor(&mut app, ui.painter(), pos2(100.0, 100.0));
+    });
+    assert!(app.ui.status_error, "the failure reaches the status bar");
+    assert!(app.ui.status.contains("Paint Bucket"), "{}", app.ui.status);
+
+    ctx.set_zoom_factor(1.0);
+    for _ in 0..2 {
+        frame(&ctx, |ui| {
+            crate::canvas::paint_bucket_cursor(&mut app, ui.painter(), pos2(100.0, 100.0));
+        });
+    }
+    assert!(!app.ui.status_error, "the cursor works again");
+    assert!(app.ui.status.is_empty(), "{}", app.ui.status);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn bucket_cursor_reuses_the_native_bitmap_while_the_hotspot_moves() {
+    let ctx = egui::Context::default();
+    ctx.add_plugin(CursorLifecycle);
+    let cursor = |at| {
+        let output = frame(&ctx, |ui| {
+            let icon = super::bucket(ui.painter(), at).unwrap();
+            ui.ctx().set_cursor_icon(icon);
+        });
+        output.platform_output.cursor_image.expect("root desktop viewport provides the bucket bitmap")
+    };
+
+    let first = cursor(pos2(100.0, 100.0));
+    let moved = cursor(pos2(137.0, 163.0));
+    assert!(Arc::ptr_eq(&first.rgba, &moved.rgba), "moving the pointer reuses the rasterized bitmap");
+    assert_eq!(first.hotspot, moved.hotspot);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn scaled_wayland_bucket_uses_one_cached_image_area_without_a_split_crosshair() {
+    let ctx = egui::Context::default();
+    ctx.add_plugin(CursorLifecycle);
+    set_wayland(&ctx, true);
+    let run = |native_ppp: f32, at: egui::Pos2| {
+        let mut input = egui::RawInput::default();
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(native_ppp);
+        let mut output = ctx.run_ui(input, |ui| {
+            let icon = super::bucket(ui.painter(), at).unwrap();
+            ui.ctx().set_cursor_icon(icon);
+        });
+        output.textures_delta.clear();
+        let mut images = Vec::new();
+        for shape in &output.shapes {
+            collect_meshes(&shape.shape, &mut images);
+        }
+        (output, images)
+    };
+
+    let first_at = pos2(100.0, 100.0);
+    run(1.25, first_at); // egui's first Area pass measures content and emits no shapes.
+    let (first, first_images) = run(1.25, first_at);
+    assert!(first.platform_output.cursor_image.is_none(), "scaled Wayland does not send a bitmap to winit");
+    assert_eq!(first.platform_output.cursor_icon, CursorIcon::None, "the image replaces the system arrow");
+    assert_eq!(first_images.len(), 1, "bucket and fill crosshair are one Image primitive");
+    let image = super::bucket::rasterize(1.25).unwrap();
+    let image_bounds = first_images[0].1;
+    let image_hotspot = image_bounds.min + egui::vec2((f32::from(image.hotspot[0]) + 0.5) / 1.25, (f32::from(image.hotspot[1]) + 0.5) / 1.25);
+    assert_eq!(image_hotspot, first_at, "the center of the hotspot texel stays on the pointer at 1.25x");
+    let moved_at = pos2(137.0, 163.0);
+    let (moved, moved_images) = run(1.25, moved_at);
+    assert_eq!(moved_images.len(), 1);
+    assert_eq!(moved_images[0].0, first_images[0].0, "the single scaled texture is cached while it moves");
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("pc-tool-cursor"));
+    assert!(ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer)), "one cursor Area owns the image");
+    assert!(
+        !ctx.memory(|memory| memory.areas().visible_layer_ids().iter().any(|id| id.id == egui::Id::unique("pc-icon-cursor"))),
+        "the old icon overlay is absent"
+    );
+    let mut moved_shapes = Vec::new();
+    for shape in &moved.shapes {
+        collect_meshes(&shape.shape, &mut moved_shapes);
+    }
+    assert_eq!(moved_shapes.len(), 1, "there are no independent crosshair line primitives");
+    let moved_bounds = moved_images[0].1;
+    let moved_hotspot = moved_bounds.min + egui::vec2((f32::from(image.hotspot[0]) + 0.5) / 1.25, (f32::from(image.hotspot[1]) + 0.5) / 1.25);
+    assert_eq!(moved_hotspot, moved_at, "the cached image keeps its hotspot aligned after movement");
 }
 
 /// On Linux a tip stays within what X servers and hardware cursor planes take (256 px); a larger
@@ -348,6 +522,41 @@ fn write_cursor_preview() {
     let image = photocraft_codecs::Image::from_u8(width as u32, height as u32, photocraft_codecs::ChannelLayout::Rgba, rgba).unwrap();
     let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tool-cursor-preview.png");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, png).unwrap();
+}
+
+/// Run explicitly to inspect the unified bucket bitmap at 1× and 2× against three backgrounds.
+#[test]
+#[ignore = "writes tmp/cursor-verification/unified-bucket-preview.png for visual inspection"]
+fn write_bucket_cursor_preview() {
+    let (width, height) = (600_usize, 300_usize);
+    let mut rgba = vec![255; width * height * 4];
+    let backgrounds = [32_u8, 128, 255];
+    for (col, background) in backgrounds.into_iter().enumerate() {
+        for y in 0..height {
+            for x in col * 200..(col + 1) * 200 {
+                rgba[(y * width + x) * 4..(y * width + x) * 4 + 3].fill(background);
+            }
+        }
+        for (row, scale) in [1.0, 2.0].into_iter().enumerate() {
+            let image = super::bucket::rasterize(scale).unwrap();
+            let side = usize::from(image.size[0]);
+            let pointer = (col * 200 + 100, row * 150 + 75);
+            let x0 = pointer.0 - usize::from(image.hotspot[0]);
+            let y0 = pointer.1 - usize::from(image.hotspot[1]);
+            for (i, pixel) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
+                let at = ((y0 + i / side) * width + x0 + i % side) * 4;
+                let a = f32::from(pixel[3]) / 255.0;
+                for channel in 0..3 {
+                    rgba[at + channel] = (f32::from(pixel[channel]) * a + f32::from(background) * (1.0 - a)).round() as u8;
+                }
+            }
+        }
+    }
+    let image = photocraft_codecs::Image::from_u8(width as u32, height as u32, photocraft_codecs::ChannelLayout::Rgba, rgba).unwrap();
+    let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/cursor-verification/unified-bucket-preview.png");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, png).unwrap();
 }

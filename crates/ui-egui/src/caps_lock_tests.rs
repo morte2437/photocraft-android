@@ -164,6 +164,9 @@ fn caps_lock_swaps_the_other_cursors_between_their_icon_and_the_crosshair() {
             assert_eq!(img.size, expected.size, "{tool:?}: bitmap dimensions match rasterized variant");
             assert_eq!(img.hotspot, expected.hotspot, "{tool:?}: hotspot matches variant");
             assert_eq!(img.rgba, expected.rgba, "{tool:?}: RGBA bitmap matches variant rasterization");
+        } else if tool == Tool::PaintBucket && cfg!(not(target_arch = "wasm32")) {
+            assert_eq!(standard.icon, CursorIcon::Crosshair, "PaintBucket: the OS bitmap has a visible fallback");
+            assert!(standard.image.is_some(), "PaintBucket: the standard cursor is the unified OS bitmap");
         } else {
             assert_eq!(standard.icon, CursorIcon::None, "{tool:?}: the standard cursor is the tool's own icon, drawn");
             assert!(standard.image.is_none(), "{tool:?}: painted fallback has no native cursor bitmap");
