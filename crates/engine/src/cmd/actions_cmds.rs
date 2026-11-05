@@ -957,7 +957,7 @@ pub(crate) fn history_policy_in_use(s: &Session) -> bool {
     s.actions.playing != 0 || s.action_history.is_some() || s.paused_action_history.iter().any(|lease| lease.strong_count() != 0)
 }
 
-/// Kept separate from Playback Options' performance modes until #5212 provides that dialog.
+/// Create a single history state alone; `actions.setPlayback` sets it with the performance mode.
 fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
     not_playing(s, "actions.setHistory")?;
     if history_policy_in_use(s) {
@@ -966,6 +966,47 @@ fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
     let enabled = p.get("singleState").and_then(Value::as_bool).ok_or_else(|| bad("actions.setHistory", "singleState must be a boolean"))?;
     s.edit_prefs(|prefs| prefs.actions.create_single_history_state = enabled);
     Ok(json!({"singleState":enabled}))
+}
+
+/// Playback Options: `performance`, Pause For's whole `seconds` (1 to 60) and `singleState`, each
+/// optional, all validated before any is stored, and saved in preferences. `{}` reads them.
+fn set_playback(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "actions.setPlayback";
+    not_playing(s, CMD)?;
+    if !p.is_object() {
+        return Err(bad(CMD, "params must be an object"));
+    }
+    let performance = match p.get("performance") {
+        None => None,
+        Some(v) => Some(v.as_str().and_then(crate::prefs::PlaybackPerformance::parse).ok_or_else(|| bad(CMD, "performance must be accelerated, step or pause"))?),
+    };
+    let range = crate::prefs::Actions::PAUSE_SECONDS;
+    let seconds = match p.get("seconds") {
+        None => None,
+        Some(v) => Some(
+            v.as_u64()
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| range.contains(n))
+                .ok_or_else(|| bad(CMD, format!("seconds must be a whole number from {} to {}", range.start(), range.end())))?,
+        ),
+    };
+    let single = match p.get("singleState") {
+        None => None,
+        Some(v) => Some(v.as_bool().ok_or_else(|| bad(CMD, "singleState must be a boolean"))?),
+    };
+    if single.is_some_and(|single| single != s.prefs().actions.create_single_history_state) && history_policy_in_use(s) {
+        return Err(bad(CMD, "cannot change action history settings during playback"));
+    }
+    if performance.is_some() || seconds.is_some() || single.is_some() {
+        s.edit_prefs(|prefs| {
+            let a = &mut prefs.actions;
+            a.performance = performance.unwrap_or(a.performance);
+            a.pause_seconds = seconds.unwrap_or(a.pause_seconds);
+            a.create_single_history_state = single.unwrap_or(a.create_single_history_state);
+        });
+    }
+    let a = &s.prefs().actions;
+    Ok(json!({"performance": a.performance.name(), "seconds": a.pause_seconds(), "singleState": a.create_single_history_state}))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -978,6 +1019,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r##"{"singleState":bool} → {singleState}. Persist Create a single history state (default true). Playback Options can use this setting without changing its performance mode."##,
             enabled: always,
             run: set_history,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.setPlayback",
+            label: "Playback Options",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"performance":"accelerated"|"step"|"pause"?, "seconds":1..60?, "singleState":bool?} → {performance, seconds, singleState}. The Actions panel menu's Playback Options, saved in preferences (`actions.performance`, `actions.pauseSeconds`, `actions.createSingleHistoryState`). Step by Step and Pause For pace a person's Play in the app, about one second between steps plus Pause For's whole seconds; actions.play from agents, the CLI and Batch always runs at once. Omitted keys keep their value; {} reads them. Every value is checked before any is stored."##,
+            enabled: always,
+            run: set_playback,
             journal: false,
         },
         CommandSpec {
@@ -1085,6 +1136,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod playback_tests;
 
 #[cfg(test)]
 mod security_tests {
