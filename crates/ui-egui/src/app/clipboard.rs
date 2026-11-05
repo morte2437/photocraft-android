@@ -155,8 +155,16 @@ impl PhotocraftApp {
         let r = photocraft_geom::Rect::new(0, 0, w as i32, h as i32);
         let mut surface = photocraft_raster::Surface::from_interleaved(photocraft_color::PixelFormat::RGBA8, r, &bytes);
         surface.prune();
-        self.session.clipboard =
-            Some(photocraft_engine::edit_cmds::Clip { components: None, surface, bounds: r, layers: None, resolution: None, source: None, svg: None });
+        self.session.clipboard = Some(photocraft_engine::edit_cmds::Clip {
+            components: None,
+            surface,
+            bounds: r,
+            layers: None,
+            resolution: None,
+            source: None,
+            svg: None,
+            board: None,
+        });
         // The SVG that came with this image (a vector app puts both): a later internal copy is
         // newer than it, so Paste As must not bring it back while it is unchanged.
         self.os_clip_svg = self.os_svg_now().flatten();

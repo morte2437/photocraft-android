@@ -66,6 +66,8 @@ pub(super) fn from_svg(bytes: &[u8]) -> Result<Clip> {
         layers: None,
         resolution: None,
         source: None,
+        // An image from another app came from no artboard.
+        board: None,
     })
 }
 
