@@ -73,6 +73,11 @@ impl Headless {
         self.renderer = renderer;
     }
 
+    /// Take the active renderer out of this session.
+    pub fn take_renderer(&mut self) -> Option<Box<dyn photocraft_io::BandRenderer>> {
+        self.renderer.take()
+    }
+
     /// Mutable reference to the active renderer if any.
     pub fn renderer_mut(&mut self) -> Option<&mut dyn photocraft_io::BandRenderer> {
         self.renderer.as_mut().map(|b| &mut **b as &mut dyn photocraft_io::BandRenderer)

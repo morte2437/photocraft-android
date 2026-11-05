@@ -10,7 +10,7 @@ use photocraft_io::ExportOptions;
 use crate::{
     CliError, Result,
     args::{ConvertArgs, InfoArgs, RunArgs, Step},
-    output::{JsonStyle, print_json, warn_all},
+    output::{JsonStyle, print_json, warn_all, warn_dedup},
 };
 
 /// An output that is the input file itself, however it is spelt (relative, with `./`, through a
@@ -34,10 +34,22 @@ pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write
     let mut o = files::open_with_options(input, &import_opts)?;
     // Preferences › Raw Defaults › Resolution at its default, as `run` and `info` open a raw.
     photocraft_engine::file_cmds::raw_defaults(&photocraft_engine::Session::new(), &o.warnings, &mut o.document);
-    warn_all(err, &o.warnings);
-    warn_all(err, &missing_font_warnings(&o.document));
-    let ws = files::save(&o.document, output, a.export.format.as_deref(), &opts, None)?;
-    warn_all(err, &ws);
+    let mut seen_warnings = std::collections::HashSet::<String>::new();
+    warn_dedup(err, &o.warnings, &mut seen_warnings);
+    warn_dedup(err, &missing_font_warnings(&o.document), &mut seen_warnings);
+    let policy = crate::gpu::GpuPolicy::from_args(&a.gpu).map_err(CliError::Other)?;
+    let mut renderer = policy.create_renderer();
+    let ws = match renderer.as_mut() {
+        Some(renderer) => files::save_with_renderer(&o.document, output, a.export.format.as_deref(), &opts, None, Some(&mut **renderer)),
+        None => files::save(&o.document, output, a.export.format.as_deref(), &opts, None),
+    };
+    // A failed GPU export can leave fallback reasons queued: report them before the error
+    // propagates, or the user would never learn why the GPU was not used.
+    if let Some(renderer) = renderer.as_mut() {
+        warn_dedup(err, &renderer.drain_diagnostics(), &mut seen_warnings);
+    }
+    let ws = ws?;
+    warn_dedup(err, &ws, &mut seen_warnings);
     Ok(())
 }
 
@@ -73,9 +85,14 @@ fn command_list(a: &RunArgs) -> Result<Vec<(String, Value)>> {
     Ok(cmds)
 }
 
+/// Reported once by `run --gpu` when a step is `file.export.quickExport`.
+const QUICK_EXPORT_CPU_NOTE: &str = "file.export.quickExport runs on the CPU compositor; --gpu applies to --out and the export commands that take a renderer";
+
 pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let opts = ExportOptions::from(&a.export);
     let mut h = Headless::trusted_local();
+    let policy = crate::gpu::GpuPolicy::from_args(&a.gpu).map_err(CliError::Other)?;
+    policy.apply_to_headless(&mut h);
     // Opening, running commands and exporting can all notice the same missing font:
     // one `run` invocation reports each warning line at most once.
     let mut reported_fonts = std::collections::HashSet::<String>::new();
@@ -106,6 +123,11 @@ pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) ->
         let new_warnings: Vec<String> =
             h.session.active().map(|st| missing_font_warnings(&st.doc)).unwrap_or_default().into_iter().filter(|w| reported_fonts.insert(w.clone())).collect();
         warn_all(err, &new_warnings);
+        // Quick Export composites and encodes inside the engine, which has no renderer: say so
+        // once, so `--gpu` never looks as if it applied to it (docs/development.md, GPU).
+        if policy.enabled && id == "file.export.quickExport" {
+            warn_dedup(err, &[QUICK_EXPORT_CPU_NOTE.to_string()], &mut reported_fonts);
+        }
         let mut result = json!({"command": id, "result": r});
         if !new_warnings.is_empty() {
             result["warnings"] = json!(new_warnings);
@@ -117,11 +139,19 @@ pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) ->
         h.session.active().map(|st| missing_font_warnings(&st.doc)).unwrap_or_default().into_iter().filter(|w| reported_fonts.insert(w.clone())).collect();
     warn_all(err, &remaining);
     if let Some(o) = a.out.as_deref() {
-        let r = h.save(None, Some(o), a.export.format.as_deref(), &opts)?;
+        let saved = h.save(None, Some(o), a.export.format.as_deref(), &opts);
+        // Report GPU diagnostics even when the export fails: the fallback reason is queued
+        // during the failed export and would otherwise be lost on the error path.
+        let failed_diags: Vec<String> = h.drain_diagnostics().into_iter().filter(|w| reported_fonts.insert(w.clone())).collect();
+        warn_all(err, &failed_diags);
+        let r = saved?;
         let ws: Vec<String> = serde_json::from_value(r["warnings"].clone()).unwrap_or_default();
         let ws: Vec<String> = ws.into_iter().filter(|w| reported_fonts.insert(w.clone())).collect();
         warn_all(err, &ws);
     }
+    let diags = h.drain_diagnostics();
+    let diags: Vec<String> = diags.into_iter().filter(|w| reported_fonts.insert(w.clone())).collect();
+    warn_all(err, &diags);
     Ok(())
 }
 

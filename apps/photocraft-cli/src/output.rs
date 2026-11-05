@@ -43,6 +43,14 @@ pub(crate) fn warn_all(err: &mut dyn Write, ws: &[String]) {
     }
 }
 
+pub(crate) fn warn_dedup(err: &mut dyn Write, ws: &[String], seen: &mut std::collections::HashSet<String>) {
+    for w in ws {
+        if seen.insert(w.clone()) {
+            let _ = writeln!(err, "warning: {w}");
+        }
+    }
+}
+
 /// How [`print_json`] lays the JSON out.
 pub(crate) enum JsonStyle {
     Pretty,

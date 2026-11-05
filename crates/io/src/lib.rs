@@ -967,9 +967,23 @@ fn checked_stages(
     photocraft_compose::discard_unreadable_pixel_caches();
     doc.scratch_health().map_err(IoError::Unsupported)?;
     let scratch_generation = photocraft_raster::spill::read_error_generation();
-    let r = export_stages_with_renderer(doc, name_or_ext, opts, ctl, renderer)?;
-    photocraft_raster::spill::check_since(scratch_generation).map_err(IoError::Unsupported)?;
-    doc.scratch_health().map_err(IoError::Unsupported)?;
+    let mut renderer = renderer;
+    // `as_deref_mut` would tie the trait object's lifetime to this function's; the closure shortens it.
+    #[allow(clippy::option_as_ref_deref)]
+    let r = export_stages_with_renderer(doc, name_or_ext, opts, ctl, renderer.as_mut().map(|r| -> &mut dyn BandRenderer { &mut **r }))?;
+    if let Err(e) = photocraft_raster::spill::check_since(scratch_generation)
+        .map_err(IoError::Unsupported)
+        .and_then(|()| doc.scratch_health().map_err(IoError::Unsupported))
+    {
+        // The provisional result is discarded: queue its renderer notes (fallback reasons, CPU-only
+        // formats) back on the renderer so the caller can still report them next to the error.
+        if let Some(renderer) = renderer {
+            for w in r.warnings.iter().filter(|w| w.starts_with("custom renderer") || w.contains("CPU compositor")) {
+                renderer.push_diagnostic(w.clone());
+            }
+        }
+        return Err(e);
+    }
     ctl.check().map_err(|_| IoError::Cancelled)?;
     Ok(r)
 }

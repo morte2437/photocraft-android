@@ -116,6 +116,36 @@ fn poisoned_session_keeps_serving() {
     assert_eq!(r["ok"], true, "{r}");
 }
 
+/// A renderer whose diagnostics panic must not cost the request its reply.
+#[test]
+fn a_panicking_renderer_diagnostic_drain_still_writes_the_reply() {
+    struct PanickyDiagnostics;
+    impl photocraft_io::BandRenderer for PanickyDiagnostics {
+        fn render_bands(
+            &mut self,
+            _doc: &photocraft_doc::Document,
+            _rect: photocraft_doc::Rect,
+            _band_rows: i32,
+            _ctl: &photocraft_raster::Interrupt<'_>,
+            _sink: &mut dyn FnMut(photocraft_io::RenderBand) -> Result<(), photocraft_io::IoError>,
+        ) -> Result<(), photocraft_io::RenderError> {
+            Ok(())
+        }
+
+        fn drain_diagnostics(&mut self) -> Vec<String> {
+            panic!("diagnostics blew up");
+        }
+    }
+    let h = session();
+    h.lock().unwrap().set_renderer(Some(Box::new(PanickyDiagnostics)));
+    let r = respond(&h, r#"{"id":7,"method":"doc.new","params":{"width":8,"height":8}}"#);
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["id"], 7);
+    // The session keeps serving afterwards.
+    let r = respond(&h, r#"{"id":8,"method":"doc.new","params":{"width":8,"height":8}}"#);
+    assert_eq!(r["ok"], true, "{r}");
+}
+
 #[test]
 fn batch_stops_on_error_unless_told_not_to() {
     let h = session();

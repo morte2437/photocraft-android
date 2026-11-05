@@ -1,8 +1,10 @@
 //! The crate's integration tests, linked into one test binary.
 
 mod cli;
+mod gpu;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod malloc_tuning;
+
 mod man_and_completions;
 mod orientation;
 

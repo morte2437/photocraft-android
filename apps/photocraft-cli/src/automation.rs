@@ -34,7 +34,13 @@ pub(crate) fn commands(a: &CommandsArgs, out: &mut dyn Write) -> Result {
 
 pub(crate) fn serve(a: &ServeArgs, err: &mut dyn Write) -> Result {
     use std::sync::{Arc, Mutex};
-    let h = Arc::new(Mutex::new(Headless::with_workspace(a.automation.workspace()?)));
+    let mut h = Headless::with_workspace(a.automation.workspace()?);
+    let policy = crate::gpu::GpuPolicy::from_args(&a.gpu).map_err(crate::CliError::Other)?;
+    policy.apply_to_headless(&mut h);
+    for d in h.drain_diagnostics() {
+        let _ = writeln!(err, "warning: {d}");
+    }
+    let h = Arc::new(Mutex::new(h));
     match a.port {
         Some(port) => {
             if a.port_from_env {
@@ -75,7 +81,15 @@ pub(crate) fn mcp(a: &McpArgs, err: &mut dyn Write) -> Result {
             let token = security::client_token(a.control.control_token.as_deref(), a.control.control_token_file.as_deref())?;
             PhotocraftMcp::bridge(&addr.to_string(), &token)?
         }
-        None => PhotocraftMcp::headless_with_workspace(a.automation.workspace()?),
+        None => {
+            let mut h = Headless::with_workspace(a.automation.workspace()?);
+            let policy = crate::gpu::GpuPolicy::from_args(&a.gpu).map_err(crate::CliError::Other)?;
+            policy.apply_to_headless(&mut h);
+            for d in h.drain_diagnostics() {
+                let _ = writeln!(err, "warning: {d}");
+            }
+            PhotocraftMcp::with_headless(h)
+        }
     };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     Ok(rt.block_on(server.serve_stdio())?)

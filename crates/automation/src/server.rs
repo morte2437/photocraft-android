@@ -579,8 +579,12 @@ impl PhotocraftMcp {
         Self::with_backend(Backend::Headless(Arc::new(Mutex::new(Headless::new()))))
     }
 
+    pub fn with_headless(headless: Headless) -> Self {
+        Self::with_backend(Backend::Headless(Arc::new(Mutex::new(headless))))
+    }
+
     pub fn headless_with_workspace(workspace: AuthorizedWorkspace) -> Self {
-        Self::with_backend(Backend::Headless(Arc::new(Mutex::new(Headless::with_workspace(workspace)))))
+        Self::with_headless(Headless::with_workspace(workspace))
     }
 
     pub fn bridge(addr: &str, token: &str) -> Result<Self, AutomationError> {

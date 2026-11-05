@@ -15,7 +15,7 @@ fn bin() -> Command {
     cmd
 }
 
-const ENV_VARS: [&str; 3] = ["PHOTOCRAFT_CONTROL_PORT", "PHOTOCRAFT_CONTROL_TOKEN", "PHOTOCRAFT_CONTROL_TOKEN_FILE"];
+const ENV_VARS: [&str; 4] = ["PHOTOCRAFT_CONTROL_PORT", "PHOTOCRAFT_CONTROL_TOKEN", "PHOTOCRAFT_CONTROL_TOKEN_FILE", "PHOTOCRAFT_GPU"];
 
 fn tmp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("pc-cli-{}-{name}", std::process::id()));
