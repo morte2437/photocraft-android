@@ -57,7 +57,10 @@ pub(crate) fn info(a: &InfoArgs, out: &mut dyn Write) -> Result {
     let file = &a.file;
     let mut h = Headless::trusted_local();
     let opened = h.open_with_approval(file, a.approve_high_memory)?;
-    let mut doc = h.inspect(None)?;
+    let mut doc = match (a.detail, h.session.active()) {
+        (true, Some(st)) => photocraft_engine::inspect::document_detail(st),
+        _ => h.inspect(None)?,
+    };
     let mut warnings = opened["warnings"].as_array().cloned().unwrap_or_default();
     if let Some(st) = h.session.active() {
         warnings.extend(missing_font_warnings(&st.doc).into_iter().map(Value::String));
