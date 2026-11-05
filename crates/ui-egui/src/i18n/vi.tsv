@@ -4039,3 +4039,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	Học hỏi
 	No recent files	Không có tệp gần đây
 	Website	Trang web
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Khung hỗ trợ các phép biến đổi affine; chọn ảnh trong khung để biến đổi phối cảnh
+	A frame supports affine transforms; select its image to warp it	Khung hỗ trợ các phép biến đổi affine; chọn ảnh trong khung để làm cong
+	Convert to Frame…	Chuyển thành khung…
+	Create a new custom frame	Tạo khung tùy chỉnh mới
+	Create a new polygonal frame	Tạo khung đa giác mới
+	Create a new triangular frame	Tạo khung tam giác mới
+	Fit Content to Frame	Khớp nội dung với khung
+	Fit Frame to Content	Khớp khung với nội dung
+	Frame coordinates must be finite and within 600000 pixels	Tọa độ khung phải hữu hạn và nằm trong giới hạn 600000 pixel
+	Import Image…	Nhập ảnh…
+	Invalid frame transform	Phép biến đổi khung không hợp lệ
+	Invalid nested file drop	Thả tệp lồng nhau không hợp lệ
+	New Frame	Khung mới
+	Replace Image…	Thay ảnh…
+	The frame is locked	Khung đã bị khóa
+	The frame is unavailable	Khung không khả dụng

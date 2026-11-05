@@ -4609,3 +4609,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	New file	Novi fajl
 	Learn	Učenje
 	Website	Veb-sajt
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Оквир подржава афине трансформације; за перспективне трансформације изаберите његову слику
+	A frame supports affine transforms; select its image to warp it	Оквир подржава афине трансформације; за изобличавање изаберите његову слику
+	Convert to Frame…	Претвори у оквир…
+	Create a new custom frame	Направи нови прилагођени оквир
+	Create a new polygonal frame	Направи нови многоугаони оквир
+	Create a new triangular frame	Направи нови троугаони оквир
+	Fit Content to Frame	Прилагоди садржај оквиру
+	Fit Frame to Content	Прилагоди оквир садржају
+	Frame coordinates must be finite and within 600000 pixels	Координате оквира морају бити коначне и унутар 600000 пиксела
+	Import Image…	Увези слику…
+	Invalid frame transform	Неважећа трансформација оквира
+	Invalid nested file drop	Неважеће угнежђено испуштање датотеке
+	New Frame	Нови оквир
+	Replace Image…	Замени слику…
+	The frame is locked	Оквир је закључан
+	The frame is unavailable	Оквир није доступан

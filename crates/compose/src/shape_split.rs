@@ -106,11 +106,15 @@ pub fn split(sh: &ShapeLayer, canvas: Rect, depth: SampleType) -> Option<(Surfac
     Some(parts)
 }
 
-/// The stroke-only shape a Photoshop Frame's stroke draws: `Group::frame_stroke` along the
-/// group's enabled vector mask (the frame outline). `None` for other layers and for a frame
-/// without a visible stroke or a vector mask.
+/// The stroke-only shape a Frame's stroke draws: the Frame tool's own border (`Layer::frame`),
+/// else a Photoshop Frame's `Group::frame_stroke` along the group's enabled vector mask (the
+/// frame outline). `None` for other layers and for a frame without a visible stroke (or, for a
+/// Photoshop Frame, a vector mask).
 pub fn frame_shape(layer: &Layer) -> Option<ShapeLayer> {
     let LayerContent::Group(g) = &layer.content else { return None };
+    if let Some(shape) = layer.frame.as_ref().and_then(|f| f.stroke_shape()) {
+        return Some(shape);
+    }
     let stroke = g.frame_stroke.as_ref().filter(|s| s.width.is_finite() && s.width > 0.0 && s.opacity > 0.0)?;
     let vm = layer.vector_mask.as_ref().filter(|m| m.enabled && !m.path.is_empty())?;
     Some(ShapeLayer { path: vm.path.clone(), fill: None, stroke: Some(stroke.clone()), ..ShapeLayer::default() })

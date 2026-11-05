@@ -3555,3 +3555,22 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	Pelajari
 	No recent files	Tidak ada file terbaru
 	Website	Situs web
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Bingkai mendukung transformasi afin; pilih gambarnya untuk transformasi perspektif
+	A frame supports affine transforms; select its image to warp it	Bingkai mendukung transformasi afin; pilih gambarnya untuk dilengkungkan
+	Convert to Frame…	Konversi ke Bingkai…
+	Create a new custom frame	Buat bingkai kustom baru
+	Create a new polygonal frame	Buat bingkai poligon baru
+	Create a new triangular frame	Buat bingkai segitiga baru
+	Fit Content to Frame	Sesuaikan Konten ke Bingkai
+	Fit Frame to Content	Sesuaikan Bingkai ke Konten
+	Frame coordinates must be finite and within 600000 pixels	Koordinat bingkai harus berhingga dan berada dalam batas 600000 piksel
+	Import Image…	Impor Gambar…
+	Invalid frame transform	Transformasi bingkai tidak valid
+	Invalid nested file drop	Penjatuhan berkas bersarang tidak valid
+	New Frame	Bingkai Baru
+	Replace Image…	Ganti Gambar…
+	The frame is locked	Bingkai terkunci
+	The frame is unavailable	Bingkai tidak tersedia
+	Frame	Bingkai

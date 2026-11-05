@@ -211,6 +211,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             feather: m.feather,
         }),
         vector_mask: l.vector_mask.clone(),
+        frame: l.frame.as_deref().cloned(),
         effects: EffectsM {
             enabled: l.effects.enabled,
             items: l.effects.items.clone(),
@@ -463,6 +464,9 @@ impl Loader<'_> {
     /// One layer, given its already converted group children.
     #[inline(never)]
     fn layer_with(&mut self, m: &LayerM, children: Vec<Layer>) -> Result<Layer> {
+        // Unusable frame metadata is dropped rather than making the whole document unreadable;
+        // the group and its vector mask still load.
+        let frame = m.frame.clone().filter(|f| f.valid() && matches!(m.content, ContentM::Group { .. }));
         let content = match &m.content {
             ContentM::Raster { surface } => LayerContent::Raster(self.surface(surface)?),
             ContentM::Group { expanded, artboard, frame_stroke, .. } => {
@@ -569,6 +573,7 @@ impl Loader<'_> {
             clipped: m.clipped,
             mask,
             vector_mask: m.vector_mask.clone(),
+            frame: frame.map(Box::new),
             effects: Effects {
                 enabled: m.effects.enabled,
                 items: m.effects.items.clone(),

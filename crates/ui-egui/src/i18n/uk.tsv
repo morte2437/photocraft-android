@@ -4244,3 +4244,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	Навчання
 	No recent files	Немає останніх файлів
 	Website	Вебсайт
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Рамка підтримує афінні перетворення; для перспективних перетворень виберіть її зображення
+	A frame supports affine transforms; select its image to warp it	Рамка підтримує афінні перетворення; для деформації виберіть її зображення
+	Convert to Frame…	Перетворити на рамку…
+	Create a new custom frame	Створити нову довільну рамку
+	Create a new polygonal frame	Створити нову багатокутну рамку
+	Create a new triangular frame	Створити нову трикутну рамку
+	Fit Content to Frame	Припасувати вміст до рамки
+	Fit Frame to Content	Припасувати рамку до вмісту
+	Frame coordinates must be finite and within 600000 pixels	Координати рамки мають бути скінченними та в межах 600000 пікселів
+	Import Image…	Імпортувати зображення…
+	Invalid frame transform	Неприпустиме перетворення рамки
+	Invalid nested file drop	Неприпустиме вкладене перетягування файлу
+	New Frame	Нова рамка
+	Replace Image…	Замінити зображення…
+	The frame is locked	Рамку заблоковано
+	The frame is unavailable	Рамка недоступна

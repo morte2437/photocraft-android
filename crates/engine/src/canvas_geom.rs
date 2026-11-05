@@ -156,6 +156,14 @@ fn grown(v: f32, k: f64) -> f32 {
 /// the parts Free Transform (`transform_layer`) doesn't move are touched: unlinked vector masks,
 /// gradient fill angles, effect reference points and artboards.
 pub(crate) fn transform_layer_geometry(l: &mut Layer, a: &Affine, content: bool, dpi: f32) {
+    if content && let Some(f) = &mut l.frame {
+        f.transform = a.mul(&f.transform);
+        // Past `Frame::valid`'s bounds it would no longer load; the vector mask, moved below,
+        // keeps the clip as a plain masked group.
+        if !f.valid() {
+            l.frame = None;
+        }
+    }
     if let Some(vm) = l.vector_mask.as_mut()
         && (content || !vm.linked)
     {

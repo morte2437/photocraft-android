@@ -100,6 +100,7 @@ fn a_background_job_journals_the_same_way() {
 fn frame_action_keeps_the_layer_it_wraps() {
     let mut s = session();
     let picture = new_layer(&mut s, "Picture");
+    s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
     s.execute("actions.record", json!({"name": "Frame picture"})).unwrap();
     s.execute("layer.new.frame", json!({"x": 1, "y": 1, "width": 20, "height": 20, "layer": picture})).unwrap();
     s.execute("actions.stop", json!({})).unwrap();
@@ -108,6 +109,7 @@ fn frame_action_keeps_the_layer_it_wraps() {
     s.execute("file.new", json!({"width": 32, "height": 32, "background": "white"})).unwrap();
     new_layer(&mut s, "Spare");
     let target = new_layer(&mut s, "Picture");
+    s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
     assert_ne!(target, picture, "the replay target has a different document-local id");
     let played = s.execute("actions.play", json!({"action": "Frame picture"})).unwrap();
     assert!(played.get("failed").is_none(), "{played}");

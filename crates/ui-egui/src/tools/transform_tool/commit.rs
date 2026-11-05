@@ -22,6 +22,17 @@ pub fn commit(app: &mut PhotocraftApp) {
     let type_layer = warps_type(app);
     let Some(t) = app.ui.transform.take() else { return };
     let mut preview = app.transform_preview.take();
+    if crate::frame_tool::frame_transform(&t) {
+        app.frame_preview = None;
+        if t.quad != corners(t.rect) {
+            let result = crate::frame_tool::transformed_frame(app, &t)
+                .and_then(|transform| app.run("layer.frame.set", json!({"layer": t.layer, "transform": transform.m})));
+            if let Err(error) = result {
+                keep_open(app, t, preview, error);
+            }
+        }
+        return;
+    }
     if let Some(options) = &t.content_aware {
         crate::cas_transform::commit(app, &t, options);
         return;
@@ -232,6 +243,11 @@ pub fn follow_edits(app: &mut PhotocraftApp) {
 }
 
 pub fn cancel(app: &mut PhotocraftApp) {
+    if app.ui.transform.as_ref().is_some_and(crate::frame_tool::frame_transform) {
+        app.frame_preview = None;
+    }
+    // A frame drag's session (frame or content) ends here; a later one must not commit on release.
+    app.ui.frame_tool.auto_transform = false;
     // Esc while the commit runs cancels the job; the session ends when it does.
     if let Some(job) = committing(app) {
         crate::jobs_ui::cancel(app, job);

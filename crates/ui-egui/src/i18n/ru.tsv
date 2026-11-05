@@ -4728,3 +4728,21 @@ shape	Appearance	Оформление
 	New file	Новый файл
 	Learn	Обучение
 	Website	Сайт
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Рамка поддерживает аффинные преобразования; для перспективных преобразований выберите её изображение
+	A frame supports affine transforms; select its image to warp it	Рамка поддерживает аффинные преобразования; для деформации выберите её изображение
+	Convert to Frame…	Преобразовать в рамку…
+	Create a new custom frame	Создать новую произвольную рамку
+	Create a new polygonal frame	Создать новую многоугольную рамку
+	Create a new triangular frame	Создать новую треугольную рамку
+	Fit Content to Frame	Подогнать содержимое под рамку
+	Fit Frame to Content	Подогнать рамку под содержимое
+	Frame coordinates must be finite and within 600000 pixels	Координаты рамки должны быть конечными и находиться в пределах 600000 пикселей
+	Import Image…	Импортировать изображение…
+	Invalid frame transform	Недопустимое преобразование рамки
+	Invalid nested file drop	Недопустимое вложенное перетаскивание файла
+	New Frame	Новая рамка
+	Replace Image…	Заменить изображение…
+	The frame is locked	Рамка заблокирована
+	The frame is unavailable	Рамка недоступна

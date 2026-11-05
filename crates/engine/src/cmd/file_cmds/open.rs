@@ -1,7 +1,7 @@
 use super::paths::{file_name, read_file, stem, template_name};
 use super::{
-    Affine, Arc, Document, EngineError, Layer, LayerContent, Resample, Result, Session, SmartObject, SmartSource, Value, f64_param, flattened_checked, json,
-    resize_surface, str_param, translate_surface,
+    Affine, Arc, Document, EngineError, Layer, LayerContent, LayerId, Resample, Result, Session, SmartObject, SmartSource, Value, f64_param, flattened_checked,
+    json, resize_surface, str_param, translate_surface,
 };
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
@@ -247,7 +247,20 @@ pub const PLACE_EMBEDDED: &str = "Place Embedded";
 /// lands as a plain pixel layer instead (an explicit `"smartObject": false` asks for one).
 pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<String>, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    let (cw, ch) = (d.doc.size.width as f64, d.doc.size.height as f64);
+    let frame_id = match p.get("frame") {
+        Some(Value::Bool(false)) => None,
+        Some(v) if !v.is_null() => Some(LayerId(v.as_u64().ok_or_else(|| EngineError::Other("frame must be a frame id or false".into()))?)),
+        _ => d.active_layer.and_then(|id| crate::frame_cmds::frame_of(&d.doc, id)),
+    };
+    let frame = frame_id
+        .map(|id| {
+            d.doc.layer(id).and_then(|l| l.frame.clone()).map(|f| (id, f)).ok_or_else(|| EngineError::Other("the destination frame is unavailable".into()))
+        })
+        .transpose()?;
+    let (cw, ch) = frame.as_ref().map_or((d.doc.size.width as f64, d.doc.size.height as f64), |(_, f)| {
+        let [a, b, c, d, _, _] = f.transform.m;
+        (a.hypot(b), c.hypot(d))
+    });
     let fmt = d.doc.pixel_format();
     let vector = photocraft_io::svg::is_svg(&bytes);
     let approve = match p.get("approveHighMemory") {
@@ -272,6 +285,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(s.prefs().general.resize_image_during_place);
     let scale = match f64_param(p, "scale") {
         Some(k) => (k / 100.0).max(1e-4),
+        None if frame.is_some() && fit => (cw / w).max(ch / h),
         None if fit && (w > cw || h > ch) => (cw / w).min(ch / h),
         None => 1.0,
     };
@@ -280,14 +294,32 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
         _ => (cw / 2.0, ch / 2.0),
     };
     let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
-    let mut px = flattened_checked(&src, fmt, "file.place")?;
-    if (scale - 1.0).abs() > 1e-9 {
-        px = resize_surface(&px, scale, scale, Resample::Bicubic);
-    }
-    let px = translate_surface(&px, dx as i32, dy as i32);
+    // A frame's image renders through its smart object below, which refuses a placement past the
+    // memory budget; resampling it to the frame's size first would allocate that surface twice.
+    let px = if frame.is_none() {
+        let mut px = flattened_checked(&src, fmt, "file.place")?;
+        if (scale - 1.0).abs() > 1e-9 {
+            px = resize_surface(&px, scale, scale, Resample::Bicubic);
+        }
+        Some(translate_surface(&px, dx as i32, dy as i32))
+    } else {
+        None
+    };
+    let placement = frame
+        .as_ref()
+        .map_or(Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, |(_, f)| f.transform.mul(&Affine { m: [scale / cw, 0.0, 0.0, scale / ch, dx / cw, dy / ch] }));
+    let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| placement.apply(photocraft_geom::Point::new(x, y)));
+    let bounds = [
+        corners.iter().map(|q| q.x).fold(f64::INFINITY, f64::min),
+        corners.iter().map(|q| q.y).fold(f64::INFINITY, f64::min),
+        corners.iter().map(|q| q.x).fold(f64::NEG_INFINITY, f64::max),
+        corners.iter().map(|q| q.y).fold(f64::NEG_INFINITY, f64::max),
+    ];
     // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off, an
     // embedded place lands as a plain pixel layer. A linked place is always a smart object.
-    let smart = linked.is_some() || p.get("smartObject").and_then(Value::as_bool).unwrap_or(s.prefs().general.always_create_smart_objects_when_placing);
+    let smart = frame.is_some()
+        || linked.is_some()
+        || p.get("smartObject").and_then(Value::as_bool).unwrap_or(s.prefs().general.always_create_smart_objects_when_placing);
     let source = match linked {
         Some(path) => SmartSource::Linked { path },
         None => SmartSource::Embedded { file_name: file_name(name), bytes: Arc::new(bytes) },
@@ -296,20 +328,32 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let label = if matches!(&source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
     let id = s.edit(label, |doc, active| {
         let layer = if smart {
-            let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+            let mut so = SmartObject::new(source, placement, px);
             // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
-            if vector && let Some(sharp) = crate::smart_cmds::render(doc, &so)? {
+            if (vector || frame.is_some())
+                && let Some(sharp) = crate::smart_cmds::render(doc, &so)?
+            {
                 so.cache = Some(sharp);
+            }
+            if so.cache.is_none() {
+                return Err(EngineError::Other(format!("{name}: the placed image could not be rendered")));
             }
             Layer::new(layer_name, LayerContent::Smart(so))
         } else {
+            let px = px.ok_or_else(|| EngineError::Other(format!("{name}: a frame's image must be a smart object")))?;
             Layer::new(layer_name, LayerContent::Raster(px))
         };
-        let id = crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::AutoEditable);
-        *active = Some(id);
+        let id = layer.id;
+        if let Some((frame_id, _)) = &frame {
+            crate::frame_cmds::put_content(doc, *frame_id, layer)?;
+            *active = Some(*frame_id);
+        } else {
+            crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::AutoEditable);
+            *active = Some(id);
+        }
         Ok(id)
     })?;
-    Ok(json!({"layer": id.0, "scale": scale * 100.0, "bounds": [dx, dy, dx + w * scale, dy + h * scale], "smartObject": smart}))
+    Ok(json!({"layer": id.0, "frame": frame.as_ref().map(|(id,_)|id.0), "scale": scale * 100.0, "bounds": bounds, "smartObject": smart}))
 }
 
 pub(super) fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {

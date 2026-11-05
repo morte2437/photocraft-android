@@ -3753,3 +3753,23 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	학습
 	No recent files	최근 파일 없음
 	Website	웹사이트
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	프레임은 아핀 변환을 지원합니다. 원근 변환을 하려면 프레임의 이미지를 선택하세요
+	A frame supports affine transforms; select its image to warp it	프레임은 아핀 변환을 지원합니다. 뒤틀려면 프레임의 이미지를 선택하세요
+	Convert to Frame…	프레임으로 변환…
+	Create a new custom frame	새 사용자 정의 프레임 만들기
+	Create a new polygonal frame	새 다각형 프레임 만들기
+	Create a new triangular frame	새 삼각형 프레임 만들기
+	Fit Content to Frame	내용을 프레임에 맞추기
+	Fit Frame to Content	프레임을 내용에 맞추기
+	Frame coordinates must be finite and within 600000 pixels	프레임 좌표는 유한한 값이며 600000픽셀 이내여야 합니다
+	Import Image…	이미지 가져오기…
+	Invalid frame transform	잘못된 프레임 변환
+	Invalid nested file drop	잘못된 중첩 파일 드롭
+	New Frame	새 프레임
+	Replace Image…	이미지 바꾸기…
+	The frame is locked	프레임이 잠겨 있습니다
+	The frame is unavailable	프레임을 사용할 수 없습니다
+	X	X
+	Y	Y

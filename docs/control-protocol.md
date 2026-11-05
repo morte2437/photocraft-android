@@ -774,6 +774,10 @@ available in custom workspaces. `window.panel.<id> {show:true}` always reveals, 
 and expands the panel, including when another tab is selected. Workspace snapshots
 retain custom collapse settings and Timeline visibility.
 
+### Frame Tool controls
+
+`ui.set {"tool":"frame","frameShape":"rectangle|ellipse|triangle|polygon|custom","frameSides":5,"frameTarget":"frame|content|both"}` selects creation options or the target inside the active frame. `ui.inspect` includes `frameTool`. `layer.frame.info {"layer":id}` queries geometry, stroke, and content without adding history. Frame edits use `layer.frame.set`, `layer.frame.fit`, `layer.frame.convert` and `layer.frame.setContent`; placement accepts `frame: id` to target an explicit frame or `frame: false` to place outside frames. See [Frame Tool behavior and persistence limits](frame-tool.md).
+
 ### Select the layer under the pointer
 
 Assign **Select Layer Under Cursor** in Keyboard Shortcuts to choose the topmost visible, pickable layer beneath the canvas pointer. Empty pixels and points outside the document leave the selection unchanged; dialogs, strokes and brush-resize gestures block it. The command follows zoom, pan, view rotation and horizontal flipping. Agents can invoke `ui.menu.invoke {"id":"layer.selectUnderCursor"}` after moving the screen pointer with `ui.move {"x": ..., "y": ...}`. The command has no default shortcut.

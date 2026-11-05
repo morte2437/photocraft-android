@@ -4232,3 +4232,23 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	New file	Νέο αρχείο
 	Learn	Εκμάθηση
 	Website	Ιστότοπος
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Το πλαίσιο υποστηρίζει αφινικούς μετασχηματισμούς· επιλέξτε την εικόνα του για μετασχηματισμούς προοπτικής
+	A frame supports affine transforms; select its image to warp it	Το πλαίσιο υποστηρίζει αφινικούς μετασχηματισμούς· επιλέξτε την εικόνα του για στρέβλωση
+	Convert to Frame…	Μετατροπή σε πλαίσιο…
+	Create a new custom frame	Δημιουργία νέου προσαρμοσμένου πλαισίου
+	Create a new polygonal frame	Δημιουργία νέου πολυγωνικού πλαισίου
+	Create a new triangular frame	Δημιουργία νέου τριγωνικού πλαισίου
+	Fit Content to Frame	Προσαρμογή περιεχομένου στο πλαίσιο
+	Fit Frame to Content	Προσαρμογή πλαισίου στο περιεχόμενο
+	Frame coordinates must be finite and within 600000 pixels	Οι συντεταγμένες του πλαισίου πρέπει να είναι πεπερασμένες και εντός 600000 pixel
+	Import Image…	Εισαγωγή εικόνας…
+	Invalid frame transform	Μη έγκυρος μετασχηματισμός πλαισίου
+	Invalid nested file drop	Μη έγκυρη ένθετη απόθεση αρχείου
+	New Frame	Νέο πλαίσιο
+	Replace Image…	Αντικατάσταση εικόνας…
+	The frame is locked	Το πλαίσιο είναι κλειδωμένο
+	The frame is unavailable	Το πλαίσιο δεν είναι διαθέσιμο
+	X	X
+	Y	Y

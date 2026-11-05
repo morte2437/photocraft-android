@@ -69,6 +69,10 @@ pub fn confirm(app: &mut PhotocraftApp) -> Result<Value, String> {
 
 /// Reset Tool: `tool`'s options, its selection mode and its brush.
 fn reset_tool(app: &mut PhotocraftApp, tool: Tool) {
+    if tool == Tool::Frame {
+        crate::frame_tool::cancel(app);
+        app.ui.frame_tool = Default::default();
+    }
     reset_options(&mut app.ui.tool_options, tool);
     if is_selection_tool(tool) {
         app.ui.selection_mode = 0;
@@ -83,6 +87,8 @@ fn reset_tool(app: &mut PhotocraftApp, tool: Tool) {
 
 /// Reset All Tools: every option, the selection mode and every tool's brush.
 fn reset_all(app: &mut PhotocraftApp) {
+    crate::frame_tool::cancel(app);
+    app.ui.frame_tool = Default::default();
     app.ui.tool_options = ToolOptions::default();
     app.ui.selection_mode = 0;
     app.ui.tool_brushes.clear();

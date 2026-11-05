@@ -4642,3 +4642,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	New file	Nuovo file
 	Learn	Impara
 	Website	Sito web
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Una cornice supporta trasformazioni affini; selezionate la sua immagine per le trasformazioni prospettiche
+	A frame supports affine transforms; select its image to warp it	Una cornice supporta trasformazioni affini; selezionate la sua immagine per alterarla
+	Convert to Frame…	Converti in cornice…
+	Create a new custom frame	Crea una nuova cornice personalizzata
+	Create a new polygonal frame	Crea una nuova cornice poligonale
+	Create a new triangular frame	Crea una nuova cornice triangolare
+	Fit Content to Frame	Adatta contenuto alla cornice
+	Fit Frame to Content	Adatta cornice al contenuto
+	Frame coordinates must be finite and within 600000 pixels	Le coordinate della cornice devono essere finite e comprese entro 600000 pixel
+	Import Image…	Importa immagine…
+	Invalid frame transform	Trasformazione della cornice non valida
+	Invalid nested file drop	Rilascio di file annidato non valido
+	New Frame	Nuova cornice
+	Replace Image…	Sostituisci immagine…
+	The frame is locked	La cornice è bloccata
+	The frame is unavailable	La cornice non è disponibile

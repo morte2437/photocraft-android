@@ -151,9 +151,9 @@ use filters::smart_mut;
 pub(crate) use filters::{add_smart_filter, filter_mask_paintable, filter_mask_surface, refresh_after_filter_mask_edit};
 use filters::{blending_options, delete_filter, edit_filters, move_filter, set_filter_params, set_filter_visible, smart, transfer_filters};
 pub(crate) use placing::detach_psd;
+pub(crate) use placing::{affine_homography, set_placement, shift_smart, transform_placement};
 use placing::{convert, shift_layer, via_copy};
 pub use placing::{layer_to_smart, layers_to_smart, placement};
-pub(crate) use placing::{set_placement, shift_smart, transform_placement};
 #[cfg(test)]
 pub(crate) use rendering::DISPLAY_NATIVE_HASH_BYTES;
 use rendering::refresh_or_fail;

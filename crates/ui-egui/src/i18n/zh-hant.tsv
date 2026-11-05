@@ -3174,3 +3174,24 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	學習
 	No recent files	沒有最近使用的檔案
 	Website	網站
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	框架支援仿射變形；若要進行透視變形，請選取框架中的影像
+	A frame supports affine transforms; select its image to warp it	框架支援仿射變形；若要進行彎曲變形，請選取框架中的影像
+	Convert to Frame…	轉換為框架…
+	Create a new custom frame	建立新的自訂框架
+	Create a new polygonal frame	建立新的多邊形框架
+	Create a new triangular frame	建立新的三角形框架
+	Fit Content to Frame	使內容符合框架
+	Fit Frame to Content	使框架符合內容
+	Frame coordinates must be finite and within 600000 pixels	框架座標必須為有限值，且在 600000 像素範圍內
+	Import Image…	讀入影像…
+	Invalid frame transform	無效的框架變形
+	Invalid nested file drop	無效的巢狀檔案拖放
+	New Frame	新增框架
+	Replace Image…	取代影像…
+	The frame is locked	框架已鎖定
+	The frame is unavailable	框架無法使用
+	Frame	框架
+	X	X
+	Y	Y

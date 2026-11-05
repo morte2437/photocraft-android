@@ -5,6 +5,16 @@ use super::{BlendMode, Document, Layer, LayerContent, Rect, advanced, bounds, ef
 /// Bounds of a layer's own pixels (union over group children; the canvas
 /// for fill layers; an artboard's board).
 pub fn layer_bounds(layer: &Layer, canvas: Rect) -> Rect {
+    if let Some(f) = &layer.frame {
+        // Empty placeholders are shell overlays, so they must not schedule a full frame-sized
+        // mask/composite on either renderer (particularly on 24+ MP documents).
+        if layer.children().is_some_and(|c| c.is_empty()) && f.stroke.as_ref().is_none_or(|s| s.width <= 0.0 || s.opacity <= 0.0) {
+            return Rect::EMPTY;
+        }
+        let b = f.bounds();
+        let n = f.stroke.as_ref().map_or(0, |s| s.width.ceil() as i32);
+        return Rect::new(b.x0.saturating_sub(n), b.y0.saturating_sub(n), b.x1.saturating_add(n), b.y1.saturating_add(n));
+    }
     // Transparency Shapes Layer off: effects and knockout cover the whole layer (the canvas).
     if advanced::shapeless(layer) {
         return canvas;
@@ -61,6 +71,9 @@ fn frame_stroke_bounds(layer: &Layer, canvas: Rect) -> Rect {
 /// children count with their own effects (a child's outside stroke shapes the group's drop
 /// shadow and must not be cut off at the child's pixels, #3274).
 pub fn effect_source_bounds(layer: &Layer, canvas: Rect) -> Rect {
+    if layer.frame.is_some() {
+        return layer_bounds(layer, canvas);
+    }
     match &layer.content {
         // A Frame's stroke is part of the group's content its effects are built from.
         LayerContent::Group(g) if g.artboard.is_none() && !advanced::shapeless(layer) => {
@@ -359,6 +372,10 @@ pub(crate) fn shapeless_stroke_bounds(layer: &Layer) -> Option<Rect> {
 /// Adjustment layers count as empty: they only change pixels already there (which is what an
 /// isolated group needs; see [`change_bounds`] for the document-level question).
 pub fn composite_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
+    if layer.frame.is_some() {
+        let bounds = layer_bounds(layer, canvas);
+        return Some(if bounds.is_empty() { bounds } else { bounds.inflate(effects::margin(layer)).intersect(&canvas) });
+    }
     if !transparent_outside(layer) {
         return None;
     }

@@ -4151,3 +4151,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	Nauka
 	No recent files	Brak ostatnich plików
 	Website	Strona internetowa
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Ramka obsługuje przekształcenia afiniczne; do przekształceń perspektywicznych wybierz jej obraz
+	A frame supports affine transforms; select its image to warp it	Ramka obsługuje przekształcenia afiniczne; aby ją wypaczyć, wybierz obraz
+	Convert to Frame…	Konwertuj na ramkę…
+	Create a new custom frame	Utwórz nową ramkę niestandardową
+	Create a new polygonal frame	Utwórz nową ramkę wielokątną
+	Create a new triangular frame	Utwórz nową ramkę trójkątną
+	Fit Content to Frame	Dopasuj zawartość do ramki
+	Fit Frame to Content	Dopasuj ramkę do zawartości
+	Frame coordinates must be finite and within 600000 pixels	Współrzędne ramki muszą być skończone i mieścić się w granicach 600000 pikseli
+	Import Image…	Importuj obraz…
+	Invalid frame transform	Nieprawidłowe przekształcenie ramki
+	Invalid nested file drop	Nieprawidłowe zagnieżdżone upuszczenie pliku
+	New Frame	Nowa ramka
+	Replace Image…	Zastąp obraz…
+	The frame is locked	Ramka jest zablokowana
+	The frame is unavailable	Ramka jest niedostępna

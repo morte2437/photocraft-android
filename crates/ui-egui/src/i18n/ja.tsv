@@ -4211,3 +4211,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Learn	学ぶ
 	No recent files	最近使ったファイルはありません
 	Website	Web サイト
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	フレームはアフィン変換に対応しています。遠近法変換を行うにはフレーム内の画像を選択してください
+	A frame supports affine transforms; select its image to warp it	フレームはアフィン変換に対応しています。ワープするにはフレーム内の画像を選択してください
+	Convert to Frame…	フレームに変換…
+	Create a new custom frame	新しいカスタムフレームを作成
+	Create a new polygonal frame	新しい多角形フレームを作成
+	Create a new triangular frame	新しい三角形フレームを作成
+	Fit Content to Frame	内容をフレームに合わせる
+	Fit Frame to Content	フレームを内容に合わせる
+	Frame coordinates must be finite and within 600000 pixels	フレームの座標は有限値で、600000 ピクセル以内である必要があります
+	Import Image…	画像を読み込み…
+	Invalid frame transform	フレームの変形が無効です
+	Invalid nested file drop	入れ子のファイルドロップは無効です
+	New Frame	新規フレーム
+	Replace Image…	画像を置き換え…
+	The frame is locked	フレームはロックされています
+	The frame is unavailable	フレームを利用できません

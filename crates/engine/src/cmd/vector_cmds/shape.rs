@@ -107,6 +107,14 @@ pub fn preview_shape_stroke(doc: &Document, id: LayerId, params: &Value) -> Resu
 /// masks, recursing into groups. For the Move tool / `layer.move`.
 pub fn translate_vectors(doc: &Document, l: &mut Layer, dx: f64, dy: f64) {
     let a = Affine::translate(dx, dy);
+    if let Some(f) = &mut l.frame {
+        f.transform = a.mul(&f.transform);
+        // Past `Frame::valid`'s bounds it would no longer load; the vector mask, moved below,
+        // keeps the clip as a plain masked group.
+        if !f.valid() {
+            l.frame = None;
+        }
+    }
     if let Some(vm) = l.vector_mask.as_mut()
         && vm.linked
     {

@@ -83,7 +83,7 @@ pub mod fill_cmds;
 pub mod fill_key_cmds;
 pub mod float_cmds;
 pub mod font_library_cmds;
-pub(super) mod frame_cmds;
+pub mod frame_cmds;
 pub mod fx_view_cmds;
 pub mod fx_visibility_cmds;
 pub mod gallery_cmds;

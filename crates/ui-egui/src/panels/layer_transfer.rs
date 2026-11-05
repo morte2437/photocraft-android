@@ -149,6 +149,20 @@ fn drop(app: &mut PhotocraftApp, ctx: &egui::Context, dest: usize, at: Option<[f
     clear(ctx);
     let docs = app.session.documents();
     let Some(src) = docs.iter().position(|d| d.doc.id == t.source) else { return };
+    if dest == src
+        && let Some(at) = at
+    {
+        if let Some(frame) = crate::frame_tool::frame_at(app, at)
+            && let [source] = t.layers.as_slice()
+        {
+            let r = app.run("layer.frame.setContent", json!({"layer":frame.0,"content":source}));
+            if let Err(e) = r {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+        }
+        return;
+    }
     let Some(to) = docs.get(dest).filter(|_| dest != src) else { return };
     let same_size = to.doc.size == docs[src].doc.size;
     let mut p = json!({"document": dest, "source": src, "layers": t.layers});

@@ -421,6 +421,17 @@ impl Ctx<'_> {
     }
 
     fn apply_common(&mut self, l: &mut Layer, rec: &LayerRecord, blend_override: Option<photocraft_psd::BlendMode>) {
+        if l.is_group()
+            && let Some(data) = rec.block(b"pcFr").filter(|b| b.data.len() <= 8 << 20)
+        {
+            let end = data.data.iter().rposition(|b| *b != 0).map_or(0, |n| n.saturating_add(1));
+            l.frame = data
+                .data
+                .get(..end)
+                .and_then(|bytes| serde_json::from_slice::<photocraft_doc::Frame>(bytes).ok())
+                .filter(photocraft_doc::Frame::valid)
+                .map(Box::new);
+        }
         l.visible = rec.is_visible();
         l.opacity = f32::from(rec.opacity) / 255.0;
         l.fill_opacity = f32::from(rec.fill_opacity()) / 255.0;
@@ -771,6 +782,17 @@ impl Ctx<'_> {
                     l.psd_blocks = preserved_blocks(rec);
                     self.apply_common(&mut l, rec, sd.and_then(|s| s.blend_mode));
                     self.apply_vector_mask(&mut l, rec);
+                    if l.frame.is_some() {
+                        let clip =
+                            l.children().and_then(|children| children.first()).filter(|child| child.psd_blocks.iter().any(|(k, _)| k == b"pcFc")).cloned();
+                        if let Some(mut clip) = clip {
+                            if let (Some(target), Some(children)) = (l.children_mut(), clip.children_mut()) {
+                                *target = std::mem::take(children);
+                            }
+                            l.mask = clip.mask;
+                            l.vector_mask = clip.vector_mask;
+                        }
+                    }
                     l
                 }
             })
@@ -778,18 +800,32 @@ impl Ctx<'_> {
     }
 }
 
-/// Sets `Layer::link_group` from resource 1026's per-record ids (`nodes` and `layers` correspond).
-fn apply_link_groups(nodes: &[LayerNode], layers: &mut [Layer], ids: &[u16]) {
-    fn rec(nodes: &[LayerNode], layers: &mut [Layer], ids: &[u16], depth: usize) {
+/// Sets `Layer::link_group` from resource 1026's per-record ids (`nodes` and `layers` correspond,
+/// except that a frame holds its `pcFc` clip group's children, as `build` adopted them).
+fn apply_link_groups(nodes: &[LayerNode], layers: &mut [Layer], records: &[LayerRecord], ids: &[u16]) {
+    fn rec(nodes: &[LayerNode], layers: &mut [Layer], records: &[LayerRecord], ids: &[u16], depth: usize) {
         for (n, l) in nodes.iter().zip(layers.iter_mut()) {
             let index = match n {
                 LayerNode::Layer { index } => *index,
                 LayerNode::Group { index, children, .. } => {
+                    // The frame's children are its clip group's, one level further down.
+                    let clip = match children.first() {
+                        Some(LayerNode::Group { index, children, .. })
+                            if l.frame.is_some() && records.get(*index).is_some_and(|r| r.block(b"pcFc").is_some()) =>
+                        {
+                            Some(children)
+                        }
+                        _ => None,
+                    };
+                    let (children, depth) = match clip {
+                        Some(c) => (c, depth + 1),
+                        None => (children, depth),
+                    };
                     // Matches the importer's nesting cap: deeper children were not imported.
                     if depth < photocraft_doc::MAX_GROUP_DEPTH
                         && let LayerContent::Group(g) = &mut l.content
                     {
-                        rec(children, &mut g.children, ids, depth + 1);
+                        rec(children, &mut g.children, records, ids, depth + 1);
                     }
                     *index
                 }
@@ -797,7 +833,7 @@ fn apply_link_groups(nodes: &[LayerNode], layers: &mut [Layer], ids: &[u16]) {
             l.link_group = ids.get(index).copied().filter(|&g| g != 0).map(u64::from);
         }
     }
-    rec(nodes, layers, ids, 0);
+    rec(nodes, layers, records, ids, 0);
 }
 
 /// Rejects a file whose groups nest deeper than the document model's cap, with the actionable
@@ -1428,7 +1464,7 @@ fn import_layered(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_
     if let Some(Ok(photocraft_psd::resources::ResourceData::LayerGroupInfo(groups))) =
         file.resources.iter().find(|r| r.id == ids::LAYER_GROUP_INFO).and_then(photocraft_psd::resources::ImageResource::parsed)
     {
-        apply_link_groups(&tree, &mut doc.layers, &groups);
+        apply_link_groups(&tree, &mut doc.layers, file.layers(), &groups);
     }
     let Some((n, plane)) = sizes else { return };
     let Some(Ok(all)) = merged else { return };

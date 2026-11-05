@@ -156,6 +156,7 @@ fn layer_pixels_cmp(a: &Layer, b: &Layer, surf: SurfaceCmp) -> bool {
         clipped,
         mask,
         vector_mask,
+        frame,
         effects,
         label: _,
         content,
@@ -176,6 +177,7 @@ fn layer_pixels_cmp(a: &Layer, b: &Layer, surf: SurfaceCmp) -> bool {
         && *fill_opacity == b.fill_opacity
         && *clipped == b.clipped
         && *vector_mask == b.vector_mask
+        && *frame == b.frame
         && *effects == b.effects
         && *excluded_channels == b.excluded_channels
         && *blend_if == b.blend_if

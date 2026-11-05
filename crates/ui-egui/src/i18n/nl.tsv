@@ -4288,3 +4288,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	New file	Nieuw bestand
 	Learn	Leren
 	Website	Website
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Een kader ondersteunt affiene transformaties; selecteer de afbeelding voor perspectieftransformaties
+	A frame supports affine transforms; select its image to warp it	Een kader ondersteunt affiene transformaties; selecteer de afbeelding om deze te verdraaien
+	Convert to Frame…	Omzetten naar kader…
+	Create a new custom frame	Nieuw aangepast kader maken
+	Create a new polygonal frame	Nieuw veelhoekig kader maken
+	Create a new triangular frame	Nieuw driehoekig kader maken
+	Fit Content to Frame	Inhoud aanpassen aan kader
+	Fit Frame to Content	Kader aanpassen aan inhoud
+	Frame coordinates must be finite and within 600000 pixels	Kadercoördinaten moeten eindig zijn en binnen 600000 pixels liggen
+	Import Image…	Afbeelding importeren…
+	Invalid frame transform	Ongeldige kadertransformatie
+	Invalid nested file drop	Ongeldige geneste bestandsneerzetting
+	New Frame	Nieuw kader
+	Replace Image…	Afbeelding vervangen…
+	The frame is locked	Het kader is vergrendeld
+	The frame is unavailable	Het kader is niet beschikbaar

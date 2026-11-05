@@ -266,6 +266,9 @@ impl UiSet {
 
     /// Apply (nothing but the final `brushSize` command can fail).
     fn apply(mut self, app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> std::result::Result<Value, String> {
+        // All fields are validated. Select the requested frame thumbnail before applying the
+        // remaining view state, so a denied selection leaves the other fields intact.
+        self.tools.select_frame_target(app)?;
         self.tools.apply(app);
         self.crop.apply(app);
         self.panels.apply_options(app);
@@ -296,6 +299,9 @@ fn theme_param(p: &Value) -> std::result::Result<Option<crate::theme::ThemeKind>
 struct ToolSet {
     gradient_blend: Option<photocraft_color::BlendMode>,
     shape_stroke: Option<Option<photocraft_doc::ShapeStroke>>,
+    frame_shape: Option<String>,
+    frame_sides: Option<u32>,
+    frame_target: Option<crate::frame_tool::Target>,
     tool: Option<Tool>,
     gradient_classic: Option<bool>,
     stroke_trace: Option<&'static str>,
@@ -314,6 +320,9 @@ impl ToolSet {
         Ok(Self {
             gradient_blend: gradient_blend_param(p)?,
             shape_stroke: shape_stroke_param(app, p)?,
+            frame_shape: frame_shape_param(p)?,
+            frame_sides: frame_sides_param(p)?,
+            frame_target: frame_target_param(p)?,
             tool: tool_param(p)?,
             gradient_classic: bool_field(p, "gradientClassic")?,
             stroke_trace: stroke_trace_param(p)?,
@@ -331,7 +340,25 @@ impl ToolSet {
         })
     }
 
+    fn select_frame_target(&self, app: &mut PhotocraftApp) -> std::result::Result<(), String> {
+        let Some(target) = self.frame_target else { return Ok(()) };
+        if let Some(id) = crate::frame_tool::selected(app).map(|l| l.id) {
+            crate::frame_tool::select_result(app, id, target)?;
+        } else {
+            app.ui.frame_tool.target = target;
+            app.ui.frame_tool.selected = None;
+        }
+        Ok(())
+    }
+
     fn apply(self, app: &mut PhotocraftApp) {
+        if let Some(shape) = &self.frame_shape {
+            app.ui.frame_tool.ellipse = shape == "ellipse";
+            app.ui.frame_tool.shape.clone_from(shape);
+        }
+        if let Some(sides) = self.frame_sides {
+            app.ui.frame_tool.sides = sides;
+        }
         if let Some(stroke) = &self.shape_stroke {
             if let Some(stroke) = stroke {
                 app.ui.tool_options.stroke_width = stroke.width;
@@ -388,6 +415,32 @@ impl ToolSet {
             crate::gradient_ui::options_changed(app, &gradient_before);
         }
     }
+}
+
+fn frame_shape_param(p: &Value) -> std::result::Result<Option<String>, String> {
+    p.get("frameShape")
+        .filter(|v| !v.is_null())
+        .map(|v| {
+            v.as_str()
+                .filter(|s| ["rectangle", "ellipse", "triangle", "polygon", "custom"].contains(s))
+                .map(str::to_string)
+                .ok_or_else(|| "frameShape must be rectangle, ellipse, triangle, polygon or custom".to_string())
+        })
+        .transpose()
+}
+
+fn frame_sides_param(p: &Value) -> std::result::Result<Option<u32>, String> {
+    match uint_field(p, "frameSides")? {
+        Some(n) if !(3..=100).contains(&n) => Err("frameSides must be 3..=100".into()),
+        n => Ok(n.map(|n| n as u32)),
+    }
+}
+
+fn frame_target_param(p: &Value) -> std::result::Result<Option<crate::frame_tool::Target>, String> {
+    p.get("frameTarget")
+        .filter(|v| !v.is_null())
+        .map(|v| serde_json::from_value::<crate::frame_tool::Target>(v.clone()).map_err(|_| "frameTarget must be frame, content or both".to_string()))
+        .transpose()
 }
 
 /// The Pen tools' options bar (#1397): Path or Shape mode.

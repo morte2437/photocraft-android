@@ -314,7 +314,9 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
                 app.refocus(doc)?;
                 let linked = linked.then(|| name.clone());
                 let result = app.place_bytes(&name, bytes, linked)?;
-                crate::transform_tool::begin_placed(app, &ctx)?;
+                if result.get("frame").and_then(Value::as_u64).is_none() {
+                    crate::transform_tool::begin_placed(app, &ctx)?;
+                }
                 Ok(result)
             }))
         }

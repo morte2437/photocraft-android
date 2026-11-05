@@ -43,6 +43,9 @@ pub fn kind_icon(content: &LayerContent) -> &'static str {
 
 /// "Type Layer", "Curves", "Artboard"…
 pub fn kind_label(layer: &Layer) -> String {
+    if layer.frame.is_some() {
+        return tl!("Frame").into();
+    }
     match &layer.content {
         LayerContent::Adjustment(a) => a.label().to_string(),
         LayerContent::Group(g) if g.artboard.is_some() => "Artboard".to_string(),

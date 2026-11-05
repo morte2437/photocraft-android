@@ -241,6 +241,7 @@ what an agent can't finish alone.
 ## UI / UX gaps
 
 ### G3. User-reported bug backlog
+- **2026-10-23 (#8864):** Frame Tool placeholders and handles persist after release; existing frames can be selected, moved/resized/rotated, filled/replaced and edited independently of their image. Shape/type conversion, solid strokes and two Layers thumbnails are available. [Behavior, evidence and remaining native Photoshop frame-file limits](frame-tool.md); no estimate or percentage changed.
 - **Missing:** fixes for 579 open issues (2026-10-10), filed mostly by 0.5/0.6 users. By title:
   ~150 UI/panels/menus/shortcuts, 94 file/format, 87 layers, 54 painting, 54 selection,
   46 type, 41 performance, 34 transform/move, 25 Linux/Wayland, 24 Windows, 20 macOS.
@@ -455,6 +456,7 @@ what an agent can't finish alone.
 | 2026-11-01 | minor | G9: 11 of 183 preferences do nothing (was 12): Graphics Adapter (`performance.gpuAdapter`) always worked, but startup read it by raw JSON key, which the scorecard prefs audit can't see; it now reads the typed Performance section; no estimate changed |
 | 2026-10-27 | minor | G9: 12 of 181 preferences do nothing, the scorecard's count with integration batch 9 (#9775) on main; no estimate changed |
 | 2026-10-26 | minor | Expand/Contract/Border distance work, mask reads and replacement cropped to nonzero bounds; bounded distances for radii ≤5; 36 MP exact-output comparisons improve 1.54–37.82× across eight cases; percentages, estimates and scorecard budgets unchanged |
+| 2026-10-23 | minor | Frame Tool interaction and persistence work (#8864); documented remaining native Photoshop frame metadata and independent-oracle limits; no percentage changed |
 | 2026-10-26 | minor | Embedded AI/PDF/EPS save-back retains native format and a separate source-bound display preview; original sources remain undoable. Native Adobe interoperability and standalone EPS/DCS remain unverified; no corpus floor or percentage changed. |
 | 2026-10-25 | minor | Selected colour channel sets: drawing, combined and per-component Levels/Curves, adjustments and supported filters; [scope, evidence and benchmarks](multi-channel-editing.md). Move/transform remains open; percentages unchanged |
 | 2026-10-22 | minor | Embedded PSD vectors gain explicit bounded SVG editor/save-back; standalone EPS/DCS and native-format fidelity remain open. |

@@ -4450,3 +4450,21 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	New file	Új fájl
 	Learn	Tanulás
 	Website	Weboldal
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	A keret affin transzformációkat támogat; perspektivikus transzformációhoz válassza ki a képét
+	A frame supports affine transforms; select its image to warp it	A keret affin transzformációkat támogat; a hajlításhoz válassza ki a képét
+	Convert to Frame…	Átalakítás keretté…
+	Create a new custom frame	Új egyéni keret létrehozása
+	Create a new polygonal frame	Új sokszögű keret létrehozása
+	Create a new triangular frame	Új háromszögű keret létrehozása
+	Fit Content to Frame	Tartalom igazítása a kerethez
+	Fit Frame to Content	Keret igazítása a tartalomhoz
+	Frame coordinates must be finite and within 600000 pixels	A keret koordinátáinak végesnek és 600000 képponton belülinek kell lenniük
+	Import Image…	Kép importálása…
+	Invalid frame transform	Érvénytelen kerettranszformáció
+	Invalid nested file drop	Érvénytelen beágyazott fájlejtés
+	New Frame	Új keret
+	Replace Image…	Kép cseréje…
+	The frame is locked	A keret zárolva van
+	The frame is unavailable	A keret nem érhető el

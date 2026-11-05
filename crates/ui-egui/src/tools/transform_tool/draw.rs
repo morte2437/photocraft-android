@@ -97,6 +97,9 @@ pub(super) fn front_vertices(h: &Homography, n: usize) -> Vec<bool> {
 /// Photoshop. The box, handles and reference point are [`draw_overlay`], drawn over the guides.
 pub fn draw_content(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let (Some(t), Some(pv)) = (&app.ui.transform, &app.transform_preview) else { return };
+    if crate::frame_tool::frame_transform(t) {
+        return;
+    }
     let output = crate::monitor_status::view_display(app, painter.ctx());
     let (display, _) = crate::canvas::canvas_display(app, &pv.doc, output);
     // Selection tint and lone mask/channel values are UI diagnostics, not document colors.
@@ -237,7 +240,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
 /// `edit.transform.warp` map it like the pixels. Not Transform Selection (its ants are hidden), a
 /// path, Content-Aware Scale or a type layer's Warp Text, which leave the selection alone.
 fn carries_selection(app: &PhotocraftApp, t: &TransformSession) -> bool {
-    !t.selection && t.path.is_none() && t.content_aware.is_none() && !(t.warp.is_some() && warps_type(app))
+    !t.selection && !crate::frame_tool::frame_transform(t) && t.path.is_none() && t.content_aware.is_none() && !(t.warp.is_some() && warps_type(app))
 }
 
 /// A transform of `document` is open that carries its selection along (#5297): the canvas traces
