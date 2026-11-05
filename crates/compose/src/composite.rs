@@ -363,6 +363,7 @@ pub(crate) fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: 
     let clip_base_adjusts = clipped.iter().any(|c| c.visible)
         && matches!(&layer.content, LayerContent::Group(g) if g.children.iter().any(|c| c.visible && matches!(c.content, LayerContent::Adjustment(_))));
     if let LayerContent::Group(g) = &layer.content
+        && layer.frame.is_none()
         && layer.blend == BlendMode::PassThrough
         && layer.fill_opacity >= 1.0
         && !effects::has_effects(layer)

@@ -421,6 +421,17 @@ impl Ctx<'_> {
     }
 
     fn apply_common(&mut self, l: &mut Layer, rec: &LayerRecord, blend_override: Option<photocraft_psd::BlendMode>) {
+        if l.is_group()
+            && let Some(data) = rec.block(b"pcFr").filter(|b| b.data.len() <= 8 << 20)
+        {
+            let end = data.data.iter().rposition(|b| *b != 0).map_or(0, |n| n.saturating_add(1));
+            l.frame = data
+                .data
+                .get(..end)
+                .and_then(|bytes| serde_json::from_slice::<photocraft_doc::Frame>(bytes).ok())
+                .filter(photocraft_doc::Frame::valid)
+                .map(Box::new);
+        }
         l.visible = rec.is_visible();
         l.opacity = f32::from(rec.opacity) / 255.0;
         l.fill_opacity = f32::from(rec.fill_opacity()) / 255.0;
@@ -771,6 +782,17 @@ impl Ctx<'_> {
                     l.psd_blocks = preserved_blocks(rec);
                     self.apply_common(&mut l, rec, sd.and_then(|s| s.blend_mode));
                     self.apply_vector_mask(&mut l, rec);
+                    if l.frame.is_some() {
+                        let clip =
+                            l.children().and_then(|children| children.first()).filter(|child| child.psd_blocks.iter().any(|(k, _)| k == b"pcFc")).cloned();
+                        if let Some(mut clip) = clip {
+                            if let (Some(target), Some(children)) = (l.children_mut(), clip.children_mut()) {
+                                *target = std::mem::take(children);
+                            }
+                            l.mask = clip.mask;
+                            l.vector_mask = clip.vector_mask;
+                        }
+                    }
                     l
                 }
             })
@@ -778,18 +800,32 @@ impl Ctx<'_> {
     }
 }
 
-/// Sets `Layer::link_group` from resource 1026's per-record ids (`nodes` and `layers` correspond).
-fn apply_link_groups(nodes: &[LayerNode], layers: &mut [Layer], ids: &[u16]) {
-    fn rec(nodes: &[LayerNode], layers: &mut [Layer], ids: &[u16], depth: usize) {
+/// Sets `Layer::link_group` from resource 1026's per-record ids (`nodes` and `layers` correspond,
+/// except that a frame holds its `pcFc` clip group's children, as `build` adopted them).
+fn apply_link_groups(nodes: &[LayerNode], layers: &mut [Layer], records: &[LayerRecord], ids: &[u16]) {
+    fn rec(nodes: &[LayerNode], layers: &mut [Layer], records: &[LayerRecord], ids: &[u16], depth: usize) {
         for (n, l) in nodes.iter().zip(layers.iter_mut()) {
             let index = match n {
                 LayerNode::Layer { index } => *index,
                 LayerNode::Group { index, children, .. } => {
+                    // The frame's children are its clip group's, one level further down.
+                    let clip = match children.first() {
+                        Some(LayerNode::Group { index, children, .. })
+                            if l.frame.is_some() && records.get(*index).is_some_and(|r| r.block(b"pcFc").is_some()) =>
+                        {
+                            Some(children)
+                        }
+                        _ => None,
+                    };
+                    let (children, depth) = match clip {
+                        Some(c) => (c, depth + 1),
+                        None => (children, depth),
+                    };
                     // Matches the importer's nesting cap: deeper children were not imported.
                     if depth < photocraft_doc::MAX_GROUP_DEPTH
                         && let LayerContent::Group(g) = &mut l.content
                     {
-                        rec(children, &mut g.children, ids, depth + 1);
+                        rec(children, &mut g.children, records, ids, depth + 1);
                     }
                     *index
                 }
@@ -797,7 +833,7 @@ fn apply_link_groups(nodes: &[LayerNode], layers: &mut [Layer], ids: &[u16]) {
             l.link_group = ids.get(index).copied().filter(|&g| g != 0).map(u64::from);
         }
     }
-    rec(nodes, layers, ids, 0);
+    rec(nodes, layers, records, ids, 0);
 }
 
 /// Rejects a file whose groups nest deeper than the document model's cap, with the actionable
@@ -1408,7 +1444,7 @@ fn import_decoded_content(import: DecodedImport<'_>, doc: &mut Document, cx: &mu
 
 fn import_multichannel(file: &PsdFile, merged: &Option<photocraft_psd::Result<Vec<u8>>>, doc: &mut Document, cx: &mut Ctx<'_>) {
     if let Some(Ok(all)) = merged {
-        let names = file.resource(1045).map(|r| unicode_names(&r.data)).unwrap_or_default();
+        let names = file.alpha_channel_names();
         if let Err(error) = crate::multichannel_map::import(file, all, doc, &names, &mut cx.warnings) {
             cx.fatal_error.get_or_insert(error);
         }
@@ -1428,7 +1464,7 @@ fn import_layered(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_
     if let Some(Ok(photocraft_psd::resources::ResourceData::LayerGroupInfo(groups))) =
         file.resources.iter().find(|r| r.id == ids::LAYER_GROUP_INFO).and_then(photocraft_psd::resources::ImageResource::parsed)
     {
-        apply_link_groups(&tree, &mut doc.layers, &groups);
+        apply_link_groups(&tree, &mut doc.layers, file.layers(), &groups);
     }
     let Some((n, plane)) = sizes else { return };
     let Some(Ok(all)) = merged else { return };
@@ -1551,6 +1587,32 @@ fn import_flattened(
     }
 }
 
+/// Spot inks whose DisplayInfo colour is in a space PhotoCraft doesn't read take their colour
+/// from the Alternate Spot Colors (1067), matched by the identifiers of 1053. `ids_from` is the
+/// first imported channel's position in 1053 (1 past a merged transparency), `skip` the
+/// DisplayInfo records before it.
+pub(crate) fn alternate_spot_inks(file: &PsdFile, ids_from: usize, skip: usize, channels: &mut [AlphaChannel]) {
+    let (Some(alt), Some(info), Some(ids)) = (
+        file.resource(crate::channel_map::ALTERNATE_SPOT_COLORS),
+        file.resource(crate::channel_map::DISPLAY_INFO).map(|r| (r, true)).or_else(|| file.resource(crate::channel_map::DISPLAY_INFO_OLD).map(|r| (r, false))),
+        file.resource(crate::channel_map::ALPHA_IDENTIFIERS),
+    ) else {
+        return;
+    };
+    let alt = crate::channel_map::alternate_spot_colors(&alt.data);
+    let spaces = crate::channel_map::display_spaces(&info.0.data, info.1, skip);
+    let ids: Vec<u32> = ids.data.as_chunks::<4>().0.iter().map(|c| u32::from_be_bytes(*c)).skip(ids_from).collect();
+    for ((ch, space), id) in channels.iter_mut().zip(spaces).zip(ids) {
+        let Some((_, solidity)) = ch.spot else { continue };
+        if crate::channel_map::decode_known_color(space, [0; 4]).is_some() {
+            continue;
+        }
+        if let Some((_, ink)) = alt.iter().find(|(alt_id, _)| *alt_id == id) {
+            ch.spot = Some((*ink, solidity));
+        }
+    }
+}
+
 fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_>) {
     // Extra (alpha / spot) channels of the merged image.
     if !import.layered {
@@ -1561,7 +1623,7 @@ fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut
     let Some((n, plane)) = sizes else { return };
     let cc = cx.cc;
     let first = cc + usize::from(file.merged_has_alpha());
-    let names = file.resource(1045).map(|r| unicode_names(&r.data)).unwrap_or_default();
+    let names = file.alpha_channel_names();
     // Photoshop lists every extra channel, the merged transparency first when there is one.
     let skip = usize::from(file.merged_has_alpha() && names.len() == usize::from(file.header.channels).saturating_sub(cc));
     let names = names.get(skip..).unwrap_or_default();
@@ -1603,6 +1665,7 @@ fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut
     } else if let Some(r) = file.resource(crate::channel_map::DISPLAY_INFO_OLD) {
         crate::channel_map::apply_display_info(&r.data, false, skip, &mut doc.channels);
     }
+    alternate_spot_inks(file, first.saturating_sub(cc), skip, &mut doc.channels);
     if let Some(r) = file.resource(crate::channel_map::QUICK_MASK_INFO)
         && r.data.len() >= 2
         && let Some(k) = usize::from(u16::from_be_bytes([r.data[0], r.data[1]])).checked_sub(first)

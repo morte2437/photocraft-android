@@ -36,6 +36,15 @@ pub fn downsample(s: &Surface, k: u32) -> Surface {
 }
 
 fn shrink_layer(l: &mut Layer, k: u32) {
+    if let Some(f) = &mut l.frame {
+        f.transform = Affine::scale(1.0 / f64::from(k)).mul(&f.transform);
+        if let Some(s) = &mut f.stroke {
+            s.width /= k as f32;
+        }
+        if let Some(mask) = &mut l.vector_mask {
+            mask.path = f.outline();
+        }
+    }
     if let Some(m) = &mut l.mask {
         m.surface = downsample(&m.surface, k);
     }

@@ -30,7 +30,8 @@ pub enum Place {
 /// parent's children (bottom to top). A missing or stale `anchor` means the top of the stack.
 pub fn insertion_point(doc: &Document, anchor: Option<LayerId>, layer: &Layer, place: Place) -> (LayerPath, usize) {
     let root_top = (Vec::new(), doc.layers.len());
-    let Some(path) = anchor.and_then(|a| doc.path_of(a)) else { return root_top };
+    // Beside a frame's image means beside the frame: the image slot stays whole.
+    let Some(path) = anchor.and_then(|a| doc.insertion_path(a)) else { return root_top };
     // An artboard stays at the top level: beside the anchor's top-level layer.
     let path = if layer.artboard().is_some() { path.get(..1).map(<[usize]>::to_vec).unwrap_or_default() } else { path };
     let (Some((&k, parent)), Some(target)) = (path.split_last(), doc.layer_at(&path)) else { return root_top };
@@ -101,7 +102,8 @@ fn takes_new_layers(target: &Layer, depth: usize, layer: &Layer) -> bool {
         Some(board) => on_board(board.rect),
         None => g.expanded,
     };
-    open && layer.artboard().is_none() && depth + subtree_depth(layer) <= MAX_GROUP_DEPTH
+    // A frame holds its image only (`layer.frame.set`/`setContent`), never new layers.
+    open && target.frame.is_none() && layer.artboard().is_none() && depth + subtree_depth(layer) <= MAX_GROUP_DEPTH
 }
 
 /// Group nesting inside `layer` itself: 0 for a layer or an empty group, as

@@ -205,6 +205,8 @@ pub struct LayerM {
     pub effects: EffectsM,
     pub label: LabelColor,
     pub content: ContentM,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<photocraft_doc::Frame>,
     /// (4-char key as hex, blob)
     pub psd_blocks: Vec<(String, Hash)>,
     pub psd_id: Option<u32>,

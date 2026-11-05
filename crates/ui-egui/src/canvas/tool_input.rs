@@ -124,6 +124,10 @@ fn filter_event_before_tool(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::
     // can land outside the corner's grab area and turn a corner drag into a move of the whole box.
     let transform_ev = if matches!(raw, ToolEvent::Down { .. }) { raw } else { ev };
     if crate::transform_tool::pointer(app, transform_ev, mods) {
+        if matches!(transform_ev, ToolEvent::Up { .. }) && app.ui.frame_tool.auto_transform {
+            app.ui.frame_tool.auto_transform = false;
+            crate::transform_tool::commit(app);
+        }
         return None;
     }
     if crate::distort_ui::pointer(app, ev, mods) {

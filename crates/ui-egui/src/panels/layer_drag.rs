@@ -154,6 +154,22 @@ pub(super) fn layer_drag_and_drop(
         "below"
     };
     let Some(st) = app.session.active() else { return };
+    if position == "into" && l.frame.is_some() {
+        let selected = st.selected_layers();
+        if selected.len() > 1 && selected.iter().any(|id| id.0 == dragged) {
+            return;
+        }
+        let source = LayerId(dragged);
+        if st.doc.layer(source).is_none_or(|l| !matches!(l.content, photocraft_doc::LayerContent::Raster(_) | photocraft_doc::LayerContent::Smart(_))) {
+            return;
+        }
+        ui.painter().rect_stroke(rect.shrink(1.0), t.radius_sm, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+        if released {
+            app.reorder_preview = None;
+            actions.push(("layer.frame.setContent".into(), json!({"layer":l.id.0,"content":dragged,"copy":copy})));
+        }
+        return;
+    }
     let mut payload = layer_drop_payload(dragged, l.id, position, &st.selected_layers());
     if background_drop_refused(&st.doc, &payload, l.id, position, copy) {
         return;

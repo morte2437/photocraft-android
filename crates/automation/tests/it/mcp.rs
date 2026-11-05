@@ -1390,6 +1390,58 @@ async fn convention_tools_have_titles_hints_and_strict_schemas() {
     client.cancel().await.unwrap();
 }
 
+/// The hints say what each tool does, not just that hints exist (#8129): `jobs_list` was
+/// advertised as destructive. A new tool fails here until it is classified.
+#[tokio::test(flavor = "multi_thread")]
+async fn convention_tool_hints_match_what_each_tool_does() {
+    // (read-only, destructive, idempotent)
+    const READ: (bool, bool, bool) = (true, false, true);
+    const ADDS: (bool, bool, bool) = (false, false, false);
+    const EDITS: (bool, bool, bool) = (false, true, false);
+    let expected = [
+        ("command_list", READ),
+        ("doc_inspect", READ),
+        ("session_list", READ),
+        ("render_preview", READ),
+        ("doc_render_preview", READ),
+        ("ui_inspect", READ),
+        ("ui_screenshot", READ),
+        ("jobs_list", READ),
+        ("doc_new", ADDS),
+        ("doc_open", ADDS),
+        ("doc_place", ADDS),
+        ("doc_export_layers", ADDS),
+        ("doc_export_data_sets", ADDS),
+        ("doc_select", (false, false, true)),
+        ("doc_save", EDITS),
+        ("doc_export", EDITS),
+        ("doc_close", EDITS),
+        ("doc_import_data_sets", EDITS),
+        ("doc_replace_smart_object", EDITS),
+        ("command_run", EDITS),
+        ("command_batch", EDITS),
+        ("jobs_cancel", EDITS),
+        ("ui_pointer", EDITS),
+        ("ui_menu_invoke", EDITS),
+        ("ui_set", EDITS),
+        ("control_call", EDITS),
+    ];
+    let client = connect(PhotocraftMcp::headless()).await;
+    let tools = client.list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), expected.len(), "classify every tool here");
+    for tool in tools {
+        let value = serde_json::to_value(&tool).unwrap();
+        let hints = &value["annotations"];
+        let actual = (hints["readOnlyHint"] == true, hints["destructiveHint"] == true, hints["idempotentHint"] == true);
+        let want = expected.iter().find(|(name, _)| *name == tool.name).map(|(_, hints)| *hints);
+        assert_eq!(Some(actual), want, "{}: {hints}", tool.name);
+        assert_eq!(hints["openWorldHint"], false, "{}", tool.name);
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(!description.contains("  "), "{}: a run of spaces in {description:?}", tool.name);
+    }
+    client.cancel().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn convention_unknown_arguments_name_the_key_without_side_effects() {
     let client = connect(PhotocraftMcp::headless()).await;

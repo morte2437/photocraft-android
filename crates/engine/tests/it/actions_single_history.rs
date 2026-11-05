@@ -443,6 +443,7 @@ fn frame_compound_retains_undo_redo_content_and_layer_targets() {
     for single in [true, false] {
         let mut s = session();
         s.execute("layer.new.layer", json!({"name":"Subject"})).unwrap();
+        s.execute("edit.fill", json!({"color":"#ff0000"})).unwrap();
         s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
         let before = s.active().unwrap().doc.clone();
         let target = s.active().unwrap().active_layer;

@@ -31,7 +31,7 @@ Triangle and Curvature Pen (minus legacy Rounded Rectangle and Targeted Adjustme
 | Lasso | Lasso, Polygonal, Magnetic | |
 | Selection | Object Selection, Quick Selection, Magic Wand | Object Selection's Object Finder (on by default in its options bar): resting the pointer highlights the object a click selects (`select.object` with `point`; ⇧ adds, ⌥ subtracts, ⇧⌥ intersects); dragging keeps the rectangle mode (#4087). Where the active layer has no pixels under the pointer (Sample All Layers off), the status bar says so instead of showing nothing (#6549). Dominant enclosed objects are retained; regions covering most of the canvas boundary are treated as background (#6548). Heuristic, not a learned segmenter (#2788). |
 | Crop and slice | Crop, Perspective Crop, Slice, Slice Select | |
-| Frame | Frame (frames are groups clipped by a rectangular or elliptical mask) | |
+| Frame | Frame: persistent handles, frame/image/both selection, transforms, fitting, replacement, solid strokes, shape/type conversion and modern shapes ([behavior and limits](frame-tool.md), #8864, 2026-10-23) | Native Photoshop frame metadata and independent Photoshop replay remain open |
 | Eyedropper | Eyedropper, Color Sampler, Ruler, Note, Count | |
 | Retouch | Remove, Spot Healing, Healing, Patch, Content-Aware Move, Red Eye | |
 | Brush | Brush, Pencil, Mixer Brush | |
@@ -285,6 +285,7 @@ Paragraph; the rest open as in-app floating windows.
 | 2026-10-24 | minor | Type options bar: the alignment and paragraph-direction buttons show the edited or selected type layer's paragraph instead of the tool defaults, as Photoshop's bar does. Scores unchanged. |
 | 2026-10-24 | minor | Font menus (options bar, Character panel): the current family is marked in the recent group when it is a recent one, and the menu opens showing it, as Photoshop's does, scrolled to the marked row when it sits below the fold; the arrows walk on from the marked row (#9160). Scores unchanged. |
 | 2026-10-24 | minor | Properties › Transform shows and edits a shape layer's path geometry (W/H/X/Y), not the pixel bounds its stroke adds, as in Photoshop; W/H scale the path to exactly the typed size. Scores unchanged. |
+| 2026-10-23 | minor | Frame Tool interaction and persistence work (#8864); documented remaining native Photoshop frame metadata and independent-oracle limits; no percentage changed |
 | 2026-10-22 | minor | Crop default mode: a drag inside an upright box snaps the frame's edges and centre to the document, layers, guides and grid, as a Classic Mode frame's move does (#8580); no percentage changed |
 | 2026-10-21 | minor | Adjustment clipping moved above Properties editors to remain visible in compact docks (#5231); scope, undo/redo and 8/16/32-bit pixel regressions; readiness estimate unchanged |
 | 2026-10-19 | minor | Pen, Freeform Pen and Curvature Pen Path Operations menu (#1397): the operation a new path is added with, and Merge Shape Components for paths (`path.mergeShapeComponents`); row stays partial until the Shape tools and Path Selection have it; no percentage changed |

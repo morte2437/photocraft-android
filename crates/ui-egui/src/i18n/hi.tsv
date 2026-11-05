@@ -590,6 +590,37 @@ cameraRaw	Yellow	पीला
 	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	अमान्य संख्यात्मक प्रविष्टि। {min}% और {max}% के बीच एक पूर्णांक आवश्यक है। पिछला मान डाला गया।
 	Edit Brush…	ब्रश संपादित करें…
 
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	फ़्रेम एफ़ाइन रूपांतरणों का समर्थन करता है; परिप्रेक्ष्य रूपांतरणों के लिए उसकी छवि चुनें
+	A frame supports affine transforms; select its image to warp it	फ़्रेम एफ़ाइन रूपांतरणों का समर्थन करता है; वार्प करने के लिए उसकी छवि चुनें
+	Convert to Frame…	फ़्रेम में बदलें…
+	Create a new custom frame	नया कस्टम फ़्रेम बनाएँ
+	Create a new polygonal frame	नया बहुभुजीय फ़्रेम बनाएँ
+	Create a new triangular frame	नया त्रिकोणीय फ़्रेम बनाएँ
+	Fit Content to Frame	सामग्री को फ़्रेम में फ़िट करें
+	Fit Frame to Content	फ़्रेम को सामग्री के अनुसार फ़िट करें
+	Frame coordinates must be finite and within 600000 pixels	फ़्रेम के निर्देशांक परिमित और 600000 पिक्सेल की सीमा में होने चाहिए
+	Import Image…	छवि आयात करें…
+	Invalid frame transform	अमान्य फ़्रेम रूपांतरण
+	Invalid nested file drop	अमान्य नेस्टेड फ़ाइल ड्रॉप
+	New Frame	नया फ़्रेम
+	Replace Image…	छवि बदलें…
+	The frame is locked	फ़्रेम लॉक है
+	The frame is unavailable	फ़्रेम उपलब्ध नहीं है
+	Both	दोनों
+	Center	केंद्र
+	Create a new elliptical frame	नया अंडाकार फ़्रेम बनाएँ
+	Create a new rectangular frame	नया आयताकार फ़्रेम बनाएँ
+	Frame	फ़्रेम
+	H	H
+	Inside	अंदर
+	Outside	बाहर
+	Sides:	भुजाएँ:
+	Stroke	स्ट्रोक
+	W	W
+	X	X
+	Y	Y
+
 # Actions panel: loading several action files at once
 	{message} ({note})	{message} ({note})
 @plural	{n} action|{n} actions	{n} एक्शन|{n} एक्शन

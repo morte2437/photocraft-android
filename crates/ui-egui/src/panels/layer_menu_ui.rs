@@ -64,6 +64,9 @@ pub fn entries(l: &Layer, multi: bool, has_selection: bool) -> Vec<Entry> {
     v.push(None);
     v.push(Some((tl!("Artboard from Layers…"), "layer.new.artboardFromLayers")));
     v.push(Some((tl!("Frame from Layers…"), "layer.new.frameFromLayers")));
+    if !multi && matches!(l.content, LayerContent::Shape(_) | LayerContent::Text(_)) {
+        v.push(Some((tl!("Convert to Frame…"), "layer.frame.convert")));
+    }
     v.push(None);
     v.push(Some((tl!("Convert to Smart Object"), "layer.smartObjects.convertToSmartObject")));
     if multi {

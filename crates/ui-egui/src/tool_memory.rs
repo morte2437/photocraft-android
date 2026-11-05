@@ -25,6 +25,9 @@ pub(crate) type ToolBrushes = (Tool, Vec<(Tool, BrushSettings)>);
 pub(crate) fn select(app: &mut PhotocraftApp, tool: Tool) {
     app.stylus.tool_before_eraser = None;
     app.ui.spring = None;
+    if app.ui.tool == Tool::Frame && tool != Tool::Frame {
+        crate::frame_tool::cancel(app);
+    }
     app.ui.tool = tool;
 }
 

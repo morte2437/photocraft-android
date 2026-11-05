@@ -14,6 +14,7 @@ pub mod analysis;
 pub mod blend_if;
 pub mod comps;
 pub mod effects;
+pub mod frame;
 pub mod mode;
 pub mod pattern;
 pub mod slices;
@@ -35,6 +36,7 @@ pub use effects::{
     Bevel, BevelContour, BevelStyle, BevelTechnique, BevelTexture, Contour, Effect, FxCommon, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient,
     GradientStyle, Satin, Shadow, StrokeFx, StrokePosition,
 };
+pub use frame::Frame;
 pub use mode::{ColorTable, Duotone, DuotoneInk, StackMode};
 pub use pattern::Pattern;
 pub use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
@@ -646,6 +648,9 @@ pub struct Layer {
     pub effects: Effects,
     pub label: LabelColor,
     pub content: LayerContent,
+    /// Frame Tool container; its clipping outline and image have independent placements. Boxed:
+    /// inline it grows every layer by 224 bytes, and deep documents recurse on small stacks.
+    pub frame: Option<Box<Frame>>,
     /// Preserved PSD additional-layer-info blocks (key, data) for lossless
     /// round-trip of anything not modelled above: vector masks, blending
     /// options, layer version, and the original adjustment/fill blocks (the
@@ -703,6 +708,7 @@ impl Layer {
             effects: Effects { enabled: true, ..Default::default() },
             label: LabelColor::None,
             content,
+            frame: None,
             psd_blocks: Vec::new(),
             psd_id: None,
             fill_cache: None,
@@ -1249,20 +1255,29 @@ impl Document {
         Some((p.children_mut()?, last))
     }
 
-    /// Insert `layer` directly above the layer `above` (or at the top of the root if None).
+    /// Frames expose their image as an editable target, rather than as a layer-stack container.
+    /// New layers beside that image belong beside the frame, keeping the image slot intact.
+    pub fn insertion_path(&self, relative: LayerId) -> Option<LayerPath> {
+        let mut path = self.path_of(relative)?;
+        let end = (1..path.len()).find(|n| path.get(..*n).and_then(|p| self.layer_at(p)).is_some_and(|l| l.frame.is_some())).unwrap_or(path.len());
+        path.truncate(end);
+        Some(path)
+    }
+
+    /// Insert `layer` above `above` (beside its frame for frame content), or at the root's top.
     pub fn insert_above(&mut self, above: Option<LayerId>, layer: Layer) -> LayerId {
         let id = layer.id;
-        match above.and_then(|a| self.path_of(a)).and_then(|path| self.siblings_mut(&path)) {
+        match above.and_then(|a| self.insertion_path(a)).and_then(|path| self.siblings_mut(&path)) {
             Some((sib, idx)) => sib.insert(idx + 1, layer),
             None => self.layers.push(layer),
         }
         id
     }
 
-    /// Insert `layer` directly below the layer `below` (or at the bottom of the root if None).
+    /// Insert `layer` below `below` (beside its frame for frame content), or at the root's bottom.
     pub fn insert_below(&mut self, below: Option<LayerId>, layer: Layer) -> LayerId {
         let id = layer.id;
-        match below.and_then(|b| self.path_of(b)).and_then(|path| self.siblings_mut(&path)) {
+        match below.and_then(|b| self.insertion_path(b)).and_then(|path| self.siblings_mut(&path)) {
             Some((sib, idx)) => sib.insert(idx, layer),
             None => self.layers.insert(0, layer),
         }

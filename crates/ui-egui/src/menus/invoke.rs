@@ -56,11 +56,31 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     Ok(r)
 }
 
+/// Layer › New › Convert to Frame without params: asks for the frame's name and size first.
+fn frame_convert_dialog(app: &mut PhotocraftApp, id: &str) -> Result<Value, String> {
+    let st = app.session.active().ok_or("no document")?;
+    let layer = st.active_layer.and_then(|id| st.doc.layer(id)).ok_or("select a shape or type layer")?;
+    let b = photocraft_engine::transform_cmds::transform_frame(&st.doc, layer);
+    let mut fixed = serde_json::Map::new();
+    fixed.insert("layer".into(), json!(layer.id.0));
+    let dialog = crate::filter_dialog::open_with_spec(app, id, tl!("New Frame"), r#"{"name":text,"width":1..300000=100,"height":1..300000=100}"#, fixed);
+    if let Some(d) = app.ui.dialog_mut(dialog) {
+        d.fields.insert("__preview".into(), json!(false));
+        d.fields.insert("name".into(), json!("Frame"));
+        d.fields.insert("width".into(), json!(b.width().max(1)));
+        d.fields.insert("height".into(), json!(b.height().max(1)));
+    }
+    Ok(json!({"dialog":dialog}))
+}
+
 /// [`invoke`] without the unsaved-changes prompt, for once the user has already answered it.
 fn invoke_early_commands(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Value) -> Option<Result<Value, String>> {
     if let Some(tool) = crate::tool_shortcuts::tool(id) {
         crate::tool_memory::select(app, tool);
         return Some(Ok(json!({"tool": tool})));
+    }
+    if id == "layer.frame.convert" && params.as_object().is_none_or(|o| o.is_empty()) {
+        return Some(frame_convert_dialog(app, id));
     }
     if id == "help.checkForUpdates" {
         return Some(crate::updates_ui::check(app, ctx, params.clone()));

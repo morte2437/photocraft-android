@@ -236,7 +236,18 @@ pub(super) fn link_group_resource(layers: &[Layer]) -> Option<Vec<u8>> {
         for l in layers {
             if let LayerContent::Group(g) = &l.content {
                 out.push(None);
-                walk(&g.children, out);
+                // `emit` writes a frame as its group around a "Frame Image" group (divider,
+                // children, record) and an optional "Frame Stroke" shape; none of those is linked.
+                if let Some(frame) = &l.frame {
+                    out.push(None);
+                    walk(&g.children, out);
+                    out.push(None);
+                    if frame.stroke.is_some() {
+                        out.push(None);
+                    }
+                } else {
+                    walk(&g.children, out);
+                }
             }
             out.push(l.link_group);
         }

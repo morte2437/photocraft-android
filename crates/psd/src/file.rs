@@ -11,6 +11,9 @@ use crate::layer::{LayerInfo, LayerRecord};
 use crate::resources::{self, ImageResource, ResourceData, ids};
 use crate::tagged::{TaggedBlock, read_blocks_with, uses_long_length, write_blocks_to};
 
+/// The name the reference editor gives the merged transparency among the alpha channel names.
+const TRANSPARENCY_NAME: &str = "Transparency";
+
 /// Where the layer info was stored in the file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -561,6 +564,11 @@ impl PsdFile {
     /// the merged transparency "Transparency" and lists it first among the alpha channel names,
     /// and some of its 16-bit PSBs carry no other mark (#4654): when the layers sit in a global
     /// `Lr16`/`Lr32` block, that name with one name per extra channel marks it too.
+    ///
+    /// A file without layer records has one when it is marked, or unless its alpha channel names
+    /// account for every extra channel without "Transparency" among them: a flat file from the
+    /// reference editor lists only its alpha and spot channels there (psd-tools
+    /// cmyk-alpha-spot.psd), while writers of plain RGBA files name nothing.
     pub fn merged_has_alpha(&self) -> bool {
         let Some(color) = self.header.color_mode.color_channels() else {
             return false;
@@ -574,14 +582,23 @@ impl PsdFile {
                 let in_block = matches!(self.layer_info_placement, LayerInfoPlacement::GlobalBlock { .. });
                 li.merged_alpha || marked || (in_block && self.names_merged_transparency(self.header.channels - color))
             }
-            None => true,
+            None => {
+                let names = self.alpha_channel_names();
+                marked || names.len() != usize::from(self.header.channels - color) || names.first().is_some_and(|n| n == TRANSPARENCY_NAME)
+            }
         }
     }
 
-    /// `true` when the alpha channel names (resource 1045, else 1006) hold exactly `extra` names
-    /// and the first is "Transparency", Photoshop's name for the merged transparency.
+    /// `true` when the alpha channel names hold exactly `extra` names and the first is
+    /// "Transparency", the reference editor's name for the merged transparency.
     fn names_merged_transparency(&self, extra: u16) -> bool {
-        const NAME: &str = "Transparency";
+        let names = self.alpha_channel_names();
+        names.len() == usize::from(extra) && names.first().is_some_and(|n| n == TRANSPARENCY_NAME)
+    }
+
+    /// The alpha channel names: the Unicode names (resource 1045), else the Pascal names (1006)
+    /// older writers and psd-tools store alone, decoded as MacRoman. Empty when the file names no channel.
+    pub fn alpha_channel_names(&self) -> Vec<String> {
         let mut names = Vec::new();
         if let Some(r) = self.resource(1045) {
             let mut at = 0usize;
@@ -597,11 +614,11 @@ impl PsdFile {
             let mut at = 0usize;
             while let Some(&len) = r.data.get(at) {
                 let Some(name) = r.data.get(at + 1..at + 1 + usize::from(len)) else { break };
-                names.push(String::from_utf8_lossy(name).into_owned());
+                names.push(crate::codepage::decode(name, encoding_rs::MACINTOSH));
                 at += 1 + usize::from(len);
             }
         }
-        names.len() == usize::from(extra) && names.first().is_some_and(|n| n == NAME)
+        names
     }
 
     /// Checks structural invariants that the writer relies on.
@@ -1062,6 +1079,56 @@ mod write_tests {
                 assert!(matches!(parsed.layer_info_placement, LayerInfoPlacement::GlobalBlock { key: k, .. } if k == key));
             }
         }
+    }
+
+    /// Without layer records, the extra channels hold a merged transparency unless the alpha
+    /// channel names (1045, else 1006) name each of them and none first as "Transparency".
+    #[test]
+    fn a_flat_file_names_its_extra_channels() {
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        file.layer_info = None;
+        file.header.channels = 5;
+        file.resources.retain(|r| r.id != 1045 && r.id != 1006);
+        assert!(file.merged_has_alpha(), "nothing named: a plain RGBA file");
+        let pascal = |names: &[&str]| names.iter().flat_map(|n| std::iter::once(n.len() as u8).chain(n.bytes())).collect::<Vec<u8>>();
+        let unicode = |names: &[&str]| {
+            names
+                .iter()
+                .flat_map(|n| (n.encode_utf16().count() as u32).to_be_bytes().into_iter().chain(n.encode_utf16().flat_map(u16::to_be_bytes)))
+                .collect::<Vec<u8>>()
+        };
+        for (names, transparency) in
+            [(&["Spot", "Alpha 1"][..], false), (&["Transparency", "Alpha 1"][..], true), (&["Alpha 1"][..], true), (&["A", "B", "C"][..], true)]
+        {
+            let mut p = file.clone();
+            p.resources.push(ImageResource::new(1006, pascal(names)));
+            assert_eq!(p.merged_has_alpha(), transparency, "1006 {names:?}");
+            assert_eq!(p.alpha_channel_names(), names, "1006");
+            let mut u = file.clone();
+            u.resources.push(ImageResource::new(1045, unicode(names)));
+            assert_eq!(u.merged_has_alpha(), transparency, "1045 {names:?}");
+            assert_eq!(u.alpha_channel_names(), names, "1045");
+        }
+        // A merged-transparency marker wins over a complete list of names.
+        let mut marked = file.clone();
+        marked.resources.push(ImageResource::new(1006, pascal(&["Spot", "Alpha 1"])));
+        marked.global_blocks.push(TaggedBlock::new(*b"Mt32", Vec::new()));
+        assert!(marked.merged_has_alpha());
+        // Truncated names stop at the damage.
+        let mut cut = file.clone();
+        cut.resources.push(ImageResource::new(1006, vec![9, b'a']));
+        assert!(cut.alpha_channel_names().is_empty());
+        assert!(cut.merged_has_alpha());
+    }
+
+    #[test]
+    fn pascal_channel_names_use_mac_roman_and_unicode_takes_precedence() {
+        let mut file = testgen::small(Version::Psd, Compression::Raw);
+        file.resources.retain(|r| !matches!(r.id, 1006 | 1045));
+        file.resources.push(ImageResource::new(1006, b"\x04caf\x8e\x03x".to_vec()));
+        assert_eq!(file.alpha_channel_names(), ["café"]);
+        file.resources.push(ImageResource::new(1045, vec![0, 0, 0, 1, 0, b'Z']));
+        assert_eq!(file.alpha_channel_names(), ["Z"]);
     }
 
     /// A positive layer count plus a merged-transparency marker still makes the first extra

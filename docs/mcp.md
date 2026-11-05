@@ -97,8 +97,12 @@ protocol messages. For `serve`, explicit credential flags require `--port` (or
 
 Existing document/session/job/UI tools remain listed, including the documented
 `doc_render_preview` spelling. There are no hidden legacy aliases. Every tool has a title
-and all four annotation hints. Generic command/control tools conservatively advertise writes;
-file saves may replace existing image and document files. Hints do not grant permission.
+and all four annotation hints. Reads (`command_list`, `doc_inspect`, `session_list`, the
+previews, `ui_inspect`, `ui_screenshot`, `jobs_list`) are read-only and idempotent. `doc_new`,
+`doc_open`, `doc_place`, `doc_select` and the scoped exports (`doc_export_layers`,
+`doc_export_data_sets`, which refuse to overwrite) are not destructive; `doc_select` is also
+idempotent. Generic command/control tools conservatively advertise writes; file saves may
+replace existing image and document files. Hints do not grant permission.
 
 After a failed batch, `completed` and per-step `results` report successful steps, not a
 rolled-back transaction. Inspect the document and its history with `doc_inspect`; commands
@@ -133,6 +137,19 @@ for ten minutes. List/read responses include the MCP 2026-07-28 result/cache fie
 
 ## Progress and cancellation
 
+Headless `command_run` (and each `command_batch` step) that waits, the default, runs a
+job-capable command (filters, Content-Aware Fill/Scale, Photomerge, …) as a background job
+and returns its result when the job ends. Meanwhile the session serves other calls
+(`doc_inspect`, `jobs_list`, …), and the running job shows in `jobs_list`. With
+`_meta.progressToken`, the call sends `notifications/progress` with the job's progress (0–1,
+`total` 1; for a batch, finished steps plus the current step's fraction, `total` the step
+count) and the job's `message`, increasing strictly and at most ten per second.
+`notifications/cancelled`, or the client dropping the request, cancels the job: the document
+stays unchanged and a cancelled batch runs no further step. A job that already finished
+before the cancellation arrived stays applied. Commands that are not jobs still run to the
+end. Bridge mode still waits on the app's reply (#8130); a bridge `command_batch` reports
+finished steps as progress and sends no further step once the request is cancelled.
+
 A direct headless `command_run` of `file.export.renderVideo` reports frame counts when
 `_meta.progressToken` is present (a string or number). Notifications increase strictly,
 are throttled to at most ten per second except completion, and include `total`. No token
@@ -154,6 +171,6 @@ the engine renderer. The document and playhead are unchanged.
 Cancellation suppresses the request response and stops at a frame boundary (the current
 frame/encoding may finish first). Unknown request ids are ignored. Render Video stays a
 synchronous command even with `wait:false`; other job-capable commands keep their existing
-`jobs_list`/`jobs_cancel` behavior. Batch exports do not emit MCP progress or support per-step
-MCP cancellation. Nested engine actions and bridge Render Video remain denied by the existing
+`jobs_list`/`jobs_cancel` behavior. Render Video as a `command_batch` step reports no
+progress and cannot be cancelled. Nested engine actions and bridge Render Video remain denied by the existing
 ambient-filesystem policy; the new scoped writer is available for direct headless commands.

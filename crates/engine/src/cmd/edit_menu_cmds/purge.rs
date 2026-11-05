@@ -67,6 +67,11 @@ pub(super) fn purge(s: &mut Session, what: &str) -> Result<Value> {
             freed = freed.saturating_add(sources);
             items.push("smart object source cache");
         }
+        let mips = photocraft_paint::purge_mip_cache();
+        if mips > 0 {
+            freed = freed.saturating_add(mips);
+            items.push("brush mip cache");
+        }
         let strokes = photocraft_compose::shape_split::purge_cache();
         if strokes > 0 {
             freed = freed.saturating_add(strokes);
@@ -96,6 +101,7 @@ pub(super) fn can_purge_all(s: &Session) -> std::result::Result<(), String> {
             || photocraft_compose::masks::cache_bytes() > 0
             || crate::smart_cmds::stack_cache_bytes() > 0
             || crate::smart_cmds::source_cache_bytes() > 0
+            || photocraft_paint::mip_cache_bytes() > 0
         {
             Ok(())
         } else {
