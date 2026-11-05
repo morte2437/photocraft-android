@@ -14,6 +14,20 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+
+/// Outcome of a bounded wait for submitted GPU work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitOutcome {
+    /// The submitted work finished before the deadline.
+    Finished,
+    /// The deadline passed (or the device faulted) before the work finished.
+    TimedOut,
+    /// The caller cancelled the wait before the work finished.
+    Cancelled,
+}
+
 /// Why the GPU can't be used any more.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -245,6 +259,93 @@ impl DeviceHealth {
             self.lost_by_poll();
         }
     }
+
+    /// Like [`Self::wait`], but bounded: returns whether the submitted work finished within
+    /// `timeout`. A timeout (or a poll that fails without reporting a loss) marks the device
+    /// faulted, so later exports stop submitting work to a wedged GPU instead of each waiting the
+    /// full timeout again. A device that was already faulted returns `false` untouched.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_timeout(&self, device: &wgpu::Device, index: Option<wgpu::SubmissionIndex>, timeout: Duration) -> bool {
+        self.wait_timeout_cancellable(device, index, timeout, &|| false) == WaitOutcome::Finished
+    }
+
+    /// [`Self::wait_timeout`] that polls in short slices and checks `cancelled` between them, so a
+    /// cancelled headless export stops waiting promptly while keeping the same overall deadline.
+    /// A slice timeout means "not finished yet"; only the overall deadline (or a failed poll)
+    /// marks the device faulted.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_timeout_cancellable(
+        &self,
+        device: &wgpu::Device,
+        index: Option<wgpu::SubmissionIndex>,
+        timeout: Duration,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> WaitOutcome {
+        if !self.is_ok() {
+            return WaitOutcome::TimedOut;
+        }
+        let mut failure = None;
+        let outcome = wait_slices(timeout, cancelled, |slice| {
+            let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                device.poll(wgpu::PollType::Wait { submission_index: index.clone(), timeout: Some(slice) })
+            }));
+            match poll {
+                Ok(Ok(_)) => {
+                    if self.is_ok() {
+                        SlicePoll::Done
+                    } else {
+                        SlicePoll::Failed
+                    }
+                }
+                Ok(Err(wgpu::PollError::Timeout)) => SlicePoll::Pending,
+                Ok(Err(e)) => {
+                    failure = Some(format!("GPU poll failed: {e}"));
+                    SlicePoll::Failed
+                }
+                Err(_) => {
+                    self.lost_by_poll();
+                    SlicePoll::Failed
+                }
+            }
+        });
+        if outcome == WaitOutcome::TimedOut && self.is_ok() {
+            let fault = failure.map_or_else(|| Fault::Lost(format!("GPU wait timed out after {:.1} s", timeout.as_secs_f64())), Fault::Error);
+            self.mark(fault);
+        }
+        outcome
+    }
+}
+
+/// What one bounded poll reported.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlicePoll {
+    Done,
+    Pending,
+    Failed,
+}
+
+/// Wait for `total`, polling in slices no longer than 100 ms and checking `cancelled` between
+/// them. A slice that times out is pending, not a failure; only the overall deadline or a failed
+/// poll ends the wait early.
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_slices(total: Duration, cancelled: &(dyn Fn() -> bool + Sync), mut poll: impl FnMut(Duration) -> SlicePoll) -> WaitOutcome {
+    const SLICE: Duration = Duration::from_millis(100);
+    let start = Instant::now();
+    loop {
+        if cancelled() {
+            return WaitOutcome::Cancelled;
+        }
+        let remaining = total.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return WaitOutcome::TimedOut;
+        }
+        match poll(remaining.min(SLICE)) {
+            SlicePoll::Done => return WaitOutcome::Finished,
+            SlicePoll::Pending => {}
+            SlicePoll::Failed => return WaitOutcome::TimedOut,
+        }
+    }
 }
 
 /// The fault a wgpu error stands for. Errors about invalid or lost objects follow a device loss
@@ -291,6 +392,49 @@ mod tests {
         assert_eq!(h.fault().map(|f| f.to_string()).as_deref(), Some("GPU device lost: reset"));
         // A recorded loss is not wgpu reporting the device lost (#3438).
         assert!(!h.device_lost());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_slices_cancel_timeout_and_completion() {
+        let never = || false;
+        assert_eq!(wait_slices(Duration::ZERO, &never, |_| SlicePoll::Done), WaitOutcome::TimedOut);
+        assert_eq!(wait_slices(Duration::from_secs(1), &never, |_| SlicePoll::Done), WaitOutcome::Finished);
+        assert_eq!(wait_slices(Duration::from_secs(1), &never, |_| SlicePoll::Failed), WaitOutcome::TimedOut);
+
+        let mut polls = 0;
+        let outcome = wait_slices(Duration::from_secs(1), &never, |_| {
+            polls += 1;
+            if polls < 3 { SlicePoll::Pending } else { SlicePoll::Done }
+        });
+        assert_eq!(outcome, WaitOutcome::Finished);
+        assert_eq!(polls, 3, "a timed-out slice must be retried, not treated as failure");
+
+        let cancelled = || true;
+        let mut called = false;
+        assert_eq!(
+            wait_slices(Duration::from_secs(1), &cancelled, |_| {
+                called = true;
+                SlicePoll::Done
+            }),
+            WaitOutcome::Cancelled
+        );
+        assert!(!called, "cancellation must be checked before polling");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_slices_observes_cancel_while_pending() {
+        let flag = AtomicBool::new(false);
+        let cancelled = || flag.load(Ordering::SeqCst);
+        let mut polls = 0;
+        let outcome = wait_slices(Duration::from_secs(1), &cancelled, |_| {
+            polls += 1;
+            flag.store(true, Ordering::SeqCst);
+            SlicePoll::Pending
+        });
+        assert_eq!(outcome, WaitOutcome::Cancelled);
+        assert_eq!(polls, 1, "cancellation set during a pending poll must end the wait");
     }
 
     #[test]

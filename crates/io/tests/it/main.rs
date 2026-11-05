@@ -26,6 +26,7 @@ mod exif_resolution;
 mod export_progress;
 mod exr_part_profile;
 mod flat;
+mod flat_export_renderer;
 mod gif_frames;
 mod guides_v2;
 mod heif;

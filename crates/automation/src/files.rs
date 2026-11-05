@@ -5,7 +5,7 @@ use std::path::Path;
 
 use photocraft_doc::Document;
 use photocraft_format::{PcraftWriter, SaveOptions};
-use photocraft_io::ExportOptions;
+use photocraft_io::{BandRenderer, ExportOptions};
 
 use crate::AutomationError;
 
@@ -104,6 +104,43 @@ pub fn save(
     opts: &ExportOptions,
     writer: Option<&mut PcraftWriter>,
 ) -> Result<Vec<String>, AutomationError> {
+    save_with_renderer(doc, path, format_override, opts, writer, None)
+}
+
+/// [`save`] with an optional custom [`BandRenderer`].
+pub fn save_with_renderer(
+    doc: &Document,
+    path: &Path,
+    format_override: Option<&str>,
+    opts: &ExportOptions,
+    writer: Option<&mut PcraftWriter>,
+    mut renderer: Option<&mut dyn BandRenderer>,
+) -> Result<Vec<String>, AutomationError> {
+    let mut kept = Vec::new();
+    let res = save_with_renderer_keeping(doc, path, format_override, opts, writer, renderer.as_mut().map(|r| &mut **r as &mut dyn BandRenderer), &mut kept);
+    if res.is_err()
+        && let Some(r) = renderer
+    {
+        // Callers without their own store still see the reason through the renderer.
+        for warning in kept {
+            r.push_diagnostic(warning);
+        }
+    }
+    res
+}
+
+/// [`save_with_renderer`] that hands the export warnings of an encode whose write then failed
+/// to the caller in `kept`, independent of what the renderer does with
+/// [`BandRenderer::push_diagnostic`] (the default is a no-op).
+pub fn save_with_renderer_keeping(
+    doc: &Document,
+    path: &Path,
+    format_override: Option<&str>,
+    opts: &ExportOptions,
+    writer: Option<&mut PcraftWriter>,
+    renderer: Option<&mut dyn BandRenderer>,
+    kept: &mut Vec<String>,
+) -> Result<Vec<String>, AutomationError> {
     let ext = format_override
         .map(|f| f.trim_start_matches('.').to_ascii_lowercase())
         .or_else(|| path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()))
@@ -113,34 +150,106 @@ pub fn save(
         let mut local = PcraftWriter::new();
         let w = writer.unwrap_or(&mut local);
         w.save_path(&named, path, &native_options(&named, opts)?)?;
-        return Ok(Vec::new());
+        let mut warnings = Vec::new();
+        if let Some(r) = renderer {
+            warnings.push("native .pcraft format uses CPU compositor for previews".into());
+            warnings.extend(r.drain_diagnostics());
+        }
+        return Ok(warnings);
     }
-    let r = photocraft_io::export(doc, &ext, opts)?;
-    // Crash-safe: a failed write never destroys the previous file.
-    photocraft_format::atomic_write(path, &r.bytes).map_err(|e| AutomationError::Io(e.to_string()))?;
+    let Some(renderer) = renderer else {
+        let r = photocraft_io::export_with_renderer(doc, &ext, opts, &photocraft_raster::Interrupt::NONE, None)?;
+        // Crash-safe: a failed write never destroys the previous file.
+        photocraft_format::atomic_write(path, &r.bytes).map_err(|e| AutomationError::Io(e.to_string()))?;
+        return Ok(r.warnings);
+    };
+    let r = photocraft_io::export_with_renderer(doc, &ext, opts, &photocraft_raster::Interrupt::NONE, Some(&mut *renderer))?;
+    if let Err(e) = photocraft_format::atomic_write(path, &r.bytes) {
+        // Encoding drained the renderer's diagnostics into `r.warnings`; hand them to the
+        // caller so it can still report the adapter or fallback reason alongside the write error.
+        kept.extend(r.warnings);
+        return Err(AutomationError::Io(e.to_string()));
+    }
     Ok(r.warnings)
 }
 
 /// Encode a document for a capability-scoped write. Unlike [`save`], this
 /// never obtains ambient filesystem authority and emits `.pcraft` as a ZIP.
 pub fn save_bytes(doc: &Document, name: &str, format_override: Option<&str>, opts: &ExportOptions) -> Result<(Vec<u8>, Vec<String>), AutomationError> {
+    save_bytes_with_renderer(doc, name, format_override, opts, None)
+}
+
+/// [`save_bytes`] with an optional custom [`BandRenderer`].
+pub fn save_bytes_with_renderer(
+    doc: &Document,
+    name: &str,
+    format_override: Option<&str>,
+    opts: &ExportOptions,
+    renderer: Option<&mut dyn BandRenderer>,
+) -> Result<(Vec<u8>, Vec<String>), AutomationError> {
     let ext = format_override
         .map(|format| format.trim_start_matches('.').to_ascii_lowercase())
         .or_else(|| Path::new(name).extension().map(|extension| extension.to_string_lossy().to_ascii_lowercase()))
         .ok_or_else(|| AutomationError::BadRequest(format!("cannot tell the format of `{name}`; pass a format")))?;
     if ext == photocraft_format::EXTENSION {
         let named = named_for_output(doc, name);
-        return Ok((photocraft_format::save_to_bytes(&named, &native_options(&named, opts)?)?, Vec::new()));
+        // Encode before draining: if the options check or the encode fails, the queued
+        // diagnostics stay with the renderer for the caller to report alongside the error.
+        let bytes = photocraft_format::save_to_bytes(&named, &native_options(&named, opts)?)?;
+        let mut warnings = Vec::new();
+        if let Some(r) = renderer {
+            warnings.push("native .pcraft format uses CPU compositor for previews".into());
+            warnings.extend(r.drain_diagnostics());
+        }
+        return Ok((bytes, warnings));
     }
-    let result = photocraft_io::export(doc, &ext, opts)?;
+    let result = photocraft_io::export_with_renderer(doc, &ext, opts, &photocraft_raster::Interrupt::NONE, renderer)?;
     Ok((result.bytes, result.warnings))
 }
 
 /// Flattened document as PNG, scaled to fit `max_side` (0 = full size).
 pub fn render_png(doc: &Document, max_side: u32) -> Result<Vec<u8>, AutomationError> {
+    render_png_with_renderer(doc, max_side, None)
+}
+
+/// [`render_png`] with an optional custom [`BandRenderer`]. Preview fallback warnings are
+/// queued on the renderer; use [`render_png_with_warnings`] to receive them directly.
+pub fn render_png_with_renderer(doc: &Document, max_side: u32, mut renderer: Option<&mut dyn BandRenderer>) -> Result<Vec<u8>, AutomationError> {
+    let (png, warnings) = render_png_with_warnings(doc, max_side, renderer.as_mut().map(|r| &mut **r as &mut dyn BandRenderer))?;
+    if let Some(r) = renderer {
+        for w in warnings {
+            r.push_diagnostic(w);
+        }
+    }
+    Ok(png)
+}
+
+/// [`render_png_with_renderer`] that returns the preview fallback warnings with the bytes.
+pub fn render_png_with_warnings(doc: &Document, max_side: u32, mut renderer: Option<&mut dyn BandRenderer>) -> Result<(Vec<u8>, Vec<String>), AutomationError> {
     let side = if max_side == 0 { doc.size.width.max(doc.size.height) } else { max_side };
+    let (target_w, target_h) = photocraft_compose::thumbnail_size(doc, side.max(1));
+    let mut warnings = Vec::new();
+
+    if let Some(r) = renderer.as_mut()
+        && (target_w, target_h) == (doc.size.width, doc.size.height)
+    {
+        // 8-bit RGBA whatever the document's depth, like the CPU preview path: a 16-bit
+        // document's preview must not be twice as large as the one it previews.
+        let res = photocraft_io::export_preview_png_with_renderer(doc, Some(&mut **r));
+        match res {
+            Ok(res) => return Ok((res.bytes, res.warnings)),
+            Err(photocraft_io::IoError::Cancelled) => return Err(AutomationError::Other("rendering was cancelled".into())),
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    if renderer.is_some() {
+        warnings.push("scaled previews and thumbnails use CPU compositor; GPU rendering applies to full-size previews".into());
+    }
+
     let img = photocraft_compose::thumbnail(doc, side.max(1));
     let image = photocraft_codecs::Image::from_u8(img.width, img.height, photocraft_codecs::ChannelLayout::Rgba, img.pixels)
         .map_err(|e| AutomationError::Other(e.to_string()))?;
-    photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).map_err(|e| AutomationError::Other(e.to_string()))
+    let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).map_err(|e| AutomationError::Other(e.to_string()))?;
+    Ok((png, warnings))
 }

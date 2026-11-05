@@ -5189,15 +5189,18 @@ dependencies = [
  "clap",
  "getrandom 0.3.4",
  "photocraft-codecs",
+ "photocraft-color",
  "photocraft-compose",
  "photocraft-doc",
  "photocraft-engine",
  "photocraft-format",
  "photocraft-geom",
+ "photocraft-gpu",
  "photocraft-io",
  "photocraft-psd",
  "photocraft-raster",
  "photocraft-raw",
+ "pollster 1.0.1",
  "rmcp",
  "rustix 1.1.5",
  "schemars",
@@ -5205,6 +5208,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "wgpu",
 ]
 
 [[package]]
@@ -5383,6 +5387,7 @@ dependencies = [
  "photocraft-vector",
  "pollster 1.0.1",
  "rayon",
+ "thiserror 2.0.21",
  "wgpu",
 ]
 
