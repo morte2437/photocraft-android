@@ -14,6 +14,10 @@ use crate::{ExportOptions, ExportResult, ImportResult, IoError, TgaBits, XmpEmbe
 /// Bytes per band when converting or exporting a band of rows at a time.
 const BAND_BYTES: usize = 32 << 20;
 
+/// Decoded size from which a PNG is read straight into the tiles. Below it the whole-image path
+/// is faster, and the memory the stream saves is small.
+const STREAM_MIN_BYTES: u64 = 32 << 20;
+
 #[cfg(test)]
 thread_local! {
     /// Called on this thread just before a layered TIFF's composite is decoded. A test proves
@@ -47,8 +51,8 @@ fn before_composite_decode() {
 #[cfg(not(test))]
 fn before_composite_decode() {}
 
-/// The codec limits a flat import uses: the caller's decoded-pixel allowance lowers the codec's
-/// default cap; 0 keeps the defaults.
+/// Decodes a flat image into a single-layer document; a TIFF with Photoshop layer data opens
+/// layered (see [`crate::tiff_layers`]).
 fn decode_limits(opts: &crate::ImportOptions) -> codecs::Limits {
     let mut limits = codecs::Limits::default();
     if opts.flat_max_pixel_bytes > 0 {
@@ -57,10 +61,22 @@ fn decode_limits(opts: &crate::ImportOptions) -> codecs::Limits {
     limits
 }
 
-/// Decodes a flat image into a single-layer document; a TIFF with Photoshop layer data opens
-/// layered (see [`crate::tiff_layers`]).
 pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
     import_flat_with_options(name, bytes, &crate::ImportOptions::default(), &photocraft_raster::Interrupt::NONE)
+}
+
+/// [`import_flat`] with cancellation and progress: checked after the decode and around the
+/// building of the tiles. A cancelled import fails with [`IoError::Cancelled`].
+#[cfg(test)]
+pub fn import_flat_with(name: &str, bytes: &[u8], ctl: &Interrupt) -> Result<ImportResult, IoError> {
+    import_flat_with_options(name, bytes, &crate::ImportOptions::default(), ctl)
+}
+
+/// [`import_flat_with`]; `stream_min` lets a PNG be decoded straight into the tiles (tests turn it
+/// off to get the whole-image path to compare with).
+#[cfg(test)]
+fn import_flat_impl(name: &str, bytes: &[u8], ctl: &Interrupt, stream_min: Option<u64>) -> Result<ImportResult, IoError> {
+    import_flat_impl_with_options(name, bytes, &crate::ImportOptions::default(), ctl, stream_min)
 }
 
 /// [`import_flat`] with the user's import settings and the job's cancellation.
@@ -76,13 +92,40 @@ pub(crate) fn import_flat_with_options(
     opts: &crate::ImportOptions,
     ctl: &photocraft_raster::Interrupt,
 ) -> Result<ImportResult, IoError> {
+    import_flat_impl_with_options(name, bytes, opts, ctl, Some(STREAM_MIN_BYTES))
+}
+
+fn import_flat_impl_with_options(
+    name: &str,
+    bytes: &[u8],
+    opts: &crate::ImportOptions,
+    ctl: &Interrupt,
+    stream_min: Option<u64>,
+) -> Result<ImportResult, IoError> {
     // Detected once; every step below branches on it.
     let format = codecs::detect(bytes);
     if format == Some(Format::Tiff) {
-        return import_tiff_page_with_options(name, bytes, None, opts, ctl);
+        // The banded decoder checks the cancellation between groups; a decode error is reported
+        // as itself, not as the cancel that follows it.
+        let r = import_tiff_page_with_options(name, bytes, None, opts, ctl)?;
+        ctl.check().map_err(|_| IoError::Cancelled)?;
+        return Ok(r);
     }
-    let limits = decode_limits(opts);
-    let img = codecs::decode_as_with(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes, &codecs::DecodeOptions { limits, ..Default::default() })?;
+    // A PNG whose rows come in final order is decoded straight into the tiles.
+    let streamed = match stream_min {
+        Some(min) if format == Some(Format::Png) => import_png_streamed(name, bytes, opts, ctl, min)?,
+        _ => None,
+    };
+    let (mut r, img) = match streamed {
+        Some(r) => (r, None),
+        None => {
+            let limits = decode_limits(opts);
+            let img = codecs::decode_as_with(format.ok_or(codecs::CodecError::UnknownFormat)?, bytes, &codecs::DecodeOptions { limits, ..Default::default() })?;
+            ctl.check().map_err(|_| IoError::Cancelled)?;
+            ctl.progress(0.6);
+            (image_to_document_with(name, &img, ctl)?, Some(img))
+        }
+    };
     // A palette BMP, PNG or GIF opens in Indexed Color mode with its colour table, as in
     // Photoshop (#3802, #4804, #7886). A GIF is always palette-based: the first frame's table.
     let palette = match format {
@@ -91,9 +134,6 @@ pub(crate) fn import_flat_with_options(
         Some(Format::Gif) => codecs::gif_palette(bytes),
         _ => None,
     };
-    ctl.check().map_err(|_| IoError::Cancelled)?;
-    ctl.progress(0.6);
-    let mut r = image_to_document_with(name, &img, ctl)?;
     if let Some((colors, transparent)) = palette.filter(|(c, _)| !c.is_empty())
         && r.document.mode == ColorMode::Rgb
     {
@@ -101,7 +141,7 @@ pub(crate) fn import_flat_with_options(
         r.document.color_table = Some(photocraft_doc::ColorTable { colors, transparent });
     }
     r.document.file_encoding = file_encoding_as(format, bytes);
-    if format == Some(Format::Tga) && img.layout() == ChannelLayout::Rgba {
+    if format == Some(Format::Tga) && img.as_ref().is_some_and(|i| i.layout() == ChannelLayout::Rgba) {
         tga_alpha_to_channel(&mut r.document)?;
     }
     // OpenEXR and Radiance HDR hold linear, scene-referred values (Rec. 709 primaries unless
@@ -116,9 +156,10 @@ pub(crate) fn import_flat_with_options(
         };
     }
     if d.icc_profile.is_none() && d.mode == ColorMode::Rgb {
-        d.icc_profile = cicp_profile(&img);
+        // Only an image the whole-image path decoded can carry a CICP description (a PNG never does).
+        d.icc_profile = img.as_ref().and_then(cicp_profile);
         if d.icc_profile.is_none()
-            && let Some((profile, warning)) = hdr_fallback(&img)
+            && let Some((profile, warning)) = img.as_ref().and_then(hdr_fallback)
         {
             d.icc_profile = Some(profile);
             r.warnings.push(warning);
@@ -350,7 +391,7 @@ fn import_tiff_layered(
     before_composite_decode();
     // The orientation is applied after the layer check: rotating the composite but not the
     // layers would misalign them, so a layered TIFF keeps its stored orientation.
-    let keep = codecs::DecodeOptions { keep_orientation: true, ..Default::default() };
+    let keep = codecs::DecodeOptions { keep_orientation: true, limits: decode_limits(opts) };
     let (mut img, orientation) = match page {
         None => (codecs::decode_with(bytes, &keep)?, codecs::tiff_orientation(bytes)),
         Some(p) => (codecs::decode_tiff_page(bytes, p, &keep)?, codecs::tiff_page_orientation(bytes, p)),
@@ -491,11 +532,33 @@ fn tiff_to_document(
     Ok(single_layer_document(name, (w, h), f, layout.has_alpha(), s, bands.icc.take(), meta, warnings))
 }
 
+/// The bytes of a layer's tiles holding a `w` × `h` image of `bpp` bytes a pixel: tiles are whole
+/// [`TILE_SIZE`] squares, so a small image still rounds up to one.
+fn tile_bytes(w: u32, h: u32, bpp: u64) -> u64 {
+    let tiles = |n: u32| u64::from(n).div_ceil(TILE_SIZE as u64).saturating_mul(TILE_SIZE as u64);
+    tiles(w).saturating_mul(tiles(h)).saturating_mul(bpp)
+}
+
+/// Refuses the layer's tiles of a `w` × `h` image decoded whole when the machine can't hold them
+/// beside the decoded pixels, which are still live: Linux overcommits, so the tiles would be
+/// allocated and writing them would have the process killed. The whole-image counterpart of
+/// [`tiff_to_document`]'s check, which the base PNG path (a small, interlaced, animated or turned
+/// image, see [`import_png_streamed`]) also comes through. Below [`STREAM_MIN_BYTES`] of tiles the
+/// image is one the whole-image path is for because it is small, and the check's reserve, not the
+/// tiles, would decide: those keep opening as they did (as [`needs_memory_check`] does for TIFF).
+fn check_layer_fits(w: u32, h: u32, target_layout: ChannelLayout, csample: CSample, available: Option<u64>) -> Result<(), IoError> {
+    let bpp = surface_format(target_layout, csample).bytes_per_pixel() as u64;
+    let needed = tile_bytes(w, h, bpp);
+    if needed < STREAM_MIN_BYTES {
+        return Ok(());
+    }
+    crate::memory::check_fits(w, h, needed, available)
+}
+
 /// Bytes a `w` × `h` px document surface of `fmt` allocates: whole tiles, including the padding
 /// of a partly covered edge tile, as [`Surface`] holds them.
 fn surface_bytes(w: u32, h: u32, fmt: PixelFormat) -> u64 {
-    let tiles = |n: u32| u64::from(n).div_ceil(TILE_SIZE as u64).saturating_mul(TILE_SIZE as u64);
-    tiles(w).saturating_mul(tiles(h)).saturating_mul(fmt.bytes_per_pixel() as u64)
+    tile_bytes(w, h, fmt.bytes_per_pixel() as u64)
 }
 
 /// Bytes a flat page that is decoded whole needs: the decoded image and its extra-sample planes,
@@ -578,23 +641,208 @@ pub fn image_to_document(name: &str, img: &Image) -> Result<ImportResult, IoErro
     image_to_document_with(name, img, &Interrupt::NONE)
 }
 
+/// [`image_to_document`], checking `ctl` before and after the tiles are built (progress 0.95
+/// once they are), and refusing tiles the machine can't hold beside the decoded image.
 fn image_to_document_with(name: &str, img: &Image, ctl: &Interrupt) -> Result<ImportResult, IoError> {
-    // What the decoder noticed (frames or pages left out, data ending early) comes first.
-    let mut warnings: Vec<String> = img.warnings.iter().map(ToString::to_string).collect();
-    let f = document_format(img.layout(), img.sample_type());
-    warnings.extend(f.warning.clone());
-    ctl.check().map_err(|_| IoError::Cancelled)?;
-    let mut s = image_surface_with(img, f.layout, f.sample, ctl)?;
-    ctl.check().map_err(|_| IoError::Cancelled)?;
-    ctl.progress(0.95);
-    if img.layout().has_alpha() {
-        s.prune();
-    }
-    let mut r = single_layer_document(name, img.dimensions(), f, img.layout().has_alpha(), s, img.icc.clone(), img.meta.clone(), warnings);
-    r.warnings.extend(crate::tiff_layers::channels_from_extras(&mut r.document, img));
-    Ok(r)
+    image_to_document_with_memory(name, img, ctl, crate::memory::available())
 }
 
+/// [`image_to_document_with`], with the memory the machine can still use given (see
+/// [`crate::memory::available`]): `None` when it isn't known.
+fn image_to_document_with_memory(name: &str, img: &Image, ctl: &Interrupt, available: Option<u64>) -> Result<ImportResult, IoError> {
+    // What the decoder noticed (frames or pages left out, data ending early) comes first.
+    let mut warnings: Vec<String> = img.warnings.iter().map(ToString::to_string).collect();
+    let (mode, target_layout, depth, csample) = flat_target(img.layout(), img.sample_type());
+    if img.sample_type() == CSample::F16 {
+        warnings.push("16-bit float samples are stored as 32-bit float".to_string());
+    }
+    let (w, h) = img.dimensions();
+    ctl.check().map_err(|_| IoError::Cancelled)?;
+    // The decoded pixels are already here: check the tiles built beside them before they exist.
+    check_layer_fits(w, h, target_layout, csample, available)?;
+    let s = image_surface_with(img, target_layout, csample, ctl)?;
+    ctl.check().map_err(|_| IoError::Cancelled)?;
+    ctl.progress(0.95);
+    flat_document(name, (w, h, img.layout(), mode, depth), s, img.icc.clone(), &img.meta, warnings, Some(img))
+}
+
+/// The document colour mode, the layout and sample type of its surface, and its depth, for a
+/// decoded image of `layout` and `sample`.
+fn flat_target(layout: ChannelLayout, sample: CSample) -> (ColorMode, ChannelLayout, SampleType, CSample) {
+    let (mode, target_layout) = match layout {
+        ChannelLayout::Gray | ChannelLayout::GrayA => (ColorMode::Grayscale, ChannelLayout::GrayA),
+        ChannelLayout::Rgb | ChannelLayout::Rgba => (ColorMode::Rgb, ChannelLayout::Rgba),
+        ChannelLayout::Cmyk | ChannelLayout::CmykA => (ColorMode::Cmyk, ChannelLayout::CmykA),
+        ChannelLayout::Lab | ChannelLayout::LabA => (ColorMode::Lab, ChannelLayout::LabA),
+    };
+    let (depth, csample) = match sample {
+        CSample::U8 => (SampleType::U8, CSample::U8),
+        CSample::U16 => (SampleType::U16, CSample::U16),
+        CSample::F16 | CSample::F32 => (SampleType::F32, CSample::F32),
+    };
+    (mode, target_layout, depth, csample)
+}
+
+/// The single-layer document of a flat image's pixels `s` and metadata: `shape` is its size, the
+/// layout it was decoded in (whether it has alpha) and the document's mode and depth. `extras` is
+/// the decoded image, for the channels of a TIFF's extra samples.
+fn flat_document(
+    name: &str,
+    shape: (u32, u32, ChannelLayout, ColorMode, SampleType),
+    mut s: Surface,
+    icc: Option<Vec<u8>>,
+    meta: &codecs::Metadata,
+    mut warnings: Vec<String>,
+    extras: Option<&Image>,
+) -> Result<ImportResult, IoError> {
+    let (w, h, layout, mode, depth) = shape;
+    let mut doc = Document::new(name, Size::new(w, h), mode, depth);
+    // Tiles that are entirely the default pixel (zero, so transparent) can only come from a
+    // source with alpha: an opaque one writes the maximum into every alpha sample.
+    if layout.has_alpha() {
+        s.prune();
+    }
+    // As in Photoshop: an opaque image opens as the locked Background layer, one with
+    // transparency (an alpha channel, or a tRNS chunk the decoder expands to one) as a normal
+    // layer named "Layer 0", since a Background can't hold transparency.
+    let layer = if layout.has_alpha() {
+        Layer::new("Layer 0", LayerContent::Raster(s))
+    } else {
+        let mut bg = Layer::new("Background", LayerContent::Raster(s));
+        bg.locks.transparency = true;
+        bg.locks.position = true;
+        bg
+    };
+    doc.layers.push(layer);
+    if let Some(img) = extras {
+        warnings.extend(crate::tiff_layers::channels_from_extras(&mut doc, img));
+    }
+    doc.icc_profile = icc.map(Arc::new);
+    doc.metadata.exif = meta.exif.clone().map(Arc::new);
+    doc.metadata.xmp = meta.xmp.as_deref().map(Arc::from);
+    doc.metadata.text = meta.text.clone();
+    if let Some((x, y)) = meta.dpi {
+        doc.resolution_dpi = x;
+        warnings.extend(crate::unequal_resolution_warning(f64::from(x), f64::from(y)));
+    }
+    // Guides in the Photoshop resources a JPEG (APP13) or TIFF carries: resource 1032.
+    let guides = meta.photoshop_resources.as_deref().and_then(|r| photocraft_psd::tiff::resources_from_bytes(r).ok());
+    if let Some(g) = guides.as_ref().and_then(|(res, _)| res.iter().find(|r| r.id == 1032)) {
+        crate::psd_import::parse_guides(&g.data, &mut doc);
+    }
+    Ok(ImportResult { document: doc, warnings, source_read_only: false, preview_only: false })
+}
+
+/// A PNG opened straight into the tiles of its layer, a group of rows at a time, so the whole
+/// decoded image never exists next to them. `None` when it can't be or isn't worth it (under
+/// `min_bytes` decoded): an interlaced or animated file, or one whose `eXIf` (which may follow the image data) calls for turning the pixels
+/// upright; the caller then decodes the whole image as for any other format. Errors, limits and
+/// metadata are the whole-image decoder's. The tiles and one group of rows are checked against
+/// free memory before the first tile exists (see [`crate::memory`]).
+fn import_png_streamed(name: &str, bytes: &[u8], opts: &crate::ImportOptions, ctl: &Interrupt, min_bytes: u64) -> Result<Option<ImportResult>, IoError> {
+    import_png_streamed_with(name, bytes, opts, ctl, min_bytes, crate::memory::available)
+}
+
+/// [`import_png_streamed`], with the memory the machine can still use given (see
+/// [`crate::memory::available`]): `None` when it isn't known.
+fn import_png_streamed_with(
+    name: &str,
+    bytes: &[u8],
+    opts: &crate::ImportOptions,
+    ctl: &Interrupt,
+    min_bytes: u64,
+    available: impl FnOnce() -> Option<u64>,
+) -> Result<Option<ImportResult>, IoError> {
+    struct Stream {
+        surface: Surface,
+        header: codecs::PngHeader,
+        convert: RowConverter,
+    }
+    // Rows are worked off 0.02..0.55 so a fallback to the whole-image path, which reports 0.6
+    // after its decode, never takes progress backwards.
+    let state = std::cell::RefCell::new(None::<Stream>);
+    let mut available = Some(available);
+    let busy = || IoError::Unsupported("the PNG reader re-entered itself".into());
+    let mut begin = |header: &codecs::PngHeader| -> Result<bool, IoError> {
+        // Decoded size, from the header; a size that overflows is certainly large enough.
+        let bytes = u64::from(header.width)
+            .checked_mul(u64::from(header.height))
+            .and_then(|px| px.checked_mul((header.layout.channels() * header.sample.bytes()) as u64));
+        if bytes.is_some_and(|b| b < min_bytes) {
+            return Ok(false);
+        }
+        // A cancelled import is reported as such, not as the memory it would have needed.
+        ctl.check().map_err(|_| IoError::Cancelled)?;
+        let (_, target_layout, _, csample) = flat_target(header.layout, header.sample);
+        // The layer's tiles, plus one group of rows as decoded and as converted into them.
+        // Linux overcommits, so the tiles would be allocated even when they can't be backed, and
+        // writing them would have the process killed: refuse first, as `tiff_to_document` does.
+        let bpp = surface_format(target_layout, csample).bytes_per_pixel() as u64;
+        let src_px = (header.layout.channels() * header.sample.bytes()) as u64;
+        let group = u64::from(header.width).saturating_mul(u64::from(header.height.min(TILE_SIZE as u32)));
+        let needed = tile_bytes(header.width, header.height, bpp).saturating_add(group.saturating_mul(src_px)).saturating_add(group.saturating_mul(bpp));
+        crate::memory::check_fits(header.width, header.height, needed, available.take().and_then(|f| f()))?;
+        *state.try_borrow_mut().map_err(|_| busy())? = Some(Stream {
+            surface: Surface::new(surface_format(target_layout, csample)),
+            header: *header,
+            convert: RowConverter::new((header.layout, header.sample), (target_layout, csample)),
+        });
+        ctl.progress(0.02);
+        Ok(true)
+    };
+    let mut rows = |y0: u32, data: &[u8]| -> Result<(), IoError> {
+        ctl.check().map_err(|_| IoError::Cancelled)?;
+        let mut guard = state.try_borrow_mut().map_err(|_| busy())?;
+        let Some(Stream { surface, header, convert }) = guard.as_mut() else { return Err(busy()) };
+        let (w, h) = (header.width, header.height);
+        let row_bytes = (w as usize).checked_mul(convert.src_px).filter(|&b| b > 0).ok_or_else(|| IoError::Unsupported("image too large".into()))?;
+        let n = u32::try_from(data.len() / row_bytes).unwrap_or(0);
+        if n == 0 || !data.len().is_multiple_of(row_bytes) {
+            return Err(IoError::Unsupported("the decoded rows do not match the image size".into()));
+        }
+        let to_i32 = |v: u32| i32::try_from(v).map_err(|_| IoError::Unsupported("image too large".into()));
+        let rect = Rect::new(0, to_i32(y0)?, to_i32(w)?, to_i32(y0.saturating_add(n))?);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        surface
+            .try_write_rows_with_interrupt(rect, ctl, |y, x0, dst| {
+                if !convert.fill(data, w as usize, y - rect.y0, x0, dst) {
+                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
+            .map_err(|e| match e {
+                RowWriteError::Cancelled(_) => IoError::Cancelled,
+                RowWriteError::Allocation(ae) => alloc_error(ae, w, h),
+            })?;
+        if failed.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(IoError::Unsupported("the decoded image does not match its size".into()));
+        }
+        ctl.progress(0.02 + 0.53 * (y0 + n) as f32 / h.max(1) as f32);
+        Ok(())
+    };
+    let Some(extras) = codecs::decode_png_rows::<IoError>(
+        bytes,
+        &codecs::DecodeOptions { limits: decode_limits(opts), ..Default::default() },
+        TILE_SIZE as u32,
+        &mut begin,
+        &mut rows,
+    )?
+    else {
+        return Ok(None);
+    };
+    ctl.check().map_err(|_| IoError::Cancelled)?;
+    let Some(Stream { surface, header, .. }) = state.into_inner() else { return Ok(None) };
+    if extras.orientation != 1 {
+        return Ok(None);
+    }
+    ctl.progress(0.95);
+    let (mode, _, depth, _) = flat_target(header.layout, header.sample);
+    let warnings = extras.warnings.iter().map(ToString::to_string).collect();
+    flat_document(name, (header.width, header.height, header.layout, mode, depth), surface, extras.icc, &extras.meta, warnings, None).map(Some)
+}
+
+/// The pixels of a decoded image as a surface of the target layout and sample type, converted
+/// straight from the decoded rows into the tiles (on all cores), so there is no second
+/// full-size copy of the image and no staging band.
 /// The document of one layer holding `s`, with the image's profile and metadata.
 #[allow(clippy::too_many_arguments)]
 fn single_layer_document(
@@ -643,50 +891,86 @@ pub(crate) fn image_surface(img: &Image, target_layout: ChannelLayout, csample: 
 }
 
 fn image_surface_with(img: &Image, target_layout: ChannelLayout, csample: CSample, ctl: &Interrupt) -> Result<Surface, IoError> {
+    let csample = if csample == CSample::F16 { CSample::F32 } else { csample };
+    let (w, h) = img.dimensions();
+    let mut s = Surface::new(surface_format(target_layout, csample));
+    let convert = RowConverter::new((img.layout(), img.sample_type()), (target_layout, csample));
+    let data = img.data();
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let (Ok(cw), Ok(ch)) = (i32::try_from(w), i32::try_from(h)) else { return Err(IoError::Unsupported("image too large".into())) };
+    let written = s.try_write_rows_with_interrupt(Rect::new(0, 0, cw, ch), ctl, |y, x0, dst| {
+        if !convert.fill(data, w as usize, y, x0, dst) {
+            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    written.map_err(|e| match e {
+        RowWriteError::Cancelled(_) => IoError::Cancelled,
+        RowWriteError::Allocation(ae) => alloc_error(ae, w, h),
+    })?;
+    if failed.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(IoError::Unsupported("the decoded image does not match its size".into()));
+    }
+    Ok(s)
+}
+
+/// The pixel format of a surface holding `target_layout` pixels of `csample`.
+fn surface_format(target_layout: ChannelLayout, csample: CSample) -> PixelFormat {
     let mode = match target_layout {
         ChannelLayout::Gray | ChannelLayout::GrayA => ColorMode::Grayscale,
         ChannelLayout::Cmyk | ChannelLayout::CmykA => ColorMode::Cmyk,
         ChannelLayout::Lab | ChannelLayout::LabA => ColorMode::Lab,
         _ => ColorMode::Rgb,
     };
-    // The surface stores 16-bit float as 32-bit float, so an F16 target converts to F32 (copying
-    // two-byte samples, or a two-byte opaque alpha, into it would be wrong).
-    let csample = if csample == CSample::F16 { CSample::F32 } else { csample };
     let depth = match csample {
         CSample::U8 => SampleType::U8,
         CSample::U16 => SampleType::U16,
         _ => SampleType::F32,
     };
-    let fmt = PixelFormat::new(mode, depth, true);
-    let (w, h) = img.dimensions();
-    let mut s = Surface::new(fmt);
-    let (from, to) = ((img.layout(), img.sample_type()), (target_layout, csample));
-    let (sb, db) = (from.1.bytes(), to.1.bytes());
-    let (src_px, dst_px) = (from.0.channels() * sb, to.0.channels() * db);
-    let data = img.data();
-    // The opaque alpha an image without one gets, when only that differs.
-    let one: Option<([u8; 4], usize)> = (from.1 == to.1 && !from.0.has_alpha() && to.0 == from.0.with_alpha()).then(|| {
-        let mut one = [0u8; 4];
-        match to.1 {
-            CSample::U8 => one[0] = u8::MAX,
-            CSample::U16 => one[..2].copy_from_slice(&u16::MAX.to_ne_bytes()),
-            _ => one.copy_from_slice(&1.0f32.to_ne_bytes()),
-        }
-        (one, db)
-    });
-    let failed = std::sync::atomic::AtomicBool::new(false);
-    let (Ok(cw), Ok(ch)) = (i32::try_from(w), i32::try_from(h)) else { return Err(IoError::Unsupported("image too large".into())) };
-    let written = s.try_write_rows_with_interrupt(Rect::new(0, 0, cw, ch), ctl, |y, x0, dst| {
-        let n = dst.len() / dst_px.max(1);
+    PixelFormat::new(mode, depth, true)
+}
+
+/// The conversion of decoded rows into the pixels of a surface: an exact copy, the opaque alpha a
+/// source without one gets, or the codec's own sample conversion.
+struct RowConverter {
+    from: (ChannelLayout, CSample),
+    to: (ChannelLayout, CSample),
+    /// Bytes per source pixel.
+    src_px: usize,
+    dst_px: usize,
+    /// The opaque alpha an image without one gets, when only that differs.
+    one: Option<([u8; 4], usize)>,
+}
+
+impl RowConverter {
+    fn new(from: (ChannelLayout, CSample), to: (ChannelLayout, CSample)) -> Self {
+        let (sb, db) = (from.1.bytes(), to.1.bytes());
+        let (src_px, dst_px) = (from.0.channels() * sb, to.0.channels() * db);
+        let one = (from.1 == to.1 && !from.0.has_alpha() && to.0 == from.0.with_alpha()).then(|| {
+            let mut one = [0u8; 4];
+            match to.1 {
+                CSample::U8 => one[0] = u8::MAX,
+                CSample::U16 => one[..2].copy_from_slice(&u16::MAX.to_ne_bytes()),
+                _ => one.copy_from_slice(&1.0f32.to_ne_bytes()),
+            }
+            (one, db)
+        });
+        Self { from, to, src_px, dst_px, one }
+    }
+
+    /// Converts the pixels of row `y` from column `x0` that fill `dst` out of `data`, rows of
+    /// `width` pixels (`y` counts from the first row in `data`). False when `data` is too short.
+    fn fill(&self, data: &[u8], width: usize, y: i32, x0: i32, dst: &mut [u8]) -> bool {
+        let n = dst.len() / self.dst_px.max(1);
         let span = usize::try_from(y)
             .ok()
             .zip(usize::try_from(x0).ok())
-            .and_then(|(y, x)| (y.checked_mul(w as usize)?.checked_add(x)?).checked_mul(src_px))
-            .and_then(|o| data.get(o..o.checked_add(n.checked_mul(src_px)?)?));
-        let Some(src) = span else { return failed.store(true, std::sync::atomic::Ordering::Relaxed) };
-        if from == to {
+            .and_then(|(y, x)| (y.checked_mul(width)?.checked_add(x)?).checked_mul(self.src_px))
+            .and_then(|o| data.get(o..o.checked_add(n.checked_mul(self.src_px)?)?));
+        let Some(src) = span else { return false };
+        let (src_px, dst_px) = (self.src_px, self.dst_px);
+        if self.from == self.to {
             dst.copy_from_slice(src);
-        } else if let Some((one, bytes)) = one {
+        } else if let Some((one, bytes)) = self.one {
             if (src_px, bytes, one[0]) == (3, 1, u8::MAX) {
                 // RGB8 to RGBA8, what nearly every JPEG and many PNGs are.
                 for (d, p) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<3>().0) {
@@ -702,29 +986,24 @@ fn image_surface_with(img: &Image, target_layout: ChannelLayout, csample: CSampl
             }
         } else {
             // Everything else (16-bit float to 32-bit float): the codec's own conversion of this row span.
-            match codecs::convert_samples(src, n as u32, 1, from, to) {
+            match codecs::convert_samples(src, n as u32, 1, self.from, self.to) {
                 Ok(out) if out.len() == dst.len() => dst.copy_from_slice(&out),
-                _ => failed.store(true, std::sync::atomic::Ordering::Relaxed),
+                _ => return false,
             }
         }
-    });
-    written.map_err(|error| match error {
-        RowWriteError::Allocation(error) => alloc_error(error),
-        RowWriteError::Cancelled(_) => IoError::Cancelled,
-    })?;
-    if failed.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(IoError::Unsupported("the decoded image does not match its size".into()));
+        true
     }
-    Ok(s)
 }
 
-/// The error an out-of-memory or oversized surface allocation is reported as.
-fn alloc_error(e: AllocationError) -> IoError {
+/// The error an out-of-memory or oversized surface allocation for a `w`×`h` image is reported as.
+/// The failed reservation is usually one tile or row band, not the image, so the message names
+/// the image by its pixel size rather than by the bytes that could not be reserved.
+fn alloc_error(e: AllocationError, w: u32, h: u32) -> IoError {
     match e {
+        AllocationError::ScratchRead(e) => IoError::Unsupported(format!("could not read scratch pixels: {e}")),
         AllocationError::LengthMismatch { .. } => IoError::Unsupported("the decoded image does not match its size".into()),
-        AllocationError::SizeOverflow => IoError::Unsupported("image too large".into()),
-        AllocationError::NotEnoughMemory { .. } => IoError::OutOfMemory("opening this image".into()),
-        AllocationError::ScratchRead(error) => IoError::Unsupported(format!("could not read tile from scratch: {error}")),
+        AllocationError::SizeOverflow => IoError::Unsupported(format!("the {w}×{h} image is too large to open")),
+        AllocationError::NotEnoughMemory { .. } => IoError::Unsupported(format!("not enough memory to open the {w}×{h} image")),
     }
 }
 
@@ -2172,37 +2451,6 @@ mod streamed_png_tests {
         assert!(decoded(&r.bytes).data() == whole.data());
     }
 
-    /// The native single-layer copy checks for cancellation before every band, so a cancel
-    /// raised mid-copy stops it instead of copying the rest of the document.
-    #[test]
-    fn a_cancelled_native_single_layer_copy_stops_with_cancelled() {
-        let mut doc = Document::new("native", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
-        doc.layers = vec![layer(&doc, &[(doc.bounds(), &[0.5, 0.5, 0.5, 1.0])])];
-        let mut ignored = Vec::new();
-        let mut src = FlatSource::new(&doc, &mut ignored, false, false).unwrap();
-        assert!(src.native.is_some(), "a single plain layer takes the native copy");
-        src.rows = 4;
-        let checks = std::sync::atomic::AtomicUsize::new(0);
-        // Pre-cancelled: no band is copied at all.
-        let yes = || true;
-        let mut copied = 0;
-        let r = src.bands(true, &Interrupt::cancel_only(&yes), None, |_, _, _| {
-            copied += 1;
-            Ok(())
-        });
-        assert!(matches!(r, Err(IoError::Cancelled)), "{:?}", r.map(|_| ()));
-        assert_eq!(copied, 0);
-        // Cancelled after the second check: the copy stops after one band, not eight.
-        let after_one = || checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 1;
-        let mut copied = 0;
-        let r = src.bands(true, &Interrupt::cancel_only(&after_one), None, |_, _, _| {
-            copied += 1;
-            Ok(())
-        });
-        assert!(matches!(r, Err(IoError::Cancelled)), "{:?}", r.map(|_| ()));
-        assert_eq!(copied, 1);
-    }
-
     #[test]
     fn a_cancelled_stream_stops_with_cancelled() {
         let mut doc = Document::new("cancel", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
@@ -2424,11 +2672,6 @@ mod fused_tile_tests {
     }
 
     #[test]
-    fn allocation_failure_reports_out_of_memory() {
-        assert!(matches!(alloc_error(AllocationError::NotEnoughMemory { bytes: 1 }), IoError::OutOfMemory(_)));
-    }
-
-    #[test]
     fn an_f16_target_is_stored_as_f32_with_opaque_alpha() {
         for &layout in &[ChannelLayout::Rgb, ChannelLayout::Rgba] {
             for &sample in &[CSample::F16, CSample::F32] {
@@ -2497,24 +2740,23 @@ mod fused_tile_tests {
         let img = pixels(64, 64, false);
         let bytes = codecs::encode(&img, Format::Png, &codecs::EncodeOptions::default()).unwrap();
         let yes = || true;
-        let r = import_flat_with_options("t", &bytes, &crate::ImportOptions::default(), &Interrupt::cancel_only(&yes));
+        let r = import_flat_with("t", &bytes, &Interrupt::cancel_only(&yes));
         assert!(matches!(r, Err(IoError::Cancelled)), "{:?}", r.map(|_| ()));
-        // Cancelled on a later poll, after the decode has run.
+        // Cancelled only once the decode is over: the tiles are not built.
         let calls = AtomicU32::new(0);
         let after_decode = || calls.fetch_add(1, Ordering::Relaxed) >= 1;
-        let r = import_flat_with_options("t", &bytes, &crate::ImportOptions::default(), &Interrupt::cancel_only(&after_decode));
+        let r = import_flat_with("t", &bytes, &Interrupt::cancel_only(&after_decode));
         assert!(matches!(r, Err(IoError::Cancelled)), "{:?}", r.map(|_| ()));
-    }
-
-    #[test]
-    fn document_import_cancels_during_surface_construction() {
-        let img = pixels(64, 64, false);
-        let calls = AtomicU32::new(0);
-        // One document check, one tile check, then row checks. Cancel after two rows.
-        let cancel = || calls.fetch_add(1, Ordering::SeqCst) >= 4;
-        let result = image_to_document_with("t", &img, &Interrupt::cancel_only(&cancel));
-        assert!(matches!(result, Err(IoError::Cancelled)));
-        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        // TIFF checks cancellation before decoding, including for damaged input.
+        let tiff = codecs::encode(&img, Format::Tiff, &codecs::EncodeOptions::default()).unwrap();
+        let r = import_flat_with("t", &tiff, &Interrupt::cancel_only(&yes));
+        assert!(matches!(r, Err(IoError::Cancelled)), "{:?}", r.map(|_| ()));
+        // Without cancellation, damaged input still reports its decode error.
+        let broken = tiff.get(..8).unwrap_or_default();
+        let r = import_flat_with("t", broken, &Interrupt::cancel_only(&yes));
+        assert!(matches!(r, Err(IoError::Cancelled)));
+        let r = import_flat_with("t", broken, &Interrupt::NONE);
+        assert!(matches!(&r, Err(e) if !matches!(e, IoError::Cancelled)), "{:?}", r.map(|_| ()));
     }
 
     #[test]
@@ -2523,7 +2765,7 @@ mod fused_tile_tests {
         let seen = std::sync::Mutex::new(Vec::new());
         let no = || false;
         let progress = |f: f32| seen.lock().unwrap().push(f);
-        import_flat_with_options("t", &bytes, &crate::ImportOptions::default(), &Interrupt::new(&no, &progress)).unwrap();
+        import_flat_with("t", &bytes, &Interrupt::new(&no, &progress)).unwrap();
         let seen = seen.into_inner().unwrap();
         assert!(seen.len() >= 2 && seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
     }
@@ -2539,3 +2781,6 @@ mod fused_tile_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod png_stream_tests;

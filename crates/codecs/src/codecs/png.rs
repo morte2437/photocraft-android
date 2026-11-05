@@ -26,9 +26,19 @@ pub(crate) fn dpi_of_ppm(ppm: u32) -> f32 {
     if (whole / f64::from(METERS_PER_INCH)).round() == f64::from(ppm) { whole as f32 } else { dpi as f32 }
 }
 
-pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError> {
-    let mut input = Cursor::new(bytes);
-    let mut decoder = png::Decoder::new_with_limits(&mut input, png::Limits { bytes: limits.alloc_usize() });
+/// A PNG opened for decoding: the header read and checked, the output layout and sample type
+/// chosen. Shared by [`decode`] (the whole image at once) and [`decode_rows`] (row by row).
+struct Opened<'a, 'b> {
+    reader: png::Reader<&'a mut Cursor<&'b [u8]>>,
+    layout: ChannelLayout,
+    sample: SampleType,
+    /// Images in the file, counting an APNG's frames and its default image.
+    images: u64,
+}
+
+fn open<'a, 'b>(input: &'a mut Cursor<&'b [u8]>, limits: &Limits) -> Result<Opened<'a, 'b>, CodecError> {
+    let file_len = input.get_ref().len();
+    let mut decoder = png::Decoder::new_with_limits(input, png::Limits { bytes: limits.alloc_usize() });
     decoder.set_transformations(png::Transformations::EXPAND);
     // png's lazy text get_text() inflates without consulting its allocation limit.
     // Read text separately below, without retaining compressed copies in the decoder.
@@ -41,9 +51,9 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
         // zlib never beats 1032:1; refuse a file too small for the declared image before the
         // output buffer exists. Measured on the stored samples (before palette/bit expansion).
         let stored = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(info.bits_per_pixel() as u64).div_ceil(8);
-        Limits::check_plausible(stored, bytes.len(), 1100)?;
+        Limits::check_plausible(stored, file_len, 1100)?;
     }
-    let mut reader = decoder.read_info().map_err(map_png_err)?;
+    let reader = decoder.read_info().map_err(map_png_err)?;
     // APNG: the IDAT image is the first frame, or an extra default image when no fcTL precedes it.
     let images = reader.info().animation_control.map_or(1, |a| u64::from(a.num_frames) + u64::from(reader.info().frame_control.is_none()));
     let (color, depth) = reader.output_color_type();
@@ -59,24 +69,29 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
         png::BitDepth::Sixteen => SampleType::U16,
         d => return Err(err(format!("unexpected output bit depth {d:?}"))),
     };
-    let size = reader.output_buffer_size().ok_or_else(|| err("image too large"))?;
-    let mut buf = alloc_zeroed::<u8>(size)?;
-    let out = reader.next_frame(&mut buf).map_err(map_png_err)?;
-    buf.truncate(out.buffer_size());
+    Ok(Opened { reader, layout, sample, images })
+}
+
+/// What a PNG holds besides its pixels. These can sit after the image data (`eXIf`, text), so
+/// they are complete only once the pixels have been read.
+pub struct PngExtras {
+    pub icc: Option<Vec<u8>>,
+    pub meta: Metadata,
+    pub warnings: Vec<DecodeWarning>,
+    /// The EXIF orientation (1-8) the pixels are stored in; 1 when there is none.
+    pub orientation: u16,
+}
+
+/// Reads to the end of the file and collects the profile, EXIF and resolution, which the reader
+/// holds; the text chunks and the warnings follow in [`extras`].
+fn finish_reader(mut reader: png::Reader<&mut Cursor<&[u8]>>) -> Result<(Option<Vec<u8>>, Metadata), CodecError> {
     // Collect ancillary chunks after IDAT. Tolerate malformed tails once pixels
     // are complete, but never swallow an allocation-limit failure.
     if let Err(e @ png::DecodingError::LimitsExceeded) = reader.finish() {
         return Err(map_png_err(e));
     }
-    if sample == SampleType::U16 {
-        for c in buf.as_chunks_mut::<2>().0 {
-            let v = u16::from_be_bytes([c[0], c[1]]);
-            c.copy_from_slice(&v.to_ne_bytes());
-        }
-    }
     let info = reader.info();
-    let mut img = Image::from_raw(out.width, out.height, layout, sample, buf)?;
-    img.icc = info.icc_profile.as_ref().map(|c| c.to_vec());
+    let icc = info.icc_profile.as_ref().map(|c| c.to_vec());
     let mut meta = Metadata { exif: info.exif_metadata.as_ref().map(|c| c.to_vec()), ..Default::default() };
     if let Some(d) = info.pixel_dims
         && d.unit == png::Unit::Meter
@@ -85,15 +100,118 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError>
     {
         meta.dpi = Some((dpi_of_ppm(d.xppu), dpi_of_ppm(d.yppu)));
     }
-    drop(reader);
+    Ok((icc, meta))
+}
+
+/// The text chunks (read from `consumed`, the file up to where the reader stopped) and the
+/// warnings, completing what [`finish_reader`] collected.
+fn extras(icc: Option<Vec<u8>>, mut meta: Metadata, input: &Cursor<&[u8]>, images: u64, limits: &Limits) -> Result<PngExtras, CodecError> {
     let end = usize::try_from(input.position()).map_err(|_| err("invalid PNG reader position"))?;
-    let consumed = bytes.get(..end).ok_or_else(|| err("invalid PNG reader position"))?;
+    let consumed = input.get_ref().get(..end).ok_or_else(|| err("invalid PNG reader position"))?;
     read_text_metadata(consumed, limits.alloc_usize(), &mut meta)?;
-    img.meta = meta;
+    let mut warnings = Vec::new();
     if images > 1 {
-        img.warnings.push(DecodeWarning::MoreFrames { total: u32::try_from(images).ok() });
+        warnings.push(DecodeWarning::MoreFrames { total: u32::try_from(images).ok() });
     }
+    let orientation = meta.exif.as_deref().map_or(1, crate::orientation::exif_orientation);
+    Ok(PngExtras { icc, meta, warnings, orientation })
+}
+
+fn be_to_native(samples: &mut [u8]) {
+    for c in samples.as_chunks_mut::<2>().0 {
+        let v = u16::from_be_bytes([c[0], c[1]]);
+        c.copy_from_slice(&v.to_ne_bytes());
+    }
+}
+
+pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, CodecError> {
+    let mut input = Cursor::new(bytes);
+    let Opened { mut reader, layout, sample, images } = open(&mut input, limits)?;
+    let size = reader.output_buffer_size().ok_or_else(|| err("image too large"))?;
+    let mut buf = alloc_zeroed::<u8>(size)?;
+    let out = reader.next_frame(&mut buf).map_err(map_png_err)?;
+    buf.truncate(out.buffer_size());
+    let (width, height) = (out.width, out.height);
+    let (icc, meta) = finish_reader(reader)?;
+    if sample == SampleType::U16 {
+        be_to_native(&mut buf);
+    }
+    let mut img = Image::from_raw(width, height, layout, sample, buf)?;
+    let extras = extras(icc, meta, &input, images, limits)?;
+    img.icc = extras.icc;
+    img.meta = extras.meta;
+    img.warnings = extras.warnings;
     Ok(img)
+}
+
+/// The size and pixel format the rows of [`decode_rows`] come in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PngHeader {
+    pub width: u32,
+    pub height: u32,
+    pub layout: ChannelLayout,
+    pub sample: SampleType,
+}
+
+/// Where [`decode_rows`] sends rows: the index of the first, then whole rows.
+pub type PngRowSink<'a, E> = dyn FnMut(u32, &[u8]) -> Result<(), E> + 'a;
+
+/// Decodes a PNG a group of rows at a time, so the caller never needs the whole decoded image:
+/// `begin` gets the header once and says whether to go on (after the same size and plausibility checks [`decode`] makes),
+/// then `rows(y0, data)` gets whole rows `y0..` in final order, `group` of them at a time (the
+/// last group may be shorter; a `group` of 0 counts as 1), native-endian, exactly the samples [`decode`] would return. Returns the extras once the file
+/// has been read to its end, or `None` (having called neither closure) when the rows can't be
+/// had in final order: an interlaced (Adam7) file, and an APNG, whose first frame may be a
+/// sub-rectangle. A damaged file fails with the error [`decode`] gives, after however many rows
+/// were delivered. The limits are checked before the first row; an orientation, which an `eXIf`
+/// after the image data may set, is for the caller to apply.
+pub(crate) fn decode_rows<E: From<CodecError>>(
+    bytes: &[u8],
+    limits: &Limits,
+    group: u32,
+    begin: &mut dyn FnMut(&PngHeader) -> Result<bool, E>,
+    rows: &mut PngRowSink<'_, E>,
+) -> Result<Option<PngExtras>, E> {
+    let group = group.max(1);
+    let mut input = Cursor::new(bytes);
+    let Opened { mut reader, layout, sample, images } = open(&mut input, limits)?;
+    let upright = reader.info().exif_metadata.as_deref().is_none_or(|e| crate::orientation::exif_orientation(e) == 1);
+    if reader.info().interlaced || reader.info().animation_control.is_some() || !upright {
+        return Ok(None);
+    }
+    let (width, height) = reader.info().size();
+    limits.check(width, height, layout, sample)?;
+    // The checks `decode` makes of the buffer it allocates for the whole image.
+    reader.output_buffer_size().ok_or_else(|| err("image too large"))?;
+    let line = reader.output_line_size(width).ok_or_else(|| err("image too large"))?;
+    if !begin(&PngHeader { width, height, layout, sample })? {
+        return Ok(None);
+    }
+    let mut buf = alloc_zeroed::<u8>(line.checked_mul(group.min(height) as usize).ok_or_else(|| err("image too large"))?)?;
+    let mut y0 = 0;
+    while y0 < height {
+        let n = group.min(height - y0) as usize;
+        for row in buf.chunks_exact_mut(line.max(1)).take(n) {
+            if reader.read_row(row).map_err(map_png_err)?.is_none() {
+                return Err(err("the image data ends before the last row").into());
+            }
+        }
+        let group = buf.get_mut(..line.saturating_mul(n)).ok_or_else(|| err("invalid PNG row group"))?;
+        if sample == SampleType::U16 {
+            be_to_native(group);
+        }
+        rows(y0, group)?;
+        y0 += n as u32;
+    }
+    // Past the last row: what `next_frame` does, so trailing damage fails the same way.
+    reader.read_row(&mut []).map_err(map_png_err)?;
+    let (icc, meta) = finish_reader(reader)?;
+    let mut extras = extras(icc, meta, &input, images, limits)?;
+    // As `decode_as_with` does for every format: a resolution the format lacks comes from EXIF or XMP.
+    if extras.meta.dpi.is_none() {
+        extras.meta.dpi = crate::resolution::from_metadata(extras.meta.exif.as_deref(), extras.meta.xmp.as_deref());
+    }
+    Ok(Some(extras))
 }
 
 /// The colour table of a palette PNG (`PLTE`) and the one entry its `tRNS` makes transparent.
