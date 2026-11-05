@@ -81,6 +81,8 @@ struct CropStep {
     rect: Option<[f64; 4]>,
     angle: f64,
     default_frame: bool,
+    /// That default frame came from a selection's bounds ([`CropState::frame_from_selection`]).
+    frame_from_selection: bool,
     /// The canvas shows the pixels past the frame ([`shows_beyond_canvas`]).
     editing: bool,
 }
@@ -590,7 +592,13 @@ pub fn clear_history(app: &mut PhotocraftApp) {
 
 /// The frame's current state, as an undo step.
 fn step_of(app: &PhotocraftApp) -> CropStep {
-    CropStep { rect: app.ui.crop_rect, angle: app.ui.crop_angle, default_frame: app.crop.default_frame, editing: app.crop.editing }
+    CropStep {
+        rect: app.ui.crop_rect,
+        angle: app.ui.crop_angle,
+        default_frame: app.crop.default_frame,
+        frame_from_selection: app.crop.frame_from_selection,
+        editing: app.crop.editing,
+    }
 }
 
 /// Put a frame state back.
@@ -598,6 +606,7 @@ fn apply_step(app: &mut PhotocraftApp, s: CropStep) {
     app.ui.crop_rect = s.rect;
     app.ui.crop_angle = s.angle;
     app.crop.default_frame = s.default_frame;
+    app.crop.frame_from_selection = s.frame_from_selection;
     app.crop.editing = s.editing;
 }
 

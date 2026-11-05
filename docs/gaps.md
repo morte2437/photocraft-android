@@ -192,8 +192,9 @@ what an agent can't finish alone.
   silently, Insert Stop turns the toggle on, and confirming a dialog inside a called action
   continues its callers (measured 2026-11-05, #8386). Adjustment-layer Make steps keep the layer
   name, blend mode and clipping (#8384). Playback Options… (Accelerated, Step by Step, Pause For
-  1 to 60 seconds, Create a single history state) paces a person's Play in one history state,
-  Esc or Stop ending it (measured 2026-11-05, #5212).
+  1 to 60 seconds, Create a single history state) paces a person's Play, in one history state
+  when Create a single history state is on and one per step when it is off, Esc or Stop ending
+  it (measured 2026-11-05, #5212).
 - **Ahead of Photoshop:** CLI, MCP and the JSON control channel drive every command.
 - **Estimate:** 120–200 h. **Human:** whether to support a JavaScript scripting dialect at all
   (AGENTS.md forbids JS in the app).
@@ -554,7 +555,7 @@ what an agent can't finish alone.
 | 2026-10-11 | minor | G13: Czech dynamic UI text localized; engine messages and native review remain open |
 | 2026-10-11 | minor | G8: triple/quadruple/five-click type selection done (TYPE-218-8, #3493); Type evidence recounted |
 | 2026-10-11 | minor | G4: Pattern Stamp and Background Eraser draw live, Spot Healing shows a dark overlay while dragging (#3754); only the Mixer Brush is left of TOOL-213-7 |
-| 2026-11-05 | minor | G11: Playback Options dialog: Step by Step and Pause For play the whole action in one history state, saved in preferences (#5212) |
+| 2026-11-05 | minor | G11: Playback Options dialog: Step by Step and Pause For play the whole action, in one history state when Create a single history state is on (one per step when off), saved in preferences (#5212) |
 | 2026-11-05 | minor | G11: Stop step messages with Continue/Stop, silent stop with the dialog toggle off, called actions resume into their callers (#8386); adjustment-layer Make keeps name, blend mode and clipping (#8384) |
 | 2026-11-04 | minor | G8: PhotoCraft-native PSDs keep stylistic sets and other Txt2-only OpenType flags through save/reopen (#10308); Stylistic Sets menu still #10285 |
 | 2026-11-03 | minor | G8: Type › OpenType › Numerals submenu landed (TYPE-218-5); `.pcraft` keeps figure tags, PSD only `OldStyle`/`onum` for now; Stylistic Sets and font-feature greying still missing |

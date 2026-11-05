@@ -1,3 +1,4 @@
+use photocraft_psd::PsdError;
 use photocraft_psd::csh;
 use photocraft_psd::path::{PathData, PsdKnot, PsdSubpath};
 
@@ -65,6 +66,18 @@ fn rejects_unsupported_headers_excessive_counts_and_invalid_unicode() {
         let mut broken = bytes.clone();
         broken[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         assert!(csh::parse(&broken).is_err(), "offset {offset}");
+    }
+    // The count and name limits answer before the reader runs out of bytes, so a removed limit
+    // cannot hide behind a truncation error. One past each limit is refused by the limit itself.
+    for (offset, value, limit) in [
+        (8, u32::MAX, "CSH shape count"),
+        (8, csh::MAX_SHAPES as u32 + 1, "CSH shape count"),
+        (12, u32::MAX, "CSH name length"),
+        (12, csh::MAX_NAME_UNITS as u32 + 1, "CSH name length"),
+    ] {
+        let mut broken = bytes.clone();
+        broken[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        assert_eq!(csh::parse(&broken), Err(PsdError::LimitExceeded(limit)), "offset {offset} value {value}");
     }
     let mut broken = bytes.clone();
     broken[16..18].copy_from_slice(&0xd800u16.to_be_bytes());

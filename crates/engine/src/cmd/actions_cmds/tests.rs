@@ -1400,3 +1400,53 @@ fn record_keeps_an_empty_loaded_sets_exact_name() {
     assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
     assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }
+
+/// A saved named Batch step follows a renamed action, by name alone or within its own set;
+/// a Batch naming the same action in another set and an inline Batch stay as they were.
+#[test]
+fn rename_follows_named_batch_steps_in_their_set() {
+    let mut s = Session::new();
+    let mut target = Action::new("Target", vec![("image.adjustments.invert".into(), json!({}))]);
+    target.set = Some("S".into());
+    s.actions.list.push(target);
+    let steps = vec![
+        ("file.automate.batch".into(), json!({"action": "Target", "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": "Target", "set": "S", "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": "Target", "set": null, "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": "Target", "set": "Other", "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": [["actions.play", {"action": "Target"}]], "input": [], "output": "/out"})),
+    ];
+    s.actions.list.push(Action::new("Caller", steps));
+    s.execute("actions.rename", json!({"action": "Target", "name": "Renamed"})).unwrap();
+    let caller = &s.actions.list[1].steps;
+    for step in &caller[..3] {
+        assert_eq!(step.1["action"], "Renamed", "{}", step.1);
+        assert_eq!(crate::file_cmds::batch_action(&s.actions.list, &step.1).unwrap(), 0, "{}", step.1);
+    }
+    assert_eq!(caller[1].1["set"], "S");
+    assert_eq!(caller[3].1["action"], "Target", "a Batch in another set names a different action");
+    assert!(caller[4].1["action"].is_array());
+}
+
+/// All Batch files saved, but the requested error log could not be written: the calling action
+/// stops at that step instead of going on as if the Batch had finished.
+#[test]
+fn playback_stops_when_a_nested_batch_cannot_write_its_error_log() {
+    let dir = std::env::temp_dir().join(format!("photocraft-actions-batch-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.to_string_lossy().into_owned();
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
+    // A folder as the log path: the log write fails while every file succeeds.
+    let batch = json!({"source": "open", "steps": [], "output": format!("{dir}/out"), "format": "png", "errorLog": dir});
+    s.actions.list.push(Action::new("Run", vec![("file.automate.batch".into(), batch), ("layer.new.layer".into(), json!({}))]));
+    let layers = s.active().unwrap().doc.layers.len();
+    let played = s.execute("actions.play", json!({"action": "Run"})).unwrap();
+    let failed = &played["failed"];
+    assert_eq!(failed["step"], 0, "{played}");
+    assert!(failed["error"].as_str().unwrap().contains("error log"), "{played}");
+    assert!(failed["result"]["errorLogError"].is_string(), "{played}");
+    assert_eq!(s.active().unwrap().doc.layers.len(), layers, "the step after the Batch must not run");
+    let _ = std::fs::remove_dir_all(&dir);
+}

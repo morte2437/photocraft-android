@@ -570,21 +570,29 @@ fn process_batch_outputs_with(
 /// The output paths a batch run has written, so a later input whose output name matches an
 /// earlier one's (`a.png` and `a.jpg` saved as JPEG, or the same name in two input folders) is
 /// reported instead of silently replacing that result (#420, #422). Names are compared ignoring
-/// case, because macOS and Windows file systems do.
+/// case, because macOS and Windows file systems do, and through symlinked folders, so two
+/// spellings of one destination are one claim.
 #[derive(Default)]
 pub struct OutputClaims(pub(super) std::collections::HashMap<String, String>);
 
 impl OutputClaims {
+    fn key(out: &str) -> String {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(identity) = super::paths::destination_identity(std::path::Path::new(out)) {
+            return identity.to_string_lossy().to_lowercase();
+        }
+        out.to_lowercase()
+    }
     /// `Err` (naming the earlier input) when `out` was already written in this run.
     pub fn check(&self, out: &str) -> std::result::Result<(), String> {
-        match self.0.get(&out.to_lowercase()) {
+        match self.0.get(&Self::key(out)) {
             Some(first) => Err(format!("not written: {out} already holds the result of {first} from this run (same output name)")),
             None => Ok(()),
         }
     }
     /// Remember that `input`'s result was written to `out`.
     pub fn record(&mut self, out: &str, input: &str) {
-        self.0.insert(out.to_lowercase(), input.to_string());
+        self.0.insert(Self::key(out), input.to_string());
     }
 }
 
@@ -852,7 +860,10 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             let carried = std::cell::Cell::new(playback_steps);
             let script_steps = std::cell::Cell::new(script_count);
             let notices = std::cell::RefCell::new(Vec::new());
+            // Whether this input's source opened read-only; Save and Close must not replace it.
+            let read_only_source = std::cell::Cell::new(false);
             let prepare = |scratch: &mut Session, path: &str| -> Result<()> {
+                read_only_source.set(false);
                 #[cfg(not(target_arch = "wasm32"))]
                 if check_folder_format && !super::paths::openable_name(path) {
                     return Err(EngineError::Other(format!("unsupported Batch folder input: {path}")));
@@ -873,13 +884,15 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     scratch.batch_open_notices = Some(Vec::new());
                 }
                 if override_open {
-                    scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi });
+                    scratch.batch_open = Some(super::open::BatchOpen { path: path.to_string(), sources: Vec::new(), raw_ppi, read_only: false });
                 } else {
                     let bytes = read_file(path)?;
                     if quiet_profiles || quiet_raw {
                         super::open::open_bytes_as(scratch, &file_name(path), &bytes, None, Some(path.to_string()))?;
+                        read_only_source.set(scratch.active().is_some_and(|state| state.source_read_only));
                     } else {
-                        let doc = import_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+                        let (doc, read_only) = super::open::import_source_at_raw_ppi(raw_ppi, &file_name(path), &bytes)?;
+                        read_only_source.set(read_only);
                         scratch.add_document(doc, Some(path.to_string()));
                     }
                 }
@@ -914,6 +927,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     let from_source = scratch.batch_open.as_ref().map_or(source_id == Some(doc.id), |binding| binding.sources.contains(&doc.id));
                     if !from_source {
                         return Err(EngineError::Other("Save and Close needs the original source document or its recorded Save snapshot".into()));
+                    }
+                    // As File > Save does, never replace a source opened read-only (an Affinity,
+                    // Krita, XCF or PDN file, even one named `.png`) with a flat encoding.
+                    if read_only_source.get() || scratch.batch_open.as_ref().is_some_and(|binding| binding.read_only) {
+                        return Err(EngineError::Other(format!("Save and Close cannot replace this source; save it to a separate output folder: {out}")));
                     }
                     // All recorded Opens passed their gates before inspecting the original source,
                     // including when this result is a saved snapshot whose document has been closed.
@@ -962,6 +980,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             continue;
                         }
                         let params = crate::actions_cmds::playback_params(scratch, id, params)?;
+                        charge_script_step(scratch)?;
                         let r = scratch.execute(id, params)?;
                         ctx.publish_batch_preview(&source_path, scratch.active().map(|state| state.doc.clone()));
                         // A failed step inside a called action makes this file an error, not a saved result.
@@ -1109,6 +1128,7 @@ fn batch_open_documents(
                     continue;
                 }
                 let params = crate::actions_cmds::playback_params(s, command, params)?;
+                charge_script_step(s)?;
                 let response = s.execute(command, params)?;
                 if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
                     return Err(FileFailure { error: EngineError::Other(error), result: Some(response) });
@@ -1158,6 +1178,20 @@ fn batch_open_documents(
     }
     result["documents"] = json!(originals.len());
     Ok(result)
+}
+
+/// A Batch run from a script charges each step it executes to the script's total, as nested
+/// playback does (`consume_playback_step`); the Batch itself is only one script step.
+fn charge_script_step(s: &mut Session) -> Result<()> {
+    if s.actions.script_depth == 0 {
+        return Ok(());
+    }
+    let max = crate::automate_cmds::MAX_SCRIPT_STEPS;
+    if s.actions.script_steps >= max {
+        return Err(EngineError::Other(format!("the script ran more than {max} steps in all (scripts calling scripts)")));
+    }
+    s.actions.script_steps += 1;
+    Ok(())
 }
 
 /// Check source structure once at the common pre-write seam, after Open authorization and ownership.

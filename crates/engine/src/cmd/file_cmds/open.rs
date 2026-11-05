@@ -9,6 +9,8 @@ pub(crate) struct BatchOpen {
     pub path: String,
     pub sources: Vec<photocraft_doc::DocId>,
     pub raw_ppi: f64,
+    /// A recorded Open read a source that must not be replaced (Affinity, Krita, XCF, PDN).
+    pub read_only: bool,
 }
 
 /// Replace only the file choice before either authorization gate; malformed params stay invalid.
@@ -31,9 +33,10 @@ pub(crate) fn batch_open_notice(s: &mut Session, name: &str, warnings: &[String]
 
 /// Record provenance after a redirected native Open succeeds, including repeated Opens.
 pub(crate) fn remember_batch_open(s: &mut Session) {
-    let id = s.active().map(|st| st.doc.id);
-    if let (Some(binding), Some(id)) = (&mut s.batch_open, id) {
+    let opened = s.active().map(|st| (st.doc.id, st.source_read_only));
+    if let (Some(binding), Some((id, read_only))) = (&mut s.batch_open, opened) {
         binding.sources.push(id);
+        binding.read_only |= read_only;
     }
 }
 
@@ -55,10 +58,16 @@ pub(crate) fn import_opened(s: &Session, name: &str, bytes: &[u8]) -> Result<Doc
 }
 
 pub(super) fn import_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Result<Document> {
+    import_source_at_raw_ppi(raw_ppi, name, bytes).map(|(doc, _)| doc)
+}
+
+/// [`import_at_raw_ppi`], also telling whether the source must not be replaced by a save
+/// (`ImportResult::source_read_only`: Affinity, Krita, XCF, PDN, whatever its extension says).
+pub(super) fn import_source_at_raw_ppi(raw_ppi: f64, name: &str, bytes: &[u8]) -> Result<(Document, bool)> {
     let r = import_result(name, bytes)?;
     let mut doc = r.document;
     raw_resolution(raw_ppi, &r.warnings, &mut doc);
-    Ok(doc)
+    Ok((doc, r.source_read_only))
 }
 
 fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult> {

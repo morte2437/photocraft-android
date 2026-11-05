@@ -251,6 +251,13 @@ pub(crate) fn gif_more_frames(b: &[u8]) -> Option<DecodeWarning> {
     (frames > 1).then_some(DecodeWarning::MoreFrames { total })
 }
 
+/// Whether a GIF holds more than one frame, or None when the walk stops before the trailer
+/// after at most one frame (so frames past the break could not be counted).
+pub(crate) fn gif_has_more_frames(b: &[u8]) -> Option<bool> {
+    let (frames, total) = gif_walk(b, |_| true);
+    if frames > 1 { Some(true) } else { total.map(|_| false) }
+}
+
 /// Walks a GIF's blocks without decompressing any, handing `frame` the offset of each image
 /// descriptor until it returns false. Gives the descriptors seen, and the frame count if the
 /// blocks reached the trailer.

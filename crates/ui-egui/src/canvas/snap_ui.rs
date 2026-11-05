@@ -284,11 +284,12 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2], mods: egui::Modifiers) {
         // A guide never snaps to itself (or other guides).
         targets = targets.filtered(|k| k != SnapKind::Guide);
     }
-    if matches!(gesture, Gesture::SelectionMove { .. } | Gesture::TransformMove { .. })
+    if matches!(gesture, Gesture::SelectionMove { .. })
+        || (matches!(gesture, Gesture::TransformMove { .. }) && app.ui.transform.as_ref().is_some_and(|t| crate::transform_tool::moves_selection(app, t)))
         || (matches!(gesture, Gesture::Move { .. }) && crate::move_ui::moves_selected_pixels_with(app, tool))
     {
-        // A moving selection, or the selected pixels a transform moves, never snaps back to where
-        // it started.
+        // A moving selection, or a transform that takes the selection along, never snaps back to
+        // where it started. A path's box leaves the selection put: its edges stay targets.
         targets = targets.filtered(|k| k != SnapKind::Selection);
     }
     let smart = if snap_on(app) && matches!(gesture, Gesture::Move { .. } | Gesture::CropImage) && smart_on(app) {

@@ -1239,7 +1239,7 @@ fn handle_canvas_tool_clicks(
     if let Some(t) = app.ui.transform.as_ref()
         && response.double_clicked()
         && let Some(p) = response.interact_pointer_pos()
-        && crate::transform_tool::hit(t, xf.to_doc(p), crate::transform_tool::handle_tolerance(app)) != crate::transform_tool::Hit::Outside
+        && crate::transform_tool::box_hit(app, t, xf.to_doc(p), crate::transform_tool::handle_tolerance(app)) != crate::transform_tool::Hit::Outside
     {
         crate::transform_tool::commit(app);
     }

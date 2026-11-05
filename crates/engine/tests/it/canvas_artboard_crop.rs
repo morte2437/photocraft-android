@@ -102,3 +102,38 @@ fn crop_target_resampling_keeps_the_canvas_board_fitted() {
     assert_eq!(doc.artboards()[0].2.rect, doc.bounds());
     assert_eq!(doc.resolution_dpi, 144.0);
 }
+
+/// A frame of the board's own size (the whole canvas, or a same-size frame moved past an edge)
+/// keeps the board's size preset; a new size drops it.
+#[test]
+fn same_size_crop_keeps_the_canvas_artboard_preset() {
+    for (x, y, width, height, kept) in [(0, 0, 100, 80, true), (-10, 5, 100, 80, true), (0, 0, 100, 79, false), (0, 0, 99, 80, false)] {
+        let mut s = fixture(&[Rect::new(0, 0, 100, 80)]);
+        s.execute("image.crop", json!({"x":x,"y":y,"width":width,"height":height,"deleteCroppedPixels":false})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        let board = &doc.artboards()[0].2;
+        assert_eq!(board.rect, Rect::new(0, 0, width, height));
+        assert_eq!(board.preset == "original preset", kept, "{x},{y} {width}x{height}: {:?}", board.preset);
+        assert_eq!(board.preset.is_empty(), !kept);
+    }
+}
+
+/// A turned crop fits a canvas board to its frame like a straight one, with exact undo.
+#[test]
+fn turned_crop_fits_the_canvas_artboard() {
+    for delete in [false, true] {
+        let mut s = fixture(&[Rect::new(0, 0, 100, 80)]);
+        let before = s.active().unwrap().doc.clone();
+        s.execute("image.crop", json!({"x":20,"y":10,"width":60,"height":40,"angle":10,"deleteCroppedPixels":delete})).unwrap();
+        let doc = &s.active().unwrap().doc;
+        assert_eq!(doc.bounds(), Rect::new(0, 0, 60, 40));
+        assert_eq!(doc.artboards()[0].2.rect, doc.bounds(), "delete {delete}");
+        assert!(doc.artboards()[0].2.preset.is_empty());
+        assert!(s.undo());
+        assert_eq!(s.active().unwrap().doc, before);
+    }
+    // Several boards keep their own layout under a turned crop too.
+    let mut s = fixture(&[Rect::new(0, 0, 100, 80), Rect::new(60, 10, 90, 50)]);
+    s.execute("image.crop", json!({"x":20,"y":10,"width":60,"height":40,"angle":10,"deleteCroppedPixels":false})).unwrap();
+    assert!(s.active().unwrap().doc.artboards().iter().all(|(_, _, b)| b.preset == "original preset" && b.rect.width() != 60));
+}

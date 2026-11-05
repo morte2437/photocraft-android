@@ -160,3 +160,20 @@ fn a_double_click_outside_the_box_does_nothing() {
     assert!(h.state().ui.transform.is_some(), "the box stays open");
     assert_eq!(steps(h.state()), before);
 }
+
+/// With Toggle Reference Point off, an ⌥-click outside the box moves the hidden reference point
+/// there; a double-click on that spot is still outside the box and must not commit.
+#[test]
+fn a_double_click_on_a_hidden_reference_point_outside_the_box_does_nothing() {
+    let mut app = app();
+    app.ui.tool_options.transform_reference_point = false;
+    tool_event(&mut app, ToolEvent::Down { x: 150.0, y: 150.0, pressure: 1.0 }, Modifiers::ALT);
+    tool_event(&mut app, ToolEvent::Up { x: 150.0, y: 150.0 }, Modifiers::ALT);
+    assert_eq!(app.ui.transform.as_ref().unwrap().pivot, [150.0, 150.0], "the ⌥-click moved the reference point");
+    let mut h = harness(app);
+    let before = steps(h.state());
+    let at = screen(h.state(), [150.0, 150.0]);
+    double_click(&mut h, at);
+    assert!(h.state().ui.transform.is_some(), "the box stays open");
+    assert_eq!(steps(h.state()), before);
+}

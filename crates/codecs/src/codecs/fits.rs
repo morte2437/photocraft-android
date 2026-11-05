@@ -231,7 +231,9 @@ pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
         if !image_hdu && size > 0 {
             return Ok(true);
         }
-        if image_hdu && ax.len() >= 2 && ax[..2].iter().all(|n| *n > 0) {
+        // An image HDU with a zero axis has no data (FITS 4.0, NAXISn) and holds no image, like
+        // the empty primary: `find_image` skips it too.
+        if image_hdu && size > 0 && ax.len() >= 2 && ax[..2].iter().all(|n| *n > 0) {
             let planes = ax.iter().skip(2).try_fold(1u64, |n, axis| n.checked_mul(*axis)).ok_or_else(|| err("plane count overflows"))?;
             let retained = planes == 1 || (ax.get(2) == Some(&3) && planes == 3);
             if image_seen || !retained || h.int("GCOUNT").unwrap_or(1) > 1 || h.int("PCOUNT").unwrap_or(0) > 0 {
@@ -254,14 +256,20 @@ pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
     Err(err("too many HDUs to inspect every source image"))
 }
 
-/// Finds the image HDU: the primary one when it has at least two axes, else the first `IMAGE`
-/// extension. Returns its header and the primary header (for its descriptive cards).
+/// Whether an HDU with these axes stores pixels: at least two axes and none of them zero (FITS 4.0,
+/// NAXISn: a zero axis means no data follow the header).
+fn holds_pixels(ax: &[u64]) -> bool {
+    ax.len() >= 2 && ax.iter().all(|n| *n > 0)
+}
+
+/// Finds the image HDU: the primary one when it holds pixels, else the first `IMAGE` extension
+/// that does. Returns its header and the primary header (for its descriptive cards).
 fn find_image(b: &[u8]) -> Result<(Header, Option<Header>), CodecError> {
     let primary = parse_header(b, 0)?;
     if primary.get("SIMPLE").is_none() {
         return Err(err("missing SIMPLE"));
     }
-    if axes(&primary)?.len() >= 2 {
+    if holds_pixels(&axes(&primary)?) {
         return Ok((primary, None));
     }
     let mut compressed = false;
@@ -277,7 +285,7 @@ fn find_image(b: &[u8]) -> Result<(Header, Option<Header>), CodecError> {
         }
         let h = parse_header(b, next)?;
         let kind = h.string("XTENSION").unwrap_or("").to_string();
-        if kind == "IMAGE" && axes(&h)?.len() >= 2 {
+        if kind == "IMAGE" && holds_pixels(&axes(&h)?) {
             return Ok((h, Some(primary)));
         }
         if kind == "BINTABLE" && h.logical("ZIMAGE") {
@@ -724,6 +732,41 @@ mod tests {
         let img = decode(&b, &Limits::default()).unwrap();
         assert_eq!(img.data(), &[42]);
         assert!(img.meta.text.contains(&("TELESCOP".into(), "Seestar S50".into())));
+    }
+
+    /// A zero axis (`NAXIS3 = 0`) means the HDU has no data: it is neither the opened image nor
+    /// an additional one that Batch Save and Close would discard.
+    #[test]
+    fn zero_axis_image_hdus_are_empty() {
+        let empty = |primary: bool| {
+            let first = if primary { "SIMPLE  = T" } else { "XTENSION= 'IMAGE   '" };
+            header(&[first, "BITPIX  = 8", "NAXIS   = 3", "NAXIS1  = 1", "NAXIS2  = 1", "NAXIS3  = 0", "PCOUNT  = 0", "GCOUNT  = 1"])
+        };
+        let image = || {
+            let mut b = header(&["XTENSION= 'IMAGE   '", "BITPIX  = 8", "NAXIS   = 2", "NAXIS1  = 1", "NAXIS2  = 1", "PCOUNT  = 0", "GCOUNT  = 1"]);
+            b.push(42);
+            b.resize(b.len().div_ceil(BLOCK) * BLOCK, 0);
+            b
+        };
+        let mut after_empty_primary = empty(true);
+        after_empty_primary.extend(image());
+        let mut after_empty_extension = header(&["SIMPLE  = T", "BITPIX  = 8", "NAXIS   = 0", "EXTEND  = T"]);
+        after_empty_extension.extend(empty(false));
+        after_empty_extension.extend(image());
+        let mut before_empty_extension = header(&["SIMPLE  = T", "BITPIX  = 8", "NAXIS   = 0", "EXTEND  = T"]);
+        before_empty_extension.extend(image());
+        before_empty_extension.extend(empty(false));
+        for b in [&after_empty_primary, &after_empty_extension, &before_empty_extension] {
+            assert!(!crate::has_unretained_source_data(b).unwrap());
+            assert_eq!(decode(b, &Limits::default()).unwrap().data(), &[42]);
+        }
+        // Only empty HDUs: nothing to open, nothing to lose.
+        assert!(!crate::has_unretained_source_data(&empty(true)).unwrap());
+        assert!(decode(&empty(true), &Limits::default()).is_err());
+        // A second non-empty image is still additional data.
+        let mut two = after_empty_primary.clone();
+        two.extend(image());
+        assert!(crate::has_unretained_source_data(&two).unwrap());
     }
 
     #[test]

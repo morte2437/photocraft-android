@@ -360,7 +360,12 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
             continue;
         }
         let Some(mut action) = list.get(i).cloned() else { continue };
-        targets(list, &mut action.steps, depth + 1, &mut queue, &mut scoped);
+        // Disabled steps never play, so the actions they call are not dependencies.
+        for (step, call) in action.steps.iter_mut().enumerate() {
+            if !action.disabled.contains(&step) {
+                targets(list, std::slice::from_mut(call), depth + 1, &mut queue, &mut scoped);
+            }
+        }
         found.insert(i, action);
     }
     let mut found: Vec<_> = found.into_values().collect();
@@ -712,8 +717,15 @@ pub fn nested_failure(id: &str, value: &Value) -> Option<String> {
         return Some(format!("script failed: {error}"));
     }
     if id == "file.automate.batch" {
-        let errors = value.get("errors")?.as_array()?;
-        let first = errors.first()?;
+        let errors = value.get("errors").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+        let Some(first) = errors.first() else {
+            // Every input succeeded, yet the run was stopped or its requested log is missing:
+            // later parent steps must not run as if the Batch had finished.
+            if value.get("cancelled") == Some(&Value::Bool(true)) {
+                return Some("Batch was cancelled".into());
+            }
+            return value.get("errorLogError").and_then(Value::as_str).map(|error| format!("Batch error log failed: {error}"));
+        };
         let error = first.get("error")?.as_str()?;
         let file = first.get("file").or_else(|| first.get("document")).and_then(Value::as_str).unwrap_or("unknown input");
         let saved = value.get("files").and_then(Value::as_array).map_or(0, Vec::len);
@@ -885,7 +897,7 @@ fn toggle(s: &mut Session, p: &Value) -> Result<Value> {
 /// Prefix of the persisted shortcut override that plays a named action (`actions.play:<name>`).
 pub const PLAY_SHORTCUT_PREFIX: &str = "actions.play:";
 
-/// Rename an action in place. Nested `actions.play` steps and `actions.conditional` branches
+/// Rename an action in place. Nested `actions.play` steps, named Batch steps and `actions.conditional` branches
 /// that call it by name, and its function-key binding, follow the new name so nothing silently
 /// stops working.
 fn rename(s: &mut Session, p: &Value) -> Result<Value> {
@@ -905,11 +917,14 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad("actions.rename", "an action with this name already exists"));
     }
     let pending = s.actions.recording.map_or(s.journal.len(), |(start, _)| start);
+    let old_set = s.actions.list.get(idx).and_then(|a| a.set.clone());
     let calls = s.actions.list.iter_mut().flat_map(|a| a.steps.iter_mut()).chain(s.journal.iter_mut().skip(pending));
     for (id, params) in calls {
         let keys: &[&str] = match id.as_str() {
             "actions.play" => &["action"],
             "actions.conditional" => &["then", "else"],
+            // A named Batch selects from the caller's list, by name alone or within its set.
+            "file.automate.batch" if params.get("set").is_none_or(|set| set.is_null() || set.as_str() == old_set.as_deref()) => &["action"],
             _ => &[],
         };
         for key in keys {

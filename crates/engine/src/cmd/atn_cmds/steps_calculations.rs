@@ -105,7 +105,11 @@ pub(super) fn to_descriptor(p: &Value) -> Option<Descriptor> {
     if !only(p, &["source1", "source2", "blending", "scale", "offset", "result"]) || p.get("result").is_some_and(|r| r != "newChannel") {
         return None;
     }
-    let blend = lookup_back(CALC_BLEND, p.get("blending")?.as_str()?)?;
+    // Calculations plays an omitted blending as Multiply (`Blending::parse`), as Apply Image saves it.
+    let blend = match p.get("blending") {
+        None | Some(Value::Null) => "Mltp",
+        Some(v) => lookup_back(CALC_BLEND, v.as_str()?)?,
+    };
     let mut using = desc("Clcl").with("T   ", source_to(p.get("source1")?)?).with("Clcl", enm("Clcn", blend));
     if let Some(v) = p.get("scale") {
         let n = v.as_f64().filter(|n| n.is_finite() && (1.0..=2.0).contains(n))?;

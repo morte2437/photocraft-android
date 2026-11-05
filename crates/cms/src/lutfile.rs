@@ -273,7 +273,8 @@ pub fn parse_3dl(text: &str) -> Result<LutFile, LutError> {
         first_len.get_or_insert(v.len());
         if v.len() == 3 {
             rows.push([v[0], v[1], v[2]]);
-        } else if v.len() > 3 {
+        } else if v.len() >= 2 {
+            // Two values are a 2-point shaper (a 2³ table's), not something to drop.
             // The input shaper: one row of values ahead of the table, and only one.
             if shaper.is_some() || !rows.is_empty() {
                 return err(format!("a second shaper row `{line}`"));
@@ -638,6 +639,34 @@ mod tests {
             assert!((at(2.0 / 3.0) - 512.0 / 1023.0).abs() < 1.0 / 4095.0, "{n}³: {}", at(2.0 / 3.0));
             assert!((at(0.5) - 256.0 / 1023.0).abs() < 1.0 / 4095.0, "{n}³: halfway between the knots");
         }
+    }
+
+    /// A two-value shaper row (a 2³ table's) is applied like a longer one, not dropped; the even
+    /// two-point ramp changes nothing.
+    #[test]
+    fn three_dl_two_point_shaper_is_applied() {
+        let bent = parse_3dl(&identity_3dl(&[0, 512], 2)).unwrap();
+        let top = sample(&bent, [1.0, 1.0, 1.0]);
+        assert!(top.iter().all(|v| (v - 512.0 / 1023.0).abs() < 1e-4), "{top:?}");
+        assert!((sample(&bent, [0.5, 0.0, 0.0])[0] - 256.0 / 1023.0).abs() < 1e-4);
+        let even = parse_3dl(&identity_3dl(&[0, 1023], 2)).unwrap();
+        assert_eq!(
+            even,
+            parse_3dl(&identity_3dl(&[0, 1023], 2).lines().skip(1).collect::<Vec<_>>().join(
+                "
+"
+            ))
+            .unwrap()
+        );
+        // A second two-value row is a second shaper, refused like a longer one.
+        let body = identity_3dl(&[0, 512], 2);
+        assert!(
+            parse_3dl(&format!(
+                "{body}0 512
+"
+            ))
+            .is_err()
+        );
     }
 
     /// #9170 review (bommerts): a shaper row with a token that isn't a number, or a second

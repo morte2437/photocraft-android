@@ -244,3 +244,59 @@ fn the_dialog_shows_the_reference_layout() {
     let a = &h.state().session.prefs().actions;
     assert_eq!((a.performance, a.pause_seconds, a.create_single_history_state), (photocraft_engine::prefs::PlaybackPerformance::Pause, 9, false));
 }
+
+#[test]
+fn a_paced_play_clears_an_earlier_playback_error() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut app = app_with("step", 1, true);
+    app.ui.status = "Step 2 (layer.select) failed: no such layer".into();
+    app.ui.status_error = true;
+    let mut h = Harness::builder().with_size(egui::vec2(400.0, 320.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(3);
+    h.get_by_label("Play selection").click();
+    h.run_steps(3);
+    assert_eq!(names(h.state()), ["A"], "the play waits after its first step");
+    assert!(h.state().paused_playbacks.timer.is_some());
+    assert!(!h.state().ui.status_error, "the old failure is gone: {}", h.state().ui.status);
+    assert!(h.state().ui.status.is_empty(), "{}", h.state().ui.status);
+    // A status that isn't an error stays (a step's own message, say).
+    let mut app = app_with("step", 1, true);
+    app.ui.status = "Saved".into();
+    play_targets(&mut app, &[0], 0).map(|v| report_play(&mut app, &v.unwrap())).unwrap();
+    assert_eq!(app.ui.status, "Saved");
+}
+
+#[test]
+fn playback_options_ok_refuses_values_automation_set_that_the_dialog_cannot_show() {
+    use photocraft_engine::prefs::PlaybackPerformance;
+    let control = |app: &mut PhotocraftApp, method: &str, params: Value| {
+        let (request, _) = crate::control::ControlRequest::new(method, params);
+        match crate::control::handle(app, &egui::Context::default(), &request) {
+            crate::control::Outcome::Done(v) => v,
+            _ => panic!("{method} answers at once"),
+        }
+    };
+    for (field, value) in
+        [("performance", Value::Null), ("performance", json!("fast")), ("performance", json!(2)), ("singleState", Value::Null), ("singleState", json!("yes"))]
+    {
+        let mut app = app_with("step", 4, false);
+        let id = playback::open_dialog(&mut app).unwrap()["dialog"].as_u64().unwrap();
+        assert_eq!(control(&mut app, "ui.dialog.set", json!({"dialog": id, "field": field, "value": value}))["ok"], true);
+        let r = control(&mut app, "ui.dialog.confirm", json!({"dialog": id}));
+        assert!(r["error"].is_string(), "{field} = {value}: {r}");
+        let a = &app.session.prefs().actions;
+        assert_eq!(
+            (a.performance, a.pause_seconds, a.create_single_history_state),
+            (PlaybackPerformance::StepByStep, 4, false),
+            "{field} = {value} saves nothing"
+        );
+    }
+    // Valid values through the same path are saved.
+    let mut app = app_with("step", 4, false);
+    let id = playback::open_dialog(&mut app).unwrap()["dialog"].as_u64().unwrap();
+    control(&mut app, "ui.dialog.set", json!({"dialog": id, "field": "performance", "value": "accelerated"}));
+    control(&mut app, "ui.dialog.set", json!({"dialog": id, "field": "singleState", "value": true}));
+    assert_eq!(control(&mut app, "ui.dialog.confirm", json!({"dialog": id}))["ok"], true);
+    let a = &app.session.prefs().actions;
+    assert_eq!((a.performance, a.create_single_history_state), (PlaybackPerformance::Accelerated, true));
+}

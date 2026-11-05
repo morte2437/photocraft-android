@@ -6258,3 +6258,108 @@ fn shear_nonfinite_coordinates_stay_kept() {
         }
     }
 }
+
+/// Save one action of steps through `actions.save`, returning the skipped list and the steps
+/// `actions.load` reads back.
+fn save_and_reload(steps: Vec<(String, Value)>) -> (Value, Vec<(String, Value)>) {
+    let mut s = Session::new();
+    let mut action = Action::new("A", steps);
+    action.set = Some("Review".into());
+    s.actions.list.push(action);
+    let saved = s.execute("actions.save", json!({"set": "Review", "skipUnsupported": true})).unwrap();
+    let mut fresh = Session::new();
+    fresh.execute("actions.load", json!({"data": saved["data"]})).unwrap();
+    (saved["skipped"].clone(), fresh.actions.list[0].steps.clone())
+}
+
+/// Calculations plays an omitted blending as Multiply, so Save Actions writes it as Multiply.
+#[test]
+fn calculations_without_blending_saves_as_multiply() {
+    let sources = json!({"source1": {"channel": {"color": "red"}}, "source2": {"channel": {"color": "green"}}});
+    for blending in [None, Some(Value::Null)] {
+        let mut params = sources.clone();
+        if let Some(b) = blending.clone() {
+            params["blending"] = b;
+        }
+        let (skipped, steps) = save_and_reload(vec![("image.calculations".into(), params)]);
+        assert_eq!(skipped, json!([]), "{blending:?}");
+        let mut expected = sources.clone();
+        expected["blending"] = json!("multiply");
+        assert_eq!(steps, vec![("image.calculations".to_string(), expected)], "{blending:?}");
+    }
+    let mut unknown = sources.clone();
+    unknown["blending"] = json!("bogus");
+    assert_eq!(save_and_reload(vec![("image.calculations".into(), unknown)]).0.as_array().map(Vec::len), Some(1));
+}
+
+/// A transparency source with no layer reads the active layer's transparency; Save Actions
+/// refuses it rather than write the merged transparency. Merged and named layers still save.
+#[test]
+fn apply_image_active_layer_transparency_is_not_saved_as_merged() {
+    for source in [json!({"channel": "transparency"}), json!({"channel": "Transparency", "layer": null})] {
+        let (skipped, _) = save_and_reload(vec![("image.applyImage".into(), json!({"source": source, "blending": "normal"}))]);
+        assert_eq!(skipped.as_array().map(Vec::len), Some(1), "{source}: {skipped}");
+    }
+    for layer in ["merged", "Pixels"] {
+        let params = json!({"source": {"channel": "transparency", "layer": layer}, "blending": "normal"});
+        let (skipped, steps) = save_and_reload(vec![("image.applyImage".into(), params)]);
+        assert_eq!(skipped, json!([]), "{layer}");
+        assert_eq!(steps[0].1["source"]["layer"], layer, "{layer}: {steps:?}");
+    }
+    // Other channels keep the merged default for an omitted layer.
+    let (skipped, steps) = save_and_reload(vec![("image.applyImage".into(), json!({"source": {"channel": "red"}, "blending": "normal"}))]);
+    assert_eq!(skipped, json!([]));
+    assert_eq!(steps[0].1["source"]["layer"], "merged");
+}
+
+fn make_levels_layer(using: Descriptor) -> Imported {
+    let levels = desc("Lvls").with("Adjs", D::List(vec![D::Descriptor(desc("LvlA").with("Chnl", channel_ref(None)).with("Gmm ", D::Double(1.2)))]));
+    let make = desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(using.with("Type", D::Descriptor(levels))));
+    let file = AtnFile {
+        name: UnicodeString::new_nul("S"),
+        actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items: vec![item("Mk  ", "Make", Some(make))], ..Default::default() }],
+        ..Default::default()
+    };
+    import(&atn::write(&file).unwrap()).unwrap()
+}
+
+/// A Make adjustment layer takes `Md  ` as its blend mode only when it is a `BlnM` enumeration.
+#[test]
+fn adjustment_layer_blend_mode_needs_a_blend_mode_enumeration() {
+    let imported = make_levels_layer(desc("AdjL").with("Md  ", enm("BlnM", "Mltp")));
+    assert!(imported.unsupported.is_empty());
+    assert_eq!(imported.actions[0].steps[0].1["mode"], "Multiply");
+    let imported = make_levels_layer(desc("AdjL").with("Md  ", enm("Ordn", "Mltp")));
+    assert_eq!(imported.unsupported.len(), 1);
+    assert_eq!(imported.actions[0].steps[0].0, PHOTOSHOP_STEP);
+    // A plain Make layer drops it rather than read another enumeration as a mode.
+    let make = desc("null").with("null", class_ref("Lyr ")).with("Usng", D::Descriptor(desc("Lyr ").with("Md  ", enm("Ordn", "Mltp"))));
+    let file = AtnFile {
+        name: UnicodeString::new_nul("S"),
+        actions: vec![AtnAction { name: UnicodeString::new_nul("A"), items: vec![item("Mk  ", "Make", Some(make))], ..Default::default() }],
+        ..Default::default()
+    };
+    let imported = import(&atn::write(&file).unwrap()).unwrap();
+    assert_eq!(imported.actions[0].steps[0].0, "layer.new.layer");
+    assert!(imported.actions[0].steps[0].1.get("mode").is_none(), "{:?}", imported.actions[0].steps);
+}
+
+/// An adjustment layer name that would not save back unchanged keeps the whole step.
+#[test]
+fn adjustment_layer_name_must_round_trip() {
+    for (name, kept) in [
+        (UnicodeString::new_nul("Grade"), true),
+        (UnicodeString::new("Grade"), true),
+        (UnicodeString(vec![u16::from(b'G'), 0xD800, 0]), false),
+        (UnicodeString(vec![u16::from(b'G'), 0, 0]), false),
+    ] {
+        let imported = make_levels_layer(desc("AdjL").with("Nm  ", D::Text(name.clone())));
+        let step = &imported.actions[0].steps[0];
+        if kept {
+            assert!(imported.unsupported.is_empty(), "{name:?}");
+            assert_eq!(step.1["name"], "Grade", "{name:?}");
+        } else {
+            assert_eq!(step.0, PHOTOSHOP_STEP, "{name:?}");
+        }
+    }
+}

@@ -389,3 +389,30 @@ fn unrepresented_shape_fields_stay_whole_and_native_geometry_refuses_atn_export(
         assert!(atn_cmds::export("Shapes", &[&a], &[], false).is_err());
     }
 }
+
+/// A Shape Blur run by an installed shape's id or name records its portable geometry, so the
+/// journal (Last Filter, recorded actions) replays it where the preset is not installed.
+#[test]
+fn recorded_custom_shape_blur_keeps_portable_geometry() {
+    for background in [false, true] {
+        for selector in [json!({"radius":5,"shapeId":SHAPE_ID}), json!({"radius":5,"shapeName":"Renamed Square"})] {
+            let mut s = fixture(16);
+            install_square(&mut s);
+            if background {
+                let photocraft_engine::jobs::Started::Job(job) = s.start("filter.blur.shapeBlur", selector.clone()).unwrap() else {
+                    panic!("background filter job")
+                };
+                s.wait_job(job).unwrap();
+            } else {
+                s.execute("filter.blur.shapeBlur", selector.clone()).unwrap();
+            }
+            let (id, params) = s.journal.last().cloned().unwrap();
+            assert_eq!(id, "filter.blur.shapeBlur");
+            assert!(params["shapePath"].is_object(), "background={background} {selector}: {params}");
+
+            let mut replay = fixture(16);
+            replay.execute(&id, params).unwrap();
+            assert_eq!(pixels(&replay), pixels(&s), "{selector}");
+        }
+    }
+}

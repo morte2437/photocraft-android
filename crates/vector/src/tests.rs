@@ -644,14 +644,37 @@ fn coverage_interrupt_preserves_geometry_and_stops_during_render() {
     assert!(path_coverage_with(&path, rect, &Interrupt::cancel_only(&|| true)).is_none());
 }
 
+/// Native targets render a large rect in parallel strips; cancellation inside one strip stops
+/// them all and discards the partial coverage.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn coverage_interrupt_stops_parallel_strips() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let path = shapes::ellipse(10.0, 10.0, 280.0, 280.0);
+    // 300 x 300 is past the parallel threshold (more than 32 rows and 64k pixels).
+    let rect = Rect::new(0, 0, 300, 300);
+    assert!(path_coverage_with(&path, rect, &Interrupt::NONE).is_some());
+    let cancelled = AtomicBool::new(false);
+    let cancel = || cancelled.load(Ordering::Relaxed);
+    let progress = |p: f32| {
+        if p >= 0.25 {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+    };
+    assert!(path_coverage_with(&path, rect, &Interrupt::new(&cancel, &progress)).is_none());
+    assert!(cancelled.load(Ordering::Relaxed), "cancellation happened during parallel rendering");
+}
+
 /// Curve budgeting and tessellation also honor cancellation before rasterization starts.
 #[test]
 fn flatten_interrupt_stops_during_preparation() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let path = shapes::ellipse(0.0, 0.0, 500.0, 500.0);
     let polls = AtomicUsize::new(0);
-    let cancel = || polls.fetch_add(1, Ordering::Relaxed) >= 3;
+    // Budgeting polls once for the subpath and once per segment (5 for an ellipse's 4 curves);
+    // the 6th poll is tessellation's first, so this cancels inside `flatten_scaled`.
+    let cancel = || polls.fetch_add(1, Ordering::Relaxed) >= 5;
     assert!(flatten::flatten_path_with(&path, DEFAULT_TOLERANCE, &Interrupt::cancel_only(&cancel)).is_none());
-    assert_eq!(polls.load(Ordering::Relaxed), 4);
+    assert_eq!(polls.load(Ordering::Relaxed), 6);
     assert_eq!(flatten::flatten_path_with(&path, DEFAULT_TOLERANCE, &Interrupt::NONE), Some(flatten_path(&path, DEFAULT_TOLERANCE)));
 }

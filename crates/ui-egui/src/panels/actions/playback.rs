@@ -194,9 +194,10 @@ fn seconds_of(fields: &Map<String, Value>) -> u8 {
     fields.get("seconds").and_then(Value::as_f64).map_or(*Actions::PAUSE_SECONDS.start(), clamp_seconds)
 }
 
-/// OK: store the options (`actions.setPlayback`).
+/// OK: store the options (`actions.setPlayback`). Performance and Create a single history state go
+/// as the dialog holds them, so the command refuses a value automation set that the dialog can't
+/// show (`null`, an unknown mode) instead of saving a default in its place.
 pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<Value, String> {
-    let performance = fields.get("performance").and_then(Value::as_str).and_then(PlaybackPerformance::parse).unwrap_or_default();
-    let single = fields.get("singleState").and_then(Value::as_bool).unwrap_or(true);
-    app.run("actions.setPlayback", json!({"performance": performance.name(), "seconds": seconds_of(fields), "singleState": single}))
+    let field = |key: &str| fields.get(key).cloned().unwrap_or(Value::Null);
+    app.run("actions.setPlayback", json!({"performance": field("performance"), "seconds": seconds_of(fields), "singleState": field("singleState")}))
 }

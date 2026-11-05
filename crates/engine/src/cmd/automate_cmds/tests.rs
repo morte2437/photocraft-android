@@ -780,3 +780,60 @@ fn scripts_nested_deeper_than_the_limit_fail() {
     assert!(r.to_string().contains("nested more than"), "{r}");
     assert_eq!(s.actions.script_depth, 0, "the depth is released");
 }
+
+/// A droplet captures only the actions its enabled steps can call: a disabled Play step in a
+/// called action does not add its target (nor count against the 4096-action limit).
+#[test]
+fn droplets_skip_actions_called_only_from_disabled_steps() {
+    let dir = tmp("droplet-disabled-calls");
+    let mut s = Session::new();
+    let mut top = crate::actions_cmds::Action::new(
+        "Top",
+        vec![("actions.play".into(), json!({"action": "Skipped"})), ("actions.play".into(), json!({"action": "Used"}))],
+    );
+    top.disabled.insert(0);
+    let used = crate::actions_cmds::Action::new("Used", vec![("image.adjustments.invert".into(), json!({}))]);
+    let skipped = crate::actions_cmds::Action::new("Skipped", vec![("image.imageRotation.90cw".into(), json!({}))]);
+    s.actions.list = vec![skipped, top, used];
+    let r =
+        s.execute("file.automate.createDroplet", json!({"path": format!("{dir}/D"), "steps": [["actions.play", {"action": "Top"}]], "shim": false})).unwrap();
+    let droplet: Value = serde_json::from_slice(&std::fs::read(r["path"].as_str().unwrap()).unwrap()).unwrap();
+    let names: Vec<&str> = droplet["calledActions"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Top", "Used"], "{droplet}");
+    // The droplet still runs on its own: the enabled call resolves, the disabled one never plays.
+    let inputs = images(&dir, 1, 3, 2);
+    let run = Session::new().execute("file.automate.runDroplet", json!({"droplet": r["path"], "input": inputs, "output": format!("{dir}/out")})).unwrap();
+    assert_eq!(run["errors"], json!([]), "{run}");
+    let out = photocraft_codecs::decode(&std::fs::read(format!("{dir}/out/img0.png")).unwrap()).unwrap();
+    assert_eq!(out.dimensions(), (3, 2), "the disabled Rotate must not run");
+}
+
+/// A droplet saved with Override Open reads each dropped input through its recorded Open,
+/// not the file the Open recorded.
+#[test]
+fn droplets_forward_override_open_to_batch() {
+    let dir = tmp("droplet-override-open");
+    let inputs = images(&dir, 1, 6, 4);
+    let recorded = {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 2, "height": 3, "background": "#00ff00"})).unwrap();
+        let path = format!("{dir}/recorded.png");
+        crate::file_cmds::save_doc(&s.active().unwrap().doc, &path, None).unwrap();
+        path
+    };
+    for (override_open, size) in [(true, (6, 4)), (false, (2, 3))] {
+        let mut s = Session::new();
+        let out = format!("{dir}/out-{override_open}");
+        let r = s
+            .execute(
+                "file.automate.createDroplet",
+                json!({"path": format!("{dir}/D-{override_open}"), "steps": [["file.openAs", {"path": recorded, "as": "png"}]],
+                    "format": "png", "output": out, "overrideOpen": override_open, "shim": false}),
+            )
+            .unwrap();
+        let run = Session::new().execute("file.automate.runDroplet", json!({"droplet": r["path"], "input": [inputs[0]]})).unwrap();
+        assert_eq!(run["errors"], json!([]), "{run}");
+        let image = photocraft_codecs::decode(&std::fs::read(format!("{out}/img0.png")).unwrap()).unwrap();
+        assert_eq!(image.dimensions(), size, "overrideOpen {override_open}: {run}");
+    }
+}

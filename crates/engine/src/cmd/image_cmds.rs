@@ -450,13 +450,16 @@ fn canvas_artboard(doc: &Document) -> Option<LayerId> {
     }
 }
 
-/// Fits the board [`canvas_artboard`] found before the crop to the new canvas; the size preset it
-/// was made from no longer describes it.
+/// Fits the board [`canvas_artboard`] found before the crop to the new canvas. A new size drops
+/// the size preset it was made from, which no longer describes it; a frame of the board's own size
+/// keeps it, as Artboard Options does.
 fn fit_canvas_artboard(doc: &mut Document, id: Option<LayerId>) {
     let bounds = doc.bounds();
     if let Some(board) = id.and_then(|id| doc.layer_mut(id)).and_then(|l| l.artboard_mut()) {
+        if board.rect.width() != bounds.width() || board.rect.height() != bounds.height() {
+            board.preset.clear();
+        }
         board.rect = bounds;
-        board.preset.clear();
     }
 }
 
@@ -890,6 +893,8 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
     } else {
         coverage
     };
+    // The canvas board, found before the turn, fits the frame as in a straight crop.
+    let board = s.active().and_then(|d| canvas_artboard(&d.doc));
     crate::analysis_cmds::compound(s, "Crop", |s| {
         // Pixels the crop deletes needn't be turned first: keeping only what lands in the frame
         // makes the rotation cost the frame's size, not the canvas's (a small turned crop of a
@@ -925,6 +930,7 @@ fn rotated_crop(s: &mut Session, r: Rect, angle: f64, delete: bool, content_awar
         let extension = s.tools.background;
         s.edit("Crop", |doc, active| {
             crop_doc(doc, CMD, target, delete, extension)?;
+            fit_canvas_artboard(doc, board);
             if content_aware {
                 crate::crop_fill::fill_uncovered(doc, *active, &coverage)?;
             }

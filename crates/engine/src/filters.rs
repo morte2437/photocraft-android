@@ -233,7 +233,19 @@ pub(crate) fn apply_filter_to_surface_in(
     let sel_bounds = selection.map(photocraft_raster::Surface::content_bounds);
     let content = surf.content_bounds();
     let area = algo::output_area(&fp, content, bounds, sel_bounds);
-    algo::apply_in_with(surf, &fp, area, bounds, selection, canvas.union(&content), &ctl).map(Some).ok_or(EngineError::Cancelled)
+    let out = algo::apply_in_with(surf, &fp, area, bounds, selection, canvas.union(&content), &ctl);
+    filter_output(out, ctx.cancelled()).map(Some)
+}
+
+/// A filter's result. The filter also yields nothing when it cannot prepare its working data (a
+/// custom Shape Blur kernel it cannot allocate or does not accept): that is a failure to report,
+/// not a cancellation, unless the job was cancelled.
+fn filter_output(out: Option<photocraft_raster::Surface>, cancelled: bool) -> Result<photocraft_raster::Surface> {
+    match out {
+        Some(surface) => Ok(surface),
+        None if cancelled => Err(EngineError::Cancelled),
+        None => Err(EngineError::Other("the filter could not prepare its working data (not enough memory, or an unusable kernel)".into())),
+    }
 }
 
 pub(crate) fn has_filterable_layer(s: &Session) -> std::result::Result<(), String> {
@@ -284,7 +296,8 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
             let filter = |surf: &photocraft_raster::Surface, fp: &FilterParams, area, bounds, sel: Option<&photocraft_raster::Surface>, extent| {
                 let _working = photocraft_raster::memory::try_reserve_operation(algo::working_bytes(fp, area, bounds, surf.format().channels()))
                     .map_err(EngineError::Other)?;
-                ctx.stage(0.1, 1.0, &msg, |ctl| algo::apply_in_with(surf, fp, area, bounds, sel, extent, ctl)).ok_or(EngineError::Cancelled)
+                let out = ctx.stage(0.1, 1.0, &msg, |ctl| algo::apply_in_with(surf, fp, area, bounds, sel, extent, ctl));
+                filter_output(out, ctx.cancelled())
             };
             let selection = doc.selection.clone();
             let sel_bounds = selection.as_ref().map(photocraft_raster::Surface::content_bounds);

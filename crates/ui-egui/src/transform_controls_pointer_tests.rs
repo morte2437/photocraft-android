@@ -472,3 +472,86 @@ fn color_picker_release_ends_an_existing_transform_handle_drag() {
         assert!(scaled.width() < previous.width() && scaled.height() < previous.height());
     }
 }
+
+/// ⌘ makes another tool the Move tool for the press: a modal blocks that layer drag too.
+#[test]
+fn modal_dialogs_block_a_command_held_move_from_another_tool() {
+    let (mut app, ctx, _) = fixture();
+    accepted(&mut app, &ctx, "ui.set", json!({"tool": "Brush"}));
+    crate::menus::invoke(&mut app, &ctx, "file.new", json!({})).unwrap();
+    assert_eq!(app.ui.dialogs.len(), 1);
+    let before = app.session.active().unwrap().doc.clone();
+    let steps = app.session.active().unwrap().history.past_len();
+    for (kind, at) in [("down", [200.0, 150.0]), ("move", [220.0, 160.0]), ("up", [220.0, 160.0])] {
+        accepted(&mut app, &ctx, "ui.pointer", json!({"command": true, "events": [{"kind": kind, "x": at[0], "y": at[1]}]}));
+        assert!(app.drag.is_none(), "{kind}: the modal owns the ⌘ Move press");
+    }
+    assert_eq!(app.session.active().unwrap().doc, before);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+    assert_eq!(app.ui.tool, Tool::Brush);
+}
+
+/// The smart guide segments `snap_ui::draw` paints on the canvas.
+fn drawn_snap_lines(app: &mut PhotocraftApp) -> usize {
+    let xf = crate::canvas::ViewXform {
+        rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)),
+        zoom: 1.0,
+        center: [500.0, 350.0],
+        flip: false,
+        rotation: 0.0,
+        aspect: 1.0,
+    };
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| crate::snap_ui::draw(app, ui.painter(), &xf));
+    output.textures_delta.clear();
+    let mut stack: Vec<egui::Shape> = output.shapes.into_iter().map(|c| c.shape).collect();
+    let mut lines = 0;
+    while let Some(shape) = stack.pop() {
+        match shape {
+            egui::Shape::Vec(v) => stack.extend(v),
+            egui::Shape::LineSegment { .. } => lines += 1,
+            _ => {}
+        }
+    }
+    lines
+}
+
+/// The Color Picker takes the release of a snapped handle drag: its alignment lines go with it.
+#[test]
+fn color_picker_release_clears_the_handle_drags_snap_lines() {
+    let (mut app, ctx, _) = fixture();
+    app.ui.extras.snap = true;
+    app.ui.view.show.smart_guides = true;
+    pointer(&mut app, &ctx, "down", [800.0, 500.0]);
+    assert!(app.ui.transform.is_some());
+    // 2 px from the document's centre (500, 350): the corner snaps there and the guides show.
+    pointer(&mut app, &ctx, "move", [502.0, 352.0]);
+    assert!(drawn_snap_lines(&mut app) > 0, "{:?}", app.prefs_rt.snap_lines);
+    accepted(&mut app, &ctx, "ui.dialog.open", json!({"kind": "colorPicker"}));
+    pointer(&mut app, &ctx, "up", [999.0, 690.0]);
+    assert_eq!(drawn_snap_lines(&mut app), 0, "the released drag draws no alignment lines");
+    assert!(app.prefs_rt.snap.is_none());
+}
+
+/// The Color Picker takes the release of an ordinary Move drag: the drag ends where it last was, and
+/// moving after the picker closes needs a new press.
+#[test]
+fn color_picker_release_ends_an_ordinary_move_drag() {
+    let (mut app, ctx, layers) = fixture();
+    let old = layers.map(|id| bounds(&app, id));
+    let steps = app.session.active().unwrap().history.past_len();
+    pointer(&mut app, &ctx, "down", [200.0, 150.0]);
+    pointer(&mut app, &ctx, "move", [220.0, 160.0]);
+    assert!(app.drag.is_some());
+    accepted(&mut app, &ctx, "ui.dialog.open", json!({"kind": "colorPicker"}));
+    let dialog = crate::color_picker_ui::top(&app).unwrap();
+    pointer(&mut app, &ctx, "up", [999.0, 690.0]);
+    assert!(app.drag.is_none(), "the picker's release ends the drag");
+    accepted(&mut app, &ctx, "ui.dialog.cancel", json!({"dialog": dialog}));
+    pointer(&mut app, &ctx, "move", [270.0, 190.0]);
+    pointer(&mut app, &ctx, "up", [270.0, 190.0]);
+    for (id, previous) in layers.into_iter().zip(old) {
+        assert_eq!(bounds(&app, id), previous.translate(20, 10), "moved only as far as before the picker opened");
+    }
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
+}

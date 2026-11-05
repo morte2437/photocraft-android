@@ -492,28 +492,55 @@ fn batch_tiff_alpha_guard_keeps_legitimate_results() {
     }
 }
 
+/// Starts the largest supported custom kernel as a background job, cancels it at once and checks
+/// it ends cancelled without an edit. Returns how long admission and the whole run took.
+fn cancel_largest_custom_shape(smart: bool) -> (std::time::Duration, std::time::Duration) {
+    let mut s = session("rgb");
+    if smart {
+        s.execute("filter.convertForSmartFilters", json!({})).unwrap();
+    }
+    let before = photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap();
+    assert!(s.execute("filter.blur.shapeBlur", json!({"radius":5,"shapePath":{"subpaths":[]}})).is_err());
+    assert_eq!(photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap(), before);
+    let knots: Vec<_> = (0..2048).map(|i| json!([if i % 2 == 0 { 0 } else { 1000 }, (i * 617) % 1001])).collect();
+    let params = json!({"radius":1000,"shapePath":{"subpaths":[{"closed":true,"knots":knots}]}});
+    let start = std::time::Instant::now();
+    let photocraft_engine::jobs::Started::Job(job) = s.start("filter.blur.shapeBlur", params).unwrap() else { panic!("background filter job") };
+    let admitted = start.elapsed();
+    assert!(s.cancel_job(job));
+    s.join_cancelled_jobs();
+    let drained = start.elapsed();
+    let outcome = loop {
+        if let Some(event) = s.poll_jobs().into_iter().find(|e| e.id == job) {
+            break event.outcome;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "the cancelled job never reported");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    assert_eq!(outcome, photocraft_engine::jobs::JobOutcome::Cancelled, "smart={smart}");
+    assert_eq!(photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap(), before);
+    (admitted, drained)
+}
+
 /// The largest supported custom kernel is prepared on the worker and can be cancelled without an edit.
 #[test]
 fn custom_shape_preparation_yields_a_cancellable_job() {
     for smart in [false, true] {
-        let mut s = session("rgb");
-        if smart {
-            s.execute("filter.convertForSmartFilters", json!({})).unwrap();
-        }
-        let before = photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap();
-        assert!(s.execute("filter.blur.shapeBlur", json!({"radius":5,"shapePath":{"subpaths":[]}})).is_err());
-        assert_eq!(photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap(), before);
-        let knots: Vec<_> = (0..2048).map(|i| json!([if i % 2 == 0 { 0 } else { 1000 }, (i * 617) % 1001])).collect();
-        let params = json!({"radius":1000,"shapePath":{"subpaths":[{"closed":true,"knots":knots}]}});
-        let start = std::time::Instant::now();
-        let photocraft_engine::jobs::Started::Job(job) = s.start("filter.blur.shapeBlur", params).unwrap() else { panic!("background filter job") };
-        let admitted = start.elapsed();
-        s.cancel_job(job);
-        s.join_cancelled_jobs();
-        eprintln!("custom shape smart={smart}: admission={admitted:?}, cancelled worker drained in {:?}", start.elapsed());
+        cancel_largest_custom_shape(smart);
+    }
+}
+
+/// How fast that job is admitted and drained after a cancel.
+#[test]
+// Wall-clock timing depends on machine load (the release corpus job runs every test), so it is
+// opt-in, like `cancel_takes_effect_within_200_ms_on_24_mp`.
+#[ignore = "timing: cargo test --release -p photocraft-engine --test it custom_shape_preparation_cancels_quickly -- --ignored"]
+fn custom_shape_preparation_cancels_quickly() {
+    for smart in [false, true] {
+        let (admitted, drained) = cancel_largest_custom_shape(smart);
+        eprintln!("custom shape smart={smart}: admission={admitted:?}, cancelled worker drained in {drained:?}");
         assert!(admitted < std::time::Duration::from_secs(1), "command thread prepared the kernel for {admitted:?}");
-        assert!(start.elapsed() < std::time::Duration::from_secs(3), "kernel preparation did not observe cancellation");
-        assert_eq!(photocraft_format::save_to_bytes(&s.active().unwrap().doc, &Default::default()).unwrap(), before);
+        assert!(drained < std::time::Duration::from_secs(3), "kernel preparation did not observe cancellation");
     }
 }
 
@@ -1030,7 +1057,9 @@ fn batch_carries_script_limits_and_restores_balanced_depth() {
         assert_eq!(result["errors"].as_array().unwrap().is_empty(), allowed, "{result}");
         assert_eq!(s.actions.script_depth, depth);
         if depth == 1 {
-            assert_eq!(s.actions.script_steps, spending + 2);
+            // Per input: the Batch's direct step (the nested script), then that script's one step
+            // unless the playback limit refuses it.
+            assert_eq!(s.actions.script_steps, spending + if allowed { 4 } else { 2 });
         }
     }
 }

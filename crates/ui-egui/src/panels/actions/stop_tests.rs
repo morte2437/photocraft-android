@@ -288,3 +288,94 @@ fn a_caller_chain_is_bounded() {
     assert_eq!(count(&app, "Suffix"), 0);
     assert_idle(&app);
 }
+
+/// `If` makes Before, runs `Stop Test` when `condition` holds (`Other` when not), then makes After.
+fn conditional_app(condition: &str) -> PhotocraftApp {
+    let mut app = stop_app(true, true);
+    app.session.actions.list.push(Action::new("Other", vec![("layer.new.layer".into(), json!({"name": "Other"}))]));
+    app.session.actions.list.push(Action::new(
+        "If",
+        vec![
+            ("layer.new.layer".into(), json!({"name": "Before"})),
+            ("actions.conditional".into(), json!({"if": condition, "then": "Stop Test", "else": "Other"})),
+            ("layer.new.layer".into(), json!({"name": "After"})),
+        ],
+    ));
+    app
+}
+
+#[test]
+fn a_conditional_branch_plays_through_the_panel_and_its_stop_shows_its_message() {
+    for confirm in [true, false] {
+        let mut app = conditional_app("always");
+        let v = play(&mut app, &json!({"action": "If"})).unwrap();
+        let id = v["paused"]["dialog"].as_u64().unwrap_or_else(|| panic!("the branch's Stop waits at its message: {v}"));
+        assert_eq!(app.ui.dialog_mut(id).unwrap().fields["message"], MESSAGE);
+        assert_eq!(names(&app), ["Before", "Prefix"]);
+        if confirm {
+            crate::dialogs::confirm(&mut app, id).unwrap();
+        } else {
+            crate::dialogs::cancel(&mut app, id).unwrap();
+        }
+        let expected: &[&str] = if confirm { &["Before", "Prefix", "Suffix", "After"] } else { &["Before", "Prefix"] };
+        assert_eq!(names(&app), expected, "confirm {confirm}: Continue finishes the branch, then its caller");
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        assert_idle(&app);
+        assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Action: If"));
+    }
+    // The other branch and a silent Stop in the branch, as for Play Action.
+    let mut app = conditional_app("never");
+    let v = play(&mut app, &json!({"action": "If"})).unwrap();
+    assert_eq!(v["ran"], 3, "{v}");
+    assert_eq!(names(&app), ["Before", "Other", "After"]);
+    assert_idle(&app);
+    let mut app = conditional_app("always");
+    app.session.actions.list[0].dialogs.clear();
+    let v = play(&mut app, &json!({"action": "If"})).unwrap();
+    assert!(v["stopped"].is_object() && v.get("failed").is_none(), "{v}");
+    assert_eq!(names(&app), ["Before", "Prefix"], "a Stop without its dialog ends the caller too");
+    assert_idle(&app);
+    // A bad condition still fails the step with the engine's error.
+    let mut app = conditional_app("sideways");
+    let v = play(&mut app, &json!({"action": "If"})).unwrap();
+    assert!(v["failed"]["error"].as_str().is_some_and(|e| e.contains("unknown condition")), "{v}");
+    assert_eq!(names(&app), ["Before"]);
+    assert_idle(&app);
+}
+
+#[test]
+fn a_paused_action_replaced_under_the_same_name_does_not_continue() {
+    for replaced in ["Stop Test", "Grandparent"] {
+        let mut app = nested_app(true);
+        let v = play(&mut app, &json!({"action": "Grandparent"})).unwrap();
+        let id = v["paused"]["dialog"].as_u64().unwrap();
+        let i = app.session.actions.list.iter().position(|a| a.name == replaced).unwrap();
+        let steps = (0..4).map(|n| ("layer.new.layer".to_string(), json!({"name": format!("Replacement {n}")}))).collect();
+        app.session.actions.list[i] = Action::new(replaced, steps);
+        assert!(crate::dialogs::confirm(&mut app, id).is_err(), "{replaced}");
+        assert_eq!(names(&app), ["Grandparent prefix", "Parent prefix", "Prefix"], "{replaced}: nothing of either action's tail runs");
+        assert!(app.ui.status_error && app.ui.status.contains("changed"), "{}", app.ui.status);
+        assert_idle(&app);
+    }
+}
+
+#[test]
+fn a_stop_message_continues_only_on_the_document_it_paused_on() {
+    for back in [false, true] {
+        let mut app = stop_app(true, true);
+        let v = play(&mut app, &json!({"action": "Stop Test"})).unwrap();
+        let id = v["paused"]["dialog"].as_u64().unwrap();
+        app.run("file.new", json!({"width": 4, "height": 4})).unwrap();
+        if back {
+            app.run("document.activate", json!({"document": 0})).unwrap();
+        }
+        let r = crate::dialogs::confirm(&mut app, id);
+        assert_eq!(r.is_ok(), back, "{r:?}");
+        assert_eq!(app.ui.status_error, !back, "{}", app.ui.status);
+        app.run("document.activate", json!({"document": 0})).unwrap();
+        assert_eq!(names(&app), if back { vec!["Prefix", "Suffix"] } else { vec!["Prefix"] });
+        app.run("document.activate", json!({"document": 1})).unwrap();
+        assert!(names(&app).is_empty(), "the other document gets no step");
+        assert_idle(&app);
+    }
+}

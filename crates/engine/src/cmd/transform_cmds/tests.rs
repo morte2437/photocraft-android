@@ -956,15 +956,17 @@ fn split_selected_lifts_up_to_the_selection_and_leaves_the_rest() {
     // max(a − k, 0), and the two add back up to the pixel's coverage.
     let gray_f32 = PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false);
     let a = 0.5_f32;
-    for k in [0.25_f32, 0.5, 0.75] {
+    // A negative coverage lifts nothing and leaves the full alpha behind.
+    for k in [-0.25_f32, 0.25, 0.5, 0.75] {
+        let kk = k.max(0.0);
         let mut surf = Surface::new(PixelFormat::RGBA32F);
         surf.fill_rect(Rect::new(3, 4, 4, 5), &[1.0, 0.0, 0.0, a]);
         let mut sel = Surface::new(gray_f32);
         sel.fill_rect(Rect::new(3, 4, 4, 5), &[k]);
         let (lifted, rest) = split_selected(&surf, &sel).unwrap();
         let (l, r) = (lifted.sample_channel(3, 4, 3), rest.sample_channel(3, 4, 3));
-        assert!((l - a.min(k)).abs() < 1e-6, "k = {k}: lifted {l}, want {}", a.min(k));
-        assert!((r - (a - k).max(0.0)).abs() < 1e-6, "k = {k}: left {r}, want {}", (a - k).max(0.0));
+        assert!((l - a.min(kk)).abs() < 1e-6, "k = {k}: lifted {l}, want {}", a.min(kk));
+        assert!((r - (a - kk).max(0.0)).abs() < 1e-6, "k = {k}: left {r}, want {}", (a - kk).max(0.0));
         assert!((l + r - a).abs() < 1e-6, "k = {k}: lifted {l} + left {r} != {a}");
     }
 }

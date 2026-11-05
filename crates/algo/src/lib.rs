@@ -926,9 +926,10 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
             },
         ),
         FilterParams::ShapeBlur { radius, shape } => blur2::shape_blur(src, out, ctx, *radius, *shape),
-        FilterParams::CustomShapeBlur { radius, kernel } => {
-            kernel.as_ref().and_then(|mask| shape_blur::Prepared::custom(*radius, mask)).map_or_else(Vec::new, |prepared| prepared.run(src, out, ctx))
-        }
+        FilterParams::CustomShapeBlur { radius, kernel } => kernel
+            .as_ref()
+            .and_then(|mask| shape_blur::Prepared::custom(*radius, mask, &photocraft_raster::Interrupt::NONE))
+            .map_or_else(Vec::new, |prepared| prepared.run(src, out, ctx)),
         FilterParams::TiltShift { blur, center_x, center_y, angle, focus, transition } => {
             gallery::tilt_shift(src, out, ctx, *blur, (*center_x, *center_y), *angle, *focus, *transition)
         }
@@ -1180,7 +1181,7 @@ fn apply_tiled_with_impl(
             if ctl.cancelled() {
                 return None;
             }
-            let prepared = shape_blur::Prepared::custom(*radius, kernel.as_ref()?)?;
+            let prepared = shape_blur::Prepared::custom(*radius, kernel.as_ref()?, ctl)?;
             Some(prepared)
         }
         FilterParams::ShapeBlur { radius, shape } => {
@@ -1259,7 +1260,7 @@ fn apply_tiled_with_impl(
         };
         let Some(mut data) = (match (&shape, &radial) {
             _ if gallery.is_some() => gallery.as_ref().map(|g| g.run(src, *t, &ctx)),
-            (Some(shape), _) => shape.checked_run(src, *t, &ctx),
+            (Some(shape), _) => shape.checked_run(src, *t, &ctx, ctl),
             (None, Some(plan)) => match plan.filter(src, *t, &ctx, ctl) {
                 Some(data) => Some(data),
                 None if ctl.cancelled() => None,

@@ -3663,3 +3663,22 @@ fn several_layers_reuse_the_transform_interpolation_preference() {
     assert_eq!(transform.layers.len(), 2);
     assert_eq!(transform.interpolation, "nearest");
 }
+
+/// #9974: the click waiting for the commit acts on the layer selected when it was made: no other
+/// layer can be picked while the commit runs (the engine refuses document commands meanwhile).
+#[test]
+fn a_waiting_new_layer_click_keeps_the_layer_it_was_made_on() {
+    let (mut app, placed, ..) = moved_place();
+    let below = app.session.active().unwrap().doc.layers.iter().map(|l| l.id).find(|id| *id != placed).unwrap();
+    let before: Vec<_> = app.session.active().unwrap().doc.layers.iter().map(|l| l.id).collect();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let err = app.run("layer.select", json!({"layer": below.0})).unwrap_err();
+    assert!(err.contains("still running"), "{err}");
+    land_jobs(&mut app);
+    let st = app.session.active().unwrap();
+    let order: Vec<_> = st.doc.layers.iter().map(|l| l.id).collect();
+    let new = *order.iter().find(|id| !before.contains(id)).expect("the new layer");
+    let at = |id| order.iter().position(|l| *l == id).unwrap();
+    assert_eq!(at(new), at(placed) + 1, "the new layer sits right above the layer selected at the click: {order:?}");
+    assert_eq!(st.active_layer, Some(new));
+}

@@ -1574,6 +1574,13 @@ impl Session {
             self.hint_before = None;
         }
         let pending = self.jobs.pending.take();
+        // Shape Blur by an installed shape's id or name records the geometry it ran with, as the
+        // filter's own prepared params carry it: the journal (Last Filter, recorded actions)
+        // replays where that shape is not installed. The run resolved it already, so it can't fail.
+        let mut params = params;
+        if r.is_ok() {
+            let _ = crate::filters_ext::resolve_shape_path(self, id, &mut params);
+        }
         let out = match (r, pending) {
             (Err(e), Some(job)) => {
                 job.ctx.cancel();

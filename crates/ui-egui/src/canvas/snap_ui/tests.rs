@@ -879,3 +879,37 @@ fn alt_over_the_box_shows_the_reference_point_pointer() {
     assert_eq!(crate::transform_tool::cursor(&app, &xf, [55.0, 52.0], egui::Modifiers::NONE), Some(egui::CursorIcon::Move));
     assert_ne!(crate::transform_tool::cursor(&app, &xf, [40.0, 40.0], alt), Some(egui::CursorIcon::Crosshair), "a corner handle stays a handle");
 }
+
+/// Free Transform Path leaves the selection where it is, so the box still snaps to the selection's
+/// edges; Transform Selection moves the outline itself and never snaps back to it.
+#[test]
+fn a_path_box_snaps_to_a_stationary_selection_edge() {
+    let mut app = app_with_box();
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": true, "knots": [[40.0, 40.0], [90.0, 40.0], [90.0, 80.0], [40.0, 80.0]]}]}}))
+        .unwrap();
+    app.run("select.rect", json!({"x": 240, "y": 150, "width": 50, "height": 50})).unwrap();
+    app.ui.tool = Tool::PathSelection;
+    app.ui.selected_path = Some("work".into());
+    free_transform(&mut app, false);
+    let t = app.ui.transform.as_ref().unwrap();
+    assert!(t.path.is_some(), "Free Transform Path");
+    assert_eq!(t.quad[0], [40.0, 40.0]);
+    // 148 px right puts the box's right edge (x = 90) 2 px short of the selection's left edge.
+    let m = egui::Modifiers::NONE;
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 208.0, y: 60.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 208.0, y: 60.0 }, m);
+    let q = app.ui.transform.as_ref().unwrap().quad;
+    assert_eq!(q[1][0], 240.0, "snapped to the selection's edge: {q:?}");
+
+    // Transform Selection: a 3 px drag moves the outline 3 px, not back onto itself.
+    let mut app = app_with_box();
+    app.run("select.rect", json!({"x": 120, "y": 100, "width": 50, "height": 30})).unwrap();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "select.transformSelection", json!({})).unwrap();
+    assert!(app.ui.transform.as_ref().unwrap().selection);
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 140.0, y: 110.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 143.0, y: 110.0, pressure: 1.0 }, m);
+    assert!(app.prefs_rt.snap_lines.is_empty(), "{:?}", app.prefs_rt.snap_lines);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 143.0, y: 110.0 }, m);
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad[0][0], 123.0);
+}

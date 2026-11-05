@@ -1201,7 +1201,7 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
             continue;
         }
         if !pointer_event_intercepted(app, ctx, &gesture, &sample) {
-            if modal_blocks_move_pointer(app, sample.ev) {
+            if modal_blocks_move_pointer(app, sample.ev, gesture.mods) {
                 continue;
             }
             if app.ui.tool == Tool::Move && !gesture.secondary && !gesture.middle && !gesture.space && matches!(sample.ev, ToolEvent::Down { .. }) {
@@ -1215,8 +1215,9 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
 }
 
 /// Dialog samplers run first; block new Move gestures while allowing an active one to finish.
-fn modal_blocks_move_pointer(app: &PhotocraftApp, event: ToolEvent) -> bool {
-    app.ui.tool == Tool::Move
+/// The Move tool is the one the event acts as: ⌘ makes most other tools the Move tool.
+fn modal_blocks_move_pointer(app: &PhotocraftApp, event: ToolEvent, mods: egui::Modifiers) -> bool {
+    crate::canvas::event_tool(app, mods) == Tool::Move
         && (!app.ui.dialogs.is_empty()
             || app.ui.layers_panel_dialog.is_some()
             || app.discard.is_some()
@@ -1276,6 +1277,11 @@ fn pointer_eyedropper_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &Poi
     if crate::color_picker_ui::top(app).is_some() {
         if matches!(s.ev, ToolEvent::Up { .. }) {
             crate::tools::transform_tool::release_handle_drag(app);
+            // A drag begun before the picker opened ends where it last was (the release's
+            // coordinates are the picker's), so later moves can't resume it without a press.
+            if let Some([x, y]) = app.drag.as_ref().map(|d| d.points.last().map_or(d.start, |p| [p[0], p[1]])) {
+                tool_event(app, ToolEvent::Up { x, y }, g.mods);
+            }
         } else {
             crate::color_picker_ui::sample_at(app, x, y);
         }

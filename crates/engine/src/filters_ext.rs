@@ -616,6 +616,9 @@ pub(crate) fn resolve_shape_kernel(fp: &mut FilterParams, p: &Value, ctl: &photo
         return Err(EngineError::Other("Shape Blur's selected shape has nonfinite geometry".into()));
     }
     let rect = Rect::new(0, 0, size, size);
+    // The coverage buffer is size² floats (16 MB at radius 1000): admit it before allocating.
+    let side = u64::try_from(size).unwrap_or(0);
+    let _working = photocraft_raster::memory::try_reserve_operation(side.saturating_mul(side).saturating_mul(4)).map_err(EngineError::Other)?;
     let data = photocraft_vector::path_coverage_with(&fitted, rect, ctl).ok_or(EngineError::Cancelled)?;
     if data.len() != (size as usize).saturating_mul(size as usize) || !data.iter().any(|v| *v > 0.0) {
         return Err(EngineError::Other("Shape Blur's selected shape has no coverage".into()));

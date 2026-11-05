@@ -2,6 +2,7 @@
 //! in the same span order as the scalar implementation, but contiguous slices
 //! let the compiler vectorize without architecture-specific code or unsafe.
 use photocraft_geom::Rect;
+use photocraft_raster::Interrupt;
 
 use crate::{
     BlurShape, Ctx,
@@ -16,6 +17,15 @@ pub(crate) fn radius(r: f32) -> f32 {
     if r.is_finite() { r.clamp(0.0, 1000.0) } else { 0.0 }
 }
 
+/// The most coverage runs a custom kernel of side `size` may hold. Every output row adds one
+/// window per run, so a fragmented mask (alternating or ever-changing coverage, up to `size²`
+/// runs) would cost as much as a direct convolution. Smooth anti-aliased shapes need about one
+/// run per edge pixel plus one per interior stretch (a radius-1000 disc about 8k, 4 per row);
+/// this allows 64 per row on average and never limits kernels of up to 256 × 256.
+pub(crate) fn max_spans(size: usize) -> usize {
+    size.saturating_mul(64).max(1 << 16)
+}
+
 pub(crate) struct Prepared {
     spans: Spans,
     weights: Option<Vec<f64>>,
@@ -26,8 +36,10 @@ impl Prepared {
         Self { spans: Spans::new(radius(r), shape_inside(shape)), weights: None }
     }
 
-    /// Coverage of a custom shape, centred in a (2 ceil(radius) + 1) square.
-    pub(crate) fn custom(r: f32, mask: &Image) -> Option<Self> {
+    /// Coverage of a custom shape, centred in a (2 ceil(radius) + 1) square. `None` for a
+    /// malformed or empty mask, a cancelled `ctl`, or one too fragmented to convolve (see
+    /// [`max_spans`]).
+    pub(crate) fn custom(r: f32, mask: &Image, ctl: &Interrupt) -> Option<Self> {
         let ri = radius(r).ceil() as i32;
         let size = usize::try_from(ri.checked_mul(2)?.checked_add(1)?).ok()?;
         if mask.ch != 1
@@ -41,7 +53,11 @@ impl Prepared {
         let mut rows = Vec::new();
         let mut weights = Vec::new();
         let mut count = 0.0;
+        let limit = max_spans(size);
         for (y, row) in mask.data.chunks_exact(size).enumerate() {
+            if ctl.cancelled() || rows.len() > limit {
+                return None;
+            }
             rows.try_reserve(size).ok()?;
             weights.try_reserve(size).ok()?;
             let mut x = 0;
@@ -60,14 +76,19 @@ impl Prepared {
                 }
             }
         }
+        if rows.len() > limit {
+            return None;
+        }
         (count > 0.0).then_some(Self { spans: Spans { rows, count }, weights: Some(weights) })
     }
 
     pub(crate) fn run(&self, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
-        self.checked_run(src, out, ctx).unwrap_or_default()
+        self.checked_run(src, out, ctx, &Interrupt::NONE).unwrap_or_default()
     }
 
-    pub(crate) fn checked_run(&self, src: &Image, out: Rect, ctx: &Ctx) -> Option<Vec<f32>> {
+    /// `None` for malformed input, an allocation that does not fit, or a cancelled `ctl`
+    /// (polled per input and output row).
+    pub(crate) fn checked_run(&self, src: &Image, out: Rect, ctx: &Ctx, ctl: &Interrupt) -> Option<Vec<f32>> {
         let n = src.ch;
         if n == 0 || n > crate::fxutil::MAXC || out.is_empty() {
             return Some(Vec::new());
@@ -89,13 +110,16 @@ impl Prepared {
         if prefix_len > MAX_SAMPLES || output_len > MAX_SAMPLES {
             return None;
         }
-        let prefix = Prefix::build(src, ctx, n, stride, prefix_len)?;
+        let prefix = Prefix::build(src, ctx, n, stride, prefix_len, ctl)?;
         let mut result = Vec::new();
         result.try_reserve_exact(output_len).ok()?;
         let mut acc = Vec::new();
         acc.try_reserve_exact(row_len).ok()?;
         acc.resize(row_len, 0.0f64);
         for y in out.y0..out.y1 {
+            if ctl.cancelled() {
+                return None;
+            }
             self.accumulate_row(&prefix, src, out, y, &mut acc)?;
             for px in acc.chunks_exact(n) {
                 let mut sample = [0.0f32; crate::fxutil::MAXC];
@@ -141,7 +165,7 @@ struct Prefix {
 }
 
 impl Prefix {
-    fn build(src: &Image, ctx: &Ctx, n: usize, stride: usize, len: usize) -> Option<Self> {
+    fn build(src: &Image, ctx: &Ctx, n: usize, stride: usize, len: usize, ctl: &Interrupt) -> Option<Self> {
         let w = src.rect.width() as usize;
         let h = src.rect.height() as usize;
         let input_row = w.checked_mul(n)?;
@@ -150,6 +174,9 @@ impl Prefix {
         data.resize(len, 0.0f64);
         if input_row != 0 {
             for (s, d) in src.data.chunks_exact(input_row).zip(data.chunks_exact_mut(stride)) {
+                if ctl.cancelled() {
+                    return None;
+                }
                 let mut sum = [0.0f64; crate::fxutil::MAXC];
                 for (px, dst) in s.chunks_exact(n).zip(d.get_mut(n..)?.chunks_exact_mut(n)) {
                     let alpha = if ctx.alpha { *px.last()? } else { 1.0 };

@@ -6,7 +6,23 @@ use super::descriptors::{
 use super::fields::{Mapped, none, step, steps};
 use super::steps_layer::quick_mask_ref;
 use super::tables::{LABEL_COLORS, MODES, blend_label, blend_ps, lookup, lookup_back};
-use super::{D, Descriptor, Id, Map, ReferenceItem, Value, json};
+use super::{D, Descriptor, Id, Map, ReferenceItem, UnicodeString, Value, json};
+
+/// A `Md  ` value as a blend-mode label, only when it is a `BlnM` enumeration: another
+/// enumeration type sharing a value id (`Mltp`) is not a blend mode.
+fn blend_mode(d: &Descriptor) -> Option<&'static str> {
+    match d.get("Md  ")? {
+        D::Enumerated { type_id, value } if type_id.is("BlnM") => blend_label(&trimmed(value)),
+        _ => None,
+    }
+}
+
+/// A `Nm  ` text that saves back unchanged: no unpaired surrogate replaced, no extra NULs lost.
+fn exact_name(d: &Descriptor) -> Option<String> {
+    let D::Text(original) = d.get("Nm  ")? else { return None };
+    let name = original.to_string_lossy();
+    (*original == UnicodeString::new_nul(&name) || *original == UnicodeString::new(&name)).then_some(name)
+}
 
 /// A `patternLayer` descriptor's pattern, scale, angle and link as the params of
 /// `layer.newFillLayer.pattern` / `layer.fill.pattern.set`. A pattern recorded with both an id
@@ -213,7 +229,7 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
                 if let Some(o) = get_num(u, "Opct") {
                     p.insert("opacity".into(), (o / 100.0).into());
                 }
-                if let Some(m) = get_enum(u, "Md  ").and_then(|m| blend_label(&m)) {
+                if let Some(m) = blend_mode(u) {
                     p.insert("mode".into(), m.into());
                 }
                 match u.get("Grup") {
@@ -249,11 +265,11 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
                 if let Some(u) = using {
                     let Some((_, Value::Object(params))) = mapped.first_mut() else { return Mapped::Unsupported { harmless: false } };
                     if u.get("Nm  ").is_some() {
-                        let Some(name) = get_text(u, "Nm  ") else { return Mapped::Unsupported { harmless: false } };
+                        let Some(name) = exact_name(u) else { return Mapped::Unsupported { harmless: false } };
                         params.insert("name".into(), name.into());
                     }
                     if u.get("Md  ").is_some() {
-                        let Some(mode) = get_enum(u, "Md  ").and_then(|m| blend_label(&m)).filter(|m| *m != "Pass Through") else {
+                        let Some(mode) = blend_mode(u).filter(|m| *m != "Pass Through") else {
                             return Mapped::Unsupported { harmless: false };
                         };
                         params.insert("mode".into(), mode.into());

@@ -447,8 +447,11 @@ fn run_droplet(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(name) = v.get("action").and_then(|action| action.get("name")).or_else(|| v.get("name")) {
         bp["action"] = name.clone();
     }
-    if let Some(q) = opts.get("quality") {
-        bp["quality"] = q.clone();
+    // Override Open is saved with the droplet: a recorded Open then reads each dropped input.
+    for key in ["quality", "overrideOpen"] {
+        if let Some(value) = opts.get(key) {
+            bp[key] = value.clone();
+        }
     }
     if let Some(called) = v.get("calledActions") {
         bp["calledActions"] = called.clone();

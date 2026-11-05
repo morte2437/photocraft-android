@@ -355,6 +355,17 @@ fn additional_images_probe_uses_container_structure_without_decoding_pixels() {
     ] {
         assert_eq!(has_unretained_source_data(&bytes).unwrap(), multiple);
     }
+    // A GIF whose blocks break off before the trailer after one frame may hide later frames:
+    // the probe refuses it instead of reporting a still.
+    let one = gif(1);
+    assert!(has_unretained_source_data(&one[..one.len() - 1]).is_err(), "trailer cut off");
+    let two = gif(2);
+    let mut broken = gif(1);
+    broken.pop();
+    broken.push(0x99);
+    broken.extend_from_slice(&two[two.len() - 10..]);
+    assert!(has_unretained_source_data(&broken).is_err(), "junk block after the first frame");
+    assert!(has_unretained_source_data(&two[..two.len() - 1]).unwrap(), "two frames seen, trailer cut off");
     let image = solid(COLOURS[0]);
     for mipmaps in [false, true] {
         let mut options = EncodeOptions::default();

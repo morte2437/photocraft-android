@@ -200,7 +200,7 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
 /// Other formats return false; this does not establish preservation of other format-specific data.
 pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {
     match detect(bytes) {
-        Some(Format::Gif) => Ok(via_image::gif_more_frames(bytes).is_some()),
+        Some(Format::Gif) => via_image::gif_has_more_frames(bytes).ok_or_else(|| CodecError::malformed(Format::Gif, "cannot inspect every frame")),
         Some(Format::Png) => png::has_additional_images(bytes),
         Some(Format::WebP) => Ok(webp_is_animated(bytes)),
         Some(Format::Tiff) => {

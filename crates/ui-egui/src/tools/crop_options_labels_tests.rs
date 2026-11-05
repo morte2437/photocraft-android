@@ -187,3 +187,92 @@ fn a_picked_ratio_hides_the_selection_entry() {
     h.run();
     assert!(!drawn(&h).iter().any(|t| t == "Selection"), "a picked ratio: {:?}", drawn(&h));
 }
+
+/// The closed dropdown names the checked entry: "Selection" while the untouched frame is the
+/// selection's (as the reference application's options bar shows), the mode once it is edited.
+#[test]
+fn the_closed_preset_dropdown_reads_selection_while_it_stands() {
+    let mut selected = app();
+    selected.ui.tool_options.crop_ratio.clear();
+    selected.run("select.all", json!({})).expect("select all");
+    crop_ui::ensure_frame(&mut selected);
+    let mut h = dropdown_harness(selected);
+    h.run();
+    assert!(drawn(&h).iter().any(|t| t == "Selection"), "closed: {:?}", drawn(&h));
+    h.state_mut().crop.default_frame = false;
+    h.run();
+    assert!(!drawn(&h).iter().any(|t| t == "Selection"), "edited frame: {:?}", drawn(&h));
+    // A picked ratio takes the entry's place, on the button too.
+    let mut ratio = app();
+    ratio.ui.tool_options.crop_ratio = "1:1".into();
+    ratio.run("select.all", json!({})).expect("select all");
+    crop_ui::ensure_frame(&mut ratio);
+    let mut h = dropdown_harness(ratio);
+    h.run();
+    assert!(!drawn(&h).iter().any(|t| t == "Selection"), "ratio: {:?}", drawn(&h));
+}
+
+/// A saved free-Ratio crop preset matches the options while the Selection entry stands, but only
+/// Selection is checked; once the frame is edited the preset is checked again.
+#[test]
+fn only_selection_is_checked_while_it_stands() {
+    use egui::accesskit::{Role, Toggled};
+    use egui_kittest::kittest::{NodeT as _, Queryable};
+
+    let mut selected = app();
+    selected.ui.tool_options.crop_ratio.clear();
+    selected.run("tool.presets.new", json!({"name": "Free Crop", "tool": "crop", "options": {"toolOptions": {"crop_ratio": ""}}})).expect("preset");
+    selected.run("select.all", json!({})).expect("select all");
+    crop_ui::ensure_frame(&mut selected);
+    let mut h = dropdown_harness(selected);
+    h.run();
+    h.get_by_role(Role::ComboBox).click();
+    h.run();
+    assert_eq!(h.get_by_label("Selection").accesskit_node().toggled(), Some(Toggled::True));
+    assert_eq!(h.get_by_label("Free Crop").accesskit_node().toggled(), Some(Toggled::False), "one current entry");
+    h.state_mut().crop.default_frame = false;
+    h.run();
+    assert_eq!(h.get_by_label("Free Crop").accesskit_node().toggled(), Some(Toggled::True), "no Selection entry: the preset is current");
+}
+
+/// Undo and Redo of the box put back whether its default frame was the selection's: undoing a
+/// Reset to a selection back to the whole-canvas frame has no Selection entry.
+#[test]
+fn box_undo_restores_whether_the_frame_came_from_a_selection() {
+    use crate::canvas::{ToolEvent, tool_event};
+    let mut app = app();
+    crop_ui::ensure_frame(&mut app);
+    let canvas = app.ui.crop_rect;
+    assert_eq!(canvas, Some([0.0, 0.0, 200.0, 100.0]));
+    assert!(!crop_presets::shows_selection(&app));
+    // Edit the frame: drag its bottom-right corner in.
+    tool_event(&mut app, ToolEvent::Down { x: 200.0, y: 100.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Move { x: 150.0, y: 80.0, pressure: 1.0 }, egui::Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 150.0, y: 80.0 }, egui::Modifiers::NONE);
+    assert!(!app.crop.default_frame, "edited");
+    app.run("select.rect", json!({"x": 50, "y": 20, "width": 100, "height": 60})).expect("select");
+    crop_ui::reset(&mut app);
+    assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 150.0, 80.0]));
+    assert!(crop_presets::shows_selection(&app), "reset to the selection's frame");
+    app.run("edit.undo", json!({})).expect("undo");
+    app.run("edit.undo", json!({})).expect("undo");
+    assert_eq!(app.ui.crop_rect, canvas, "back to the whole-canvas frame");
+    assert!(app.crop.default_frame);
+    assert!(!crop_presets::shows_selection(&app), "the canvas frame has no Selection entry");
+    app.run("edit.redo", json!({})).expect("redo");
+    app.run("edit.redo", json!({})).expect("redo");
+    assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 150.0, 80.0]));
+    assert!(crop_presets::shows_selection(&app), "redo brings the selection's frame back");
+}
+
+/// The Fill entry's default labels are translated in every catalog that translated the old
+/// "Background (Default)" label, so no language falls back to English.
+#[test]
+fn the_fill_labels_are_translated_where_the_old_label_was() {
+    use crate::i18n::{Lang, has};
+    for lang in Lang::all().filter(|l| has(*l, "Background (Default)")) {
+        for label in ["Background (default)", "Transparent (default)"] {
+            assert!(has(lang, label), "{} lacks {label}", lang.code());
+        }
+    }
+}

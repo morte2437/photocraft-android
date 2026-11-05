@@ -151,7 +151,8 @@ pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // selection's and no ratio presets it (#10872); a picked ratio takes the check mark instead.
     let selection_entry = shows_selection(app) && app.ui.tool_options.crop_ratio.is_empty();
     let o = &app.ui.tool_options;
-    let label = button_label(o, &builtin, &users);
+    // The closed control names the entry that is checked: "Selection" while it stands.
+    let label = if selection_entry { tl!("Selection").to_string() } else { button_label(o, &builtin, &users) };
     let current_user = current_user(app);
     let can_new = savable(o).is_some();
     let mut chosen: Option<Choice> = None;
@@ -169,7 +170,7 @@ pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
             }
             for (name, _) in &users {
-                if ui.selectable_label(current_user.as_deref() == Some(name), name.as_str()).clicked() {
+                if ui.selectable_label(!selection_entry && current_user.as_deref() == Some(name), name.as_str()).clicked() {
                     chosen = Some(Choice::User(name.clone()));
                 }
             }

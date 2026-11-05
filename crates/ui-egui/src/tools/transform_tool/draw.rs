@@ -243,6 +243,13 @@ fn carries_selection(app: &PhotocraftApp, t: &TransformSession) -> bool {
     !t.selection && t.path.is_none() && t.content_aware.is_none() && !(t.warp.is_some() && warps_type(app))
 }
 
+/// Applying the open box moves the selection outline: Transform Selection's own box, or a box
+/// that [carries the selection along](carries_selection). A path, Content-Aware Scale or Warp Text
+/// leaves it where it is, so its edges stay snap targets.
+pub(crate) fn moves_selection(app: &PhotocraftApp, t: &TransformSession) -> bool {
+    t.selection || carries_selection(app, t)
+}
+
 /// A transform of `document` is open that carries its selection along (#5297): the canvas traces
 /// the whole outline, not only the part in view where it started, for [`selection_ants`].
 pub(crate) fn carries_selection_of(app: &PhotocraftApp, document: DocId) -> bool {

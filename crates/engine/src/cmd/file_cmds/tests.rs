@@ -383,7 +383,7 @@ fn batch_override_open_authorizes_effective_path_and_carries_failure_budget() {
     let intact = std::fs::read(&existing).unwrap();
     let mut s = Session::new();
     s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), json!({"path":"/recorded.png","as":"png"}))]));
-    s.batch_open = Some(BatchOpen { path: first.clone(), sources: Vec::new(), raw_ppi: 300.0 });
+    s.batch_open = Some(BatchOpen { path: first.clone(), sources: Vec::new(), raw_ppi: 300.0, read_only: false });
     assert!(matches!(s.execute("file.openAs", json!([1])), Err(EngineError::BadParams { .. })));
     assert!(s.documents().is_empty());
     s.batch_open = None;
@@ -4090,4 +4090,106 @@ fn open_as_and_place_keep_the_typed_hard_budget_fields() {
             }
         });
     });
+}
+
+thread_local! { static REVIEW_CANCEL: std::cell::RefCell<Option<crate::jobs::JobCtx>> = const { std::cell::RefCell::new(None) }; }
+
+fn cancel_at_marker(id: &str, params: &Value) -> Result<()> {
+    if id == "layer.renameLayer" && params["name"] == "Cancel here" {
+        REVIEW_CANCEL.with(|ctx| ctx.borrow().as_ref().unwrap().cancel());
+        return Err(EngineError::Cancelled);
+    }
+    Ok(())
+}
+
+/// A Batch cancelled with no file errors stops the calling action at that step.
+#[test]
+fn playback_stops_after_a_cancelled_nested_batch() {
+    let dir = tmp("batch-cancel-parent");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    let mut s = session(4, 4, 8);
+    let ctx = crate::jobs::JobCtx::new();
+    s.set_inline_job_ctx(Some(ctx.clone()));
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+    s.authorize = Some(cancel_at_marker);
+    let batch = json!({"input": [input], "output": join(&dir, "out"), "steps": [["layer.renameLayer", {"name": "Cancel here"}]]});
+    s.actions.list.push(crate::actions_cmds::Action::new("Run", vec![("file.automate.batch".into(), batch), ("layer.new.layer".into(), json!({}))]));
+    let layers = doc(&s).layers.len();
+    let played = s.execute("actions.play", json!({"action": "Run"})).unwrap();
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = None);
+    assert!(ctx.cancelled());
+    assert_eq!(played["failed"]["step"], 0, "{played}");
+    assert_eq!(played["failed"]["result"]["cancelled"], true, "{played}");
+    assert_eq!(played["failed"]["result"]["errors"], json!([]), "{played}");
+    assert_eq!(doc(&s).layers.len(), layers, "the step after the cancelled Batch must not run");
+}
+
+/// Steps a Batch runs from inside a script count against the script's total, in both sources.
+#[test]
+fn batch_steps_inside_a_script_count_against_its_step_limit() {
+    let dir = tmp("batch-script-steps");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    for source in ["open", "folder"] {
+        let mut s = session(4, 4, 8);
+        s.actions.script_depth = 1;
+        s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS - 1;
+        let mut p = json!({"source": source, "output": join(&dir, source), "format": "png",
+            "steps": [["image.adjustments.invert", {}], ["image.adjustments.invert", {}]]});
+        if source == "folder" {
+            p["input"] = json!([input]);
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        let error = result["errors"][0]["error"].as_str().unwrap_or_default();
+        assert!(error.contains("steps in all"), "{source}: {result}");
+        assert_eq!(s.actions.script_steps, crate::automate_cmds::MAX_SCRIPT_STEPS, "{source}");
+    }
+}
+
+/// Two spellings of one destination through a symlinked folder are one output claim.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn output_claims_see_one_destination_through_a_symlinked_folder() {
+    let dir = tmp("batch-claims-symlink");
+    let real = join(&dir, "real");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = join(&dir, "link");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&real, &link);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&real, &link);
+    if let Err(error) = linked {
+        eprintln!("skipped: cannot create a directory symlink here: {error}");
+        return;
+    }
+    let mut claims = OutputClaims::default();
+    claims.record(&join(&real, "a.png"), "first.png");
+    assert!(claims.check(&join(&link, "A.png")).is_err(), "the link reaches the earlier result");
+    assert!(claims.check(&join(&real, "b.png")).is_ok());
+}
+
+/// Save and Close never replaces a source that opened read-only, such as a Krita document
+/// named `.png`, whether Batch opens it or a recorded Open with Override Open does.
+#[test]
+fn save_and_close_refuses_a_read_only_source() {
+    let dir = tmp("batch-save-close-read-only");
+    let maindoc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DOC xmlns=\"http://www.calligra.org/DTD/krita\" syntaxVersion=\"2.0\">\
+        <IMAGE name=\"img\" width=\"4\" height=\"4\" colorspacename=\"RGBA\" x-res=\"72\" y-res=\"72\"><layers></layers></IMAGE></DOC>";
+    let mut zip = photocraft_format::zip::ZipWriter::new();
+    zip.add("mimetype", b"application/x-krita").unwrap();
+    zip.add("maindoc.xml", maindoc.as_bytes()).unwrap();
+    let bytes = zip.finish().unwrap();
+    let source = join(&dir, "source.png");
+    std::fs::write(&source, &bytes).unwrap();
+    assert!(photocraft_io::import("source.png", &bytes).unwrap().source_read_only, "the fixture opens read-only");
+    for override_open in [false, true] {
+        let mut p = json!({"input": [source], "destination": "saveAndClose", "steps": []});
+        if override_open {
+            p["overrideOpen"] = json!(true);
+            p["steps"] = json!([["file.openAs", {"path": join(&dir, "elsewhere.png")}]]);
+        }
+        let result = Session::new().execute("file.automate.batch", p).unwrap();
+        let error = result["errors"][0]["error"].as_str().unwrap_or_default();
+        assert!(error.contains("cannot replace this source"), "overrideOpen {override_open}: {result}");
+        assert_eq!(std::fs::read(&source).unwrap(), bytes, "overrideOpen {override_open}: the source is unchanged");
+    }
 }
