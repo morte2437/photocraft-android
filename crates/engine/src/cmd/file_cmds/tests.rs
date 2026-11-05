@@ -1300,6 +1300,12 @@ fn camera_data_formats_like_photoshop_and_falls_back_to_xmp() {
     assert_eq!(info(Some(0.5), Some(5.6), None), json!({"exposure": "1/2 s", "fNumber": "f/5.6"}));
     assert_eq!(info(Some(0.4), None, None), json!({"exposure": "0.4 s"}));
     assert_eq!(info(Some(1.0 / 2000.0), None, None), json!({"exposure": "1/2000 s"}));
+    // Non-standard fractions round to the nearest 1/n instead of losing digits (#6958).
+    assert_eq!(info(Some(0.031714), None, None), json!({"exposure": "1/32 s"}));
+    assert_eq!(info(Some(0.0215), None, None), json!({"exposure": "1/47 s"}));
+    assert_eq!(info(Some(1.0 / 3.0), None, None), json!({"exposure": "1/3 s"}));
+    // Too far from any whole denominator: three significant digits, not two decimals.
+    assert_eq!(info(Some(0.2731), None, None), json!({"exposure": "0.273 s"}));
     assert_eq!(info(Some(0.0), Some(0.0), Some(0.0)), json!({}));
     // No EXIF block (a raw import, XMP-only files): Photoshop's exif:/tiff:/aux: properties.
     let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
