@@ -394,6 +394,10 @@ fn gray_range(depth: SampleType) -> f64 {
 /// gray image `gray` (0–1). Returns features in scan order of their first pixel; `origin` offsets
 /// the reported bounds.
 pub fn measure_features(mask: &[bool], gray: &[f32], w: usize, h: usize, origin: (i32, i32), range: f64) -> Vec<Feature> {
+    measure_features_impl(mask, Some(gray), w, h, origin, range)
+}
+
+fn measure_features_impl(mask: &[bool], gray: Option<&[f32]>, w: usize, h: usize, origin: (i32, i32), range: f64) -> Vec<Feature> {
     // Two-pass connected components.
     let mut label = vec![u32::MAX; w * h];
     let mut parent: Vec<u32> = Vec::new();
@@ -491,8 +495,15 @@ pub fn measure_features(mask: &[bool], gray: &[f32], w: usize, h: usize, origin:
             },
         );
     // Area, bounds and gray values.
-    let mut feats: Vec<Feature> =
-        (0..n).map(|_| Feature { bounds: Rect::EMPTY, gray_min: f64::MAX, gray_max: f64::MIN, histogram: vec![0; 256], ..Default::default() }).collect();
+    let mut feats: Vec<Feature> = (0..n)
+        .map(|_| Feature {
+            bounds: Rect::EMPTY,
+            gray_min: f64::MAX,
+            gray_max: f64::MIN,
+            histogram: if gray.is_some() { vec![0; 256] } else { Vec::new() },
+            ..Default::default()
+        })
+        .collect();
     let mut sums = vec![0.0f64; n];
     let mut values: Vec<Vec<u16>> = vec![Vec::new(); n];
     for y in 0..h {
@@ -506,12 +517,14 @@ pub fn measure_features(mask: &[bool], gray: &[f32], w: usize, h: usize, origin:
             let (px, py) = (x as i32 + origin.0, y as i32 + origin.1);
             let r = Rect::new(px, py, px + 1, py + 1);
             f.bounds = if f.bounds.is_empty() { r } else { f.bounds.union(&r) };
-            let g = f64::from(gray[y * w + x]);
-            f.gray_min = f.gray_min.min(g);
-            f.gray_max = f.gray_max.max(g);
-            sums[l as usize] += g;
-            f.histogram[(g.clamp(0.0, 1.0) * 255.0).round() as usize] += 1;
-            values[l as usize].push((g.clamp(0.0, 1.0) * 65535.0).round() as u16);
+            if let Some(gray) = gray {
+                let g = f64::from(gray[y * w + x]);
+                f.gray_min = f.gray_min.min(g);
+                f.gray_max = f.gray_max.max(g);
+                sums[l as usize] += g;
+                f.histogram[(g.clamp(0.0, 1.0) * 255.0).round() as usize] += 1;
+                values[l as usize].push((g.clamp(0.0, 1.0) * 65535.0).round() as u16);
+            }
         }
     }
     for (i, f) in feats.iter_mut().enumerate() {
@@ -577,7 +590,7 @@ fn gray_image(d: &Document, r: Rect) -> Vec<f32> {
     buf.px.par_iter().map(|p| 0.30 * p[0] + 0.59 * p[1] + 0.11 * p[2]).collect()
 }
 
-fn selection_rows(d: &Document) -> Result<(Feature, Vec<Feature>)> {
+fn selection_rows(d: &Document, needs_gray: bool) -> Result<(Feature, Vec<Feature>)> {
     let r = match &d.selection {
         Some(sel) => sel.content_bounds().intersect(&d.bounds()),
         None => d.bounds(),
@@ -598,13 +611,16 @@ fn selection_rows(d: &Document) -> Result<(Feature, Vec<Feature>)> {
     };
     let (w, h) = (r.width() as usize, r.height() as usize);
     let mask = selection_mask(d, r, n);
-    let gray = gray_image(d, r);
+    let gray = needs_gray.then(|| gray_image(d, r));
     let range = gray_range(d.depth);
-    let feats = measure_features(&mask, &gray, w, h, (r.x0, r.y0), range);
+    let feats = measure_features_impl(&mask, gray.as_deref(), w, h, (r.x0, r.y0), range);
     if feats.is_empty() {
         return Err(EngineError::Other("the selection is empty".into()));
     }
-    let mut all: Vec<u16> = mask.iter().zip(&gray).filter(|(m, _)| **m).map(|(_, g)| (g.clamp(0.0, 1.0) * 65535.0).round() as u16).collect();
+    let mut all: Vec<u16> = gray
+        .as_deref()
+        .map(|gray| mask.iter().zip(gray).filter(|(m, _)| **m).map(|(_, g)| (g.clamp(0.0, 1.0) * 65535.0).round() as u16).collect())
+        .unwrap_or_default();
     let med = median(&mut all) * range;
     Ok((summary(&feats, med), feats))
 }
@@ -999,7 +1015,13 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
     let mut rows: Vec<Map<String, Value>> = Vec::new();
     match source {
         "selection" => {
-            let (sum, feats) = selection_rows(&d)?;
+            let needs_gray = s
+                .analysis
+                .data_points
+                .selection
+                .iter()
+                .any(|key| matches!(key.as_str(), "grayMin" | "grayMax" | "grayMean" | "grayMedian" | "integratedDensity" | "histogram"));
+            let (sum, feats) = selection_rows(&d, needs_gray)?;
             let mut m = base_row(s, &d, source, &label, &now);
             feature_values(&mut m, &sum, feats.len(), factor);
             rows.push(m);

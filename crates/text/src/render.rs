@@ -548,14 +548,18 @@ impl skrifa::outline::OutlinePen for Recorder<'_> {
     }
 }
 
-/// Glyph outlines of `layout` in document space (through `transform`, bent by `warp`), one
-/// element list per glyph, for Type › Create Work Path and Convert to Shape. Faux bold is not
-/// applied (Photoshop also converts the regular outline); faux italic and scaling are. Under a
-/// warp, control points are mapped directly, which is exact for straight segments and a close
-/// approximation for curves.
-pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Vec<Vec<PathEl>> {
+/// Positioned glyph outline with its style and character run information.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphOutline {
+    pub glyph_index: usize,
+    pub style: u32,
+    pub elements: Vec<PathEl>,
+}
+
+/// Glyph outlines of `layout` preserving the style index of each glyph.
+pub fn glyph_outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Vec<GlyphOutline> {
     let mut glyphs = Vec::new();
-    for g in &layout.glyphs {
+    for (i, g) in layout.glyphs.iter().enumerate() {
         let face = &layout.faces[g.face as usize];
         let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else {
             continue;
@@ -579,10 +583,19 @@ pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) ->
         let mut rec = Recorder { glyph, post: Xform(transform.m), warp: bend, out: Vec::new() };
         let settings = DrawSettings::unhinted(Size::new(face.size_px), LocationRef::new(&coords));
         if outline.draw(settings, &mut rec).is_ok() && !rec.out.is_empty() {
-            glyphs.push(rec.out);
+            glyphs.push(GlyphOutline { glyph_index: i, style: g.style, elements: rec.out });
         }
     }
     glyphs
+}
+
+/// Glyph outlines of `layout` in document space (through `transform`, bent by `warp`), one
+/// element list per glyph, for Type › Create Work Path and Convert to Shape. Faux bold is not
+/// applied (the regular outline is converted); faux italic and scaling are. Under a
+/// warp, control points are mapped directly, which is exact for straight segments and a close
+/// approximation for curves.
+pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Vec<Vec<PathEl>> {
+    glyph_outlines(layout, transform, warp).into_iter().map(|g| g.elements).collect()
 }
 
 #[cfg(test)]

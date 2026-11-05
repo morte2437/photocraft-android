@@ -13,6 +13,22 @@ fn styled(text: &str, style: CharStyle) -> TextLayer {
     TextLayer { text: text.into(), runs: vec![TextRun { len: text.len(), style }], ..Default::default() }
 }
 
+#[test]
+fn glyph_source_ranges_follow_shaped_clusters() {
+    let mut engine = TextEngine::new();
+    for text in ["office", "Aé B", "First\nSecond"] {
+        let layer = point(text, 24.0);
+        let layout = engine.layout(&layer, 72.0);
+        assert!(!layout.glyphs.is_empty());
+        assert_eq!(layout.glyphs.len(), layout.glyph_ranges.len());
+        for range in &layout.glyph_ranges {
+            assert!(range.start < range.end, "empty range in {text:?}");
+            assert!(text.get(range.clone()).is_some(), "invalid range {range:?} in {text:?}");
+            assert!(layout.clusters.iter().any(|cluster| cluster.range == *range), "missing cluster for {range:?}");
+        }
+    }
+}
+
 /// The rasteriser's pixel stages — composing one colour's coverage, unpremultiplying it, and
 /// converting the tiles — are per pixel: no pixel reads a slot another pixel wrote. Spreading them
 /// over threads therefore has to leave every byte as it was, which a one-thread pool checks.
@@ -3612,6 +3628,25 @@ fn restyling_the_photoshop_era_objects_keeps_the_raw_strings_of_the_file() {
     assert!(out.windows(6).any(|w| w == b"(0100)"), "{:?}", String::from_utf8_lossy(&out));
     let runs = era_runs(&crate::psd::parse_txt2(&out).unwrap());
     assert_eq!(runs.first().and_then(|(_, f)| f.get("FontSize")).and_then(E::as_f64), Some(24.0), "and the legacy copy was restyled");
+}
+
+#[test]
+fn glyph_outlines_preserves_style_indices() {
+    let mut e = TextEngine::new();
+    let t = TextLayer {
+        text: "AB".into(),
+        transform: Affine::translate(10.0, 30.0),
+        runs: vec![
+            photocraft_doc::text::TextRun { len: 1, style: CharStyle { color: Color::rgb(1.0, 0.0, 0.0), ..Default::default() } },
+            photocraft_doc::text::TextRun { len: 1, style: CharStyle { color: Color::rgb(0.0, 1.0, 0.0), ..Default::default() } },
+        ],
+        ..Default::default()
+    };
+    let layout = e.layout(&t, 72.0);
+    let glyphs = crate::render::glyph_outlines(&layout, &t.transform, None);
+    assert!(glyphs.len() >= 2);
+    assert_eq!(glyphs[0].style, 0);
+    assert_eq!(glyphs[1].style, 1);
 }
 
 /// Colour passes are grouped in one walk of the glyphs: with a colour per letter, every placed

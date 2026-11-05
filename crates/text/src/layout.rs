@@ -137,6 +137,8 @@ pub struct ClusterInfo {
 pub struct TextLayout {
     pub faces: Vec<GlyphFace>,
     pub glyphs: Vec<PlacedGlyph>,
+    /// Layer-text byte range represented by each glyph, in the same order as `glyphs`.
+    pub glyph_ranges: Vec<Range<usize>>,
     pub decorations: Vec<DecorationRect>,
     pub lines: Vec<LineInfo>,
     pub clusters: Vec<ClusterInfo>,
