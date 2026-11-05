@@ -95,8 +95,7 @@ use paint::{
 use selection::selection_shown_offset;
 pub use selection::{SelCursor, selection_cursor};
 pub(crate) use selection::{floating_outline, selection_drag_delta};
-#[cfg(test)]
-use start_screen::start_screen_drop_hint;
+pub(crate) use start_screen::start_screen_drop_hint;
 pub(crate) use strokes::multiple_color_target;
 pub use strokes::paint_target;
 pub(crate) use strokes::{ClonePreviewCache, CommittedStroke, LiveStroke, cancel_mixer_on_context_change, freehand_tool, spread_ms, strokes_live};

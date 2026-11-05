@@ -1419,8 +1419,10 @@ fn start_screen_buttons_stay_inside_a_narrow_canvas() {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
         h.state_mut().1 = true;
         h.run_steps(3);
-        for label in ["New document", "Join us on Discord"] {
-            for node in h.query_all_by_label_contains(label) {
+        for label in ["New file", "Open…"] {
+            let nodes: Vec<_> = h.query_all_by_label(label).collect();
+            assert!(!nodes.is_empty(), "`{label}` is rendered in a {width}-point-wide canvas");
+            for node in nodes {
                 let r = node.rect();
                 assert!(r.left() >= 0.0 && r.right() <= width, "`{label}` is clipped in a {width}-point-wide canvas: {r:?}");
             }
@@ -1450,6 +1452,27 @@ fn home_recent_list_hides_when_the_preference_is_off() {
     h.run_steps(3);
     assert!(h.query_by_label("hidden.psd").is_none(), "hidden when off");
     assert_eq!(h.state().0.ui.recent_files.len(), 1, "the list itself is kept");
+}
+
+#[test]
+fn start_screen_narrow_window_renders_actions_row() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.push_recent("/tmp/photocraft-narrow/test.psd");
+    // Window narrower than 640px (e.g. 500px width split-screen)
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(500.0, 600.0)).build_ui_state(
+        |ui, (app, ready): &mut (PhotocraftApp, bool)| {
+            if *ready {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| document_area(app, ui));
+            }
+        },
+        (app, false),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
+    h.state_mut().1 = true;
+    h.run_steps(3);
+    assert!(h.query_by_label("New file").is_some(), "New file button must be present in narrow mode");
+    assert!(h.query_all_by_label("Open…").next().is_some(), "Open… button must be present in narrow mode");
 }
 
 /// The Home screen's × takes a file off Recent without opening it, and its right-click menu
