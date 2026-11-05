@@ -4558,3 +4558,6 @@ shape	Appearance	Apparence
 	Stop Color	Couleur du point
 	Shapes can't use patterns yet	Les formes ne peuvent pas encore utiliser de motifs
 	Edit Brush…	Modifier le pinceau…
+
+# Action Stop message (#8386)
+	Message	Message

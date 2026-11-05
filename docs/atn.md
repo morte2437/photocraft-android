@@ -31,6 +31,14 @@ modes; the Playback Options dialog can use the same setting when #5212 lands.
 Step-dialog confirmation joins the original play only while its document and
 history still match the paused state. Cancel keeps the completed prefix; an
 intervening edit or document switch prevents the stale dialog from applying.
+A Stop step (`Stop`, `Msge` message, `Cntn` Allow Continue) with its dialog toggle on shows a
+window titled Message with the recorded text and Continue (the default) and Stop, or Stop alone
+without Allow Continue; Stop keeps the steps already applied. With the toggle off the step ends
+playback silently, whatever `Cntn` says. Insert Stop… turns the toggle on. Confirming a dialog
+inside a called action (Play Action step) finishes that action and then continues each caller after
+its call, as one history state. Agents and headless playback keep the engine's rule: Allow Continue
+continues, otherwise the step fails. Measured 2026-11-05.
+
 Batch and droplets group each processed document independently under the action's
 name and use the same saved option.
 Existing non-linear History ordering and visibility options continue to apply.

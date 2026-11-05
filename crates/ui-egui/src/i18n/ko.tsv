@@ -3743,3 +3743,6 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Stop Color	정지점 색상
 	Shapes can't use patterns yet	모양에는 아직 패턴을 사용할 수 없습니다
 	Edit Brush…	브러시 편집…
+
+# Action Stop message (#8386)
+	Message	메시지

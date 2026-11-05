@@ -1316,7 +1316,7 @@ fn a_set_paused_at_a_dialog_ends_at_an_action_replaced_under_its_name() {
 /// the called action resumes alone, so the next action of the set must not run on a caller that
 /// never finished.
 #[test]
-fn a_set_paused_inside_a_called_action_stops_there() {
+fn a_set_paused_inside_a_called_action_continues_into_its_caller_then_the_set() {
     use egui_kittest::kittest::Queryable;
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
@@ -1338,12 +1338,19 @@ fn a_set_paused_inside_a_called_action_stops_there() {
     let dialog = h.state().ui.dialogs.last().map(|d| d.id).expect("C's blur dialog");
     crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
     h.run_steps(2);
-    assert_eq!(layer_names(h.state()), ["c"], "C finished; B didn't run ahead of A's tail");
-    assert_eq!(h.state().session.active().unwrap().history.past_len(), count + 1);
-    assert_eq!(h.state().session.active().unwrap().history.undo_label(), Some("Action: A"));
+    // #8386, measured: confirming a dialog inside a called action continues the caller after
+    // the call, and the set's next action after that.
+    assert_eq!(layer_names(h.state()), ["c", "a-tail", "b"], "C finished, then A's tail, then B");
+    // One history state per played action: A with its call into C, then B.
+    assert_eq!(h.state().session.active().unwrap().history.past_len(), count + 2);
+    assert_eq!(h.state().session.active().unwrap().history.undo_label(), Some("Action: B"));
     let after = h.state().session.active().unwrap().doc.clone();
     assert!(h.state_mut().session.undo());
+    assert_eq!(layer_names(h.state()), ["c", "a-tail"]);
+    assert_eq!(h.state().session.active().unwrap().history.undo_label(), Some("Action: A"));
+    assert!(h.state_mut().session.undo());
     assert_eq!(h.state().session.active().unwrap().doc.as_ref(), before.as_ref());
+    assert!(h.state_mut().session.redo());
     assert!(h.state_mut().session.redo());
     assert_eq!(h.state().session.active().unwrap().doc.as_ref(), after.as_ref());
 }
@@ -1740,6 +1747,7 @@ fn insert_stop_dialog_adds_a_stop_after_the_selected_step() {
     crate::dialogs::confirm(&mut app, id).unwrap();
     let steps = &app.session.actions.list[0].steps;
     assert_eq!(steps[1], (photocraft_engine::atn_cmds::STOP_MESSAGE.to_string(), json!({"message": "Check the mask", "allowContinue": true})));
+    assert!(app.session.actions.list[0].dialogs.contains(&1), "an inserted Stop has its dialog toggle on");
     assert_eq!((app.ui.actions.selected, app.ui.actions.selected_step), (Some(0), Some(1)));
     assert_eq!(step_label(&steps[1].0, &steps[1].1), "Stop: Check the mask");
     // Without a selected step the stop goes last; the panel's menu wiring is exercised by name.

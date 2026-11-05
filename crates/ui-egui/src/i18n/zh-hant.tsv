@@ -3164,3 +3164,6 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Solid Color	純色
 	Tint Color	色調顏色
 	Edit Brush…	編輯筆刷…
+
+# Action Stop message (#8386)
+	Message	訊息

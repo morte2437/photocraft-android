@@ -100,8 +100,8 @@ fn playback_targets(app: &PhotocraftApp) -> Vec<usize> {
 
 /// Play `targets` one after another, stopping at the first that fails or can't start. One that
 /// pauses for a step dialog of its own hands the rest to that dialog, which plays them after its OK
-/// (Cancel stops them all, as it stops one action). A pause inside an action it calls resumes only
-/// the called action, so the set stops there rather than run its next action on an unfinished one. Returns the last result with `ran` counting the steps
+/// (Cancel stops them all, as it stops one action), also from inside an action it calls: that one
+/// continues into its callers first. A Stop with its dialog off ends the set. Returns the last result with `ran` counting the steps
 /// of all of them plus `before` (steps the same Play ran before a pause), or `None` when there was nothing to play.
 fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Result<Option<Value>, String> {
     let (mut last, mut ran) = (None, before);
@@ -109,7 +109,7 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
         let name = app.session.actions.list.get(i).map(|a| a.name.clone());
         let mut v = app.run("actions.play", json!({"action": i}))?;
         ran = ran.saturating_add(v.get("ran").and_then(Value::as_u64).unwrap_or(0));
-        let failed = v.get("failed").is_some_and(Value::is_object);
+        let failed = v.get("failed").is_some_and(Value::is_object) || v.get("stopped").is_some_and(Value::is_object);
         let paused = v.get("paused").filter(|p| p.is_object()).and_then(waiting_dialog).cloned();
         if let Some(o) = v.as_object_mut() {
             o.insert("ran".into(), json!(ran));
@@ -122,7 +122,7 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
             let rest: Vec<Action> = targets.get(n + 1..).unwrap_or_default().iter().filter_map(|i| list.get(*i).cloned()).collect();
             let token = paused_token(app, &dialog);
             if let Some(entry) = token.and_then(|t| app.paused_playbacks.paused.get_mut(&t))
-                && name.as_ref() == Some(&entry.action)
+                && name.as_deref() == Some(entry.outermost())
             {
                 entry.then = rest;
                 entry.ran = ran;
@@ -187,12 +187,97 @@ pub(crate) fn assign_shortcut(app: &mut PhotocraftApp, name: &str, shortcut: &st
 /// Replay edits synchronously, with view steps handled by the shell in the same order.
 /// Engine steps keep the headless action semantics (no dialogs or background jobs).
 pub(crate) fn play(app: &mut PhotocraftApp, params: &Value) -> Result<Value, String> {
-    play_owned(app, params, None)
+    play_owned(app, params, None, &[])
+}
+
+/// How a step that called another action left its caller.
+enum Called {
+    /// The called action finished: the caller goes on.
+    Done,
+    Failed(Value),
+    /// It waits at a dialog that now carries this caller as well.
+    Paused(Value),
+    /// A Stop with its dialog off ended it, and the caller with it.
+    Stopped(Value),
+}
+
+/// Read the result of step `i` (`id`) of `caller`: a nested failure, a pause (the caller joins the
+/// paused playback's [`PausedPlayback::callers`], so it continues after the called action) or a
+/// silent stop end the caller there.
+fn called(app: &mut PhotocraftApp, caller: &str, i: usize, id: &str, value: &Value, target: Option<photocraft_doc::DocId>) -> Called {
+    if let Some(error) = actions_cmds::nested_failure(id, value).or_else(|| actions_cmds::save_target_closed(&app.session, id, target)) {
+        return Called::Failed(json!({"step": i, "id": id, "error": error}));
+    }
+    if let Some(inner) = value.get("paused").filter(|p| p.is_object()) {
+        if let Some(token) = waiting_dialog(inner).cloned().and_then(|dialog| paused_token(app, &dialog))
+            && let Some(entry) = app.paused_playbacks.paused.get_mut(&token)
+        {
+            if entry.callers.len() >= MAX_CALLERS {
+                return Called::Failed(json!({"step": i, "id": id, "error": format!("action nesting exceeds {MAX_CALLERS} levels")}));
+            }
+            entry.callers.push((caller.to_string(), i.saturating_add(1)));
+        }
+        return Called::Paused(inner.clone());
+    }
+    if id == "actions.play"
+        && let Some(stop) = value.get("stopped").filter(|s| s.is_object())
+    {
+        return Called::Stopped(json!({"step": i, "id": id, "stopped": stop}));
+    }
+    Called::Done
+}
+
+/// File `c` under the playback's ending, or count the step when it ran: whether the playback ends.
+fn end_at(c: Called, ran: &mut u64, failed: &mut Option<Value>, paused: &mut Option<Value>, stopped: &mut Option<Value>) -> bool {
+    match c {
+        Called::Done => {
+            *ran += 1;
+            return false;
+        }
+        Called::Failed(f) => *failed = Some(f),
+        Called::Paused(p) => *paused = Some(p),
+        Called::Stopped(s) => *stopped = Some(s),
+    }
+    true
+}
+
+/// A resumed playback goes on in the action this one called (`inner`, see [`play_owned`]) inside
+/// this one's playback frame, so its recursion checks still see this caller; the call was step
+/// `from - 1`. `None` when there is nothing to replay.
+fn replay_inner(app: &mut PhotocraftApp, caller: &str, from: usize, inner: &[(String, usize)]) -> Option<Called> {
+    let ((name, child_from), rest) = inner.split_first()?;
+    let step = from.saturating_sub(1);
+    let target = app.session.active().map(|d| d.doc.id);
+    Some(match play_owned(app, &json!({"action": name, "from": child_from}), None, rest) {
+        Ok(value) => called(app, caller, step, "actions.play", &value, target),
+        Err(error) => Called::Failed(json!({"step": step, "id": "actions.play", "error": error})),
+    })
+}
+
+/// Step `i` of `action` is a Stop: with its dialog toggle on it shows its message and pauses
+/// (Continue, when the step allows it, resumes after it); with the toggle off it ends the playback
+/// without a word, as in the reference application.
+fn stop_step(app: &mut PhotocraftApp, action: &Action, i: usize, p: &Value) -> Called {
+    let id = photocraft_engine::atn_cmds::STOP_MESSAGE;
+    if !action.dialogs.contains(&i) {
+        return Called::Stopped(json!({"step": i, "id": id}));
+    }
+    let token = app.paused_playbacks.pause(action.name.clone(), i + 1, app.session.authorize);
+    let allow = p.get("allowContinue").and_then(Value::as_bool).unwrap_or(false);
+    if let Some(entry) = app.paused_playbacks.paused.get_mut(&token) {
+        entry.allow_continue = allow;
+    }
+    let message = p.get("message").and_then(Value::as_str).unwrap_or_default();
+    let fields = json!({STOP_DIALOG: true, "__label": "Message", "message": message, "allowContinue": allow, RESUME: token});
+    let dialog = app.ui.open_dialog(crate::state::DialogKind::Command, fields.as_object().cloned().unwrap_or_default());
+    Called::Paused(json!({"step": i, "id": id, "dialog": dialog}))
 }
 
 /// `suspended` is the recording a paused part of the same call took ([`PausedPlayback::record`]); it comes
-/// back, with that named call journaled, only when the whole call ends.
-fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>) -> Result<Value, String> {
+/// back, with that named call journaled, only when the whole call ends. `inner` are the called
+/// actions a resumed playback replays first, outermost first, each `(action, from)`: the first is
+/// the one this action's step before `from` called ([`resume`]).
+fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>, inner: &[(String, usize)]) -> Result<Value, String> {
     let (action, from) = match actions_cmds::playback_plan(&app.session, params) {
         Ok(plan) => plan,
         Err(e) => {
@@ -216,9 +301,12 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
         })
         .or(suspended);
     let mut ran = 0u64;
-    let mut failed = None;
-    let mut paused = None;
-    for (i, (id, p)) in action.enabled_steps().skip_while(|(i, _)| *i < from) {
+    let (mut failed, mut paused, mut stopped) = (None, None, None);
+    let ended = match replay_inner(app, &action.name, from, inner) {
+        Some(c) => end_at(c, &mut ran, &mut failed, &mut paused, &mut stopped),
+        None => false,
+    };
+    for (i, (id, p)) in action.enabled_steps().skip_while(|(i, _)| *i < from).filter(|_| !ended) {
         if !actions_cmds::consume_playback_step(&mut app.session) {
             failed = Some(json!({"step": i, "id": id, "error": format!("action playback exceeded the {}-step limit", actions_cmds::MAX_PLAYBACK_STEPS)}));
             break;
@@ -237,6 +325,12 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             && let Err(e) = auth(id, p)
         {
             failed = Some(json!({"step": i, "id": id, "error": e.to_string()}));
+            break;
+        }
+        // A Stop shows its message or ends the playback (`stop_step`). Agents keep the headless
+        // semantics of the engine command.
+        if id == photocraft_engine::atn_cmds::STOP_MESSAGE && !app.automation_input {
+            end_at(stop_step(app, &action, i, p), &mut ran, &mut failed, &mut paused, &mut stopped);
             break;
         }
         // The dialog toggle: show the step's dialog with its recorded values and continue
@@ -312,17 +406,11 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             app.session.execute(id, p.clone()).map_err(|e| e.to_string())
         };
         match result {
+            // A called action that paused for a dialog continues here after it once confirmed.
             Ok(value) => {
-                if let Some(error) = actions_cmds::nested_failure(id, &value).or_else(|| actions_cmds::save_target_closed(&app.session, id, target)) {
-                    failed = Some(json!({"step": i, "id": id, "error": error}));
+                if end_at(called(app, &action.name, i, id, &value, target), &mut ran, &mut failed, &mut paused, &mut stopped) {
                     break;
                 }
-                if let Some(inner) = value.get("paused").filter(|p| p.is_object()) {
-                    // A called action paused for a dialog; it resumes alone when confirmed.
-                    paused = Some(inner.clone());
-                    break;
-                }
-                ran += 1;
             }
             Err(error) => {
                 failed = Some(json!({"step": i, "id": id, "error": error}));
@@ -354,10 +442,11 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>)
             restore_recording(app, owner.as_ref());
         }
     }
-    Ok(match (failed, paused) {
-        (Some(f), _) => json!({"action": action.name, "ran": ran, "failed": f}),
-        (None, Some(p)) => json!({"action": action.name, "ran": ran, "paused": p}),
-        (None, None) => json!({"action": action.name, "ran": ran}),
+    Ok(match (failed, paused, stopped) {
+        (Some(f), _, _) => json!({"action": action.name, "ran": ran, "failed": f}),
+        (None, Some(p), _) => json!({"action": action.name, "ran": ran, "paused": p}),
+        (None, None, Some(s)) => json!({"action": action.name, "ran": ran, "stopped": s}),
+        (None, None, None) => json!({"action": action.name, "ran": ran}),
     })
 }
 
@@ -427,6 +516,11 @@ fn begin_recording(app: &mut PhotocraftApp, append: bool) {
 }
 
 pub(crate) fn report_play(app: &mut PhotocraftApp, v: &Value) {
+    if v.get("stopped").is_some_and(Value::is_object) {
+        app.ui.status = tl!("Action playback stopped").to_string();
+        app.ui.status_error = false;
+        return;
+    }
     if let Some(paused) = v.get("paused").filter(|p| p.is_object()) {
         let step = paused.get("step").and_then(Value::as_u64).unwrap_or(0);
         let template = "Step {step} is waiting for its dialog";
@@ -781,6 +875,54 @@ pub fn insert_stop_confirm(app: &mut PhotocraftApp, fields: &serde_json::Map<Str
     Ok(r)
 }
 
+/// The field marking a Stop step's message (the dialog toggle on, played by a person).
+const STOP_DIALOG: &str = "__actionStop";
+
+pub fn owns_stop_message(fields: &serde_json::Map<String, Value>) -> bool {
+    fields.contains_key(STOP_DIALOG)
+}
+
+pub fn stop_message_body(ui: &mut egui::Ui, fields: &serde_json::Map<String, Value>) {
+    ui.set_min_width(300.0);
+    ui.add(egui::Label::new(fields.get("message").and_then(Value::as_str).unwrap_or_default()).wrap());
+}
+
+/// Continue (the default) and Stop, or Stop alone when the step doesn't allow continuing.
+/// `Some(true)` continues, `Some(false)` stops. ↩ answers the default button from the frame after
+/// the dialog appeared, so the ↩ that started the playback doesn't answer it too; the mark lives in
+/// the dialog's own fields and goes with it.
+pub fn stop_message_buttons(ui: &mut egui::Ui, fields: &mut serde_json::Map<String, Value>, interactive: bool) -> Option<bool> {
+    use crate::widgets::{ButtonRole, DialogButton, dialog_buttons};
+    let allow = fields.get("allowContinue").and_then(Value::as_bool).unwrap_or(false);
+    let shown_before = fields.insert(STOP_SEEN.into(), json!(true)).is_some();
+    let clicked = if allow {
+        dialog_buttons(ui, &[DialogButton::new(ButtonRole::Default, tl!("Continue"), 84.0), DialogButton::new(ButtonRole::Cancel, tl!("Stop"), 84.0)])
+    } else {
+        dialog_buttons(ui, &[DialogButton::new(ButtonRole::Default, tl!("Stop"), 84.0)])
+    };
+    match clicked {
+        Some(ButtonRole::Default) => Some(allow),
+        Some(_) => Some(false),
+        None if interactive && shown_before && ui.input(|i| i.key_pressed(egui::Key::Enter)) => Some(allow),
+        None => None,
+    }
+}
+
+/// The private field [`stop_message_buttons`] marks a drawn Stop message with.
+const STOP_SEEN: &str = "__actionStopSeen";
+
+/// Continue (OK, ↩, automation): the action goes on after the Stop when the step allows it, as
+/// recorded; otherwise it ends there like Stop.
+pub fn stop_message_confirm(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) -> Result<Value, String> {
+    let allow = fields.get(RESUME).and_then(Value::as_u64).and_then(|t| app.paused_playbacks.paused.get(&t)).is_some_and(|p| p.allow_continue);
+    if allow {
+        resume(app, fields)?;
+    } else {
+        stopped(app, fields);
+    }
+    Ok(json!({"continued": allow}))
+}
+
 /// The key a paused playback leaves in its dialog's fields: the token of its [`PausedPlayback`].
 pub const RESUME: &str = "__resumeAction";
 
@@ -874,6 +1016,24 @@ pub(crate) struct PausedPlayback {
     /// An implicit filter/adjustment step resolves this active layer at the pause. The outer Option marks
     /// that binding even when there was no active layer; explicit-layer and other dialogs omit it.
     filter_receiver: Option<Option<photocraft_doc::LayerId>>,
+    /// The actions that called this one through Play Action steps, nearest first, each with the
+    /// step it continues from: confirming the dialog finishes `action`, then each of them in turn
+    /// (at most [`MAX_CALLERS`]).
+    callers: Vec<(String, usize)>,
+    /// A Stop step's Allow Continue, kept here rather than in the dialog's fields, which automation
+    /// may rewrite: without it, confirming the message only ends the playback.
+    allow_continue: bool,
+}
+
+/// The longest caller chain a paused playback keeps; [`actions_cmds::playback_plan`] refuses deeper
+/// nesting anyway.
+const MAX_CALLERS: usize = 16;
+
+impl PausedPlayback {
+    /// The action the person (or agent) started: the last caller, else the paused action.
+    fn outermost(&self) -> &str {
+        self.callers.last().map_or(self.action.as_str(), |(name, _)| name.as_str())
+    }
 }
 
 /// The paused playbacks, by the token their dialog carries. The dialog's fields hold only the
@@ -888,8 +1048,22 @@ impl PausedPlaybacks {
     /// Allocate an opaque token retaining the action, resume position and captured authorization gate.
     fn pause(&mut self, action: String, from: usize, gate: Option<Gate>) -> u64 {
         self.last = self.last.wrapping_add(1);
-        self.paused
-            .insert(self.last, PausedPlayback { action, from, gate, record: None, history: None, then: Vec::new(), ran: 0, doc: None, filter_receiver: None });
+        self.paused.insert(
+            self.last,
+            PausedPlayback {
+                action,
+                from,
+                gate,
+                record: None,
+                history: None,
+                then: Vec::new(),
+                ran: 0,
+                doc: None,
+                filter_receiver: None,
+                callers: Vec::new(),
+                allow_continue: false,
+            },
+        );
         self.last
     }
 
@@ -1036,6 +1210,7 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
     let saved = app.session.authorize;
     let service = if app.automation_input { app.services.automation_authorize } else { None };
     let remaining = !paused.then.is_empty()
+        || !paused.callers.is_empty()
         || app
             .session
             .actions
@@ -1056,16 +1231,21 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
             return Err(error);
         }
     };
-    let params = json!({"action": paused.action, "from": paused.from});
+    // The paused action goes on, then each action that called it, inside its callers' frames:
+    // replay starts at the outermost, which replays the inner ones first.
+    let frames: Vec<(String, usize)> = paused.callers.iter().rev().cloned().chain(std::iter::once((paused.action.clone(), paused.from))).collect();
+    let Some(((outer, outer_from), inner)) = frames.split_first() else {
+        return Err("this dialog doesn't belong to a paused action".into());
+    };
+    let params = json!({"action": outer, "from": outer_from});
     app.session.authorize = gate;
-    let mut played = play_owned(app, &params, owner);
-    // Paused again at a later dialog of the same action (not of one it calls, which resumes
-    // alone): that dialog carries the rest of the set.
+    let mut played = play_owned(app, &params, owner, inner);
+    // Paused again at a later dialog of the same call: that dialog carries the rest of the set.
     if let Ok(v) = &played
         && let Some(dialog) = v.get("paused").and_then(waiting_dialog)
         && let Some(token) = paused_token(app, dialog)
         && let Some(entry) = app.paused_playbacks.paused.get_mut(&token)
-        && entry.action == paused.action
+        && entry.outermost() == paused.outermost()
     {
         entry.then = paused.then.clone();
         entry.ran = paused.ran.saturating_add(1).saturating_add(v.get("ran").and_then(Value::as_u64).unwrap_or(0));
@@ -1084,6 +1264,7 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         && !paused.then.is_empty()
         && v.get("failed").is_none()
         && v.get("paused").is_none()
+        && v.get("stopped").is_none()
     {
         let list = &app.session.actions.list;
         let rest: Vec<usize> = paused.then.iter().map_while(|then| list.iter().position(|a| a == then)).collect();
@@ -1802,3 +1983,6 @@ fn draw_step_controls(ui: &mut egui::Ui, rect: Rect, step: usize, label: &str, c
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stop_tests;
