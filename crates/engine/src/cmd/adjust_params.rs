@@ -1,3 +1,5 @@
+use photocraft_doc::BlendMode;
+
 use super::enabled::{check_all_unlocked, is_mask_target, paint_surface};
 use super::layer_params::{layer_param, mask_new_layer};
 use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
@@ -12,13 +14,32 @@ pub(super) fn new_adjustment(s: &mut Session, adj: Adjustment, p: &Value, cmd: &
             .filter(|o| o.is_finite() && (0.0..=1.0).contains(o))
             .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "opacity must be a number in 0..1".into() })? as f32,
     };
+    let bad = |msg: String| EngineError::BadParams { cmd: cmd.into(), msg };
+    // Name, blend mode and clipping read like New Layer's (#8384).
+    let name = match p.get("name") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| bad("`name` must be a string".into()))?.to_string()),
+    };
+    let mode = match p.get("mode") {
+        None | Some(Value::Null) => BlendMode::Normal,
+        Some(v) => {
+            let m = v.as_str().ok_or_else(|| bad("`mode` must be a blend mode name".into()))?;
+            crate::commands::blend_from_str(m).filter(|b| *b != BlendMode::PassThrough).ok_or_else(|| bad(format!("unknown layer blend mode `{m}`")))?
+        }
+    };
+    let clip = match p.get("clipToPrevious") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or_else(|| bad("`clipToPrevious` must be true or false".into()))?,
+    };
     let label = format!("New {} Layer", adj.label());
-    let name = adj.label().to_string();
+    let default_name = adj.label().to_string();
     let id = s.edit(&label, |doc, active| {
-        let mut l = Layer::new(doc.next_layer_name(&name), LayerContent::Adjustment(adj));
+        let mut l = Layer::new(name.clone().unwrap_or_else(|| doc.next_layer_name(&default_name)), LayerContent::Adjustment(adj));
         l.opacity = opacity;
+        l.blend = mode;
         mask_new_layer(doc, &mut l, p, cmd, true)?;
         let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
+        crate::clip_group::settle(doc, &[id], &Default::default(), clip);
         *active = Some(id);
         Ok(id)
     })?;

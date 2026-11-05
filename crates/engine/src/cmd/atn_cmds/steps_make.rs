@@ -241,6 +241,28 @@ pub(super) fn make_from(d: &Descriptor) -> Mapped {
                     // Recorded layer opacity uses 0..255 even in a 16-bit document.
                     params.insert("opacity".into(), ((opacity * 255.0 / 100.0).round() / 255.0).into());
                 }
+                // Name, blend mode and clipping travel on the same command; an unreadable value
+                // keeps the whole step rather than replaying a different layer (#8384).
+                if let Some(u) = using {
+                    let Some((_, Value::Object(params))) = mapped.first_mut() else { return Mapped::Unsupported { harmless: false } };
+                    if u.get("Nm  ").is_some() {
+                        let Some(name) = get_text(u, "Nm  ") else { return Mapped::Unsupported { harmless: false } };
+                        params.insert("name".into(), name.into());
+                    }
+                    if u.get("Md  ").is_some() {
+                        let Some(mode) = get_enum(u, "Md  ").and_then(|m| blend_label(&m)).filter(|m| *m != "Pass Through") else {
+                            return Mapped::Unsupported { harmless: false };
+                        };
+                        params.insert("mode".into(), mode.into());
+                    }
+                    match u.get("Grup") {
+                        None => {}
+                        Some(D::Boolean(clip)) => {
+                            params.insert("clipToPrevious".into(), (*clip).into());
+                        }
+                        Some(_) => return Mapped::Unsupported { harmless: false },
+                    }
+                }
                 if let Some(c) = using.and_then(|u| get_enum(u, "Clr ")) {
                     let Some(color) = lookup(LABEL_COLORS, &c) else { return Mapped::Unsupported { harmless: false } };
                     mapped.push(("layer.setLabelColor".into(), json!({"color": color})));
@@ -451,30 +473,65 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
             n = n.with("Fl  ", enm("Fl  ", fill)).with("Dpth", long(jnum(p, "depth").unwrap_or(8.0)));
             desc("null").with("Nw  ", D::Descriptor(n))
         }
-        _ => {
-            let suffix = id.strip_prefix("layer.newAdjustmentLayer.")?;
-            let a = adjustment_by_suffix(suffix)?;
-            let opacity = match p.get("opacity") {
-                None => None,
-                Some(value) => Some(value.as_f64().filter(|o| o.is_finite() && (0.0..=1.0).contains(o))?),
-            };
-            let mut params = p.clone();
-            if let Some(params) = params.as_object_mut() {
-                params.remove("opacity");
-            }
-            // Layer opacity must not turn default adjustment settings into a custom preset.
-            let t = if params.as_object().is_some_and(|o| o.is_empty()) {
-                desc(a.class).with("presetKind", enm("presetKindType", "presetKindDefault"))
-            } else {
-                (a.to)(&params)?
-            };
-            let mut using = desc("AdjL").with("Type", D::Descriptor(t));
-            if let Some(opacity) = opacity {
-                using = using.with("Opct", pct(recorded_percent(opacity)));
-            }
-            desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(using))
-        }
+        _ => return adjustment_layer_to(id, p),
     })
+}
+
+/// `layer.newAdjustmentLayer.*` as a Make step: the adjustment's settings under `Type`, the new
+/// layer's opacity, name, blend mode and clipping beside it.
+fn adjustment_layer_to(id: &str, p: &Value) -> Option<Descriptor> {
+    let suffix = id.strip_prefix("layer.newAdjustmentLayer.")?;
+    let a = adjustment_by_suffix(suffix)?;
+    let opacity = match p.get("opacity") {
+        None => None,
+        Some(value) => Some(value.as_f64().filter(|o| o.is_finite() && (0.0..=1.0).contains(o))?),
+    };
+    // Layer properties go on the `Usng` layer, not into the adjustment's own settings; a
+    // value the reference application cannot record makes the step unexportable (#8384).
+    let name = match p.get("name") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_str()?),
+    };
+    let mode = match p.get("mode") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let label = v.as_str()?;
+            if crate::commands::blend_from_str(label)? == photocraft_doc::BlendMode::PassThrough {
+                return None;
+            }
+            Some(blend_ps(label)?)
+        }
+    };
+    let clip = match p.get("clipToPrevious") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_bool()?),
+    };
+    let mut params = p.clone();
+    if let Some(params) = params.as_object_mut() {
+        for key in ["opacity", "name", "mode", "clipToPrevious"] {
+            params.remove(key);
+        }
+    }
+    // Layer opacity must not turn default adjustment settings into a custom preset.
+    let t = if params.as_object().is_some_and(|o| o.is_empty()) {
+        desc(a.class).with("presetKind", enm("presetKindType", "presetKindDefault"))
+    } else {
+        (a.to)(&params)?
+    };
+    let mut using = desc("AdjL").with("Type", D::Descriptor(t));
+    if let Some(opacity) = opacity {
+        using = using.with("Opct", pct(recorded_percent(opacity)));
+    }
+    if let Some(name) = name {
+        using = using.with("Nm  ", text(name));
+    }
+    if let Some(mode) = mode {
+        using = using.with("Md  ", enm("BlnM", mode));
+    }
+    if let Some(clip) = clip {
+        using = using.with("Grup", D::Boolean(clip));
+    }
+    Some(desc("null").with("null", class_ref("AdjL")).with("Usng", D::Descriptor(using)))
 }
 
 /// Import selection geometry or a channel source, including its optional source layer.

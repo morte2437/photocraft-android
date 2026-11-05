@@ -3,6 +3,7 @@
 mod actions_single_history;
 mod affinity;
 mod artboard_export_names;
+mod atn_adjustment_make_props;
 mod atn_classic_gradient;
 mod atn_content_aware_fill;
 mod atn_crystallize_cell_size;
