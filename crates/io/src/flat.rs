@@ -1132,13 +1132,13 @@ pub fn export_flat_with_renderer(
                 strip_xmp(&mut img.meta, opts);
                 let mut img = prepare_flat(img, format, &mut warnings)?;
                 if format == Format::Tga {
-                    img = tga_image(doc, img, opts.tga_bits, &mut warnings)?;
+                    img = tga_image(doc, img, opts.tga_bits, opts.preserve_alpha, &mut warnings)?;
                 }
                 if format == Format::Dds {
                     img = dds_image(doc, img, &mut warnings)?;
                 }
                 if format == Format::Tiff {
-                    warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency));
+                    warnings.extend(crate::tiff_layers::flat_transparency_and_channels(doc, &mut img, opts.tiff_transparency, opts.preserve_alpha)?);
                 }
                 // Drain only once encoding succeeded: if it fails, the queued diagnostics stay
                 // with the renderer for the caller to report alongside the error.
