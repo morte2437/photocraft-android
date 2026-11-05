@@ -94,11 +94,14 @@ pub(super) fn to(_: &str, p: &Value) -> Option<Descriptor> {
         "look" => "LUTFormatLOOK",
         _ => return None,
     };
+    let file_name = jstr(p, "fileName")?;
     for (key, value) in &mut d.items {
         if key.is("LUTFormat") {
             *value = enm("LUTFormatType", format);
         } else if key.is("LUT3DFileName") {
-            *value = text(jstr(p, "fileName")?);
+            if !matches!(value, D::Text(recorded) if recorded.to_string_lossy() == file_name) {
+                *value = text(file_name);
+            }
         } else if key.is("Dthr") {
             *value = D::Boolean(p.get("dither")?.as_bool()?);
         }

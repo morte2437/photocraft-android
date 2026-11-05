@@ -194,7 +194,8 @@ pub fn webp_is_animated(bytes: &[u8]) -> bool {
 }
 
 /// Inspect declared source data which a flat decode and save cannot retain: additional frames,
-/// TIFF pages, masks or unretained channels, ICO entries, DDS mip levels or slices, DPX elements and FITS HDU payloads.
+/// TIFF pages, masks or unretained channels, ICO entries, DDS mip levels, slices, faces or arrays,
+/// DPX elements and FITS HDU payloads.
 /// Pixels are not decoded; derived TIFF thumbnails do not require preservation here.
 /// Other formats return false; this does not establish preservation of other format-specific data.
 pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {

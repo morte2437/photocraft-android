@@ -110,6 +110,35 @@ fn fibers_missing_seed_is_stable_across_playback_and_save() {
     assert_eq!(render(imported.actions.clone()), render(saved.actions));
 }
 
+/// Default materialization remains native; unrepresented metadata stays on the preserved path.
+#[test]
+fn fibers_preserves_noncanonical_descriptors_without_rejecting_missing_defaults() {
+    for d in [Descriptor::new("null"), Descriptor::new("null").with("RndS", D::Integer(-1))] {
+        let imported = atn_cmds::import(&encoded(b"Fbrs", d)).unwrap();
+        assert!(imported.unsupported.is_empty());
+        assert_eq!(imported.actions[0].steps[0].0, "filter.render.fibers");
+        let (out, skipped) = atn_cmds::export("Dialog", &[&imported.actions[0]], &[], false).unwrap();
+        assert!(skipped.is_empty());
+        let saved = atn_cmds::import(&out).unwrap();
+        assert_eq!(saved.actions[0].steps, imported.actions[0].steps);
+    }
+    let canonical = Descriptor::new("null").with("Vrnc", D::Integer(16)).with("Strg", D::Integer(4)).with("RndS", D::Integer(7));
+    let mut named = canonical.clone();
+    named.name = UnicodeString(vec![0xd800, 0]);
+    let mut class = canonical.clone();
+    class.class_id = Id::Str(b"null".to_vec());
+    let mut ordered = canonical.clone();
+    ordered.items.swap(0, 1);
+    let mut key = canonical;
+    key.items[0].0 = Id::Str(b"Vrnc".to_vec());
+    for d in [named, class, ordered, key] {
+        let imported = atn_cmds::import(&encoded(b"Fbrs", d.clone())).unwrap();
+        assert_eq!(imported.actions[0].steps[0].0, atn_cmds::PHOTOSHOP_STEP);
+        let (out, _) = atn_cmds::export("Dialog", &[&imported.actions[0]], &[], false).unwrap();
+        assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(d));
+    }
+}
+
 /// Malformed and unsupported forms remain complete steps instead of being partially interpreted.
 #[test]
 fn dialog_filters_keep_unrepresented_types_ranges_and_fields_whole() {

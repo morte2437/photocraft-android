@@ -93,6 +93,35 @@ fn embedded_lookup_bytes_replay_invert_and_save_the_exact_descriptor() {
     }
 }
 
+/// Unchanged text keeps its UTF-16 representation; editing it still writes the requested name.
+#[test]
+fn lookup_filename_and_outer_metadata_survive_unrelated_edits() {
+    for name in [UnicodeString::new("embedded.bin"), UnicodeString(vec![65, 0, 0]), UnicodeString(vec![0xd800, 0])] {
+        let mut d = descriptor("LUTFormatCUBE", CUBE);
+        d.name = UnicodeString(vec![0xd800, 0]);
+        d.class_id = Id::Str(b"null".to_vec());
+        d.items.iter_mut().find(|(key, _)| key.is("LUT3DFileName")).unwrap().1 = D::Text(name);
+        let imported = atn_cmds::import(&encoded(d.clone())).unwrap();
+        assert!(imported.unsupported.is_empty());
+        let mut action = imported.actions[0].clone();
+        assert_eq!(action.steps[0].0, "image.adjustments.colorLookup");
+        for edited in [false, true] {
+            action.steps[0].1["dither"] = json!(edited);
+            let (out, skipped) = atn_cmds::export("Lookup", &[&action], &[], false).unwrap();
+            assert!(skipped.is_empty());
+            let mut expected = d.clone();
+            expected.items.iter_mut().find(|(key, _)| key.is("Dthr")).unwrap().1 = D::Boolean(edited);
+            assert_eq!(atn::parse(&out).unwrap().actions[0].items[0].descriptor, Some(expected));
+        }
+        action.steps[0].1["fileName"] = json!("renamed.cube");
+        let (out, _) = atn_cmds::export("Lookup", &[&action], &[], false).unwrap();
+        let result = atn::parse(&out).unwrap().actions[0].items[0].descriptor.clone().unwrap();
+        assert_eq!(result.name, d.name);
+        assert_eq!(result.class_id, d.class_id);
+        assert_eq!(result.get("LUT3DFileName"), Some(&D::Text(UnicodeString::new_nul("renamed.cube"))));
+    }
+}
+
 /// Saving an adjustment must preserve the original payload rather than a decoded substitute.
 #[test]
 fn encoded_lookup_keeps_its_bytes_in_a_saved_adjustment() {

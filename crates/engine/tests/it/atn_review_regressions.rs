@@ -129,10 +129,14 @@ fn custom_non_object_params_refuse_export() {
 #[test]
 fn custom_supported_representations_map_and_save_losslessly() {
     let kernel = D::List((0..25).map(|i| D::Integer(i32::from(i == 12))).collect());
+    let mut metadata = Descriptor::new("null").with("Mtrx", kernel.clone()).with("Scl ", D::Integer(2));
+    metadata.name = UnicodeString(vec![0xd800, 0]);
+    metadata.class_id = Id::Str(b"null".to_vec());
     for d in [
         Descriptor::new("null").with("Scl", D::Integer(3)).with("Mtrx", kernel.clone()),
         Descriptor::new("null").with("Mtrx", kernel.clone()).with("Scl ", D::Double(2.0)),
         Descriptor::new("Cstm").with("Ofst", D::Double(0.0)).with("Mtrx", kernel).with("Scl ", D::Integer(1)),
+        metadata,
     ] {
         let imported = atn_cmds::import(&encoded(*b"Cstm", d.clone(), true)).unwrap();
         assert!(imported.unsupported.is_empty());
@@ -805,6 +809,9 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
     let mut second = dds[128..].to_vec();
     second[0] ^= 0xff;
     slices.extend(second);
+    let mut faces = slices.clone();
+    faces[24..28].copy_from_slice(&0u32.to_le_bytes());
+    faces[112..116].copy_from_slice(&0xc00u32.to_le_bytes());
     let rgb = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, [32, 64, 128].repeat(4)).unwrap();
     let mut options = photocraft_codecs::EncodeOptions::default();
     options.dds.mipmaps = true;
@@ -845,6 +852,7 @@ fn batch_save_close_preserves_additional_images_and_allows_single_images() {
         ("gif", animated),
         ("dpx", elements),
         ("dds", slices),
+        ("dds", faces),
         ("dds", mipmaps),
         ("fits", hdus),
         ("fits", cubes),

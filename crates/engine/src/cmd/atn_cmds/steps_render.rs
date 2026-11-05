@@ -63,8 +63,11 @@ pub(super) fn fibers_from(d: &Descriptor) -> Mapped {
         }
         let seed = if d.get("RndS").is_none() { new_seed() } else { integer(d, "RndS", 0)? };
         let p = json!({"variance": integer(d, "Vrnc", 16)?, "strength": integer(d, "Strg", 4)?, "seed": seed});
-        fibers_to("filter.render.fibers", &p)?;
-        Some(p)
+        let mut represented = fibers_to("filter.render.fibers", &p)?;
+        // Missing fields legitimately acquire defaults (and one stable seed). Present
+        // fields and outer metadata must still have an exact native representation.
+        represented.items.retain(|(key, _)| d.items.iter().any(|(recorded, _)| recorded == key));
+        (represented == *d).then_some(p)
     };
     mapped().map_or(Mapped::Unsupported { harmless: false }, |p| step("filter.render.fibers", p))
 }
