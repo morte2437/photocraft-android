@@ -97,6 +97,9 @@ pub use flat::{
     export_png_streamed_with_renderer, export_preview_png_with_renderer, file_encoding, import_gif_frames, import_tiff_page, import_tiff_page_with_options,
     import_webp_frames, tga_alpha_channel_to_transparency, tga_default_bits,
 };
+// Re-exported for the `flat_open_bench` example, which times the tile-building phase of a flat open.
+#[doc(hidden)]
+pub use flat::image_to_document;
 pub use psd_export::{PsdExportOptions, document_to_psd, document_to_psd_with};
 pub use psd_import::{psd_to_document, psd_to_document_with};
 

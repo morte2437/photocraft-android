@@ -574,7 +574,7 @@ fn document_format(layout: ChannelLayout, sample: CSample) -> DocumentFormat {
 
 /// A decoded flat image as a single-layer document: a locked "Background" when it is opaque, a
 /// normal "Layer 0" when it has transparency.
-pub(crate) fn image_to_document(name: &str, img: &Image) -> Result<ImportResult, IoError> {
+pub fn image_to_document(name: &str, img: &Image) -> Result<ImportResult, IoError> {
     image_to_document_with(name, img, &Interrupt::NONE)
 }
 
