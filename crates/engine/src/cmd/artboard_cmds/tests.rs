@@ -840,3 +840,157 @@ fn from_layers_defaults_are_the_selected_layers_size() {
     assert_eq!(from_layers_defaults(&s), Some(("Artboard 1".to_string(), [100, 80])), "an empty layer: the canvas");
     assert_eq!(from_layers_defaults(&Session::new()), None);
 }
+
+/// Board "A" at (10, 10, 50, 50) holding a red square at (10..30)², and an empty board "B" at
+/// (200, 20, 240, 60).
+fn nest_boards(s: &mut Session) -> (LayerId, LayerId, LayerId) {
+    let red = add_square(s, Rect::new(10, 10, 30, 30), [1.0, 0.0, 0.0, 1.0]);
+    let a = LayerId(s.execute("layer.new.artboardFromLayers", json!({"name": "A"})).unwrap()["layer"].as_u64().unwrap());
+    s.execute("layer.artboard.set", json!({"width": 40, "height": 40})).unwrap();
+    let b = LayerId(s.execute("layer.new.artboard", json!({"rect": [200, 20, 40, 40], "name": "B"})).unwrap()["layer"].as_u64().unwrap());
+    assert_eq!(doc(s).artboard_of(red), Some(a));
+    (red, a, b)
+}
+
+/// The ids of a board's children, bottom to top.
+fn children(s: &Session, board: LayerId) -> Vec<LayerId> {
+    doc(s).layer(board).unwrap().children().unwrap().iter().map(|l| l.id).collect()
+}
+
+/// Auto-nesting (Photoshop's Move tool): a layer dragged onto another artboard joins it, on top of
+/// its stack, instead of staying in its old board and being clipped away; dragged onto the
+/// pasteboard, it leaves for the top level, above the board it left. One step for Undo.
+#[test]
+fn a_layer_moved_onto_another_artboard_joins_it() {
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        let (red, a, b) = nest_boards(&mut s);
+        let steps = s.active().unwrap().history.past_len();
+        let r = s.execute("layer.translate", json!({"layer": red.0, "dx": 190, "dy": 10, "nest": true})).unwrap();
+        assert_eq!(r, json!({"nested": [red.0]}), "{depth}");
+        assert_eq!(doc(&s).artboard_of(red), Some(b), "{depth}");
+        assert_eq!(children(&s, b).last(), Some(&red), "{depth}: on top of the board's stack");
+        assert!(red_at(&s, 205, 25), "{depth}: shows on board B");
+        assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "{depth}: one step");
+
+        // Off every board: to the top level, directly above the board it left.
+        s.execute("layer.translate", json!({"layer": red.0, "dx": -100, "dy": 0, "nest": true})).unwrap();
+        assert_eq!(doc(&s).artboard_of(red), None, "{depth}");
+        let top: Vec<LayerId> = doc(&s).layers.iter().map(|l| l.id).collect();
+        let at = top.iter().position(|id| *id == red).unwrap();
+        assert_eq!(top.get(at - 1), Some(&b), "{depth}: above the board it left");
+        assert!(red_at(&s, 105, 25), "{depth}: shows over the pasteboard");
+
+        // Undo takes the move and the change of board back together.
+        s.undo();
+        assert_eq!(doc(&s).artboard_of(red), Some(b), "{depth}");
+        s.undo();
+        assert_eq!(doc(&s).artboard_of(red), Some(a), "{depth}");
+        assert!(red_at(&s, 15, 15), "{depth}");
+    }
+}
+
+/// Only the Move tool nests (it passes `nest`): a nudge or a script's `layer.translate` moves the
+/// layer and leaves it where it is in the stack, as before.
+#[test]
+fn translate_without_nest_leaves_the_layer_in_its_board() {
+    let mut s = session(8);
+    let (red, a, _b) = nest_boards(&mut s);
+    let r = s.execute("layer.translate", json!({"layer": red.0, "dx": 190, "dy": 10})).unwrap();
+    assert_eq!(r, Value::Null);
+    assert_eq!(doc(&s).artboard_of(red), Some(a));
+    assert!(s.execute("layer.translate", json!({"layer": red.0, "dx": 1, "nest": "yes"})).is_err(), "nest must be a boolean");
+}
+
+/// A layer that stays on its board, or moves between spots off every board, doesn't change parent;
+/// a loose layer dragged onto a board joins it.
+#[test]
+fn nesting_changes_parent_only_when_the_board_changes() {
+    let mut s = session(8);
+    let (red, a, b) = nest_boards(&mut s);
+    let r = s.execute("layer.translate", json!({"layer": red.0, "dx": 5, "dy": 5, "nest": true})).unwrap();
+    assert_eq!(r, Value::Null, "still on board A");
+    assert_eq!(doc(&s).artboard_of(red), Some(a));
+    // Out to the pasteboard, then along it: no board either side.
+    s.execute("layer.translate", json!({"layer": red.0, "dx": 80, "dy": 0, "nest": true})).unwrap();
+    assert_eq!(doc(&s).artboard_of(red), None);
+    assert_eq!(s.execute("layer.translate", json!({"layer": red.0, "dx": 10, "dy": 0, "nest": true})).unwrap(), Value::Null);
+    // And onto board B from outside any board.
+    s.execute("layer.translate", json!({"layer": red.0, "dx": 95, "dy": 10, "nest": true})).unwrap();
+    assert_eq!(doc(&s).artboard_of(red), Some(b));
+    // Moving a board itself never nests it.
+    assert_eq!(s.execute("layer.translate", json!({"layer": a.0, "dx": 190, "dy": 60, "nest": true})).unwrap(), Value::Null);
+    assert!(doc(&s).layers.iter().any(|l| l.id == a), "board A stays at the top level");
+}
+
+/// Lock › Prevent Auto-Nesting, on the layer or on the board it would join, keeps it where it is.
+#[test]
+fn prevent_auto_nesting_keeps_the_layer_in_its_board() {
+    let mut s = session(8);
+    let (red, a, b) = nest_boards(&mut s);
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("layer.lockLayers", json!({"artboard": true})).unwrap();
+    s.execute("layer.translate", json!({"layer": red.0, "dx": 190, "dy": 10, "nest": true})).unwrap();
+    assert_eq!(doc(&s).artboard_of(red), Some(a), "locked layer");
+    s.execute("layer.lockLayers", json!({"artboard": false})).unwrap();
+    s.execute("layer.select", json!({"layer": b.0})).unwrap();
+    s.execute("layer.lockLayers", json!({"artboard": true})).unwrap();
+    s.execute("layer.translate", json!({"layer": red.0, "dx": 0, "dy": 1, "nest": true})).unwrap();
+    assert_eq!(doc(&s).artboard_of(red), Some(a), "locked board takes nothing in");
+}
+
+/// Several layers dragged onto a board together keep their order there.
+#[test]
+fn layers_moved_together_keep_their_order_on_the_new_board() {
+    let mut s = session(8);
+    let (red, a, b) = nest_boards(&mut s);
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    let blue = add_square(&mut s, Rect::new(12, 12, 28, 28), [0.0, 0.0, 1.0, 1.0]);
+    s.execute("layer.moveTo", json!({"layer": blue.0, "target": a.0, "position": "into"})).unwrap();
+    assert_eq!(children(&s, a), vec![red, blue]);
+    s.execute("layer.select", json!({"layer": red.0})).unwrap();
+    s.execute("layer.select", json!({"layer": blue.0, "mode": "add"})).unwrap();
+    let r = s.execute("layer.translate", json!({"dx": 190, "dy": 10, "nest": true})).unwrap();
+    assert_eq!(r["nested"].as_array().unwrap().len(), 2);
+    assert_eq!(children(&s, b), vec![red, blue], "same order, blue still above red");
+    assert!(children(&s, a).is_empty());
+}
+
+/// Where `id`'s pixels are. Its own name: main's tests (#10489) already have a `content`.
+fn pixel_bounds(s: &Session, id: LayerId) -> Rect {
+    doc(s).layer(id).unwrap().surface().unwrap().content_bounds()
+}
+
+/// The board a dragged layer joins is the one under the true middle of its bounds (#10512
+/// review): boards L (20..30) and R (30..40) meet at x = 30, and a layer dropped at 29..31 is
+/// centred at 30, on R. Halving each edge first put it at 29, on L, where it was clipped.
+#[test]
+fn a_layer_straddling_two_boards_joins_the_one_under_its_middle() {
+    let mut s = session(8);
+    let l = LayerId(s.execute("layer.new.artboard", json!({"rect": [20, 0, 10, 20], "name": "L"})).unwrap()["layer"].as_u64().unwrap());
+    let r = LayerId(s.execute("layer.new.artboard", json!({"rect": [30, 0, 10, 20], "name": "R"})).unwrap()["layer"].as_u64().unwrap());
+    // A loose 2-pixel-wide layer at 49..51, off both boards.
+    let id = add_square(&mut s, Rect::new(49, 5, 51, 10), [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(doc(&s).artboard_of(id), None);
+    s.execute("layer.translate", json!({"layer": id.0, "dx": -20, "dy": 0, "nest": true})).unwrap();
+    assert_eq!(pixel_bounds(&s, id), Rect::new(29, 5, 31, 10));
+    assert_eq!(doc(&s).artboard_of(id), Some(r), "its middle, x = 30, is on R");
+    assert_ne!(doc(&s).artboard_of(id), Some(l));
+}
+
+/// Negative coordinates round down too (#10512 review): a layer dropped at -4..3 is centred at
+/// -0.5, left of a board starting at x = 0, so it stays off the board. Truncating toward zero put
+/// its middle at 0, inside the board.
+#[test]
+fn a_layer_centred_just_left_of_a_board_at_negative_coordinates_stays_off_it() {
+    let mut s = session(8);
+    let b = LayerId(s.execute("layer.new.artboard", json!({"rect": [0, 0, 20, 20], "name": "B"})).unwrap()["layer"].as_u64().unwrap());
+    let id = add_square(&mut s, Rect::new(-24, 5, -17, 10), [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(doc(&s).artboard_of(id), None);
+    s.execute("layer.translate", json!({"layer": id.0, "dx": 20, "dy": 0, "nest": true})).unwrap();
+    assert_eq!(pixel_bounds(&s, id), Rect::new(-4, 5, 3, 10));
+    assert_eq!(doc(&s).artboard_of(id), None, "centred at -0.5, left of B");
+    // One pixel further right (-3..4, middle 0.5) is on the board.
+    s.execute("layer.translate", json!({"layer": id.0, "dx": 1, "dy": 0, "nest": true})).unwrap();
+    assert_eq!(doc(&s).artboard_of(id), Some(b));
+}

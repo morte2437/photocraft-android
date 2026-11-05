@@ -106,7 +106,7 @@ fn takes_new_layers(target: &Layer, depth: usize, layer: &Layer) -> bool {
 
 /// Group nesting inside `layer` itself: 0 for a layer or an empty group, as
 /// [`Document::max_group_depth`] counts it. Explicit stack: pasted groups can be deep.
-fn subtree_depth(layer: &Layer) -> usize {
+pub(crate) fn subtree_depth(layer: &Layer) -> usize {
     let mut max = 0;
     let mut stack: Vec<(&Layer, usize)> = vec![(layer, 0)];
     while let Some((l, depth)) = stack.pop() {

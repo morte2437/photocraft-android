@@ -372,10 +372,13 @@ pub(crate) fn finish(app: &mut PhotocraftApp, dx: f64, dy: f64) {
     if dx == 0.0 && dy == 0.0 {
         return;
     }
-    if app.run("layer.translate", json!({"dx": dx, "dy": dy, "selection": carries_selection(app)})).is_err() {
+    // `nest`: a layer dropped on another artboard joins it (Photoshop's auto-nesting).
+    let Ok(result) = app.run("layer.translate", json!({"dx": dx, "dy": dy, "selection": carries_selection(app), "nest": true})) else {
         return;
-    }
-    let Some(p) = shown else { return };
+    };
+    // A layer that changed board is clipped by its new board, not the old one the preview showed,
+    // so the canvas recomposites instead of keeping the preview.
+    let Some(p) = shown.filter(|_| result.get("nested").is_none()) else { return };
     crate::canvas::shown_as_document(app, p.doc, is_preview_key);
 }
 
