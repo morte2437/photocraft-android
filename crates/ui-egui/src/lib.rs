@@ -596,6 +596,8 @@ pub struct PhotocraftApp {
     /// The filter a "Rasterize?" prompt answered for, run after the dialog closes, where the
     /// egui context is available again (rasterize_prompt).
     pub(crate) pending_after_prompt: Option<(String, serde_json::Value)>,
+    /// A command clicked while Free Transform commits in the background, run when it lands.
+    pub(crate) after_transform_commit: Option<(String, serde_json::Value)>,
     /// Last mirrored or imported OS image; this can predate the current internal copy.
     os_clip_sig: Option<u64>,
     /// Last observed SVG bytes, to distinguish an unchanged OS source from a newer internal copy.

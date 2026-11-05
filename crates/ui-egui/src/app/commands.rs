@@ -63,7 +63,12 @@ impl PhotocraftApp {
             self.session.precheck(id, &params).map_err(|e| e.to_string())?;
             transform_tool::commit(self);
             if transform_tool::committing(self).is_some() {
-                return Err(tl!("Free Transform is still being applied; try again when it has finished.").into());
+                if self.automation_input {
+                    return Err(tl!("Free Transform is still being applied; try again when it has finished.").into());
+                }
+                // A click stays a click: it runs when the commit lands (#9974).
+                self.after_transform_commit = Some((id.to_string(), params));
+                return Ok(Value::Null);
             }
             if self.ui.transform.is_some() {
                 return Err(if self.ui.status.is_empty() { tl!("The transform couldn't be applied.").into() } else { self.ui.status.clone() });

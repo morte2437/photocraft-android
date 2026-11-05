@@ -122,6 +122,7 @@ pub fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
     if committing(app) != Some(e.id) {
         return;
     }
+    let after = app.after_transform_commit.take();
     let (Some(t), Some(mut pv)) = (app.ui.transform.take(), app.transform_preview.take()) else { return };
     // A refused commit (a result over the pixel budget, #3773) keeps the box open, as inline,
     // unless picking another tool or layer started it: then the box ends, as Esc would.
@@ -133,7 +134,16 @@ pub fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
         }
         return;
     }
-    finish(app, Some(pv.doc.id), LayerId(t.layer), t.made, matches!(e.outcome, JobOutcome::Done(_)));
+    let document = pv.doc.id;
+    let landed = matches!(e.outcome, JobOutcome::Done(_));
+    finish(app, Some(document), LayerId(t.layer), t.made, landed);
+    // Not in another tab, which the click wasn't meant for.
+    if let Some((id, params)) = after.filter(|_| landed && app.session.active().is_some_and(|st| st.doc.id == document))
+        && let Err(e) = app.run(&id, params)
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
 }
 
 /// A commit the engine refused (a result over the pixel budget, #3773): the box stays open as it

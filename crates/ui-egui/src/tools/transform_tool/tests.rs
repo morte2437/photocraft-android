@@ -617,20 +617,23 @@ fn another_tool_or_layer_applies_a_transform_committed_in_the_background() {
 }
 
 /// #5667: New Layer while a dropped file is in Free Transform applies the transform first. When
-/// the commit runs in the background the command is refused until it has landed, then runs: the
-/// place (which takes the move into its step) and the new layer each stay their own step, in
-/// that order.
+/// the commit runs in the background a click waits for it to land, then runs (#9974): the place
+/// (which takes the move into its step) and the new layer each stay their own step, in that
+/// order. A script is refused instead, as it needs an answer now.
 #[test]
 fn new_layer_applies_the_open_transform() {
+    let (mut script, ..) = moved_place();
+    script.automation_input = true;
+    let err = script.run("layer.new.layer", json!({})).unwrap_err();
+    assert!(err.contains("Free Transform is still being applied"), "a script is refused while the commit runs: {err}");
+
     let (mut app, placed, frame, steps) = moved_place();
     let layers = app.session.active().unwrap().doc.layers.len();
-    let err = app.run("layer.new.layer", json!({})).unwrap_err();
-    assert!(err.contains("Free Transform is still being applied"), "refused while the commit runs: {err}");
+    app.run("layer.new.layer", json!({})).unwrap();
     assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "no layer yet");
     land_jobs(&mut app);
     assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "the box ended");
     assert_eq!(frame_of(&app, placed), Some(frame.translate(8, 0)), "applied as it showed, not the original");
-    app.run("layer.new.layer", json!({})).unwrap();
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.layers.len(), layers + 1);
     assert_eq!(st.history.past_len(), steps + 2, "the place with its move, then New Layer");
