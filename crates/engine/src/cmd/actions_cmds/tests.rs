@@ -1401,6 +1401,33 @@ fn record_keeps_an_empty_loaded_sets_exact_name() {
     assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }
 
+/// A droplet capturing two actions of one name (sets A and B) keeps each call on the action it
+/// reached: an index or set-qualified call to B's action still reaches B's copy, a name-only call
+/// still reaches A's, and a call to a uniquely named action stays a name.
+#[test]
+fn captured_calls_keep_their_target_among_same_named_actions() {
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.180")] {
+        let mut a = Action::new("Retouch", vec![(step.into(), json!({}))]);
+        a.set = Some(set.into());
+        list.push(a);
+    }
+    list.push(Action::new("Other", vec![("image.imageRotation.90cw".into(), json!({}))]));
+    let mut steps: Vec<(String, Value)> = vec![
+        ("actions.play".into(), json!({"action": 1})),
+        ("actions.play".into(), json!({"action": "Retouch"})),
+        ("file.automate.batch".into(), json!({"action": "Retouch", "set": "B", "input": [], "output": "/out"})),
+        ("actions.play".into(), json!({"action": 2})),
+    ];
+    let called = crate::actions_cmds::called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 3, "{called:?}");
+    let set_of = |i: usize| called[i].set.clone();
+    assert_eq!(set_of(resolve(&called, &steps[0].1, "t").unwrap()), Some("B".into()), "{}", steps[0].1);
+    assert_eq!(set_of(resolve(&called, &steps[1].1, "t").unwrap()), Some("A".into()), "{}", steps[1].1);
+    assert_eq!(set_of(crate::file_cmds::batch_action(&called, &steps[2].1).unwrap()), Some("B".into()), "{}", steps[2].1);
+    assert_eq!(steps[3].1["action"], "Other", "a unique name stays a name");
+}
+
 /// Two actions of one name in different sets (a loaded library): renaming the second by index
 /// leaves the unqualified calls, which reach the first, and a Batch with explicit steps alone;
 /// only the Batch qualified with the second's set follows. Renaming the first moves them all.

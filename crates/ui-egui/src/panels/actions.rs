@@ -74,6 +74,22 @@ pub fn selected_action(app: &PhotocraftApp) -> Option<&Action> {
     idx.and_then(|i| list.get(i)).or_else(|| selected_set_actions(app).first().and_then(|i| list.get(*i))).or_else(|| list.first())
 }
 
+/// The Set and Action dropdowns of the Batch and Create Droplet dialogs, as in the reference
+/// application: each action name once and each set once, in list order. A loaded library can hold
+/// one name in two sets, so the dialog sends the set too and the command picks that set's action.
+pub fn action_form_choices(app: &PhotocraftApp) -> (Vec<String>, Vec<String>) {
+    let (mut names, mut sets) = (Vec::new(), Vec::new());
+    for action in &app.session.actions.list {
+        if !names.contains(&action.name) {
+            names.push(action.name.clone());
+        }
+        if let Some(set) = action.set.as_ref().filter(|set| !sets.contains(*set)) {
+            sets.push(set.clone());
+        }
+    }
+    (names, sets)
+}
+
 /// The selected set folder, if no action is selected and the set still exists.
 fn selected_set(app: &PhotocraftApp) -> Option<&str> {
     if app.ui.actions.selected.is_some_and(|i| i < app.session.actions.list.len()) {

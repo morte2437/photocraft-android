@@ -908,10 +908,14 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     .or_else(|| scratch.active().and_then(|state| state.path.clone()))
                     .unwrap_or_default();
                 let encode_format = if format == "same" { same_format(&source_path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+                // Save and Close writes over the source, so its bytes must be the source's own
+                // format: a source PhotoCraft reads but saves as PSD (Cineon, whose extension has
+                // a writer elsewhere) would otherwise get PSD bytes under its own name.
                 if save_and_close
                     && !extension(out).is_some_and(|ext| {
-                        matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora")
-                            || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
+                        ext == encode_format
+                            && (matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora")
+                                || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write))
                     })
                 {
                     return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")).into());

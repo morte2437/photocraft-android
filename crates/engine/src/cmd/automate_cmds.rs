@@ -336,9 +336,21 @@ pub fn document_saved(s: &mut Session, doc: photocraft_doc::DocId) -> Option<Val
 
 // ---------- Create Droplet ----------
 
-/// Resolve the enabled steps of the saved action chosen for Batch or a droplet.
+/// Resolve the enabled steps of the saved action chosen for a droplet: by name within `set` when
+/// one is given (a loaded library can hold one name in two sets), else by name or index.
 pub(crate) fn named_action_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(String, Value)>> {
-    let index = crate::actions_cmds::resolve(&s.actions.list, p, cmd)?;
+    let index = match p.get("set").filter(|v| !v.is_null()) {
+        Some(set) => {
+            let set = set.as_str().ok_or_else(|| bad(cmd, "\"set\" must be a string"))?;
+            let name = p.get("action").and_then(Value::as_str).ok_or_else(|| bad(cmd, "a set needs a named action"))?;
+            s.actions
+                .list
+                .iter()
+                .position(|a| a.name == name && a.set.as_deref() == Some(set))
+                .ok_or_else(|| bad(cmd, format!("no action named `{name}` in set `{set}`")))?
+        }
+        None => crate::actions_cmds::resolve(&s.actions.list, p, cmd)?,
+    };
     let action = s.actions.list.get(index).ok_or_else(|| bad(cmd, "the selected action no longer exists"))?;
     Ok(action.enabled_steps().map(|(_, step)| step.clone()).collect())
 }
@@ -617,7 +629,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.automate.createDroplet",
             "Create Droplet…",
             &["File", "Automate"],
-            r##"{"path":str (.pcdroplet),"steps":[[id,params]…]?,"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
+            r##"{"path":str (.pcdroplet),"steps":[[id,params]…]?,"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"set":str? (with a named action: that set's action of the name),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
             native,
             create_droplet
         ),

@@ -238,6 +238,34 @@ fn droplet_folder_follows_the_document_or_uses_a_safe_fallback() {
     assert_eq!(droplet_default_dir(&app), "/tmp/photocraft");
 }
 
+/// Two actions of one name in sets A and B: Create Droplet starts on the selected action's set
+/// and saves that set's steps, not the first action of the name.
+#[test]
+fn create_droplet_saves_the_selected_sets_action_among_same_named_ones() {
+    let (mut app, ctx) = app();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("b.pcdroplet").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.90cw")] {
+        let mut action = photocraft_engine::actions_cmds::Action::new("Retouch", vec![(step.into(), json!({}))]);
+        action.set = Some(set.into());
+        list.push(action);
+    }
+    app.session.actions.list = list;
+    app.ui.actions.selected = Some(1);
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.createDroplet", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["set"], json!(["A", "B"]));
+    assert_eq!(fields["set"], "B");
+    fields.insert("path".into(), json!(path));
+    fields.insert("output".into(), json!(dir.path().join("out").to_string_lossy()));
+    fields.insert("shim".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["action"]["steps"], json!([["image.imageRotation.90cw", {}]]));
+}
+
 /// The droplet contains the form's chosen action; cancelling writes nothing.
 #[test]
 fn create_droplet_uses_the_action_selected_in_the_form() {

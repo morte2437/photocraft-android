@@ -3672,6 +3672,28 @@ fn folder_listing_takes_every_format_photocraft_opens() {
     assert!(!super::openable_name("a.avif"));
 }
 
+/// Save and Close never writes a source in a format other than its own: a Cineon source, which
+/// Batch saves as PSD, is refused and left as it was, while a PNG next to it is saved in place.
+#[test]
+fn batch_save_and_close_refuses_a_source_it_would_save_in_another_format() {
+    let dir = tmp("batch-save-close-cin");
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8, "background": "#ff0000"})).unwrap();
+    let cin = join(&dir, "a.cin");
+    save_doc(doc(&s), &cin, None).unwrap();
+    let png_path = png(&dir, "b.png", 8, 8, "#ff0000");
+    let (cin_before, png_before) = (std::fs::read(&cin).unwrap(), std::fs::read(&png_path).unwrap());
+    let r = Session::new()
+        .execute("file.automate.batch", json!({"input": dir, "destination": "saveAndClose", "steps": [["image.adjustments.invert", {}]]}))
+        .unwrap();
+    let errors = r["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{r}");
+    assert!(errors[0]["file"].as_str().unwrap().ends_with("a.cin"), "{r}");
+    assert!(errors[0]["error"].as_str().unwrap().contains("needs Save As"), "{r}");
+    assert_eq!(std::fs::read(&cin).unwrap(), cin_before, "the Cineon source keeps its bytes");
+    assert_ne!(std::fs::read(&png_path).unwrap(), png_before, "the PNG is saved in place");
+}
+
 /// A batch over a folder processes PAM, PFM and DDS files instead of skipping them.
 #[test]
 fn batch_folder_processes_netpbm_and_dds_files() {

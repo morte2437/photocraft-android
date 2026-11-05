@@ -330,12 +330,10 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
         visit_calls(steps, &mut |id, params, own_actions| match id {
             "actions.play" | "file.automate.batch" => {
                 let Ok(i) = target(list, params, id) else { return };
+                // The reference is rewritten by `remap` once the exported list is known.
                 if own_actions {
                     scoped.insert(i);
                 } else {
-                    if let (Some(action), Some(obj)) = (list.get(i), params.as_object_mut()) {
-                        obj.insert("action".into(), json!(action.name));
-                    }
                     queue.push_back((i, depth));
                 }
             }
@@ -368,7 +366,10 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
         }
         found.insert(i, action);
     }
+    // Where each captured source action lands in the exported list (source order).
+    let exported: std::collections::BTreeMap<usize, usize> = found.keys().enumerate().map(|(at, &i)| (i, at)).collect();
     let mut found: Vec<_> = found.into_values().collect();
+    let names: Vec<String> = found.iter().map(|a| a.name.clone()).collect();
     let mut originals = Vec::new();
     let mut slots = std::collections::BTreeMap::new();
     for i in scoped {
@@ -392,6 +393,22 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
             // The pinned source slot identifies its set; a numeric Batch choice cannot carry a named set.
             if let Some(object) = params.as_object_mut() {
                 object.remove("set");
+            }
+            return;
+        }
+        // An ordinary call becomes the captured action's name, which reads well and resolves to
+        // it while the name is unique in the exported list. Two captured actions of one name (in
+        // different sets) would both resolve to the first, so such a call keeps its exported index.
+        if !scoped && let Ok(i) = target(list, params, id) {
+            let Some(name) = list.get(i).map(|a| a.name.clone()) else { return };
+            match exported.get(&i) {
+                Some(&at) if names.iter().filter(|n| **n == name).count() > 1 => {
+                    params["action"] = json!(at);
+                    if let Some(object) = params.as_object_mut() {
+                        object.remove("set");
+                    }
+                }
+                _ => params["action"] = json!(name),
             }
             return;
         }

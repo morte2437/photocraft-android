@@ -332,6 +332,37 @@ fn batch_menu_requires_a_recorded_action() {
     assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["action"], "Invert");
 }
 
+/// Two actions of one name in sets A and B (a loaded library): the Batch form lists the name once
+/// and both sets, starts on the selected action's set, and runs that set's action.
+#[test]
+fn batch_menu_runs_the_selected_sets_action_among_same_named_ones() {
+    let (mut app, ctx) = app_with(0);
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.90cw")] {
+        let mut action = photocraft_engine::actions_cmds::Action::new("Retouch", vec![(step.into(), json!({}))]);
+        action.set = Some(set.into());
+        list.push(action);
+    }
+    app.session.actions.list = list;
+    app.ui.actions.selected = Some(1);
+    let id = menu(&mut app, &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["action"], json!(["Retouch"]));
+    assert_eq!(fields["__choices"]["set"], json!(["A", "B"]));
+    assert_eq!((&fields["action"], &fields["set"]), (&json!("Retouch"), &json!("B")));
+    fields.insert("input".into(), json!([input.clone()]));
+    fields.insert("output".into(), json!(output));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved = std::fs::read_dir(&output).unwrap().next().unwrap().unwrap().path();
+    let image = photocraft_io::import("out.png", &std::fs::read(saved).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2), "set B's action (a rotation) ran");
+}
+
 /// Choosing a different action changes the output; cancelled or deleted choices write nothing.
 #[test]
 fn batch_menu_runs_the_action_chosen_in_the_form() {
