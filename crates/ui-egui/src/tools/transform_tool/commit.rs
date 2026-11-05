@@ -141,8 +141,8 @@ pub fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
     if let Some((id, params)) = after.filter(|_| landed && app.session.active().is_some_and(|st| st.doc.id == document))
         && let Err(e) = app.run(&id, params)
     {
-        app.ui.status = e;
-        app.ui.status_error = true;
+        // A notice, as the commit's own status replaces the status bar's text next (jobs_ui).
+        crate::notices::error(app, e);
     }
 }
 

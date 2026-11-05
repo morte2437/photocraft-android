@@ -643,6 +643,26 @@ fn new_layer_applies_the_open_transform() {
     assert_eq!(frame_of(&app, placed), Some(frame.translate(8, 0)), "the transform stays");
 }
 
+/// #9974: only a click waits for the commit. A control request (authorized, not automation
+/// input) needs its answer now, and a second click while one waits is refused, not queued.
+#[test]
+fn only_one_click_waits_for_the_commit() {
+    let (mut control, ..) = moved_place();
+    control.session.authorize = Some(|_, _| Ok(()));
+    let layers = control.session.active().unwrap().doc.layers.len();
+    let err = control.run("layer.new.layer", json!({})).unwrap_err();
+    assert!(err.contains("Free Transform is still being applied"), "a control request is refused: {err}");
+    land_jobs(&mut control);
+    assert_eq!(control.session.active().unwrap().doc.layers.len(), layers, "and nothing runs later");
+
+    let (mut app, ..) = moved_place();
+    let layers = app.session.active().unwrap().doc.layers.len();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert!(app.run("layer.new.layer", json!({})).is_err(), "a second click is refused");
+    land_jobs(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the waiting click ran once");
+}
+
 /// #5665, the report's second case through the UI with background jobs on, as in the desktop
 /// app: Free Transform on a layer, move it, then click another layer's row in the Layers panel.
 #[test]
