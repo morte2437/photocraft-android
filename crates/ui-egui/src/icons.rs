@@ -23,6 +23,18 @@ pub fn exists(name: &str) -> bool {
     white_icons().contains(name)
 }
 
+/// Rasterize an embedded icon from the white icon set at exact pixel dimensions `[width, height]`.
+pub(crate) fn rasterize_svg(name: &str, width: u32, height: u32) -> Option<egui::ColorImage> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let egui::ImageSource::Bytes { bytes, .. } = white_icons().source(name) else {
+        return None;
+    };
+    egui_extras::image::load_svg_bytes_with_size(bytes.as_ref(), egui::load::SizeHint::Size { width, height, maintain_aspect_ratio: true }, &Default::default())
+        .ok()
+}
+
 /// Panel footer buttons share one glyph per action and one size, so the Layers footer and the
 /// Swatches, Gradients and Patterns footers read the same, as in Photoshop (#10656).
 pub const FOOTER_SIZE: f32 = 26.0;
