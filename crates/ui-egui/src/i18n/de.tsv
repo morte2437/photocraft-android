@@ -1923,6 +1923,7 @@
 	Soften	Erweichen
 	Source	Quelle
 	Source: set	Quelle: gesetzt
+	Source: {name}	Quelle: {name}
 	Sponge Tool	Schwamm-Werkzeug
 	Spot Healing Brush Tool	Punktkorrektur-Pinsel-Werkzeug
 	Spread	Spreizung
@@ -3350,6 +3351,7 @@ curves	Smooth	Glätten
 	Automatically Check for Updates	Automatisch nach Updates suchen
 	Paints from the History panel's source state	Malt aus dem Quellzustand des Protokollbedienfelds
 	Sets the source for the history brush	Legt die Quelle für den Protokollpinsel fest
+	The History Brush source was deleted: set a new source in the History panel	Die Quelle des Protokollpinsels wurde gelöscht: Legen Sie eine neue Quelle im Protokollbedienfeld fest
 	Highlight Mode	Lichtermodus
 	Highlight Color	Lichterfarbe
 	Highlight Opacity	Lichterdeckkraft

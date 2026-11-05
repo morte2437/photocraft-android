@@ -1941,6 +1941,7 @@
 	Soften	Ammorbidisci
 	Source	Sorgente
 	Source: set	Sorgente: impostata
+	Source: {name}	Sorgente: {name}
 	Sponge Tool	Strumento Spugna
 	Spot Healing Brush Tool	Strumento Pennello correttivo al volo
 	Spread	Estendi
@@ -4297,6 +4298,7 @@ navigator	Zoom	Zoom
 	Automatically Check for Updates	Cerca automaticamente aggiornamenti
 	Paints from the History panel's source state	Dipinge dallo stato di origine del pannello Cronologia
 	Sets the source for the history brush	Imposta l'origine del pennello storia
+	The History Brush source was deleted: set a new source in the History panel	L'origine del pennello storia è stata eliminata: imposta una nuova origine nel pannello Cronologia
 	Highlight Mode	Metodo luci
 	Highlight Color	Colore luci
 	Highlight Opacity	Opacità luci

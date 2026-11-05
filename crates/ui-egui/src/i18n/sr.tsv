@@ -1850,6 +1850,7 @@
 	Paints from the document's opening state	Slika iz stanja dokumenta pri otvaranju
 	Paints from the History panel's source state	Slika iz izvornog stanja panela Istorija
 	Sets the source for the history brush	Postavlja izvor za četkicu istorije
+	The History Brush source was deleted: set a new source in the History panel	Izvor četkice istorije je izbrisan: postavite novi izvor u panelu Istorija
 	Path Selection Tool	Alatka za selekciju putanje
 	Direct Selection Tool	Alatka za direktnu selekciju
 	Add Anchor Point Tool	Alatka za dodavanje sidrišne tačke
@@ -1913,6 +1914,7 @@
 	Soften	Omekšaj
 	Source	Izvor
 	Source: set	Izvor: postavljen
+	Source: {name}	Izvor: {name}
 	Sponge Tool	Alatka sunđer
 	Spot Healing Brush Tool	Alatka četkica za tačkastu popravku
 	Spread	Raširenost

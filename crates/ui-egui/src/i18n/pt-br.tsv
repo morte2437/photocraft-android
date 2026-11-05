@@ -1898,6 +1898,7 @@
 	Soften	Suavizar
 	Source	Origem
 	Source: set	Origem: definida
+	Source: {name}	Origem: {name}
 	Sponge Tool	Ferramenta Esponja
 	Spot Healing Brush Tool	Ferramenta Pincel de recuperação para manchas
 	Spread	Propagação
@@ -4133,6 +4134,7 @@ layerLabel	No Color	Sem cor
 	Automatically Check for Updates	Verificar atualizações automaticamente
 	Paints from the History panel's source state	Pinta a partir do estado de origem do painel Histórico
 	Sets the source for the history brush	Define a origem do pincel do histórico
+	The History Brush source was deleted: set a new source in the History panel	A origem do pincel do histórico foi excluída: defina uma nova origem no painel Histórico
 	Highlight Mode	Modo de realces
 	Highlight Color	Cor dos realces
 	Highlight Opacity	Opacidade dos realces

@@ -1943,6 +1943,7 @@
 	Soften	柔化
 	Source	來源
 	Source: set	來源：已設定
+	Source: {name}	來源：{name}
 	Sponge Tool	海綿工具
 	Spot Healing Brush Tool	污點修復筆刷工具
 	Spread	展開
@@ -2952,6 +2953,7 @@ curves	Smooth	平滑
 	Automatically Check for Updates	自動檢查更新
 	Paints from the History panel's source state	從步驟記錄面板的來源狀態繪畫
 	Sets the source for the history brush	設定步驟記錄筆刷的來源
+	The History Brush source was deleted: set a new source in the History panel	步驟記錄筆刷的來源已刪除：請在步驟記錄面板中設定新的來源
 	Highlight Mode	亮部模式
 	Highlight Color	亮部顏色
 	Highlight Opacity	亮部不透明度

@@ -2995,6 +2995,7 @@ fontWeight	Italic	Курсивний
 	Soft	М'який
 	Soften	Пом'якшити
 	Source: set	Джерело: задано
+	Source: {name}	Джерело: {name}
 	Spread	Поширення
 	Square, 12 x 12	Квадратна, 12 x 12
 	Square, 5 x 5	Квадратна, 5 x 5
@@ -4036,6 +4037,7 @@ curves	Smooth	Згладити
 	Automatically Check for Updates	Автоматично перевіряти оновлення
 	Paints from the History panel's source state	Малює з вихідного стану панелі «Історія»
 	Sets the source for the history brush	Задає джерело для пензля історії
+	The History Brush source was deleted: set a new source in the History panel	Джерело для пензля історії було видалено: задайте нове джерело на панелі «Історія»
 	Highlight Mode	Режим світлих тонів
 	Highlight Color	Колір світлих тонів
 	Highlight Opacity	Непрозорість світлих тонів

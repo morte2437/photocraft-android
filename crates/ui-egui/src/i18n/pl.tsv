@@ -1935,6 +1935,7 @@
 	Soften	Zmiękcz
 	Source	Źródło
 	Source: set	Źródło: ustawione
+	Source: {name}	Źródło: {name}
 	Sponge Tool	Narzędzie Gąbka
 	Spot Healing Brush Tool	Narzędzie Punktowy pędzel korygujący
 	Spread	Rozszerzenie
@@ -3950,6 +3951,7 @@ curves	Smooth	Wygładź
 	Automatically Check for Updates	Automatycznie sprawdzaj aktualizacje
 	Paints from the History panel's source state	Maluje ze stanu źródłowego panelu Historia
 	Sets the source for the history brush	Ustawia źródło dla pędzla historii
+	The History Brush source was deleted: set a new source in the History panel	Źródło pędzla historii zostało usunięte: ustaw nowe źródło w panelu Historia
 	Highlight Mode	Tryb świateł
 	Highlight Color	Kolor świateł
 	Highlight Opacity	Krycie świateł

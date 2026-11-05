@@ -936,6 +936,7 @@
 	Show Extras Options	Εμφάνιση επιπλέον επιλογών
 	Soften	Απαλότητα
 	Source: set	Πηγή: ορίστηκε
+	Source: {name}	Πηγή: {name}
 	Std Dev:	Τυπική απόκλιση:
 	Subtract	Αφαίρεση
 	Text Replacement	Αντικατάσταση κειμένου
@@ -4034,6 +4035,7 @@ curves	Smooth	Εξομάλυνση
 	Automatically Check for Updates	Αυτόματος έλεγχος ενημερώσεων
 	Paints from the History panel's source state	Βάφει από την κατάσταση πηγής του πίνακα Ιστορικό
 	Sets the source for the history brush	Ορίζει την πηγή για το πινέλο ιστορικού
+	The History Brush source was deleted: set a new source in the History panel	Η πηγή για το πινέλο ιστορικού διαγράφηκε: ορίστε νέα πηγή στον πίνακα Ιστορικό
 	Highlight Mode	Λειτουργία φωτεινών τόνων
 	Highlight Color	Χρώμα φωτεινών τόνων
 	Highlight Opacity	Αδιαφάνεια φωτεινών τόνων

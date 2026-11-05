@@ -852,3 +852,66 @@ fn art_history_stroke_runs_the_command() {
     drag(&mut app, Tool::ArtHistoryBrush);
     assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("paint.artHistoryBrush"));
 }
+
+#[test]
+fn history_brush_opacity_and_flow_reach_the_painted_pixels() {
+    let mut app = app();
+    app.run("paint.pencil", json!({"points": [[10, 10]], "size": 16, "color": "#ff0000"})).unwrap();
+    app.run("paint.pencil", json!({"points": [[10, 10]], "size": 16, "color": "#00ff00"})).unwrap();
+    app.ui.tool = Tool::HistoryBrush;
+    app.run("tools.setBrush", json!({"brush": {"opacity": 0.5, "flow": 0.5}})).unwrap();
+    assert!(finish_stroke(&mut app, Tool::HistoryBrush, &[[10.0, 10.0, 1.0]], egui::Modifiers::NONE));
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    let (id, params) = app.session.journal.last().unwrap();
+    assert_eq!(id, "paint.historyBrush");
+    assert_eq!(params["opacity"], 50.0);
+    assert_eq!(params["flow"], 50.0);
+}
+
+#[test]
+fn history_brush_options_bar_shows_source_name() {
+    use crate::theme::ThemeKind;
+    use egui::vec2;
+    use egui_kittest::kittest::Queryable;
+    let mut app = app();
+    app.ui.tool = Tool::HistoryBrush;
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 60.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            crate::panels::options_bar(app, ui);
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, ThemeKind::Studio);
+    h.run_steps(4);
+    h.get_by_label("Paints from the document's opening state");
+
+    // Now set a snapshot as the source
+    h.state_mut().run("history.newSnapshot", json!({"name": "MySnap"})).unwrap();
+    h.state_mut().run("history.setSource", json!({"snapshot": 1})).unwrap();
+    h.run_steps(4);
+    h.get_by_label("Source: MySnap");
+
+    // Now set an explicit state as the source
+    h.state_mut().run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    h.state_mut().run("history.setSource", json!({"state": 1})).unwrap();
+    h.run_steps(4);
+    h.get_by_label("Source: Fill");
+
+    // Deleting the source snapshot leaves source(st) as None, displaying the missing-source hint
+    h.state_mut().run("history.setSource", json!({"snapshot": 1})).unwrap();
+    h.state_mut().run("history.deleteSnapshot", json!({"snapshot": 1})).unwrap();
+    h.run_steps(4);
+    h.get_by_label("The History Brush source was deleted: set a new source in the History panel");
+
+    // Discarding a redo state source also leaves source(st) as None
+    h.state_mut().run("edit.fill", json!({"color": "#00ff00"})).unwrap();
+    // Set source to the latest state (state 2), then undo, then paint new stroke to discard redo
+    h.state_mut().run("history.setSource", json!({"state": 2})).unwrap();
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    h.state_mut().run("paint.pencil", json!({"points": [[10, 10]], "size": 1, "color": "#0000ff"})).unwrap();
+    h.run_steps(4);
+    h.get_by_label("The History Brush source was deleted: set a new source in the History panel");
+}

@@ -1924,6 +1924,7 @@
 	Soften	부드럽게 하기
 	Source	원본
 	Source: set	원본: 설정됨
+	Source: {name}	원본: {name}
 	Sponge Tool	스폰지 도구
 	Spot Healing Brush Tool	스팟 복구 브러시 도구
 	Spread	확산
@@ -3540,6 +3541,7 @@ curves	Smooth	매끄럽게
 	Automatically Check for Updates	자동으로 업데이트 확인
 	Paints from the History panel's source state	작업 내역 패널의 소스 상태에서 칠합니다
 	Sets the source for the history brush	작업 내역 브러시의 소스를 설정합니다
+	The History Brush source was deleted: set a new source in the History panel	작업 내역 브러시 소스가 삭제되었습니다: 작업 내역 패널에서 새 소스를 설정하세요
 	Highlight Mode	하이라이트 모드
 	Highlight Color	하이라이트 색상
 	Highlight Opacity	하이라이트 불투명도

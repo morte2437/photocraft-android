@@ -1355,6 +1355,7 @@
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Щелчок: выбрать узел · Перетаскивание: переместить узел, маркер или сегмент · {shift}-щелчок: добавить · {alt}-щелчок: весь подконтур
 	Draw with the Pen tool (P) or make a work path from a selection.	Нарисуйте пером (P) или создайте рабочий контур из выделения.
 	Source: not set ({key}-click with Clone Stamp)	Источник: не задан ({key}-клик штампом)
+	Source: {name}	Источник: {name}
 	Clone source {n} ({key}-click with Clone Stamp to set)	Источник клонирования {n} ({key}-клик штампом, чтобы задать)
 	{key}-click to set the source	{key}-клик, чтобы задать источник
 	Option-click to define a source point to clone from	Option-клик, чтобы задать точку источника клонирования
@@ -3267,6 +3268,7 @@ curves	Smooth	Сгладить
 	Shadow Tint	Оттенок теней
 	Paints from the History panel's source state	Рисует из исходного состояния панели «История»
 	Sets the source for the history brush	Задаёт источник для кисти истории
+	The History Brush source was deleted: set a new source in the History panel	Источник кисти истории был удалён: задайте новый источник на панели «История»
 	Select Inverse	Инвертировать выделение
 	Pro (Light)	Pro (светлая)
 	Pro (Light Gray)	Pro (светло-серая)

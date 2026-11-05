@@ -1949,6 +1949,7 @@
 	Soften	ぼかし
 	Source	ソース
 	Source: set	ソース: 設定済み
+	Source: {name}	ソース: {name}
 	Sponge Tool	スポンジツール
 	Spot Healing Brush Tool	スポット修復ブラシツール
 	Spread	スプレッド
@@ -4009,6 +4010,7 @@ curves	Smooth	スムーズ
 	Automatically Check for Updates	アップデートを自動的に確認
 	Paints from the History panel's source state	ヒストリーパネルのソース状態からペイントします
 	Sets the source for the history brush	ヒストリーブラシのソースを設定します
+	The History Brush source was deleted: set a new source in the History panel	ヒストリーブラシのソースが削除されました: ヒストリーパネルで新しいソースを設定してください
 	Highlight Mode	ハイライトモード
 	Highlight Color	ハイライトカラー
 	Highlight Opacity	ハイライト不透明度

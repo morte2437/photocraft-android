@@ -1181,6 +1181,7 @@
 	History Brush	Előzményecset
 	Paints from the History panel's source state	Az Előzmények panel forrásállapotából fest
 	Sets the source for the history brush	Beállítja az előzményecset forrását
+	The History Brush source was deleted: set a new source in the History panel	Az előzményecset forrása törölve lett: állítson be új forrást az Előzmények panelen
 	Horizontal scale	Vízszintes méretarány
 	Horizontal type	Vízszintes szöveg
 	Hue Jitter	Színárnyalat ingadozása
@@ -1979,6 +1980,7 @@ layerLabel	Magenta	Bíbor
 	Size:	Méret:
 	Source: not set ({key}-click with Clone Stamp)	Forrás: nincs beállítva ({key}+kattintás a klónozó bélyegzővel)
 	Source: set	Forrás: beállítva
+	Source: {name}	Forrás: {name}
 	Style	Stílus
 	Subtract from selection  ({key})	Kivonás a kijelölésből  ({key})
 	Swap colours (X)	Színek cseréje (X)

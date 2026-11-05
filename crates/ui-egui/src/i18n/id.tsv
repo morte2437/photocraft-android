@@ -1912,6 +1912,7 @@
 	Soften	Lembutkan
 	Source	Sumber
 	Source: set	Sumber: sudah diatur
+	Source: {name}	Sumber: {name}
 	Sponge Tool	Alat Sponge
 	Spot Healing Brush Tool	Alat Spot Healing Brush
 	Spread	Sebar
@@ -3346,6 +3347,7 @@ curves	Smooth	Haluskan
 	Automatically Check for Updates	Periksa Pembaruan Secara Otomatis
 	Paints from the History panel's source state	Melukis dari status sumber panel Riwayat
 	Sets the source for the history brush	Menetapkan sumber untuk kuas riwayat
+	The History Brush source was deleted: set a new source in the History panel	Sumber kuas riwayat telah dihapus: atur sumber baru di panel Riwayat
 	Highlight Mode	Mode Sorotan
 	Highlight Color	Warna Sorotan
 	Highlight Opacity	Opasitas Sorotan

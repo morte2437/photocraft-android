@@ -111,7 +111,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                     brush.mode = m;
                                 }
                             }
-                            if tool == Tool::CloneStamp {
+                            if matches!(tool, Tool::CloneStamp | Tool::HistoryBrush) {
                                 let width = if t.pro { 62.0 } else { 66.0 };
                                 percent_field(ui, tl!("Opacity"), &mut brush.opacity, 1.0..=100.0, width);
                                 percent_field(ui, tl!("Flow"), &mut brush.flow, 1.0..=100.0, width);
