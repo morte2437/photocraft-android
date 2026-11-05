@@ -246,6 +246,13 @@ pub fn handle_tolerance(app: &PhotocraftApp) -> f64 {
     HANDLE_PX / app.point_zoom().max(0.01) as f64
 }
 
+/// End a handle drag whose release a modal sampler consumed, preserving the transform.
+pub(crate) fn release_handle_drag(app: &mut PhotocraftApp) {
+    if let Some(preview) = app.transform_preview.as_mut() {
+        preview.gesture = None;
+    }
+}
+
 /// The box as one undo step restores it.
 #[derive(Clone, Debug, PartialEq)]
 struct Step {
