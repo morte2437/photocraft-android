@@ -316,6 +316,49 @@ fn remove_matte(s: &mut Session, white: bool) -> Result<Value> {
     })
 }
 
+/// Extracts the alpha channel of `surf` within bounds `r` into a GRAY8 surface,
+/// preserving default alpha for unallocated tiles intersecting `r`.
+fn decontamination_alpha(surf: &Surface, r: Rect) -> Surface {
+    let mut alpha = Surface::new(photocraft_color::PixelFormat::GRAY8);
+    let default_alpha = to_rgba(&surf.format(), &surf.default_pixel())[3].clamp(0.0, 1.0);
+    if default_alpha > 0.0 {
+        let shared = alpha.solid_tile(&[default_alpha]);
+        for tc in r.tiles() {
+            if surf.tile(tc).is_some() {
+                continue;
+            }
+            let area = tc.rect().intersect(&r);
+            if area == tc.rect() {
+                alpha.put_tiles([(tc, shared.clone())]);
+            } else {
+                alpha.fill_rect(area, &[default_alpha]);
+            }
+        }
+    }
+    let mut converted = std::collections::HashMap::new();
+    for (tc, tile) in surf.tiles() {
+        let area = tc.rect().intersect(&r);
+        if area.is_empty() {
+            continue;
+        }
+        let key = std::sync::Arc::as_ptr(tile) as usize;
+        if area == tc.rect()
+            && let Some(shared) = converted.get(&key)
+        {
+            alpha.put_tiles([(*tc, std::sync::Arc::clone(shared))]);
+            continue;
+        }
+        let values: Vec<u8> = read_rgba(surf, area).iter().map(|q| (q[3].clamp(0.0, 1.0) * 255.0).round() as u8).collect();
+        alpha.write_interleaved(area, &values);
+        if area == tc.rect()
+            && let Some(shared) = alpha.tile(*tc)
+        {
+            converted.insert(key, shared.clone());
+        }
+    }
+    alpha
+}
+
 /// Layer › Matting › Color Decontaminate: fringe colours move toward nearby opaque colours
 /// (the Select and Mask decontamination, driven by the layer's own alpha).
 fn color_decontaminate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -328,9 +371,8 @@ fn color_decontaminate(s: &mut Session, p: &Value) -> Result<Value> {
         if r.is_empty() || !surf.format().alpha {
             return Ok(());
         }
-        let alpha: Vec<u8> = read_rgba(surf, r).iter().map(|q| (q[3].clamp(0.0, 1.0) * 255.0).round() as u8).collect();
-        let region = Region { bbox: r, mask: alpha };
-        *surf = photocraft_algo::matting::decontaminate(surf, &region, radius, amount);
+        let alpha = decontamination_alpha(surf, r);
+        *surf = photocraft_algo::matting::decontaminate_surface(surf, &alpha, radius, amount);
         Ok(())
     })?;
     Ok(Value::Null)

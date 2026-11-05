@@ -821,3 +821,29 @@ fn applying_a_feathered_mask_keeps_off_canvas_pixels_it_reveals() {
     s.execute("layer.layerMask.apply", json!({})).unwrap();
     assert_eq!(active(&s).surface().unwrap().rgba(52, 15)[3], 1.0, "off-canvas pixel stays visible");
 }
+
+#[test]
+fn decontamination_alpha_shares_solid_source_tiles() {
+    let mut source = Surface::new(photocraft_color::PixelFormat::RGBA8);
+    let bounds = Rect::new(0, 0, 2048, 1024);
+    source.fill_rect(bounds, &[0.4, 0.2, 0.7, 0.5]);
+    let alpha = decontamination_alpha(&source, bounds);
+    let a = photocraft_geom::TileCoord::new(0, 0);
+    let b = photocraft_geom::TileCoord::new(3, 2);
+    assert!(std::sync::Arc::ptr_eq(alpha.tile(a).unwrap(), alpha.tile(b).unwrap()));
+    assert_eq!(alpha.sample_channel(20, 20, 0), source.sample_channel(20, 20, 3));
+}
+
+#[test]
+fn decontamination_alpha_keeps_missing_source_alpha_only_inside_bounds() {
+    let mut source = Surface::with_default(photocraft_color::PixelFormat::RGBA8, &[1.0, 0.0, 0.0, 1.0]);
+    source.write_pixel(255, 128, &[0.5, 0.0, 0.5, 0.5]);
+    let bounds = Rect::new(10, 10, 700, 240);
+    let alpha = decontamination_alpha(&source, bounds);
+    assert_eq!(alpha.sample_channel(300, 128, 0), 1.0);
+    assert_eq!(alpha.sample_channel(699, 128, 0), 1.0);
+    assert_eq!(alpha.sample_channel(255, 128, 0), source.sample_channel(255, 128, 3));
+    for (x, y) in [(9, 128), (700, 128), (300, 9), (300, 240)] {
+        assert_eq!(alpha.sample_channel(x, y, 0), 0.0);
+    }
+}
