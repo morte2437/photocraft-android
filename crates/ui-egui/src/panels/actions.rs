@@ -206,6 +206,8 @@ enum Called {
     Paused(Value),
     /// A Stop with its dialog off ended it, and the caller with it.
     Stopped(Value),
+    /// The step ran, and Step by Step or Pause For waits before the next one ([`playback::paced`]).
+    Paced(Value),
 }
 
 /// Read the result of step `i` (`id`) of `caller`: a nested failure, a pause (the caller joins the
@@ -245,6 +247,10 @@ fn end_at(c: Called, ran: &mut u64, failed: &mut Option<Value>, paused: &mut Opt
         Called::Failed(f) => *failed = Some(f),
         Called::Paused(p) => *paused = Some(p),
         Called::Stopped(s) => *stopped = Some(s),
+        Called::Paced(p) => {
+            *ran += 1;
+            *paused = Some(p);
+        }
     }
     true
 }
@@ -311,7 +317,8 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
     let mut ran = 0u64;
     let (mut failed, mut paused, mut stopped) = (None, None, None);
     let ended = match replay_inner(app, &action.name, from, inner) {
-        Some(c) => end_at(c, &mut ran, &mut failed, &mut paused, &mut stopped),
+        // The call was step `from - 1`: a paced Play waits after it as after any other step.
+        Some(c) => end_at(playback::paced(app, &action, from.saturating_sub(1), "actions.play", ran, c), &mut ran, &mut failed, &mut paused, &mut stopped),
         None => false,
     };
     for (i, (id, p)) in action.enabled_steps().skip_while(|(i, _)| *i < from).filter(|_| !ended) {
@@ -416,14 +423,9 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
         match result {
             // A called action that paused for a dialog continues here after it once confirmed.
             Ok(value) => {
-                if end_at(called(app, &action.name, i, id, &value, target), &mut ran, &mut failed, &mut paused, &mut stopped) {
-                    break;
-                }
                 // Step by Step and Pause For: the canvas shows this step before the next one runs.
-                if let Some(wait) = playback::step_pause(app)
-                    && action.enabled_steps().any(|(j, _)| j > i)
-                {
-                    paused = Some(playback::pace(app, &action.name, i, id, ran, wait));
+                let c = called(app, &action.name, i, id, &value, target);
+                if end_at(playback::paced(app, &action, i, id, ran, c), &mut ran, &mut failed, &mut paused, &mut stopped) {
                     break;
                 }
             }

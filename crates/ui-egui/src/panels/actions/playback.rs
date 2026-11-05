@@ -48,9 +48,21 @@ pub(super) fn step_pause(app: &PhotocraftApp) -> Option<Duration> {
     }
 }
 
+/// Step `i` of `action` ended as `c` (`ran` steps of it before): when it simply ran and Step by
+/// Step or Pause For waits before the next enabled step, park the rest ([`super::Called::Paced`]).
+pub(super) fn paced(app: &mut PhotocraftApp, action: &super::Action, i: usize, id: &str, ran: u64, c: super::Called) -> super::Called {
+    if !matches!(c, super::Called::Done) || !action.enabled_steps().any(|(j, _)| j > i) {
+        return c;
+    }
+    match step_pause(app) {
+        Some(wait) => super::Called::Paced(pace(app, &action.name, i, id, ran.saturating_add(1), wait)),
+        None => c,
+    }
+}
+
 /// Park `action` after its step `i` (`ran` steps of it so far): it continues from the next step
 /// after `wait`. Returns the `paused` value [`super::play_owned`] reports.
-pub(super) fn pace(app: &mut PhotocraftApp, action: &str, i: usize, id: &str, ran: u64, wait: Duration) -> Value {
+fn pace(app: &mut PhotocraftApp, action: &str, i: usize, id: &str, ran: u64, wait: Duration) -> Value {
     let rev = app.session.actions.rev;
     let gate = app.session.authorize;
     let pb = &mut app.paused_playbacks;

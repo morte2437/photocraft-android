@@ -177,9 +177,13 @@ fn nested_and_set_playback_stay_one_play() {
     ));
     let past = app.session.active().unwrap().history.past_len();
     play_targets(&mut app, &[1], 0).unwrap();
-    for _ in 0..10 {
+    // One step per frame, also into and out of the called action.
+    let mut seen = vec![names(&app)];
+    while app.paused_playbacks.timer.is_some() {
         next_step(&mut app, &ctx);
+        seen.push(names(&app));
     }
+    assert_eq!(seen.iter().map(Vec::len).collect::<Vec<_>>(), [1, 2, 3, 4, 5], "{seen:?}");
     assert_eq!(names(&app), ["Before", "A", "B", "C", "After"]);
     assert_idle(&app);
     assert_eq!(app.session.active().unwrap().history.past_len(), past + 1);
