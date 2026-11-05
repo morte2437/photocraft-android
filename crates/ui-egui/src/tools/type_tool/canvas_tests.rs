@@ -2445,6 +2445,34 @@ mod multi_layer_formatting {
         assert_eq!(text(&app, ids[0]).antialias, AntiAlias::Sharp);
     }
 
+    /// Type > OpenType > Stylistic Sets (#10285): while editing, a set goes on for the selected
+    /// characters only, and its checkmark follows the style at the selection start.
+    #[test]
+    fn stylistic_set_menu_toggles_the_selection_and_checks_its_start() {
+        use photocraft_engine::type_extra_cmds::feature_on;
+        let (mut app, ids) = fixture();
+        let ctx = egui::Context::default();
+        let id = "type.openType.stylisticSets.set2";
+        let checked = |app: &PhotocraftApp| crate::menus::menu_items(app).into_iter().find(|i| i.id == id).and_then(|i| i.checked);
+        editing(&mut app, ids[0]);
+        assert_eq!(checked(&app), Some(false));
+        crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+        let on: Vec<bool> = (0..5).map(|ci| feature_on(&style(&app, ids[0], ci), "ss02")).collect();
+        assert_eq!(on, [false, true, true, false, false], "only the selected characters");
+        assert!((0..5).all(|ci| !feature_on(&style(&app, ids[1], ci), "ss02")), "the other layer is untouched");
+        assert_eq!(checked(&app), Some(true), "the selection start has the set");
+        // A selection starting after the styled characters shows it off.
+        if let Some(ed) = app.ui.text_edit.as_mut() {
+            ed.anchor = 3;
+            ed.caret = 5;
+        }
+        assert_eq!(checked(&app), Some(false));
+        crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+        let on: Vec<bool> = (0..5).map(|ci| feature_on(&style(&app, ids[0], ci), "ss02")).collect();
+        assert_eq!(on, [false, true, true, true, true]);
+        assert_eq!(checked(&app), Some(true));
+    }
+
     /// The Character panel's OpenType buttons (TYPE-218-5, #3752): Photoshop's eight, in its
     /// order; each shows pressed while its feature is on and toggles it on the selected type
     /// layers, or on the selected characters while typing.

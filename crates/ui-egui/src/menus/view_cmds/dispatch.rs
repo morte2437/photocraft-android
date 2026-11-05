@@ -205,9 +205,17 @@ fn type_checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
         "ornaments" => "ornm",
         "ordinals" => "ordn",
         "fractions" => "frac",
-        _ => return None,
+        set => stylistic_set_tag(set.strip_prefix("stylisticSets.set")?)?,
     };
     Some(photocraft_engine::type_extra_cmds::feature_on_at(t, start, tag))
+}
+
+/// `ss01`..`ss20` for the digits of a Stylistic Sets item id (`1`..`20`, no leading zeros).
+fn stylistic_set_tag(n: &str) -> Option<&'static str> {
+    if n.starts_with('0') || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    photocraft_engine::type_extra_cmds::STYLISTIC_SET_TAGS.get(n.parse::<usize>().ok()?.checked_sub(1)?).copied()
 }
 
 /// Engine commands that get a dialog or file picker here when invoked without parameters.

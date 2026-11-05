@@ -299,6 +299,26 @@ fn numerals_checkmark_follows_the_selection() {
 }
 
 #[test]
+fn stylistic_set_checkmark_follows_the_toggle() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.stylisticSets.set4";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.stylisticSets.set5"), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(false));
+    for bad in ["set0", "set21", "set04", "set", "set-1", "setx", "set100"] {
+        // Not through `checked`, which only finds catalog items: these ids must reach the resolver.
+        assert_eq!(super::dispatch::checked(&app, &format!("type.openType.stylisticSets.{bad}")), None, "{bad}");
+    }
+}
+
+#[test]
 fn batch_menu_requires_a_recorded_action() {
     let (mut app, ctx) = app_with(1);
     assert!(!crate::menus::is_enabled(&app, "file.automate.batch"));
