@@ -236,10 +236,7 @@ pub fn resolve_brush(s: &Session, p: &Value, cmd: &str) -> Result<BrushSettings>
 }
 
 fn layer_id(s: &Session, p: &Value) -> Result<photocraft_doc::LayerId> {
-    match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => Ok(photocraft_doc::LayerId(id)),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into())),
-    }
+    crate::commands::layer_param(s, p)
 }
 
 fn damage_json(s: &mut Session, dmg: Rect) -> Value {
@@ -250,7 +247,7 @@ fn damage_json(s: &mut Session, dmg: Rect) -> Value {
 /// The target layer (`None` for a channel), brush and zoom of a stroke. On a mask or channel the
 /// eraser paints the background colour (Photoshop).
 fn stroke_target(s: &Session, p: &Value, brush: BrushSettings) -> Result<(Option<photocraft_doc::LayerId>, BrushSettings, f32)> {
-    let gray = is_mask_target(p) || crate::channel_cmds::is_channel_target(p);
+    let gray = is_mask_target(p) || crate::channel_cmds::is_channel_target(p) || crate::color_channels::target(s, p)?.is_some();
     let id = if crate::channel_cmds::is_channel_target(p) { None } else { Some(layer_id(s, p)?) };
     let brush = if gray && brush.erase { BrushSettings { erase: false, color: s.tools.background, ..brush } } else { brush };
     Ok((id, brush, num(p, "zoom").unwrap_or(1.0)))
@@ -536,6 +533,7 @@ pub struct LiveStroke {
     /// passes it merged (a mirror joining redraws every tile).
     union_live: Option<(photocraft_paint::UnionLive, usize)>,
     pre: Surface,
+    colors: Option<crate::color_channels::ColorChannels>,
     sel: Option<Surface>,
     lock: bool,
     layer: Option<photocraft_doc::LayerId>,
@@ -598,6 +596,8 @@ impl LiveStroke {
     /// Start a live stroke of `cmd`: `paint.stroke` (the Brush and Eraser) or `paint.pencil`.
     /// Committing `cmd` with the same params and `"seed": live.seed` gives the same pixels.
     pub fn begin_with(s: &Session, cmd: &str, p: &Value) -> Result<Self> {
+        let captured = crate::channel_cmds::inject_target(s, cmd, p.clone());
+        let p = &captured;
         has_paintable(s).map_err(EngineError::Other)?;
         let pts = parse_points(p, cmd)?;
         let pencil = match cmd {
@@ -634,6 +634,7 @@ impl LiveStroke {
             mirror_distinct,
             union_live: None,
             pre,
+            colors: crate::color_channels::target(s, p)?,
             sel,
             lock,
             layer,
@@ -720,6 +721,9 @@ impl LiveStroke {
                 dmg = dmg.union(&StrokeRenderer::composite_union_live(&mut renderers, &mut live, full, &self.pre, surf, self.sel.as_ref(), self.lock));
                 self.tail = old.union(&live.bounds());
                 self.union_live = Some((live, passes));
+                if let Some(colors) = self.colors {
+                    crate::color_channels::restrict_region(&self.pre, surf, colors, dmg)?;
+                }
                 return Ok(dmg);
             }
             let mut dmg = Rect::EMPTY;
@@ -734,6 +738,9 @@ impl LiveStroke {
             if let Some(mut tail) = self.renderer.tail_preview() {
                 self.tail = tail.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false);
                 dmg = dmg.union(&self.tail);
+            }
+            if let Some(colors) = self.colors {
+                crate::color_channels::restrict_region(&self.pre, surf, colors, dmg)?;
             }
             Ok(dmg)
         })?;
@@ -825,7 +832,9 @@ fn mixer_load_pixel(s: &mut Session, p: &Value) -> Result<Value> {
 /// channel or Quick Mask `target` is refused rather than recolouring the layer instead.
 fn color_replacement_setup(s: &Session, p: &Value) -> Result<(Stroke, ReplaceSettings, photocraft_doc::LayerId)> {
     let cmd = "paint.colorReplacement";
-    if let Some(t) = p.get("target").filter(|t| t.as_str() != Some("pixels")) {
+    if let Some(t) = p.get("target").filter(|t| t.as_str() != Some("pixels"))
+        && crate::color_channels::explicit(p, s.active().map_or(0, |st| crate::channel_cmds::color_count(&st.doc)))?.is_none()
+    {
         return Err(bad(cmd, format!("Color Replacement paints layer pixels only (`target` {t} is not \"pixels\")")));
     }
     let pts = parse_points(p, cmd)?;
@@ -861,10 +870,8 @@ fn color_replacement(s: &mut Session, p: &Value) -> Result<Value> {
 /// recolouring per dab as the commit, so the preview at the last point is the committed result.
 pub fn live_color_replacement(s: &Session, p: &Value) -> Result<crate::retouch_cmds::LiveDab> {
     let (stroke, rs, id) = color_replacement_setup(s, p)?;
-    crate::retouch_cmds::LiveDab::with_effect(s, "paint.colorReplacement", &json!({}), stroke, Some(id), 0, |pre| {
-        Box::new(color_replacement_effect(pre.clone(), rs))
-    })?
-    .with_tail_preview()
+    crate::retouch_cmds::LiveDab::with_effect(s, "paint.colorReplacement", p, stroke, Some(id), 0, |pre| Box::new(color_replacement_effect(pre.clone(), rs)))?
+        .with_tail_preview()
 }
 
 fn brush_json(b: &BrushSettings) -> Value {
@@ -1098,6 +1105,9 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     }
     b = merge_brush(&b, &patch, cmd)?;
     validate_brush(&b, cmd)?;
+    // Loading a stored tip can fail. Finish preparing the brush before changing its identity or
+    // foreground colour, so a failed pick leaves the entire current brush state intact.
+    s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
     // The picked preset stays "the current brush" across later edits, so `brush.presets.update`
     // knows what to overwrite. Only once the brush is accepted: a failed call leaves no state
     // behind (a `reset` wins over a `preset`, as it replaces the whole brush).
@@ -1110,8 +1120,6 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
             s.tools.foreground = c;
         }
     }
-    // The tool's brush always paints with full tips: load a library preset's from the store.
-    s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
     let before = std::mem::replace(&mut s.tools.brush, b);
     // A coalesced gesture (one slider drag) journals as one call: remember the brush it started from.
     let key = p.get("coalesce").and_then(Value::as_str).filter(|_| p.get("preset").is_none() && p.get("reset").is_none());

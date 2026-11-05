@@ -213,7 +213,7 @@ pub(super) fn gradient_map(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> E
     if let Some(s) = stops.get_mut(selected) {
         ui.horizontal(|ui| {
             label(ui, tl!("Color:"));
-            let r = color_button(ui, &mut s.1);
+            let r = color_button(ui, &mut s.1, tl!("Stop Color"));
             changed |= r.changed;
             e.add(r);
             ui.add_enabled_ui(can_remove, |ui| {

@@ -256,7 +256,8 @@ pub fn compose(doc: &Document, work: &Layer, plan: &Plan, source: &Source) -> Op
         let band = Rect::new(shown.x0, y0, shown.x1, y0.saturating_add((px.len() / width.max(1)) as i32));
         let mut over = Buffer::transparent(band);
         effects::composite_with_effects(work, &crop(&content, band), &mut over, &maps, plan.bounds, &doc.patterns);
-        for (o, p) in px.iter_mut().zip(over.px) {
+        // Copied, not moved out, so `over` hands its band back to the scratch pool on drop.
+        for (o, p) in px.iter_mut().zip(over.px.iter().copied()) {
             *o = p;
         }
     });

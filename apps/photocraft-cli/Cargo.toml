@@ -7,9 +7,12 @@ license.workspace = true
 build = "build.rs"
 
 [features]
+default = ["gpu"]
 # Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]
+# Optional native GPU rendering backend, enabled by default in native CLI builds.
+gpu = ["photocraft-automation/gpu"]
 
 [lints]
 workspace = true
@@ -22,10 +25,16 @@ path = "src/lib.rs"
 name = "photocraft-cli"
 path = "src/main.rs"
 
+[[example]]
+name = "gpu_bench"
+required-features = ["gpu"]
+
 [dependencies]
 photocraft-automation = { path = "../../crates/automation" }
+photocraft-doc = { workspace = true }
 photocraft-engine = { workspace = true }
 photocraft-io = { workspace = true }
+photocraft-raster = { workspace = true }
 photocraft-format = { path = "../../crates/format" }
 photocraft-codecs = { workspace = true }
 clap = { workspace = true }

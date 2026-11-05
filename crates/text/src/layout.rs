@@ -137,6 +137,8 @@ pub struct ClusterInfo {
 pub struct TextLayout {
     pub faces: Vec<GlyphFace>,
     pub glyphs: Vec<PlacedGlyph>,
+    /// Layer-text byte range represented by each glyph, in the same order as `glyphs`.
+    pub glyph_ranges: Vec<Range<usize>>,
     pub decorations: Vec<DecorationRect>,
     pub lines: Vec<LineInfo>,
     pub clusters: Vec<ClusterInfo>,
@@ -175,6 +177,17 @@ impl TextLayout {
                 Some(a) => [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])],
             })
         })
+    }
+
+    /// Whether boxed text doesn't all fit its shape: a box's layout drops the lines that
+    /// overflow (`layout` breaks out of the line loop), so any character the laid-out lines
+    /// don't cover — the last line's range ends short of the whole text — points at dropped
+    /// content. Text that fits completely covers its end: paragraph breaks are inside their
+    /// lines, and a trailing empty paragraph that fits gains its own (empty) line. Empty text
+    /// has nothing to drop. Callers gate this on the shape being a box; point text has no box
+    /// to overflow.
+    pub fn overflows(&self, text: &str) -> bool {
+        !text.is_empty() && self.lines.last().is_none_or(|ln| ln.range.end < text.len())
     }
 
     /// Byte offset of the caret nearest to a text-space point.
@@ -313,7 +326,7 @@ impl Layouter {
             if flow.stop {
                 break;
             }
-            let ps = paras[para_starts.iter().rposition(|&s| s <= prange.start).unwrap_or(0)].style.clone();
+            let ps = paras[run_index_at(&para_starts, prange.start)].style.clone();
             self.layout_paragraph(fonts, &mut out, &mut flow, Para::new(&env, fonts, pi, prange, ps));
         }
         out.styles = styles;

@@ -1943,6 +1943,7 @@
 	Soften	柔化
 	Source	來源
 	Source: set	來源：已設定
+	Source: {name}	來源：{name}
 	Sponge Tool	海綿工具
 	Spot Healing Brush Tool	污點修復筆刷工具
 	Spread	展開
@@ -2884,6 +2885,9 @@ curves	Smooth	平滑
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} 個步驟在 PhotoCraft 中尚無對應功能
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	已將 {n} 個動作儲存到 {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	已略過 {n} 個沒有 Photoshop 對應功能的步驟
+@plural	{n} action file loaded|{n} action files loaded	已載入 {n} 個動作檔案
+	{set} from {file} replaced the one from {earlier}	{file} 中的組合 {set} 取代了 {earlier} 中的同名組合
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} 個檔案無法載入：{errors}
 	File Naming	檔案命名
 	Starting serial	起始序號
 	Insert Stop…	插入停止…
@@ -2905,6 +2909,7 @@ curves	Smooth	平滑
 	Sent to {printer}	已傳送至 {printer}
 	set in Print Settings…	在列印設定中設定…
 	ICO is limited to 256 × 256 pixels	ICO 最大為 256 × 256 像素
+	Memory usage percent	記憶體使用比例 (%)
 	Show Favorite Fonts	顯示我的最愛字體
 	No favorite fonts yet: click the star beside a font to add it.	尚無我的最愛字體：按一下字體旁的星號即可加入。
 	Favorite fonts	我的最愛字體
@@ -2948,6 +2953,7 @@ curves	Smooth	平滑
 	Automatically Check for Updates	自動檢查更新
 	Paints from the History panel's source state	從步驟記錄面板的來源狀態繪畫
 	Sets the source for the history brush	設定步驟記錄筆刷的來源
+	The History Brush source was deleted: set a new source in the History panel	步驟記錄筆刷的來源已刪除：請在步驟記錄面板中設定新的來源
 	Highlight Mode	亮部模式
 	Highlight Color	亮部顏色
 	Highlight Opacity	亮部不透明度
@@ -2967,6 +2973,7 @@ curves	Smooth	平滑
 	Chisel Soft	雕刻柔和
 	Open color-less EXR as ACEScg	將無色彩空間資訊的 EXR 以 ACEScg 開啟
 	Do not append "copy" to filename when saving a copy	儲存副本時不在檔名後加上「copy」
+	Save Full-Size Composite in .pcraft Files	在 .pcraft 檔案中儲存全尺寸合成影像
 	Color Profile	色彩描述檔
 	EXIF	EXIF
 	Edit Selected Guides	編輯所選參考線
@@ -3026,6 +3033,7 @@ curves	Smooth	平滑
 	This document's layers: {needed} of {budget} for layers	此文件的圖層：圖層可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文件的圖層需要 {needed}，但只能佔用 {budget}：整份文件的重繪使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 記憶體（MB，0 = 自動）
+	Scratch Size Limit (MB, 0 = No Limit)	暫存磁碟大小上限（MB，0 = 無限制）
 	{path}: the path is not valid Unicode; save under another name.	{path}：路徑不是有效的 Unicode；請以其他名稱儲存。
 	Replace	取代
 	{name} was changed by another app after it was opened or saved here.	{name} 在此處開啟或儲存後已被其他 App 更改。
@@ -3064,6 +3072,9 @@ curves	Smooth	平滑
 	There is no color table to save.	沒有可儲存的色表。
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	已將 {n} 種顏色儲存至 {file}
 	GPU adapter	GPU 介面卡
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS 內容將以 SVG 格式編輯。儲存會取代嵌入的來源檔案；格式特有的功能可能會改變。
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	匯入樣式…
 	Export Selected Styles…	匯出所選樣式…
 	Export Styles…	匯出樣式…
@@ -3124,6 +3135,7 @@ curves	Smooth	平滑
 	Font size presets	字體大小預設
 	Leading presets	行距預設
 	Tracking presets	字距調整預設
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	數值輸入無效。需要介於 {min}% 和 {max}% 之間的整數。已插入先前的值。
 	Clear Selection	清除選取範圍
 	Color Aware	顏色感知
 	Decontaminate Colors	淨化顏色
@@ -3142,4 +3154,23 @@ curves	Smooth	平滑
 	Select and Mask was closed: its document is no longer the active one	已關閉「選取並遮住」：其文件已不是使用中的文件
 	Select and Mask was closed: another layer was selected	已關閉「選取並遮住」：已選取另一個圖層
 	Drag to move the selected path	拖曳以移動選取的路徑
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	檢色器
+	Recently Used Colors	最近使用的顏色
+	Stop Color	色標顏色
+	Shapes can't use patterns yet	形狀尚不支援圖樣
+	Solid Color	純色
+	Tint Color	色調顏色
 	Edit Brush…	編輯筆刷…
+	Drag to move the active shape's path or the Work Path	拖曳以移動作用中形狀的路徑或工作路徑
+	Generator enabled	啟用 Generator
+	Move Up	上移
+	Move Down	下移
+	Grid view	格線檢視
+	List view	清單檢視
+	On your computer	在您的電腦上
+	New file	新增檔案
+	Learn	學習
+	No recent files	沒有最近使用的檔案
+	Website	網站

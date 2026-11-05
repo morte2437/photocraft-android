@@ -104,6 +104,15 @@ args = ["4", "2", "--reps", "5"]
 quick_args = ["2", "0.25", "--reps", "3"]
 note = "synthetic Photomerge multi-band blend; resident-set peak includes input/output buffers"
 
+# Pen cursor native bitmap and warm cache benchmark (#9122)
+[[bench]]
+name = "cursor_bench"
+package = "photocraft-ui-egui"
+requires = "crates/ui-egui/examples/cursor_bench.rs"
+args = ["--moves", "1000", "--reps", "5"]
+quick_args = ["--moves", "200", "--reps", "2"]
+note = "native Pen cursor rasterization, warm lookup, and painted baseline (#9122)"
+
 # ---- #209: interactive edits on layered documents (20 MP, styled layers) ---------------------
 
 [[scenario]]

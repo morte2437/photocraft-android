@@ -125,8 +125,12 @@ pub(super) fn precise_other_cursor(app: &PhotocraftApp) -> bool {
 }
 
 /// A pen tool's standard cursor: its toolbar icon with the nib (the Convert Point tool: the
-/// anchor) on `p`. Draws it at `p` and returns the OS cursor to set (hidden).
-pub(crate) fn pen_cursor(ctx: &egui::Context, tool: Tool, p: Pos2) -> egui::CursorIcon {
+/// anchor) on `p`. Uses an OS cursor bitmap where supported so its movement tracks hardware
+/// pointer input without waiting for canvas frames (#9122); falls back to drawing the tooltip icon.
+pub fn pen_cursor(ctx: &egui::Context, tool: Tool, p: Pos2) -> egui::CursorIcon {
+    if let Some(icon) = crate::tool_cursor::pen(ctx, tool) {
+        return icon;
+    }
     // Where each icon's point is in its 24-unit box: the full-size pen's nib at (2.3, 2.3); the
     // Freeform and Curvature pens draw it at 0.68 × from (7, 7); Convert Point's apex anchor.
     let hot = match tool {

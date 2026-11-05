@@ -36,8 +36,10 @@ pub(super) struct Resources {
     pub(super) layer_fit: Option<LayerFit>,
     pub(super) compositor_cache_budget: Option<u64>,
     pub(super) compositor_focus: Option<photocraft_geom::Rect>,
-    /// GPU bytes one document's display texture set may take (see [`canvas_budget`]).
+    /// GPU bytes the documents' display textures may take together (see [`canvas_budget`]).
     pub(super) canvas_budget: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// How that budget is split between the open documents (see [`super::residency`]).
+    pub(super) residency: super::residency::Residency,
     pub(super) encode_bgl: wgpu::BindGroupLayout,
     encode_pipeline: wgpu::RenderPipeline,
     pub(super) lut_bgl: wgpu::BindGroupLayout,
@@ -166,6 +168,9 @@ pub(super) struct Tile {
     pub(super) levels: Vec<wgpu::TextureView>,
     pub(super) bind_group: wgpu::BindGroup,
     pub(super) _uniform: wgpu::Buffer,
+    /// A viewport page ([`GpuCanvas::upload_page`]): its id and reduction factor (document
+    /// pixels per texel); `None` for a tile of a whole-document texture set.
+    pub(super) page: Option<(u64, u32)>,
 }
 
 fn uniform_entry(binding: u32, size: u64, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -366,6 +371,7 @@ impl Resources {
             compositor_cache_budget: None,
             compositor_focus: None,
             canvas_budget: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(canvas_budget(physical_memory(), None))),
+            residency: Default::default(),
             encode_bgl,
             encode_pipeline,
         }

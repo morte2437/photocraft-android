@@ -52,14 +52,14 @@ id = "FILE-215-7"
 target = "Layered TIFF read and write (tag 37724), honouring the ask-before-saving pref"
 status = "done"
 issue = 215
-note = "psd tiff.rs (ImageSourceData, both byte orders), io tiff_layers.rs, ui tiff_options_ui.rs (Discard Layers and Save a Copy); extra alpha/spot channels and a Quick Mask are written as TIFF extra samples (at most 16) plus Photoshop resources for name, colour and solidity; Photoshop's MTrn marker is read (#7415). The TIFF Options Save Transparency choice isn't offered: channels are written as Photoshop does with it off"
+note = "psd tiff.rs (ImageSourceData, both byte orders), io tiff_layers.rs, ui tiff_options_ui.rs (Discard Layers and Save a Copy); extra alpha/spot channels and a Quick Mask are written as TIFF extra samples (at most 16) plus Photoshop resources for name, colour and solidity; Photoshop's MTrn marker is read (#7415). TIFF Options (ui tiff_options_ui.rs) asks on every TIFF Save As and Save a Copy: compression, Save Image Pyramid, Save Transparency (on writes MTrn next to channels, as Photoshop does) and the layers choice (#8827)"
 
 [[item]]
 id = "FILE-215-8"
 target = "Large and BigTIFF import with banded decode across all IFDs"
 status = "done"
 issue = 215
-note = "codecs tiff_ifd.rs (bounds-checked IFD chain + SubIFD walk, classic and BigTIFF, cycle-safe; tiff_info / decode_tiff_page), tiff.rs banded parallel strip/tile decode, planar 1 and 2, BigTIFF write (tiff_bigtiff or > 4 GiB); io import_tiff_page; 30 MP RGB8 Deflate 345 -> 32 ms; no page picker in the UI yet"
+note = "codecs tiff_ifd.rs (bounds-checked IFD chain + SubIFD walk, classic and BigTIFF, cycle-safe; tiff_info / decode_tiff_page), tiff.rs banded parallel strip/tile decode, planar 1 and 2, BigTIFF write (tiff_bigtiff or > 4 GiB); io import_tiff_page; 30 MP RGB8 Deflate 345 -> 32 ms; flat pages up to 300000 px a side decode a group of rows at a time into the layer (codecs TiffBands, #8169): the 117504 x 22464 px banner from #8456 opens in 3.3 s at 11.45 GB peak; refused with an error past free memory (io memory.rs); layered TIFFs still decode whole; no page picker in the UI yet"
 
 [[item]]
 id = "FILE-215-9"

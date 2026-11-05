@@ -169,10 +169,7 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));
     }
-    let id = match p.get("layer").and_then(Value::as_u64) {
-        Some(id) => LayerId(id),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into()))?,
-    };
+    let id = crate::commands::layer_param(s, p)?;
     Ok((Stroke { brush, points: pts }, Some(id)))
 }
 
@@ -389,7 +386,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","state":row (a History panel row, as history.setSource),"snapshot":id (a history.newSnapshot id; default: the History panel's source, as paint.historyBrush; a source of another canvas size is an error),"style":"tightShort|tightMedium|tightLong|looseMedium|looseLong|dab|tightCurl|looseCurl"="tightMedium","area":0..100=50,"tolerance":0..100=0"#
+                r#","state":row (a History panel row, as history.setSource),"snapshot":id (a history.newSnapshot id; default: the History panel's source, as paint.historyBrush; a source of another canvas size is an error),"style":"tightShort|tightMedium|tightLong|looseMedium|looseLong|dab|tightCurl|looseCurl"="tightMedium","area":0..100=50,"tolerance":0..100=0,"opacity":0..100=100 (overrides the common 1..100: how strongly the history state is painted; 0 changes nothing; no flow, mode is Normal)"#
             ),
             enabled: has_pixel_layer,
             run: art_history::run,

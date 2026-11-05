@@ -140,8 +140,9 @@ pub fn claim_delete_keys(ctx: &egui::Context, id: egui::Id) {
 
 impl Focus {
     pub fn of(ctx: &egui::Context) -> Focus {
-        // A layer rename keeps its keys even in the frame egui drops its focus (Esc, Tab).
-        if ctx.text_edit_focused() || crate::layer_row_ui::rename_active(ctx) {
+        // A layer rename and a zoom field keep their keys even in the frame egui drops their
+        // focus (Esc, Tab).
+        if ctx.text_edit_focused() || crate::layer_row_ui::rename_active(ctx) || crate::zoom_field::editing(ctx) {
             Focus::Text
         } else if ctx.egui_wants_keyboard_input() {
             let owner = ctx.data(|d| d.get_temp::<egui::Id>(delete_owner_id()));
@@ -209,9 +210,17 @@ impl Focus {
 
 /// What decides which keys [`crate::shortcuts::handle`] gives the shortcuts: an open menu, a
 /// dialog, the unsaved-changes prompt, a warp or the Filter Gallery, inline type.
-fn key_owner(app: &PhotocraftApp, ctx: &egui::Context) -> (bool, usize, bool, bool, bool) {
+fn key_owner(app: &PhotocraftApp, ctx: &egui::Context) -> (bool, usize, bool, bool, bool, bool, bool) {
     let distort = app.distort.active() || app.distort.gallery.is_some();
-    (crate::menu_nav::is_open(ctx), app.ui.dialogs.len(), app.discard.is_some(), distort, app.ui.text_edit.is_some())
+    (
+        crate::menu_nav::is_open(ctx),
+        app.ui.dialogs.len(),
+        app.discard.is_some(),
+        distort,
+        app.ui.text_edit.is_some(),
+        app.save_options_open(),
+        app.smart_svg.modal_open(),
+    )
 }
 
 /// Keys whose shortcuts follow the key's position, as in Photoshop: ⇧⌘. is ⇧⌘> on a US layout,

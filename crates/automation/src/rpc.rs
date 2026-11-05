@@ -17,7 +17,7 @@
 //!   `doc.importDataSets {path, delimiter?, index?}` (#3216: the same treatment for the export
 //!   and CSV half of #2810), `doc.save {path?, format?, quality?, index?}`, `doc.inspect {index?}`,
 //!   `doc.render {index?, maxSide?, path?}` (writes a PNG to `path`, else
-//!   returns it base64-encoded), `doc.select {index}`, `doc.close {index?}`
+//!   returns it base64-encoded; adds `warnings` when a renderer fell back), `doc.select {index}`, `doc.close {index?}`
 //! - `batch {steps: [{command, params?, wait?} | {method, params?}], stopOnError?}`
 //! - `methods`: this list.
 
@@ -60,6 +60,36 @@ pub const METHODS: &[&str] = &[
     "batch",
     "methods",
 ];
+
+/// Adds the structured memory fields (`required`, soft and hard limits and measured capacity)
+/// from a typed admission error to a JSON error object, so clients can offer approval.
+fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
+    match err {
+        AutomationError::Import(photocraft_io::IoError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdApprovalRequired { required, soft_limit, hard_limit, available_ram, .. }) => {
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("required".into(), json!(required));
+                m.insert("soft".into(), json!(soft_limit));
+                m.insert("softLimit".into(), json!(soft_limit));
+                m.insert("hard".into(), json!(hard_limit));
+                m.insert("hardLimit".into(), json!(hard_limit));
+                if let Some(avail) = available_ram {
+                    m.insert("available".into(), json!(avail));
+                    m.insert("availableRam".into(), json!(avail));
+                }
+            }
+        }
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("required".into(), json!(required));
+                m.insert("hard".into(), json!(limit));
+                m.insert("hardLimit".into(), json!(limit));
+            }
+        }
+        _ => {}
+    }
+}
 
 fn bad(msg: impl Into<String>) -> AutomationError {
     AutomationError::BadRequest(msg.into())
@@ -107,10 +137,18 @@ impl Headless {
             "session.list" => Ok(self.session_list()),
             "doc.open" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.open needs `path`"))?;
-                self.open(&PathBuf::from(path))
+                let approve = match p.get("approveHighMemory") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => return Err(bad("`approveHighMemory` must be a boolean")),
+                };
+                self.open_with_approval(&PathBuf::from(path), approve)
             }
             "doc.place" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.place needs `path`"))?;
+                if p.get("approveHighMemory").is_some_and(|v| !v.is_boolean()) {
+                    return Err(bad("`approveHighMemory` must be a boolean"));
+                }
                 let mut opts = p.as_object().cloned().unwrap_or_default();
                 opts.remove("path");
                 opts.remove("index");
@@ -126,10 +164,22 @@ impl Headless {
             "doc.new" => self.command_run("file.new", p),
             "doc.save" => {
                 let tga_bits = photocraft_engine::file_cmds::tga_bits_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?;
-                let mut opts =
-                    photocraft_io::ExportOptions { tiff_layers: p.get("tiffLayers").and_then(Value::as_bool).unwrap_or(false), tga_bits, ..Default::default() };
+                let mut opts = photocraft_io::ExportOptions {
+                    tiff_layers: p.get("tiffLayers").and_then(Value::as_bool).unwrap_or(false),
+                    tga_bits,
+                    pcraft_full_composite: photocraft_engine::file_cmds::pcraft_full_composite_param(&p, "doc.save")
+                        .map_err(|e| bad(e.to_string()))?
+                        .unwrap_or(false),
+                    ..Default::default()
+                };
                 opts.encode.dpx_bits = photocraft_engine::file_cmds::dpx_bits_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?;
                 opts.encode.dds = photocraft_engine::file_cmds::dds_param(&p, "doc.save").map_err(|e| bad(e.to_string()))?.unwrap_or_default();
+                if let Some(c) = photocraft_engine::file_cmds::tiff_compression_param(&p, "doc.save").map_err(|e| bad(e.to_string()))? {
+                    opts.encode.tiff_compression = c;
+                }
+                let tiff_bool = |key| photocraft_engine::file_cmds::tiff_bool_param(&p, key, "doc.save").map_err(|e| bad(e.to_string()));
+                opts.tiff_transparency = tiff_bool("tiffTransparency")?;
+                opts.encode.tiff_pyramid = tiff_bool("tiffPyramid")?.unwrap_or(false);
                 match p.get("quality") {
                     None | Some(Value::Null) => {}
                     Some(v) => {
@@ -171,16 +221,24 @@ impl Headless {
                     }
                 };
                 let png = self.render_png(index_of(&p)?, max)?;
-                match str_of(&p, "path") {
+                // A GPU to CPU fallback is reported with this reply, not on the next save.
+                let warnings = self.drain_diagnostics();
+                let mut reply = match str_of(&p, "path") {
                     Some(path) => {
                         self.write_render(&PathBuf::from(path), &png)?;
-                        Ok(json!({"path": path, "bytes": png.len()}))
+                        json!({"path": path, "bytes": png.len()})
                     }
-                    None => Ok(json!({
+                    None => json!({
                         "mime": "image/png",
                         "base64": base64::engine::general_purpose::STANDARD.encode(&png),
-                    })),
+                    }),
+                };
+                if !warnings.is_empty()
+                    && let Some(object) = reply.as_object_mut()
+                {
+                    object.insert("warnings".into(), json!(warnings));
                 }
+                Ok(reply)
             }
             "doc.select" => {
                 let i = index_of(&p)?.ok_or_else(|| bad("doc.select needs `index`"))?;
@@ -224,7 +282,11 @@ impl Headless {
             let was_error = r.is_err();
             let result = match r {
                 Ok(v) => json!({"ok": true, "result": v}),
-                Err(e) => json!({"ok": false, "error": e.to_string()}),
+                Err(e) => {
+                    let mut obj = json!({"ok": false, "error": e.to_string()});
+                    attach_memory_error_details(&mut obj, &e);
+                    obj
+                }
             };
             if let Err(error) = reply_budget.charge(&result) {
                 failed += 1;
@@ -260,9 +322,20 @@ pub fn respond(h: &Mutex<Headless>, line: &str) -> Value {
     // poisoned lock is safe to keep using, the same as the MCP server does.
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h.lock().unwrap_or_else(PoisonError::into_inner).handle(method, params)))
         .unwrap_or_else(|_| Err(AutomationError::Other(format!("internal error: `{method}` panicked"))));
+    // A renderer whose diagnostics panic must not lose the reply either.
+    let diagnostics =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h.lock().unwrap_or_else(PoisonError::into_inner).drain_diagnostics())).unwrap_or_default();
+    for diagnostic in diagnostics {
+        // A broken stderr pipe must not panic the server before it writes the reply.
+        let _ = writeln!(std::io::stderr(), "warning: {diagnostic}");
+    }
     match r {
         Ok(v) => json!({"id": id, "ok": true, "result": v}),
-        Err(e) => json!({"id": id, "ok": false, "error": e.to_string()}),
+        Err(e) => {
+            let mut obj = json!({"id": id, "ok": false, "error": e.to_string()});
+            attach_memory_error_details(&mut obj, &e);
+            obj
+        }
     }
 }
 

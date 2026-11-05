@@ -3183,6 +3183,9 @@ curves	Smooth	Tasoita
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} vaiheella ei ole vielä vastaavuutta PhotoCraftissa|{n} vaiheella ei ole vielä vastaavuutta PhotoCraftissa
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Tallennettu {n} toiminto tiedostoon {file}|Tallennettu {n} toimintoa tiedostoon {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} vaihe jätettiin pois, koska sillä ei ole Photoshop-vastinetta|{n} vaihetta jätettiin pois, koska niillä ei ole Photoshop-vastinetta
+@plural	{n} action file loaded|{n} action files loaded	Ladattu {n} toimintotiedosto|Ladattu {n} toimintotiedostoa
+	{set} from {file} replaced the one from {earlier}	Sarja {set} tiedostosta {file} korvasi sarjan tiedostosta {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} tiedoston lataaminen epäonnistui: {errors}|{n} tiedoston lataaminen epäonnistui: {errors}
 
 	File Naming	Tiedostojen nimeäminen
 	Starting serial	Aloitusnumero
@@ -3210,16 +3213,16 @@ curves	Smooth	Tasoita
 	set in Print Settings…	asetetaan kohdassa Tulostusasetukset…
 	ICO is limited to 256 × 256 pixels	ICO-tiedosto on rajoitettu kokoon 256 × 256 pikseliä
 	Calibration	Kalibrointi
-	Red Primary	Punainen pääväri
-	Green Primary	Vihreä pääväri
-	Blue Primary	Sininen pääväri
+	Red Primary	Punainen perusväri
+	Green Primary	Vihreä perusväri
+	Blue Primary	Sininen perusväri
 	Write xmp sidecars	Kirjoita XMP-sivutiedostot
-	Set the tone sliders from the image	Aseta sävysäätimet kuvan perusteella
-	Settings from {name}	Asetukset tiedostosta {name}
-	Settings from {name}; {count} not supported: {names}	Asetukset tiedostosta {name}; {count} tukematonta: {names}
-	Could not write {name}: {error}	Tiedostoa {name} ei voitu kirjoittaa: {error}
-	Kept {name}: written by another application	Tiedosto {name} säilytettiin: sen on kirjoittanut toinen ohjelma
-	Shadow Tint	Varjojen sävytys
+	Set the tone sliders from the image	Aseta sävyliukusäätimet kuvan perusteella
+	Settings from {name}	Asetukset kohteesta {name}
+	Settings from {name}; {count} not supported: {names}	Asetukset kohteesta {name}; {count} ei tuettu: {names}
+	Could not write {name}: {error}	Kohdetta {name} ei voitu kirjoittaa: {error}
+	Kept {name}: written by another application	{name} säilytettiin: toisen sovelluksen kirjoittama
+	Shadow Tint	Varjojen sävy
 # History panel › History Brush source (#2966)
 	Paints from the History panel's source state	Maalaa Historia-paneelin lähdetilasta
 	Sets the source for the history brush	Asettaa historiasiveltimen lähteen
@@ -3251,7 +3254,7 @@ curves	Smooth	Tasoita
 	Show All Fonts	Näytä kaikki fontit
 	All Classes	Kaikki luokat
 	Blackletter	Fraktuura
-	Decorative	Koristefontti
+	Decorative	Koriste
 	Font preview:	Fontin esikatselu:
 	Handwritten	Käsinkirjoitettu
 	Hide Font Classes	Piilota fonttiluokat
@@ -3260,14 +3263,14 @@ curves	Smooth	Tasoita
 	No fonts match these filters.	Mikään fontti ei vastaa näitä suodattimia.
 	No similar fonts: the current font doesn't say what it looks like.	Ei samankaltaisia fontteja: nykyinen fontti ei kerro, miltä se näyttää.
 	OpenType font	OpenType-fontti
-	Sans Serif	Groteski
+	Sans Serif	Pääteviivaton
 	Script	Kaunokirjoitus
-	Serif	Antiikva
+	Serif	Pääteviivallinen
 	Show Font Classes	Näytä fonttiluokat
 	Show Similar Fonts	Näytä samankaltaiset fontit
 	Show Styles	Näytä tyylit
 	Show Variable Fonts	Näytä muuttuvat fontit
-	Slab Serif	Egyptienne
+	Slab Serif	Laattapäätteinen
 	TrueType font	TrueType-fontti
 	Variable font	Muuttuva fontti
 # Bevel & Emboss shading controls.
@@ -3359,6 +3362,7 @@ curves	Smooth	Tasoita
 	This document's layers: {needed} of {budget} for layers	Tämän asiakirjan tasot: {needed} / {budget} tasoille
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Tämän asiakirjan tasot tarvitsevat {needed}, mutta saavat käyttää {budget}: koko asiakirjan uudelleenpiirrot käyttävät suoritinta
 	GPU Memory (MB, 0 = Automatic)	GPU-muisti (Mt, 0 = automaattinen)
+	Scratch Size Limit (MB, 0 = No Limit)	Työlevyn kokoraja (Mt, 0 = ei rajaa)
 	{path}: the path is not valid Unicode; save under another name.	{path}: polku ei ole kelvollista Unicodea; tallenna toisella nimellä.
 	Replace	Korvaa
 	{name} was changed by another app after it was opened or saved here.	Toinen ohjelma on muuttanut tiedostoa {name} sen jälkeen, kun se avattiin tai tallennettiin täällä.
@@ -4315,17 +4319,17 @@ curves	Smooth	Tasoita
 	Select Data Points	Valitse datapisteet
 	Select Layer	Valitse taso
 	Select and Mask	Valitse ja maskaa
-	Color Aware	Värit huomioiva
+	Color Aware	Väritietoinen
 	Decontaminate Colors	Puhdista värit
-	Edge Detection	Reunojen tunnistus
+	Edge Detection	Reunantunnistus
 	Global Refinements	Yleiset tarkennukset
-	High Quality Preview	Korkealaatuinen esikatselu
-	Object Aware	Objektit huomioiva
-	Object Aware needs a segmentation model, which isn't available yet	Objektit huomioiva -tila vaatii segmentointimallin, joka ei ole vielä käytettävissä
+	High Quality Preview	Laadukas esikatselu
+	Object Aware	Objektitietoinen
+	Object Aware needs a segmentation model, which isn't available yet	Objektitietoinen tila tarvitsee segmentointimallin, jota ei vielä ole saatavilla
 	Real-Time Refinement	Reaaliaikainen tarkennus
-	Refine Edge Brush Tool	Reunan tarkennussivellin
+	Refine Edge Brush Tool	Reunan tarkennussivellintyökalu
 	Refine Hair	Tarkenna hiuksia
-	Refine Hair needs hair detection, which isn't available yet	Tarkenna hiuksia -toiminto vaatii hiusten tunnistuksen, joka ei ole vielä käytettävissä
+	Refine Hair needs hair detection, which isn't available yet	Tarkenna hiuksia tarvitsee hiusten tunnistuksen, jota ei vielä ole saatavilla
 	Refine Mode	Tarkennustila
 	Select and Mask was closed: another layer was selected	Valitse ja maskaa suljettiin: toinen taso valittiin
 	Select and Mask was closed: its document is no longer the active one	Valitse ja maskaa suljettiin: sen asiakirja ei ole enää aktiivinen
@@ -4684,23 +4688,23 @@ shape	Appearance	Ulkoasu
 	Make Ramp Web Safe	Rajoita liukuma verkkoturvallisiin väreihin
 # Art History Brush (#213).
 	Art History Brush Tool	Taidehistoriasivellintyökalu
-	Tight Short	Tiukka lyhyt
-	Tight Medium	Tiukka keskipitkä
-	Tight Long	Tiukka pitkä
-	Loose Medium	Löysä keskipitkä
-	Loose Long	Löysä pitkä
+	Tight Short	Tiivis lyhyt
+	Tight Medium	Tiivis keskipitkä
+	Tight Long	Tiivis pitkä
+	Loose Medium	Väljä keskipitkä
+	Loose Long	Väljä pitkä
 	Dab	Täplä
-	Tight Curl	Tiukka kihara
-	Loose Curl	Löysä kihara
-	Stylized dabs from a history state	Tyylitellyt täplät historiatilasta
+	Tight Curl	Tiivis kiehkura
+	Loose Curl	Väljä kiehkura
+	Stylized dabs from a history state	Tyyliteltyjä täpliä historiatilasta
 	Font size presets	Fonttikoon esiasetukset
 	Leading presets	Rivivälin esiasetukset
 	Tracking presets	Kirjainvälin esiasetukset
 
 # Recent labels (histogram statistics, self-update, Artboards and others)
-	CPU Rendering	CPU-renderöinti
+	CPU Rendering	Suoritinpiirto
 	Calculating…	Lasketaan…
-	Click to refresh histogram with uncached data	Napsauta päivittääksesi histogrammin ilman välimuistia
+	Click to refresh histogram with uncached data	Päivitä histogrammi ilman välimuistia napsauttamalla
 	Convert to Shape…	Muunna muodoksi…
 	Cooling Filter (80)	Viilennyssuodatin (80)
 	Cooling Filter (82)	Viilennyssuodatin (82)
@@ -4708,12 +4712,12 @@ shape	Appearance	Ulkoasu
 	Count:	Määrä:
 	Delete Hidden Layers	Poista piilotetut tasot
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	Lisää rajoite vetämällä kuvassa; Shift vaaka-/pystysuunnalle; poista napsauttamalla hiiren kakkospainikkeella.
-	Drawn on the CPU: {reason}. Click for System Info.	Piirretään suorittimella: {reason}. Avaa järjestelmän tiedot napsauttamalla.
+	Drawn on the CPU: {reason}. Click for System Info.	Piirretty suorittimella: {reason}. Avaa järjestelmän tiedot napsauttamalla.
 	Exported {n} files	Vietiin {n} tiedostoa
 	Fit Layer on Screen	Sovita taso näyttöön
 	Flow:	Virtaus:
 	Level:	Sävytaso:
-	Percentile:	Persentiili:
+	Percentile:	Prosenttipiste:
 	Refine Edge…	Tarkenna reunaa…
 	Remember Settings	Muista asetukset
 	Reset Essentials	Nollaa Perusteet

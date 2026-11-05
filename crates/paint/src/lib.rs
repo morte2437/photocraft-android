@@ -22,6 +22,7 @@ pub mod bg_erase;
 pub mod brush;
 pub mod curve;
 pub mod dynamics;
+mod mip_cache;
 pub mod mixer;
 pub mod outline;
 pub mod presets;
@@ -38,6 +39,7 @@ pub use brush::{
     Scattering, SectionLocks, ShapeDynamics, Smoothing, Texture, TipShape, Transfer,
 };
 pub use curve::ResponseCurve;
+pub use mip_cache::{mip_cache_bytes, purge_mip_cache};
 pub use mixer::MixerSettings;
 pub use render::{BrushContext, StrokeRenderer, UnionLive, grid_center, grid_square, render_stroke};
 pub use tile::{GrayTile, StoredTile};

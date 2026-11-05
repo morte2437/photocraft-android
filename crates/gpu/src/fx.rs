@@ -336,8 +336,10 @@ fn bands(r: Rect, rows: i32) -> Vec<Rect> {
     let mut out = Vec::new();
     let mut y = r.y0;
     while y < r.y1 {
-        out.push(Rect::new(r.x0, y, r.x1, (y + rows).min(r.y1)));
-        y += rows;
+        // Saturating near the coordinate ceiling: a wrapped edge would never reach `y1`.
+        let end = y.saturating_add(rows.max(1)).min(r.y1);
+        out.push(Rect::new(r.x0, y, r.x1, end));
+        y = end;
     }
     out
 }
@@ -427,12 +429,20 @@ fn fields_in_windows<const N: usize>(
     })
 }
 
-/// The layer's shape (`compose::layer_shape`) over `r`, in parallel bands.
+/// The layer's shape (`compose::layer_shape`) over `r`, in parallel bands. Callers hand the
+/// result back with `photocraft_raster::scratch::give` once they have read it.
 pub(crate) fn shape(doc: &photocraft_doc::Document, layer: &Layer, r: Rect) -> Vec<f32> {
     if r.is_empty() {
         return Vec::new();
     }
-    par_map(bands(r, BAND), |band| photocraft_compose::layer_shape(doc, layer, band)).concat()
+    let parts = par_map(bands(r, BAND), |band| photocraft_compose::layer_shape(doc, layer, band));
+    let mut shape = photocraft_raster::scratch::take_cap(parts.iter().map(Vec::len).sum());
+    // A band can be a pooled mask (Transparency Shapes Layer off): hand each back once copied.
+    for part in parts {
+        shape.extend_from_slice(&part);
+        photocraft_raster::scratch::give(part);
+    }
+    shape
 }
 
 /// Write `v` (row-major over `r`) into the region-sized `shape`.

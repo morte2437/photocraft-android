@@ -430,6 +430,47 @@ mod tests {
         assert!(rgba(&s, 24, 16)[0] > 0.9, "{:?}", rgba(&s, 24, 16));
     }
 
+    /// Total absolute difference of the layer from `before` (a row of pixels across the stroke).
+    fn row_diff(s: &Session, before: &[[f32; 4]]) -> f32 {
+        before.iter().enumerate().map(|(i, b)| (0..4).map(|c| (rgba(s, 8 + i as i32, 16)[c] - b[c]).abs()).sum::<f32>()).sum()
+    }
+
+    /// The stroke's Opacity scales how far it restores the source, at every depth; omitted = 100.
+    #[test]
+    fn opacity_scales_the_stroke_at_every_depth() {
+        for depth in [8u64, 16, 32] {
+            let setup = || {
+                let mut s = session(48, 32, depth, "rgb");
+                s.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+                s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
+                s
+            };
+            let row = |s: &Session| (8..41).map(|x| rgba(s, x, 16)).collect::<Vec<_>>();
+            let diff = |extra: Value| {
+                let mut s = setup();
+                let before = row(&s);
+                stroke(&mut s, extra).unwrap();
+                row_diff(&s, &before)
+            };
+            let none = diff(json!({"state": 1, "opacity": 0}));
+            let half = diff(json!({"state": 1, "opacity": 50}));
+            let full = diff(json!({"state": 1, "opacity": 100}));
+            let omitted = diff(json!({"state": 1}));
+            assert_eq!(none, 0.0, "opacity 0 leaves the pixels alone at depth {depth}");
+            assert!(half > 0.0 && half < full, "depth {depth}: half {half} full {full}");
+            assert_eq!(omitted, full, "omitted opacity is 100 at depth {depth}");
+        }
+    }
+
+    #[test]
+    fn opacity_out_of_range_is_an_error() {
+        let mut s = session(32, 24, 8, "rgb");
+        paint_layer(&mut s, |_, _| [0.2, 0.3, 0.4, 1.0]);
+        for bad in [json!(150), json!(-1)] {
+            assert!(stroke(&mut s, json!({"state": 1, "opacity": bad})).is_err());
+        }
+    }
+
     #[test]
     fn bad_params_are_errors() {
         let mut s = session(32, 24, 8, "rgb");

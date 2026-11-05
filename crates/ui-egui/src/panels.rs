@@ -33,7 +33,7 @@ mod dock;
 pub mod histogram_panel;
 mod history;
 pub mod history_menu_ui;
-mod info;
+pub(crate) mod info;
 mod layer_drag;
 pub mod layer_filter_ui;
 pub mod layer_menu_ui;
@@ -110,7 +110,9 @@ pub use status_bar::{status_bar, status_bar_heights};
 use title_bar::title_x;
 pub use title_bar::{sync_window_title, system_title_bar, title_bar, window_title};
 #[cfg(test)]
-use toolbar::{STUDIO_CHIP, TOOL_SECTIONS, chips_height, color_chips, tool_flyout_drag_open, tool_flyout_release, toolbar_icon_size, visible_sections};
+use toolbar::{
+    STUDIO_CHIP, TOOL_SECTIONS, chips_height, color_chips, next_slot_tool, tool_flyout_drag_open, tool_flyout_release, toolbar_icon_size, visible_sections,
+};
 pub use toolbar::{paint_toolbar_flyout_indicator, toolbar};
 
 fn c32(c: [f32; 4]) -> Color32 {
@@ -145,7 +147,7 @@ mod title_tests {
 
     #[test]
     fn without_the_preference_the_mark_stays() {
-        // The default (e.g. the web build or the snapshot example): no custom bar, no preference.
+        // The default (e.g. the web build or snapshot example): the integrated title bar.
         let app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         assert!(!system_title_bar(&app));
     }
@@ -1523,7 +1525,10 @@ mod embedding_tests {
     fn whole_app(rail: bool, menu_bar: bool) -> egui_kittest::Harness<'static, PhotocraftApp> {
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1280.0, 800.0)).with_max_steps(64).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            let mut session = photocraft_engine::Session::new();
+            // An empty workspace with its docks, not the Home screen.
+            session.edit_prefs(|p| p.general.auto_show_home_screen = false);
+            let mut app = PhotocraftApp::new(session, crate::Services::default());
             app.ui.panels.rail = rail;
             app.ui.panels.menu_bar = menu_bar;
             app

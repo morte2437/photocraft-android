@@ -283,6 +283,16 @@ pub(crate) fn targets_of(doc: &Document, selected: &[LayerId], active: Option<La
     if ids.is_empty() { active.into_iter().collect() } else { ids }
 }
 
+/// The layers one box over `targets` moves: `targets` with the layers linked to them, as the Move
+/// tool takes them along. In Photoshop transforming one linked layer transforms the whole link
+/// group (#11217). A linked Background joins only when it is a target itself: `targets_of`
+/// leaves it out of a box over other layers, and a link doesn't bring it back in.
+pub fn box_targets(doc: &Document, targets: &[LayerId]) -> Vec<LayerId> {
+    let mut ids = crate::layer_multi_cmds::move_targets(doc, targets);
+    ids.retain(|id| targets.contains(id) || !doc.is_background(*id));
+    ids
+}
+
 /// The `layers` param: the layers one box transforms together (at most 10000, each in the
 /// document), without those a listed group carries. `None` when it isn't given.
 fn layers_param(doc: &Document, p: &Value) -> Result<Option<Vec<LayerId>>> {
@@ -574,13 +584,12 @@ pub fn split_selected(surf: &Surface, sel: &Surface) -> Result<(Surface, Surface
     for (i, (l, r)) in lp.chunks_exact_mut(n).zip(rp.chunks_exact_mut(n)).enumerate() {
         let (x, y) = (src.x0 + (i % w) as i32, src.y0 + (i / w) as i32);
         let k = sel.sample_channel(x, y, 0);
-        // The selection lifts its share of a pixel's coverage, up to all of it, as moving selected
-        // pixels does (`float_cmds::cut_piece`, #7655): after a move the selection is the moved
-        // pixels' alpha, and multiplying left a × (1 − a) of every soft edge behind (#10461).
+        // The selection lifts its share of a pixel's coverage, up to all of it, as Move does
+        // (`float_cmds::cut_piece`, #7655): a layer's own transparency loaded as the selection
+        // lifts it whole and leaves no ghost behind (#5595). An opaque pixel splits as k and 1 − k.
         let a = l[n - 1];
-        let lifted = a.min(k.max(0.0));
-        l[n - 1] = lifted;
-        r[n - 1] = (a - lifted).max(0.0);
+        l[n - 1] = a.min(k);
+        r[n - 1] = (a - k).max(0.0);
         // Likewise an unselected pixel leaves nothing in the lifted surface, so its bounds are the
         // selected pixels' (what a stretch repeats at the edge, #3773).
         if l[n - 1] <= 0.0 {
@@ -646,6 +655,7 @@ pub(crate) fn composite_over(dst: &mut Surface, top: &Surface) {
                     SampleType::F32 => tb.chunks_exact(bpp).all(|px| read_sample(px, SampleType::F32, a) == 1.0),
                 };
                 if all_opaque {
+                    drop(tb);
                     return Some((tc, top_tile));
                 }
                 let all_transparent = match fmt.sample {
@@ -663,6 +673,7 @@ pub(crate) fn composite_over(dst: &mut Surface, top: &Surface) {
                         SampleType::F32 => tb.chunks_exact(bpp).all(|px| read_sample(px, SampleType::F32, a) > 0.0 || px.iter().all(|&b| b == 0)),
                     };
                     if clean_zero {
+                        drop(tb);
                         return Some((tc, top_tile));
                     }
                 }
@@ -745,7 +756,7 @@ pub(crate) fn composite_over(dst: &mut Surface, top: &Surface) {
 
 /// The relative form (`scaleX`, `scaleY` in percent, `rotate` in degrees clockwise, `dx`, `dy`
 /// in pixels), as Photoshop records a Free Transform: scale and rotate about the frame's
-/// centre, then move. `None` when none of them is given.
+/// named reference point (the centre by default), then move. `None` when none of them is given.
 fn relative_matrix(p: &Value, rect: [f64; 4]) -> Result<Option<Homography>> {
     let num = |k: &str| -> Result<Option<f64>> {
         match p.get(k) {
@@ -761,7 +772,7 @@ fn relative_matrix(p: &Value, rect: [f64; 4]) -> Result<Option<Homography>> {
     if sx.abs() < 1e-6 || sy.abs() < 1e-6 {
         return Err(bad("`scaleX` and `scaleY` must not be 0"));
     }
-    let (cx, cy) = ((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0);
+    let [cx, cy] = crate::select_extra_cmds::reference_point("edit.transform", p, rect)?;
     let (sin, cos) = rot.unwrap_or(0.0).to_radians().sin_cos();
     // (x, y) → translate(-c) → scale → rotate → translate(c + d).
     let (a, b, c, d) = (sx * cos, sx * sin, -sy * sin, sy * cos);
@@ -815,8 +826,9 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         (None, false) if many.is_some() => None,
         (None, false) => return Err(EngineError::Other("no active layer".into())),
     };
+    let listed = many.is_some();
     // The layers the box moves: those listed, the one named, or else the layer selection (#6501).
-    let ids: Vec<LayerId> = match (many, explicit) {
+    let mut ids: Vec<LayerId> = match (many, explicit) {
         (Some(ids), _) => ids,
         _ if lone.is_some() => Vec::new(),
         (None, Some(id)) => vec![id],
@@ -824,6 +836,13 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if let Some(missing) = ids.iter().find(|id| st.doc.layer(**id).is_none()) {
         return Err(EngineError::NoLayer(*missing));
+    }
+    // The named layer or the selection takes its linked layers along, as the Move tool does: in
+    // Photoshop transforming one linked layer transforms the whole link group (#11217), but not a
+    // linked Background it didn't target ([`box_targets`]). A caller listing `layers` gets
+    // exactly those.
+    if !listed {
+        ids = box_targets(&st.doc, &ids);
     }
     let rect = match p.get("rect").and_then(Value::as_array) {
         Some(r) if r.len() == 4 => {
@@ -955,7 +974,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Free Transform",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id?,"layers":[id,…]? (several layers moved by one box, one step; default with neither = the selected layers but the Background, as Photoshop's Free Transform with several selected),"rect":[x0,y0,x1,y1]? (source frame; default = the layers' content ∩ selection),"quad":[[x,y]×4]? (where the frame's corners go, clockwise from top-left),"matrix":[a,b,c,d,e,f]? (affine alternative),"scaleX":%?,"scaleY":%?,"rotate":deg?,"dx":px?,"dy":px? (relative alternative: scale and rotate about the frame's centre, then move, as a Photoshop action records a Free Transform),"interpolation":"bicubic|bilinear|nearest|bicubicSharper|bicubicSmoother|bicubicAutomatic"="bicubic" (Photoshop's bicubic variants render as Bicubic),"target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target (an unlinked mask, an alpha channel or the Quick Mask transforms alone; a linked mask moves with its layer)}"##,
+        params: r##"{"layer":id?,"layers":[id,…]? (several layers moved by one box, one step; default with neither = the selected layers but the Background, as Photoshop's Free Transform with several selected),"rect":[x0,y0,x1,y1]? (source frame; default = the layers' content ∩ selection),"quad":[[x,y]×4]? (where the frame's corners go, clockwise from top-left),"matrix":[a,b,c,d,e,f]? (affine alternative),"scaleX":%?,"scaleY":%?,"rotate":deg?,"dx":px?,"dy":px?,"reference":"center|topLeft|top|topRight|left|right|bottomLeft|bottom|bottomRight"|[x,y]="center" (relative alternative: scale and rotate about this point, then move),"interpolation":"bicubic|bilinear|nearest|bicubicSharper|bicubicSmoother|bicubicAutomatic"="bicubic" (Photoshop's bicubic variants render as Bicubic),"target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target (an unlinked mask, an alpha channel or the Quick Mask transforms alone; a linked mask moves with its layer)}"##,
         enabled: has_layer,
         journal: true,
         run: transform,

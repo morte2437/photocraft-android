@@ -308,3 +308,12 @@ fn shape_tiles_and_group_pins_hold_addresses_not_pixels() {
     drop(group);
     assert!(pins.iter().all(|w| w.strong_count() == 0), "a group's pins keep none of its pixels");
 }
+
+#[test]
+fn bands_end_at_the_coordinate_ceiling() {
+    let r = Rect::new(0, i32::MAX - 100, 8, i32::MAX);
+    let bands = super::bands(r, 64);
+    assert_eq!(bands.len(), 2, "{bands:?}");
+    assert_eq!((bands[0].y0, bands[0].y1, bands[1].y1), (i32::MAX - 100, i32::MAX - 36, i32::MAX));
+    assert_eq!(super::bands(Rect::new(0, 0, 8, 10), 0).len(), 10, "a zero step still makes progress");
+}

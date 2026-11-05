@@ -235,7 +235,7 @@ impl BrushContext {
     pub fn new(brush: &BrushSettings) -> Self {
         let brush = brush.bounded_for_render();
         let mips = |t: &TipShape| match t.bitmap() {
-            Some(g) if g.is_valid() => Some(Arc::new(Mips::new(g))),
+            Some(g) if g.is_valid() => Some(crate::mip_cache::tip_mips(g)),
             _ => None,
         };
         Self {
@@ -559,21 +559,24 @@ impl CoverageMap {
                 let keys: Vec<_> = keys.into_iter().zip(touched).filter_map(|(key, touched)| touched.then_some(key)).collect();
                 if parallel(keys.len().saturating_mul(n)) {
                     use rayon::prelude::*;
-                    // Only genuinely parallel work takes ownership of tiles out of the map.
+                    // Only genuinely parallel work takes ownership of tiles out of the map. A new tile's
+                    // zeroing is the expensive part of a large dab, so it happens on the workers.
                     let mut tiles: Vec<_> = keys
                         .into_iter()
                         .map(|(key, tr)| {
                             self.dirty.insert(key);
-                            let tile = self.tiles.remove(&tile_key(key)).unwrap_or_else(CovTile::new);
-                            (key, tr, tile)
+                            (key, tr, self.tiles.remove(&tile_key(key)))
                         })
                         .collect();
-                    tiles.par_iter_mut().for_each(|(key, tr, tile)| {
+                    tiles.par_iter_mut().for_each(|(key, tr, slot)| {
+                        let tile = slot.get_or_insert_with(CovTile::new);
                         dab.prepare(tile);
                         dab.tile(*tr, *key, tile);
                     });
                     for (key, _, tile) in tiles {
-                        self.tiles.insert(tile_key(key), tile);
+                        if let Some(tile) = tile {
+                            self.tiles.insert(tile_key(key), tile);
+                        }
                     }
                 } else {
                     self.accumulate_serial(keys.into_iter(), dab);
@@ -1363,3 +1366,7 @@ mod reference;
 
 #[cfg(test)]
 mod coverage_tests;
+
+#[cfg(test)]
+#[path = "mip_cache_render_tests.rs"]
+mod mip_cache_tests;

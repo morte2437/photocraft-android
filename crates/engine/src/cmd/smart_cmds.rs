@@ -70,6 +70,11 @@ pub fn encode_source(doc: &Document) -> Result<Vec<u8>> {
 
 /// Decodes smart-object contents (a `.pcraft` bundle, PSD/PSB, or any flat image format).
 pub fn decode_source(file_name: &str, bytes: &[u8]) -> Result<Document> {
+    if photocraft_io::svg::is_svg(bytes) {
+        return photocraft_io::svg::import_svg_bounded_images(file_name, bytes, 24_000_000)
+            .map(|imported| imported.document)
+            .map_err(|e| other(format!("can't read SVG smart object contents: {e}")));
+    }
     crate::file_cmds::import(file_name, bytes).map_err(|e| other(format!("can't read smart object contents \"{file_name}\": {e}")))
 }
 
@@ -145,17 +150,22 @@ use contents::{edit_contents, export_contents, is_smart_child, path_param, repla
 use filters::smart_mut;
 pub(crate) use filters::{add_smart_filter, filter_mask_paintable, filter_mask_surface, refresh_after_filter_mask_edit};
 use filters::{blending_options, delete_filter, edit_filters, move_filter, set_filter_params, set_filter_visible, smart, transfer_filters};
-use placing::{convert, detach_psd, shift_layer, via_copy};
+pub(crate) use placing::detach_psd;
+use placing::{convert, shift_layer, via_copy};
 pub use placing::{layer_to_smart, layers_to_smart, placement};
 pub(crate) use placing::{set_placement, shift_smart, transform_placement};
+#[cfg(test)]
+pub(crate) use rendering::DISPLAY_NATIVE_HASH_BYTES;
 use rendering::refresh_or_fail;
 pub(crate) use rendering::source_box;
+#[cfg(test)]
+use rendering::{NativeDigests, blend_surfaces, place, render_in};
 pub use rendering::{apply_smart_filters, purge_stack_cache, refresh, refresh_layer, render, render_below_filter, stack_cache_bytes, stack_image};
 #[cfg(test)]
-use rendering::{blend_surfaces, place, render_in};
+use source::svg_source_image_in;
 pub use source::{SourceImage, purge_source_cache, source_bytes, source_cache_bytes, source_decode_count, source_image, svg_source_image};
 use source::{authorize_source, authorized_source_bytes};
-pub(crate) use source::{restore_unrendered, take_caches};
+pub(crate) use source::{restore_unrendered, take_caches, vector_scale};
 
 const SO: &[&str] = &["Layer", "Smart Objects"];
 const SF: &[&str] = &["Layer", "Smart Filter"];

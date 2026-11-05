@@ -109,6 +109,12 @@ pub struct ToolOptions {
     pub corner_radius: f32,
     pub polygon_sides: u32,
     pub line_weight: f32,
+    /// Line arrowheads.
+    pub arrow_start: bool,
+    pub arrow_end: bool,
+    pub arrow_width: f32,
+    pub arrow_length: f32,
+    pub arrow_concavity: f32,
     /// Freeform Pen › Curve Fit: how far (px) the fitted path may stray from the pointer trace.
     #[serde(default = "default_curve_fit")]
     pub curve_fit: f32,
@@ -307,6 +313,14 @@ pub(super) fn default_layer_filter_mode() -> photocraft_color::BlendMode {
     photocraft_color::BlendMode::Normal
 }
 
+/// A stored Mode filter set to Pass Through, which the Mode list offered until #10878, loads as
+/// Normal: Pass Through isn't a mode the filter lists any more.
+pub(super) fn layer_filter_mode_or_normal<'de, D: serde::Deserializer<'de>>(d: D) -> Result<photocraft_color::BlendMode, D::Error> {
+    use serde::Deserialize;
+    let mode = photocraft_color::BlendMode::deserialize(d)?;
+    Ok(if mode == photocraft_color::BlendMode::PassThrough { photocraft_color::BlendMode::Normal } else { mode })
+}
+
 fn one_u32() -> u32 {
     1
 }
@@ -423,6 +437,11 @@ impl Default for ToolOptions {
             corner_radius: 0.0,
             polygon_sides: 5,
             line_weight: 3.0,
+            arrow_start: false,
+            arrow_end: false,
+            arrow_width: 52.0,
+            arrow_length: 50.0,
+            arrow_concavity: 0.0,
             curve_fit: default_curve_fit(),
             pen_auto_add_delete: true,
             marquee_style: default_marquee_style(),

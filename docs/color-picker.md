@@ -1,6 +1,8 @@
 # Color selection and screen sampling
 
-Click the color swatch in the Type options bar or Character panel to open the full Color Picker. It offers the color field, component strip, HSB/RGB/Lab/CMYK and hex fields, and current/new swatches. Selecting characters targets that range; with no character selection, the active text layer is targeted. **OK** applies through `type.setStyle`; **Cancel** leaves the text and history unchanged. The foreground color is independent of this dialog.
+Click the color swatch in the Type options bar or Character panel to open the full Color Picker. It offers the color field, component strip, HSB/RGB/Lab/CMYK and hex fields, and current/new swatches. Selecting characters targets that range; with no character selection, the active text layer is targeted. While the picker is open, the canvas shows the target in the picked colour, as Photoshop does: the preview runs `type.setStyle` on a copy of the document, so the document, its revision and its history are untouched. **OK** applies through `type.setStyle`, exactly the previewed edit, in one history step; **Cancel** leaves the text and history unchanged. The foreground color is independent of this dialog.
+
+The Color Picker for a gradient fill layer's colour stop (double-click a stop in Properties or on the canvas) previews the same way, through `gradient.fill.stop`. The gradient presets editor's stop picker changes presets, not pixels, and has no canvas preview.
 
 ## HUD Color Picker
 

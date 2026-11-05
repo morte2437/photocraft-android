@@ -23,6 +23,25 @@ pub fn exists(name: &str) -> bool {
     white_icons().contains(name)
 }
 
+/// Rasterize an embedded icon from the white icon set at exact pixel dimensions `[width, height]`.
+pub(crate) fn rasterize_svg(name: &str, width: u32, height: u32) -> Option<egui::ColorImage> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let egui::ImageSource::Bytes { bytes, .. } = white_icons().source(name) else {
+        return None;
+    };
+    egui_extras::image::load_svg_bytes_with_size(bytes.as_ref(), egui::load::SizeHint::Size { width, height, maintain_aspect_ratio: true }, &Default::default())
+        .ok()
+}
+
+/// Panel footer buttons share one glyph per action and one size, so the Layers footer and the
+/// Swatches, Gradients and Patterns footers read the same, as in Photoshop (#10656).
+pub const FOOTER_SIZE: f32 = 26.0;
+pub const FOOTER_NEW: &str = "square-plus";
+pub const FOOTER_NEW_GROUP: &str = "folder";
+pub const FOOTER_DELETE: &str = "trash";
+
 /// An egui image for an icon, tinted.
 pub fn image(name: &str, size: f32, tint: Color32) -> egui::Image<'static> {
     egui::Image::new(white_icons().source(name)).fit_to_exact_size(Vec2::splat(size)).tint(tint)
@@ -126,7 +145,7 @@ pub fn tool_icon(t: Tool) -> &'static str {
         Tool::RedEye => "eye",
         Tool::CloneStamp => "stamp",
         Tool::PatternStamp => "grid-3x3",
-        Tool::HistoryBrush => "clock",
+        Tool::HistoryBrush => "history-brush",
         Tool::ArtHistoryBrush => "sparkles",
         Tool::Blur => "droplet",
         Tool::Sharpen => "triangle",
@@ -342,6 +361,14 @@ mod tests {
             assert_eq!(uri.as_ref(), format!("bytes://icons/{name}.svg"));
             assert_eq!(bytes.as_ref(), expected.as_bytes(), "{name}");
             assert!(!std::str::from_utf8(&bytes).unwrap().contains("currentColor"), "{name}");
+        }
+    }
+
+    /// #10656: a misspelt footer glyph would silently draw the fallback square.
+    #[test]
+    fn footer_glyphs_are_bundled() {
+        for name in [FOOTER_NEW, FOOTER_NEW_GROUP, FOOTER_DELETE] {
+            assert!(exists(name), "{name}");
         }
     }
 

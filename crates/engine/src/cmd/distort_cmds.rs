@@ -191,10 +191,7 @@ pub fn apply_to_surface(id: &str, params: &Value, surf: &Surface, canvas: Rect) 
 // ---------- commands ----------
 
 fn target(s: &Session, p: &Value) -> Result<LayerId> {
-    match p.get("layer").and_then(Value::as_u64) {
-        Some(v) => Ok(LayerId(v)),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into())),
-    }
+    crate::commands::layer_param(s, p)
 }
 
 fn pixel_layer(s: &Session) -> std::result::Result<(), String> {
@@ -232,6 +229,7 @@ type LayerFn<'a> = &'a dyn Fn(&Surface, Option<&Surface>, Rect) -> Result<Surfac
 
 fn run_on_layer(s: &mut Session, cmd: &str, label: &str, p: &Value, moves: bool, f: LayerFn, mask: MaskFn) -> Result<Value> {
     let id = target(s, p)?;
+    let colors = crate::color_channels::target(s, p)?.is_some();
     let mut params = p.clone();
     if let Value::Object(m) = &mut params {
         m.remove("layer");
@@ -241,7 +239,7 @@ fn run_on_layer(s: &mut Session, cmd: &str, label: &str, p: &Value, moves: bool,
         let selection = doc.selection.clone();
         let group = crate::transform_cmds::group_locks(doc, id);
         // A Background gains transparency when the distortion moves pixels (as in Photoshop).
-        if moves {
+        if moves && !colors {
             crate::extra_cmds::background_to_layer(doc, id);
         }
         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
@@ -252,13 +250,14 @@ fn run_on_layer(s: &mut Session, cmd: &str, label: &str, p: &Value, moves: bool,
             let sf = SmartFilter { command: cmd.to_string(), params: params.clone(), blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
             return crate::smart_cmds::add_smart_filter(doc, id, sf, selection.as_ref());
         }
-        check_locks(l, group, moves)?;
+        check_locks(l, group, moves && !colors)?;
         let LayerContent::Raster(surf) = &mut l.content else {
             return Err(EngineError::Other(format!("{label} needs a pixel layer (rasterize it first)")));
         };
         *surf = f(surf, selection.as_ref(), canvas)?;
         // A linked layer mask follows a geometric warp, only where the pixels moved (#3083).
-        if let (Some(mf), Some(m)) = (mask, l.mask.as_mut())
+        if !colors
+            && let (Some(mf), Some(m)) = (mask, l.mask.as_mut())
             && m.linked
         {
             m.surface = mf(&m.surface, selection.as_ref())?;

@@ -33,14 +33,13 @@ pub const SECTIONS: [(&str, &str); 18] = [
 /// They still load, save and round-trip through `prefs.get` / `prefs.set` unchanged.
 ///
 /// When you implement one, remove it here; the `prefs_usage` test fails while a listed
-/// preference is read anywhere outside `prefs.rs`, and while an unlisted one is read nowhere.
+/// preference is read anywhere outside the prefs model (`prefs.rs` except its `impl Session`
+/// blocks), and while an unlisted one is read nowhere.
 pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
     "general.colorPicker",
     "workspace.autoShowHiddenPanels",
     "workspace.enableFloatingDocumentWindowDocking",
-    "performance.effectCacheMb",
     "performance.legacyCompositing",
-    "scratchDisks.disks",
     "unitsAndRulers.columnWidth",
     "unitsAndRulers.gutter",
     "plugIns.showExtensionPanels",
@@ -119,10 +118,11 @@ pub fn range(path: &str) -> Option<(f64, f64)> {
         "export.jpegQuality" | "export.webpQuality" => (1.0, 100.0),
         "performance.memoryUsageMb" => (256.0, 1_048_576.0),
         "performance.gpuMemoryMb" => (0.0, 1_048_576.0),
+        "performance.memoryUsagePercent" => (1.0, 95.0),
         "performance.historyStates" => (1.0, 1000.0),
         "performance.cacheLevels" => (1.0, 8.0),
         "performance.cacheTileSize" => (256.0, 16384.0),
-        "performance.effectCacheMb" => (16.0, 65536.0),
+        "performance.effectCacheMb" => (f64::from(super::EFFECT_CACHE_MIN_MB), f64::from(super::effect_cache_max_mb(super::SMALL_ADDRESS_SPACE))),
         "transparencyAndGamut.gamutWarningOpacity" => (1.0, 100.0),
         "unitsAndRulers.columnWidth" | "unitsAndRulers.gutter" => (0.0, 10_000.0),
         "unitsAndRulers.printResolution" | "unitsAndRulers.screenResolution" | "rawDefaults.resolution" => (1.0, 10_000.0),
@@ -231,7 +231,7 @@ pub(super) fn check_value(path: &str, v: &Value) -> std::result::Result<(), Stri
             seen.push(theme);
         }
     }
-    if path == "performance.renderingMode" && v.is_null() {
+    if matches!(path, "performance.renderingMode" | "performance.memoryUsagePercent") && v.is_null() {
         return Ok(()); // Legacy policy, resolved from useGpu and gpuBackend.
     }
     if let Some(c) = choices(path) {

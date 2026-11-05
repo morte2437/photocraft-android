@@ -68,7 +68,11 @@ Shape Stroke Options (updated 2026-10-11) sizes to its content and scrolls only 
 It has no Apply/Cancel footer. Solid, Dashed and Dotted are full clickable rows with line
 samples and visible selection; opening the editor alone never changes a shape. Invalid pending
 numeric input leaves the last valid style in effect. Fill and Stroke use clickable swatches
-and the existing compact colour picker, preserving alpha and offering No Color. The style
+that open Photoshop's paint popover (paint types, Color Picker button, Recently Used Colors, swatch
+folders, the Gradient tab; updated 2026-10-27), preserving alpha and offering No Color. Every other colour swatch
+(`widgets::color_edit_button*`: Photo Filter, Black & White tint, Gradient Map stops, Content-Aware
+Fill overlay, Filter Gallery glow, Save for Web colour table) opens the full Color Picker dialog,
+never egui's built-in picker. The style
 button remains available when no stroke is set; deliberately choosing a stroke colour or
 style enables a 3 px stroke. Colours, borders and selection treatments come from theme tokens.
 These tool defaults are serde state, but are not restored across app restarts. See

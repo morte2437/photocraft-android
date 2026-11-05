@@ -503,15 +503,18 @@ fn apply_engine_data(layer: &mut TextLayer, e: &E, txt: Option<&str>, k: f32) {
         .map(|a| a.iter().filter_map(|x| x.get("StyleSheet")).take(max_sruns).collect())
         .unwrap_or_default();
     // The paragraph run each character run starts in (UTF-16 offsets).
+    // Each paragraph run's end, once: a scan from the first paragraph for every character run was
+    // quadratic in the file's run counts. A negative or NaN length ends nothing (it never did).
+    let para_ends: Vec<f64> = plens16
+        .iter()
+        .scan(0.0, |end, n| {
+            *end += n.max(0.0);
+            Some(*end)
+        })
+        .collect();
     let para_of = |at: f64| -> Option<usize> {
-        let mut end = 0.0;
-        for (i, n) in plens16.iter().enumerate() {
-            end += n;
-            if at < end {
-                return Some(i);
-            }
-        }
-        plens16.len().checked_sub(1)
+        let i = para_ends.partition_point(|&end| end <= at);
+        if i < para_ends.len() { Some(i) } else { plens16.len().checked_sub(1) }
     };
     let mut at16 = 0.0;
     let bases: Vec<[Option<&E>; 3]> = ssheets

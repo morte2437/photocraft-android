@@ -435,6 +435,18 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             let stem = name.rsplit_once('.').map_or(name.as_str(), |(a, _)| a).to_string();
             dialog(app, json!({"path": format!("{dir}/{stem}.pdf"), "quality": 10}), json!({}))
         }
+        "file.export.dataSetsAsFiles" => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (app, dir, doc);
+                Some(Err(tl!("Data Sets as Files is unavailable on the web").to_string()))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (_, _, _) = doc?;
+                dialog(app, json!({"dir": dir, "naming": "{name}", "format": "png"}), json!({"format": ["png", "jpg", "psd", "tiff", "webp", "bmp"]}))
+            }
+        }
         "layer.new.artboard" => {
             let (w, h, _) = doc?;
             let presets: Vec<&str> = std::iter::once("").chain(photocraft_engine::artboard_cmds::PRESETS.iter().map(|p| p.0)).collect();
@@ -490,8 +502,15 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
             let name = action.name.clone();
             dialog(
                 app,
-                json!({"action": name, "steps": steps, "input": dir, "includeSubfolders": false, "__labels": subfolders_label(), "output": format!("{dir}/batch"), "format": "same", "quality": null, "__batchQuality": 8, "naming": "", "startingSerial": 1}),
-                json!({"format": ["same", "png", "jpg", "psd", "tiff", "webp"]}),
+                json!({
+                    "action": name, "steps": steps, "source": "folder", "input": dir,
+                    "includeSubfolders": false, "__labels": subfolders_label(),
+                    "output": format!("{dir}/batch"), "format": "same", "quality": null,
+                    "__batchQuality": 8, "naming": "", "startingSerial": 1,
+                    "stopOnError": false, "errorLog": "",
+                    "__order": ["action", "source", "input", "includeSubfolders", "output", "format", "naming", "startingSerial", "quality", "stopOnError", "errorLog"]
+                }),
+                json!({"format": ["same", "png", "jpg", "psd", "tiff", "webp"], "source": ["folder", "open"]}),
             )
         }
         // Channel workflow dialogs (see channels_panel.rs for the channel references).
@@ -589,8 +608,9 @@ fn save_a_copy(app: &mut PhotocraftApp) -> Result<Value, String> {
     let suggested = format!("{stem}{}.psd", app.session.prefs().file_handling.copy_suffix());
     // The copy is of the document as it was when asked.
     app.pick_save(&suggested, move |app, path| {
-        // An RGB Targa asks for its bits per pixel first, a DDS texture for its compression, and
-        // a JPEG for its JPEG Options; the copy is written from the prompt.
+        // An RGB Targa asks for its bits per pixel first, a DDS texture for its compression, a
+        // JPEG for its JPEG Options and a TIFF for its TIFF Options; the copy is written from the
+        // prompt.
         let parked = app.with_document(doc.id, |app| {
             if crate::targa_options_ui::wants_prompt(app, &path) {
                 crate::targa_options_ui::park(app, path.clone(), true, "file.saveACopy")?;
@@ -602,6 +622,10 @@ fn save_a_copy(app: &mut PhotocraftApp) -> Result<Value, String> {
             }
             if crate::jpeg_options_ui::wants_prompt(app, &path) {
                 crate::jpeg_options_ui::park(app, path.clone(), true, "file.saveACopy")?;
+                return Ok(true);
+            }
+            if crate::tiff_options_ui::wants_prompt(app, &path) {
+                crate::tiff_options_ui::park(app, path.clone(), true, "file.saveACopy")?;
                 return Ok(true);
             }
             Ok(false)

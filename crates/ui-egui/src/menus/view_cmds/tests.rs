@@ -41,6 +41,29 @@ fn place_embedded_enablement_does_not_require_native_doc() {
 }
 
 #[test]
+fn data_sets_as_files_enablement_respects_target_platform() {
+    let (app, _) = app_with(1);
+    let enabled = is_enabled_with_engine(&app, "file.export.dataSetsAsFiles", || true);
+    if cfg!(target_arch = "wasm32") {
+        assert_eq!(enabled, Some(false));
+    } else {
+        assert_eq!(enabled, Some(true));
+    }
+}
+
+#[test]
+fn data_sets_as_files_dialog_respects_target_platform() {
+    let (mut app, ctx) = app_with(1);
+    app.run("image.variables.dataSets", json!({"dataSets": [{"name": "Set 1", "values": []}]})).unwrap();
+    let res = front(&mut app, &ctx, "file.export.dataSetsAsFiles", &json!({}));
+    if cfg!(target_arch = "wasm32") {
+        assert!(matches!(res, Some(Err(msg)) if msg.contains("unavailable on the web")));
+    } else {
+        assert!(matches!(res, Some(Ok(v)) if v.get("dialog").is_some()));
+    }
+}
+
+#[test]
 fn show_snap_extras_and_screen_modes_are_state() {
     let (mut app, ctx) = app_with(1);
     for id in [
@@ -256,6 +279,46 @@ fn type_menu_checkmarks_follow_the_layer() {
 }
 
 #[test]
+fn numerals_checkmark_follows_the_selection() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.numerals.tabularLining";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.lining"), Some(false));
+    menu(&mut app, &ctx, "type.openType.numerals.default", json!({})).unwrap();
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.notAStyle"), None);
+}
+
+#[test]
+fn stylistic_set_checkmark_follows_the_toggle() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.stylisticSets.set4";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.stylisticSets.set5"), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(false));
+    for bad in ["set0", "set21", "set04", "set", "set-1", "setx", "set100"] {
+        // Not through `checked`, which only finds catalog items: these ids must reach the resolver.
+        assert_eq!(super::dispatch::checked(&app, &format!("type.openType.stylisticSets.{bad}")), None, "{bad}");
+    }
+}
+
+#[test]
 fn batch_menu_requires_a_recorded_action() {
     let (mut app, ctx) = app_with(1);
     assert!(!crate::menus::is_enabled(&app, "file.automate.batch"));
@@ -437,12 +500,22 @@ fn batch_dialogs_include_all_subfolders() {
         let fields = &mut app.ui.dialog_mut(d).unwrap().fields;
         assert_eq!(fields["includeSubfolders"], json!(false), "{id}");
         assert_eq!(fields["__labels"]["includeSubfolders"], json!("Include All Subfolders"), "{id}");
+        if id == "file.automate.batch" {
+            assert_eq!(fields["source"], json!("folder"));
+            assert_eq!(fields["stopOnError"], json!(false));
+            assert_eq!(fields["errorLog"], json!(""));
+        }
         fields.insert("input".into(), json!(input));
         fields.insert("output".into(), json!(dir.join(out).to_string_lossy()));
         fields.insert("includeSubfolders".into(), json!(true));
         let r = crate::dialogs::confirm(&mut app, d).unwrap();
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{id}: {r}");
-        assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        if id == "file.automate.batch" {
+            assert!(dir.join(out).join("a.png").is_file(), "{id} writes subfolder inputs flat: {r}");
+            assert!(!dir.join(out).join("sub").exists());
+        } else {
+            assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

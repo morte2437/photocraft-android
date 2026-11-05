@@ -6,6 +6,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+gpu = [
+    "dep:photocraft-gpu",
+    "dep:wgpu",
+    "dep:pollster",
+    "photocraft-gpu/native",
+]
+
 [lints]
 workspace = true
 
@@ -28,9 +37,20 @@ getrandom = { workspace = true }
 cap-std = "4"
 clap = { workspace = true }
 
+# Optional native GPU rendering backend
+photocraft-gpu = { workspace = true, optional = true }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"], optional = true }
+pollster = { version = "1", optional = true }
+
 [dev-dependencies]
+photocraft-color = { workspace = true }
+photocraft-geom = { workspace = true }
 # Synthetic camera raws (#7789).
 photocraft-raw = { workspace = true, features = ["testgen"] }
+# Tiny generated PSDs and the scoped estimate charge for the high-memory approval tests
+# (no multi-gigabyte fixture or global override).
+photocraft-io = { workspace = true, features = ["testgen"] }
+photocraft-psd = { workspace = true, features = ["testgen"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "net", "io-util", "time"] }
 

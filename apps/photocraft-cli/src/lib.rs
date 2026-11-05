@@ -14,6 +14,7 @@ mod automation;
 mod batch;
 mod document;
 mod error;
+mod gpu;
 mod output;
 
 pub use actions::{ActionsError, Steps, load_actions, load_actions_file, parse_actions};

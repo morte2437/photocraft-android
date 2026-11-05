@@ -32,7 +32,7 @@ pub use moves::{move_targets, move_to, moved, moved_target, moves_mask_alone, pr
 use selection::{doc_state, find_layers, select_all_layers, select_linked};
 pub(crate) use selection::{mask_targets, recorded_step, reselect, targets, top_level};
 pub use selection::{select, selected, set_selection};
-pub(crate) use structure::{check_group_depth, deletion_neighbours};
+pub(crate) use structure::{check_group_depth, deletion_neighbours, relink_copies};
 pub use structure::{delete_selected, duplicate_selected, group_layers, set_visible_selected};
 use structure::{link_layers, lock_layers, merge_layers, rename_layer, reverse};
 
@@ -134,9 +134,15 @@ pub fn specs() -> Vec<CommandSpec> {
             s,
             "vertically"
         )),
-        spec!("layer.linkLayers", "Link Layers", &["Layer"], None, "{} (toggles: unlinks when the selection is already one link group)", can_link, |s, _| {
-            link_layers(s)
-        }),
+        spec!(
+            "layer.linkLayers",
+            "Link Layers",
+            &["Layer"],
+            None,
+            r#"{"linked":bool?} (omitted: toggle; explicit true links, false unlinks)"#,
+            can_link,
+            link_layers
+        ),
         spec!("layer.mergeLayers", "Merge Layers", &["Layer"], Some("Cmd+E"), "{} (one layer selected: Merge Down)", has_layer, |s, _| merge_layers(s)),
         spec!(
             "layer.new.groupFromLayers",

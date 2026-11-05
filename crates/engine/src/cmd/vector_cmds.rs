@@ -73,8 +73,8 @@ pub(crate) use params::{layer_id, nums, op_from, pt};
 pub use params::{parse_path, parse_stroke, path_json};
 pub use paths::STROKE_PATH_TOOLS;
 use paths::{
-    clipping_path_clear, clipping_path_set, path_delete, path_fill, path_rename, path_set, path_stroke, path_to_selection, path_transform, paths_list,
-    resolve_path, select_to_work_path,
+    clipping_path_clear, clipping_path_set, path_delete, path_fill, path_rename, path_set, path_stroke, path_to_selection, path_to_selection_with_mode,
+    path_transform, paths_list, resolve_path, select_to_work_path,
 };
 pub(crate) use paths::{is_work, path_mut};
 pub(crate) use shape::{bake_path, map_path, map_shape, shift_shape, with_shape};
@@ -98,7 +98,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New Shape Layer",
             ["Layer", "New"],
             leak(format!(
-                r##"{{"kind":"rect|roundedRect|ellipse|polygon|star|line|path"="rect","rect":[x,y,w,h] (rect/roundedRect/ellipse/polygon/star),"radii":[tl,tr,br,bl]|r (roundedRect=10),"sides":3..100=5,"starRatio":0..1 (star=0.5),"cornerRadius":px=0 (polygon/star: rounds every vertex; the Triangle tool is a 3-sided polygon),"from":[x,y],"to":[x,y],"weight":px=1 (line),"path":{{…}} (kind path),{fill}=foreground,{stroke}=none,"name":str?,"addTo":layerId? + "op":"combine|subtract|intersect|exclude" (append to an existing shape layer)}} → shape.info. {PATH_FORM}"##
+                r##"{{"kind":"rect|roundedRect|ellipse|polygon|star|line|path"="rect","rect":[x,y,w,h] (rect/roundedRect/ellipse/polygon/star),"radii":[tl,tr,br,bl]|r (roundedRect=10),"sides":3..100=5,"starRatio":0..1 (star=0.5),"cornerRadius":px=0 (polygon/star: rounds every vertex; the Triangle tool is a 3-sided polygon),"from":[x,y],"to":[x,y],"weight":px=1 (line),"arrowStart":bool=false,"arrowEnd":bool=false,"arrowWidth":px=52,"arrowLength":px=50,"arrowConcavity":0..100=0 (line),"path":{{…}} (kind path),{fill}=foreground,{stroke}=none,"name":str?,"addTo":layerId? + "op":"combine|subtract|intersect|exclude" (append to an existing shape layer)}} → shape.info. {PATH_FORM}"##
             )),
             has_doc,
             shape_create
@@ -108,7 +108,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Shape",
             [],
             leak(format!(
-                r##"{{"layer":id?,"path":{{…}}? (replaces; drops live shape),"kind":str?,"rect":[x,y,w,h]?,"radii":[tl,tr,br,bl]|r?,"sides":n?,"starRatio":r?,"cornerRadius":px?,"from":[x,y]?,"to":[x,y]?,"weight":px? (live-shape params regenerate the path),"move":[dx,dy]?,"transform":[a,b,c,d,e,f]?,"op":"combine|…"? + "subpath":index? (default all but the first),"fillRule":"nonzero|evenodd"?,{fill}?,{stroke}? (merged into the current stroke),"name":str?}} → shape.info"##
+                r##"{{"layer":id?,"path":{{…}}? (replaces; drops live shape),"kind":str?,"rect":[x,y,w,h]?,"radii":[tl,tr,br,bl]|r?,"sides":n?,"starRatio":r?,"cornerRadius":px?,"from":[x,y]?,"to":[x,y]?,"weight":px? (live-shape params regenerate the path),"arrowStart":bool?,"arrowEnd":bool?,"arrowWidth":px?,"arrowLength":px?,"arrowConcavity":0..100? (line arrows),"move":[dx,dy]?,"transform":[a,b,c,d,e,f]?,"op":"combine|…"? + "subpath":index? (default all but the first),"fillRule":"nonzero|evenodd"?,{fill}?,{stroke}? (merged into the current stroke),"name":str?}} → shape.info"##
             )),
             has_layer,
             shape_edit
@@ -207,6 +207,27 @@ pub fn specs() -> Vec<CommandSpec> {
             params: r##"{"name":str|"work"|"layer"="work","feather":px=0,"antiAlias":bool=true,"mode":"replace|add|subtract|intersect"="replace"}"##,
             enabled: has_doc,
             run: path_to_selection,
+            journal: true,
+        },
+        // ⌘⇧↩ / Ctrl+Shift+Enter adds the path to the selection, ⌘⌥↩ / Ctrl+Alt+Enter subtracts it.
+        CommandSpec {
+            id: "path.addToSelection",
+            label: "Add Path to Selection",
+            menu: &[],
+            shortcut: Some("Cmd+Shift+Enter"),
+            params: r##"{"name":str|"work"|"layer"="work","feather":px=0,"antiAlias":bool=true} (path.toSelection with mode "add")"##,
+            enabled: has_doc,
+            run: |s, p| path_to_selection_with_mode(s, p, "add"),
+            journal: true,
+        },
+        CommandSpec {
+            id: "path.subtractFromSelection",
+            label: "Subtract Path from Selection",
+            menu: &[],
+            shortcut: Some("Cmd+Alt+Enter"),
+            params: r##"{"name":str|"work"|"layer"="work","feather":px=0,"antiAlias":bool=true} (path.toSelection with mode "subtract")"##,
+            enabled: has_doc,
+            run: |s, p| path_to_selection_with_mode(s, p, "subtract"),
             journal: true,
         },
         spec!("select.toWorkPath", "Make Work Path", [], r##"{"tolerance":0.5..10 px=2} → {subpaths,knots}"##, has_selection, select_to_work_path),

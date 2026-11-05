@@ -1181,6 +1181,7 @@
 	History Brush	Előzményecset
 	Paints from the History panel's source state	Az Előzmények panel forrásállapotából fest
 	Sets the source for the history brush	Beállítja az előzményecset forrását
+	The History Brush source was deleted: set a new source in the History panel	Az előzményecset forrása törölve lett: állítson be új forrást az Előzmények panelen
 	Horizontal scale	Vízszintes méretarány
 	Horizontal type	Vízszintes szöveg
 	Hue Jitter	Színárnyalat ingadozása
@@ -1979,6 +1980,7 @@ layerLabel	Magenta	Bíbor
 	Size:	Méret:
 	Source: not set ({key}-click with Clone Stamp)	Forrás: nincs beállítva ({key}+kattintás a klónozó bélyegzővel)
 	Source: set	Forrás: beállítva
+	Source: {name}	Forrás: {name}
 	Style	Stílus
 	Subtract from selection  ({key})	Kivonás a kijelölésből  ({key})
 	Swap colours (X)	Színek cseréje (X)
@@ -4144,6 +4146,9 @@ cameraRaw	Yellow	Sárga
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} lépésnek még nincs megfelelője a PhotoCraftban
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} művelet mentve. Cél: {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} Photoshop-megfelelő nélküli lépés kihagyva
+@plural	{n} action file loaded|{n} action files loaded	{n} műveletfájl betöltve
+	{set} from {file} replaced the one from {earlier}	A(z) {file} {set} készlete lecserélte a(z) {earlier} készletét
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fájlt nem sikerült betölteni: {errors}
 	Starting serial	Kezdő sorszám
 	Insert Stop…	Leállítás beszúrása…
 	Save Set…	Készlet mentése…
@@ -4192,6 +4197,7 @@ cameraRaw	Yellow	Sárga
 	Kept {name}: written by another application	{name} megtartva: egy másik alkalmazás írta
 	Shadow Tint	Árnyék színezet
 	Redrawing	Újrarajzolás
+	Memory usage percent	Memóriahasználat százaléka
 	Show Favorite Fonts	Kedvenc betűtípusok megjelenítése
 	No favorite fonts yet: click the star beside a font to add it.	Még nincsenek kedvenc betűtípusok: kattintson a betűtípus melletti csillagra a hozzáadáshoz.
 	Favorite fonts	Kedvenc betűtípusok
@@ -4241,6 +4247,7 @@ cameraRaw	Yellow	Sárga
 	Chisel Soft	Lágy vésés
 	Open color-less EXR as ACEScg	Színinformáció nélküli EXR megnyitása ACEScg-ként
 	Do not append "copy" to filename when saving a copy	Ne fűzze a „copy” szót a fájlnévhez másolat mentésekor
+	Save Full-Size Composite in .pcraft Files	Teljes méretű kompozit kép mentése a .pcraft fájlokba
 	Edit Selected Guides	Kijelölt segédvonalak szerkesztése
 	Clear Selected Guides	Kijelölt segédvonalak törlése
 	Bicubic Automatic	Automatikus bikubikus
@@ -4316,6 +4323,7 @@ cameraRaw	Yellow	Sárga
 	This document's layers: {needed} of {budget} for layers	A dokumentum rétegei: {needed} / {budget} a rétegeknek
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	A dokumentum rétegeinek {needed} kell, de {budget} foglalhatnak: a teljes dokumentum újrarajzolása a CPU-n fut
 	GPU Memory (MB, 0 = Automatic)	GPU-memória (MB, 0 = Automatikus)
+	Scratch Size Limit (MB, 0 = No Limit)	Lapozólemez méretkorlátja (MB, 0 = nincs korlát)
 	{path}: the path is not valid Unicode; save under another name.	{path}: az elérési út nem érvényes Unicode-szöveg. Mentsd más néven.
 	{name} was changed by another app after it was opened or saved here.	A(z) {name} fájlt egy másik alkalmazás módosította, miután itt megnyitották vagy mentették.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Cserélje le erre a dokumentumra, vagy válassza a Mégse gombot, és a Fájl › Mentés másként paranccsal tartsa meg mindkettőt.
@@ -4351,6 +4359,18 @@ cameraRaw	Yellow	Sárga
 	There is no color table to save.	Nincs menthető színtábla.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} szín mentve ide: {file}
 	GPU adapter	GPU-adapter
+smartSvg	Choose executable…	Futtatható fájl kiválasztása…
+smartSvg	Choose the application used to edit this SVG:	Válassza ki az SVG szerkesztésére használt alkalmazást:
+smartSvg	Edit SVG Smart Object	SVG intelligens objektum szerkesztése
+smartSvg	Other application	Másik alkalmazás
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (belső szerkesztő)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	Az SVG-szerkesztő megnyílt. Mentse az SVG-t az intelligens objektum frissítéséhez.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Mentse a megnyitott SVG-fájlba. Minden mentett módosítás külön visszavonási lépés lesz a PhotoCraftban.
+smartSvg	Stop syncing this Smart Object	Az intelligens objektum szinkronizálásának leállítása
+smartSvg	Updates wait while another document or an editing dialog is active.	A frissítések várakoznak, amíg másik dokumentum vagy szerkesztési párbeszédablak aktív.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Az AI/PDF/EPS tartalom SVG-ként szerkeszthető. A mentés lecseréli a beágyazott forrást; a formátumspecifikus tulajdonságok megváltozhatnak.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Stílusok importálása…
 	Export Selected Styles…	Kijelölt stílusok exportálása…
 	Export Styles…	Stílusok exportálása…
@@ -4398,6 +4418,7 @@ cameraRaw	Yellow	Sárga
 	Font size presets	Betűméret-előbeállítások
 	Leading presets	Sorköz-előbeállítások
 	Tracking presets	Betűköz-előbeállítások
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Érvénytelen számbevitel. {min}% és {max}% közötti egész szám szükséges. Az előző érték lett beillesztve.
 	Color Aware	Színalapú
 	Decontaminate Colors	Színek fertőtlenítése
 	Edge Detection	Élészlelés
@@ -4415,4 +4436,17 @@ cameraRaw	Yellow	Sárga
 	Select and Mask was closed: its document is no longer the active one	A Kijelölés és maszk bezárult: a dokumentuma már nem az aktív
 	Select and Mask was closed: another layer was selected	A Kijelölés és maszk bezárult: másik réteg lett kijelölve
 	Drag to move the selected path	Húzza a kijelölt útvonal mozgatásához
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Legutóbb használt színek
+	Stop Color	Színpont színe
+	Shapes can't use patterns yet	Az alakzatok még nem használhatnak mintákat
 	Edit Brush…	Ecset szerkesztése…
+	This Layer:	Ez a réteg:
+	Generator enabled	Generátor bekapcsolva
+	Move Up	Mozgatás felfelé
+	Move Down	Mozgatás lefelé
+	On your computer	A számítógépen
+	New file	Új fájl
+	Learn	Tanulás
+	Website	Weboldal

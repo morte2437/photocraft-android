@@ -97,6 +97,18 @@ pub fn paint_badge(painter: &egui::Painter, center: egui::Pos2, color: Color32) 
     }
 }
 
+/// Select smart object `layer` now, ahead of its filter editor. The editor captures the
+/// document's revision as its target, so the click's queued `layer.select` must not run after it
+/// opens (OK would refuse the edit): select first, as the Layers panel runs it. False when the
+/// selection failed and the editor must stay closed.
+fn select_before_editor(app: &mut PhotocraftApp, layer: u64, actions: &mut Vec<(String, Value)>) -> bool {
+    actions.retain(|(id, p)| !(id == "layer.select" && p.get("layer").and_then(Value::as_u64) == Some(layer)));
+    if app.ui.text_edit.is_some() {
+        crate::type_tool::commit(app);
+    }
+    app.run("layer.select", json!({"layer": layer})).is_ok()
+}
+
 /// Paint the Smart Filters header and one row per filter of Smart Object `l` (top filter first), with their drag, drop and click handling; actions go to `actions`.
 pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l: &Layer, depth: usize, actions: &mut Vec<(String, Value)>) {
     let LayerContent::Smart(sm) = &l.content else { return };
@@ -202,6 +214,7 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
         }
         if let Some(i) = index
             && hit(egui::Response::double_clicked)
+            && (active || select_before_editor(app, l.id.0, actions))
         {
             open_editor(app, ui.ctx(), l.id.0, sm, i);
         }

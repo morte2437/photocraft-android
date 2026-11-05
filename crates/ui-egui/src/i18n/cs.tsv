@@ -1964,6 +1964,7 @@
 	Soften	Změkčení
 	Source	Zdroj
 	Source: set	Zdroj: nastaven
+	Source: {name}	Zdroj: {name}
 	Sponge Tool	Nástroj houba
 	Spot Healing Brush Tool	Nástroj bodový retušovací štětec
 	Spread	Rozprostření
@@ -3884,6 +3885,9 @@ navigator	Zoom	Zvětšení
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} krok zatím nemá v PhotoCraftu obdobu|{n} kroky zatím nemají v PhotoCraftu obdobu|{n} kroků zatím nemá v PhotoCraftu obdobu
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Uložena {n} akce do souboru {file}|Uloženy {n} akce do souboru {file}|Uloženo {n} akcí do souboru {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Vynechán {n} krok bez obdoby v Photoshopu|Vynechány {n} kroky bez obdoby v Photoshopu|Vynecháno {n} kroků bez obdoby v Photoshopu
+@plural	{n} action file loaded|{n} action files loaded	Načten {n} soubor akcí|Načteny {n} soubory akcí|Načteno {n} souborů akcí
+	{set} from {file} replaced the one from {earlier}	Sada {set} ze souboru {file} nahradila sadu ze souboru {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} soubor nelze načíst: {errors}|{n} soubory nelze načíst: {errors}|{n} souborů nelze načíst: {errors}
 	File Naming	Pojmenování souborů
 	Starting serial	Počáteční pořadové číslo
 	Insert Stop…	Vložit zastavení…
@@ -3904,6 +3908,7 @@ navigator	Zoom	Zvětšení
 	Sent to {printer}	Odesláno do {printer}
 	set in Print Settings…	nastavuje se v nastavení tisku…
 	ICO is limited to 256 × 256 pixels	ICO je omezen na 256 × 256 pixelů
+	Memory usage percent	Využití paměti (%)
 	Show Favorite Fonts	Zobrazit oblíbená písma
 	No favorite fonts yet: click the star beside a font to add it.	Zatím žádná oblíbená písma: přidejte písmo kliknutím na hvězdičku vedle něj.
 	Favorite fonts	Oblíbená písma
@@ -3947,6 +3952,7 @@ navigator	Zoom	Zvětšení
 	Automatically Check for Updates	Automaticky kontrolovat aktualizace
 	Paints from the History panel's source state	Maluje ze zdrojového stavu panelu Historie
 	Sets the source for the history brush	Nastaví zdroj pro štětec historie
+	The History Brush source was deleted: set a new source in the History panel	Zdroj štětce historie byl smazán: nastavte nový zdroj v panelu Historie
 	Highlight Mode	Režim světel
 	Highlight Color	Barva světel
 	Highlight Opacity	Krytí světel
@@ -3966,6 +3972,7 @@ navigator	Zoom	Zvětšení
 	Chisel Soft	Měkké tesání
 	Open color-less EXR as ACEScg	Otevřít EXR bez údaje o barevném prostoru jako ACEScg
 	Do not append "copy" to filename when saving a copy	Nepřidávat „copy“ k názvu souboru při ukládání kopie
+	Save Full-Size Composite in .pcraft Files	Ukládat složený obraz v plné velikosti do souborů .pcraft
 	Edit Selected Guides	Upravit vybraná vodítka
 	Clear Selected Guides	Vymazat vybraná vodítka
 	Bicubic Automatic	Bikubická automatická
@@ -4019,6 +4026,7 @@ navigator	Zoom	Zvětšení
 	This document's layers: {needed} of {budget} for layers	Vrstvy tohoto dokumentu: {needed} z {budget} pro vrstvy
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Vrstvy tohoto dokumentu potřebují {needed}, ale mohou zabrat {budget}: překreslení celého dokumentu probíhá na CPU
 	GPU Memory (MB, 0 = Automatic)	Paměť GPU (MB, 0 = Automaticky)
+	Scratch Size Limit (MB, 0 = No Limit)	Limit velikosti odkládacího disku (MB, 0 = bez limitu)
 	{path}: the path is not valid Unicode; save under another name.	{path}: cesta není platný Unicode; uložte soubor pod jiným názvem.
 	{name} was changed by another app after it was opened or saved here.	Soubor {name} změnila jiná aplikace poté, co byl zde otevřen nebo uložen.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Nahraďte ho tímto dokumentem, nebo zrušte a použijte Soubor › Uložit jako, abyste zachovali obojí.
@@ -4181,6 +4189,9 @@ cameraRaw	Dehaze	Odstranění oparu
 	There is no color table to save.	Neexistuje žádná tabulka barev k uložení.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Uložena {n} barva do {file}|Uloženy {n} barvy do {file}|Uloženo {n} barev do {file}
 	GPU adapter	Adaptér GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Obsah AI/PDF/EPS se bude upravovat jako SVG. Uložení nahradí vložený zdroj; vlastnosti specifické pro formát se mohou změnit.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Importovat styly…
 	Export Selected Styles…	Exportovat vybrané styly…
 	Export Styles…	Exportovat styly…
@@ -4233,6 +4244,7 @@ cameraRaw	Dehaze	Odstranění oparu
 	Font size presets	Předvolby velikosti písma
 	Leading presets	Předvolby prokladu
 	Tracking presets	Předvolby prostrkání
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Neplatná číselná hodnota. Je vyžadováno celé číslo mezi {min}% a {max}%. Byla vložena předchozí hodnota.
 	Color Aware	Podle barev
 	Decontaminate Colors	Dekontaminovat barvy
 	Edge Detection	Detekce okraje
@@ -4250,4 +4262,19 @@ cameraRaw	Dehaze	Odstranění oparu
 	Select and Mask was closed: its document is no longer the active one	Vybrat a maskovat bylo zavřeno: jeho dokument již není aktivní
 	Select and Mask was closed: another layer was selected	Vybrat a maskovat bylo zavřeno: byla vybrána jiná vrstva
 	Drag to move the selected path	Tažením přesunete vybranou cestu
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Nedávno použité barvy
+	Stop Color	Barva zarážky
+	Shapes can't use patterns yet	Tvary zatím nemohou používat vzorky
 	Edit Brush…	Upravit štětec…
+	Drag to move the active shape's path or the Work Path	Tažením přesunete cestu aktivního tvaru nebo pracovní cestu
+	Generator enabled	Generátor zapnut
+	This Layer:	Tato vrstva:
+	Move Up	Přesunout nahoru
+	Move Down	Přesunout dolů
+	On your computer	V tomto počítači
+	New file	Nový soubor
+	Learn	Učit se
+	No recent files	Žádné nedávné soubory
+	Website	Web

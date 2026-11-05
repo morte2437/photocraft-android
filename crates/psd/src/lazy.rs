@@ -132,6 +132,17 @@ impl PsdFile {
         want: impl FnOnce(&PsdFile) -> bool,
         recover: impl FnOnce(&PsdFile) -> bool,
     ) -> Result<(Self, Option<Result<Vec<u8>>>)> {
+        Self::from_source_and_merged_preflight(source, |file| Ok(want(file)), recover)
+    }
+
+    /// Parses with a fallible pixel preflight after layer records are available and before
+    /// the merged image is read, validated or decoded. A preflight error is always fatal;
+    /// `recover` only handles damage encountered after an accepted preflight.
+    pub fn from_source_and_merged_preflight(
+        source: Source,
+        want: impl FnOnce(&PsdFile) -> Result<bool>,
+        recover: impl FnOnce(&PsdFile) -> bool,
+    ) -> Result<(Self, Option<Result<Vec<u8>>>)> {
         let mut c = Cursor::new(&source);
         let header = Header::read(&mut Reader::new(&c.bytes(26)?))?;
         let version = header.version;
@@ -217,7 +228,7 @@ impl PsdFile {
             image_data: ImageData::new(Compression::Raw, Vec::new()),
             write_as_psb: false,
         };
-        if !want(&file) {
+        if !want(&file)? {
             let compression = Compression::from_u16(c.u16()?);
             file.image_data = ImageData { compression, data: Vec::new(), stored: Some(c.stored_rest()) };
             return Ok((file, None));

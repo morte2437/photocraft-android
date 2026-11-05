@@ -114,6 +114,48 @@ fn recorded_eye_visibility_replays_on_another_document_and_duplicate_names() {
     assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
 }
 
+/// ⌘-clicking a layer's thumbnail that is not the selected layer records the layer by name (the
+/// Background as the Background), so the step saves in strict Save Actions and replays on the
+/// same-named layer of another document.
+#[test]
+fn recorded_thumbnail_click_on_another_layer_saves_and_replays_by_name() {
+    use photocraft_geom::Rect;
+    let fixture = |s: &mut Session| {
+        s.execute("file.new", json!({"width": 4, "height": 1})).unwrap();
+        let source = s.execute("layer.new.layer", json!({"name": "Source"})).unwrap()["layer"].as_u64().unwrap();
+        s.edit("Pixels", |doc, _| {
+            doc.layer_mut(photocraft_doc::LayerId(source)).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 1, 1), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        s.execute("layer.new.layer", json!({"name": "Active"})).unwrap();
+        source
+    };
+    let mut s = Session::new();
+    let source = fixture(&mut s);
+    let background = s.active().unwrap().doc.background().unwrap().id.0;
+    s.execute("actions.record", json!({"name": "Load"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": source, "operation": "new"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": background, "operation": "new"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let action = s.actions.list.iter().find(|a| a.name == "Load").unwrap().clone();
+    assert_eq!(
+        action.steps,
+        vec![
+            ("select.loadSelection".into(), json!({"channel": "transparency", "layer": {"name": "Source"}, "operation": "new"})),
+            ("select.loadSelection".into(), json!({"channel": "transparency", "layer": {"background": true}, "operation": "new"})),
+        ]
+    );
+    crate::atn_cmds::export("Set", &[&action], &[], false).unwrap();
+    // Replayed in another document, the first step loads its Source layer.
+    let mut other = Session::new();
+    fixture(&mut other);
+    let (id, params) = &action.steps[0];
+    other.execute(id, params.clone()).unwrap();
+    let doc = &other.active().unwrap().doc;
+    assert_eq!(doc.selection.as_ref().unwrap().read_region(Rect::new(0, 0, 4, 1)), vec![1.0, 0.0, 0.0, 0.0]);
+}
+
 #[test]
 fn rename_keeps_calls_and_function_key_and_rejects_bad_names() {
     let mut s = Session::new();
@@ -340,6 +382,78 @@ fn record_explicit_transform_keeps_one_replayable_step() {
 }
 
 #[test]
+fn recording_folds_one_run_of_move_tool_nudges() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for (dx, dy, run) in [(1, 0, "nudge:1"), (1, 0, "nudge:1"), (1, 10, "nudge:1"), (0, 1, "nudge:2")] {
+        s.execute("layer.translate", json!({"dx": dx, "dy": dy, "coalesce": run})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = &s.actions.list[0].steps;
+    assert_eq!(steps, &[("layer.translate".into(), json!({"dx": 3.0, "dy": 10.0})), ("layer.translate".into(), json!({"dx": 0.0, "dy": 1.0}))]);
+}
+
+/// Each nudge moves by whole pixels, so two 0.6 px steps fold into the 2 px they moved, not 1.2.
+#[test]
+fn folded_nudges_add_whole_pixel_steps() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for _ in 0..2 {
+        s.execute("layer.translate", json!({"dx": 0.6, "dy": 0.0, "coalesce": "nudge:1"})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("layer.translate".into(), json!({"dx": 2.0, "dy": 0.0}))]);
+}
+
+#[test]
+fn recording_document_activation_uses_opening_order_offset() {
+    let mut s = Session::new();
+    for name in ["First", "Second"] {
+        s.execute("file.new", json!({"width": 8, "height": 8, "name": name})).unwrap();
+    }
+    s.execute("actions.record", json!({"name": "Switch"})).unwrap();
+    s.execute("document.activate", json!({"document": 0})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("document.activate".into(), json!({"offset": -1}))]);
+}
+
+#[test]
+fn recorded_point_text_position_scales_with_the_playback_canvas() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100, "background": "transparent"})).unwrap();
+    s.execute("actions.record", json!({"name": "Caption"})).unwrap();
+    s.execute("type.create", json!({"x": 20, "y": 30, "text": "Hi", "size": 12})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps[0].1["xPercent"], json!(20.0));
+    assert_eq!(s.actions.list[0].steps[0].1["yPercent"], json!(30.0));
+    s.execute("file.new", json!({"width": 200, "height": 300, "background": "transparent"})).unwrap();
+    let played = s.execute("actions.play", json!({"action": "Caption"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    let info = s.execute("type.info", json!({})).unwrap();
+    assert_eq!(info["transform"][4], json!(40.0));
+    assert_eq!(info["transform"][5], json!(90.0));
+}
+
+#[test]
+fn recorded_point_text_rejects_invalid_relative_positions() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+    for params in [
+        json!({"xPercent": 20}),
+        json!({"xPercent": "20", "yPercent": 30}),
+        json!({"xPercent": 20, "yPercent": 30, "x": 20}),
+        json!({"xPercent": 20, "yPercent": 30, "box": [0, 0, 10, 10]}),
+        json!({"xPercent": 1e100, "yPercent": 30}),
+    ] {
+        assert!(playback_params(&s, "type.create", &params).is_err(), "{params}");
+    }
+}
+
+#[test]
 fn recorded_single_layer_transform_replays_after_layer_ids_shift() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();
@@ -430,9 +544,12 @@ fn record_keeps_only_replayable_steps() {
 }
 
 #[test]
+/// Playback on a different document must match native edits at every depth, independent of history grouping.
 fn play_on_another_document_matches_pixels_at_each_depth() {
     for depth in [8, 16, 32] {
         let mut s = Session::new();
+        // This control checks the optional, per-step history behavior.
+        s.execute("actions.setHistory", json!({"singleState": false})).unwrap();
         record_red(&mut s, depth);
         s.execute("file.new", json!({"width": 40, "height": 40, "depth": depth})).unwrap();
         let before = s.active().unwrap().history.past_len();
@@ -1124,9 +1241,12 @@ fn button_color_is_one_of_the_photoshop_swatches() {
 }
 
 #[test]
+/// An arrangement that cannot move the layer must not create a grouped history entry.
 fn arrange_that_cannot_move_is_a_noop_in_playback() {
     // #8453: imported actions make an adjustment layer, then Bring it to Front, where it already is.
     let mut s = Session::new();
+    // Keep individual rows visible so grouping cannot hide an extra no-op record.
+    s.execute("actions.setHistory", json!({"singleState": false})).unwrap();
     s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
     let steps = vec![
         ("layer.newAdjustmentLayer.curves".to_string(), json!({})),
@@ -1175,4 +1295,36 @@ fn arrange_that_cannot_move_is_a_noop_in_playback() {
     let played = s.execute("actions.play", json!({"action": 1})).unwrap();
     assert_eq!(played["ran"], 0, "{played}");
     assert!(played["failed"].is_object(), "{played}");
+}
+
+/// #10459 review: recording into an existing set keeps that set's exact name, even one with
+/// surrounding spaces (from an older actions.json); a new set name is trimmed.
+#[test]
+fn record_keeps_an_existing_sets_exact_name() {
+    let mut s = Session::new();
+    s.actions.list.push(Action { set: Some(" Web ".into()), ..Action::new("Old", Vec::new()) });
+    s.execute("actions.record", json!({"name": "New", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set_of = |s: &Session, n: &str| s.actions.list.iter().find(|a| a.name == n).and_then(|a| a.set.clone());
+    assert_eq!(set_of(&s, "New").as_deref(), Some(" Web "), "the existing set");
+    s.execute("actions.record", json!({"name": "Fresh", "set": "  Print  "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(set_of(&s, "Fresh").as_deref(), Some("Print"), "a new set is trimmed");
+}
+
+/// CodeRabbit review on #10459: an empty set loaded from a `.atn` (or made by New Set) keeps its
+/// exact name too, so the first action recorded into it lands in that folder and saves with it.
+#[test]
+fn record_keeps_an_empty_loaded_sets_exact_name() {
+    let mut src = Session::new();
+    src.actions.sets.push(" Web ".into());
+    let saved = src.execute("actions.save", json!({"set": " Web "})).unwrap();
+    let mut s = Session::new();
+    assert_eq!(s.execute("actions.load", json!({"data": saved["data"]})).unwrap()["set"], " Web ");
+    s.execute("actions.record", json!({"name": "First", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set = s.actions.list.iter().find(|a| a.name == "First").and_then(|a| a.set.clone());
+    assert_eq!(set.as_deref(), Some(" Web "));
+    assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
+    assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
 }

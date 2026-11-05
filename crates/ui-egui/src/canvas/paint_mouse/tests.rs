@@ -563,6 +563,29 @@ fn the_brush_is_a_per_tool_option_that_presets_keep() {
     tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 5.0 }, Modifiers::NONE);
 }
 
+/// #10263: the Art History Brush starts at full opacity the first time it is picked, though it
+/// keeps the rest of the brush the old tool left (other tools still take its opacity).
+#[test]
+fn art_history_brush_starts_at_full_opacity() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.ui.tool = Tool::Brush;
+    sync_tool_brush(&mut app);
+    app.run("tools.setBrush", json!({"brush": {"size": 40, "opacity": 0.3}})).unwrap();
+    app.ui.tool = Tool::ArtHistoryBrush;
+    sync_tool_brush(&mut app);
+    assert_eq!(app.session.tools.brush.opacity, 1.0, "Art History starts at 100%");
+    assert_eq!(app.session.tools.brush.size, 40.0, "and inherits the size");
+    app.ui.tool = Tool::CloneStamp;
+    sync_tool_brush(&mut app);
+    assert_eq!(app.session.tools.brush.opacity, 1.0, "the Clone Stamp takes the Art History brush's opacity");
+    app.ui.tool = Tool::Brush;
+    sync_tool_brush(&mut app);
+    app.ui.tool = Tool::Eraser;
+    sync_tool_brush(&mut app);
+    assert_eq!(app.session.tools.brush.opacity, 0.3, "other tools still inherit opacity");
+}
+
 /// #218: Photoshop keeps a brush per painting tool, so the size, hardness, mode, opacity and
 /// dynamics of one tool never leak into another's, and each tool gets its own back.
 #[test]

@@ -82,7 +82,7 @@ fn psd_merged_image_matches_composite_and_drops_near_opaque_alpha() {
         let file = document_to_psd(&d);
         assert_eq!(file.merged_has_alpha(), alpha < 0.99, "alpha {alpha}");
         let merged = merged_composite(&file).unwrap();
-        let want = photocraft_compose::flatten(&d).px;
+        let want = photocraft_compose::flatten(&d).into_px();
         let m = merged.iter().zip(&want).flat_map(|(a, b)| (0..4).map(move |i| (a[i] - b[i]).abs())).fold(0.0f32, f32::max);
         // Un-matting divides the 8-bit rounding error by alpha.
         assert!(m <= 1.0 / (255.0 * alpha) + 1e-4, "alpha {alpha}: max diff {m}");

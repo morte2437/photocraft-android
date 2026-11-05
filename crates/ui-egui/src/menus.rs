@@ -40,11 +40,11 @@ use state::{checked, translated_menu_label};
 
 /// Shared gate for native menu clicks and control-channel `ui.menu.invoke`.
 /// Dialogs and unsaved-changes prompts block edits, but allow the four view-navigation
-/// commands also usable through shortcuts. Camera Raw and the full-window workspaces
+/// commands also usable through shortcuts. Camera Raw, the SVG editor choice and full-window workspaces
 /// (`distort_ui::modal_workspace`) block menu commands entirely, and a pending crop blocks the
 /// commands Photoshop greys during one (`crop_ui::blocks`).
 pub(crate) fn modal_allows(app: &PhotocraftApp, id: &str) -> bool {
-    if app.camera_raw.is_some() || crate::distort_ui::modal_workspace(app).is_some() || crate::crop_ui::blocks(app, id) {
+    if app.camera_raw.is_some() || app.smart_svg.modal_open() || crate::distort_ui::modal_workspace(app).is_some() || crate::crop_ui::blocks(app, id) {
         return false;
     }
     (app.ui.dialogs.is_empty() && app.ui.layers_panel_dialog.is_none() && app.discard.is_none()) || crate::shortcuts::NAV_COMMANDS.contains(&id)
@@ -115,6 +115,33 @@ mod open_recent_tests {
         invoke(&mut app, &ctx, "file.removeRecent", json!({"path": "/tmp/not-listed.png"})).unwrap();
         assert_eq!(app.ui.recent_files.len(), 2, "a path that isn't listed changes nothing");
         assert!(invoke(&mut app, &ctx, "file.removeRecent", json!({})).is_err(), "needs a path");
+    }
+
+    #[test]
+    fn push_recent_evicts_thumbnails_beyond_cap() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        {
+            let mut cache = app.thumbnail_cache.lock().unwrap();
+            for i in 0..25 {
+                cache.entries.insert(
+                    format!("/tmp/item_{i}.png"),
+                    crate::home_recent_ui::ThumbnailEntry {
+                        key: crate::home_recent_ui::CacheKey::OpenDoc { revision: 1 },
+                        texture: None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        last_checked: std::time::Instant::now(),
+                    },
+                );
+            }
+        }
+        for i in 0..25 {
+            app.push_recent(&format!("/tmp/item_{i}.png"));
+        }
+        let cache = app.thumbnail_cache.lock().unwrap();
+        for i in 0..5 {
+            assert!(!cache.entries.contains_key(&format!("/tmp/item_{i}.png")), "evicted item_{i} must be removed from cache");
+        }
+        assert_eq!(app.ui.recent_files.len(), 20);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -31,12 +31,20 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
     dialogs.extend(crate::discard_ui::inspect(app));
     json!({
         "window": {"width": screen.width(), "height": screen.height(), "pixelsPerPoint": ctx.pixels_per_point()},
+        "scratch": photocraft_raster::spill::stats(),
+        "memory": photocraft_raster::memory::stats(),
         "tool": app.ui.tool,
         "toolOptions": app.ui.tool_options,
         "perspectiveCrop": app.ui.perspective_crop,
         "strokeEditor": app.ui.stroke_editor,
         "magnetic": app.ui.magnetic,
         "textEdit": app.ui.text_edit,
+        // The paragraph box's overflow flag (set by the overlay each frame): agents
+        // learn the overflow without a screen; never persisted (serde skip). Gated on the
+        // session: the flag is a per-frame snapshot, and an `ui.inspect` running between the
+        // frame that ended the edit and the one that resets the flag would otherwise report
+        // overflow beside `"textEdit": null`.
+        "typeBoxOverflow": app.ui.text_edit.is_some() && app.ui.type_box_overflow,
         "typeTransform": app.ui.type_transform,
         "camTransform": app.ui.cam_transform,
         "layerMenu": app.ui.layer_menu,

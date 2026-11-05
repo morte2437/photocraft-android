@@ -518,10 +518,21 @@ fn missing_corrupt_or_unknown_tips_fail_when_used_without_panicking() {
     // Deleted behind the store's back.
     let k0 = key(&t, "Big 0");
     mem.remove(&tip_file(&k0)).unwrap();
+    t.execute("tools.setBrush", json!({"preset": "Hard Round"})).unwrap();
+    let broken = t.tools.presets.iter_mut().find(|p| p.name == "Big 0").unwrap();
+    broken.captures.color = true;
+    broken.brush.color = [1.0, 0.0, 0.0, 1.0];
+    t.tools.foreground = [0.0, 0.0, 1.0, 1.0];
     let before = t.tools.brush.clone();
+    let preset_before = t.tools.current_preset.clone();
+    let foreground_before = t.tools.foreground;
+    let revision_before = t.tools.brush_rev;
     assert!(t.execute("tools.setBrush", json!({"preset": "Big 0"})).is_err());
     assert!(t.execute("paint.stroke", json!({"points": [[1, 1], [9, 9]], "preset": "Big 0"})).is_err());
     assert_eq!(t.tools.brush, before);
+    assert_eq!(t.tools.current_preset, preset_before);
+    assert_eq!(t.tools.foreground, foreground_before);
+    assert_eq!(t.tools.brush_rev, revision_before);
     // Corrupt, or a different bitmap under the same name.
     let k1 = key(&t, "Big 1");
     mem.write(&tip_file(&k1), b"PCTIP1\x08garbage").unwrap();

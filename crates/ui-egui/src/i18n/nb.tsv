@@ -582,7 +582,7 @@
 	Mixer Brush Tool	Mikserpenselverktøy
 	Color Replacement Tool	Fargeerstatningsverktøy
 	History Brush	Historikkpensel
-	Art History Brush	Kunstnerisk historikkpensel
+	Art History Brush	Kunsthistorikkpensel
 	Pattern Stamp	Mønsterstempel
 	Spot Healing	Punktreparasjon
 	Red Eye	Røde øyne
@@ -907,7 +907,7 @@
 	F	F
 	ISO	ISO
 	Focal Length35mm	Brennvidde 35 mm
-	Aspect Ratio	Størrelsesforhold
+	Aspect Ratio	Sideforhold
 	Time	Tid
 	Artist	Kunstner
 	Copyright	Opphavsrett
@@ -1039,10 +1039,10 @@
 	Mix	Bland
 	Auto Clean Brush	Rens pensel automatisk
 	Wet	Våt
-	Current Brush Load	Gjeldende pensellast
-	Load Brush	Last inn pensel
+	Current Brush Load	Gjeldende penselfylling
+	Load Brush	Fyll pensel
 	Clean Brush	Rens pensel
-	Load the brush after each stroke	Last inn penselen etter hvert strøk
+	Load the brush after each stroke	Fyll penselen etter hvert strøk
 	Clean the brush after each stroke	Rens penselen etter hvert strøk
 	Rate	Hastighet
 	Airbrush: keeps depositing paint while the pointer rests.	Airbrush: fortsetter å legge på maling mens pekeren står i ro.
@@ -1295,7 +1295,7 @@
 	First Color Readout	Første fargeavlesning
 	Second Color Readout	Andre fargeavlesning
 	Actual Color	Faktisk farge
-	Grayscale Slider	Gråtoneglider
+	Grayscale Slider	Gråtoneglidebryter
 	Web Color	Webfarge
 	HSB Color	HSB-farge
 	Total Ink	Total fargemengde
@@ -1362,7 +1362,7 @@
 	Caption Credits	Bildetekstkreditering
 	Description	Beskrivelse
 	Keywords	Nøkkelord
-	Copyright Info URL	URL for opphavsrettsinfo
+	Copyright Info URL	URL for opphavsrettsinformasjon
 	Copyright Status	Opphavsrettsstatus
 	Copyright Notice	Opphavsrettsmerknad
 	Document Title	Dokumenttittel
@@ -1605,7 +1605,7 @@
 	Click to restore the current colour	Klikk for å gjenopprette gjeldende farge
 	Click with the Note tool to add a note.	Klikk med notatverktøyet for å legge til et notat.
 	Drag a rectangle around the object	Dra et rektangel rundt objektet
-	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Dra på bildet for å legge til en begrensning; Shift for vannrett/loddrett; høyreklikk en begrensning for å endre eller slette den.
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Dra på bildet for å legge til en begrensning. Shift for vannrett/loddrett. Høyreklikk på en begrensning for å endre eller slette den.
 	Drag the arrow to set the angle, the dots to set the roundness	Dra pilen for å angi vinkelen, prikkene for å angi rundheten
 	Create new pattern from the selection	Opprett nytt mønster fra utvalget
 	Create new gradient	Opprett ny gradient
@@ -2511,8 +2511,8 @@
 	Cancelled opening {name}	Avbrøt åpning av {name}
 	Damaged Photoshop document	Skadet Photoshop-dokument
 	The document “{name}” may be damaged.	Dokumentet «{name}» kan være skadet.
-	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Enkelte lag, piksler eller masker kunne ikke leses. Vil du fortsette å åpne det?
-	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Hvis du fortsetter, kan lagring over originalen permanent forkaste uleselige data. Lagre en kopi for å beholde originalen.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Noen lag, piksler eller masker kunne ikke leses. Vil du fortsette å åpne det?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Hvis du fortsetter, kan lagring over originalen forkaste uleselige data for godt. Lagre en kopi for å beholde originalen.
 	Continue	Fortsett
 	The document “{name}” does not have an embedded {mode} profile.	Dokumentet «{name}» har ingen innebygd {mode}-profil.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokumentet «{name}» har en innebygd fargeprofil som ikke samsvarer med gjeldende {mode}-arbeidsfargerom.
@@ -2615,8 +2615,8 @@ cameraRaw	Roughness	Ruhet
 	JPEG Options	JPEG-alternativer
 	Image Options	Bildealternativer
 	Format Options	Formatalternativer
-	Baseline ("Standard")	Grunnlinje («Standard»)
-	Baseline Optimized	Grunnlinje, optimalisert
+	Baseline ("Standard")	Baseline («standard»)
+	Baseline Optimized	Baseline optimalisert
 	24 bits/pixel	24 biter/piksel
 	32 bits/pixel	32 biter/piksel
 	Including layers will increase file size.	Å ta med lag øker filstørrelsen.
@@ -3035,11 +3035,11 @@ cameraData	Lens	Objektiv
 	Duplicate Layer	Dupliser lag
 	Contract	Trekk sammen
 
-	Animation Options	Alternativer for animasjon
+	Animation Options	Animasjonsalternativer
 	Entire Document	Hele dokumentet
 	Filter Options	Filteralternativer
 	Layer Bounds	Laggrenser
-	Layers Panel Options	Alternativer for lagpanel
+	Layers Panel Options	Alternativer for lagpanelet
 	Lock Layers	Lås lag
 	New Artboard…	Ny tegneflate…
 	New Group…	Ny gruppe…
@@ -3048,19 +3048,19 @@ cameraData	Lens	Objektiv
 	Thumbnail Contents	Miniatyrinnhold
 	Thumbnail Size	Miniatyrstørrelse
 	Use Default Masks on Fill Layers	Bruk standardmasker på fyllag
-	Expand New Effects	Vis nye effekter utvidet
-	Add “copy” to Copied Layers and Groups	Legg til «kopi» i kopierte lag og grupper
-	Preview on canvas when reordering layers	Forhåndsvis på lerretet ved omordning av lag
-	Show layer mask badges	Vis merker for lagmaske
+	Expand New Effects	Utvid nye effekter
+	Add “copy” to Copied Layers and Groups	Legg til «kopi» på kopierte lag og grupper
+	Preview on canvas when reordering layers	Forhåndsvis på lerretet når lag omorganiseres
+	Show layer mask badges	Vis lagmaskemerker
 
 # Smart Filter editors
 	Blending Options ({filter})	Blandingsalternativer ({filter})
 	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Skjul lagets effekter og smartfiltre  ({key}-klikk: alle lag)
 	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Vis lagets effekter og smartfiltre  ({key}-klikk: alle lag)
-	Wait for the current job to finish.	Vent til gjeldende jobb er ferdig.
+	Wait for the current job to finish.	Vent til den gjeldende jobben er ferdig.
 	The document or Smart Filter changed. Reopen its dialog.	Dokumentet eller smartfilteret er endret. Åpne dialogen på nytt.
 	Opacity must be between 0% and 100%.	Dekkevnen må være mellom 0 % og 100 %.
-	Dissolve is approximated: it blends without Photoshop's dither.	Oppløs er tilnærmet: det blander uten Photoshops dithering.
+	Dissolve is approximated: it blends without Photoshop's dither.	Oppløs er tilnærmet: den blander uten Photoshops dithering.
 	Loading fonts…	Laster inn skrifter…
 	Response curve	Responskurve
 	Tool	Verktøy
@@ -3084,7 +3084,7 @@ curves	Smooth	Jevn ut
 	Vanishing Point is not active	Fluktpunkt er ikke aktivt
 	Apply Vanishing Point ({key})	Bruk fluktpunkt ({key})
 	Fix the red plane first: its corners must form a convex quad	Rett opp det røde planet først: hjørnene må danne en konveks firkant
-	Alt-click a plane to set the clone source	Alt-klikk et plan for å angi klonekilden
+	Alt-click a plane to set the clone source	Alt-klikk på et plan for å angi klonekilden
 	Too many clone strokes: apply Vanishing Point first	For mange klonestrøk: bruk fluktpunkt først
 # Select and Mask view modes (#1754)
 	Onion Skin	Løkskall
@@ -3163,7 +3163,7 @@ curves	Smooth	Jevn ut
 	Replace Contours…	Erstatt konturer…
 	Save Contours…	Lagre konturer…
 	Delete Contour	Slett kontur
-	Loaded contours from {file}	Lastet konturer fra {file}
+	Loaded contours from {file}	Lastet inn konturer fra {file}
 	Saved contours to {file}	Lagret konturer til {file}
 	Show home recent files	Vis nylig brukte filer på startskjermen
 	Clear Brush Controls	Fjern penselkontroller
@@ -3182,6 +3182,9 @@ curves	Smooth	Jevn ut
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} trinn har ingen PhotoCraft-ekvivalent ennå|{n} trinn har ingen PhotoCraft-ekvivalent ennå
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Lagret {n} handling til {file}|Lagret {n} handlinger til {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} trinn uten Photoshop-ekvivalent ble utelatt|{n} trinn uten Photoshop-ekvivalent ble utelatt
+@plural	{n} action file loaded|{n} action files loaded	{n} handlingsfil lastet inn|{n} handlingsfiler lastet inn
+	{set} from {file} replaced the one from {earlier}	Settet {set} fra {file} erstattet det fra {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fil kunne ikke lastes inn: {errors}|{n} filer kunne ikke lastes inn: {errors}
 
 	File Naming	Filnavngiving
 	Starting serial	Startserienummer
@@ -3209,18 +3212,18 @@ curves	Smooth	Jevn ut
 	set in Print Settings…	angitt i Utskriftsinnstillinger…
 	ICO is limited to 256 × 256 pixels	ICO er begrenset til 256 × 256 piksler
 	Calibration	Kalibrering
-	Red Primary	Rød primærfarge
-	Green Primary	Grønn primærfarge
-	Blue Primary	Blå primærfarge
+	Red Primary	Primærfarge rød
+	Green Primary	Primærfarge grønn
+	Blue Primary	Primærfarge blå
 	Write xmp sidecars	Skriv XMP-sidefiler
-	Set the tone sliders from the image	Angi toneglidebryterne ut fra bildet
+	Set the tone sliders from the image	Sett toneglidebryterne fra bildet
 	Settings from {name}	Innstillinger fra {name}
 	Settings from {name}; {count} not supported: {names}	Innstillinger fra {name}; {count} støttes ikke: {names}
 	Could not write {name}: {error}	Kunne ikke skrive {name}: {error}
 	Kept {name}: written by another application	Beholdt {name}: skrevet av et annet program
-	Shadow Tint	Skyggetoning
+	Shadow Tint	Skyggetone
 # History panel › History Brush source (#2966)
-	Paints from the History panel's source state	Maler fra historikkpanelets kildetilstand
+	Paints from the History panel's source state	Maler fra kildetilstanden i historikkpanelet
 	Sets the source for the history brush	Angir kilden for historikkpenselen
 
 # Dynamic selection context menu and appearance favorites
@@ -3243,7 +3246,7 @@ curves	Smooth	Jevn ut
 	Integrated Density	Integrert tetthet
 	Length	Lengde
 	Show Favorite Fonts	Vis favorittskrifter
-	No favorite fonts yet: click the star beside a font to add it.	Ingen favorittskrifter ennå: klikk på stjernen ved siden av en skrift for å legge den til.
+	No favorite fonts yet: click the star beside a font to add it.	Ingen favorittskrifter ennå: klikk stjernen ved siden av en skrift for å legge den til.
 	Favorite fonts	Favorittskrifter
 	Add to Favorites	Legg til i favoritter
 	Remove from Favorites	Fjern fra favoritter
@@ -3251,11 +3254,11 @@ curves	Smooth	Jevn ut
 	All Classes	Alle klasser
 	Blackletter	Frakturskrift
 	Decorative	Dekorativ
-	Font preview:	Skriftforhåndsvisning:
+	Font preview:	Forhåndsvisning av skrift:
 	Handwritten	Håndskrift
 	Hide Font Classes	Skjul skriftklasser
-	Hide Styles	Skjul stiler
-	Monospace	Fast tegnbredde
+	Hide Styles	Skjul snitt
+	Monospace	Fast bredde
 	No fonts match these filters.	Ingen skrifter samsvarer med disse filtrene.
 	No similar fonts: the current font doesn't say what it looks like.	Ingen lignende skrifter: gjeldende skrift oppgir ikke hvordan den ser ut.
 	OpenType font	OpenType-skrift
@@ -3264,7 +3267,7 @@ curves	Smooth	Jevn ut
 	Serif	Seriff
 	Show Font Classes	Vis skriftklasser
 	Show Similar Fonts	Vis lignende skrifter
-	Show Styles	Vis stiler
+	Show Styles	Vis snitt
 	Show Variable Fonts	Vis variable skrifter
 	Slab Serif	Blokkseriff
 	TrueType font	TrueType-skrift
@@ -3278,7 +3281,7 @@ curves	Smooth	Jevn ut
 	Shadow Opacity	Skyggedekkevne
 # PhotoCraft release checks.
 	Check for Updates…	Se etter oppdateringer…
-	Open the release page to choose an installer for your system.	Åpne utgivelsessiden for å velge en installasjonspakke for systemet ditt.
+	Open the release page to choose an installer for your system.	Åpne utgivelsessiden for å velge et installasjonsprogram for systemet ditt.
 	Automatically Check for Updates	Se etter oppdateringer automatisk
 # Embedded Profile Mismatch: profile names beside the choices, Remember this choice
 	Use the embedded profile ({profile})	Bruk den innebygde profilen ({profile})
@@ -3358,7 +3361,8 @@ curves	Smooth	Jevn ut
 	This document's layers: {needed} of {budget} for layers	Dette dokumentets lag: {needed} av {budget} for lag
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Dette dokumentets lag trenger {needed}, men kan holde {budget}: gjentegning av hele dokumentet bruker CPU-en
 	GPU Memory (MB, 0 = Automatic)	GPU-minne (MB, 0 = automatisk)
-	{path}: the path is not valid Unicode; save under another name.	{path}: banen er ikke gyldig Unicode; lagre under et annet navn.
+	Scratch Size Limit (MB, 0 = No Limit)	Størrelsesgrense for arbeidsdisk (MB, 0 = ingen grense)
+	{path}: the path is not valid Unicode; save under another name.	{path}: banen er ikke gyldig Unicode. Lagre under et annet navn.
 	Replace	Erstatt
 	{name} was changed by another app after it was opened or saved here.	{name} ble endret av et annet program etter at den ble åpnet eller lagret her.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Erstatt den med dette dokumentet, eller avbryt og bruk Fil › Lagre som for å beholde begge.
@@ -3866,15 +3870,15 @@ curves	Smooth	Jevn ut
 	In Black	I svart
 	In White	I hvitt
 	Increase Brush Hardness	Øk penselhardhet
-	Demosaic	Demosaikking
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hvordan kameraets fargefiltermosaikk fylles ut. Det brukes når filen åpnes; forhåndsvisningen viser metoden den ble åpnet med.
+	Demosaic	Demosaikk
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hvordan kameraets fargefiltermosaikk fylles ut. Det brukes når filen åpnes. Forhåndsvisningen viser metoden den ble åpnet med.
 	AHD (adaptive homogeneity)	AHD (adaptiv homogenitet)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: de reneste kantene og minst fargefrynser, men tregest.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradientkorrigert interpolering: skarp og rask, med noe fargefrynser på fine detaljer.
-	The fastest and the softest, with colour fringing on fine detail.	Den raskeste og mykeste, med fargefrynser på fine detaljer.
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: de reneste kantene og minst fargefrynsing, den tregeste.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradientkorrigert interpolering: skarp og rask, med noe fargefrynsing på fine detaljer.
+	The fastest and the softest, with colour fringing on fine detail.	Den raskeste og mykeste, med fargefrynsing på fine detaljer.
 	“{name}” already exists. Replace it?	«{name}» finnes allerede. Erstatte den?
-	The name in the save dialog was “{name}”.	Navnet i lagredialogen var «{name}».
+	The name in the save dialog was “{name}”.	Navnet i lagringsdialogen var «{name}».
 	Move Up	Flytt opp
 	Move Down	Flytt ned
 	Previous Brush	Forrige pensel
@@ -4660,9 +4664,9 @@ navigator	Zoom	Zoom
 shape	Appearance	Utseende
 # Paragraph direction (TYPE-218-2)
 	Automatic paragraph direction	Automatisk avsnittsretning
-	Left-to-right paragraph direction	Venstre-til-høyre avsnittsretning
-	Right-to-left paragraph direction	Høyre-til-venstre avsnittsretning
-	Not rendered: this adjustment ({key}) is kept as imported.	Ikke gjengitt: denne justeringen ({key}) beholdes som importert.
+	Left-to-right paragraph direction	Avsnittsretning fra venstre til høyre
+	Right-to-left paragraph direction	Avsnittsretning fra høyre til venstre
+	Not rendered: this adjustment ({key}) is kept as imported.	Ikke gjengitt: denne justeringen ({key}) beholdes slik den ble importert.
 # Print preview image (#8236)
 	Print preview image	Forhåndsvisningsbilde for utskrift
 # Color panel menu: modes, copy commands and colour ramps (#6000)
@@ -4675,14 +4679,14 @@ shape	Appearance	Utseende
 	Lab Sliders	Lab-glidebrytere
 	Web Color Sliders	Webfarge-glidebrytere
 	Copy Color as HTML	Kopier farge som HTML
-	Copy Color's Hex Code	Kopier fargens hex-kode
+	Copy Color's Hex Code	Kopier fargens heksadesimale kode
 	RGB Spectrum	RGB-spektrum
 	CMYK Spectrum	CMYK-spektrum
 	Grayscale Ramp	Gråtonerampe
 	Current Colors	Gjeldende farger
 	Make Ramp Web Safe	Gjør rampen webtrygg
 # Art History Brush (#213).
-	Art History Brush Tool	Kunstnerisk historikkpenselverktøy
+	Art History Brush Tool	Kunsthistorikkpensel
 	Tight Short	Stram kort
 	Tight Medium	Stram middels
 	Tight Long	Stram lang
@@ -4699,7 +4703,7 @@ shape	Appearance	Utseende
 # Recent labels (histogram statistics, self-update, Artboards and others)
 	CPU Rendering	CPU-gjengivelse
 	Calculating…	Beregner…
-	Click to refresh histogram with uncached data	Klikk for å oppdatere histogrammet med data som ikke er bufret
+	Click to refresh histogram with uncached data	Klikk for å oppdatere histogrammet med ubufrede data
 	Convert to Shape…	Konverter til form…
 	Cooling Filter (80)	Kjølefilter (80)
 	Cooling Filter (82)	Kjølefilter (82)

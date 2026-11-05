@@ -292,6 +292,29 @@ fn serbian_plural_rule_handles_teens_and_compound_counts() {
     assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 0, 1, 2, 0, 2, 2, 1]);
 }
 
+/// Bosnian locales, with or without region, script or encoding, select the Latin catalog.
+#[test]
+fn bosnian_resolves_locales_and_preferences() {
+    let bs = Lang::from_code("bs").expect("bs registered");
+    assert_eq!(bs.name(), "Bosanski");
+    for tag in ["bs", "BS", "bs-BA", "bs_BA", "bs_BA.UTF-8", "bs-Latn", "bs-Latn-BA", "bs-Cyrl-BA", "bs_BA@cyrillic"] {
+        assert_eq!(lang_from_tag(tag), Some(bs), "{tag}");
+        assert_eq!(Lang::from_pref(tag), bs, "{tag}");
+    }
+    assert_ne!(lang_from_tag("hr-HR"), Some(bs), "Croatian is not Bosnian");
+}
+
+/// Bosnian counts: 1, 21, 101 are `one`; 2–4, 22–24 (not 12–14) `few`; everything else `other`.
+#[test]
+fn bosnian_plural_rule_handles_teens_and_compound_counts() {
+    let bs = Lang::from_code("bs").expect("bs registered");
+    let counts = [0, 1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111, 112, 122];
+    let forms: Vec<usize> = counts.into_iter().map(bs.0.plural).collect();
+    assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 0, 1, 2, 0, 2, 2, 1]);
+    assert_eq!(trn(bs, 3, "{n} pixel", "{n} pixels"), "3 piksela");
+    assert_eq!(trn(bs, 5, "{n} document", "{n} documents"), "5 dokumenata");
+}
+
 #[test]
 fn catalog_kinds_are_parsed_and_looked_up() {
     let c = Catalog::parse("# c\n\tHello\tこんにちは\n@id\tfile.save\t保存する\nmenu\tWindows\tウィンドウ群\n@plural\t{n} file|{n} files\t{n} 個\n\n");

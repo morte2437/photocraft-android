@@ -187,12 +187,12 @@ fn plane(
         Some(Value::Array(a)) => a,
         _ => &[],
     };
-    let mut tiles = match s.field(bitmap, &tag(b"Idx", c)) {
-        Some(Value::Array(a)) => a.as_slice(),
+    // Tile references in order. Null slots are skipped, but every slot walked (null or not) is
+    // charged below, so a shared bitmap's long null prefix is not rescanned for free.
+    let mut tiles: &[Value] = match s.field(bitmap, &tag(b"Idx", c)) {
+        Some(Value::Array(a)) => a,
         _ => &[],
-    }
-    .iter()
-    .filter_map(|v| if let Value::Obj(Some(o)) = v { Some(*o) } else { None });
+    };
     // The scan below runs for every occurrence of a shared bitmap, whatever it produces.
     r.charge_slots(states.len().min(tw.saturating_mul(th)))?;
     let row = (w as usize) * bps;
@@ -206,7 +206,14 @@ fn plane(
             0 | 1 => None,
             2 => Some(0xFF),
             4 => {
-                let Some(blck) = tiles.next() else { return Err(Error::Malformed("missing pixel tile")) };
+                let Some(at) = tiles.iter().position(|v| matches!(v, Value::Obj(Some(_)))) else {
+                    r.charge_slots(tiles.len())?;
+                    return Err(Error::Malformed("missing pixel tile"));
+                };
+                r.charge_slots(at + 1)?;
+                let Some(Value::Obj(Some(blck))) = tiles.get(at) else { return Err(Error::Malformed("missing pixel tile")) };
+                let blck = *blck;
+                tiles = tiles.get(at + 1..).unwrap_or_default();
                 let (ox, oy) = (tx * TILE, ty * TILE);
                 if ox >= bx1 || ox + TILE <= bx0 || oy >= py1 || oy + TILE <= py0 {
                     continue;

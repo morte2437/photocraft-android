@@ -123,7 +123,8 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if !ui.input(|i| i.pointer.primary_down()) || !app.ui.layers_panel_options.preview_on_canvas_when_reordering_layers {
         app.reorder_preview = None;
     }
-    if t.pro && app.ui.layers_panel_options.show_filters {
+    // Every theme draws the filter row: Filter Options › Show is in every theme's panel menu.
+    if app.ui.layers_panel_options.show_filters {
         crate::layer_filter_ui::bar(app, ui);
         ui.add_space(4.0);
     }
@@ -270,7 +271,7 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 ui.scroll_with_delta(vec2(0.0, delta));
                 ctx.request_repaint();
             }
-            let filter = crate::layer_filter_ui::Filter::of(&app.ui);
+            let filter = crate::layer_filter_ui::Filter::of_app(app);
             let fx_collapsed = app.session.active().map(|d| d.fx_collapsed.clone()).unwrap_or_default();
             crate::layer_row_ui::begin(ui.ctx());
             // The drawn rows, top to bottom (#1721): the space between them and below the last
@@ -380,7 +381,7 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         } else {
             ("layer.delete", "Delete layer")
         };
-        let trash = icons::button(ui, "trash", 26.0, false, tl!(label));
+        let trash = icons::button(ui, icons::FOOTER_DELETE, icons::FOOTER_SIZE, false, tl!(label));
         // A selected smart filter row is what Delete removes, as in Photoshop (#4751).
         let picked_filter = crate::smart_ui::selected(&ctx, &doc, active);
         if trash.clicked()
@@ -411,7 +412,8 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // A click follows the selected thumbnail; name that action for screen readers even
         // though dropping a whole layer row onto the same button always deletes the layer.
         trash.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!(label)));
-        let new_layer = icons::button(ui, "square-plus", 26.0, false, &crate::shortcuts::tip_label(app, "Create a new layer", "layer.new.layer"));
+        let new_layer =
+            icons::button(ui, icons::FOOTER_NEW, icons::FOOTER_SIZE, false, &crate::shortcuts::tip_label(app, "Create a new layer", "layer.new.layer"));
         if new_layer.clicked() {
             // A click makes the layer above the selection; ⌥-click asks first (the New Layer
             // dialog) and ⌘/Ctrl-click adds it below, as in Photoshop.
@@ -426,7 +428,7 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             actions.push(("layer.new.layer".into(), params));
         }
         actions.extend(footer_drop(ui, &new_layer, footer_drag, "layer.duplicate"));
-        let group = icons::button(ui, "folder", 26.0, false, tl!("Create a new group"));
+        let group = icons::button(ui, icons::FOOTER_NEW_GROUP, icons::FOOTER_SIZE, false, tl!("Create a new group"));
         if group.clicked() {
             // Like Photoshop CC 2014 and later, a click with two or more layers selected puts them
             // in the new group (Layer › Group Layers); with one layer or none it adds an empty
@@ -462,6 +464,9 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             if menu.item(ui, tl!("Gradient…")) {
                 actions.push(("layer.newFillLayer.gradient".into(), json!({})));
+            }
+            if menu.item(ui, tl!("Pattern…")) {
+                actions.push(("layer.newFillLayer.pattern".into(), json!({})));
             }
         });
         // Like Photoshop the button never replaces a mask (#2075): with a layer mask it adds a
@@ -515,6 +520,9 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.ui.mask_target = p.as_bool().unwrap_or(false);
             app.ui.vector_mask_target = false;
             app.ui.filter_mask_target = None;
+            if app.ui.mask_target {
+                app.target_mask_over_colour_rows();
+            }
             app.sync_mask_targets();
             continue;
         }
@@ -537,9 +545,10 @@ pub(super) fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.ui.dock.collapsed.retain(|g| *g != crate::dock::Group::Properties);
             continue;
         }
-        if p.is_null() || id == "layer.newFillLayer.solidColor" {
-            // Context-menu items and the Layers footer's Solid Color… action behave like
-            // their menu-bar twins. In particular, a new Solid Color fill opens its picker.
+        if p.is_null() || id == "layer.newFillLayer.solidColor" || id == photocraft_engine::pattern_fill_cmds::CREATE {
+            // Context-menu items and the Layers footer's Solid Color… and Pattern… actions behave
+            // like their menu-bar twins: a new Solid Color fill opens its picker, a new Pattern
+            // fill the Pattern Fill dialog.
             let ctx = ui.ctx().clone();
             let params = if p.is_null() { json!({}) } else { p };
             if let Err(e) = crate::menus::invoke(app, &ctx, &id, params) {

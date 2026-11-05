@@ -103,6 +103,7 @@ pub mod layer_menu_cmds;
 pub mod layer_multi_cmds;
 pub mod layer_nav_cmds;
 mod layer_params;
+mod layer_references;
 pub mod layer_xmp_cmds;
 pub mod lens_cmds;
 pub mod magnetic_cmds;
@@ -133,6 +134,7 @@ pub mod select_extra_cmds;
 pub mod selection_cmds;
 pub mod slice_cmds;
 pub mod smart_cmds;
+pub mod smart_svg_cmds;
 pub mod smartselect_cmds;
 pub mod solid_fill_cmds;
 pub mod stamp_cmds;
@@ -151,6 +153,7 @@ pub mod type_spell_cmds;
 pub mod type_styles_cmds;
 pub mod updates_cmds;
 pub(super) mod variables_cmds;
+mod vector_clipboard;
 pub mod vector_cmds;
 pub(super) mod video_cmds;
 pub mod vp_cmds;
@@ -165,6 +168,7 @@ pub(crate) use enabled::{always, check_all_unlocked, check_pixels_unlocked, has_
 use enabled::{can_redo, can_undo, has_doc, has_layer, has_pixel_layer, has_pixel_or_channel, has_selection};
 pub use layer_params::blend_from_str;
 pub(crate) use layer_params::{NEW_LAYER_PATH, explicit_layer, layer_listing, layer_panel_option, layer_param, mask_at_depth, mask_new_layer, selection_mask};
+pub(crate) use layer_references::{recorded_drop, recorded_layer};
 use ops::{arrange, merge_group, set_mask, set_mask_and_deselect};
 pub(crate) use ops::{layer_copy, translate_layer};
 use params::{bad, set_clipped};
@@ -238,6 +242,7 @@ fn registry() -> &'static Registry {
 // ---------- the table ----------
 
 #[allow(clippy::too_many_lines)]
+/// Register the core file, edit, layer and document commands.
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
         // File
@@ -304,11 +309,30 @@ fn build() -> Vec<CommandSpec> {
                 Ok(json!({ "document": i }))
             }
         ),
-        cmd!("file.close", "Close", ["File"], Some("Cmd+W"), r##"{"document":index?}"##, has_doc, |s, p| {
-            let i = p.get("document").and_then(Value::as_u64).map(|v| v as usize).or(s.active_index()).ok_or(EngineError::NoDocument)?;
-            s.close(i).ok_or(EngineError::NoDocument)?;
-            Ok(Value::Null)
-        }),
+        cmd!(
+            "file.close",
+            "Close",
+            ["File"],
+            Some("Cmd+W"),
+            r##"{"document":index?,"save":"discard|ask"|false="discard"} (false means discard; ask refuses to close a changed document in headless playback)"##,
+            has_doc,
+            |s, p| {
+                let i = p.get("document").and_then(Value::as_u64).map(|v| v as usize).or(s.active_index()).ok_or(EngineError::NoDocument)?;
+                match p.get("save").filter(|v| !v.is_null()) {
+                    Some(v) if v == "ask" => {
+                        if s.documents().get(i).ok_or(EngineError::NoDocument)?.is_dirty() {
+                            return Err(bad("file.close", "the document has unsaved changes; save it or explicitly discard them"));
+                        }
+                    }
+                    // `false` (don't save) is the older spelling of discard.
+                    Some(Value::Bool(false)) => {}
+                    Some(v) if v != "discard" => return Err(bad("file.close", "`save` must be ask, discard or false")),
+                    _ => {}
+                }
+                s.close(i).ok_or(EngineError::NoDocument)?;
+                Ok(Value::Null)
+            }
+        ),
         // Edit
         cmd!("edit.undo", "Undo", ["Edit"], Some("Cmd+Z"), "{}", can_undo, |s, _| Ok(json!(s.undo()))),
         cmd!("edit.redo", "Redo", ["Edit"], Some("Cmd+Shift+Z"), "{}", can_redo, |s, _| Ok(json!(s.redo()))),
@@ -317,30 +341,54 @@ fn build() -> Vec<CommandSpec> {
             "Fill…",
             ["Edit"],
             Some("Shift+F5"),
-            r##"{"contents":"foreground|background|color|contentAware|pattern|history|black|gray|white"="color","color":"#rrggbb|[r,g,b,a]"=foreground (contents=color),"pattern":id|name (contents=pattern),"scale":%=100,"angle":deg,"state":row?,"snapshot":id? (contents=history: a History panel row as history.setSource, redo rows last, or a snapshot; default the History Brush source),"colorAdaptation":bool=true (contents=contentAware),"mode":"normal|multiply|…"="normal","opacity":0..100=100,"preserveTransparency":bool=false,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}?}"##,
+            r##"{"contents":"foreground|background|color|contentAware|pattern|history|black|gray|white"="color","color":"#rrggbb|[r,g,b,a]"=foreground (contents=color),"pattern":id|name (contents=pattern),"scale":%=100,"angle":deg,"state":row?,"snapshot":id? (contents=history: a History panel row as history.setSource, redo rows last, or a snapshot; default the History Brush source),"colorAdaptation":bool=true,"scaleAdaptation":bool=false,"mirror":bool=false,"rotationAdaptation":bool=false (contents=contentAware: enable quarter-turn source candidates within the sampling budget),"mode":"normal|multiply|…"="normal","opacity":0..100=100,"preserveTransparency":bool=false,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}?}"##,
             has_pixel_or_channel,
             crate::fill_cmds::fill
         ),
-        cmd!("edit.clear", "Clear", ["Edit"], Some("Delete"), "{} (a targeted channel or Quick Mask is cleared alone)", has_pixel_or_channel, |s, p| {
-            let bg = s.tools.background;
-            // A targeted alpha channel or Quick Mask is filled instead (#2734).
-            if let Some(t) = crate::channel_cmds::targeted_channel(s) {
-                s.edit("Clear", |doc, _| crate::channel_cmds::clear_channel(doc, &t, bg))?;
-                return Ok(Value::Null);
+        cmd!(
+            "edit.clear",
+            "Clear",
+            ["Edit"],
+            Some("Delete"),
+            r##"{"target":"mask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active} (a targeted mask, channel or Quick Mask is cleared alone)"##,
+            has_pixel_or_channel,
+            |s, p| {
+                let bg = s.tools.background;
+                // A targeted alpha channel or Quick Mask is filled instead (#2734).
+                let channel = if crate::channel_cmds::is_channel_target(p) {
+                    Some(p.clone())
+                } else if p.get("target").is_none() {
+                    crate::channel_cmds::targeted_channel(s)
+                } else {
+                    None
+                };
+                if let Some(t) = channel {
+                    s.edit("Clear", |doc, _| crate::channel_cmds::clear_channel(doc, &t, bg))?;
+                    return Ok(Value::Null);
+                }
+                let id = layer_param(s, p)?;
+                if is_mask_target(p) {
+                    s.edit("Clear Mask", |doc, _| crate::edit_cmds::clear_mask(doc, id, bg, p))?;
+                    return Ok(Value::Null);
+                }
+                // A targeted colour channel clears that channel only (#2720).
+                if let Some(colors) = crate::color_channels::target(s, p)? {
+                    s.edit("Clear", |doc, _| {
+                        for k in colors.indices() {
+                            crate::channel_cmds::clear_color_channel(doc, id, k, bg)?;
+                        }
+                        Ok(())
+                    })?;
+                    return Ok(Value::Null);
+                }
+                s.edit("Clear", |doc, _| {
+                    let sel = doc.selection.clone();
+                    let area = sel.as_ref().map(|m| m.content_bounds()).unwrap_or(doc.bounds());
+                    crate::edit_cmds::clear_area(doc, id, area, sel.as_ref(), bg)
+                })?;
+                Ok(Value::Null)
             }
-            let id = layer_param(s, p)?;
-            // A targeted colour channel clears that channel only (#2720).
-            if let Some(k) = crate::channel_cmds::targeted_color(s) {
-                s.edit("Clear", |doc, _| crate::channel_cmds::clear_color_channel(doc, id, k, bg))?;
-                return Ok(Value::Null);
-            }
-            s.edit("Clear", |doc, _| {
-                let sel = doc.selection.clone();
-                let area = sel.as_ref().map(|m| m.content_bounds()).unwrap_or(doc.bounds());
-                crate::edit_cmds::clear_area(doc, id, area, sel.as_ref(), bg)
-            })?;
-            Ok(Value::Null)
-        }),
+        ),
         // Select
         cmd!("select.all", "All", ["Select"], Some("Cmd+A"), "{}", has_doc, |s, _| {
             s.edit("Select All", |doc, _| {
@@ -527,6 +575,8 @@ fn build() -> Vec<CommandSpec> {
                         dup.name.clone_from(name);
                     }
                     let nid = doc.insert_above(Some(id), dup);
+                    // A lone copy joins its original's link group, as in the reference application (#11217).
+                    crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
                     if !in_place {
                         crate::artboard_cmds::place_copy(doc, nid)?;
                     }
@@ -561,7 +611,7 @@ fn build() -> Vec<CommandSpec> {
             "Select Layer",
             [],
             None,
-            r##"{"layer":id|str | "name":str,"occurrence":index?,"mode":"replace|toggle|range|add|remove"="replace"} (name occurrence: zero-based document walk order; required for duplicate names; toggle = ⌘-click, range = ⇧-click, remove = deselect it, keeping at least one)"##,
+            r##"{"layer":id|str|{"index":uint}|{"ordinal":"Trgt|Frwr|Bckw|Frnt|Back"} | "name":str,"occurrence":index?,"mode":"replace|toggle|range|add|remove"="replace"} (typed references use the recorded full layer stack; name occurrence: zero-based document walk order; required for duplicate names; toggle = ⌘-click, range = ⇧-click, remove = deselect it, keeping at least one)"##,
             has_doc,
             crate::layer_multi_cmds::select
         ),
@@ -885,7 +935,7 @@ fn build() -> Vec<CommandSpec> {
             "Reorder Layer",
             [],
             None,
-            r##"{"layer":id?| "layers":[id,…]?, "target":id|name,"targetOccurrence":n? (which of several layers named `target`, in document order),"position":"above|below|into"="above","copy":bool=false} (layers: one undoable move, document order preserved; copy: place duplicates there and leave the layers, as ⌥-dragging a Layers panel row; a recorded action keeps the target by name)"##,
+            r##"{"layer":id|{"index":uint}|{"ordinal":"Trgt|Frwr|Bckw|Frnt|Back"}?| "layers":[id,…]?, "target":id|name|{"index":uint},"targetOccurrence":n? (which of several layers named `target`, in document order),"position":"above|below|into"="above","copy":bool=false} (typed target: pre-move recorded stack boundary, omit position; layers: one undoable move, document order preserved; copy: place duplicates there and leave the layers, as ⌥-dragging a Layers panel row; recorded typed references retain their form)"##,
             has_layer,
             crate::layer_multi_cmds::move_to
         ),
@@ -894,7 +944,7 @@ fn build() -> Vec<CommandSpec> {
             "Move Layer",
             [],
             None,
-            r##"{"layer":id?,"dx":i32,"dy":i32,"units":"px"|"pt"="px" (pt: points, whole pixels at the document's resolution),"target":"pixels"|"mask"="pixels","selection":bool=false} (no layer: every selected layer; linked layers follow; target mask: a layer whose mask is unlinked moves that mask alone, a linked mask moves with the layer; selection: the selection moves too, in the same step)"##,
+            r##"{"layer":id?,"dx":i32,"dy":i32,"units":"px"|"pt"="px" (pt: points, whole pixels at the document's resolution),"target":"pixels"|"mask"="pixels","selection":bool=false,"nest":bool=false} → null | {nested:[id]} (no layer: every selected layer; linked layers follow; target mask: a layer whose mask is unlinked moves that mask alone, a linked mask moves with the layer; selection: the selection moves too, in the same step; nest: auto-nesting as the Move tool does it, a layer whose bounds centre lands on another artboard joins it and one whose centre is off every artboard leaves for the top level; artboards, the Background, empty layers, layers whose board doesn't change, groups that would nest too deep and layers locked with Prevent Auto-Nesting (on the layer, a group around it or the destination board) stay put; nested lists the layers that changed board)"##,
             has_layer,
             crate::layer_multi_cmds::translate
         ),
@@ -914,20 +964,28 @@ fn build() -> Vec<CommandSpec> {
         cmd!("image.imageRotation.90ccw", "90° Counter Clockwise", ["Image", "Image Rotation"], None, "{}", has_doc, |s, _| {
             turn(s, "Rotate Canvas", crate::canvas_geom::Turn::Ccw90)
         }),
-        cmd!("image.adjustments.desaturate", "Desaturate", ["Image", "Adjustments"], Some("Cmd+Shift+U"), "{}", has_pixel_layer, |s, _| {
-            destructive_adjust(
-                s,
-                "Desaturate",
-                Adjustment::HueSaturation {
-                    hue: 0.0,
-                    saturation: -100.0,
-                    lightness: 0.0,
-                    colorize: false,
-                    ranges: photocraft_doc::adjust::HueRange::defaults(),
-                },
-                &Value::Null,
-            )
-        }),
+        cmd!(
+            "image.adjustments.desaturate",
+            "Desaturate",
+            ["Image", "Adjustments"],
+            Some("Cmd+Shift+U"),
+            r##"{"target":"pixels"|"mask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active}"##,
+            has_pixel_layer,
+            |s, p| {
+                destructive_adjust(
+                    s,
+                    "Desaturate",
+                    Adjustment::HueSaturation {
+                        hue: 0.0,
+                        saturation: -100.0,
+                        lightness: 0.0,
+                        colorize: false,
+                        ranges: photocraft_doc::adjust::HueRange::defaults(),
+                    },
+                    p,
+                )
+            }
+        ),
         // Paint
         cmd!(
             "paint.stroke",
@@ -1012,7 +1070,7 @@ fn build() -> Vec<CommandSpec> {
             label: "Activate Document",
             menu: &[],
             shortcut: None,
-            params: r##"{"document":index} or {"offset":int} (the open document that many tabs after the active one, before it when negative: a Photoshop action's switch to another document) → {document}"##,
+            params: r##"{"document":index|{"index":uint}} or {"offset":int} (numeric document: zero-based tab index; typed index: one-based opening order; offset: places after the active document in opening order, before it when negative) → {document}"##,
             enabled: has_doc,
             run: |s, p| {
                 // A null key counts as omitted.
@@ -1020,27 +1078,29 @@ fn build() -> Vec<CommandSpec> {
                 let idx = match (given("document"), given("offset")) {
                     (Some(_), Some(_)) => return Err(bad("document.activate", "give `document` or `offset`, not both")),
                     (None, None) => return Err(bad("document.activate", "needs `document` (a tab index) or `offset`")),
-                    // Past the first or last tab is refused rather than wrapped, so an action that
-                    // copies from one document never silently pastes into the wrong one (#7103).
+                    // Recorded offsets wrap in opening order, independently of dragged tabs.
                     (None, Some(o)) => {
                         let o = o.as_i64().ok_or_else(|| bad("document.activate", "`offset` must be an integer"))?;
-                        let (active, len) = (s.active_index().ok_or(EngineError::NoDocument)?, s.documents().len());
-                        let target = i64::try_from(active).ok().and_then(|a| a.checked_add(o)).and_then(|i| usize::try_from(i).ok());
-                        let Some(i) = target.filter(|&i| i < len) else {
-                            let side = if o < 0 { "before" } else { "after" };
-                            let msg = format!("no document {} {side} the active one, which is {} of {len}", o.unsigned_abs(), active + 1);
-                            return Err(EngineError::Other(msg));
-                        };
-                        i
+                        s.document_at_offset(o)?
                     }
                     (Some(d), None) => {
+                        if let Some(selector) = d.as_object() {
+                            let index = selector
+                                .get("index")
+                                .filter(|_| selector.len() == 1)
+                                .and_then(Value::as_u64)
+                                .ok_or_else(|| bad("document.activate", "document reference needs one non-negative index"))?;
+                            return s
+                                .document_at_index(index)
+                                .and_then(|idx| if s.set_active(idx) { Ok(json!({"document": idx})) } else { Err(EngineError::NoDocument) });
+                        }
                         let i = d.as_u64().ok_or_else(|| bad("document.activate", "`document` must be a tab index"))?;
                         usize::try_from(i).map_err(|_| bad("document.activate", "`document` out of range"))?
                     }
                 };
                 if s.set_active(idx) { Ok(json!({"document": idx})) } else { Err(EngineError::Other(format!("no document at index {idx}"))) }
             },
-            journal: false,
+            journal: true,
         },
         CommandSpec {
             id: "document.move",
@@ -1158,7 +1218,7 @@ fn build() -> Vec<CommandSpec> {
             label,
             menu: &["Layer", "New Adjustment Layer"],
             shortcut: None,
-            params: Box::leak(format!("{params} + {{{NEW_LAYER_PATH}}}").into_boxed_str()),
+            params: Box::leak(format!(r#"{params} + {{{NEW_LAYER_PATH},"opacity":0..1=1}}"#).into_boxed_str()),
             enabled: has_doc,
             run: |s, p| {
                 let kind = p.get("__kind").and_then(Value::as_str).unwrap_or("invert").to_string();
@@ -1212,6 +1272,13 @@ fn build() -> Vec<CommandSpec> {
                         crate::adjust_params::from_params(&kind, &tone, None, adjust_mode(s, p))?
                     }
                 };
+                let adj = if matches!(kind.as_str(), "levels" | "curves")
+                    && let Some(colors) = crate::color_channels::target(s, p)?
+                {
+                    crate::color_channels::tone_adjustment(&kind, p, adj, doc_mode(s), colors)?
+                } else {
+                    adj
+                };
                 let label = adj.label().to_string();
                 // A smart object records the adjustment as a smart filter (Photoshop), which
                 // re-runs from the source instead of baking into a copy of the pixels.
@@ -1243,6 +1310,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::cutout_cmds::specs());
     v.extend(crate::symmetry_cmds::specs());
     v.extend(crate::edit_cmds::specs());
+    v.extend(crate::smart_svg_cmds::specs());
     v.extend(crate::color_cmds::specs());
     v.extend(crate::brush_cmds::specs());
     v.extend(crate::brush_preset_cmds::specs());

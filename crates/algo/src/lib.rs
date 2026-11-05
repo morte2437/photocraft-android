@@ -43,6 +43,8 @@ pub mod histogram;
 mod image;
 pub mod inpaint;
 pub mod lens;
+mod lens_flare;
+mod lens_flare_data;
 pub mod liquify;
 pub mod magnetic;
 pub mod matting;
@@ -846,7 +848,7 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
         FilterParams::Fibers { variance, strength, seed, foreground, background } => {
             render::fibers(src, out, ctx, *variance, *strength, *seed, (*foreground, *background))
         }
-        FilterParams::LensFlare { brightness, center_x, center_y, lens } => render::lens_flare(src, out, ctx, *brightness, (*center_x, *center_y), *lens),
+        FilterParams::LensFlare { brightness, center_x, center_y, lens } => lens_flare::lens_flare(src, out, ctx, *brightness, (*center_x, *center_y), *lens),
         FilterParams::LightingEffects { lights, gloss, metallic, exposure, ambience, texture, height, white_is_high } => render::lighting(
             src,
             out,
@@ -1020,6 +1022,31 @@ fn auto_tile(params: &FilterParams, bounds: Rect) -> i32 {
             TILE.max(halo as i32).min(2048)
         }
         Halo::Bounds => TILE,
+    }
+}
+
+/// Conservative transient allocation estimate for filter admission. Output tiles remain in
+/// the paged store; whole-image kernels must admit their float input before reading it.
+pub fn working_bytes(params: &FilterParams, area: Rect, bounds: Rect, channels: usize) -> u64 {
+    if area.is_empty() {
+        return 0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let threads = rayon::current_num_threads().max(1) as u64;
+    #[cfg(target_arch = "wasm32")]
+    let threads = 1u64;
+    let tile = auto_tile(params, bounds).max(1) as u64;
+    let floats = (channels as u64).saturating_mul(4);
+    // Result groups hold at most RESULT_BUDGET bytes of floats, and never more than the area.
+    let base = area.size().area().saturating_mul(floats).min(RESULT_BUDGET as u64).saturating_mul(3);
+    match params.halo_for(bounds) {
+        Halo::Bounds => base.saturating_add(bounds.union(&area).size().area().saturating_mul(floats)),
+        Halo::Radius(r) => {
+            let side = tile.saturating_add((r.max(0) as u64).saturating_mul(2));
+            base.saturating_add(
+                side.saturating_mul(side).saturating_add(tile.saturating_mul(tile).saturating_mul(3)).saturating_mul(floats).saturating_mul(threads),
+            )
+        }
     }
 }
 
@@ -1269,7 +1296,10 @@ fn apply_tiled_with_impl(
         }
         for (t, data) in results {
             match data {
-                TileData::Samples(data) => out.write_region(t, &data),
+                TileData::Samples(data) => {
+                    out.write_region(t, &data);
+                    photocraft_raster::scratch::give(data);
+                }
                 TileData::Encoded(data) => out.write_interleaved(t, &data),
             }
         }
@@ -1324,6 +1354,7 @@ fn apply_box_blur(
                     mix_selection(data, *t, sel, &Image::read(surface, *t), fmt.alpha);
                 }
                 s.write_region(*t, data);
+                photocraft_raster::scratch::give(std::mem::take(data));
             }
         };
         #[cfg(not(target_arch = "wasm32"))]

@@ -69,20 +69,20 @@ fn delete_state(s: &mut Session, p: &Value) -> Result<Value> {
     if i == 0 {
         return Err(bad(CMD, "the oldest state can't be deleted"));
     }
+    let rows = crate::actions_cmds::history_rows(s);
     if non_linear {
         crate::history_options_cmds::delete_state(s, i, current)?;
-        let entries = s.active().ok_or(EngineError::NoDocument)?.history.entries();
-        return Ok(json!({ "states": entries.len(), "current": entries.last() }));
-    }
-    // Step back to the state before `i`; the steps from `i` on are then redo states.
-    for _ in i..=current {
-        if !s.undo() {
-            return Err(EngineError::Other("the history can't step back right now".into()));
+    } else {
+        // Step back to the state before `i`; the steps from `i` on are then redo states.
+        for _ in i..=current {
+            if !s.undo() {
+                return Err(EngineError::Other("the history can't step back right now".into()));
+            }
         }
+        s.active_mut().ok_or(EngineError::NoDocument)?.history.clear_redo();
     }
-    let st = s.active_mut().ok_or(EngineError::NoDocument)?;
-    st.history.clear_redo();
-    let entries = st.history.entries();
+    crate::actions_cmds::reconcile_history_removal(s, &rows);
+    let entries = s.active().ok_or(EngineError::NoDocument)?.history.entries();
     Ok(json!({ "states": entries.len(), "current": entries.last() }))
 }
 
@@ -509,7 +509,7 @@ mod tests {
     }
 
     fn tile_bytes(doc: &Document) -> usize {
-        doc.layers.iter().filter_map(|l| l.surface()).flat_map(|s| s.tiles().map(|(_, t)| t.bytes().len())).sum()
+        doc.layers.iter().filter_map(|l| l.surface()).flat_map(|s| s.tiles().map(|(_, t)| t.len())).sum()
     }
 
     /// A Merged Layers snapshot is a flattened copy only it holds (#4530): it counts in the

@@ -8,7 +8,7 @@ use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use skrifa::outline::DrawSettings;
 use skrifa::{GlyphId, MetadataProvider};
 
-use crate::layout::{GlyphOrient, PlacedGlyph, TextLayout};
+use crate::layout::{DecorationRect, GlyphOrient, PlacedGlyph, TextLayout};
 use crate::raster::{Bounds, Coverage, LineSink, Pen, Xform, rect_to};
 use crate::warp::{Placement, Warp};
 
@@ -135,45 +135,64 @@ fn glyph_is_placed(layout: &TextLayout, g: &PlacedGlyph, warp: Option<&Warp>) ->
     true
 }
 
+/// The glyphs and decorations one colour pass draws, as indices into the layout's lists.
+#[derive(Default)]
+pub(crate) struct Pass {
+    pub(crate) glyphs: Vec<usize>,
+    pub(crate) decorations: Vec<usize>,
+}
+
 /// Distinct visible colours (`alpha > 0.0`) used by placed glyphs or decorations, each paired with
-/// whether any placed glyph of that colour uses faux/synthetic bold.
-fn visible_color_passes(layout: &TextLayout, warp: Option<&Warp>) -> Vec<(Color, bool)> {
-    let mut colors: Vec<(Color, bool)> = Vec::new();
-    let mut record = |c: Color, bold: bool| {
+/// whether any placed glyph of that colour uses faux/synthetic bold and the items it draws. Built
+/// in one pass with a hash of the colour: a linear search per glyph, and then a walk of every
+/// glyph per colour, made text with many coloured runs quadratic.
+pub(crate) fn visible_color_passes(layout: &TextLayout, warp: Option<&Warp>) -> Vec<(Color, bool, Pass)> {
+    type Key = (std::mem::Discriminant<photocraft_color::ColorMode>, [u32; 4], u32);
+    fn slot<'a>(colors: &'a mut Vec<(Color, bool, Pass)>, index: &mut std::collections::HashMap<Key, usize>, c: Color, bold: bool) -> Option<&'a mut Pass> {
         if !(c.alpha.is_finite() && c.alpha > 0.0) {
-            return;
+            return None;
         }
-        match colors.iter_mut().find(|(existing, _)| *existing == c) {
-            Some((_, b)) => *b |= bold,
-            None => colors.push((c, bold)),
-        }
-    };
-    for g in &layout.glyphs {
+        // `+ 0.0` folds -0.0 into 0.0, which compare equal.
+        let key = (std::mem::discriminant(&c.mode), c.c.map(|v| (v + 0.0).to_bits()), c.alpha.to_bits());
+        let i = *index.entry(key).or_insert_with(|| {
+            colors.push((c, false, Pass::default()));
+            colors.len() - 1
+        });
+        colors[i].1 |= bold;
+        Some(&mut colors[i].2)
+    }
+    let mut colors: Vec<(Color, bool, Pass)> = Vec::new();
+    let mut index = std::collections::HashMap::new();
+    for (i, g) in layout.glyphs.iter().enumerate() {
         let Some(st) = layout.styles.get(g.style as usize) else { continue };
         if !(st.color.alpha.is_finite() && st.color.alpha > 0.0) {
             continue;
         }
-        if glyph_is_placed(layout, g, warp) {
-            record(st.color, is_bold(layout, g));
+        if glyph_is_placed(layout, g, warp)
+            && let Some(pass) = slot(&mut colors, &mut index, st.color, is_bold(layout, g))
+        {
+            pass.glyphs.push(i);
         }
     }
-    for d in &layout.decorations {
+    for (i, d) in layout.decorations.iter().enumerate() {
         let Some(st) = layout.styles.get(d.style as usize) else { continue };
-        record(st.color, false);
+        if let Some(pass) = slot(&mut colors, &mut index, st.color, false) {
+            pass.decorations.push(i);
+        }
     }
     colors
 }
 
-/// Draws every glyph and decoration of `layout` whose style colour is `color` (or all of them
-/// when `color` is `None`) into `sink`, through `transform` (text space → sink space), bending
+/// Draws the glyphs and decorations of `layout` in `only` (or all of them when it is `None`) into `sink`, through `transform` (text space → sink space), bending
 /// the outlines with `warp` first (in text space). Faux bold glyphs are drawn from their outline
 /// thickened by [`FAUX_BOLD_RADIUS`] ([`crate::embolden`]).
-fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only_color: Option<&Color>, warp: Option<&Warp>) {
-    for g in &layout.glyphs {
+fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only: Option<&Pass>, warp: Option<&Warp>) {
+    let glyphs: Box<dyn Iterator<Item = &PlacedGlyph>> = match only {
+        Some(p) => Box::new(p.glyphs.iter().filter_map(|&i| layout.glyphs.get(i))),
+        None => Box::new(layout.glyphs.iter()),
+    };
+    for g in glyphs {
         let st = &layout.styles[g.style as usize];
-        if only_color.is_some_and(|c| c != &st.color) {
-            continue;
-        }
         let face = &layout.faces[g.face as usize];
         let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else {
             continue;
@@ -217,11 +236,11 @@ fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only_c
             None => draw_glyph(&outline, settings, bold.as_ref(), &mut Pen::new(&mut *sink, transform.mul(&glyph))),
         }
     }
-    for d in &layout.decorations {
-        let st = &layout.styles[d.style as usize];
-        if only_color.is_some_and(|c| c != &st.color) {
-            continue;
-        }
+    let decorations: Box<dyn Iterator<Item = &DecorationRect>> = match only {
+        Some(p) => Box::new(p.decorations.iter().filter_map(|&i| layout.decorations.get(i))),
+        None => Box::new(layout.decorations.iter()),
+    };
+    for d in decorations {
         match warp {
             Some(w) => {
                 let mut ws = WarpSink { inner: &mut *sink, warp: w, post: *transform };
@@ -373,7 +392,7 @@ pub(crate) fn rasterize_passes(
     }
     let n = format.mode.color_channels();
     let stride = n + 1;
-    let any_bold = colors.iter().any(|&(_, b)| b);
+    let any_bold = colors.iter().any(|(_, b, _)| *b);
     if !fits_raster_budget(w, h, stride, format.sample, any_bold, MAX_RASTER_BYTES) {
         return nothing(format);
     }
@@ -384,13 +403,13 @@ pub(crate) fn rasterize_passes(
     let xf = Xform([1.0, 0.0, 0.0, 1.0, -rect.x0 as f64, -rect.y0 as f64]).mul(&Xform(transform.m));
     let whole = Rect::new(0, 0, w as i32, h as i32);
     let mut pass_pixels = 0u64;
-    for &(c, _) in &colors {
+    for (c, _, pass) in &colors {
         // Rasterise each colour only over its own glyphs (faux bold's thickened outlines included):
         // a full-size pass per colour made text with many coloured runs cost colours x area
         // (#8602). Outside its ink a colour's coverage is zero, so the result is the same.
         let sub = if per_colour {
             let mut b = Bounds::default();
-            draw(layout, &xf, &mut b, Some(&c), warp);
+            draw(layout, &xf, &mut b, Some(pass), warp);
             b.rect.map(rect_from_bounds).unwrap_or(Rect::EMPTY).intersect(&whole)
         } else {
             whole
@@ -411,11 +430,11 @@ pub(crate) fn rasterize_passes(
         let Some(mut cov) = Coverage::try_new(sw, sh) else {
             return nothing(format);
         };
-        draw(layout, &xf, &mut cov, Some(&c), warp);
+        draw(layout, &xf, &mut cov, Some(pass), warp);
         let Some(cov) = cov.finish() else {
             return nothing(format);
         };
-        let comps = color_in(&format, &c);
+        let comps = color_in(&format, c);
         let a = c.alpha.clamp(0.0, 1.0);
         composite(&mut acc, w, sub, &cov, stride, &comps, a, antialias);
     }
@@ -529,14 +548,18 @@ impl skrifa::outline::OutlinePen for Recorder<'_> {
     }
 }
 
-/// Glyph outlines of `layout` in document space (through `transform`, bent by `warp`), one
-/// element list per glyph, for Type › Create Work Path and Convert to Shape. Faux bold is not
-/// applied (Photoshop also converts the regular outline); faux italic and scaling are. Under a
-/// warp, control points are mapped directly, which is exact for straight segments and a close
-/// approximation for curves.
-pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Vec<Vec<PathEl>> {
+/// Positioned glyph outline with its style and character run information.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlyphOutline {
+    pub glyph_index: usize,
+    pub style: u32,
+    pub elements: Vec<PathEl>,
+}
+
+/// Glyph outlines of `layout` preserving the style index of each glyph.
+pub fn glyph_outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Vec<GlyphOutline> {
     let mut glyphs = Vec::new();
-    for g in &layout.glyphs {
+    for (i, g) in layout.glyphs.iter().enumerate() {
         let face = &layout.faces[g.face as usize];
         let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else {
             continue;
@@ -560,10 +583,19 @@ pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) ->
         let mut rec = Recorder { glyph, post: Xform(transform.m), warp: bend, out: Vec::new() };
         let settings = DrawSettings::unhinted(Size::new(face.size_px), LocationRef::new(&coords));
         if outline.draw(settings, &mut rec).is_ok() && !rec.out.is_empty() {
-            glyphs.push(rec.out);
+            glyphs.push(GlyphOutline { glyph_index: i, style: g.style, elements: rec.out });
         }
     }
     glyphs
+}
+
+/// Glyph outlines of `layout` in document space (through `transform`, bent by `warp`), one
+/// element list per glyph, for Type › Create Work Path and Convert to Shape. Faux bold is not
+/// applied (the regular outline is converted); faux italic and scaling are. Under a
+/// warp, control points are mapped directly, which is exact for straight segments and a close
+/// approximation for curves.
+pub fn outlines(layout: &TextLayout, transform: &Affine, warp: Option<&Warp>) -> Vec<Vec<PathEl>> {
+    glyph_outlines(layout, transform, warp).into_iter().map(|g| g.elements).collect()
 }
 
 #[cfg(test)]

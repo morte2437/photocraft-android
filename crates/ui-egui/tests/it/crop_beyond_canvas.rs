@@ -110,7 +110,8 @@ fn editing_a_crop_frame_shows_the_pixels_past_the_canvas() {
         let app = h.state_mut();
         // 300 × 120: red down the left 60 px and blue down the right 60 px of a new layer, then
         // cropped to (50, 0) 200 × 100 keeping the pixels: 50 px of red past the left edge, 50 of
-        // blue past the right, and 20 rows of the white Background below.
+        // blue past the right, and 20 rows of the white Background below (the crop makes it "Layer 0",
+        // which keeps them, #10867).
         app.run("file.new", json!({"width": 300, "height": 120, "background": "white"})).expect("new");
         app.run("layer.new.layer", json!({})).expect("layer");
         for (x, color) in [(0, "#ff0000"), (240, "#0000ff")] {
@@ -173,11 +174,11 @@ fn editing_a_crop_frame_shows_the_pixels_past_the_canvas() {
         assert!(c[0] > 230 && c[1] < 40, "at x = {x}: {c:?}");
     }
 
-    // Esc cancels: back to the canvas alone.
+    // Esc cancels: back to the canvas alone, with no frame until the next press (#10370).
     h.event(egui::Event::PointerGone);
     h.event(egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(3);
     let img = render(&mut h);
-    assert_eq!(h.state().ui.crop_rect, Some([0.0, 0.0, 200.0, 100.0]));
+    assert_eq!(h.state().ui.crop_rect, None, "Esc hides the frame");
     assert_eq!(shown(&h, &img), was, "hidden again after Esc");
 }

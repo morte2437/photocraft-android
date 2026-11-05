@@ -4,9 +4,9 @@ use super::{
     brush_picker, camera_raw_ui, canvas, dds_options_ui, delete_layer_prompt, dialogs, discard_ui, distort_ui, dock, field_wheel, file_open, gpu_canvas,
     gpu_status, gradient_ui, histogram_panel, i18n, jobs_ui, jpeg_options_ui, json, kys_import, last_brush, layers_panel_ui, mask_thumbs_ui, mask_trash_prompt,
     monitor_status, native_menu, notices, open_prompt, paint_mouse, palette, panel_docking, panels, prefs_ui, preset_files_ui, preset_panels, rasterize_prompt,
-    screen_picker, shape_stroke_ui, shortcuts, single_line_drag, state, stroke_trace, stylus, targa_options_ui, text_field_menu, theme, tiff_options_ui,
-    timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, type_transform, updates_ui, vector_ui, view_cmds, wheel_nav,
-    wide_angle_ui, widgets, work_area, workspace_ui,
+    screen_picker, shape_stroke_ui, shortcuts, single_line_drag, smart_svg_ui, state, stroke_trace, stylus, targa_options_ui, text_field_menu, theme,
+    tiff_options_ui, timeline_ui, titlebar, tool_cursor, tool_memory, transform_tool, type_panels_ui, type_tool, type_transform, updates_ui, vector_ui,
+    view_cmds, wheel_nav, wide_angle_ui, widgets, work_area, workspace_ui,
 };
 
 mod clipboard;
@@ -43,8 +43,10 @@ impl PhotocraftApp {
             display_memo: HashMap::new(),
             navigator_gpu: HashMap::new(),
             navigator_plain: std::collections::HashSet::new(),
+            streams: HashMap::new(),
             info_samplers: None,
             monitors: Default::default(),
+            thumbnail_cache: std::sync::Arc::new(std::sync::Mutex::new(crate::home_recent_ui::ThumbnailCache::default())),
             checker: None,
             drag: None,
             cancelled_vector_drag: false,
@@ -132,6 +134,7 @@ impl PhotocraftApp {
             type_clicks: None,
             type_transform_preview: None,
             type_font_preview: None,
+            color_picker_preview: None,
             guide_drag: None,
             layer_box: None,
             crop: Default::default(),
@@ -142,9 +145,11 @@ impl PhotocraftApp {
             clone_preview: None,
             info_sample: None,
             os_clip_sig: None,
+            os_clip_svg: None,
             clip_unmirrored: true,
             clip_external: false,
             clip_read_for_paste: false,
+            smart_svg: Default::default(),
             transform_preview: None,
             move_mods: Default::default(),
             nudge_bundle: Default::default(),
@@ -153,6 +158,7 @@ impl PhotocraftApp {
             solid_fill_preview: None,
             pattern_fill_preview: None,
             shape_fill_preview: None,
+            widget_colors: Vec::new(),
             distort: Default::default(),
             gradient: Default::default(),
             camera_raw: None,
@@ -160,6 +166,7 @@ impl PhotocraftApp {
             raw_redevelop: Vec::new(),
             wide_angle: None,
             dialog_edits: Default::default(),
+            color_picker_live: Vec::new(),
             pending_after_prompt: None,
             tone_hist: None,
             doc_hist: None,
@@ -183,12 +190,16 @@ impl PhotocraftApp {
             discard: None,
             file_dialog: None,
             tiff_options: None,
+            tiff_remembered: Default::default(),
             save_dirs: HashMap::new(),
             disk_stamps: HashMap::new(),
             targa_options: None,
             jpeg_options: None,
             dds_options: None,
             held_opens: Default::default(),
+            held_memory_prompts: Default::default(),
+            prompt_order: Default::default(),
+            held_preset_import: None,
             allow_close: false,
             stylus: Default::default(),
             control_click: Default::default(),
@@ -266,6 +277,14 @@ impl eframe::App for PhotocraftApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        photocraft_compose::discard_unreadable_pixel_caches();
+        if let Err(error) = photocraft_raster::spill::check_integrity() {
+            self.ui.status = error;
+            self.ui.status_error = true;
+        } else if let Some(error) = photocraft_raster::spill::last_error() {
+            self.ui.status = error;
+            self.ui.status_error = true;
+        }
         self.ui_frame(ui, frame);
         self.finish_type_reset_pass(ui.ctx());
     }

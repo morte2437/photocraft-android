@@ -7,8 +7,9 @@
 //! `edit.transform.againCopy`) into an action. A replayable command's journal entry replaces the
 //! entries of the commands it ran on its own behalf, so they are recorded once (#3067). Playback
 //! runs those steps with [`Session::execute`] and stops at the first error, leaving one history
-//! step per step that ran. Steps switched off with `actions.toggle` (the Actions panel check
-//! marks) are skipped by playback, Batch and droplets.
+//! entry for the whole play by default (`actions.setHistory` opts into per-step history).
+//! Steps switched off with `actions.toggle` (the Actions panel check marks) are skipped by
+//! playback, Batch and droplets.
 //!
 //! An untrusted session installs [`Session::authorize`]. `actions.play` calls it for every nested
 //! step, because the outer `actions.play` id would otherwise hide a recorded `file.*` command from
@@ -21,6 +22,11 @@ use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
+
+mod history;
+pub(crate) use history::ActionHistory;
+pub use history::{ActionHistoryContinuation, finish_pending_history, suspend_history};
+pub(crate) use history::{before_edit as before_action_edit, begin_document_history, finish_document_history, history_rows, reconcile_history_removal};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
@@ -106,6 +112,12 @@ pub struct ActionState {
     /// Steps run by the current top-level script and everything it calls.
     #[serde(skip)]
     pub script_steps: u64,
+    /// Sets made with New Set (`actions.newSet`), or loaded from an `.atn` with no actions, that
+    /// hold no action yet: the Actions panel shows them as empty folders. Save Actions… writes one
+    /// to an `.atn` as Photoshop does, but the preset store keeps sets through their actions, so
+    /// an empty one isn't remembered past the session.
+    #[serde(skip)]
+    pub sets: Vec<String>,
     /// Bumped whenever `list` changes, so the preset store can skip unchanged writes.
     #[serde(skip)]
     pub rev: u64,
@@ -131,9 +143,33 @@ pub(crate) fn recorded_params(s: &Session, id: &str, mut p: Value) -> Value {
     p
 }
 
-/// Resolve the recorded visibility target identically in engine and shell playback.
+/// Resolve the recorded visibility target identically in engine and shell playback, and drop
+/// the `.atn` event a Filter Gallery step remembers for Save Actions: the command, its journal
+/// entry (Last Filter), a smart filter and the step's dialog never see it.
 pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
     let mut p = p.clone();
+    if id == "type.create" && (p.get("xPercent").is_some() || p.get("yPercent").is_some()) {
+        if p.get("box").is_some() || p.get("x").is_some() || p.get("y").is_some() {
+            return Err(bad(id, "recorded type position cannot mix percentages with pixel coordinates or a box"));
+        }
+        let size = s.active().ok_or(EngineError::NoDocument)?.doc.size;
+        for (percent_key, pixel_key, dimension) in [("xPercent", "x", size.width), ("yPercent", "y", size.height)] {
+            let percent = p.get(percent_key).and_then(Value::as_f64).ok_or_else(|| bad(id, format!("invalid `{percent_key}`")))?;
+            let pixel = percent / 100.0 * f64::from(dimension);
+            if !pixel.is_finite() || pixel.abs() > f64::from(f32::MAX) {
+                return Err(bad(id, format!("`{percent_key}` is outside the canvas coordinate range")));
+            }
+            if let Some(object) = p.as_object_mut() {
+                object.remove(percent_key);
+                object.insert(pixel_key.into(), json!(pixel));
+            }
+        }
+    }
+    if id.starts_with("filter.gallery.")
+        && let Some(object) = p.as_object_mut()
+    {
+        object.remove(crate::atn_cmds::RECORDED_EVENT);
+    }
     if id == "layer.setProps"
         && let Some(target) = p.get("_actionLayer")
     {
@@ -333,7 +369,7 @@ fn from_step(p: &Value, len: usize) -> Result<usize> {
 fn list(s: &mut Session, _p: &Value) -> Result<Value> {
     let actions: Vec<Value> = s.actions.list.iter().map(|a| json!({"name": a.name, "steps": a.steps.len(), "set": a.set})).collect();
     let recording = s.actions.recording.and_then(|(_, i)| s.actions.list.get(i).map(|a| a.name.clone()));
-    Ok(json!({"actions": actions, "recording": recording}))
+    Ok(json!({"actions": actions, "sets": crate::actions_edit_cmds::set_names(s), "recording": recording}))
 }
 
 fn get(s: &mut Session, p: &Value) -> Result<Value> {
@@ -366,7 +402,15 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         if s.actions.list.iter().any(|action| action.name == name) {
             return Err(bad("actions.record", "an action with this name already exists"));
         }
-        s.actions.list.push(Action::new(name, Vec::new()));
+        let set = match p.get("set") {
+            None | Some(Value::Null) => None,
+            // An existing set, empty ones included, keeps its exact name (an older actions.json or
+            // a `.atn` may pad it); a new one is trimmed.
+            Some(Value::String(n)) if crate::actions_edit_cmds::set_names(s).contains(n) => Some(n.clone()),
+            Some(Value::String(n)) if !n.trim().is_empty() => Some(n.trim().to_string()),
+            Some(_) => return Err(bad("actions.record", "\"set\" must be a set name or null")),
+        };
+        s.actions.list.push(Action { set, ..Action::new(name, Vec::new()) });
         s.actions.touch();
         s.actions.list.len() - 1
     };
@@ -376,10 +420,19 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"action": name, "index": idx}))
 }
 
+/// Whether a journal entry is recorded as an action step: a replayable command, except Check
+/// Spelling's corrections and lookups.
+fn recorded(id: &str, p: &Value) -> bool {
+    replayable(id) && (id != "edit.checkSpelling" || crate::type_spell_cmds::records(p))
+}
+
+/// Commands recorded with their step's dialog on: Check Spelling.
+const RECORDED_WITH_DIALOG: &[&str] = &["edit.checkSpelling"];
+
 /// Replayable journal entries not yet committed to this action while recording.
 pub fn pending_steps(s: &Session, action: usize) -> impl Iterator<Item = &(String, Value)> {
     let from = s.actions.recording.filter(|(_, i)| *i == action).map_or(s.journal.len(), |(from, _)| from);
-    s.journal.iter().skip(from).filter(|(id, _)| replayable(id))
+    s.journal.iter().skip(from).filter(|(id, p)| recorded(id, p))
 }
 
 pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
@@ -387,13 +440,64 @@ pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
     if idx >= s.actions.list.len() {
         return Err(bad("actions.stop", "the action being recorded no longer exists"));
     }
-    let steps: Vec<_> = pending_steps(s, idx).cloned().collect();
+    let steps = fold_recorded_nudges(pending_steps(s, idx).cloned());
     s.actions.recording = Some((s.journal.len(), idx));
     if !steps.is_empty() {
-        s.actions.list[idx].steps.extend(steps);
+        let action = &mut s.actions.list[idx];
+        let first = action.steps.len();
+        action.dialogs.extend(steps.iter().enumerate().filter(|(_, (id, _))| RECORDED_WITH_DIALOG.contains(&id.as_str())).map(|(i, _)| first + i));
+        action.steps.extend(steps);
         s.actions.touch();
     }
     Ok(())
+}
+
+/// Consecutive Move-tool keystrokes in one UI nudge run are one relative action step.
+/// The UI's `coalesce` run id distinguishes a held key from a later, separate gesture.
+fn fold_recorded_nudges(steps: impl IntoIterator<Item = (String, Value)>) -> Vec<(String, Value)> {
+    let mut out: Vec<(String, Value)> = Vec::new();
+    let mut last_run: Option<String> = None;
+    for (id, mut params) in steps {
+        let run = (id == "layer.translate")
+            .then(|| params.as_object())
+            .flatten()
+            .filter(|p| p.keys().all(|key| matches!(key.as_str(), "dx" | "dy" | "coalesce")))
+            .and_then(|p| p.get("coalesce").and_then(Value::as_str).filter(|run| run.starts_with("nudge:")))
+            .map(str::to_string);
+        if let Some(run) = &run {
+            // `layer.translate` moves each step by whole pixels, so the fold adds rounded steps.
+            let dx = params.get("dx").and_then(Value::as_f64).map(f64::round);
+            let dy = params.get("dy").and_then(Value::as_f64).map(f64::round);
+            if let (Some(dx), Some(dy)) = (dx, dy)
+                && dx.is_finite()
+                && dy.is_finite()
+            {
+                if last_run.as_ref() == Some(run)
+                    && let Some((last_id, previous)) = out.last_mut()
+                    && last_id == &id
+                {
+                    let sum_x = previous.get("dx").and_then(Value::as_f64).unwrap_or(0.0) + dx;
+                    let sum_y = previous.get("dy").and_then(Value::as_f64).unwrap_or(0.0) + dy;
+                    if sum_x.is_finite() && sum_y.is_finite() {
+                        previous["dx"] = json!(sum_x);
+                        previous["dy"] = json!(sum_y);
+                        continue;
+                    }
+                }
+                if let Some(object) = params.as_object_mut() {
+                    object.remove("coalesce");
+                    object.insert("dx".into(), json!(dx));
+                    object.insert("dy".into(), json!(dy));
+                }
+                last_run = Some(run.clone());
+                out.push((id, params));
+                continue;
+            }
+        }
+        last_run = None;
+        out.push((id, params));
+    }
+    out
 }
 
 fn stop(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -467,6 +571,7 @@ fn run_recorded(s: &mut Session, action: &Action, from: usize) -> (u64, Option<V
 pub fn begin_playback(s: &mut Session, action: &Action) -> Result<Option<(usize, usize)>> {
     flush_recording(s)?;
     if s.actions.playing == 0 {
+        history::begin(s, &action.name);
         s.actions.playback_steps = 0;
     }
     let recording = s.actions.recording.take();
@@ -475,9 +580,13 @@ pub fn begin_playback(s: &mut Session, action: &Action) -> Result<Option<(usize,
     Ok(recording)
 }
 
+/// Unwind the playback stack and finish grouping only at the outer boundary, then restore suspended recording.
 pub fn finish_playback(s: &mut Session, recording: Option<(usize, usize)>, action: &Action, from: usize) {
     s.actions.playback_stack.pop();
     s.actions.playing = s.actions.playing.saturating_sub(1);
+    if s.actions.playing == 0 {
+        history::finish_playback(s);
+    }
     if let Some((_, idx)) = recording {
         restore_recording(s, idx, &action.name, from);
     }
@@ -729,8 +838,34 @@ fn set_color(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"action": name, "color": color}))
 }
 
+/// Active playback and retained dialog continuations keep their chosen history policy.
+pub(crate) fn history_policy_in_use(s: &Session) -> bool {
+    s.actions.playing != 0 || s.action_history.is_some() || s.paused_action_history.iter().any(|lease| lease.strong_count() != 0)
+}
+
+/// Kept separate from Playback Options' performance modes until #5212 provides that dialog.
+fn set_history(s: &mut Session, p: &Value) -> Result<Value> {
+    not_playing(s, "actions.setHistory")?;
+    if history_policy_in_use(s) {
+        return Err(bad("actions.setHistory", "cannot change action history settings during playback"));
+    }
+    let enabled = p.get("singleState").and_then(Value::as_bool).ok_or_else(|| bad("actions.setHistory", "singleState must be a boolean"))?;
+    s.edit_prefs(|prefs| prefs.actions.create_single_history_state = enabled);
+    Ok(json!({"singleState":enabled}))
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "actions.setHistory",
+            label: "Set Actions History",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"singleState":bool} → {singleState}. Persist Create a single history state (default true). Playback Options can use this setting without changing its performance mode."##,
+            enabled: always,
+            run: set_history,
+            journal: false,
+        },
         CommandSpec {
             id: "actions.move",
             label: "Move Action or Step",
@@ -746,7 +881,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Actions",
             menu: &[],
             shortcut: None,
-            params: "{} → {actions:[{name, steps:count, set:name|null}], recording:name|null}",
+            params: "{} → {actions:[{name, steps:count, set:name|null}], sets:[name…] (every set in panel order, empty ones too), recording:name|null}",
             enabled: always,
             run: list,
             journal: false,
@@ -766,7 +901,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Record Action",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str? (new action, default "Action N")} or {"action":name|index} (append) → {action, index}"##,
+            params: r##"{"name":str? (new action, default "Action N"),"set":name? (the set it goes in, as New Action records into the selected set)} or {"action":name|index} (append) → {action, index}"##,
             enabled: always,
             run: record,
             journal: false,
@@ -786,7 +921,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Play Action",
             menu: &[],
             shortcut: None,
-            params: r##"{"action":name|index, "from":step?} → {action, ran, failed?:{step, id, error}}. step and from are 0-based; steps switched off with actions.toggle are skipped. Stops at the first error (the command still returns ok, with failed set) and leaves one history step per step that ran. Nested calls are supported up to 16 levels; cycles are rejected. Recording stores a named call rather than its expanded commands. Each step is checked with Session::authorize when one is installed."##,
+            params: r##"{"action":name|index, "from":step?} → {action, ran, failed?:{step, id, error}}. step and from are 0-based; steps switched off with actions.toggle are skipped. Stops at the first error (the command still returns ok, with failed set) and groups document edits in one Action: <name> history entry by default; actions.setHistory can retain per-step history. Nested calls are supported up to 16 levels; cycles are rejected. Recording stores a named call rather than its expanded commands. Each step is checked with Session::authorize when one is installed."##,
             enabled: always,
             run: play,
             journal: false,

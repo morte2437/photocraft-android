@@ -616,3 +616,318 @@ fn the_pointer_belongs_to_another_window_from_its_report_until_this_one_hears_it
     let float = Some(egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 300.0)));
     assert!(covers(float, Some(egui::pos2(150.0, 150.0))) && !covers(float, Some(egui::pos2(98.0, 150.0))), "just outside its edge stays here");
 }
+
+/// Check glyph bounds, contrast and the fixed Convert Point apex across display scales.
+#[test]
+fn pen_bitmaps_render_all_six_variants_with_exact_outline_and_hotspots_at_each_scale() {
+    let anchor = convert_point_anchor_centre();
+    assert_eq!(super::PenVariant::Standard.hotspot_in_box(), vec2(2.3, 2.3), "the full-size pen nib is at (2.3, 2.3)");
+    assert_eq!(super::PenVariant::ConvertPoint.hotspot_in_box(), vec2(12.0, 7.0), "match the painted Convert Point apex");
+    assert_eq!(anchor, vec2(12.0, 7.0), "convert-point.svg anchor square centre");
+    assert_eq!(super::PenVariant::ConvertPoint.hotspot_in_box(), anchor, "the Convert Point hotspot is the SVG anchor square centre");
+    for scale in [1.0f32, 1.25, 1.5, 2.0] {
+        for variant in super::PenVariant::all() {
+            let image = super::pen::rasterize(variant, scale).expect("pen variant rasterizes");
+            let [w, h] = image.size;
+            assert!(w > 0 && h > 0, "{variant:?} side at {scale}");
+            assert!(w <= (38.0 * scale) as u16, "{variant:?} side within cursor bounds at {scale}");
+            assert_eq!(image.rgba.len(), (usize::from(w) * usize::from(h) * 4));
+
+            let [hx, hy] = image.hotspot;
+            assert!(hx < w && hy < h, "{variant:?} hotspot inside bitmap at {scale}");
+
+            // Verify straight RGBA: white foreground has RGB=255, dark outline has RGB=0 and alpha>0
+            let pixels = image.rgba.as_chunks::<4>().0;
+            let has_white = pixels.iter().any(|p| p[0] == 255 && p[1] == 255 && p[2] == 255 && p[3] > 180);
+            let has_dark_outline = pixels.iter().any(|p| p[0] == 0 && p[1] == 0 && p[2] == 0 && p[3] > 50);
+            assert!(has_white, "{variant:?} at {scale} has solid white foreground");
+            assert!(has_dark_outline, "{variant:?} at {scale} has dark outline");
+
+            // Verify hotspot matches expected formula: pad + (hot_box / 24.0) * 22.0 * scale,
+            // with Convert Point anchored to its SVG square rather than a literal.
+            let offset_px = scale;
+            let pad = (offset_px + 2.0).ceil();
+            let hot_box = expected_hot_box(variant, anchor);
+            let ideal_hx = pad + (hot_box.x / 24.0) * 22.0 * scale;
+            let ideal_hy = pad + (hot_box.y / 24.0) * 22.0 * scale;
+            let expected_hx = ideal_hx.round() as u16;
+            let expected_hy = ideal_hy.round() as u16;
+            assert_eq!(hx, expected_hx, "{variant:?} hotspot x at {scale}");
+            assert_eq!(hy, expected_hy, "{variant:?} hotspot y at {scale}");
+        }
+    }
+}
+
+/// Catch swapped glyph mappings, including the two anchor badges.
+#[test]
+fn pen_variants_have_distinct_hotspots_and_geometry() {
+    let standard = super::pen::rasterize(super::PenVariant::Standard, 1.0).unwrap();
+    let convert = super::pen::rasterize(super::PenVariant::ConvertPoint, 1.0).unwrap();
+    let freeform = super::pen::rasterize(super::PenVariant::Freeform, 1.0).unwrap();
+
+    // Standard nib vs ConvertPoint apex vs Freeform nib
+    assert_ne!(standard.hotspot, convert.hotspot);
+    assert_ne!(standard.hotspot, freeform.hotspot);
+    assert_ne!(convert.hotspot, freeform.hotspot);
+    assert_ne!(standard.rgba, convert.rgba);
+    assert_ne!(standard.rgba, freeform.rgba);
+    let add = super::pen::rasterize(super::PenVariant::AddAnchor, 1.0).unwrap();
+    let delete = super::pen::rasterize(super::PenVariant::DeleteAnchor, 1.0).unwrap();
+    assert_ne!(standard.rgba, add.rgba, "Add Anchor keeps its plus badge");
+    assert_ne!(standard.rgba, delete.rgba, "Delete Anchor keeps its minus badge");
+    assert_ne!(add.rgba, delete.rgba, "the two anchor badges differ");
+
+    // Pin every tool-to-variant and variant-to-icon mapping so a swapped glyph cannot pass.
+    for (tool, variant, icon) in [
+        (Tool::Pen, super::PenVariant::Standard, "pen-tool"),
+        (Tool::FreeformPen, super::PenVariant::Freeform, "pen-freeform"),
+        (Tool::CurvaturePen, super::PenVariant::Curvature, "pen-curvature"),
+        (Tool::AddAnchorPoint, super::PenVariant::AddAnchor, "pen-add-anchor"),
+        (Tool::DeleteAnchorPoint, super::PenVariant::DeleteAnchor, "pen-delete-anchor"),
+        (Tool::ConvertPoint, super::PenVariant::ConvertPoint, "convert-point"),
+    ] {
+        assert_eq!(super::PenVariant::from_tool(tool), Some(variant), "{tool:?} maps to its Pen variant");
+        assert_eq!(variant.icon_name(), icon, "{variant:?} uses its own icon");
+    }
+}
+
+/// The Convert Point glyph's anchor-square centre, read from the SVG's `<rect>` so a moved square
+/// fails the hotspot tests instead of passing against a stale literal.
+fn convert_point_anchor_centre() -> Vec2 {
+    const SVG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/icons/convert-point.svg"));
+    let rect = SVG
+        .split_once("<rect")
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .map(|(attrs, _)| attrs)
+        .expect("convert-point.svg contains one <rect> anchor square");
+    let attr = |name: &str| -> f32 {
+        rect.split_whitespace()
+            .find_map(|a| a.strip_prefix(name)?.strip_prefix("=\"")?.strip_suffix('"')?.parse::<f32>().ok())
+            .unwrap_or_else(|| panic!("convert-point.svg <rect> is missing numeric {name}"))
+    };
+    vec2(attr("x") + attr("width") / 2.0, attr("y") + attr("height") / 2.0)
+}
+
+/// The point each glyph's hotspot is built from: the SVG anchor-square centre for Convert Point,
+/// the icon's own point for every other variant.
+fn expected_hot_box(variant: super::PenVariant, anchor: Vec2) -> Vec2 {
+    if variant == super::PenVariant::ConvertPoint { anchor } else { variant.hotspot_in_box() }
+}
+
+/// Reject invalid or unbounded rasterization scales without allocating a cursor.
+#[test]
+fn hostile_scales_get_no_pen_bitmap() {
+    for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 0.0, f32::MAX, 500.0] {
+        for variant in super::PenVariant::all() {
+            assert!(super::pen::rasterize(variant, scale).is_none(), "{variant:?} at {scale}");
+        }
+    }
+}
+
+/// Tool switching reuses small Pen images without retaining additional brush images.
+#[test]
+fn pen_cursor_bounded_cache_reuses_uploads_and_bounds_memory() {
+    let ctx = egui::Context::default();
+    let shape_a = super::PenVariant::Standard;
+    let a1 = super::cached_pen_image(&ctx, shape_a, 1.0).unwrap();
+    let a2 = super::cached_pen_image(&ctx, shape_a, 1.0).unwrap();
+    assert!(Arc::ptr_eq(&a1.rgba, &a2.rgba), "pointer movement reuses cached bitmap");
+
+    // All six variants can be cached concurrently without thrashing
+    let mut images = Vec::new();
+    for v in super::PenVariant::all() {
+        let img = super::cached_pen_image(&ctx, v, 1.0).unwrap();
+        images.push(img);
+    }
+    for (i, v) in super::PenVariant::all().into_iter().enumerate() {
+        let lookup = super::cached_pen_image(&ctx, v, 1.0).unwrap();
+        assert!(Arc::ptr_eq(&lookup.rgba, &images[i].rgba), "switching tools retains cached image");
+    }
+
+    // Non-Pen shapes use single-entry cache (memory bounded to 1 bitmap)
+    for i in 0..25 {
+        let _ = super::cached_image(&ctx, &super::Shape::Circle { radius: (10 + i) as f32, centre: false }, 1.0);
+    }
+    let id = egui::Id::unique("photocraft-tool-cursor");
+    let cached = ctx.data(|d| d.get_temp::<super::Cached>(id)).unwrap();
+    assert_eq!(cached.shape, super::Shape::Circle { radius: 34.0, centre: false }, "non-Pen cache holds only single most recent shape");
+}
+
+/// Clear stale images and retain a visible fallback when the backend rejects a bitmap.
+#[test]
+fn pen_cursor_lifecycle_and_fallback_marks_visible_cursor() {
+    let ctx = egui::Context::default();
+    ctx.add_plugin(super::CursorLifecycle);
+
+    // Simulated native pass
+    let output = frame(&ctx, |ui| {
+        let icon = super::pen(ui.ctx(), Tool::Pen);
+        if let Some(i) = icon {
+            ui.ctx().set_cursor_icon(i);
+        }
+    });
+    assert!(output.platform_output.cursor_image.is_some(), "desktop root sets native cursor");
+    assert_eq!(output.platform_output.cursor_icon, CursorIcon::Crosshair, "fallback if OS rejects upload");
+
+    // Clear on pass end / leaving canvas
+    let empty = frame(&ctx, |_| {});
+    assert!(empty.platform_output.cursor_image.is_none(), "lifecycle clears cursor image");
+}
+
+/// Guard padding, integer hotspot rounding and unclipped cursor ink.
+#[test]
+fn pen_bitmaps_geometric_bounds_and_hotspot_quantization_limits() {
+    let anchor = convert_point_anchor_centre();
+    for scale in [1.0f32, 1.25, 1.5, 2.0] {
+        let offset_px = scale;
+        let pad = (offset_px + 2.0).ceil() as usize;
+        let icon_px = (22.0 * scale).round() as usize;
+        let expected_side = icon_px + pad * 2;
+
+        for variant in super::PenVariant::all() {
+            let image = super::pen::rasterize(variant, scale).expect("pen variant rasterizes");
+            let [w, h] = image.size;
+            let [hx, hy] = image.hotspot;
+
+            // 1. Geometric bounds: exact bounding box accommodating 22pt icon + 1pt outline + padding
+            assert_eq!(usize::from(w), expected_side, "{variant:?} width at {scale}");
+            assert_eq!(usize::from(h), expected_side, "{variant:?} height at {scale}");
+
+            // 2. Hotspot quantization: OS cursor requires integer hotspot coordinates.
+            let hot_box = expected_hot_box(variant, anchor);
+            let ideal_hx = pad as f32 + (hot_box.x / 24.0) * 22.0 * scale;
+            let ideal_hy = pad as f32 + (hot_box.y / 24.0) * 22.0 * scale;
+
+            // Quantization to integer physical pixel must not exceed 0.5 px (round)
+            let diff_x = (f32::from(hx) - ideal_hx).abs();
+            let diff_y = (f32::from(hy) - ideal_hy).abs();
+            assert!(diff_x <= 0.5 + 1e-4, "{variant:?} hotspot x quantization error {diff_x} exceeds 0.5 px at scale {scale}");
+            assert!(diff_y <= 0.5 + 1e-4, "{variant:?} hotspot y quantization error {diff_y} exceeds 0.5 px at scale {scale}");
+
+            // Hotspot must lie strictly within bitmap bounds
+            assert!(usize::from(hx) < expected_side);
+            assert!(usize::from(hy) < expected_side);
+
+            // 3. Measured alpha edge profile:
+            // - Transparent margins: outermost 1px perimeter has zero alpha (no clipping)
+            let pixels = image.rgba.as_chunks::<4>().0;
+            for x in 0..usize::from(w) {
+                let top_alpha = pixels[x][3];
+                let bottom_alpha = pixels[(usize::from(h) - 1) * usize::from(w) + x][3];
+                assert_eq!(top_alpha, 0, "{variant:?} top border pixel non-zero at scale {scale}");
+                assert_eq!(bottom_alpha, 0, "{variant:?} bottom border pixel non-zero at scale {scale}");
+            }
+            for y in 0..usize::from(h) {
+                let left_alpha = pixels[y * usize::from(w)][3];
+                let right_alpha = pixels[y * usize::from(w) + usize::from(w) - 1][3];
+                assert_eq!(left_alpha, 0, "{variant:?} left border pixel non-zero at scale {scale}");
+                assert_eq!(right_alpha, 0, "{variant:?} right border pixel non-zero at scale {scale}");
+            }
+
+            // - Non-empty foreground with solid white pixels and dark halo outline
+            let white_count = pixels.iter().filter(|p| p[0] == 255 && p[1] == 255 && p[2] == 255 && p[3] >= 200).count();
+            let dark_count = pixels.iter().filter(|p| p[0] == 0 && p[1] == 0 && p[2] == 0 && p[3] >= 50).count();
+            assert!(white_count > 10, "{variant:?} at {scale} has insufficient white foreground pixels: {white_count}");
+            assert!(dark_count > 10, "{variant:?} at {scale} has insufficient dark outline pixels: {dark_count}");
+        }
+    }
+}
+
+/// Check the compositing identity independently from the rasterizer implementation.
+#[test]
+fn synthetic_straight_rgba_compositing_math_proves_equivalence() {
+    // Mathematical equivalence of single-pass straight RGBA hardware blending
+    // vs multi-pass painter fallback (dark outline + white foreground) over any background:
+    // Hardware blend: C_hw = C_straight * a_out + C_bg * (1 - a_out)
+    // Multi-pass blend: C_painter = 255 * a_fg + (C_bg * (1 - a_dark)) * (1 - a_fg)
+    // Equivalence: C_straight * a_out = (a_fg / a_out) * a_out = a_fg.
+    // (1 - a_out) = 1 - (a_fg + a_dark * (1 - a_fg)) = (1 - a_fg) * (1 - a_dark).
+    // Therefore C_hw == C_painter for all C_bg, within integer rounding tolerance (<= 1 LSB).
+    for &c_bg in &[0u8, 15, 64, 128, 200, 240, 255] {
+        for fg_step in 0..=20 {
+            let a_fg = fg_step as f32 / 20.0;
+            for dark_step in 0..=20 {
+                let a_dark = dark_step as f32 / 20.0;
+                let a_out = a_fg + a_dark * (1.0 - a_fg);
+                if a_out <= 0.0 {
+                    continue;
+                }
+                let white = ((a_fg / a_out) * 255.0).round().clamp(0.0, 255.0);
+                let alpha = (a_out * 255.0).round().clamp(0.0, 255.0);
+
+                let c_hw = ((white * alpha + (c_bg as f32) * (255.0 - alpha) + 127.5) / 255.0).floor() as i32;
+                let c_painter = ((255.0 * a_fg + ((c_bg as f32) * (1.0 - a_dark)) * (1.0 - a_fg)).round()) as i32;
+                assert!((c_hw - c_painter).abs() <= 1, "background {c_bg}, a_fg {a_fg}, a_dark {a_dark}: hw {c_hw} vs painter {c_painter}");
+            }
+        }
+    }
+}
+
+/// White icon coverage is the sole source of non-black RGB. Re-premultiplying
+/// rasterizer output must recover the independently rasterized SVG coverage,
+/// including translucent pixels where a premultiplied/straight mixup is visible.
+#[test]
+fn partial_alpha_pen_rgb_recovers_source_glyph_coverage() {
+    let mut partial_alpha = Vec::new();
+    for scale in [1.0f32, 1.25, 1.5, 2.0] {
+        let pad = (scale + 2.0).ceil() as usize;
+        let side = (22.0 * scale).round() as u32;
+        for variant in super::PenVariant::all() {
+            let source = crate::icons::rasterize_svg(variant.icon_name(), side, side).unwrap();
+            let image = super::pen::rasterize(variant, scale).unwrap();
+            let width = usize::from(image.size[0]);
+            let mut checked = 0;
+            for (i, pixel) in source.pixels.iter().enumerate() {
+                let out_i = ((i / source.size[0] + pad) * width + i % source.size[0] + pad) * 4;
+                let out = &image.rgba[out_i..out_i + 4];
+                if pixel.a() == 0 || out[3] == 0 || out[3] == 255 {
+                    continue;
+                }
+                for channel in &out[..3] {
+                    let recovered = (u16::from(*channel) * u16::from(out[3]) + 127) / 255;
+                    assert!(
+                        recovered.abs_diff(u16::from(pixel.a())) <= 1,
+                        "{variant:?} scale {scale}: partial-alpha RGB lost the source coverage at pixel {i}"
+                    );
+                }
+                checked += 1;
+            }
+            println!("partial-alpha samples for {variant:?} at {scale}x: {checked}");
+            partial_alpha.push((variant, scale, checked));
+        }
+    }
+    // Some glyph/scale pairs composite every edge opaquely; each variant must still keep a
+    // translucent edge at one of the scales.
+    for variant in super::PenVariant::all() {
+        let counts: Vec<_> = partial_alpha.iter().filter(|(v, _, _)| *v == variant).map(|&(_, scale, count)| (scale, count)).collect();
+        let total: usize = counts.iter().map(|&(_, count)| count).sum();
+        assert!(total > 0, "{variant:?} has no translucent edge sample at any scale: {counts:?}");
+    }
+}
+
+// Exercise the benchmark's actual allocation-admission helper in normal library CI;
+// example test binaries are not part of the workspace nextest gate.
+mod benchmark_args {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cursor_bench/args.rs"));
+}
+
+// Likewise the percentile helper: nearest rank must include the largest sample, so a single slow
+// run cannot hide under the cost gate. Example test binaries are not in the workspace nextest gate.
+mod benchmark_stats {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/cursor_bench/stats.rs"));
+
+    #[test]
+    fn nearest_rank_percentiles_include_the_maximum_for_small_samples() {
+        let samples: Vec<f64> = (1..=12).map(f64::from).collect();
+        assert_eq!(percentile(&samples, 0.95), 12.0, "ceil(0.95 * 12) = 12, the largest sample");
+        assert_eq!(percentile(&samples, 0.99), 12.0);
+        assert_eq!(percentile(&samples, 0.5), 6.0, "lower median of an even count");
+        assert_eq!(percentile(&samples, 0.1), 2.0, "ceil(0.1 * 12) = 2");
+        assert_eq!(percentile(&samples, 0.0), 1.0, "the lowest sample");
+        assert_eq!(percentile(&samples, 1.0), 12.0, "the highest sample");
+        assert_eq!(percentile(&samples, f64::INFINITY), 12.0, "an infinite percentage stays bounded");
+        assert_eq!(percentile(&samples, f64::NAN), 1.0, "a NaN percentage stays bounded");
+        assert_eq!(percentile(&[], 0.95), 0.0, "no samples");
+        assert_eq!(percentile(&[4.5], 0.95), 4.5, "one sample");
+    }
+}

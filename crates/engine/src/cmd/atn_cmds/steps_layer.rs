@@ -1,27 +1,41 @@
 use super::convert::clip_name;
 use super::descriptors::{
     PT, PX, Target, ang, class, code, color_desc, color_hex, desc, enm, get_bool, get_enum, get_num, get_obj, get_ref, get_text, jbool, jnum, jstr, layer_ref,
-    layer_target, long, name_ref, pct, px, ref_class, target, target_ref, text, trimmed,
+    layer_target, long, name_ref, pct, px, recorded_layer_ref, recorded_layer_target, ref_class, target, target_ref, text, trimmed,
 };
 use super::events::pixel_target;
 use super::fields::{F, Kind, Mapped, fields_to, none, step, steps};
 use super::steps_make::is_tool_class;
-use super::tables::{FILL_CONTENTS, INTERPOLATION, MENU_ITEMS, STROKE_LOCATION, blend_label, blend_ps, lookup, lookup_back};
+
+use super::tables::{CHANNELS, FILL_CONTENTS, INTERPOLATION, MENU_ITEMS, STROKE_LOCATION, blend_label, blend_ps, lookup, lookup_back};
 use super::{D, Descriptor, Id, Map, ReferenceItem, UnicodeString, Value, json};
 
+/// Import recorded targets while retaining stack and opening-order references for playback.
+/// Resolve a recorded selection while retaining layer names, Background properties and modifiers.
+/// Translate supported selection targets, retaining unknown references as Photoshop steps.
 pub(super) fn select_from(d: &Descriptor) -> Mapped {
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };
+    // The layer selection's modifier, whichever way the step names the layer.
+    let with_modifier = |params| {
+        let mut p = Value::Object(params);
+        match get_enum(d, "selectionModifier").as_deref() {
+            Some("addToSelection") => p["mode"] = json!("add"),
+            Some("removeFromSelection") => p["mode"] = json!("remove"),
+            // Shift-click: select everything between the active layer and this one.
+            Some("addToSelectionContinuous") => p["mode"] = json!("range"),
+            _ => {}
+        }
+        step("layer.select", p)
+    };
     match (ref_class(r).as_deref(), target(r)) {
-        (Some("Lyr"), Target::Name(n)) => {
-            let mut p = json!({"layer": n});
-            match get_enum(d, "selectionModifier").as_deref() {
-                Some("addToSelection") => p["mode"] = json!("add"),
-                Some("removeFromSelection") => p["mode"] = json!("remove"),
-                // Shift-click: select everything between the active layer and this one.
-                Some("addToSelectionContinuous") => p["mode"] = json!("range"),
-                _ => {}
-            }
-            step("layer.select", p)
+        (Some("Lyr"), Target::Name(_) | Target::Index(_) | Target::Ordinal(_)) => {
+            let Some(params) = recorded_layer_target(r) else { return Mapped::Unsupported { harmless: false } };
+            with_modifier(params)
+        }
+        // A Cmd-click recorded on a layer property (e.g. the Background, #10702).
+        (Some("Lyr"), Target::Property(_)) => {
+            let Some(p) = layer_target(r) else { return Mapped::Unsupported { harmless: false } };
+            with_modifier(p)
         }
         // The Channels panel: the active layer's mask, or back to the composite (`RGB`, `CMYK`…).
         (Some("Chnl"), Target::Ordinal(o)) => match o.as_str() {
@@ -29,24 +43,20 @@ pub(super) fn select_from(d: &Descriptor) -> Mapped {
             "RGB" | "CMYK" | "Lab" | "Gry" => step("channel.target", json!({"channel": "composite"})),
             // Re-selecting the channel that is already targeted changes nothing.
             "Trgt" => Mapped::Unsupported { harmless: true },
+            _ if r.len() == 1
+                && d.get("selectionModifier").is_none()
+                // Shift-click (`Extd` true) adds the channel to the selection: kept verbatim.
+                && !matches!(d.get("Extd"), Some(v) if v != &D::Boolean(false))
+                && matches!(r.first(), Some(ReferenceItem::Enumerated { type_id, .. }) if type_id.is("Chnl")) =>
+            {
+                // The exact code only: the legacy `Lmnc` would save back as `Lght`.
+                lookup(CHANNELS, &o).map_or(Mapped::Unsupported { harmless: false }, |channel| step("channel.target", json!({"channel": {"color": channel}})))
+            }
             _ => Mapped::Unsupported { harmless: false },
         },
         // History › Step Backward / Step Forward.
         (Some("HstS"), Target::Ordinal(o)) if o == "Prvs" => none("edit.undo"),
         (Some("HstS"), Target::Ordinal(o)) if o == "Nxt" => none("edit.redo"),
-        (Some("Lyr"), Target::Ordinal(o)) => {
-            // Shift+Alt+[ / ] add the next layer to the selection instead of replacing it.
-            let add = get_enum(d, "selectionModifier").as_deref() == Some("addToSelection");
-            match (o.as_str(), add) {
-                ("Frwr", false) => none("layer.selectAbove"),
-                ("Frwr", true) => none("layer.addAboveToSelection"),
-                ("Bckw", false) => none("layer.selectBelow"),
-                ("Bckw", true) => none("layer.addBelowToSelection"),
-                ("Frnt", _) => none("layer.selectTop"),
-                ("Back", _) => none("layer.selectBottom"),
-                _ => Mapped::Unsupported { harmless: false },
-            }
-        }
         (Some(c), Target::Class) if is_tool_class(c) => Mapped::Unsupported { harmless: true },
         // A menu item chosen while recording (`Mn`): the View menu's zoom items replay.
         (Some("Mn"), Target::Ordinal(item)) => match lookup(MENU_ITEMS, &item) {
@@ -54,12 +64,16 @@ pub(super) fn select_from(d: &Descriptor) -> Mapped {
             None => Mapped::Unsupported { harmless: false },
         },
         // Switching to another open document: its offset from the active one, -1 for the previous
-        // tab and 1 for the next (a template action copies from one and pastes into the other, #7103).
-        (Some("Dcmn"), Target::Offset(o)) => step("document.activate", json!({"offset": o})),
+        // opened document and 1 for the next, independently of dragged tabs (#7103).
+        (Some("Dcmn"), Target::Offset(o)) if o != 0 => step("document.activate", json!({"offset": o})),
+        (Some("Dcmn"), Target::Index(index)) if r.len() == 1 => step("document.activate", json!({"document": {"index": index}})),
         _ => Mapped::Unsupported { harmless: false },
     }
 }
 
+/// Write supported selection/navigation references without replacing their kind with a name.
+/// Write the supported layer, channel, document and history selection references.
+/// Encode selections whose target and selection mode can be represented faithfully in ATN.
 pub(super) fn select_to(id: &str, p: &Value) -> Option<Descriptor> {
     let ord = |o: &str| D::Reference(vec![ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code(o) }]);
     let enumerated = |cls: &str, ty: &str, v: &str| D::Reference(vec![ReferenceItem::Enumerated { class: class(cls), type_id: code(ty), value: code(v) }]);
@@ -68,8 +82,13 @@ pub(super) fn select_to(id: &str, p: &Value) -> Option<Descriptor> {
             if p.get("occurrence").is_some() {
                 return None;
             }
-            let name = jstr(p, "name").or_else(|| jstr(p, "layer"))?;
-            let mut d = desc("null").with("null", name_ref("Lyr ", name));
+            let reference = if let Some(name) = p.get("name") {
+                name_ref("Lyr ", name.as_str()?)
+            } else {
+                p.get("layer").filter(|v| !v.is_null())?;
+                recorded_layer_ref(p).or_else(|| layer_ref(p))?
+            };
+            let mut d = desc("null").with("null", reference);
             match jstr(p, "mode") {
                 None | Some("replace") => {}
                 Some("add") => d = d.with("selectionModifier", enm("selectionModifierType", "addToSelection")),
@@ -80,10 +99,27 @@ pub(super) fn select_to(id: &str, p: &Value) -> Option<Descriptor> {
             d.with("MkVs", D::Boolean(false))
         }
         "channel.target" => {
-            let v = match jstr(p, "channel") {
-                Some("mask") => "Msk ",
-                None | Some("composite") => "RGB ",
-                Some(_) => return None,
+            if p.get("colors").is_some()
+                || p.get("channel").and_then(|channel| channel.get("colors")).is_some()
+                || p.get("extend").is_some_and(|v| v != &Value::Bool(false))
+            {
+                return None;
+            }
+            let v = match p.get("channel") {
+                None => "RGB ",
+                Some(Value::String(channel)) => match channel.as_str() {
+                    "mask" => "Msk ",
+                    "composite" => "RGB ",
+                    _ => return None,
+                },
+                Some(channel) => {
+                    let color = channel.get("color")?.as_str()?.to_ascii_lowercase();
+                    // Gry imports as portable composite, unlike a mode-specific Gray object.
+                    if color == "gray" {
+                        return None;
+                    }
+                    lookup_back(CHANNELS, &color)?
+                }
             };
             desc("null").with("null", enumerated("Chnl", "Chnl", v)).with("MkVs", D::Boolean(false))
         }
@@ -95,9 +131,21 @@ pub(super) fn select_to(id: &str, p: &Value) -> Option<Descriptor> {
         "layer.addBelowToSelection" => desc("null").with("null", ord("Bckw")).with("selectionModifier", enm("selectionModifierType", "addToSelection")),
         "layer.selectTop" => desc("null").with("null", ord("Frnt")),
         "layer.selectBottom" => desc("null").with("null", ord("Back")),
-        // An absolute tab index has no Photoshop equivalent; an offset is what Photoshop records.
+        "document.activate" if p.get("document").is_some_and(Value::is_object) => {
+            if p.get("offset").is_some_and(|v| !v.is_null()) {
+                return None;
+            }
+            let selector = p.get("document")?.as_object().filter(|selector| selector.len() == 1)?;
+            let index = u32::try_from(selector.get("index")?.as_u64()?).ok()?;
+            desc("null").with("null", D::Reference(vec![ReferenceItem::Index { class: class("Dcmn"), index }]))
+        }
+        // A native numeric document selects a tab; the typed index above selects opening order.
         "document.activate" if p.get("document").is_none_or(Value::is_null) => {
             let offset = i32::try_from(p.get("offset")?.as_i64()?).ok()?;
+            // The reference application rejects zero, though the native command permits that no-op.
+            if offset == 0 {
+                return None;
+            }
             desc("null").with("null", D::Reference(vec![ReferenceItem::Offset { class: class("Dcmn"), offset }]))
         }
         _ => {
@@ -172,11 +220,21 @@ pub(super) fn delete_to(id: &str, p: &Value) -> Option<Descriptor> {
     })
 }
 
-/// `hide` / `show` take a list of references (or one).
+/// Import visibility references; a single Show with TglO is the reversible Show Only command.
 pub(super) fn visibility_from(d: &Descriptor, id: &str) -> Mapped {
     let refs: Vec<&[ReferenceItem]> = match d.get("null") {
-        Some(D::List(l)) => l.iter().filter_map(|v| if let D::Reference(r) = v { Some(r.as_slice()) } else { None }).collect(),
+        Some(D::List(l)) => {
+            let Some(refs) = l.iter().map(|v| if let D::Reference(r) = v { Some(r.as_slice()) } else { None }).collect() else {
+                return Mapped::Unsupported { harmless: false };
+            };
+            refs
+        }
         Some(D::Reference(r)) => vec![r.as_slice()],
+        _ => return Mapped::Unsupported { harmless: false },
+    };
+    let id = match d.get("TglO") {
+        Some(D::Boolean(true)) if id == "layer.showLayers" && refs.len() == 1 => "layer.showOnly",
+        Some(D::Boolean(false)) | None => id,
         _ => return Mapped::Unsupported { harmless: false },
     };
     let mut v = Vec::new();
@@ -189,10 +247,16 @@ pub(super) fn visibility_from(d: &Descriptor, id: &str) -> Mapped {
     if v.is_empty() { Mapped::Unsupported { harmless: false } } else { steps(v) }
 }
 
-pub(super) fn visibility_to(_: &str, p: &Value) -> Option<Descriptor> {
-    Some(desc("null").with("null", D::List(vec![layer_ref(p)?])))
+/// Write the layer reference and preserve Show Only's toggle flag.
+pub(super) fn visibility_to(id: &str, p: &Value) -> Option<Descriptor> {
+    let mut d = desc("null").with("null", D::List(vec![layer_ref(p)?]));
+    if id == "layer.showOnly" {
+        d = d.with("TglO", D::Boolean(true));
+    }
+    Some(d)
 }
 
+/// Import supported layer moves while retaining pre-move stack boundaries.
 pub(super) fn move_from(d: &Descriptor) -> Mapped {
     let Some(r) = get_ref(d, "null") else { return Mapped::Unsupported { harmless: false } };
     // The selection outline nudged.
@@ -208,7 +272,7 @@ pub(super) fn move_from(d: &Descriptor) -> Mapped {
     if ref_class(r).as_deref() != Some("Lyr") {
         return Mapped::Unsupported { harmless: false };
     }
-    let Some(mut p) = layer_target(r) else { return Mapped::Unsupported { harmless: false } };
+    let Some(mut p) = layer_target(r).or_else(|| recorded_layer_target(r)) else { return Mapped::Unsupported { harmless: false } };
     match d.get("T   ") {
         Some(D::Descriptor(t)) => {
             let unit = |k: &str| match t.get(k) {
@@ -233,15 +297,19 @@ pub(super) fn move_from(d: &Descriptor) -> Mapped {
             step("layer.translate", Value::Object(p))
         }
         Some(D::Reference(t)) => {
+            // Only a layer destination: an index or ordinal of anything else isn't a stack move.
+            if t.len() != 1 || ref_class(t).as_deref() != Some("Lyr") {
+                return Mapped::Unsupported { harmless: false };
+            }
+            if let Target::Index(index) = target(t) {
+                p.insert("target".into(), json!({"index": index}));
+                return step("layer.moveTo", Value::Object(p));
+            }
             let id = match target(t) {
                 Target::Ordinal(o) if o == "Frnt" => "layer.arrange.bringToFront",
                 Target::Ordinal(o) if o == "Back" => "layer.arrange.sendToBack",
                 Target::Ordinal(o) if o == "Nxt" => "layer.arrange.bringForward",
                 Target::Ordinal(o) if o == "Prvs" => "layer.arrange.sendBackward",
-                Target::Offset(1) => "layer.arrange.bringForward",
-                Target::Offset(-1) => "layer.arrange.sendBackward",
-                // Index 0 is the bottom of the stack.
-                Target::Index(0) => "layer.arrange.sendToBack",
                 _ => return Mapped::Unsupported { harmless: false },
             };
             step(id, Value::Object(p))
@@ -250,9 +318,20 @@ pub(super) fn move_from(d: &Descriptor) -> Mapped {
     }
 }
 
+/// Encode an indexed boundary or a supported relative move without losing its source selector.
 pub(super) fn move_to(id: &str, p: &Value) -> Option<Descriptor> {
     let ord = |o: &str| D::Reference(vec![ReferenceItem::Enumerated { class: class("Lyr "), type_id: code("Ordn"), value: code(o) }]);
     let t = match id {
+        "layer.moveTo" => {
+            if ["layers", "position", "targetOccurrence"].iter().any(|key| p.get(key).is_some_and(|value| !value.is_null()))
+                || p.get("copy").is_some_and(|value| value.as_bool() != Some(false))
+            {
+                return None;
+            }
+            let selector = p.get("target")?.as_object().filter(|selector| selector.len() == 1)?;
+            let index = u32::try_from(selector.get("index")?.as_u64()?).ok()?;
+            D::Reference(vec![ReferenceItem::Index { class: class("Lyr "), index }])
+        }
         "layer.translate" => {
             let unit = match jstr(p, "units") {
                 None | Some("px") => PX,
@@ -268,7 +347,7 @@ pub(super) fn move_to(id: &str, p: &Value) -> Option<Descriptor> {
         "layer.arrange.sendBackward" => ord("Prvs"),
         _ => return None,
     };
-    Some(desc("null").with("null", layer_ref(p)?).with("T   ", t))
+    Some(desc("null").with("null", recorded_layer_ref(p)?).with("T   ", t))
 }
 
 pub(super) fn duplicate_from(d: &Descriptor) -> Mapped {
@@ -326,18 +405,52 @@ pub(super) fn duplicate_to(id: &str, p: &Value) -> Option<Descriptor> {
     Some(d)
 }
 
-/// Only a comp name in the active document is portable across action playback.
+/// Retain measured comp reference forms and resolve them against the playback document.
 pub(super) fn apply_comp_from(d: &Descriptor) -> Mapped {
-    match get_ref(d, "null") {
+    let comp = match get_ref(d, "null") {
         Some([ReferenceItem::Name { class, name }]) if trimmed(&class.class_id) == "compsClass" => {
-            step("layerComp.apply", json!({"comp": name.to_string_lossy()}))
+            json!(name.to_string_lossy())
         }
-        _ => Mapped::Unsupported { harmless: false },
-    }
+        Some([ReferenceItem::Index { class, index }]) if trimmed(&class.class_id) == "compsClass" => json!({"index": index}),
+        Some([ReferenceItem::Identifier { class, id }]) if trimmed(&class.class_id) == "compsClass" => json!({"id": id}),
+        Some([ReferenceItem::Enumerated { class, type_id, value }])
+            if trimmed(&class.class_id) == "compsClass"
+                && type_id.is("Ordn")
+                && matches!(trimmed(value).as_str(), "Trgt" | "Nxt" | "Prvs" | "Frst" | "Lst" | "Al") =>
+        {
+            json!({"ordinal": trimmed(value)})
+        }
+        _ => return Mapped::Unsupported { harmless: false },
+    };
+    step("layerComp.apply", json!({"comp": comp}))
 }
 
+/// Write the original reference kind, including padded ordinal codes and signed index bits.
 pub(super) fn apply_comp_to(_: &str, p: &Value) -> Option<Descriptor> {
-    Some(desc("null").with("null", name_ref("compsClass", jstr(p, "comp")?)))
+    let reference = match p.get("comp")? {
+        Value::String(name) => name_ref("compsClass", name),
+        Value::Object(selector) if selector.len() == 1 => {
+            let item = if let Some(index) = selector.get("index") {
+                let index = if let Some(index) = index.as_u64() {
+                    u32::try_from(index).ok()?
+                } else {
+                    u32::from_be_bytes(i32::try_from(index.as_i64()?).ok()?.to_be_bytes())
+                };
+                ReferenceItem::Index { class: class("compsClass"), index }
+            } else if let Some(id) = selector.get("id") {
+                ReferenceItem::Identifier { class: class("compsClass"), id: u32::try_from(id.as_u64()?).ok()? }
+            } else {
+                let ordinal = selector.get("ordinal")?.as_str()?;
+                if !matches!(ordinal, "Trgt" | "Nxt" | "Prvs" | "Frst" | "Lst" | "Al") {
+                    return None;
+                }
+                ReferenceItem::Enumerated { class: class("compsClass"), type_id: code("Ordn"), value: code(ordinal) }
+            };
+            D::Reference(vec![item])
+        }
+        _ => return None,
+    };
+    Some(desc("null").with("null", reference))
 }
 
 pub(super) fn play_from(d: &Descriptor) -> Mapped {
@@ -360,6 +473,7 @@ pub(super) fn play_to(_: &str, p: &Value) -> Option<Descriptor> {
     Some(desc("null").with("null", D::Reference(items)))
 }
 
+/// Import Fill or Paint Bucket, keeping Content-Aware choices the engine cannot replay.
 pub(super) fn fill_from(d: &Descriptor) -> Mapped {
     if let Some(from) = get_obj(d, "From") {
         // The Paint Bucket tool's click: its point is in pixels, or in percent of the canvas
@@ -398,6 +512,23 @@ pub(super) fn fill_from(d: &Descriptor) -> Mapped {
     }
     let Some(contents) = get_enum(d, "Usng").and_then(|u| lookup(FILL_CONTENTS, &u)) else { return Mapped::Unsupported { harmless: false } };
     let mut p = json!({"contents": contents});
+    if contents == "contentAware" {
+        let rotate = match d.get("contentAwareRotateFill") {
+            None => false,
+            Some(D::Boolean(value)) => *value,
+            Some(_) => return Mapped::Unsupported { harmless: false },
+        };
+        p["rotationAdaptation"] = json!(rotate);
+        for (key, param) in
+            [("contentAwareColorAdaptationFill", "colorAdaptation"), ("contentAwareScaleFill", "scaleAdaptation"), ("contentAwareMirrorFill", "mirror")]
+        {
+            match d.get(key) {
+                None => {}
+                Some(D::Boolean(value)) => p[param] = json!(value),
+                Some(_) => return Mapped::Unsupported { harmless: false },
+            }
+        }
+    }
     if contents == "color" {
         match get_obj(d, "Clr ").and_then(color_hex) {
             Some(c) => p["color"] = json!(c),
@@ -419,6 +550,7 @@ pub(super) fn fill_from(d: &Descriptor) -> Mapped {
     step("edit.fill", p)
 }
 
+/// Export Fill settings, including the effective native Content-Aware rotation option.
 pub(super) fn fill_to(id: &str, p: &Value) -> Option<Descriptor> {
     if id == "paint.bucket" {
         let mut d = desc("null").with("From", D::Descriptor(desc("Pnt ").with("Hrzn", px(jnum(p, "x")?)).with("Vrtc", px(jnum(p, "y")?))));
@@ -466,7 +598,50 @@ pub(super) fn fill_to(id: &str, p: &Value) -> Option<Descriptor> {
     if let Some(t) = jbool(p, "preserveTransparency") {
         d = d.with("PrsT", D::Boolean(t));
     }
+    if contents.eq_ignore_ascii_case("contentAware") {
+        let rotate = match p.get("rotationAdaptation") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => return None,
+        };
+        d = d.with("contentAwareRotateFill", D::Boolean(rotate));
+        for (key, param) in
+            [("contentAwareColorAdaptationFill", "colorAdaptation"), ("contentAwareScaleFill", "scaleAdaptation"), ("contentAwareMirrorFill", "mirror")]
+        {
+            match p.get(param) {
+                None | Some(Value::Null) => {}
+                Some(Value::Bool(value)) => d = d.with(key, D::Boolean(*value)),
+                Some(_) => return None,
+            }
+        }
+    }
     Some(d)
+}
+
+/// Preserve the group eligibility flag without approximating an explicit recorded target.
+pub(super) fn paste_effects_from(d: &Descriptor) -> Mapped {
+    if d.get("null").is_some() {
+        return Mapped::Unsupported { harmless: false };
+    }
+    let allow = match d.get("allowPasteFXOnLayerSet") {
+        None => true,
+        Some(D::Boolean(value)) => *value,
+        Some(_) => return Mapped::Unsupported { harmless: false },
+    };
+    step("layer.layerStyle.pasteLayerStyle", json!({"allowGroups": allow}))
+}
+
+/// Emit the effective default; unrepresented target parameters must not silently disappear.
+pub(super) fn paste_effects_to(_: &str, p: &Value) -> Option<Descriptor> {
+    if !pixel_target(p) || p.get("layer").is_some() || p.get("layers").is_some() {
+        return None;
+    }
+    let allow = match p.get("allowGroups") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return None,
+    };
+    Some(desc("null").with("allowPasteFXOnLayerSet", D::Boolean(allow)))
 }
 
 /// The Paint Bucket's `color` as `paint.bucket` reads it (`[r, g, b(, a)]` in 0..=1 or
@@ -499,6 +674,11 @@ pub(super) fn stroke_to(_: &str, p: &Value) -> Option<Descriptor> {
     }
     let mut params = if p.is_null() { Map::new() } else { p.as_object()?.clone() };
     params.insert("width".into(), Value::from(crate::extra_cmds::stroke_width(p)));
+    // Photoshop opens the Stroke dialog for a descriptor that leaves out a setting, even with
+    // dialogs off (#8303), so the command's defaults for the ones left out are written too.
+    for (key, default) in [("location", json!("center")), ("opacity", json!(100)), ("mode", json!("Normal")), ("preserveTransparency", json!(false))] {
+        params.entry(key).or_insert(default);
+    }
     fields_to(&Value::Object(params), STROKE, desc("null"))
 }
 

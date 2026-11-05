@@ -26,7 +26,8 @@ pub fn cap_text_events(events: &mut [egui::Event]) {
             }
             // The highlighted range indexes the old text; past the cut it would point nowhere.
             egui::Event::Ime(egui::ImeEvent::Preedit { text, active_range_chars }) => {
-                if cut(text) && active_range_chars.as_ref().is_some_and(|r| r.end > INPUT_EVENT_LIMIT) {
+                let truncated = cut(text);
+                if truncated && active_range_chars.as_ref().is_some_and(|r| r.end > INPUT_EVENT_LIMIT) {
                     *active_range_chars = None;
                 }
             }

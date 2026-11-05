@@ -147,6 +147,8 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 ui.painter().galley(egui::pos2(x, full.center().y - g.size().y / 2.0), g, t.text_dim);
             }
         });
+    // A click anywhere on the bar keeps a zoom being typed (zoom_field.rs).
+    crate::zoom_field::set_title_bar_rect(ui.ctx(), bar.response.rect);
     if custom {
         crate::titlebar::caption_buttons(app, ui, bar.response.rect);
     }

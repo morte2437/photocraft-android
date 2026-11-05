@@ -5,6 +5,8 @@
 //! data). The [`control`] module exposes both to automation, so agents can drive and inspect every
 //! part of the interface.
 #![forbid(unsafe_code)]
+// `control::inspect` builds the whole UI snapshot in one `json!`, past the default limit of 128.
+#![recursion_limit = "256"]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 /// PhotoCraft as craft-update knows it, with its 128 px icon and accent colour: the update
@@ -31,6 +33,7 @@ pub mod file_dialog;
 pub mod file_open;
 pub mod frame_stages;
 pub mod gpu_status;
+pub mod home_recent_ui;
 pub mod i18n;
 mod icon_data;
 pub mod icons;
@@ -72,6 +75,11 @@ mod app;
 mod input;
 mod prefs;
 mod services;
+#[cfg(not(target_arch = "wasm32"))]
+mod smart_svg_ui;
+#[cfg(target_arch = "wasm32")]
+#[path = "smart_svg_ui/browser.rs"]
+mod smart_svg_ui;
 mod text;
 mod tools;
 
@@ -107,6 +115,7 @@ use canvas::tile_overlay;
 use canvas::tool_cursor;
 pub use canvas::tool_feedback;
 pub use canvas::wheel_nav;
+pub use canvas::zoom_field;
 pub use canvas::zoom_hold;
 pub use canvas::zoom_levels;
 pub use canvas::zoom_window_fit;
@@ -123,6 +132,7 @@ use dialogs::camera_raw_preview_ui;
 use dialogs::camera_raw_scope_ui;
 pub use dialogs::camera_raw_ui;
 pub use dialogs::channel_options_ui;
+pub(crate) use dialogs::color_picker_preview;
 pub use dialogs::color_picker_ui;
 pub use dialogs::color_range_ui;
 pub use dialogs::color_table_ui;
@@ -156,6 +166,7 @@ pub use dialogs::new_layer_ui;
 pub use dialogs::open_prompt;
 pub use dialogs::palette;
 pub(crate) use dialogs::pattern_fill_ui;
+pub use dialogs::preset_group_prompt;
 pub use dialogs::rasterize_prompt;
 pub use dialogs::replace_prompt;
 use dialogs::rgb_histogram;
@@ -243,9 +254,10 @@ pub(crate) use services::SAVE_OPTIONS_OPEN;
 pub(crate) use services::saved_revision_after_write;
 pub use services::{
     AdoptAutosaveFn, AppendTextFn, AutomationCommandFn, AutomationOpenPcraftFn, AutomationReadFn, AutomationWriteFn, AutosaveFn, AutosaveResultsFn, CapsLockFn,
-    CaptionStyleFn, ClipboardGetFn, ClipboardSetFn, ClipboardUnreadableFn, CursorPosFn, DiscardAutosaveFn, EncodePngFn, ExportFn, ExportSettings, FileStamp,
-    FileStampFn, FormatChoices, ImportFn, Inbox, LoadTextFn, OpenUrlFn, OsEventsFn, PhotoshopShortcutsFn, QuitFn, RecoverFn, Recoverable, RightButtonDownFn,
-    SameFileFn, SaveFileFn, SaveTextFn, Services, SystemThemeFn, WindowFrameFn, WriteFn,
+    CaptionStyleFn, ClipboardGetFn, ClipboardGetSvgFn, ClipboardSetFn, ClipboardUnreadableFn, CursorPosFn, DiscardAutosaveFn, EncodePngFn, ExportFn,
+    ExportSettings, ExternalSvgEditor, ExternalSvgSession, ExternalVectorSave, ExternalVectorSource, FileStamp, FileStampFn, FormatChoices, ImportFn, Inbox,
+    LoadTextFn, OpenExternalSvgFn, OpenUrlFn, OsEventsFn, PhotoshopShortcutsFn, QuitFn, RecoverFn, Recoverable, RightButtonDownFn, SameFileFn, SaveFileFn,
+    SaveTextFn, Services, SystemThemeFn, WindowFrameFn, WriteFn,
 };
 pub use text::bidi_text;
 pub use text::cjk_fonts;
@@ -284,6 +296,7 @@ pub use tools::move_hover;
 pub use tools::move_lock;
 pub use tools::move_mods;
 pub use tools::object_finder;
+use tools::paint_picker;
 use tools::path_components;
 pub use tools::perspective_crop_ui;
 pub use tools::perspective_ui;
@@ -338,10 +351,13 @@ pub struct PhotocraftApp {
     navigator_gpu: HashMap<DocId, crate::gpu_canvas::ViewParams>,
     /// Documents whose GPU canvas texture holds the plain document (`canvas::ensure_gpu`).
     navigator_plain: std::collections::HashSet<DocId>,
+    /// Viewport pages of documents too large for their GPU texture set (`canvas::viewport_pages`).
+    streams: HashMap<DocId, canvas::viewport_pages::Stream>,
     /// The Info panel's Color Sampler readouts for (document, revision) (`panels::sampler_readouts`).
     info_samplers: Option<panels::SamplerReadouts>,
     /// Display profile readings (#569).
     monitors: monitor_status::State,
+    pub(crate) thumbnail_cache: std::sync::Arc<std::sync::Mutex<crate::home_recent_ui::ThumbnailCache>>,
     checker: Option<egui::TextureHandle>,
     drag: Option<canvas::Drag>,
     /// An owned vector drag was cancelled (`canvas::cancel_stale_vector_drag`): the rest of its
@@ -557,6 +573,9 @@ pub struct PhotocraftApp {
     pub(crate) pattern_fill_preview: Option<pattern_fill_ui::Preview>,
     /// Shape fill Color Picker preview (shape_fill_ui).
     pub(crate) shape_fill_preview: Option<shape_fill_ui::Preview>,
+    /// Colours a colour swatch widget's Color Picker returned with OK, waiting for the widget to
+    /// take them next frame (`color_picker_ui::widget_tick`): (widget id, sRGB).
+    pub(crate) widget_colors: Vec<(u64, [f32; 3])>,
     /// Liquify dialog, Puppet Warp and Perspective Warp sessions (distort_ui).
     pub(crate) distort: distort_ui::Distort,
     /// Gradient tool live-mode drags and previews (gradient_ui).
@@ -573,11 +592,16 @@ pub struct PhotocraftApp {
     pub(crate) wide_angle: Option<wide_angle_ui::WideAngleDialog>,
     /// ⌘Z history of each open parameter dialog (edit_history).
     pub(crate) dialog_edits: edit_history::DialogEdits,
+    /// What each open Color Picker's live target was when it opened, to put back on Cancel
+    /// (`color_picker_ui::live_preview`).
+    pub(crate) color_picker_live: Vec<color_picker_ui::live_preview::Live>,
     /// The filter a "Rasterize?" prompt answered for, run after the dialog closes, where the
     /// egui context is available again (rasterize_prompt).
     pub(crate) pending_after_prompt: Option<(String, serde_json::Value)>,
     /// Last mirrored or imported OS image; this can predate the current internal copy.
     os_clip_sig: Option<u64>,
+    /// Last observed SVG bytes, to distinguish an unchanged OS source from a newer internal copy.
+    os_clip_svg: Option<std::sync::Arc<Vec<u8>>>,
     /// The session copy, if any, need not track the OS clipboard. An older OS signature is kept
     /// to recognize unchanged system contents when exporting a newer copy failed or was disabled.
     clip_unmirrored: bool,
@@ -587,6 +611,7 @@ pub struct PhotocraftApp {
     /// The OS clipboard was already read for the paste in flight (Edit › Paste positions it first),
     /// so `run` doesn't read it a second time.
     pub(crate) clip_read_for_paste: bool,
+    pub(crate) smart_svg: smart_svg_ui::State,
     /// Pointer position over the canvas (document px), for the Info panel and status bar.
     pub(crate) hover_doc: Option<[f64; 2]>,
     /// Layer hovered in the Layers panel, outlined on the canvas.
@@ -611,6 +636,8 @@ pub struct PhotocraftApp {
     pub(crate) type_transform_preview: Option<type_transform::Preview>,
     /// A font hovered in the Type tool's font picker, shown live (`type_font_preview`).
     pub(crate) type_font_preview: Option<type_font_preview::TypeFontPreview>,
+    /// The colour under a text or gradient stop Color Picker, shown live before OK (`color_picker_preview`).
+    pub(crate) color_picker_preview: Option<color_picker_preview::Preview>,
     /// Channel thumbnails for one document snapshot; view-only revisions reuse their pixels.
     channel_thumbs: Option<(DocId, std::sync::Weak<Document>, bool, Vec<egui::TextureHandle>)>,
     /// Channels panel overlays / channel views drawn over the canvas, per document id.
@@ -652,8 +679,10 @@ pub struct PhotocraftApp {
     pub(crate) discard: Option<discard_ui::Prompt>,
     /// The Open or Save dialog in progress, and the action waiting on it (see `file_dialog`).
     pub(crate) file_dialog: Option<file_dialog::Pending>,
-    /// A Save As to a layered TIFF parked behind the TIFF Options prompt (see `tiff_options_ui`).
+    /// A Save As or Save a Copy to a TIFF parked behind the TIFF Options prompt (see `tiff_options_ui`).
     pub(crate) tiff_options: Option<tiff_options_ui::Prompt>,
+    /// The last TIFF Options compression and pyramid answer, where the next prompt starts. Session-only.
+    pub(crate) tiff_remembered: tiff_options_ui::Remembered,
     /// Where each document was last saved or exported to through a dialog (#1826): its next Save
     /// As or export dialog starts there rather than beside the document. Session-only.
     pub(crate) save_dirs: HashMap<photocraft_doc::DocId, std::path::PathBuf>,
@@ -669,6 +698,11 @@ pub struct PhotocraftApp {
     /// Files read but not opened yet: the first waits on its profile prompt, the rest behind it
     /// (see `open_prompt`).
     pub(crate) held_opens: std::collections::VecDeque<open_prompt::Held>,
+    /// PSD files whose memory preflight requires user approval before pixel decoding (see `open_prompt`).
+    pub(crate) held_memory_prompts: std::collections::VecDeque<open_prompt::MemoryPrompt>,
+    pub(crate) prompt_order: std::collections::VecDeque<open_prompt::PromptKind>,
+    /// A brush or gradient file waiting on the group-name prompt (see `preset_group_prompt`).
+    pub(crate) held_preset_import: Option<preset_group_prompt::Held>,
     /// Set once the user has agreed to quit, so the resulting close request goes through.
     pub(crate) allow_close: bool,
     /// Pen pressure/tilt from the platform (see `stylus`).
@@ -733,6 +767,8 @@ mod input_tests;
 
 #[cfg(test)]
 mod empty_workspace_tests;
+#[cfg(test)]
+mod home_chrome_tests;
 
 #[cfg(test)]
 mod pen_variants_tests;
@@ -764,6 +800,9 @@ mod notice_text_tests;
 mod transform_switch_tests;
 #[cfg(test)]
 mod transform_undo_tests;
+
+#[cfg(test)]
+mod transform_rotate_snap_tests;
 
 #[cfg(test)]
 mod transform_type_tests;

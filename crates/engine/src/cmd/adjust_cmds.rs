@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
+mod replace_color_range;
+
 /// Built-in Color Lookup looks `(id, label)`.
 pub use photocraft_cms::lutfile::BUILTIN as LOOKS;
 
@@ -262,7 +264,7 @@ fn process_surface(surf: &mut Surface, selection: Option<&Surface>, f: &mut dyn 
 
 /// One history step running `f` on the active pixel layer (or targeted channel or layer mask).
 fn rgba_edit(s: &mut Session, label: &str, p: &Value, mut f: impl FnMut(&mut Vec<[f32; 4]>, Rect)) -> Result<Value> {
-    let id = crate::commands::layer_param(s, &Value::Null).ok();
+    let id = if p.get("layer").is_some() { Some(crate::commands::layer_param(s, p)?) } else { crate::commands::layer_param(s, p).ok() };
     if crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels {
         return s.edit(label, |doc, _| {
             let sel = doc.selection.clone();
@@ -316,10 +318,10 @@ pub(crate) fn has_adjustable(s: &Session) -> std::result::Result<(), String> {
 /// the filter mask); `Ok(false)` when the command should edit pixels instead (a mask or channel
 /// target, or the active layer is not a smart object).
 pub(crate) fn adjust_as_smart_filter(s: &mut Session, kind: &str, label: &str, p: &Value) -> Result<bool> {
-    if crate::commands::is_mask_target(p) || crate::channel_cmds::is_channel_target(p) {
+    if crate::commands::is_mask_target(p) || crate::channel_cmds::is_channel_target(p) || crate::color_channels::target(s, p)?.is_some() {
         return Ok(false);
     }
-    let Some(id) = s.active().and_then(|d| d.active_layer) else { return Ok(false) };
+    let Ok(id) = crate::commands::layer_param(s, p) else { return Ok(false) };
     let smart = s.active().is_some_and(|d| matches!(d.doc.layer(id).map(|l| &l.content), Some(LayerContent::Smart(_))));
     if !smart {
         return Ok(false);
@@ -401,7 +403,11 @@ fn shadows_highlights_params(p: &Value) -> ShadowsHighlights {
     }
 }
 
+/// Recorded Lab bounds use native profile matching; ordinary RGB samples keep their existing path.
 fn replace_color(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(result) = replace_color_range::apply(s, p)? {
+        return Ok(result);
+    }
     const CMD: &str = "image.adjustments.replaceColor";
     let c = crate::commands::color_param(CMD, p, "color", s.tools.foreground)?;
     let fuzz = num(p, "fuzziness", 40.0).clamp(0.0, 200.0);
@@ -459,9 +465,9 @@ fn stats_pixels(doc: &Document, layer: Option<u64>, use_selection: bool) -> Resu
     let px: Vec<[f32; 4]> = match layer {
         Some(id) => {
             let l = doc.layer(photocraft_doc::LayerId(id)).ok_or(EngineError::NoLayer(photocraft_doc::LayerId(id)))?;
-            photocraft_compose::render_layer(l, area).px
+            photocraft_compose::render_layer(l, area).into_px()
         }
-        None => photocraft_compose::flatten(doc).px,
+        None => photocraft_compose::flatten(doc).into_px(),
     };
     let mask = doc.selection.as_ref().filter(|_| use_selection).map(|sel| photocraft_algo::selection::mask_from_surface(Some(sel), area));
     Ok((px, mask))
@@ -521,7 +527,7 @@ fn hdr_toning(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("HDR Toning", |doc, active| {
         let buf = photocraft_compose::flatten(doc).over_background([1.0, 1.0, 1.0]);
         let (w, hgt) = (buf.rect.width() as usize, buf.rect.height() as usize);
-        let mut px = buf.px;
+        let mut px = buf.into_px();
         tone::hdr_toning(&mut px, w, hgt, &h);
         let fmt = doc.pixel_format();
         let data: Vec<f32> = px.iter().flat_map(|q| photocraft_raster::from_rgba(&fmt, *q)).collect();
@@ -562,7 +568,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "image.adjustments.replaceColor",
             "Replace Color…",
             ["Image", "Adjustments"],
-            r##"{"localized":bool=false,"color":color,"fuzziness":0..200=40,"range":0..100=100,"hue":-180..180=0,"saturation":-100..100=0,"lightness":-100..100=0,"points":[[x,y],…]?} (color: "#rrggbb", default the foreground colour; Localized Color Clusters: "points" where the colour was picked, "range" % of the longer side)"##,
+            r##"{"localized":bool=false,"color":color,"fuzziness":0..200=40,"range":0..100=100,"hue":-180..180=0,"saturation":-100..100=0,"lightness":-100..100=0,"points":[[x,y],…]?,"labMinimum":[L,a,b]?,"labMaximum":[L,a,b]?} (Lab bounds: a finite ordered D50 box, mutually exclusive with color/points/localized/range; composite pixel-layer target only. Otherwise color defaults to the foreground; localized points use range % of the longer side.)"##,
             has_pixels,
             replace_color
         ),

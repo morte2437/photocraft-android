@@ -148,6 +148,119 @@ fn reports_write_progress() {
     assert_no_temp(&d.0);
 }
 
+/// Writes "head", a 4-byte placeholder, `len` bytes, then patches the placeholder by seeking back.
+fn patched_writer(len: usize) -> impl FnMut(&mut dyn WriteSeek) -> io::Result<()> {
+    move |w| {
+        w.write_all(b"head")?;
+        let at = w.stream_position()?;
+        w.write_all(&[0; 4])?;
+        w.write_all(&vec![9u8; len])?;
+        w.seek(io::SeekFrom::Start(at))?;
+        w.write_all(&(len as u32).to_be_bytes())?;
+        w.seek(io::SeekFrom::End(0))?;
+        Ok(())
+    }
+}
+
+fn patched_bytes(len: usize) -> Vec<u8> {
+    let mut v = b"head".to_vec();
+    v.extend_from_slice(&(len as u32).to_be_bytes());
+    v.extend(std::iter::repeat_n(9u8, len));
+    v
+}
+
+/// #6607: a streamed save replaces the file with what its writer wrote, seeks included, and leaves
+/// no temporary file.
+#[test]
+fn streamed_write_replaces_and_creates() {
+    let d = TempDir::new("stream");
+    let p = d.0.join("doc.psd");
+    atomic_write_stream(&p, &mut patched_writer(3)).unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), patched_bytes(3));
+    atomic_write_stream(&p, &mut patched_writer(100_000)).unwrap();
+    assert!(std::fs::read(&p).unwrap() == patched_bytes(100_000));
+    assert_no_temp(&d.0);
+}
+
+/// #6607: a writer that fails halfway (a serializer error, a full disk) leaves the original as it
+/// was, with the same message as a buffered save.
+#[test]
+fn streamed_write_failure_halfway_keeps_original() {
+    let d = TempDir::new("stream-fail");
+    let p = d.0.join("doc.psd");
+    std::fs::write(&p, ORIGINAL).unwrap();
+    let e = atomic_write_stream(&p, &mut |w| {
+        w.write_all(&[1; 70_000])?;
+        Err(io::Error::new(io::ErrorKind::StorageFull, "injected: no space left on device"))
+    })
+    .unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::StorageFull);
+    assert!(e.to_string().contains("the disk is full") && e.to_string().contains("not changed"), "{e}");
+    assert_eq!(std::fs::read(&p).unwrap(), ORIGINAL);
+    assert_no_temp(&d.0);
+}
+
+/// A writer failing with `AlreadyExists` (from whatever it reads) is a failed save, not a
+/// temporary name collision: it runs once and its partial file is removed.
+#[test]
+fn streamed_write_failing_with_already_exists_runs_once() {
+    let d = TempDir::new("stream-exists");
+    let p = d.0.join("doc.psd");
+    std::fs::write(&p, ORIGINAL).unwrap();
+    let runs = Cell::new(0);
+    let e = atomic_write_stream(&p, &mut |w| {
+        runs.set(runs.get() + 1);
+        w.write_all(&[1; 70_000])?;
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, "injected"))
+    })
+    .unwrap_err();
+    assert_eq!(runs.get(), 1);
+    assert!(e.to_string().contains("not changed"), "{e}");
+    assert_eq!(std::fs::read(&p).unwrap(), ORIGINAL);
+    assert_no_temp(&d.0);
+}
+
+/// A streamed save renames like a buffered one: retried while locked, the original kept when the
+/// lock outlasts the retries.
+#[test]
+fn streamed_write_retries_a_locked_rename() {
+    let d = TempDir::new("stream-locked");
+    let p = d.0.join("doc.psd");
+    std::fs::write(&p, ORIGINAL).unwrap();
+    let fs = Faulty { locked_renames: Cell::new(2), ..Default::default() };
+    atomic_write_stream_with(&fs, RenameRetry { attempts: 3, first_delay_ms: 1 }, &p, &mut patched_writer(10)).unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), patched_bytes(10));
+    assert_eq!(fs.renames.get(), 3);
+    let fs = Faulty { locked_renames: Cell::new(10), ..Default::default() };
+    let e = atomic_write_stream_with(&fs, RenameRetry { attempts: 1, first_delay_ms: 1 }, &p, &mut patched_writer(20)).unwrap_err();
+    assert!(e.to_string().contains("locked"), "{e}");
+    assert_eq!(std::fs::read(&p).unwrap(), patched_bytes(10));
+    assert_no_temp(&d.0);
+}
+
+/// A streamed save reports the furthest position over the expected length, chunk by chunk, and
+/// 1.0 once the writer is done.
+#[test]
+fn streamed_write_reports_progress() {
+    let d = TempDir::new("stream-progress");
+    let p = d.0.join("big.psd");
+    let len = WRITE_CHUNK * 2 + 123;
+    let seen = std::sync::Mutex::new(Vec::new());
+    let mut write = |w: &mut dyn WriteSeek| {
+        for chunk in patched_bytes(len).chunks(WRITE_CHUNK / 4) {
+            w.write_all(chunk)?;
+        }
+        Ok(())
+    };
+    atomic_write_stream_progress(&p, len as u64 + 8, &|f| seen.lock().unwrap().push(f), &mut write).unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.len(), 3, "two chunks, then done: {seen:?}");
+    assert!(seen.windows(2).all(|w| w[0] < w[1]), "monotonic: {seen:?}");
+    assert_eq!(seen.last().copied(), Some(1.0));
+    assert!(std::fs::read(&p).unwrap() == patched_bytes(len));
+    assert_no_temp(&d.0);
+}
+
 #[test]
 fn creates_missing_parent_folders() {
     let d = TempDir::new("parent");
@@ -183,6 +296,33 @@ fn rename_failure_keeps_original() {
     assert_eq!(fs.synced.get(), 0, "a failed replacement never reaches the publication barrier");
     assert_eq!(std::fs::read(&p).unwrap(), ORIGINAL);
     assert_no_temp(&d.0);
+}
+
+/// The unresolved Windows recovery state (branch coverage, #11178): the error names the backup
+/// where the original survives, `rename_error` passes it through without the false `UNCHANGED`
+/// promise, and `retry_rename` does not retry it into a fresh backup name that would forget it.
+#[test]
+fn an_unresolved_recovery_reports_the_backup_and_is_not_retried() {
+    let unresolved = || {
+        unresolved_recovery_error(
+            Path::new("/docs/report.psd"),
+            &io::Error::new(io::ErrorKind::PermissionDenied, "completion locked"),
+            &io::Error::new(io::ErrorKind::PermissionDenied, "restoration locked"),
+            Path::new("/docs/.report.psd.7.pcsave.tmp"),
+        )
+    };
+    let reported = rename_error(unresolved(), Path::new("/docs/report.psd"));
+    let msg = reported.to_string();
+    assert!(msg.contains(".report.psd.7.pcsave.tmp") && msg.contains("recover"), "the recovery location survives reporting: {msg}");
+    assert!(!msg.contains(UNCHANGED), "the destination is not the unchanged original in this state: {msg}");
+    let calls = Cell::new(0);
+    let e = retry_rename(RenameRetry { attempts: 7, first_delay_ms: 0 }, || {
+        calls.set(calls.get() + 1);
+        Err(unresolved())
+    })
+    .unwrap_err();
+    assert_eq!(calls.get(), 1, "the retry loop must not run again over an unresolved recovery");
+    assert!(!e.to_string().contains(UNCHANGED), "{e}");
 }
 
 #[test]
