@@ -246,6 +246,8 @@ const SORT_ARROW_W: f32 = 12.0;
 /// Padding inside each cell, on each side.
 const CELL_PAD: f32 = 6.0;
 const NAME_MIN_W: f32 = 110.0;
+/// The narrowest a credits column can be dragged.
+const MIN_COLUMN: f32 = 28.0;
 
 /// About ▸ Contributors: a name toggle, a sort, and the list as a grab bag or a table.
 pub fn contributors_ui(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
@@ -354,13 +356,17 @@ fn column_width<'a>(ui: &egui::Ui, header: &str, cells: impl Iterator<Item = &'a
 }
 
 /// A credits table: columns of `widths`, the `None` one taking what the others leave (at least
-/// `flex_min`). The header stays put while the rows scroll, within `height` (header included). Too
-/// narrow for every column (a long translation), it scrolls sideways rather than clip one.
+/// [`NAME_MIN_W`]). The header stays put while the rows scroll, within `height` (header included). Too
+/// narrow for every column (a long translation), it scrolls sideways rather than clip one. Every
+/// column edge can be dragged, down to [`MIN_COLUMN`] (the `None` column to [`NAME_MIN_W`]): widening
+/// a column grows the table, as in a spreadsheet, and only then does it scroll sideways. When the
+/// window, a column's width or `flex_text` (the width the `None` column's text needs) changes, the
+/// columns go back to this fit, dropping any dragged widths.
 fn credits_table(
     ui: &mut egui::Ui,
     id: &str,
     widths: &[Option<f32>],
-    flex_min: f32,
+    flex_text: f32,
     height: f32,
     header: impl FnOnce(egui_extras::TableRow<'_, '_>),
     body: impl FnOnce(egui_extras::TableBody<'_>),
@@ -371,21 +377,31 @@ fn credits_table(
     // The table puts a row gap under its header.
     let body_h = (height - TABLE_HEADER_H - ui.spacing().item_spacing.y).max(TABLE_ROW_H);
     egui::ScrollArea::horizontal().id_salt((id, "h")).auto_shrink([false, true]).show(ui, |ui| {
-        let flex = (ui.available_width() - fixed).max(flex_min);
+        let flex = (ui.available_width() - fixed).max(NAME_MIN_W);
         // No gaps between cells: their padding spaces them, and the header rule runs unbroken.
         ui.spacing_mut().item_spacing.x = 0.0;
+        // The table keeps its own column widths, so a change in what they were fitted to has to clear
+        // them. Scrolling can nudge the available width, so this compares the clip rect, which scrolling
+        // never moves.
+        let fit = egui::Id::unique(("credits_fit", id));
+        let measured = (widths.to_vec(), flex_text, ui.clip_rect().width());
+        let refit = ui.data_mut(|d| d.get_temp::<(Vec<Option<f32>>, f32, f32)>(fit)).as_ref() != Some(&measured);
+        ui.data_mut(|d| d.insert_temp(fit, measured));
         let mut b = egui_extras::TableBuilder::new(ui)
             .id_salt(id)
             .striped(true)
-            .resizable(false)
+            .resizable(true)
             .auto_shrink([false, false])
             .min_scrolled_height(body_h)
             .max_scroll_height(body_h)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+        if refit {
+            b.reset();
+        }
         for w in widths {
             b = b.column(match w {
-                Some(w) => egui_extras::Column::exact(*w),
-                None => egui_extras::Column::exact(flex).clip(true),
+                Some(w) => egui_extras::Column::initial(*w).at_least(MIN_COLUMN).clip(true),
+                None => egui_extras::Column::initial(flex).at_least(NAME_MIN_W).clip(true),
             });
         }
         b.header(TABLE_HEADER_H, header).body(body);
@@ -403,11 +419,13 @@ fn table(app: &mut PhotocraftApp, ui: &mut egui::Ui, list: &[&Contributor], v: &
             (k != SortKey::Name).then(|| column_width(ui, k.label().1, cells.iter().map(String::as_str)))
         })
         .collect();
+    let shown: Vec<String> = list.iter().map(|c| c.name(names)).collect();
+    let name_text = column_width(ui, SortKey::Name.label().1, shown.iter().map(String::as_str));
     credits_table(
         ui,
         "credits_table",
         &widths,
-        NAME_MIN_W,
+        name_text,
         height,
         |mut header| {
             for k in SortKey::ALL {
@@ -521,12 +539,13 @@ fn models_in(ui: &mut egui::Ui, models: &[Model], total_commits: u64) {
     // The model name takes the spare width.
     let widths: Vec<Option<f32>> =
         (0..heads.len()).map(|i| (i != 1).then(|| column_width(ui, heads[i], rows.iter().filter_map(|r| r.get(i)).map(String::as_str)))).collect();
+    let model_text = column_width(ui, heads[1], rows.iter().filter_map(|r| r.get(1)).map(String::as_str));
     let numeric = |i: usize| i >= 3;
     credits_table(
         ui,
         "credits_models",
         &widths,
-        NAME_MIN_W,
+        model_text,
         table_height(ui, rows.len()),
         |mut header| {
             for (i, h) in heads.iter().enumerate() {
