@@ -272,7 +272,7 @@ fn select_subject_samples_the_selected_layer_else_the_composite() {
 /// after Deselect); sampling something else or a pixel edit computes it again.
 #[test]
 fn select_subject_repeat_reuses_the_mask_until_pixels_change() {
-    let (mut s, _) = disc(8);
+    let (mut s, inside) = disc(8);
     let sel = |s: &Session| {
         let mut v = Vec::new();
         s.active().unwrap().doc.selection.as_ref().unwrap().read_region_into(Rect::new(0, 0, 200, 160), &mut v);
@@ -298,7 +298,10 @@ fn select_subject_repeat_reuses_the_mask_until_pixels_change() {
     .unwrap();
     assert!(s.subject_cache.region.is_none());
     s.execute("select.subject", json!({})).unwrap();
-    assert_eq!(sel(&s), first);
+    // Recomputed on the edited pixels (one changed pixel may move the edge a little).
+    assert!(!std::sync::Arc::ptr_eq(&mask, &cached(&s)));
+    let v = sel_iou(&s, 200, 160, inside);
+    assert!(v > 0.9, "IoU {v}");
 }
 
 /// A vertical Gaussian-blurred edge at x = 40 (warm left, cool right) with the left half selected.
