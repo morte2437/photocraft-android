@@ -106,14 +106,14 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
             let Some(action) = crate::actions::selected_action(app) else {
                 return Some(Err("record an action in the Actions panel first".into()));
             };
-            let steps = crate::actions::action_steps(action);
             let name = action.name.clone();
+            let names: Vec<_> = app.session.actions.list.iter().map(|action| action.name.clone()).collect();
             form(
                 app,
                 id,
                 tl!("Create Droplet"),
-                json!({"path": format!("{dir}/{name}.pcdroplet"), "name": name, "steps": steps, "output": format!("{dir}/droplet-output"), "format": "same"}),
-                json!({"format": ["same", "png", "jpg", "psd", "tiff"]}),
+                json!({"path": format!("{dir}/{name}.pcdroplet"), "name": name, "action": name, "output": format!("{dir}/droplet-output"), "format": "same"}),
+                json!({"action": names, "format": ["same", "png", "jpg", "psd", "tiff"]}),
             )
         }
         "file.scripts.statistics" => json!({"dialog": crate::stack_dialog::open_statistics(app)}),

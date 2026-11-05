@@ -179,6 +179,30 @@ fn same_format_takes_the_file_names_extension() {
     assert_eq!(same_format("/in/.hidden"), "png");
 }
 
+/// A per-input failure retaining the complete response from nested work.
+struct FileFailure {
+    error: EngineError,
+    result: Option<Value>,
+}
+
+impl From<EngineError> for FileFailure {
+    fn from(error: EngineError) -> Self {
+        Self { error, result: None }
+    }
+}
+
+impl FileFailure {
+    /// Ordinary failures keep their shape; nested failures also keep their results.
+    fn value(&self, key: &str, input: &str) -> Value {
+        let mut failure = json!({"error": self.error.to_string()});
+        failure[key] = json!(input);
+        if let Some(result) = &self.result {
+            failure["result"] = result.clone();
+        }
+        failure
+    }
+}
+
 /// Run one source through its action and output pipeline while finalizing only that document's owned history scope.
 fn process_outputs<'a>(
     s: &Session,
@@ -194,7 +218,7 @@ fn process_outputs<'a>(
     let mut written = OutputClaims::default();
     let run = |scratch: &mut Session, out: &str| {
         scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
-        f(scratch, out)
+        f(scratch, out).map_err(FileFailure::from)
     };
     for (path, out) in outputs {
         let r = process_one(raw_ppi, path, &out, save, ProcessOptions { format: None, written: Some(&written), ctx: None }, &run);
@@ -203,7 +227,7 @@ fn process_outputs<'a>(
                 written.record(&out, path);
                 files.push(out);
             }
-            Err(e) => errors.push(json!({"file": path, "error": e.to_string()})),
+            Err(error) => errors.push(error.value("file", path)),
         }
     }
     json!({"files": files, "errors": errors})
@@ -215,7 +239,14 @@ struct ProcessOptions<'a> {
     ctx: Option<&'a crate::jobs::JobCtx>,
 }
 
-fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: ProcessOptions<'_>, f: &dyn Fn(&mut Session, &str) -> Result<bool>) -> Result<()> {
+fn process_one(
+    raw_ppi: f64,
+    path: &str,
+    out: &str,
+    save: SaveOpts,
+    options: ProcessOptions<'_>,
+    f: &dyn Fn(&mut Session, &str) -> std::result::Result<bool, FileFailure>,
+) -> std::result::Result<(), FileFailure> {
     if let Some(written) = options.written {
         written.check(out).map_err(EngineError::Other)?;
     }
@@ -235,7 +266,7 @@ fn process_one(raw_ppi: f64, path: &str, out: &str, save: SaveOpts, options: Pro
     if let Some(ctx) = options.ctx {
         ctx.check()?;
         if ctx.batch_interrupt_requested() {
-            return Err(EngineError::Cancelled);
+            return Err(EngineError::Cancelled.into());
         }
     }
     let d = scratch.active().ok_or(EngineError::NoDocument)?;
@@ -349,6 +380,8 @@ pub fn validate_flat_outputs(outputs: &[(String, String)]) -> Result<()> {
     Ok(())
 }
 
+/// Keep ordinary worker controls while named playback retains nested results.
+#[cfg(test)]
 pub(super) fn process_batch_outputs(
     raw_ppi: f64,
     outputs: Vec<(String, String)>,
@@ -357,6 +390,19 @@ pub(super) fn process_batch_outputs(
     policy: &BatchPolicy,
     ctx: &crate::jobs::JobCtx,
     f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+) -> Result<Value> {
+    process_batch_outputs_with_results(raw_ppi, outputs, format, save, policy, ctx, &|scratch, out| f(scratch, out).map_err(FileFailure::from))
+}
+
+/// Retain child payloads through the existing progress, interrupt and write checkpoints.
+fn process_batch_outputs_with_results(
+    raw_ppi: f64,
+    outputs: Vec<(String, String)>,
+    format: &str,
+    save: SaveOpts,
+    policy: &BatchPolicy,
+    ctx: &crate::jobs::JobCtx,
+    f: &dyn Fn(&mut Session, &str) -> std::result::Result<bool, FileFailure>,
 ) -> Result<Value> {
     let total = outputs.len();
     let mut files = Vec::new();
@@ -377,8 +423,7 @@ pub(super) fn process_batch_outputs(
         let result = process_one(raw_ppi, path, out, save, ProcessOptions { format: Some(format), written: None, ctx: Some(ctx) }, f);
         // An input that failed on its own (not because it was stopped) stays a failure with its
         // reason, even when a cancel or Esc lands while it runs.
-        let failure =
-            result.as_ref().err().filter(|error| !matches!(error, EngineError::Cancelled)).map(|error| json!({"file": path, "error": error.to_string()}));
+        let failure = result.as_ref().err().filter(|error| !matches!(&error.error, EngineError::Cancelled)).map(|error| error.value("file", path));
         if ctx.cancelled() {
             ctx.publish_batch_preview(path, None);
             // A cancel that lands while the result is written still leaves that file written.
@@ -421,7 +466,7 @@ pub(super) fn process_batch_outputs(
                 files.push(out.clone());
             }
             Err(error) => {
-                errors.push(json!({"file": path, "error": error.to_string()}));
+                errors.push(error.value("file", path));
                 if policy.stop_on_error {
                     stopped = Some(path.clone());
                     break;
@@ -484,19 +529,41 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
-/// Execute the selected source set with per-document action scopes and restore the caller's library on every exit.
+/// Resolve a named set reference or an ordinary action name/index.
+pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
+    const CMD: &str = "file.automate.batch";
+    if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
+        let set = set.as_str().ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "set must be a string".into() })?;
+        let name =
+            p.get("action").and_then(Value::as_str).ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "a set needs a named action".into() })?;
+        return list
+            .iter()
+            .position(|a| a.name == name && a.set.as_deref() == Some(set))
+            .ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: format!("no action named `{name}` in set `{set}`") });
+    }
+    crate::actions_cmds::resolve(list, p, CMD)
+}
+
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    let (mut steps, action) = match p.get("steps").or_else(|| p.get("action").filter(|value| value.is_array())) {
+        Some(steps) => (parse_steps(steps)?, None),
+        None => {
+            // Select from the caller before using an embedded library for internal calls.
+            let index = batch_action(&s.actions.list, p)?;
+            let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": index}))?;
+            (action.enabled_steps().map(|(_, step)| step.clone()).collect(), Some(action.name))
+        }
+    };
     let action_name = s
         .action_history
         .as_ref()
         .map(|group| group.name.clone())
         .or_else(|| s.actions.playback_stack.first().cloned())
+        .or_else(|| action.clone())
         .or_else(|| p.get("action").and_then(Value::as_str).map(str::to_string))
         .or_else(|| p.get("action").and_then(|action| action.get("name")).and_then(Value::as_str).map(str::to_string))
         .unwrap_or_else(|| "Batch".into());
-    let mut steps =
-        parse_steps(p.get("steps").or_else(|| p.get("action")).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "missing \"steps\"".into() })?)?;
     // Each result goes to the destination folder, which overrides the action's recorded Save /
     // Save As steps: they only mark the result.
     steps.retain(|(id, _)| batch_keeps_step(id) && id != "file.export.quickExport");
@@ -536,39 +603,68 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     };
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
     // decoded and saved even with no steps) to the playback tree it is in and
-    // hands the count on, so a batch of batches can't multiply past the limit. A top-level batch
-    // is not limited by it.
+    // hands the count on, so nested batches cannot multiply past the limit. A top-level named
+    // action starts fresh; standalone explicit steps retain their existing behavior.
     let input_count = if source == "open" { s.documents().len() } else { inputs.len() };
+    let named = action.is_some();
     let mut playback_steps = 0;
-    if s.actions.playing > 0 {
-        playback_steps = s.actions.playback_steps.saturating_add((steps.len().max(1) as u64).saturating_mul(input_count as u64));
+    if s.actions.playing > 0 || named {
+        let spent = if s.actions.playing > 0 { s.actions.playback_steps } else { 0 };
+        playback_steps = spent.saturating_add((steps.len().max(1) as u64).saturating_mul(input_count as u64));
         if playback_steps > crate::actions_cmds::MAX_PLAYBACK_STEPS {
-            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the playback step limit of the action that runs it".into() });
+            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the action playback step limit".into() });
         }
-        s.actions.playback_steps = playback_steps;
+        if s.actions.playing > 0 {
+            s.actions.playback_steps = playback_steps;
+        }
     }
-    let actions = crate::actions_cmds::ActionState {
+    let mut actions = crate::actions_cmds::ActionState {
         list,
         playing: s.actions.playing,
         playback_stack: s.actions.playback_stack.clone(),
         playback_steps,
+        script_depth: s.actions.script_depth,
+        script_steps: s.actions.script_steps,
         ..Default::default()
     };
+    if let Some(name) = action {
+        actions.playing = actions.playing.saturating_add(1);
+        actions.playback_stack.push(name);
+    }
     if source == "open" {
         let save = SaveOpts::from_params(s, p, cmd)?;
-        // A top-level open-document batch owns its lazy per-document scope. A batch
-        // inside an action shares that action's scope and must not finish it early.
+        // A caller's recording index belongs to its original library, not an embedded namespace.
+        // As in ordinary named playback, suspend it while executing and restore the Batch owner.
+        let previous_recording = if named {
+            crate::actions_cmds::flush_recording(s)?;
+            s.actions.recording.take()
+        } else {
+            None
+        };
+        // Change only playback context, retaining the live recorder and script counters.
+        let previous_playing = std::mem::replace(&mut s.actions.playing, actions.playing);
+        let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
+        let previous_steps = std::mem::replace(&mut s.actions.playback_steps, actions.playback_steps);
+        let previous_list = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list));
+        // A top-level Batch owns its document scope; an enclosing action keeps its scope.
         let owns_history = s.action_history.is_none() && s.prefs().actions.create_single_history_state;
         if owns_history {
             crate::actions_cmds::begin_document_history(s, &action_name);
         }
-        let previous = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list.clone()));
         let result = batch_open_documents(s, &steps, p, &output, &format, &policy, save);
         if owns_history {
             crate::actions_cmds::finish_document_history(s);
         }
-        if let Some(previous) = previous {
-            s.actions.list = previous;
+        if let Some(list) = previous_list {
+            s.actions.list = list;
+        }
+        s.actions.playing = previous_playing;
+        s.actions.playback_stack = previous_stack;
+        if previous_playing == 0 {
+            s.actions.playback_steps = previous_steps;
+        }
+        if named {
+            s.actions.recording = previous_recording;
         }
         return result;
     }
@@ -594,6 +690,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // Each input runs in its own scratch session, so what the played steps spend is carried from
     // one input to the next (failed or not) and back to this session, not restarted per input.
     let was_playing = s.actions.playing > 0;
+    let was_script = s.actions.script_depth > 0;
     #[cfg(test)]
     let history_observer = s.batch_history_observer;
     crate::jobs::run(
@@ -602,16 +699,18 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         false,
         move |ctx| {
             let carried = std::cell::Cell::new(playback_steps);
+            let carried_script = std::cell::Cell::new(actions.script_steps);
             let run = |scratch: &mut Session, out: &str| {
                 scratch.authorize = authorize;
                 scratch.actions = actions.clone();
                 scratch.actions.playback_steps = carried.get();
+                scratch.actions.script_steps = carried_script.get();
                 scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
                 let owns_history = scratch.action_history.is_none() && scratch.prefs().actions.create_single_history_state;
                 if owns_history {
                     crate::actions_cmds::begin_document_history(scratch, &action_name);
                 }
-                let result = (|| {
+                let result = (|| -> std::result::Result<bool, FileFailure> {
                     // A recorded save marks a result. If the action later closes or switches
                     // documents, write the saved snapshot instead of the new active document.
                     let source = scratch.active().and_then(|state| state.path.as_deref()).unwrap_or("").to_string();
@@ -620,7 +719,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     for (id, params) in &steps {
                         ctx.check()?;
                         if ctx.batch_interrupt_requested() {
-                            return Err(EngineError::Cancelled);
+                            return Err(EngineError::Cancelled.into());
                         }
                         if batch_save_point(id) {
                             let state = scratch.active_mut().ok_or(EngineError::NoDocument)?;
@@ -632,10 +731,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                             }
                             continue;
                         }
-                        let result = scratch.execute(id, params.clone())?;
+                        let params = crate::actions_cmds::playback_params(scratch, id, params)?;
+                        let result = scratch.execute(id, params)?;
                         ctx.publish_batch_preview(&source, scratch.active().map(|state| state.doc.clone()));
                         if let Some(error) = crate::actions_cmds::nested_failure(id, &result) {
-                            return Err(EngineError::Other(error));
+                            return Err(FileFailure { error: EngineError::Other(error), result: Some(result) });
                         }
                     }
                     match saved {
@@ -655,14 +755,18 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     observe(scratch);
                 }
                 carried.set(scratch.actions.playback_steps);
+                carried_script.set(scratch.actions.script_steps);
                 result
             };
-            let result = process_batch_outputs(raw_ppi, outputs, &format, save, &policy, ctx, &run);
-            Ok((result, carried.get()))
+            let result = process_batch_outputs_with_results(raw_ppi, outputs, &format, save, &policy, ctx, &run);
+            Ok((result, carried.get(), carried_script.get()))
         },
-        move |s, (result, carried)| {
+        move |s, (result, carried, script_steps)| {
             if was_playing {
                 s.actions.playback_steps = carried;
+            }
+            if was_script {
+                s.actions.script_steps = script_steps;
             }
             result
         },
@@ -724,7 +828,7 @@ fn batch_open_documents(
         // The document a recorded Save / Save As marked as saved, with its earlier saved
         // revision: when Batch then writes nothing, it reads as changed again.
         let mut marked: Option<(u64, u64)> = None;
-        let result = (|| -> Result<()> {
+        let result = (|| -> std::result::Result<(), FileFailure> {
             let position = s.documents().iter().position(|state| state.doc.id.0 == *id).ok_or(EngineError::NoDocument)?;
             s.set_active(position);
             let mut saved: Option<Arc<Document>> = None;
@@ -741,9 +845,10 @@ fn batch_open_documents(
                     }
                     continue;
                 }
-                let response = s.execute(command, params.clone())?;
+                let params = crate::actions_cmds::playback_params(s, command, params)?;
+                let response = s.execute(command, params)?;
                 if let Some(error) = crate::actions_cmds::nested_failure(command, &response) {
-                    return Err(EngineError::Other(error));
+                    return Err(FileFailure { error: EngineError::Other(error), result: Some(response) });
                 }
             }
             let Some(paths) = &planned else { return Ok(()) };
@@ -769,7 +874,7 @@ fn batch_open_documents(
             }
         }
         if let Err(error) = result {
-            errors.push(json!({"document": name, "error": error.to_string()}));
+            errors.push(error.value("document", name));
             if policy.stop_on_error {
                 stopped = Some(name.clone());
                 break;
@@ -837,12 +942,16 @@ mod action_history_tests {
                 path
             })
             .collect();
-        for (case, single, nested, stopped, droplet) in [
-            ("batch", true, false, false, false),
-            ("off", false, false, false, false),
-            ("nested", true, true, false, false),
-            ("stopped", true, false, true, false),
-            ("droplet", true, false, false, true),
+        for (case, single, nested, stopped, droplet, named) in [
+            ("batch", true, false, false, false, false),
+            ("off", false, false, false, false, false),
+            ("nested", true, true, false, false, false),
+            ("stopped", true, false, true, false, false),
+            ("droplet", true, false, false, true, false),
+            ("named", true, false, false, false, true),
+            ("named-off", false, false, false, false, true),
+            ("named-nested", true, true, false, false, true),
+            ("named-stopped", true, false, true, false, true),
         ] {
             OBSERVED.with(|seen| seen.borrow_mut().clear());
             let mut s = Session::new();
@@ -864,6 +973,10 @@ mod action_history_tests {
                 let path = dir.path().join("named.pcdroplet");
                 s.execute("file.automate.createDroplet", json!({"path":path,"name":"Named","steps":action_steps,"output":output,"shim":false})).unwrap();
                 s.execute("file.automate.runDroplet", json!({"droplet":path,"input":paths})).unwrap()
+            } else if named {
+                let index = s.actions.list.len();
+                s.actions.list.push(Action::new("Named", action_steps));
+                s.execute("file.automate.batch", json!({"action":index,"input":paths,"output":output})).unwrap()
             } else {
                 s.execute("file.automate.batch", json!({"action":"Named","steps":action_steps,"input":paths,"output":output})).unwrap()
             };
@@ -891,52 +1004,57 @@ mod action_history_tests {
     #[test]
     /// Batch over open documents must preserve an enclosing action scope and finish its own document scopes.
     fn opened_document_batch_keeps_top_level_and_parent_history_boundaries() {
-        for single in [false, true] {
-            for parent in [false, true] {
-                let mut s = Session::new();
-                for _ in 0..2 {
-                    s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+        for (single, parent, named) in [false, true]
+            .into_iter()
+            .flat_map(|single| [false, true].into_iter().flat_map(move |parent| [false, true].into_iter().map(move |named| (single, parent, named))))
+        {
+            let mut s = Session::new();
+            for _ in 0..2 {
+                s.execute("file.new", json!({"width":4,"height":4})).unwrap();
+            }
+            s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
+            let before: Vec<_> = s.documents().iter().map(|st| (st.doc.clone(), st.history.past_len())).collect();
+            let steps = vec![("layer.renameLayer".into(), json!({"name":"Prefix"})), ("layer.renameLayer".into(), json!({"name":"Final"}))];
+            let params = if named {
+                s.actions.list.push(Action::new("Opened batch", steps));
+                json!({"source":"open","action":0})
+            } else {
+                json!({"source":"open","action":"Opened batch","steps":steps})
+            };
+            if parent {
+                s.actions.list.push(Action::new(
+                    "Parent",
+                    vec![
+                        ("layer.renameLayer".into(), json!({"name":"Before batch"})),
+                        ("file.automate.batch".into(), params),
+                        ("layer.renameLayer".into(), json!({"name":"After batch"})),
+                    ],
+                ));
+                let result = s.execute("actions.play", json!({"action":"Parent"})).unwrap();
+                assert!(result.get("failed").is_none(), "{result}");
+            } else {
+                let result = s.execute("file.automate.batch", params).unwrap();
+                assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+            }
+            assert!(s.action_history.is_none());
+            for (index, (original, past)) in before.iter().enumerate() {
+                s.set_active(index);
+                let st = s.active().unwrap();
+                let after = st.doc.clone();
+                assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, if parent && index == 1 { "After batch" } else { "Final" });
+                let steps = if parent && index == 1 { 4 } else { 2 };
+                assert_eq!(st.history.past_len(), past + if single { 1 } else { steps });
+                if single {
+                    assert_eq!(st.history.undo_label(), Some(if parent { "Action: Parent" } else { "Action: Opened batch" }));
                 }
-                s.execute("actions.setHistory", json!({"singleState":single})).unwrap();
-                let before: Vec<_> = s.documents().iter().map(|st| (st.doc.clone(), st.history.past_len())).collect();
-                let params = json!({"source":"open","action":"Opened batch","steps":[
-                    ["layer.renameLayer",{"name":"Prefix"}], ["layer.renameLayer",{"name":"Final"}]
-                ]});
-                if parent {
-                    s.actions.list.push(Action::new(
-                        "Parent",
-                        vec![
-                            ("layer.renameLayer".into(), json!({"name":"Before batch"})),
-                            ("file.automate.batch".into(), params),
-                            ("layer.renameLayer".into(), json!({"name":"After batch"})),
-                        ],
-                    ));
-                    let result = s.execute("actions.play", json!({"action":"Parent"})).unwrap();
-                    assert!(result.get("failed").is_none(), "{result}");
+                assert!(s.undo());
+                if single {
+                    assert_eq!(s.active().unwrap().doc.as_ref(), original.as_ref());
                 } else {
-                    let result = s.execute("file.automate.batch", params).unwrap();
-                    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+                    assert_ne!(s.active().unwrap().doc.as_ref(), original.as_ref());
                 }
-                assert!(s.action_history.is_none());
-                for (index, (original, past)) in before.iter().enumerate() {
-                    s.set_active(index);
-                    let st = s.active().unwrap();
-                    let after = st.doc.clone();
-                    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, if parent && index == 1 { "After batch" } else { "Final" });
-                    let steps = if parent && index == 1 { 4 } else { 2 };
-                    assert_eq!(st.history.past_len(), past + if single { 1 } else { steps });
-                    if single {
-                        assert_eq!(st.history.undo_label(), Some(if parent { "Action: Parent" } else { "Action: Opened batch" }));
-                    }
-                    assert!(s.undo());
-                    if single {
-                        assert_eq!(s.active().unwrap().doc.as_ref(), original.as_ref());
-                    } else {
-                        assert_ne!(s.active().unwrap().doc.as_ref(), original.as_ref());
-                    }
-                    assert!(s.redo());
-                    assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
-                }
+                assert!(s.redo());
+                assert_eq!(s.active().unwrap().doc.as_ref(), after.as_ref());
             }
         }
     }

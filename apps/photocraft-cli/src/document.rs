@@ -100,7 +100,9 @@ pub(crate) fn run_cmds(a: &RunArgs, out: &mut dyn Write, err: &mut dyn Write) ->
             continue;
         }
         let r = h.command_run(&id, params).map_err(|source| CliError::Command { id: id.clone(), source })?;
-        if let Some(message) = photocraft_engine::actions_cmds::nested_failure(&id, &r) {
+        // A direct Batch reports per-file errors and continues, as in Scripts; failed
+        // action or script calls still stop the command list before export.
+        if let Some(message) = photocraft_engine::actions_cmds::nested_failure(&id, &r).filter(|_| id != "file.automate.batch") {
             return Err(CliError::NestedFailure { id, message });
         }
         let new_warnings: Vec<String> =

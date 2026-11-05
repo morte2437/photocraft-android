@@ -238,6 +238,44 @@ fn droplet_folder_follows_the_document_or_uses_a_safe_fallback() {
     assert_eq!(droplet_default_dir(&app), "/tmp/photocraft");
 }
 
+/// The droplet contains the form's chosen action; cancelling writes nothing.
+#[test]
+fn create_droplet_uses_the_action_selected_in_the_form() {
+    let (mut app, ctx) = app();
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    let path = dir.path().join("chosen.pcdroplet").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    app.session.actions.list = vec![
+        photocraft_engine::actions_cmds::Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]),
+        photocraft_engine::actions_cmds::Action::new("Rotate", vec![("image.imageRotation.90cw".into(), json!({}))]),
+    ];
+    app.ui.actions.selected = Some(0);
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.createDroplet", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["action"], json!(["Invert", "Rotate"]));
+    assert!(!fields.contains_key("steps"));
+    fields.insert("action".into(), json!("Rotate"));
+    fields.insert("path".into(), json!(path));
+    fields.insert("output".into(), json!(output));
+    fields.insert("shim".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved["action"]["steps"], json!([["image.imageRotation.90cw", {}]]));
+    let result = photocraft_engine::Session::new().execute("file.automate.runDroplet", json!({"droplet": path, "input": [input]})).unwrap();
+    assert_eq!(result["errors"], json!([]));
+    let image = photocraft_io::import("source.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2));
+
+    let cancelled = dir.path().join("cancelled.pcdroplet");
+    let id = crate::menus::invoke(&mut app, &ctx, "file.automate.createDroplet", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    app.ui.dialog_mut(id).unwrap().fields.insert("path".into(), json!(cancelled.to_string_lossy()));
+    crate::dialogs::cancel(&mut app, id).unwrap();
+    assert!(!cancelled.exists());
+}
+
 #[test]
 fn save_for_web_dialog_runs_the_command() {
     let (mut app, ctx) = app();

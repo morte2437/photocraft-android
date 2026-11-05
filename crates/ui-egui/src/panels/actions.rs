@@ -206,7 +206,8 @@ enum Called {
 /// silent stop end the caller there.
 fn called(app: &mut PhotocraftApp, caller: &str, i: usize, id: &str, value: &Value, target: Option<photocraft_doc::DocId>) -> Called {
     if let Some(error) = actions_cmds::nested_failure(id, value).or_else(|| actions_cmds::save_target_closed(&app.session, id, target)) {
-        return Called::Failed(json!({"step": i, "id": id, "error": error}));
+        // Keep the same child-result detail as headless Actions and Scripts.
+        return Called::Failed(json!({"step": i, "id": id, "error": error, "result": value}));
     }
     if let Some(inner) = value.get("paused").filter(|p| p.is_object()) {
         if let Some(token) = waiting_dialog(inner).cloned().and_then(|dialog| paused_token(app, &dialog))

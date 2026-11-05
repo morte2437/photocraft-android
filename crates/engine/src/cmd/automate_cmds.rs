@@ -124,11 +124,7 @@ fn check_known(steps: &[(String, Value)], cmd: &str) -> Result<()> {
 const MAX_SCRIPT_DEPTH: u8 = 16;
 pub(crate) const MAX_SCRIPT_STEPS: u64 = crate::actions_cmds::MAX_PLAYBACK_STEPS;
 
-/// A script run from a script reports its own failure inside an `Ok`; it stops the caller too.
-fn nested_script_failure(id: &str, r: &Value) -> Option<String> {
-    (id == "file.scripts.browse" && r.get("ok") == Some(&Value::Bool(false))).then(|| "a script it runs failed".to_string())
-}
-
+/// Direct Batch file errors remain results; failed called actions or scripts stop the caller.
 fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
     let mut results = Vec::new();
     for (id, params) in steps {
@@ -139,7 +135,7 @@ fn run_steps(s: &mut Session, steps: &[(String, Value)]) -> Vec<Value> {
         }
         match s.execute(id, params.clone()) {
             // A called action reports a failed step inside an `Ok`; it stops the script too.
-            Ok(r) => match crate::actions_cmds::nested_failure(id, &r).or_else(|| nested_script_failure(id, &r)) {
+            Ok(r) => match crate::actions_cmds::nested_failure(id, &r).filter(|_| id != "file.automate.batch") {
                 Some(error) => {
                     results.push(json!({"command": id, "result": r, "error": error}));
                     break;
@@ -336,11 +332,21 @@ pub fn document_saved(s: &mut Session, doc: photocraft_doc::DocId) -> Option<Val
 
 // ---------- Create Droplet ----------
 
+/// Resolve the enabled steps of the saved action chosen for Batch or a droplet.
+pub(crate) fn named_action_steps(s: &Session, p: &Value, cmd: &str) -> Result<Vec<(String, Value)>> {
+    let index = crate::actions_cmds::resolve(&s.actions.list, p, cmd)?;
+    let action = s.actions.list.get(index).ok_or_else(|| bad(cmd, "the selected action no longer exists"))?;
+    Ok(action.enabled_steps().map(|(_, step)| step.clone()).collect())
+}
+
+/// Save the chosen action's enabled steps and dependencies as a runnable droplet.
 fn create_droplet(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.createDroplet";
     let path = p.get("path").and_then(Value::as_str).filter(|v| !v.is_empty()).ok_or_else(|| bad(cmd, "missing \"path\" (where to save the droplet)"))?;
-    let steps_v = p.get("steps").or_else(|| p.get("action")).ok_or_else(|| bad(cmd, "missing \"steps\" (the action to run)"))?;
-    let mut steps = parse_steps(steps_v, cmd)?;
+    let mut steps = match p.get("steps").or_else(|| p.get("action").filter(|v| v.is_array())) {
+        Some(steps) => parse_steps(steps, cmd)?,
+        None => named_action_steps(s, p, cmd)?,
+    };
     // As in batch, the droplet's output folder replaces recorded saves, which are kept to mark the
     // result, and view steps don't apply.
     steps.retain(|(id, _)| crate::file_cmds::batch_keeps_step(id));
@@ -604,7 +610,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.automate.createDroplet",
             "Create Droplet…",
             &["File", "Automate"],
-            r##"{"path":str (.pcdroplet),"steps":[[id,params]…] (the action),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
+            r##"{"path":str (.pcdroplet),"steps":[[id,params]…]?,"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"name":str?,"output":folder?,"format":"same|png|jpg|…"?,"quality":0..12?,"shim":bool=true on Unix (writes <name>.command calling `photocraft-cli droplet`)} → {path, shim} (the actions its Play Action and Conditional steps call are saved in the droplet)"##,
             native,
             create_droplet
         ),
