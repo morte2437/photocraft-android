@@ -444,12 +444,25 @@ what an agent can't finish alone.
   launch, #5485), in-app bug report (DIST-220-3), Flathub (#173),
   starting without a GPU adapter (#2519, #2412), Windows 7 (#2310, out of scope), Intel Macs with
   OpenCore (#1859).
+- **Progress (2026-10-29):** the web build no longer freezes silently when it runs out of memory
+  (#10024). A failed allocation aborts the WebAssembly module and can't be caught, so Place, Image
+  Size, a smart-object re-render and Save first ask the allocator whether their estimated need
+  fits (`photocraft_raster::headroom`, `photocraft_engine::memory_gate`) and refuse with an error
+  that says what to do; a standing warning shows below 512 MiB; and a trap that still happens
+  shows a "PhotoCraft stopped" message with a Reload link. Still open: the decoded originals that
+  accumulate (#10030), Place decoding on the UI thread (#10031), Image Size re-rendering every
+  smart object at once (#10032), and recovering the document after a crash (#6615). Not every
+  allocation is gated, so a trap is still possible.
+  A layered PSD/PSB source is estimated as a canvas-sized surface per layer (the decoder keeps
+  one per layer; layers larger than the canvas are not counted), and one that isn't 8-bit RGB or
+  grayscale is refused on the web before Place or smart-object rendering.
 - **Estimate:** 30–60 h. **Human:** signing certificates.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-29 | minor | G17: web build memory handling (#10024): up-front memory checks for Place, Image Size, smart-object re-render and Save; a low-memory warning; a stopped message when the module traps; PSD save reserves its whole output; no estimate changed |
 | 2026-11-02 | minor | G11: Batch Esc Continue/Stop, one plan and error log across interruptions, and read-only input previews without a progress bar (#4579); live tab parity remains open, AUTO-219-5 partial; readiness and estimate unchanged |
 | 2026-11-02 | minor | Action recording folds Move-tool nudge runs, records keyboard document switches by opening-order offset and places point text by canvas percentage; paragraph boxes remain absolute (AUTO-219-1, #4514); parity percentages unchanged |
 | 2026-11-01 | minor | Action recording stores portable layer targets and whole-text Type steps where unambiguous (AUTO-219-1, #4514); duplicate names remain ambiguous; parity percentages unchanged |

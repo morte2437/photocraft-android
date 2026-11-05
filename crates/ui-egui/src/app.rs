@@ -13,6 +13,7 @@ mod clipboard;
 mod commands;
 mod control;
 mod files;
+pub(crate) use files::ensure_memory_to_save;
 mod frame;
 mod gpu;
 mod ime;
@@ -89,6 +90,7 @@ impl PhotocraftApp {
             live_adjust: None,
             frame: 0,
             notices_hovered: false,
+            low_memory: crate::memory_warning::Watch::default(),
             styled: false,
             integrated_titlebar: false,
             custom_titlebar: false,

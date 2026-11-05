@@ -538,9 +538,11 @@ impl PhotocraftApp {
         if self.background_jobs
             && let Some(save) = self.services.save_file.clone()
         {
+            // `start_save` checks the memory itself: other callers reach it directly.
             return jobs_ui::start_save(self, path, settings.clone(), copy, save, false);
         }
         let st = self.session.active().ok_or("no document")?;
+        ensure_memory_to_save(&st.doc, &path)?;
         let (doc, written, previous) = (st.doc.id, st.revision, st.saved_revision);
         let export = self.services.export.as_ref().ok_or("no exporter configured")?;
         let (bytes, warnings) = export(&st.doc, &path, settings)?;
@@ -782,6 +784,7 @@ impl PhotocraftApp {
             };
         }
         let state = self.session.active().ok_or("no document")?;
+        ensure_memory_to_save(&state.doc, &target)?;
         let (doc, revision) = (state.doc.id, state.revision);
         let export = self.services.export.as_ref().ok_or("no exporter configured")?;
         let (bytes, warnings) = export(&state.doc, &target, &settings)?;
@@ -848,6 +851,15 @@ impl PhotocraftApp {
         }
         f
     }
+}
+
+/// Refuses a save that won't fit in memory, before any encoding starts (#10024): on the web a
+/// failed allocation aborts the module and the unsaved document is lost with it. The document
+/// stays open and unchanged, and the message says how to free memory.
+pub(crate) fn ensure_memory_to_save(doc: &photocraft_engine::doc::Document, path: &str) -> Result<(), String> {
+    let name = file_open::display_name(path);
+    photocraft_engine::memory_gate::ensure_for_save(&format!("save \u{201c}{name}\u{201d}"), photocraft_io::estimate_export_bytes(doc, path))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

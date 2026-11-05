@@ -263,6 +263,8 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
     let dpi = p.get("resolution").and_then(Value::as_f64).map(|v| v as f32);
     let scale_styles = p.get("scaleStyles").and_then(Value::as_bool).unwrap_or(true);
     if !matches!(resample, Method::None) && (nw, nh) != (ow, oh) {
+        // Before the sampler map or the document change: a resize that doesn't fit would trap on the web (#10024).
+        crate::memory_gate::ensure(&format!("resize the image to {nw} x {nh} px"), crate::memory_gate::image_size_need(&d.doc, nw, nh))?;
         // Color Sampler points scale with the pixels (same map `transform_geometry` applies).
         let (sx, sy) = (f64::from(nw) / f64::from(ow.max(1)), f64::from(nh) / f64::from(oh.max(1)));
         s.set_sampler_map(photocraft_geom::Affine { m: [sx, 0.0, 0.0, sy, 0.0, 0.0] });

@@ -286,6 +286,7 @@ pub fn start_save(
         // The engine's wording for a command refused while a job runs.
         return Err(format!("“{}” is still running on this document; wait for it to finish or cancel it (Esc)", j.label));
     }
+    crate::app::ensure_memory_to_save(&st.doc, &path)?;
     let name = crate::file_open::display_name(&path);
     // One writer per file: an older snapshot must not land after a newer one.
     if app.jobs.saves.iter().any(|s| s.path == path) {

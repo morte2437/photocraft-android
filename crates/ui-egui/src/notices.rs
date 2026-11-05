@@ -35,6 +35,10 @@ pub struct Notice {
     /// and is reset while the pointer rests on the stack (issue #2022). `None` until first shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown_at: Option<f64>,
+    /// Stays until dismissed (or until whatever it warns of has passed), whatever the auto-hide
+    /// setting: for a warning the user must not miss, such as nearly full memory.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sticky: bool,
 }
 
 impl Notice {
@@ -48,14 +52,23 @@ impl Notice {
 /// Show a notice (newest last); returns its id.
 pub fn post(app: &mut PhotocraftApp, title: impl Into<String>, lines: Vec<String>, error: bool, dismiss_pref: Option<&str>) -> u64 {
     let id = app.ui.alloc_id();
-    app.ui.notices.push(Notice { id, title: title.into(), lines, error, dismiss_pref: dismiss_pref.map(str::to_owned), args: Vec::new(), shown_at: None });
+    app.ui.notices.push(Notice {
+        id,
+        title: title.into(),
+        lines,
+        error,
+        dismiss_pref: dismiss_pref.map(str::to_owned),
+        args: Vec::new(),
+        shown_at: None,
+        sticky: false,
+    });
     cap_notices(app);
     id
 }
 
 fn cap_notices(app: &mut PhotocraftApp) {
     while app.ui.notices.len() > MAX_NOTICES {
-        let oldest_temporary = app.ui.notices.iter().position(|notice| notice.dismiss_pref.is_none()).unwrap_or(0);
+        let oldest_temporary = app.ui.notices.iter().position(|notice| notice.dismiss_pref.is_none() && !notice.sticky).unwrap_or(0);
         app.ui.notices.remove(oldest_temporary);
     }
 }
@@ -186,7 +199,7 @@ fn expire(app: &mut PhotocraftApp, now: f64, hovered: bool, just_left: bool, aut
     }
     let mut expired = Vec::new();
     let mut next = f64::INFINITY;
-    for n in &mut app.ui.notices {
+    for n in app.ui.notices.iter_mut().filter(|n| !n.sticky) {
         if n.shown_at.is_none() {
             n.shown_at = Some(now);
         }
