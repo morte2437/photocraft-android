@@ -541,41 +541,56 @@ fn crop_mask(m: &[f32], pw: usize, pad: usize, w: usize, h: usize) -> Vec<f32> {
 }
 
 /// Grow (contiguous) / Similar (anywhere): pixels whose colour lies within
-/// the selected pixels' colour range widened by the tolerance.
+/// tolerance of any selected pixel (indexed via ColorMatcher BVH).
 fn grow_similar(s: &mut Session, p: &Value, contiguous: bool) -> Result<Value> {
     let tol = f(p, "tolerance", 32.0) / 255.0;
     let (area, px) = sample_pixels(s, b(p, "sampleAllLayers", false), None)?;
     let (_, m) = current_mask(&s.active().ok_or(EngineError::NoDocument)?.doc);
-    let (mut lo, mut hi) = ([f32::MAX; 4], [f32::MIN; 4]);
-    for (q, v) in px.iter().zip(&m) {
-        if *v >= 0.5 {
-            for c in 0..4 {
-                lo[c] = lo[c].min(q[c]);
-                hi[c] = hi[c].max(q[c]);
-            }
-        }
-    }
-    if lo[0] > hi[0] {
+    let matcher = sel::ColorMatcher::new(px.iter().zip(&m).filter_map(|(q, v)| (*v >= 0.5).then_some(*q)), tol);
+    if matcher.is_empty() {
         return Err(EngineError::Other("selection is empty".into()));
     }
-    let inside = |q: &[f32; 4]| (0..4).all(|c| q[c] >= lo[c] - tol - 1e-6 && q[c] <= hi[c] + tol + 1e-6);
     let (w, h) = (area.width() as usize, area.height() as usize);
     let mut out: Vec<f32> = m.iter().map(|v| if *v >= 0.5 { 1.0 } else { 0.0 }).collect();
     if contiguous {
-        let mut stack: Vec<usize> = (0..out.len()).filter(|i| out[*i] > 0.0).collect();
+        // Frontier stack: only push selected pixels adjacent to at least one unselected pixel
+        let mut stack = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if out[i] == 0.0 {
+                    continue;
+                }
+                let has_unselected_neighbor =
+                    (x > 0 && out[i - 1] == 0.0) || (x + 1 < w && out[i + 1] == 0.0) || (y > 0 && out[i - w] == 0.0) || (y + 1 < h && out[i + w] == 0.0);
+                if has_unselected_neighbor {
+                    stack.push(i);
+                }
+            }
+        }
         while let Some(i) = stack.pop() {
             let (x, y) = (i % w, i / w);
             let n = [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)];
             for j in n.into_iter().flatten() {
-                if out[j] == 0.0 && inside(&px[j]) {
+                if out[j] == 0.0 && matcher.matches(px[j]) {
                     out[j] = 1.0;
                     stack.push(j);
                 }
             }
         }
     } else {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use rayon::prelude::*;
+            out.par_iter_mut().zip(px.par_iter()).for_each(|(o, q)| {
+                if *o == 0.0 && matcher.matches(*q) {
+                    *o = 1.0;
+                }
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
         for (o, q) in out.iter_mut().zip(&px) {
-            if inside(q) {
+            if *o == 0.0 && matcher.matches(*q) {
                 *o = 1.0;
             }
         }

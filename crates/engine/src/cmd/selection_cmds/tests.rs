@@ -642,6 +642,39 @@ fn grow_and_similar() {
 }
 
 #[test]
+fn grow_and_similar_multi_color_does_not_select_intermediate_hull() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 30})).unwrap();
+    s.edit("paint", |doc, _| {
+        let bg = doc.layers[0].surface_mut().unwrap();
+        bg.fill_rect(Rect::new(5, 5, 15, 15), &[1.0, 0.0, 0.0, 1.0]);
+        bg.fill_rect(Rect::new(25, 5, 35, 15), &[0.0, 0.0, 1.0, 1.0]);
+        bg.fill_rect(Rect::new(5, 18, 15, 28), &[0.0, 0.0, 0.0, 1.0]);
+        bg.fill_rect(Rect::new(25, 18, 35, 28), &[0.5, 0.0, 0.5, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+
+    // Select a patch of Red and a patch of Blue
+    s.execute("select.rect", json!({"x": 6, "y": 6, "width": 2, "height": 2})).unwrap();
+    s.execute("select.rect", json!({"x": 26, "y": 6, "width": 2, "height": 2, "mode": "add"})).unwrap();
+
+    // Similar should select the remaining Red and Blue, but NOT Black or Purple
+    s.execute("select.similar", json!({"tolerance": 5})).unwrap();
+    assert_eq!(coverage(&s, 10, 10), 1.0, "red rect should be selected");
+    assert_eq!(coverage(&s, 30, 10), 1.0, "blue rect should be selected");
+    assert_eq!(coverage(&s, 10, 22), 0.0, "black rect must not be selected");
+    assert_eq!(coverage(&s, 30, 22), 0.0, "purple rect must not be selected");
+
+    // Grow from just the Red patch should not reach disconnected Blue
+    s.execute("select.deselect", json!({})).unwrap();
+    s.execute("select.rect", json!({"x": 6, "y": 6, "width": 2, "height": 2})).unwrap();
+    s.execute("select.grow", json!({"tolerance": 5})).unwrap();
+    assert_eq!(coverage(&s, 10, 10), 1.0, "contiguous red rect should be grown");
+    assert_eq!(coverage(&s, 30, 10), 0.0, "disconnected blue rect must not be grown");
+}
+
+#[test]
 fn lasso_polygon() {
     let mut s = session();
     s.execute("select.lasso", json!({"points": [[0, 0], [20, 0], [0, 20]]})).unwrap();
