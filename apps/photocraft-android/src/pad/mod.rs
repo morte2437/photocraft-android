@@ -3,6 +3,8 @@
 //!
 //! - A key presses its shortcut while it is touched: `Ctrl+Z` undoes, a modifier on its own
 //!   (`Alt`) is held, so the pen Alt-clicks while a finger rests on the key.
+//! - Double-tapping a key locks it down: it stays held, with a bar along its foot, until the
+//!   next tap, so Ctrl or Alt can stay on while the pen clicks layers.
 //! - Pressing the wheel opens a large ring (its size is a setting); sliding the finger around it
 //!   zooms, rotates the view, sizes or hardens the brush (all smoothly), or steps through
 //!   history, at the chosen sensitivity. Tapping the centre switches to the next of the chosen
@@ -35,7 +37,7 @@ use photocraft_ui_egui::theme::Tokens;
 use router::{Control, Env, Layout, PadTouch, Routed, Router, ViewMove};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -73,6 +75,16 @@ pub struct Pad {
     /// Keys being held, with the chord they pressed (released with the same one even if the
     /// settings change meanwhile).
     held: HashMap<usize, Chord>,
+    /// Keys locked down by a double tap: kept in `held` after the finger lifts, until a tap.
+    locked: HashSet<usize>,
+    /// Keys whose touch unlocked them: their lift does nothing.
+    unlocking: HashSet<usize>,
+    /// When each held key was touched, and the last short tap (key, when it lifted), to spot a
+    /// double tap.
+    down_at: HashMap<usize, f64>,
+    last_tap: Option<(usize, f64)>,
+    /// The time of the frame being routed (`Env::now`).
+    now: f64,
     /// Wheel changes waiting for the frame (they need the app and the egui context).
     pending: Vec<wheel::Action>,
     /// The large ring shown while the wheel is pressed.
@@ -124,6 +136,9 @@ fn big_ring(wheel: egui::Pos2, radius: f32, screen: egui::Rect, side: Side) -> B
 /// Brush sizes the engine accepts (`photocraft_paint::MAX_BRUSH_SIZE`).
 const MAX_BRUSH_SIZE: f32 = 5000.0;
 
+/// Seconds for a double tap: the first touch's length, and the gap before the second.
+const DOUBLE_TAP: f64 = 0.35;
+
 impl Pad {
     pub fn new(files_dir: &std::path::Path) -> Self {
         let path = files_dir.join("shortcut-pad.json");
@@ -136,6 +151,11 @@ impl Pad {
             turn: wheel::Turn::default(),
             turning: false,
             held: HashMap::new(),
+            locked: HashSet::new(),
+            unlocking: HashSet::new(),
+            down_at: HashMap::new(),
+            last_tap: None,
+            now: 0.0,
             pending: Vec::new(),
             big: None,
             finger: None,
@@ -210,6 +230,7 @@ impl Pad {
     /// shortcut (Touch Input), the rest reaches the app.
     pub fn input(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput, env: &Env, covered: impl Fn(egui::Pos2) -> bool) {
         let shown = self.shared.borrow().config.enabled;
+        self.now = env.now;
         let layout = if shown { self.layout.clone() } else { None };
         // A window or menu drawn over the pad last frame (the settings window, a menu dropping
         // down) keeps the touches there.
@@ -249,7 +270,20 @@ impl Pad {
 
     fn touch(&mut self, t: PadTouch, out: &mut Vec<Event>) {
         match t {
+            // A tap on a locked key unlocks it, and its lift is ignored.
+            PadTouch::Down(Control::Key(i), _) if self.locked.remove(&i) => {
+                if let Some(chord) = self.held.remove(&i) {
+                    out.extend(release(chord));
+                }
+                self.unlocking.insert(i);
+                self.last_tap = None;
+            }
             PadTouch::Down(Control::Key(i), _) => {
+                // The second touch of a double tap locks the key down.
+                if self.last_tap.take().is_some_and(|(k, at)| k == i && self.now - at <= DOUBLE_TAP) {
+                    self.locked.insert(i);
+                }
+                self.down_at.insert(i, self.now);
                 let shortcut = self.shared.borrow().config.keys.get(i).map(|k| k.shortcut.clone()).unwrap_or_default();
                 match config::parse(&shortcut) {
                     Ok(chord) if !chord.is_empty() => {
@@ -263,8 +297,16 @@ impl Pad {
                 }
             }
             PadTouch::Up(Control::Key(i)) => {
+                let since = self.down_at.remove(&i);
+                if self.unlocking.remove(&i) || self.locked.contains(&i) {
+                    return;
+                }
                 if let Some(chord) = self.held.remove(&i) {
                     out.extend(release(chord));
+                }
+                // A short touch can be the first half of a double tap.
+                if since.is_some_and(|at| self.now - at <= DOUBLE_TAP) {
+                    self.last_tap = Some((i, self.now));
                 }
             }
             PadTouch::Down(Control::Keyboard, _) => self.keyboard_tapped = true,
@@ -318,6 +360,10 @@ impl Pad {
         for (_, chord) in self.held.drain() {
             out.extend(release(chord));
         }
+        self.locked.clear();
+        self.unlocking.clear();
+        self.down_at.clear();
+        self.last_tap = None;
         self.turning = false;
         self.big = None;
         self.finger = None;
@@ -474,6 +520,11 @@ impl Pad {
                 None => (tk.field, tk.text),
             };
             p.rect(*rect, tk.radius, fill, Stroke::new(if down { 2.0 } else { 1.0 }, tk.field_border), egui::StrokeKind::Inside);
+            // A locked key: a bar along its foot, so it reads as latched, not just touched.
+            if self.locked.contains(&i) {
+                let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + 5.0, rect.bottom() - 5.0), egui::pos2(rect.right() - 5.0, rect.bottom() - 3.0));
+                p.rect_filled(bar, 1.0, color);
+            }
             let label = config.keys.get(i).map(|k| k.label.as_str()).unwrap_or("");
             let label = label.to_string();
             // The largest size that fits the key's width (typed labels can be wide), clipped
@@ -586,7 +637,7 @@ impl Pad {
                     }
                     ui.label(format!("{} above the wheel, {} below", n.div_ceil(2), n / 2));
                 });
-                ui.label("Keys (top to bottom). A modifier on its own, such as Alt, is held while the key is touched.");
+                ui.label("Keys (top to bottom). A modifier on its own, such as Alt, is held while the key is touched. Double-tap a key to lock it down; tap it again to let go.");
                 let above = c.keys.len().div_ceil(2);
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     egui::Grid::new("pad_keys").num_columns(5).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -859,6 +910,10 @@ mod tests {
     }
 
     fn run(p: &mut Pad, events: Vec<Event>) -> Vec<Event> {
+        run_at(p, events, 0.0)
+    }
+
+    fn run_at(p: &mut Pad, events: Vec<Event>, now: f64) -> Vec<Event> {
         let mut raw = egui::RawInput { events, ..Default::default() };
         let config = crate::touch::config::TouchConfig::default();
         let env = Env {
@@ -871,7 +926,7 @@ mod tests {
             secondary: &|_| false,
             scroll_strips: &[],
             screen: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1280.0, 800.0)),
-            now: 0.0,
+            now,
         };
         p.input(&egui::Context::default(), &mut raw, &env, |_| false);
         raw.events
@@ -909,6 +964,60 @@ mod tests {
         // Hiding the pad releases it (no stuck Alt).
         p.shared.borrow_mut().config.enabled = false;
         assert_eq!(keys(&run(&mut p, vec![])), [(Key::AltLeft, false)]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_double_tap_locks_a_key_until_the_next_tap() {
+        let (mut p, dir) = pad();
+        p.shared.borrow_mut().config.keys[1].shortcut = "Ctrl".into();
+        let ctrl = p.layout.clone().unwrap().keys[1].center();
+        let tap = |p: &mut Pad, id: u64, at: f64| {
+            let mut e = keys(&run_at(p, vec![touch(id, TouchPhase::Start, ctrl)], at));
+            e.extend(keys(&run_at(p, vec![touch(id, TouchPhase::End, ctrl)], at + 0.08)));
+            e
+        };
+        assert_eq!(tap(&mut p, 1, 1.0), [(Key::ControlLeft, true), (Key::ControlLeft, false)], "one tap presses and lets go");
+        assert_eq!(tap(&mut p, 2, 1.25), [(Key::ControlLeft, true)], "the second tap keeps Ctrl down");
+        assert!(p.locked.contains(&1));
+        assert!(keys(&run_at(&mut p, vec![], 3.0)).is_empty(), "still held, nothing repeats");
+        // The next tap lets go, and its lift does nothing more.
+        assert_eq!(tap(&mut p, 3, 5.0), [(Key::ControlLeft, false)]);
+        assert!(p.locked.is_empty() && p.held.is_empty());
+        // Hiding the pad lets a locked key go too.
+        tap(&mut p, 4, 8.0);
+        tap(&mut p, 5, 8.2);
+        p.shared.borrow_mut().config.enabled = false;
+        assert_eq!(keys(&run_at(&mut p, vec![], 8.5)), [(Key::ControlLeft, false)]);
+        assert!(p.locked.is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn slow_taps_and_long_holds_dont_lock() {
+        let (mut p, dir) = pad();
+        let l = p.layout.clone().unwrap();
+        p.shared.borrow_mut().config.keys[3].shortcut = "Alt".into();
+        p.shared.borrow_mut().config.keys[2].shortcut = "Shift".into();
+        let (alt, shift) = (l.keys[3].center(), l.keys[2].center());
+        // Two taps too far apart.
+        run_at(&mut p, vec![touch(1, TouchPhase::Start, alt)], 1.0);
+        run_at(&mut p, vec![touch(1, TouchPhase::End, alt)], 1.05);
+        run_at(&mut p, vec![touch(2, TouchPhase::Start, alt)], 2.0);
+        assert_eq!(keys(&run_at(&mut p, vec![touch(2, TouchPhase::End, alt)], 2.05)), [(Key::AltLeft, false)]);
+        // A long hold, then a quick tap: the hold wasn't a tap.
+        run_at(&mut p, vec![touch(3, TouchPhase::Start, alt)], 4.0);
+        run_at(&mut p, vec![touch(3, TouchPhase::End, alt)], 5.0);
+        run_at(&mut p, vec![touch(4, TouchPhase::Start, alt)], 5.1);
+        assert_eq!(keys(&run_at(&mut p, vec![touch(4, TouchPhase::End, alt)], 5.15)), [(Key::AltLeft, false)]);
+        // A tap on another key in between.
+        run_at(&mut p, vec![touch(5, TouchPhase::Start, alt)], 7.0);
+        run_at(&mut p, vec![touch(5, TouchPhase::End, alt)], 7.05);
+        run_at(&mut p, vec![touch(6, TouchPhase::Start, shift)], 7.1);
+        run_at(&mut p, vec![touch(6, TouchPhase::End, shift)], 7.15);
+        run_at(&mut p, vec![touch(7, TouchPhase::Start, alt)], 7.2);
+        assert_eq!(keys(&run_at(&mut p, vec![touch(7, TouchPhase::End, alt)], 7.25)), [(Key::AltLeft, false)]);
+        assert!(p.locked.is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
 
