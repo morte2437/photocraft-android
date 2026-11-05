@@ -25,7 +25,7 @@ pub(crate) fn hit(t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
 
 /// [`hit`] for the Free Transform box, whose reference point is a handle only while the options
 /// bar's Toggle Reference Point is on (#11098).
-pub(super) fn box_hit(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
+pub(crate) fn box_hit(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
     hit_with(t, p, tol, app.ui.tool_options.transform_reference_point)
 }
 
@@ -38,8 +38,11 @@ fn hit_with(t: &TransformSession, p: [f64; 2], tol: f64, pivot: bool) -> Hit {
     // With the reference point hidden, the box centre is a move target in its place, so a press
     // at the centre of a box smaller than two grab areas moves it instead of grabbing an edge.
     let centre = [t.quad.iter().map(|q| q[0]).sum::<f64>() / 4.0, t.quad.iter().map(|q| q[1]).sum::<f64>() / 4.0];
-    let middle = if pivot { (t.pivot, Hit::Pivot) } else { (centre, Hit::Inside) };
-    let handles = (0..4).map(|i| (t.quad[i], Hit::Corner(i))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain(std::iter::once(middle));
+    // A shown reference point comes first: where it sits on a handle (the options bar's locator
+    // or its pull to the box's points put it there), a press drags the point, not the handle, as
+    // in the reference application.
+    let (first, last) = if pivot { (Some((t.pivot, Hit::Pivot)), None) } else { (None, Some((centre, Hit::Inside))) };
+    let handles = first.into_iter().chain((0..4).map(|i| (t.quad[i], Hit::Corner(i)))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain(last);
     let nearest = handles.map(|(q, h)| (d(q), h)).filter(|(dist, _)| *dist < tol).min_by(|a, b| a.0.total_cmp(&b.0));
     match nearest {
         Some((_, h)) => h,
@@ -324,6 +327,11 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], mods: egui::Modi
         return Some(if w.mesh.as_ref().and_then(|m| surface_at(m, p)).is_some() { CursorIcon::Grab } else { CursorIcon::Default });
     }
     let h = handle_at(app, t, p, tol);
+    // Alt off the handles, inside or outside the box (the rotation zone too): a press places the
+    // reference point there (`pointer`), and the reference application shows its pointer.
+    if mods.alt && matches!(h, Hit::Inside | Hit::Outside) && app.transform_preview.as_ref().is_none_or(|pv| pv.gesture.is_none()) {
+        return Some(CursorIcon::Crosshair);
+    }
     if !mode_allows(t.mode, h) || (t.content_aware.is_some() && h == Hit::Outside) {
         return Some(CursorIcon::Default);
     }

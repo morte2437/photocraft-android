@@ -802,6 +802,11 @@ fn the_nearest_handle_wins_on_a_small_box() {
     assert_eq!(hit(&s, [8.0, -1.0], 12.0), Hit::Edge(0));
     assert_eq!(hit(&s, [8.0, 8.0], 12.0), Hit::Pivot);
     assert_eq!(hit(&s, [40.0, 40.0], 12.0), Hit::Outside);
+    // A reference point on a handle wins the press, as in the reference application (#5153).
+    s.pivot = [0.0, 0.0];
+    assert_eq!(hit(&s, [0.0, 0.0], 12.0), Hit::Pivot);
+    assert_eq!(hit(&s, [1.0, 1.0], 12.0), Hit::Pivot);
+    assert_eq!(hit(&s, [16.0, 17.0], 12.0), Hit::Corner(2));
 }
 
 #[test]

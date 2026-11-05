@@ -59,7 +59,7 @@ use options_bar::{
     set_size_unit, size_pct, size_shown, size_unit, warp_grid_id,
 };
 pub use options_bar::{options_bar, reset_warp};
-pub(crate) use pointer::{Gesture, Hit, hit, rotate_cursor_dir};
+pub(crate) use pointer::{Gesture, Hit, box_hit, hit, rotate_cursor_dir};
 #[cfg(test)]
 use pointer::{accepts_outside_click, carry_pivot, near_rotate_corner, point_on_quad, rotation_degrees};
 pub use pointer::{cursor, pointer};
