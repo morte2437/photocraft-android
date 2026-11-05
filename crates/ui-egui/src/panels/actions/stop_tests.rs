@@ -361,8 +361,11 @@ fn a_paused_action_replaced_under_the_same_name_does_not_continue() {
 
 #[test]
 fn a_stop_message_continues_only_on_the_document_it_paused_on() {
-    for back in [false, true] {
+    // In both history modes: the binding comes from the history continuation, which the outermost
+    // playback captures whether or not it makes a single history state.
+    for (single, back) in [(true, false), (true, true), (false, false), (false, true)] {
         let mut app = stop_app(true, true);
+        app.run("actions.setPlayback", json!({"performance": "accelerated", "singleState": single})).unwrap();
         let v = play(&mut app, &json!({"action": "Stop Test"})).unwrap();
         let id = v["paused"]["dialog"].as_u64().unwrap();
         app.run("file.new", json!({"width": 4, "height": 4})).unwrap();
@@ -370,10 +373,10 @@ fn a_stop_message_continues_only_on_the_document_it_paused_on() {
             app.run("document.activate", json!({"document": 0})).unwrap();
         }
         let r = crate::dialogs::confirm(&mut app, id);
-        assert_eq!(r.is_ok(), back, "{r:?}");
-        assert_eq!(app.ui.status_error, !back, "{}", app.ui.status);
+        assert_eq!(r.is_ok(), back, "single {single}: {r:?}");
+        assert_eq!(app.ui.status_error, !back, "single {single}: {}", app.ui.status);
         app.run("document.activate", json!({"document": 0})).unwrap();
-        assert_eq!(names(&app), if back { vec!["Prefix", "Suffix"] } else { vec!["Prefix"] });
+        assert_eq!(names(&app), if back { vec!["Prefix", "Suffix"] } else { vec!["Prefix"] }, "single {single}");
         app.run("document.activate", json!({"document": 1})).unwrap();
         assert!(names(&app).is_empty(), "the other document gets no step");
         assert_idle(&app);
