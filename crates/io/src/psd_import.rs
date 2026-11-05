@@ -1408,7 +1408,7 @@ fn import_decoded_content(import: DecodedImport<'_>, doc: &mut Document, cx: &mu
 
 fn import_multichannel(file: &PsdFile, merged: &Option<photocraft_psd::Result<Vec<u8>>>, doc: &mut Document, cx: &mut Ctx<'_>) {
     if let Some(Ok(all)) = merged {
-        let names = file.resource(1045).map(|r| unicode_names(&r.data)).unwrap_or_default();
+        let names = file.alpha_channel_names();
         if let Err(error) = crate::multichannel_map::import(file, all, doc, &names, &mut cx.warnings) {
             cx.fatal_error.get_or_insert(error);
         }
@@ -1551,6 +1551,32 @@ fn import_flattened(
     }
 }
 
+/// Spot inks whose DisplayInfo colour is in a space PhotoCraft doesn't read take their colour
+/// from the Alternate Spot Colors (1067), matched by the identifiers of 1053. `ids_from` is the
+/// first imported channel's position in 1053 (1 past a merged transparency), `skip` the
+/// DisplayInfo records before it.
+pub(crate) fn alternate_spot_inks(file: &PsdFile, ids_from: usize, skip: usize, channels: &mut [AlphaChannel]) {
+    let (Some(alt), Some(info), Some(ids)) = (
+        file.resource(crate::channel_map::ALTERNATE_SPOT_COLORS),
+        file.resource(crate::channel_map::DISPLAY_INFO).map(|r| (r, true)).or_else(|| file.resource(crate::channel_map::DISPLAY_INFO_OLD).map(|r| (r, false))),
+        file.resource(crate::channel_map::ALPHA_IDENTIFIERS),
+    ) else {
+        return;
+    };
+    let alt = crate::channel_map::alternate_spot_colors(&alt.data);
+    let spaces = crate::channel_map::display_spaces(&info.0.data, info.1, skip);
+    let ids: Vec<u32> = ids.data.as_chunks::<4>().0.iter().map(|c| u32::from_be_bytes(*c)).skip(ids_from).collect();
+    for ((ch, space), id) in channels.iter_mut().zip(spaces).zip(ids) {
+        let Some((_, solidity)) = ch.spot else { continue };
+        if crate::channel_map::decode_known_color(space, [0; 4]).is_some() {
+            continue;
+        }
+        if let Some((_, ink)) = alt.iter().find(|(alt_id, _)| *alt_id == id) {
+            ch.spot = Some((*ink, solidity));
+        }
+    }
+}
+
 fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut Ctx<'_>) {
     // Extra (alpha / spot) channels of the merged image.
     if !import.layered {
@@ -1561,7 +1587,7 @@ fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut
     let Some((n, plane)) = sizes else { return };
     let cc = cx.cc;
     let first = cc + usize::from(file.merged_has_alpha());
-    let names = file.resource(1045).map(|r| unicode_names(&r.data)).unwrap_or_default();
+    let names = file.alpha_channel_names();
     // Photoshop lists every extra channel, the merged transparency first when there is one.
     let skip = usize::from(file.merged_has_alpha() && names.len() == usize::from(file.header.channels).saturating_sub(cc));
     let names = names.get(skip..).unwrap_or_default();
@@ -1603,6 +1629,7 @@ fn import_extra_channels(import: DecodedImport<'_>, doc: &mut Document, cx: &mut
     } else if let Some(r) = file.resource(crate::channel_map::DISPLAY_INFO_OLD) {
         crate::channel_map::apply_display_info(&r.data, false, skip, &mut doc.channels);
     }
+    alternate_spot_inks(file, first.saturating_sub(cc), skip, &mut doc.channels);
     if let Some(r) = file.resource(crate::channel_map::QUICK_MASK_INFO)
         && r.data.len() >= 2
         && let Some(k) = usize::from(u16::from_be_bytes([r.data[0], r.data[1]])).checked_sub(first)

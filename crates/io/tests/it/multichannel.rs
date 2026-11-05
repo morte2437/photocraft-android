@@ -34,6 +34,18 @@ fn roundtrip(d: &photocraft_doc::Document) -> (PsdFile, photocraft_doc::Document
 }
 
 #[test]
+fn multichannel_names_decode_mac_roman_unless_unicode_is_present() {
+    let mut f = file(8);
+    f.resources.push(ImageResource::new(1006, b"\x04caf\x8e\x05Alpha".to_vec()));
+    let opened = import("multi.psd", &f.to_bytes().unwrap()).unwrap().document;
+    assert_eq!(opened.channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["café", "Alpha"]);
+    assert!(opened.channels[0].spot.is_some());
+    f.resources.push(ImageResource::new(1045, vec![0, 0, 0, 1, 0, b'Z', 0, 0, 0, 1, 0, b'Y']));
+    let opened = import("multi.psd", &f.to_bytes().unwrap()).unwrap().document;
+    assert_eq!(opened.channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Z", "Y"]);
+}
+
+#[test]
 fn alpha_type_channels_import_as_alpha_and_round_trip() {
     for depth in [8, 16] {
         let f = file(depth);
@@ -224,6 +236,25 @@ fn corpus_multichannel_round_trip_keeps_channels_and_resources() {
     assert_eq!(keys(&back), keys(&f));
 }
 
+/// A Multichannel spot whose DisplayInfo colour space is unknown takes its ink from the Alternate
+/// Spot Colors (1067), matched by the 1053 identifier, as in the other modes.
+#[test]
+fn unknown_display_space_takes_the_alternate_spot_colour() {
+    let mut f = file(8);
+    let info = f.resources.iter_mut().find(|r| r.id == 1077).unwrap();
+    info.data[4..6].copy_from_slice(&0x2331u16.to_be_bytes());
+    f.resources.push(ImageResource::new(1053, [3u32, 4].iter().flat_map(|id| id.to_be_bytes()).collect()));
+    let without = psd_to_document(&f).0;
+    // Lab 58.47 / −33.27 / −14.59 for channel id 3: about sRGB (0, 157, 165).
+    f.resources.push(ImageResource::new(1067, vec![0, 1, 0, 1, 0, 0, 0, 3, 0x00, 0x07, 0x16, 0xd7, 0xf3, 0x01, 0xfa, 0x4d, 0x00, 0x00]));
+    let (doc, _) = psd_to_document(&f);
+    let (ink, _) = doc.channels[0].spot.unwrap();
+    let rgb = ink.to_rgb().map(|v| (v * 255.0).round());
+    assert!(rgb[0] <= 3.0 && (rgb[1] - 157.0).abs() <= 3.0 && (rgb[2] - 165.0).abs() <= 3.0, "{rgb:?}");
+    assert_ne!(without.channels[0].spot.unwrap().0, ink);
+    assert!(doc.channels[1].spot.is_none(), "the alpha channel stays an alpha channel");
+}
+
 #[test]
 fn tile_row_conversion_preserves_spot_and_alpha_planes() {
     for depth in [8, 16, 32] {
@@ -250,4 +281,26 @@ fn tile_row_conversion_preserves_spot_and_alpha_planes() {
             }
         }
     }
+}
+
+#[test]
+fn legacy_unknown_display_space_uses_matching_alternate_id() {
+    let mut f = file(8);
+    f.resources.retain(|r| r.id != 1077);
+    let mut info = Vec::new();
+    display_record(&mut info, [0, 0, 0], 0, 2);
+    info[0..2].copy_from_slice(&0x2331u16.to_be_bytes());
+    info.push(0);
+    display_record(&mut info, [0, 0, 0], 50, 1);
+    info.push(0);
+    f.resources.push(ImageResource::new(1007, info));
+    f.resources.push(ImageResource::new(1053, [3u32, 4].iter().flat_map(|id| id.to_be_bytes()).collect()));
+    let without = psd_to_document(&f).0;
+    f.resources.push(ImageResource::new(1067, vec![0, 1, 0, 1, 0, 0, 0, 3, 0, 7, 0x16, 0xd7, 0xf3, 1, 0xfa, 0x4d, 0, 0]));
+    let doc = psd_to_document(&f).0;
+    let ink = doc.channels[0].spot.unwrap().0;
+    assert_ne!(without.channels[0].spot.unwrap().0, ink);
+    let rgb = ink.to_rgb().map(|v| (v * 255.0).round());
+    assert!(rgb[0] <= 3.0 && (rgb[1] - 157.0).abs() <= 3.0 && (rgb[2] - 165.0).abs() <= 3.0, "{rgb:?}");
+    assert!(doc.channels[1].spot.is_none());
 }

@@ -63,6 +63,7 @@ pub(crate) fn import(file: &PsdFile, all: &[u8], doc: &mut Document, names: &[St
     } else if let Some(r) = file.resource(crate::channel_map::DISPLAY_INFO_OLD) {
         crate::channel_map::apply_display_info(&r.data, false, 0, &mut doc.channels);
     }
+    crate::psd_import::alternate_spot_inks(file, 0, 0, &mut doc.channels);
     for (k, ch) in doc.channels.iter_mut().enumerate() {
         let start = k.checked_mul(plane).ok_or_else(invalid)?;
         let p = all.get(start..start.checked_add(plane).ok_or_else(invalid)?).ok_or_else(invalid)?;
