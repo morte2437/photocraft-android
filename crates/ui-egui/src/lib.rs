@@ -788,6 +788,8 @@ mod tool_shortcut_tests;
 mod pixel_aspect_tests;
 
 #[cfg(test)]
+mod transform_controls_pointer_tests;
+#[cfg(test)]
 mod transform_fx_tests;
 
 #[cfg(test)]

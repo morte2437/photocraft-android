@@ -303,6 +303,7 @@ struct ToolSet {
     eyedropper_sample: Option<String>,
     eyedropper_ring: Option<bool>,
     cam_transform_on_drop: Option<bool>,
+    move_show_transform: Option<bool>,
     tile_grid: Option<bool>,
     layer_filter: Option<crate::layer_filter_ui::Filter>,
     pen_mode: Option<String>,
@@ -310,6 +311,7 @@ struct ToolSet {
 }
 
 impl ToolSet {
+    /// Validate the complete tool patch before applying any field; omitted settings are retained.
     fn parse(app: &PhotocraftApp, p: &Value) -> std::result::Result<Self, String> {
         Ok(Self {
             gradient_blend: gradient_blend_param(p)?,
@@ -323,6 +325,7 @@ impl ToolSet {
             eyedropper_ring: bool_field(p, "eyedropperRing")?,
             // Content-Aware Move's Transform On Drop checkbox.
             cam_transform_on_drop: bool_field(p, "camTransformOnDrop")?,
+            move_show_transform: bool_field(p, "moveShowTransform")?,
             // Developer overlay of the active layer's storage tiles (tile_overlay.rs).
             tile_grid: bool_field(p, "tileGrid")?,
             layer_filter: p.get("layerFilter").map(|v| crate::layer_filter_ui::patched(&app.ui, v)).transpose()?,
@@ -331,6 +334,7 @@ impl ToolSet {
         })
     }
 
+    /// Apply a validated patch, selecting the tool before its per-tool settings.
     fn apply(self, app: &mut PhotocraftApp) {
         if let Some(stroke) = &self.shape_stroke {
             if let Some(stroke) = stroke {
@@ -358,6 +362,9 @@ impl ToolSet {
         }
         if let Some(on) = self.cam_transform_on_drop {
             app.ui.tool_options.cam_transform_on_drop = on;
+        }
+        if let Some(on) = self.move_show_transform {
+            app.ui.tool_options.move_show_transform = on;
         }
         if let Some(on) = self.tile_grid {
             app.ui.view.tile_grid = on;
@@ -1167,6 +1174,7 @@ struct PointerGesture {
     mods: egui::Modifiers,
 }
 
+/// Validate every sample before starting a gesture, then respect modal, button and temporary-tool ownership.
 fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     // Every field and event is validated before the first event runs, so a rejected call
     // changes nothing (#2449).
@@ -1193,11 +1201,35 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
             continue;
         }
         if !pointer_event_intercepted(app, ctx, &gesture, &sample) {
+            if modal_blocks_move_pointer(app, sample.ev) {
+                continue;
+            }
+            if app.ui.tool == Tool::Move && !gesture.secondary && !gesture.middle && !gesture.space && matches!(sample.ev, ToolEvent::Down { .. }) {
+                app.begin_move_transform_controls(ctx, sample.x, sample.y);
+            }
             forward_pointer_event(app, &gesture, sample);
         }
     }
     app.stylus.feed.set(None);
     ok(json!({"status": app.ui.status}))
+}
+
+/// Dialog samplers run first; block new Move gestures while allowing an active one to finish.
+fn modal_blocks_move_pointer(app: &PhotocraftApp, event: ToolEvent) -> bool {
+    app.ui.tool == Tool::Move
+        && (!app.ui.dialogs.is_empty()
+            || app.ui.layers_panel_dialog.is_some()
+            || app.discard.is_some()
+            || app.camera_raw.is_some()
+            || app.smart_svg.modal_open()
+            || app.distort.gallery.is_some()
+            || app.wide_angle.is_some())
+        && (matches!(event, ToolEvent::Down { .. })
+            || (app.drag.is_none()
+                && app.layer_box.is_none()
+                && app.guide_drag.is_none()
+                // Existing transform sessions, including Warp, only finish or ignore Move/Up.
+                && app.ui.transform.is_none()))
 }
 
 fn parse_pointer(p: &Value) -> std::result::Result<ParsedPointer, String> {
@@ -1242,7 +1274,9 @@ fn pointer_eyedropper_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &Poi
     let down = matches!(s.ev, ToolEvent::Down { .. });
     // With the Color Picker on top the image is its eyedropper, as for the mouse.
     if crate::color_picker_ui::top(app).is_some() {
-        if !matches!(s.ev, ToolEvent::Up { .. }) {
+        if matches!(s.ev, ToolEvent::Up { .. }) {
+            crate::tools::transform_tool::release_handle_drag(app);
+        } else {
             crate::color_picker_ui::sample_at(app, x, y);
         }
         return true;
