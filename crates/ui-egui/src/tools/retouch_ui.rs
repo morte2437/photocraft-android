@@ -162,6 +162,7 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
                 "style": o.art_history_style,
                 "area": o.art_history_area,
                 "tolerance": o.art_history_tolerance,
+                "opacity": app.session.tools.brush.opacity * 100.0,
             }),
         ),
         Tool::Blur | Tool::Sharpen | Tool::Smudge | Tool::Dodge | Tool::Burn | Tool::Sponge => match dab_params(app, tool) {

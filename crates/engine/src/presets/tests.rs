@@ -612,6 +612,18 @@ fn tool_presets_save_filter_select() {
     assert!(s.execute("tool.presets.new", json!({"name": "x"})).is_err());
 }
 
+/// An Art History Brush preset captures the brush's opacity and selecting it restores it.
+#[test]
+fn art_history_brush_preset_carries_the_opacity() {
+    let mut s = Session::new();
+    s.execute("tools.setBrush", json!({"brush": {"opacity": 0.4}})).unwrap();
+    s.execute("tool.presets.new", json!({"name": "Faint History", "tool": "artHistoryBrush"})).unwrap();
+    s.execute("tools.setBrush", json!({"brush": {"opacity": 1.0}})).unwrap();
+    let r = s.execute("tool.presets.select", json!({"preset": "Faint History"})).unwrap();
+    assert_eq!(r["tool"], "artHistoryBrush");
+    assert!((s.tools.brush.opacity - 0.4).abs() < 1e-6, "{}", s.tools.brush.opacity);
+}
+
 /// Crop presets are `crop` tool presets: saved, listed, persisted and deleted like the others.
 #[test]
 fn crop_presets_are_tool_presets_that_persist() {

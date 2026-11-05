@@ -318,4 +318,4 @@ id = "TOOL-213-20"
 target = "Art History Brush: Y-group, styles, Area, Tolerance, paints from a history state"
 status = "partial"
 issue = 213
-note = "paint.artHistoryBrush + Tool::ArtHistoryBrush in the Y flyout; 8 of 10 styles (no Tight Curl Long / Loose Curl Long); Area scales spacing, not coverage; rotated-patch look; no Mode/Opacity on the options bar, no pen pressure"
+note = "paint.artHistoryBrush + Tool::ArtHistoryBrush in the Y flyout; 8 of 10 styles (no Tight Curl Long / Loose Curl Long); Area scales spacing, not coverage; rotated-patch look; no Mode on the options bar, no pen pressure"
