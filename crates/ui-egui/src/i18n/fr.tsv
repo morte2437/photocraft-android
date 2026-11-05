@@ -4561,3 +4561,12 @@ shape	Appearance	Apparence
 
 # Action Stop message (#8386)
 	Message	Message
+# Playback Options (#5212)
+	Playback Options…	Options d'exécution…
+	Playback Options	Options d'exécution
+	Accelerated	Accélérée
+	Step by Step	Pas à pas
+	Pause For:	Pause de :
+	Pause For	Pause de
+	seconds	secondes
+	Create a single history state	Créer un seul état d'historique

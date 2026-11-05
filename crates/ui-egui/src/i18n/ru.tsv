@@ -4722,3 +4722,12 @@ shape	Appearance	Оформление
 
 # Action Stop message (#8386)
 	Message	Сообщение
+# Playback Options (#5212)
+	Playback Options…	Параметры воспроизведения…
+	Playback Options	Параметры воспроизведения
+	Accelerated	Ускоренное
+	Step by Step	Пошаговое
+	Pause For:	Пауза на:
+	Pause For	Пауза на
+	seconds	с
+	Create a single history state	Создавать одно состояние истории

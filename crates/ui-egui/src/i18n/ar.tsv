@@ -3555,3 +3555,12 @@ curves	Smooth	تنعيم
 
 # Action Stop message (#8386)
 	Message	رسالة
+# Playback Options (#5212)
+	Playback Options…	خيارات التشغيل…
+	Playback Options	خيارات التشغيل
+	Accelerated	مُسرَّع
+	Step by Step	خطوة بخطوة
+	Pause For:	إيقاف مؤقت لمدة:
+	Pause For	إيقاف مؤقت لمدة
+	seconds	ثانية
+	Create a single history state	إنشاء حالة سجل واحدة

@@ -104,6 +104,8 @@ fn playback_targets(app: &PhotocraftApp) -> Vec<usize> {
 /// continues into its callers first. A Stop with its dialog off ends the set. Returns the last result with `ran` counting the steps
 /// of all of them plus `before` (steps the same Play ran before a pause), or `None` when there was nothing to play.
 fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Result<Option<Value>, String> {
+    // A new Play ends a Step by Step or Pause For playback that is waiting for its next step.
+    playback::stop(app);
     let (mut last, mut ran) = (None, before);
     for (n, &i) in targets.iter().enumerate() {
         let name = app.session.actions.list.get(i).map(|a| a.name.clone());
@@ -136,15 +138,17 @@ fn play_targets(app: &mut PhotocraftApp, targets: &[usize], before: u64) -> Resu
     Ok(last)
 }
 
-/// The dialog a paused playback waits at: a step dialog by id, or Check Spelling.
+/// The dialog a paused playback waits at: a step dialog by id, Check Spelling, or Step by Step and
+/// Pause For's wait before the next step.
 fn waiting_dialog(paused: &Value) -> Option<&Value> {
-    paused.get("dialog").filter(|d| d.is_u64() || d.as_str() == Some(crate::type_panels_ui::SPELLING))
+    paused.get("dialog").filter(|d| d.is_u64() || matches!(d.as_str(), Some(crate::type_panels_ui::SPELLING | playback::PLAYBACK_TIMER)))
 }
 
 /// The token of the paused playback waiting at `dialog` (see [`waiting_dialog`]).
 fn paused_token(app: &mut PhotocraftApp, dialog: &Value) -> Option<u64> {
     match dialog.as_u64() {
         Some(id) => app.ui.dialog_mut(id).and_then(|d| d.fields.get(RESUME)).and_then(Value::as_u64),
+        None if dialog.as_str() == Some(playback::PLAYBACK_TIMER) => playback::waiting(app),
         None => app.ui.type_panels.spell.as_ref().and_then(|d| d.resume),
     }
 }
@@ -187,6 +191,9 @@ pub(crate) fn assign_shortcut(app: &mut PhotocraftApp, name: &str, shortcut: &st
 /// Replay edits synchronously, with view steps handled by the shell in the same order.
 /// Engine steps keep the headless action semantics (no dialogs or background jobs).
 pub(crate) fn play(app: &mut PhotocraftApp, params: &Value) -> Result<Value, String> {
+    // A new Play ends a Step by Step or Pause For playback that is waiting for its next step (none
+    // waits while a playback runs its steps, so a Play Action step never ends its own).
+    playback::stop(app);
     play_owned(app, params, None, &[])
 }
 
@@ -412,6 +419,13 @@ fn play_owned(app: &mut PhotocraftApp, params: &Value, suspended: Option<Value>,
                 if end_at(called(app, &action.name, i, id, &value, target), &mut ran, &mut failed, &mut paused, &mut stopped) {
                     break;
                 }
+                // Step by Step and Pause For: the canvas shows this step before the next one runs.
+                if let Some(wait) = playback::step_pause(app)
+                    && action.enabled_steps().any(|(j, _)| j > i)
+                {
+                    paused = Some(playback::pace(app, &action.name, i, id, ran, wait));
+                    break;
+                }
             }
             Err(error) => {
                 failed = Some(json!({"step": i, "id": id, "error": error}));
@@ -523,6 +537,10 @@ pub(crate) fn report_play(app: &mut PhotocraftApp, v: &Value) {
         return;
     }
     if let Some(paused) = v.get("paused").filter(|p| p.is_object()) {
+        if paused.get("dialog").and_then(Value::as_str) == Some(playback::PLAYBACK_TIMER) {
+            // Step by Step or Pause For between two steps: the last report comes at the end.
+            return;
+        }
         let step = paused.get("step").and_then(Value::as_u64).unwrap_or(0);
         let template = "Step {step} is waiting for its dialog";
         app.ui.status = crate::i18n::fmt(tl!(template), &[("step", &(step + 1).to_string())]);
@@ -1024,6 +1042,9 @@ pub(crate) struct PausedPlayback {
     /// A Stop step's Allow Continue, kept here rather than in the dialog's fields, which automation
     /// may rewrite: without it, confirming the message only ends the playback.
     allow_continue: bool,
+    /// Parked by Step by Step or Pause For after a step that ran (counted in `ran`), not at a dialog
+    /// whose own step runs on confirm.
+    timed: bool,
 }
 
 /// The longest caller chain a paused playback keeps; [`actions_cmds::playback_plan`] refuses deeper
@@ -1043,6 +1064,8 @@ impl PausedPlayback {
 pub(crate) struct PausedPlaybacks {
     last: u64,
     paused: std::collections::HashMap<u64, PausedPlayback>,
+    /// The Step by Step or Pause For playback waiting for its next step ([`playback::tick`]).
+    timer: Option<playback::Timer>,
 }
 
 impl PausedPlaybacks {
@@ -1063,6 +1086,7 @@ impl PausedPlaybacks {
                 filter_receiver: None,
                 callers: Vec::new(),
                 allow_continue: false,
+                timed: false,
             },
         );
         self.last
@@ -1239,6 +1263,8 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         return Err("this dialog doesn't belong to a paused action".into());
     };
     let params = json!({"action": outer, "from": outer_from});
+    // A dialog's own step runs on its confirm; a paced wait's step already ran and was counted.
+    let own = u64::from(!paused.timed);
     app.session.authorize = gate;
     let mut played = play_owned(app, &params, owner, inner);
     // Paused again at a later dialog of the same call: that dialog carries the rest of the set.
@@ -1249,10 +1275,10 @@ pub fn resume(app: &mut PhotocraftApp, fields: &serde_json::Map<String, Value>) 
         && entry.outermost() == paused.outermost()
     {
         entry.then = paused.then.clone();
-        entry.ran = paused.ran.saturating_add(1).saturating_add(v.get("ran").and_then(Value::as_u64).unwrap_or(0));
+        entry.ran = paused.ran.saturating_add(own).saturating_add(v.get("ran").and_then(Value::as_u64).unwrap_or(0));
     }
     // The count covers the steps this Play ran before the pause, and the step the dialog ran.
-    let ran = paused.ran.saturating_add(1).saturating_add(played.as_ref().ok().and_then(|v| v.get("ran")).and_then(Value::as_u64).unwrap_or(0));
+    let ran = paused.ran.saturating_add(own).saturating_add(played.as_ref().ok().and_then(|v| v.get("ran")).and_then(Value::as_u64).unwrap_or(0));
     if let Ok(Some(o)) = played.as_mut().map(Value::as_object_mut)
         && o.contains_key("ran")
     {
@@ -1330,6 +1356,11 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         act = Some("stop");
     }
     ui.separator();
+    // Enabled with nothing selected, as in the reference application; not while a paced Play waits.
+    if ui.add_enabled(!playback::pending(app), egui::Button::new(tl!("Playback Options…"))).clicked() {
+        act = Some("playbackOptions");
+    }
+    ui.separator();
     if ui.button(tl!("Load Actions…")).clicked() {
         act = Some("load");
     }
@@ -1366,6 +1397,7 @@ pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         "load" => load_dialog(app),
         "newSet" => new_set_dialog(app),
         "stop" => insert_stop_dialog(app),
+        "playbackOptions" => playback::open_dialog(app),
         _ => save_dialog(app, None),
     };
     if let Err(e) = r
@@ -1832,7 +1864,7 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let recording_now = app.session.actions.recording.is_some();
-        if crate::icons::button(ui, "square", 24.0, false, tl!("Stop playing/recording")).clicked() && recording_now {
+        if crate::icons::button(ui, "square", 24.0, false, tl!("Stop playing/recording")).clicked() && !playback::stop(app) && recording_now {
             let _ = app.run("actions.stop", json!({}));
         }
         let (r, rec) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
@@ -1982,8 +2014,13 @@ fn draw_step_controls(ui: &mut egui::Ui, rect: Rect, step: usize, label: &str, c
     (check.on_hover_text(tl!("Include in playback")), dialog.on_hover_text(tl!("Show dialog during playback")))
 }
 
+pub(crate) mod playback;
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod stop_tests;
+
+#[cfg(test)]
+mod playback_tests;

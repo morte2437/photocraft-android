@@ -3211,3 +3211,12 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 
 # Action Stop message (#8386)
 	Message	信息
+# Playback Options (#5212)
+	Playback Options…	回放选项…
+	Playback Options	回放选项
+	Accelerated	加速
+	Step by Step	逐步
+	Pause For:	暂停：
+	Pause For	暂停
+	seconds	秒
+	Create a single history state	创建单个历史记录状态

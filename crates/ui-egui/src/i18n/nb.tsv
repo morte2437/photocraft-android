@@ -4778,3 +4778,12 @@ cameraRaw	White Balance: As Shot	Hvitbalanse: som fotografert
 
 # Action Stop message (#8386)
 	Message	Melding
+# Playback Options (#5212)
+	Playback Options…	Avspillingsalternativer…
+	Playback Options	Avspillingsalternativer
+	Accelerated	Akselerert
+	Step by Step	Trinn for trinn
+	Pause For:	Pause i:
+	Pause For	Pause i
+	seconds	sekunder
+	Create a single history state	Opprett én historikktilstand

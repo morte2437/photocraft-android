@@ -603,3 +603,12 @@ cameraRaw	Yellow	पीला
 	Message	संदेश
 	Continue	जारी रखें
 	Stop	रोकें
+# Playback Options (#5212)
+	Playback Options…	प्लेबैक विकल्प…
+	Playback Options	प्लेबैक विकल्प
+	Accelerated	त्वरित
+	Step by Step	चरण दर चरण
+	Pause For:	इतने समय रुकें:
+	Pause For	इतने समय रुकें
+	seconds	सेकंड
+	Create a single history state	एक ही इतिहास स्थिति बनाएँ

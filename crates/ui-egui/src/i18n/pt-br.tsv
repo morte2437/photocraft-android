@@ -4452,3 +4452,12 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 
 # Action Stop message (#8386)
 	Message	Mensagem
+# Playback Options (#5212)
+	Playback Options…	Opções de reprodução…
+	Playback Options	Opções de reprodução
+	Accelerated	Acelerada
+	Step by Step	Passo a passo
+	Pause For:	Pausar por:
+	Pause For	Pausar por
+	seconds	segundos
+	Create a single history state	Criar um único estado de histórico

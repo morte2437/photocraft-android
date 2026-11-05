@@ -3548,3 +3548,12 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 
 # Action Stop message (#8386)
 	Message	Pesan
+# Playback Options (#5212)
+	Playback Options…	Opsi pemutaran…
+	Playback Options	Opsi pemutaran
+	Accelerated	Dipercepat
+	Step by Step	Langkah demi langkah
+	Pause For:	Jeda selama:
+	Pause For	Jeda selama
+	seconds	detik
+	Create a single history state	Buat satu status riwayat
