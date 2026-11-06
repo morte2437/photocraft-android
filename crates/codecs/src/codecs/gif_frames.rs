@@ -48,6 +48,9 @@ pub fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<AnimationFrame>,
     decoder.set_limits(il).map_err(map)?;
     let (w, h) = decoder.dimensions();
     limits.check_bytes(w, h, 4)?;
+    // The backend initializes the whole logical screen before it reads the first frame, so the
+    // same file-size plausibility as the first-frame decode applies before iterating (#8597).
+    super::via_image::gif_plausible(bytes, w, h, 4)?;
     let frame_bytes = u64::from(w) * u64::from(h) * 4;
 
     let mut out: Vec<AnimationFrame> = Vec::new();

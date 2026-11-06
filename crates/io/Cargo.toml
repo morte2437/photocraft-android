@@ -14,6 +14,8 @@ workspace = true
 corpus = []
 # HEIC/HEIF decode (forwarded to photocraft-codecs; see its `heif` feature).
 heif = ["photocraft-codecs/heif"]
+# Test support for synthetic memory injection, estimate charges and verification across crates.
+testgen = []
 
 [dependencies]
 photocraft-geom = { workspace = true }
@@ -33,6 +35,7 @@ photocraft-vector = { workspace = true }
 photocraft-format = { path = "../format" }
 craft-docpath = { workspace = true }
 thiserror = { workspace = true }
+ttf-parser = "0.25.1"
 serde_json = { workspace = true }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 # svg.rs inflates `.svgz` itself (with a size cap) so the XML can be checked before it is parsed;
@@ -40,6 +43,8 @@ blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 flate2 = { workspace = true }
 # ora.rs reads OpenRaster's stack.xml (already in the tree through usvg).
 roxmltree = "0.21"
+# Reuse usvg's locked header reader to bound embedded SVG raster data before decoding.
+imagesize = "0.13"
 # SVG import (svg.rs): usvg parses, resvg rasterises what the shape model can't hold. Both are
 # already in the tree through the UI's icon loader; text shaping needs the fonts feature set.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -49,6 +54,7 @@ resvg = { version = "0.45", default-features = false, features = ["text", "syste
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }
 
 [dev-dependencies]
+lopdf = { version = "0.38", default-features = false }
 miniz_oxide = "0.9"
 crc32fast = "1.5"
 photocraft-affinity = { workspace = true, features = ["synth"] }

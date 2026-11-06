@@ -132,6 +132,44 @@ fn half_roundtrip() {
     }
 }
 
+/// #9173: no two pipeline build jobs share a shader, so no FXC blob is shared across threads.
+#[test]
+fn build_jobs_share_no_shader() {
+    use super::consts::{MAP16, MAP32};
+    use super::kit::{build_jobs, vertex_shader};
+    let jobs = build_jobs(wgpu::TextureFormat::Rgba32Float);
+    let mut seen = std::collections::HashSet::new();
+    for job in &jobs {
+        let fragments: std::collections::HashSet<_> = job.keys.iter().filter_map(|k| k.0.entry()).collect();
+        for f in fragments {
+            assert!(seen.insert(f.to_string()), "fragment shader {f} is built by two jobs");
+        }
+        assert!(seen.insert(job.vertex.clone()), "vertex entry {} is shared", job.vertex);
+    }
+    // Every drawn pipeline is still built, in the same formats.
+    let keys: Vec<_> = jobs.iter().flat_map(|job| job.keys.iter().copied()).collect();
+    let plain = Kernel::DRAWN.iter().filter(|k| !k.is_map()).count();
+    assert_eq!(keys.len(), plain + 2 * (Kernel::DRAWN.len() - plain));
+    for k in Kernel::DRAWN {
+        let formats: Vec<_> = keys.iter().filter(|key| key.0 == k).map(|key| key.1).collect();
+        let want = if k.is_map() { vec![MAP32, MAP16] } else { vec![wgpu::TextureFormat::Rgba32Float] };
+        assert_eq!(formats, want, "{k:?}");
+    }
+    // The vertex module validates and has every job's entry point.
+    let src = vertex_shader(&jobs);
+    let module = wgpu::naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+    wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::empty())
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    for job in &jobs {
+        assert!(module.entry_points.iter().any(|ep| ep.name == job.vertex && ep.stage == wgpu::naga::ShaderStage::Vertex), "missing {}", job.vertex);
+    }
+    // The fragment module has no vertex stage, so the build can't fall back to one shared `vs`.
+    let compose = wgpu::naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
+    let shared: Vec<_> = compose.entry_points.iter().filter(|ep| ep.stage == wgpu::naga::ShaderStage::Vertex).map(|ep| ep.name.as_str()).collect();
+    assert!(shared.is_empty(), "compose.wgsl has a vertex entry point every job would share: {shared:?}");
+}
+
 #[test]
 fn shader_validates() {
     let module = wgpu::naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
@@ -303,7 +341,7 @@ fn sixteen_and_thirty_two_bit_fast_paths_match_the_general_one() {
         let data: Vec<f32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761) as f32 / u32::MAX as f32 * hdr - (hdr - 1.0) / 4.0).collect();
         s.write_region(r, &data);
         let t = s.tile(TileCoord::new(0, 0)).expect("written").clone();
-        let fast = rgb_gray16_to_f16(&fmt, t.bytes()).or_else(|| rgb_gray32_to_f16(&fmt, t.bytes())).expect("fast path");
+        let fast = rgb_gray16_to_f16(&fmt, &t.bytes()).or_else(|| rgb_gray32_to_f16(&fmt, &t.bytes())).expect("fast path");
         let raw = s.read_region(r);
         let general: Vec<u8> =
             raw.chunks_exact(fmt.channels()).flat_map(|px| photocraft_raster::to_rgba(&fmt, px).map(|x| f32_to_f16(x).to_le_bytes())).flatten().collect();
@@ -387,4 +425,10 @@ fn colour_managed_tiles_match_the_per_pixel_conversion() {
 #[test]
 fn grid_rounds_out() {
     assert_eq!(tile_grid(Rect::new(0, 0, 300, 256)), Rect::new(0, 0, 512, 256));
+}
+
+#[test]
+fn shader_fingerprint_is_fnv1a_of_embedded_source() {
+    assert_eq!(super::fnv1a(b"hello"), 0xa430_d846_80aa_bd0b);
+    assert_eq!(super::shader_fingerprint(), super::fnv1a(super::SHADER.as_bytes()));
 }

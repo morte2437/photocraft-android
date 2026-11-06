@@ -104,6 +104,59 @@ fn swept_pointer_range(ctx: &egui::Context) -> Option<(f32, f32)> {
     Some(((p.y - delta.y).min(p.y), (p.y - delta.y).max(p.y)))
 }
 
+/// A Frame row's second thumbnail (its image) beside the frame outline's: paints both targets'
+/// brackets and handles the click that picks Frame / Image / Both and a double-click that opens
+/// a smart-object image. Returns whether the click was taken.
+#[allow(clippy::too_many_arguments)]
+fn frame_content_thumb(
+    app: &mut PhotocraftApp,
+    ctx: &egui::Context,
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    (doc, l, rect): (&photocraft_doc::Document, &Layer, Rect),
+    (thumb, x, ts, selected): (Rect, f32, f32, bool),
+    resp: &egui::Response,
+    actions: &mut Vec<(String, Value)>,
+) -> bool {
+    let t = Tokens::get(ctx);
+    let target = crate::frame_tool::target(app, l);
+    if selected && target != crate::frame_tool::Target::Content {
+        crate::mask_thumbs_ui::paint_brackets(painter, thumb, t.text);
+    }
+    let content_thumb = Rect::from_min_size(pos2(x, rect.center().y - ts / 2.0), vec2(ts, ts));
+    let child = l.children().and_then(|c| c.first());
+    if let Some(child) = child {
+        draw_layer_thumb(app, ctx, ui, doc, child, content_thumb, false);
+    } else {
+        icons::paint(ui, content_thumb, "frame-placeholder", ts.min(24.0), t.icon);
+    }
+    if selected && target != crate::frame_tool::Target::Frame {
+        crate::mask_thumbs_ui::paint_brackets(painter, content_thumb, t.text);
+    }
+    let pos = resp.interact_pointer_pos();
+    let on_content = pos.is_some_and(|p| content_thumb.contains(p));
+    let mut clicked = false;
+    if resp.clicked() && !ui.input(|i| i.modifiers.command) && (on_content || pos.is_some_and(|p| thumb.contains(p))) {
+        let target = if ui.input(|i| i.modifiers.shift) {
+            crate::frame_tool::Target::Both
+        } else if on_content {
+            crate::frame_tool::Target::Content
+        } else {
+            crate::frame_tool::Target::Frame
+        };
+        crate::frame_tool::select(app, l.id, target);
+        clicked = true;
+    }
+    if resp.double_clicked()
+        && on_content
+        && let Some(child) = child
+        && matches!(child.content, LayerContent::Smart(_))
+    {
+        actions.push(("layer.smartObjects.editContents".into(), json!({"layer": child.id.0})));
+    }
+    clicked
+}
+
 /// Marker in the clipped row's existing 12-point slot, beside its thumbnail.
 pub(super) fn paint_clipping_indicator(painter: &egui::Painter, at: Pos2, color: Color32) {
     let tip = at + vec2(5.0, 3.0);
@@ -111,6 +164,11 @@ pub(super) fn paint_clipping_indicator(painter: &egui::Painter, at: Pos2, color:
     painter.add(egui::Shape::line(vec![at + vec2(9.0, -4.0), at + vec2(5.0, -4.0), tip], stroke));
     painter.add(egui::Shape::line(vec![at + vec2(2.0, 0.0), tip, at + vec2(8.0, 0.0)], stroke));
 }
+
+/// Height of an artboard's row. Photoshop sets artboards apart from layers and groups in the
+/// Layers panel: a shorter row with the name in bold and no thumbnail (a board is a canvas, not a
+/// folder), so the boards read as headings over their layers (#10218).
+pub(super) const ARTBOARD_ROW_H: f32 = 26.0;
 
 /// One row of the Layers panel for `l`, `depth` levels inside groups or artboards: it paints the
 /// row, queues what a click or drag on it asks for in `actions`, and returns the row's rect.
@@ -125,10 +183,17 @@ pub(super) fn layer_row(
     row: RowSel,
     actions: &mut Vec<(String, Value)>,
 ) -> Rect {
+    let row = RowSel { selected: row.selected || (l.frame.is_some() && crate::frame_tool::selected(app).is_some_and(|f| f.id == l.id)), ..row };
     let selected = row.selected;
     let t = Tokens::get(ctx);
     // The Layers Panel Options thumbnail size controls rows and both layer/mask thumbnails.
     let (base, row_h) = crate::layers_panel_ui::thumbnail_geometry(app.ui.layers_panel_options.thumbnail_size, t.pro);
+    // A board's row is a compact heading with no thumbnail, never taller than a layer's (with
+    // thumbnails off every row is already compact). A board with a mask keeps its usual row,
+    // thumbnail and all: the thumbnail is what clicks go back to from the mask, what ends the mask
+    // view, what carries the target brackets, and what spaces the mask's chain from the triangle.
+    let compact = l.artboard().is_some() && l.mask.is_none() && l.vector_mask.is_none();
+    let (base, row_h) = if compact { (0.0, row_h.min(ARTBOARD_ROW_H)) } else { (base, row_h) };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
     // With thumbnails off no mask thumbnail is drawn, so none may keep catching drags from older frames.
     if base == 0.0 {
@@ -186,6 +251,11 @@ pub(super) fn layer_row(
         draw_layer_thumb(app, ctx, ui, doc, l, thumb, row.primary);
         x += ts + 6.0;
     }
+    let mut frame_clicked = false;
+    if l.frame.is_some() && ts > 0.0 {
+        frame_clicked = frame_content_thumb(app, ctx, ui, &painter, (doc, l, rect), (thumb, x, ts, selected), &resp, actions);
+        x += ts + 6.0;
+    }
     // With thumbnails disabled the labels and disclosure controls remain interactive.
     let masks = if ts > 0.0 { crate::mask_thumbs_ui::paint(app, ctx, ui, &painter, doc, l, &mut x, rect.center().y, ts, actions) } else { Default::default() };
     let rc = RowCtx { l, doc, row, rect, ts, thumb, resp: &resp, masks: &masks };
@@ -218,6 +288,9 @@ pub(super) fn layer_row(
         if !m.command {
             return None;
         }
+        if l.frame.is_some() && thumb.contains(p) {
+            return Some(crate::mask_thumbs_ui::load_params(l, crate::mask_thumbs_ui::MaskKind::Vector, m));
+        }
         if let Some(kind) = masks.hit(p) {
             return Some(crate::mask_thumbs_ui::load_params(l, kind, m));
         }
@@ -242,7 +315,12 @@ pub(super) fn layer_row(
         actions.push(("select.loadSelection".into(), p));
     } else if let Some(cmd) = mask_toggle {
         actions.push(cmd);
-    } else if resp.clicked() && !eye_resp.clicked() && !toggled && !fx_toggled && !masks.clicked {
+    } else if resp.clicked() && !frame_clicked && !eye_resp.clicked() && !toggled && !fx_toggled && !masks.clicked {
+        if l.frame.is_some() {
+            app.ui.frame_tool.selected = Some(l.id.0);
+            app.ui.frame_tool.target =
+                if l.children().is_some_and(|c| !c.is_empty()) { crate::frame_tool::Target::Both } else { crate::frame_tool::Target::Frame };
+        }
         select_row_on_click(app, ui, &rc, actions);
     }
     // Double-click: the name renames in place (over the row's full height, not just the glyphs:
@@ -291,6 +369,11 @@ fn paint_row_background(painter: &egui::Painter, t: &Tokens, l: &Layer, rect: Re
     } else if is_hovered {
         painter.rect_filled(rect, t.radius, t.hover.gamma_multiply(0.5));
         painter.rect_filled(rect, t.radius, t.accent.gamma_multiply(0.12));
+    }
+    if l.artboard().is_some() && !selected && !is_hovered {
+        // A faint band behind a board's row, so where each board starts stands out in a long
+        // list. Under the label colour and the dividers, which keep their look on every row.
+        painter.rect_filled(rect, if t.pro { 0.0 } else { t.radius }, t.hover.gamma_multiply(0.35));
     }
     let eye_cell = eye_cell(rect);
     if let Some((_, background)) = t.layer_label_colors(l.label) {
@@ -360,7 +443,15 @@ fn paint_target_brackets(app: &PhotocraftApp, painter: &egui::Painter, t: &Token
 fn paint_row_name(painter: &egui::Painter, t: &Tokens, rc: &RowCtx<'_>, x: f32, name_right: f32) -> Option<Rect> {
     let (l, doc, rect, ts, selected) = (rc.l, rc.doc, rc.rect, rc.ts, rc.row.selected);
     let name_color = if l.visible { t.text } else { t.text_faint };
-    let font = if selected && !t.pro { theme::medium(13.0) } else { egui::FontId::proportional(if t.pro { 12.0 } else { 13.0 }) };
+    let size = if t.pro { 12.0 } else { 13.0 };
+    let font = if l.artboard().is_some() {
+        // Artboards are named in bold, as in Photoshop.
+        theme::semibold(size)
+    } else if selected && !t.pro {
+        theme::medium(13.0)
+    } else {
+        egui::FontId::proportional(size)
+    };
     // Photoshop before 2026 set the Background layer's name in italics; 2026 sets it upright.
     let italic = !t.pro && doc.is_background(l.id);
     // Photoshop rows show only the name; the kind sub-label is a Studio-theme addition.
@@ -374,6 +465,7 @@ fn paint_row_name(painter: &egui::Painter, t: &Tokens, rc: &RowCtx<'_>, x: f32, 
     if !is_pixel {
         let sub = match &l.content {
             LayerContent::Adjustment(a) => tl!(a.label()).to_string(),
+            LayerContent::Group(_) if l.frame.is_some() => tl!("Frame").to_string(),
             LayerContent::Group(g) => crate::i18n::trn(crate::i18n::current(), g.children.len() as u64, "Group · {n} layer", "Group · {n} layers"),
             other => tl!(other.kind_name()).to_string(),
         };
@@ -405,20 +497,19 @@ fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, 
         let mask = if v.filter { "filter" } else { "layer" };
         actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off", "mask": mask})));
     }
-    let adjustment = matches!(l.content, LayerContent::Adjustment(_));
-    let fill_mask = matches!(l.content, LayerContent::Fill(_)) && l.mask.is_some();
+    let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
     if on_vector {
         // The vector mask thumbnail targets the vector mask: the path tools edit it and the
         // Paths panel selects the layer's path.
         app.ui.selected_path = Some("layer".into());
         actions.push(("ui.vectorMaskTarget".into(), json!(true)));
-    } else if on_mask || (fill_mask && !on_thumb) {
+    } else if on_mask || (content_less && l.mask.is_some() && !on_thumb) {
         if on_mask {
             // The mask thumbnail also switches Properties to the mask (#3369).
             app.ui.properties_layer = None;
         }
         actions.push(("ui.maskTarget".into(), json!(true)));
-    } else if on_thumb || adjustment || !row.primary {
+    } else if on_thumb || !row.primary {
         actions.push(("ui.maskTarget".into(), json!(false)));
     }
     // ⌥-click the layer thumbnail: fit the layer on screen, as Photoshop does.
@@ -430,7 +521,16 @@ fn select_row_on_click(app: &mut PhotocraftApp, ui: &egui::Ui, rc: &RowCtx<'_>, 
 /// Double-click: rename, un-background, open the thumbnail's settings or the row's Layer Style.
 fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &RowCtx<'_>, name_rect: Option<Rect>, actions: &mut Vec<(String, Value)>) {
     let (l, doc, resp, masks, ts, thumb, rect) = (rc.l, rc.doc, rc.resp, rc.masks, rc.ts, rc.thumb, rc.rect);
-    if resp.double_clicked() {
+    // A frame row's thumbnails are handled in the row; its name still renames in place.
+    if resp.double_clicked()
+        && l.frame.is_some()
+        && name_rect.is_some_and(|n| resp.interact_pointer_pos().is_some_and(|p| Rect::from_x_y_ranges(n.x_range(), rect.y_range()).expand(2.0).contains(p)))
+        && let Some(done) = crate::layer_row_ui::start_rename(ctx, l.id.0, &l.name)
+    {
+        // One rename at a time: starting this one commits any other (#314).
+        actions.push(done);
+    }
+    if resp.double_clicked() && l.frame.is_none() {
         let pos = resp.interact_pointer_pos();
         let on = |r: Rect| pos.is_some_and(|p| r.expand(2.0).contains(p));
         if crate::doc_props_ui::is_background(doc, l) {
@@ -505,6 +605,20 @@ pub(super) fn layer_thumb_fit(cell: Rect, w: u32, h: u32) -> (Rect, Rect) {
 fn draw_layer_thumb(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &egui::Ui, doc: &photocraft_doc::Document, l: &Layer, rect: Rect, selected: bool) {
     let t = Tokens::get(ctx);
     let p = ui.painter();
+    if let Some(f) = &l.frame {
+        let path = f.path.clone();
+        for line in photocraft_vector::flatten::flatten_path(&path, 0.01) {
+            let mut points: Vec<Pos2> =
+                line.pts.iter().map(|&(x, y)| pos2(rect.left() + x as f32 * rect.width(), rect.top() + y as f32 * rect.height())).collect();
+            if line.closed
+                && let Some(p) = points.first().copied()
+            {
+                points.push(p);
+            }
+            ui.painter().add(egui::Shape::line(points, Stroke::new(1.0, t.icon)));
+        }
+        return;
+    }
     match &l.content {
         LayerContent::Adjustment(_) | LayerContent::Group(_) => {
             p.rect_filled(rect, 6.0, t.field);

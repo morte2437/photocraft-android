@@ -232,6 +232,8 @@ pub fn clear_ratio(o: &mut ToolOptions) {
         clear(o);
     } else {
         o.crop_ratio.clear();
+        o.crop_custom_ratio_width = 0.0;
+        o.crop_custom_ratio_height = 0.0;
     }
 }
 
@@ -313,11 +315,15 @@ fn text_field(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, width
 }
 
 /// The W x H x Resolution fields of the options bar: W, ⇄, H, the resolution and its unit.
-pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) {
+/// Returns true when ⇄ swapped W and H, so the Crop tool turns its frame with them.
+pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) -> bool {
     text_field(ui, "crop-width", &mut o.crop_width, tl!("Width"), 64.0, normalize_length);
-    if crate::icons::button(ui, "arrow-left-right", 22.0, false, tl!("Swaps height and width")).clicked() {
+    // Always swaps (Perspective Crop shows the fields without the mode); true in W x H x Resolution
+    // mode, where the Crop tool turns its frame with W and H.
+    let swapped = crate::icons::button(ui, "arrow-left-right", 22.0, false, tl!("Swaps height and width")).clicked() && {
         swap_fields(o);
-    }
+        o.crop_ratio == WHR
+    };
     text_field(ui, "crop-height", &mut o.crop_height, tl!("Height"), 64.0, normalize_length);
     text_field(ui, "crop-resolution", &mut o.crop_resolution, tl!("Resolution"), 64.0, normalize_resolution);
     let units = [(PX_PER_IN.to_string(), "px/in"), (PX_PER_CM.to_string(), "px/cm")];
@@ -329,6 +335,7 @@ pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) {
             o.crop_resolution = crate::widgets::fmt_num2(v);
         }
     }
+    swapped
 }
 
 #[cfg(test)]
@@ -383,6 +390,26 @@ mod tests {
         assert_eq!(custom_ratio_fields(&options, (0.0, 0.0)), (4.0, 3.0));
         let (width, height) = crate::chrome_ui::crop_ratio(&options.crop_ratio, 0.0, 0.0).unwrap_or_default();
         assert_eq!(width / height, 4.0 / 3.0);
+    }
+
+    #[test]
+    fn clear_ratio_discards_complete_and_partial_ratio_fields() {
+        for (width, height) in [(16.0, 9.0), (4.0, 0.0), (0.0, 3.0)] {
+            let mut options = ToolOptions::default();
+            set_custom_ratio_fields(&mut options, width, height);
+            clear_ratio(&mut options);
+            assert!(options.crop_ratio.is_empty());
+            assert_eq!(custom_ratio_fields(&options, (300.0, 200.0)), (0.0, 0.0));
+            set_custom_ratio_fields(&mut options, 5.0, 0.0);
+            assert!(options.crop_ratio.is_empty(), "entering a new width must not reuse the old height");
+            assert_eq!(custom_ratio_fields(&options, (300.0, 200.0)), (5.0, 0.0));
+        }
+        let mut options = whr("4 in", "6 in", "300", PX_PER_IN);
+        clear_ratio(&mut options);
+        assert_eq!(
+            (options.crop_ratio.as_str(), options.crop_width.as_str(), options.crop_height.as_str(), options.crop_resolution.as_str()),
+            (WHR, "", "", "")
+        );
     }
 
     #[test]

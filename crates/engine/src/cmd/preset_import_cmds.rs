@@ -34,46 +34,71 @@ pub const MAX_ABR_FILE_BYTES: u64 = photocraft_psd::abr::MAX_TOTAL_BYTES as u64;
 
 /// File bytes from `data` (base64) or `path`, plus a default group name.
 pub(crate) fn file_bytes(p: &Value, cmd: &str, what: &str) -> Result<(Vec<u8>, String)> {
-    file_bytes_within(p, cmd, what, MAX_FILE_BYTES)
+    file_bytes_limited(p, cmd, what, MAX_FILE_BYTES)
 }
 
-/// [`file_bytes`] with a size cap of `max` bytes.
-fn file_bytes_within(p: &Value, cmd: &str, what: &str, max: u64) -> Result<(Vec<u8>, String)> {
+/// Load preset bytes with a format-specific limit; `data` takes precedence over `path`.
+/// Inline base64 returns an empty group name; a file returns its filename stem.
+/// The encoded-length check bounds base64 allocation, then decoded length is checked exactly.
+/// File reads are capped at `max_bytes + 1` so growth after the metadata check is still rejected.
+/// This helper does not authorize paths; automation callers must enforce their workspace policy.
+pub(crate) fn file_bytes_limited(p: &Value, cmd: &str, what: &str, max_bytes: u64) -> Result<(Vec<u8>, String)> {
     if let Some(d) = p.get("data") {
         let s = d.as_str().ok_or_else(|| bad(cmd, "`data` must be a base64 string"))?;
-        if s.len() as u64 > max / 3 * 4 + 4 {
+        if s.len() as u64 > max_bytes / 3 * 4 + 4 {
             return Err(bad(cmd, "`data` is too large"));
         }
         let bytes = photocraft_paint::tile::b64_decode(s).ok_or_else(|| bad(cmd, "`data` is not valid base64"))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(bad(cmd, "`data` is too large"));
+        }
         return Ok((bytes, String::new()));
     }
     let path =
         p.get("path").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(cmd, format!("give `path` ({what}) or `data` (base64)")))?;
     let len = std::fs::metadata(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?.len();
-    if len > max {
+    if len > max_bytes {
         return Err(bad(cmd, format!("{path}: file too large ({len} bytes)")));
     }
-    let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let file = std::fs::File::open(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = read_preset_bytes(file, cmd, path, max_bytes)?;
     let stem = std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     Ok((bytes, stem))
 }
 
+/// Bound the actual stream independently of metadata, which can become stale before reading.
+/// One extra byte distinguishes an exact-limit file from an oversized or growing input.
+fn read_preset_bytes(reader: impl std::io::Read, cmd: &str, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes).map_err(|error| EngineError::Other(format!("{path}: {error}")))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(bad(cmd, format!("{path}: file too large")));
+    }
+    Ok(bytes)
+}
+
 /// The preset names in use, for naming new presets.
-struct UniqueNames {
-    /// Every name in use, ASCII-lowercased.
+pub(crate) struct UniqueNames {
+    /// Every name in use, normalized according to the comparison mode.
     taken: std::collections::HashSet<String>,
-    /// The next number to try for each repeated name (lowercased).
+    /// The next number to try for each normalized repeated name.
     next: std::collections::HashMap<String, usize>,
+    exact: bool,
 }
 
 impl UniqueNames {
-    fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
-        UniqueNames { taken: names.into_iter().map(str::to_ascii_lowercase).collect(), next: std::collections::HashMap::new() }
+    pub(crate) fn new<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        UniqueNames { taken: names.into_iter().map(str::to_ascii_lowercase).collect(), next: std::collections::HashMap::new(), exact: false }
     }
 
-    /// A name not in use (case-insensitive): `name`, `name 2`, `name 3`… It is in use from then on.
-    fn unique(&mut self, name: &str) -> String {
-        let key = name.to_ascii_lowercase();
+    pub(crate) fn new_exact<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        UniqueNames { taken: names.into_iter().map(str::to_string).collect(), next: std::collections::HashMap::new(), exact: true }
+    }
+
+    /// A name not in use under the selected comparison mode: `name`, `name 2`, `name 3`… It is in use from then on.
+    pub(crate) fn unique(&mut self, name: &str) -> String {
+        let key = if self.exact { name.to_string() } else { name.to_ascii_lowercase() };
         if self.taken.insert(key.clone()) {
             return name.to_string();
         }
@@ -101,7 +126,7 @@ fn import_abr(s: &mut Session, p: &Value) -> Result<Value> {
         move |ctx| {
             ctx.progress(0.0, "Importing brushes");
             let p = &params;
-            let (bytes, stem) = file_bytes_within(p, cmd, ".abr file", MAX_ABR_FILE_BYTES)?;
+            let (bytes, stem) = file_bytes_limited(p, cmd, ".abr file", MAX_ABR_FILE_BYTES)?;
             let group = match p.get("group") {
                 Some(v) => v.as_str().map(str::trim).filter(|g| !g.is_empty()).ok_or_else(|| bad(cmd, "`group` must be a non-empty string"))?.to_string(),
                 None if !stem.is_empty() => stem,
@@ -117,14 +142,30 @@ fn import_abr(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
-fn add_abr_presets(s: &mut Session, p: &Value, group: String, imp: photocraft_io::abr_map::AbrImport) -> Result<Value> {
-    // Re-importing a file replaces its group instead of duplicating it.
-    if p.get("replace").and_then(Value::as_bool).unwrap_or(true) {
-        s.tools.presets.retain(|x| x.builtin || x.group != group);
+/// `name`, or `name (2)`, `name (3)`… when `taken` says it is in use.
+fn free_group(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(name) {
+        return name.to_string();
     }
+    (2..=u32::MAX).map(|i| format!("{name} ({i})")).find(|g| !taken(g)).unwrap_or_else(|| name.to_string())
+}
+
+fn add_abr_presets(s: &mut Session, p: &Value, group: String, imp: photocraft_io::abr_map::AbrImport) -> Result<Value> {
+    // A file whose name matches a group already in the library becomes a new group beside it, as
+    // in Photoshop, unless `replace` asks to drop that group's own presets first: the group name
+    // is only the file name, and the library is outside document history (#10640).
+    let group = if p.get("replace").and_then(Value::as_bool).unwrap_or(false) {
+        s.tools.presets.retain(|x| x.builtin || x.group != group);
+        group
+    } else {
+        // One pass over the library, not one per numbered candidate.
+        let groups: std::collections::HashSet<&str> = s.tools.presets.iter().map(|x| x.group.as_str()).collect();
+        free_group(&group, |g| groups.contains(g))
+    };
     let mut taken = UniqueNames::new(s.tools.presets.iter().map(|x| x.name.as_str()));
     let mut names = Vec::with_capacity(imp.presets.len());
     for mut preset in imp.presets {
+        preset.group.clone_from(&group);
         preset.name = taken.unique(&preset.name);
         names.push(preset.name.clone());
         s.tools.presets.push(preset);
@@ -243,7 +284,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Import Brushes…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".abr file"?,"data":base64 bytes?,"group":string?=file name,"replace":bool=true (replace a group of the same name),"select":bool=false (make the first imported preset current)} → {group, imported, count, folders (nested folders kept from the file), version, warnings}"##,
+            params: r##"{"path":".abr file"?,"data":base64 bytes?,"group":string?=file name,"replace":bool=false (first delete the non-built-in presets of a group of the same name; false imports beside it as <group> (2)),"select":bool=false (make the first imported preset current)} → {group, imported, count, folders (nested folders kept from the file), version, warnings}"##,
             enabled: always,
             run: import_abr,
             journal: true,
@@ -263,7 +304,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Import Gradients…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".grd file"?,"data":base64 bytes?,"group":string?=file name,"replace":bool=true (replace a group of the same name)}"##,
+            params: r##"{"path":".grd file"?,"data":base64 bytes?,"group":string?=file name,"replace":bool=false (first delete a group of the same name; false imports beside it as <group> (2))} → {group, imported, count, warnings}"##,
             enabled: always,
             run: import_grd,
             journal: true,
@@ -332,6 +373,14 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
         None => "Imported Gradients".to_string(),
     };
     let grads = photocraft_psd::grd::parse(&bytes).map_err(|e| bad(cmd, format!("not a readable gradient file (.grd): {e}")))?;
+    // Same default as the group insertion below and the documented contract (#10640).
+    let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
+    let mut taken =
+        UniqueNames::new_exact(s.presets.gradients.iter().filter(|g| !replace || g.name != group).flat_map(|g| g.items.iter().map(|i| i.name.as_str())));
+    let original_names: Vec<String> =
+        grads.iter().enumerate().map(|(i, g)| if g.name.trim().is_empty() { format!("Gradient {}", i + 1) } else { g.name.trim().to_string() }).collect();
+    let mut reserved = taken.taken.clone();
+    reserved.extend(original_names.iter().cloned());
     let mut warnings = Vec::new();
     let mut items = Vec::new();
     let (mut noise, mut midpoints) = (0, false);
@@ -349,6 +398,15 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
             opacity.clear();
         }
         let name = if g.name.trim().is_empty() { format!("Gradient {}", i + 1) } else { g.name.trim().to_string() };
+        let name = if taken.taken.insert(name.clone()) {
+            name
+        } else {
+            std::mem::swap(&mut taken.taken, &mut reserved);
+            let unique = taken.unique(&name);
+            std::mem::swap(&mut taken.taken, &mut reserved);
+            taken.taken.insert(unique.clone());
+            unique
+        };
         items.push(GradientPreset { name, stops, opacity });
     }
     if noise > 0 {
@@ -362,9 +420,13 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let names: Vec<String> = items.iter().map(|g| g.name.clone()).collect();
     let st = &mut s.presets;
-    if p.get("replace").and_then(Value::as_bool).unwrap_or(true) {
+    // As with brushes: a new group beside one of the same name unless `replace` (#10640).
+    let group = if replace {
         st.gradients.retain(|g| g.name != group);
-    }
+        group
+    } else {
+        free_group(&group, |g| st.gradients.iter().any(|x| x.name == g))
+    };
     st.gradients.push(Group::new(&group, items));
     s.presets_changed();
     Ok(json!({"group": group, "imported": names, "count": names.len(), "warnings": warnings}))
@@ -372,6 +434,27 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    /// A growing stream must fail the actual-read check after at most cap + 1 bytes;
+    /// the exact-limit control stays valid, including a zero-byte budget.
+    #[test]
+    fn preset_stream_limit_does_not_depend_on_metadata() {
+        for cap in [0_u64, 2] {
+            let mut exact = std::io::Cursor::new(vec![7; cap as usize]);
+            assert_eq!(super::read_preset_bytes(&mut exact, "test", "fixture", cap).unwrap(), vec![7; cap as usize]);
+            let mut growing = std::io::Cursor::new(vec![7; 32]);
+            let error = super::read_preset_bytes(&mut growing, "test", "fixture", cap).unwrap_err();
+            assert!(error.to_string().contains("file too large"), "{error}");
+            assert_eq!(growing.position(), cap + 1, "the reader must not consume the rest of a growing source");
+        }
+    }
+    #[test]
+    fn decoded_preset_data_cannot_exceed_its_format_budget() {
+        // Both payloads have four encoded characters: checking base64 length alone is insufficient.
+        let at_limit = serde_json::json!({"data": "AQI="});
+        let over_limit = serde_json::json!({"data": "AQID"});
+        assert_eq!(super::file_bytes_limited(&at_limit, "test", "preset", 2).unwrap().0, [1, 2]);
+        assert!(super::file_bytes_limited(&over_limit, "test", "preset", 2).is_err());
+    }
     use super::*;
     use photocraft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v6, write_v12};
     use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as DV};
@@ -406,8 +489,8 @@ mod tests {
         assert_eq!(s.tools.presets.len(), before + 2);
         assert!(s.tools.presets.iter().filter(|p| p.group == "Legacy").all(|p| !p.builtin));
         assert!(matches!(s.tools.brush.tip, photocraft_paint::TipShape::Sampled(_)));
-        // Re-import replaces the group.
-        s.execute("brush.presets.importAbr", json!({"data": data, "group": "Legacy"})).unwrap();
+        // Re-import with `replace` replaces the group.
+        s.execute("brush.presets.importAbr", json!({"data": data, "group": "Legacy", "replace": true})).unwrap();
         assert_eq!(s.tools.presets.len(), before + 2);
         // Imported presets paint.
         s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
@@ -424,6 +507,40 @@ mod tests {
         let r = s.execute("brush.presets.importAbr", json!({"path": path.to_string_lossy()})).unwrap();
         assert_eq!((r["group"].as_str(), r["imported"][0].as_str(), r["version"].as_u64()), (Some("My Set"), Some("Speckle"), Some(6)));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Importing a file named like an existing group keeps that group's brushes, edited or moved
+    /// in ones included: the new brushes become "Kit (2)", "Kit (3)"… Only `replace` drops them (#10640).
+    #[test]
+    fn reimport_keeps_the_groups_brushes_unless_replace() {
+        let mut s = Session::new();
+        let data = photocraft_paint::tile::b64_encode(&abr_v2());
+        let builtin = s.tools.presets.iter().filter(|p| p.builtin).count();
+        s.execute("brush.presets.importAbr", json!({"data": data, "group": "Kit"})).unwrap();
+        // The user's own brush moved into the group.
+        let mut own = s.tools.presets.iter().find(|p| p.group == "Kit").unwrap().clone();
+        own.name = "My Ink".into();
+        s.tools.presets.push(own);
+        let r = s.execute("brush.presets.importAbr", json!({"data": data, "group": "Kit"})).unwrap();
+        assert_eq!(r["group"], "Kit (2)");
+        let in_group = |s: &Session, g: &str| s.tools.presets.iter().filter(|p| p.group == g).count();
+        assert_eq!((in_group(&s, "Kit"), in_group(&s, "Kit (2)")), (3, 2));
+        let r = s.execute("brush.presets.importAbr", json!({"data": data, "group": "Kit", "replace": false})).unwrap();
+        assert_eq!(r["group"], "Kit (3)");
+        assert!(s.tools.presets.iter().any(|p| p.name == "My Ink" && p.group == "Kit"));
+        // `replace` drops only that group's non-built-in presets.
+        let r = s.execute("brush.presets.importAbr", json!({"data": data, "group": "Kit", "replace": true})).unwrap();
+        assert_eq!(r["group"], "Kit");
+        assert_eq!((in_group(&s, "Kit"), in_group(&s, "Kit (2)"), in_group(&s, "Kit (3)")), (2, 2, 2));
+        assert!(!s.tools.presets.iter().any(|p| p.name == "My Ink"));
+        assert_eq!(s.tools.presets.iter().filter(|p| p.builtin).count(), builtin);
+    }
+
+    #[test]
+    fn free_group_numbers_past_taken_names() {
+        let taken = ["Kit", "Kit (2)"];
+        assert_eq!(free_group("Set", |g| taken.contains(&g)), "Set");
+        assert_eq!(free_group("Kit", |g| taken.contains(&g)), "Kit (3)");
     }
 
     #[test]
@@ -446,6 +563,104 @@ mod tests {
             assert!(s.execute("brush.presets.importAbr", p.clone()).is_err(), "{p}");
         }
         assert_eq!(s.tools.presets.len(), n);
+    }
+
+    #[test]
+    fn duplicate_gradient_names_remain_independently_selectable() {
+        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        let gradients: Vec<_> = [0.2, 0.8]
+            .into_iter()
+            .map(|red| GrdGradient {
+                name: "Duplicate".into(),
+                stops: vec![
+                    GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([red, 0.0, 0.0]) },
+                    GrdStop { location: 1.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 1.0, 1.0]) },
+                ],
+                ..Default::default()
+            })
+            .collect();
+        let data = photocraft_paint::tile::b64_encode(&write(&gradients));
+        let mut s = Session::new();
+        // Re-importing over the group replaces it (`replace`, #10640), so it keeps the same names.
+        for _ in 0..2 {
+            let result = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Duplicates", "replace": true})).unwrap();
+            assert_eq!(result["imported"], json!(["Duplicate", "Duplicate 2"]));
+        }
+        s.execute("gradient.presets.select", json!({"preset": "Duplicate"})).unwrap();
+        let first = s.presets.gradient.clone();
+        s.execute("gradient.presets.select", json!({"preset": "Duplicate 2"})).unwrap();
+        assert_ne!(first.stops, s.presets.gradient.stops);
+        let mut saved = s.presets.to_json(&s);
+        let groups = saved["gradients"].as_array_mut().unwrap();
+        let group = groups.iter_mut().find(|g| g["name"] == "Duplicates").unwrap();
+        group["items"][1]["name"] = json!("Duplicate");
+        s.load_presets_json(saved);
+        let restored = s.presets.gradients.iter().find(|g| g.name == "Duplicates").unwrap();
+        assert_eq!(restored.items[1].name, "Duplicate 2");
+        assert_eq!(s.presets.gradient.name, "Duplicate 2");
+        let result = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Other", "replace": false})).unwrap();
+        assert_eq!(result["imported"], json!(["Duplicate 3", "Duplicate 4"]));
+    }
+
+    /// Re-importing without `replace` (the default) adds a sibling group, so its presets must get
+    /// names distinct from the existing group's, keeping name-only selection unambiguous.
+    #[test]
+    fn default_gradient_reimport_keeps_names_unique_across_sibling_groups() {
+        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        let gradients = vec![GrdGradient {
+            name: "Sunset".into(),
+            stops: vec![
+                GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 0.0, 0.0]) },
+                GrdStop { location: 1.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 1.0, 1.0]) },
+            ],
+            ..Default::default()
+        }];
+        let data = photocraft_paint::tile::b64_encode(&write(&gradients));
+        let mut s = Session::new();
+        let first = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Sky"})).unwrap();
+        assert_eq!(first["imported"], json!(["Sunset"]));
+        let second = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Sky"})).unwrap();
+        assert_eq!(second["group"], json!("Sky (2)"));
+        assert_eq!(second["imported"], json!(["Sunset 2"]));
+        // Explicit `replace` drops the same-named group, so the original name is free again.
+        let third = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Sky", "replace": true})).unwrap();
+        assert_eq!(third["group"], json!("Sky"));
+        assert_eq!(third["imported"], json!(["Sunset"]));
+    }
+
+    #[test]
+    fn gradient_import_preserves_original_and_case_distinct_names() {
+        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        let gradients: Vec<_> = ["Foo", "Foo", "Foo 2", "FOO"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| GrdGradient {
+                name: name.into(),
+                stops: vec![
+                    GrdStop { location: 0.0, midpoint: 0.5, color: GrdColor::Rgb([i as f32 / 4.0, 0.0, 0.0]) },
+                    GrdStop { location: 1.0, midpoint: 0.5, color: GrdColor::Rgb([1.0, 1.0, 1.0]) },
+                ],
+                ..Default::default()
+            })
+            .collect();
+        let mut s = Session::new();
+        let result = s
+            .execute(
+                "gradient.presets.importGrd",
+                json!({
+                    "data": photocraft_paint::tile::b64_encode(&write(&gradients)), "group": "Names"
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["imported"], json!(["Foo", "Foo 3", "Foo 2", "FOO"]));
+        for (name, red) in [("Foo", 0.0), ("Foo 3", 0.25), ("Foo 2", 0.5), ("FOO", 0.75)] {
+            s.execute("gradient.presets.select", json!({"preset": name})).unwrap();
+            let current = s.presets.gradient.clone();
+            assert_eq!(current.name, name);
+            assert_eq!(current.stops[0].1, crate::presets::gradients::StopColor::Rgb([red, 0.0, 0.0]));
+        }
+        let mut tools = UniqueNames::new(["Foo"]);
+        assert_eq!(tools.unique("FOO"), "FOO 2");
     }
 
     #[test]
@@ -472,10 +687,14 @@ mod tests {
         let g = s.presets.gradients.iter().find(|g| g.name == "Fire").unwrap();
         assert_eq!(g.items[0].stops, vec![(0.0, StopColor::Foreground), (1.0, StopColor::Rgb([1.0, 0.0, 0.0]))]);
         assert_eq!(g.items[0].opacity, vec![(0.0, 1.0), (1.0, 0.0)]);
-        // Re-import replaces the group.
+        // Re-import adds a group beside it (#10640); with `replace` it replaces the group.
         let n = s.presets.gradients.len();
-        s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Fire"})).unwrap();
-        assert_eq!(s.presets.gradients.len(), n);
+        let r = s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Fire"})).unwrap();
+        assert_eq!(r["group"], "Fire (2)");
+        assert_eq!(s.presets.gradients.len(), n + 1);
+        s.execute("gradient.presets.importGrd", json!({"data": data, "group": "Fire", "replace": true})).unwrap();
+        assert_eq!(s.presets.gradients.len(), n + 1);
+        assert_eq!(s.presets.gradients.iter().filter(|g| g.name == "Fire").count(), 1);
         for p in [json!({}), json!({"data": "@@"}), json!({"data": photocraft_paint::tile::b64_encode(b"8BGR\0\x03")}), json!({"path": "/nope.grd"})] {
             assert!(s.execute("gradient.presets.importGrd", p.clone()).is_err(), "{p}");
         }
@@ -617,16 +836,16 @@ mod tests {
         let path = dir.join("cap.abr");
         std::fs::write(&path, [0u8; 10]).unwrap();
         let p = json!({"path": path.to_string_lossy()});
-        assert!(file_bytes_within(&p, "t", "f", 10).is_ok());
-        assert!(file_bytes_within(&p, "t", "f", 9).is_err(), "a file over the cap is refused before reading");
+        assert!(file_bytes_limited(&p, "t", "f", 10).is_ok());
+        assert!(file_bytes_limited(&p, "t", "f", 9).is_err(), "a file over the cap is refused before reading");
         // A sparse file between the two caps: refused as a .grd, which is checked before reading.
         let big = dir.join("big.grd");
         std::fs::File::create(&big).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
         let err = Session::new().execute("gradient.presets.importGrd", json!({"path": big.to_string_lossy()})).unwrap_err();
         assert!(err.to_string().contains("too large"), "{err}");
         let data = json!({"data": "A".repeat(16)});
-        assert!(file_bytes_within(&data, "t", "f", 12).is_ok());
-        assert!(file_bytes_within(&data, "t", "f", 8).is_err());
+        assert!(file_bytes_limited(&data, "t", "f", 12).is_ok());
+        assert!(file_bytes_limited(&data, "t", "f", 8).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

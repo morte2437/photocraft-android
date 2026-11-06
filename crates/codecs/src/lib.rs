@@ -7,8 +7,9 @@
 //!   metadata (EXIF, XMP, DPI, text) are preserved where the format allows.
 //! * [`caps`] declares per-format capabilities and [`fidelity_warnings`]
 //!   tells the UI exactly what an export will lose.
-//! * The API is I/O free (`&[u8]` in, `Vec<u8>` out) and builds for
-//!   `wasm32-unknown-unknown`. Decoders enforce [`Limits`] before allocating.
+//! * APIs use bytes or caller-provided readers, with no ambient filesystem access,
+//!   and build for `wasm32-unknown-unknown`. Byte decoders enforce [`Limits`];
+//!   [`exr_stream`] instead bounds metadata and one decoded compression block.
 
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -17,6 +18,7 @@ pub mod cicp;
 mod codecs;
 mod error;
 pub mod exif_color;
+pub mod exr_stream;
 mod fidelity;
 mod format;
 mod image;
@@ -29,8 +31,12 @@ pub mod web;
 pub use crate::cicp::Cicp;
 pub use crate::codecs::exr_cryptomatte::{cryptomatte_id, cryptomatte_key, cryptomatte_preview_color};
 pub use crate::codecs::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
-pub use crate::codecs::png::{PngPalette, PngRows, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo};
-pub use crate::codecs::tiff::{PhotoshopTags as TiffPhotoshopTags, photoshop_tags as tiff_photoshop_tags, writes_little_endian as tiff_writes_little_endian};
+pub use crate::codecs::png::{
+    PngExtras, PngHeader, PngPalette, PngRowSink, PngRows, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo,
+};
+pub use crate::codecs::tiff::{
+    PhotoshopTags as TiffPhotoshopTags, TiffBands, photoshop_tags as tiff_photoshop_tags, writes_little_endian as tiff_writes_little_endian,
+};
 pub use crate::codecs::tiff_ifd::{TiffInfo, TiffPage, TiffPageKind};
 pub use crate::error::CodecError;
 pub use crate::exif_color::{EXIF_COLOR_SPACE_SRGB, exif_color_space};
@@ -38,10 +44,11 @@ pub use crate::fidelity::{FidelityWarning, fidelity_warnings, fidelity_warnings_
 pub use crate::format::{ASYMMETRIC_EXCEPTIONS, Format, FormatCaps, caps, detect, from_extension};
 pub use crate::image::{
     ChannelLayout, CryptomatteBuffer, CryptomatteLayer, DecodeWarning, DeepChannel, DeepImage, ExrChannelInfo, ExrPartInfo, ExtraSample, Image,
-    MAX_EXTRA_SAMPLES, Metadata, SampleType,
+    MAX_EXTRA_SAMPLES, Metadata, SampleType, convert_samples,
 };
 pub use crate::options::{
-    DdsCompression, DdsOptions, DecodeOptions, DpxBits, EncodeOptions, ExrCompression, JpegFormat, Limits, PngCompression, PngStereo, TiffCompression,
+    DdsCompression, DdsOptions, DecodeOptions, DpxBits, EncodeOptions, ExrCompression, JpegFormat, Limits, PngCompression, PngStereo, TIFF_PYRAMID_MIN,
+    TiffCompression,
 };
 pub use crate::orientation::{exif_orientation, upright_exif, upright_xmp};
 pub use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_resolution, xmp_resolution};
@@ -110,6 +117,26 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         _ => img.meta.exif.as_deref().map_or(1, exif_orientation),
     };
     finish_decode(img, o, opts)
+}
+
+/// Decodes a PNG a group of rows at a time, for a caller that builds its own pixel storage and
+/// never needs the whole decoded image. `begin` gets the [`PngHeader`] once and returns whether to go on, then `rows(y0, data)`
+/// gets whole rows `y0..` (`group` of them, fewer in the last call; native-endian) in final order, holding exactly the
+/// samples [`decode`] would return. The result is the metadata, complete once the file is read.
+///
+/// `Ok(None)`, with no row delivered, means the rows can't be had in final order (an
+/// interlaced or animated PNG) or `begin` returned false: use [`decode_as_with`]. Damaged files fail as [`decode_as_with`]
+/// fails them, possibly after some rows. The limits are checked before the first row; the
+/// orientation is not applied, so [`PngExtras::orientation`] other than 1 is for the caller to
+/// handle (or to fall back to [`decode_as_with`], which turns the image upright).
+pub fn decode_png_rows<E: From<CodecError>>(
+    bytes: &[u8],
+    opts: &DecodeOptions,
+    group: u32,
+    begin: &mut dyn FnMut(&PngHeader) -> Result<bool, E>,
+    rows: &mut PngRowSink<'_, E>,
+) -> Result<Option<PngExtras>, E> {
+    png::decode_rows(bytes, &opts.limits, group, begin, rows)
 }
 
 /// The upright pixel size [`decode`] would return, read from the file's header without decoding
@@ -186,6 +213,38 @@ pub fn decode_webp_frames(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<Anim
 /// first frame, with a warning, and [`decode_webp_frames`] reads whole).
 pub fn webp_is_animated(bytes: &[u8]) -> bool {
     crate::codecs::webp::is_animated(bytes)
+}
+
+/// Inspect declared source data which a flat decode and save cannot retain: additional frames,
+/// TIFF pages, masks or unretained channels, ICO entries, DDS mip levels, slices, faces or arrays,
+/// DPX elements and FITS HDU payloads.
+/// Pixels are not decoded; derived TIFF thumbnails do not require preservation here.
+/// Other formats return false; this does not establish preservation of other format-specific data.
+pub fn has_unretained_source_data(bytes: &[u8]) -> Result<bool, CodecError> {
+    match detect(bytes) {
+        Some(Format::Gif) => via_image::gif_has_more_frames(bytes).ok_or_else(|| CodecError::malformed(Format::Gif, "cannot inspect every frame")),
+        Some(Format::Png) => png::has_additional_images(bytes),
+        Some(Format::WebP) => Ok(webp_is_animated(bytes)),
+        Some(Format::Tiff) => {
+            let info = tiff_info(bytes)?;
+            if !info.complete {
+                return Err(CodecError::malformed(Format::Tiff, "cannot inspect every source image directory"));
+            }
+            let retained = info.default_page();
+            if info.pages.iter().enumerate().any(|(index, page)| Some(index) != retained && page.kind != TiffPageKind::ReducedResolution) {
+                return Ok(true);
+            }
+            retained.and_then(|index| info.pages.get(index)).map_or(Ok(false), |page| tiff::has_unretained_samples(bytes, page.ifd_offset))
+        }
+        Some(Format::Ico) => {
+            let count = bytes.get(4..6).and_then(|b| <[u8; 2]>::try_from(b).ok()).ok_or_else(|| CodecError::malformed(Format::Ico, "truncated image count"))?;
+            Ok(u16::from_le_bytes(count) > 1)
+        }
+        Some(Format::Dds) => dds::has_additional_images(bytes),
+        Some(Format::Dpx) => dpx::has_additional_images(bytes),
+        Some(Format::Fits) => fits::has_additional_images(bytes),
+        _ => Ok(false),
+    }
 }
 
 /// The Orientation (1–8) of the page [`decode`] opens from a TIFF or BigTIFF file; 1 when it is
@@ -271,6 +330,7 @@ pub fn decode_exr_channels(bytes: &[u8], part: usize, names: &[&str], opts: &Dec
 /// [`decode_as_with`] instead flattens a deep file into a normal [`Image`] with a
 /// [`DecodeWarning::DeepFlattened`]. `Err(Unsupported)` when the file has no deep part.
 pub fn decode_deep_exr(bytes: &[u8], limits: &Limits) -> Result<DeepImage, CodecError> {
+    codecs::exr::check_previews(bytes)?;
     let mut cur = std::io::Cursor::new(bytes);
     let meta = ::exr::meta::MetaData::read_from_buffered(&mut cur, false).map_err(|e| CodecError::malformed(Format::OpenExr, e))?;
     codecs::deep_exr::decode_deep(&meta, bytes, limits)

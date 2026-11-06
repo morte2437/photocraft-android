@@ -69,6 +69,11 @@ whose layout is the driver's paper the other way round (a landscape layout, port
 turns the settings to the layout before printing, rather than stopping with "the driver paper or
 orientation differs"; another paper is still refused.
 
+Scale to Fit Media fills the printable area the driver reports for that page (`printable` in
+`file.print.page`), so borderless paper prints edge to edge (#7782). The area turns with the
+paper, and a print sent to a Windows printer reads it from the driver itself. Without a driver
+page (CUPS, IPP, a PDF or a preview) it fits the paper less an 18 pt margin, as before.
+
 ## Results
 
 `file.print` returns `sent`, `backend` (`lp`, `windows`, `ipp`, `portal`), `spooler` (where the

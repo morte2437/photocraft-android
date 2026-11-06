@@ -32,7 +32,7 @@
 
 # Layer Style dialog: style presets and per-effect defaults
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -1898,6 +1898,7 @@
 	Soften	Suavizar
 	Source	Origem
 	Source: set	Origem: definida
+	Source: {name}	Origem: {name}
 	Sponge Tool	Ferramenta Esponja
 	Spot Healing Brush Tool	Ferramenta Pincel de recuperação para manchas
 	Spread	Propagação
@@ -4066,6 +4067,9 @@ layerLabel	No Color	Sem cor
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} etapa ainda não tem equivalente no PhotoCraft|{n} etapas ainda não têm equivalente no PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} ação salva em {file}|{n} ações salvas em {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} etapa sem equivalente no Photoshop foi omitida|{n} etapas sem equivalente no Photoshop foram omitidas
+@plural	{n} action file loaded|{n} action files loaded	{n} arquivo de ações carregado|{n} arquivos de ações carregados
+	{set} from {file} replaced the one from {earlier}	O conjunto {set} de {file} substituiu o de {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Não foi possível carregar {n} arquivo: {errors}|Não foi possível carregar {n} arquivos: {errors}
 	File Naming	Nomenclatura de arquivos
 	Starting serial	Número de série inicial
 	Insert Stop…	Inserir parada…
@@ -4078,6 +4082,8 @@ layerLabel	No Color	Sem cor
 	Step {step} is waiting for its dialog	A etapa {step} está aguardando sua caixa de diálogo
 @plural	{n} action|{n} actions	{n} ação|{n} ações
 	Background (Default)	Plano de fundo (padrão)
+	Background (default)	Plano de fundo (padrão)
+	Transparent (default)	Transparente (padrão)
 	Include All Subfolders	Incluir todas as subpastas
 	Auto Add/Delete	Adicionar/excluir automaticamente
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Não ative também a imagem espelhada nas configurações de impressão: as duas inversões se anulam.
@@ -4086,6 +4092,7 @@ layerLabel	No Color	Sem cor
 	Sent to {printer}	Enviado para {printer}
 	set in Print Settings…	definido nas configurações de impressão…
 	ICO is limited to 256 × 256 pixels	ICO é limitado a 256 × 256 pixels
+	Memory usage percent	Uso de memória (%)
 	Show Favorite Fonts	Mostrar fontes favoritas
 	No favorite fonts yet: click the star beside a font to add it.	Ainda não há fontes favoritas: clique na estrela ao lado de uma fonte para adicioná-la.
 	Favorite fonts	Fontes favoritas
@@ -4125,19 +4132,11 @@ layerLabel	No Color	Sem cor
 	Kept {name}: written by another application	{name} mantido: gravado por outro aplicativo
 	Shadow Tint	Matiz das sombras
 	Check for Updates…	Verificar atualizações…
-	PhotoCraft Updates	Atualizações do PhotoCraft
-	Checking for updates…	Verificando atualizações…
 	Open the release page to choose an installer for your system.	Abra a página da versão para escolher um instalador para o seu sistema.
-	Open Download Page	Abrir página de download
-	PhotoCraft is up to date.	O PhotoCraft está atualizado.
-	Could not check for updates.	Não foi possível verificar atualizações.
-	Updates have not been checked yet.	As atualizações ainda não foram verificadas.
-	Check Again	Verificar novamente
 	Automatically Check for Updates	Verificar atualizações automaticamente
-	Installed version: {version}	Versão instalada: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} está disponível.
 	Paints from the History panel's source state	Pinta a partir do estado de origem do painel Histórico
 	Sets the source for the history brush	Define a origem do pincel do histórico
+	The History Brush source was deleted: set a new source in the History panel	A origem do pincel do histórico foi excluída: defina uma nova origem no painel Histórico
 	Highlight Mode	Modo de realces
 	Highlight Color	Cor dos realces
 	Highlight Opacity	Opacidade dos realces
@@ -4157,6 +4156,7 @@ layerLabel	No Color	Sem cor
 	Chisel Soft	Cinzel suave
 	Open color-less EXR as ACEScg	Abrir EXR sem espaço de cor como ACEScg
 	Do not append "copy" to filename when saving a copy	Não acrescentar "copy" ao nome do arquivo ao salvar uma cópia
+	Save Full-Size Composite in .pcraft Files	Salvar a imagem composta em tamanho real nos arquivos .pcraft
 	Edit Selected Guides	Editar guias selecionadas
 	Clear Selected Guides	Limpar guias selecionadas
 	Bicubic Automatic	Bicúbica automática
@@ -4209,6 +4209,7 @@ layerLabel	No Color	Sem cor
 	This document's layers: {needed} of {budget} for layers	Camadas deste documento: {needed} de {budget} para camadas
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	As camadas deste documento precisam de {needed} mas podem ocupar {budget}: o documento inteiro é redesenhado na CPU
 	GPU Memory (MB, 0 = Automatic)	Memória da GPU (MB, 0 = Automático)
+	Scratch Size Limit (MB, 0 = No Limit)	Limite de tamanho do disco de rascunho (MB, 0 = sem limite)
 	{path}: the path is not valid Unicode; save under another name.	{path}: o caminho não é Unicode válido; salve com outro nome.
 	{name} was changed by another app after it was opened or saved here.	{name} foi alterado por outro app depois de ser aberto ou salvo aqui.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Substitua-o por este documento, ou cancele e use Arquivo › Salvar como para manter os dois.
@@ -4244,6 +4245,9 @@ layerLabel	No Color	Sem cor
 	There is no color table to save.	Não há tabela de cores para salvar.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} cor salva em {file}|{n} cores salvas em {file}
 	GPU adapter	Adaptador de GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	O conteúdo AI/PDF/EPS será editado como SVG. Salvar substitui a origem incorporada; recursos específicos do formato podem mudar.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Importar estilos…
 	Export Selected Styles…	Exportar estilos selecionados…
 	Export Styles…	Exportar estilos…
@@ -4423,6 +4427,9 @@ layerLabel	No Color	Sem cor
 	Font size presets	Predefinições de tamanho da fonte
 	Leading presets	Predefinições de entrelinha
 	Tracking presets	Predefinições de tracking
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Entrada numérica inválida. É necessário um número inteiro entre {min}% e {max}%. O valor anterior foi inserido.
 	Color Aware	Com reconhecimento de cor
 	Decontaminate Colors	Descontaminar cores
 	Edge Detection	Detecção de borda
@@ -4440,3 +4447,47 @@ layerLabel	No Color	Sem cor
 	Select and Mask was closed: its document is no longer the active one	Selecionar e mascarar foi fechado: o documento dele não está mais ativo
 	Select and Mask was closed: another layer was selected	Selecionar e mascarar foi fechado: outra camada foi selecionada
 	Drag to move the selected path	Arraste para mover o demarcador selecionado
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Cores usadas recentemente
+	Stop Color	Cor da parada
+	Shapes can't use patterns yet	Formas ainda não podem usar padrões
+	Edit Brush…	Editar pincel…
+
+# Action Stop message (#8386)
+	Message	Mensagem
+# Playback Options (#5212)
+	Playback Options…	Opções de reprodução…
+	Playback Options	Opções de reprodução
+	Accelerated	Acelerada
+	Step by Step	Passo a passo
+	Pause For:	Pausar por:
+	Pause For	Pausar por
+	seconds	segundos
+	Create a single history state	Criar um único estado de histórico
+	Drag to move the active shape's path or the Work Path	Arraste para mover o demarcador da forma ativa ou o demarcador de trabalho
+	Generator enabled	Gerador ativado
+	Move Up	Mover para cima
+	Move Down	Mover para baixo
+	On your computer	No seu computador
+	New file	Novo arquivo
+	Learn	Aprender
+	Website	Site
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Uma moldura permite transformações afins; selecione sua imagem para transformações de perspectiva
+	A frame supports affine transforms; select its image to warp it	Uma moldura permite transformações afins; selecione sua imagem para deformá-la
+	Convert to Frame…	Converter em moldura…
+	Create a new custom frame	Criar nova moldura personalizada
+	Create a new polygonal frame	Criar nova moldura poligonal
+	Create a new triangular frame	Criar nova moldura triangular
+	Fit Content to Frame	Ajustar conteúdo à moldura
+	Fit Frame to Content	Ajustar moldura ao conteúdo
+	Frame coordinates must be finite and within 600000 pixels	As coordenadas da moldura devem ser finitas e estar dentro de 600000 pixels
+	Import Image…	Importar imagem…
+	Invalid frame transform	Transformação de moldura inválida
+	Invalid nested file drop	Soltura de arquivo aninhada inválida
+	New Frame	Nova moldura
+	Replace Image…	Substituir imagem…
+	The frame is locked	A moldura está bloqueada
+	The frame is unavailable	A moldura não está disponível

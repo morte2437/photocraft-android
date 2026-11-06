@@ -1,10 +1,758 @@
 use super::*;
 
+// Named Batch action regression adapted from #7170 by @HirthikBalaji.
+/// Named action lookup retains the original #7170 behavior while rejecting recursive Batch calls.
+#[test]
+fn batch_resolves_action_by_name_and_detects_recursion() {
+    let dir = tmp("batch-action-name");
+    let input = png(&dir, "in.png", 8, 8, "#ff0000");
+    let out = join(&dir, "out");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut s = Session::new();
+    let mut action = crate::actions_cmds::Action::new("Scale", vec![("image.imageSize".into(), json!({"width":16,"height":16}))]);
+    action.set = Some("Ops".into());
+    s.actions.list.push(action);
+    let result = s.execute("file.automate.batch", json!({"action":"Scale","set":"Ops","input":[input.clone()],"output":out})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    for p in [json!({"action":"Nonexistent"}), json!({"action":"Scale","set":"Wrong set"})] {
+        let mut p = p;
+        p["input"] = json!([input.clone()]);
+        p["output"] = json!(out);
+        assert!(s.execute("file.automate.batch", p).is_err());
+    }
+    s.actions.playback_stack.push("Scale".into());
+    let err = s.execute("file.automate.batch", json!({"action":"Scale","input":[input],"output":out})).unwrap_err();
+    assert!(err.to_string().contains("recursive action call"), "{err}");
+}
+
+/// Exercise saved-action replay through Batch; filename suffixes cannot change encoded image content.
+#[test]
+fn batch_structured_names_keep_image_format_and_refuse_unsupported_save_routing() {
+    let dir = tmp("batch-component-format");
+    let input = png(&dir, "a.png", 3, 2, "#ff0000");
+    let output = join(&dir, "out");
+    std::fs::create_dir_all(&output).unwrap();
+    let mut s = Session::new();
+    let components = json!([{"component":"name"},{"text":".jpg"}]);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"steps":[],"input":[input.clone()],"output":output,
+        "namingComponents":components,"overrideSaveAs":false}),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let path = result["files"][0].as_str().unwrap();
+    assert!(path.ends_with("a.jpg"));
+    assert!(std::fs::read(path).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"), "typed extension must not change the encoded image format");
+    for (steps, override_save) in [(json!([]), true), (json!([["file.saveAs", {}]]), false)] {
+        assert!(
+            s.execute(
+                "file.automate.batch",
+                json!({"steps":steps,"input":[input.clone()],"output":output,
+            "namingComponents":[{"component":"name"}],"overrideSaveAs":override_save})
+            )
+            .is_err()
+        );
+    }
+    let saved = s
+        .execute(
+            "file.automate.batch",
+            json!({"steps":[["file.saveAs",{}],["file.close",{}]],"input":[input],"output":output,
+        "namingComponents":[{"text":"no-extension"}],"overrideSaveAs":true}),
+        )
+        .unwrap();
+    assert!(saved["errors"].as_array().unwrap().is_empty(), "{saved}");
+    assert!(std::fs::read(saved["files"][0].as_str().unwrap()).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+    // One composition witness: Save Actions -> Load Actions -> named Batch -> actual PNG bytes.
+    let mut child = crate::actions_cmds::Action::new("Child", vec![]);
+    child.set = Some("S".into());
+    s.actions.list.push(child);
+    let params = json!({"input":dir,"output":output,"action":"Child","set":"S","includeSubfolders":false,"flatOutput":true,
+        "overrideSaveAs":false,"stopOnError":true,"includeNonImages":true,"namingComponents":[{"text":"from-atn"}]});
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), params)]);
+    let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let imported = crate::atn_cmds::import(&bytes).unwrap();
+    assert!(imported.unsupported.is_empty());
+    s.actions.list.extend(imported.actions);
+    s.execute("actions.play", json!({"action":"Driver"})).unwrap();
+    assert!(std::fs::read(join(&output, "from-atn")).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+}
+
+/// Recorded Stop For Errors keeps prior writes and leaves later inputs untouched; native defaults continue.
+#[test]
+fn batch_recorded_stop_for_errors_retains_earlier_outputs_and_stops_before_later_inputs() {
+    let dir = tmp("batch-stop-for-errors");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    let first = png(&input, "a.png", 3, 2, "#ff0000");
+    let bad = join(&input, "b.txt");
+    std::fs::write(&bad, b"not an image").unwrap();
+    let last = png(&input, "c.png", 3, 2, "#0000ff");
+    let mut s = Session::new();
+    for (mode, stop) in [("default", None), ("continue", Some(false)), ("stop", Some(true))] {
+        let output = join(&dir, mode);
+        let mut p = json!({"input":[first,bad,last],"output":output,"steps":[]});
+        if let Some(stop) = stop {
+            p["stopOnError"] = json!(stop);
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), if stop == Some(true) { 1 } else { 2 }, "{result}");
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(result["errors"][0]["file"], bad);
+        assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
+        assert_eq!(std::path::Path::new(&join(&output, "c.png")).exists(), stop != Some(true));
+    }
+    // Native folder defaults still select images only.
+    let native = s.execute("file.automate.batch", json!({"input":input,"output":join(&dir,"folder-default"),"steps":[]})).unwrap();
+    assert_eq!(native["files"].as_array().unwrap().len(), 2, "{native}");
+    assert!(native["errors"].as_array().unwrap().is_empty(), "{native}");
+    let mut child = crate::actions_cmds::Action::new("Child", vec![]);
+    child.set = Some("S".into());
+    s.actions.list.push(child);
+    let output = join(&dir, "recorded");
+    let p = json!({"input":input,"output":output,"action":"Child","set":"S","stopOnError":true,"includeNonImages":true,
+        "includeSubfolders":false,"overrideSaveAs":false,"flatOutput":true,
+        "namingComponents":[{"component":"name"},{"component":"extension"}]});
+    let sentinel = json!({"width":7,"height":9});
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), p.clone()), ("file.new".into(), sentinel.clone())]);
+    let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    let imported = crate::atn_cmds::import(&bytes).unwrap();
+    assert_eq!(imported.actions[0].steps[1].0, "file.new", "the after-Batch sentinel must be replayable");
+    s.actions.list.extend(imported.actions);
+    let result = s.execute("actions.play", json!({"action":"Driver"})).unwrap();
+    assert_eq!(result["ran"], 0, "{result}");
+    assert_eq!(result["failed"]["id"], "file.automate.batch");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("b.txt"), "{result}");
+    assert!(s.documents().is_empty(), "the command after the failed Batch must not run");
+    assert!(std::path::Path::new(&join(&output, "a.png")).is_file());
+    assert!(!std::path::Path::new(&join(&output, "c.png")).exists());
+    // The measured scripting API reports success for the same stopped Batch and continues the script.
+    let result = s.execute("file.scripts.browse", json!({"steps":[["file.automate.batch",p],["file.new",sentinel]]})).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["results"][0]["result"]["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(s.documents().len(), 1, "the direct script caller still runs its next command");
+    batch_folder_input_controls(&mut s, &dir, &input, &first, &bad);
+}
+
+/// Check folder selection and explicit-array behavior against the same three Batch inputs.
+fn batch_folder_input_controls(s: &mut Session, dir: &str, input: &str, first: &str, bad: &str) {
+    // The recursive mode keeps output exclusion and reports excluded RAW names before import.
+    let output = join(input, "out");
+    std::fs::create_dir_all(&output).unwrap();
+    png(&output, "ignored.png", 3, 2, "#ffffff");
+    let sub = join(input, "sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let raw = join(&sub, "d.cr3");
+    std::fs::copy(first, &raw).unwrap();
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":input,"output":output,"steps":[],"format":"png",
+        "includeSubfolders":true,"includeNonImages":true}),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([join(&output, "a.png"), join(&output, "c.png")]), "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 2, "{result}");
+    assert_eq!(std::path::Path::new(result["errors"][0]["file"].as_str().unwrap()), std::path::Path::new(bad));
+    assert_eq!(std::path::Path::new(result["errors"][1]["file"].as_str().unwrap()), std::path::Path::new(&raw));
+    assert!(result["errors"][1]["error"].as_str().unwrap().contains("unsupported Batch folder input"), "{result}");
+    assert!(!std::path::Path::new(&join(&output, "sub/d.png")).exists());
+    // Explicit arrays still sniff the image content, including with the folder option enabled.
+    let output = join(dir, "explicit-array");
+    let result = s.execute("file.automate.batch", json!({"input":[raw],"output":output,"steps":[],"format":"png","includeNonImages":true})).unwrap();
+    assert_eq!(result["files"], json!([join(&output, "d.png")]), "{result}");
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    for key in ["stopOnError", "includeNonImages"] {
+        let invalid_output = join(dir, key);
+        let mut p = json!({"input":[first],"output":invalid_output,"steps":[]});
+        p[key] = json!("true");
+        let err = s.execute("file.automate.batch", p).unwrap_err();
+        assert!(err.to_string().contains(key), "{err}");
+        assert!(!std::path::Path::new(&invalid_output).exists());
+    }
+}
+
+/// In-place Batch retains caller state and commits only successful sources, including a saved Close snapshot.
+#[test]
+fn batch_save_and_close_preserves_caller_and_failed_sources() {
+    let dir = tmp("batch-save-close");
+    let inputs: Vec<String> = ["a.png", "b.png", "c.png"].iter().map(|name| png(&dir, name, 3, 2, "#ff0000")).collect();
+    let originals: Vec<Vec<u8>> = inputs.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    let caller_dir = join(&dir, "caller");
+    std::fs::create_dir_all(&caller_dir).unwrap();
+    let caller_path = png(&caller_dir, "caller.png", 7, 9, "#4488aa");
+    let mut s = Session::new();
+    open_bytes_as(&mut s, "caller.png", &std::fs::read(&caller_path).unwrap(), None, Some(caller_path)).unwrap();
+    s.execute("select.all", json!({})).unwrap();
+    let caller_state = |s: &Session| {
+        let docs: Vec<Value> = s
+            .documents()
+            .iter()
+            .map(|st| {
+                json!({
+                    "id":st.doc.id,"path":st.path,"revision":st.revision,"saved":st.saved_revision,
+                    "activeLayer":st.active_layer,"selected":st.selected_layers,"channels":format!("{:?}",st.channel_view),
+                    "history":st.history.past_len(),"undo":st.history.undo_label(),"redo":st.history.can_redo(),
+                    "bytes":photocraft_format::save_to_bytes(&st.doc,&Default::default()).unwrap()
+                })
+            })
+            .collect();
+        json!({"active":s.active_index(),"generation":s.active_generation(),"docs":docs})
+    };
+    let before = caller_state(&s);
+    let mut child = crate::actions_cmds::Action::new(
+        "Child",
+        vec![("image.adjustments.invert".into(), json!({})), ("file.saveAs".into(), json!({})), ("file.close".into(), json!({}))],
+    );
+    child.set = Some("S".into());
+    s.actions.list.push(child);
+    let params = json!({"input":dir,"destination":"saveAndClose","action":"Child","set":"S",
+        "includeSubfolders":false,"overrideSaveAs":false,"stopOnError":true,"includeNonImages":true});
+    let driver = crate::actions_cmds::Action::new("Driver", vec![("file.automate.batch".into(), params)]);
+    let (bytes, skipped) = crate::atn_cmds::export("S", &[&driver], &[], false).unwrap();
+    assert!(skipped.is_empty());
+    s.actions.list.extend(crate::atn_cmds::import(&bytes).unwrap().actions);
+    let result = s.execute("actions.play", json!({"action":"Driver"})).unwrap();
+    assert_eq!(result["ran"], 1, "{result}");
+    assert!(result.get("failed").is_none(), "{result}");
+    for (path, original) in inputs.iter().zip(&originals) {
+        assert_ne!(std::fs::read(path).unwrap(), *original);
+        let loaded = photocraft_io::import("saved.png", &std::fs::read(path).unwrap()).unwrap().document;
+        assert_eq!(photocraft_compose::render(&loaded, Rect::new(1, 0, 2, 1)).px[0], [0.0, 1.0, 1.0, 1.0]);
+    }
+    assert_eq!(caller_state(&s), before);
+
+    /// Arm the existing save failpoint at the second file's last nonallocating action step.
+    fn fail_second_save(id: &str, _: &Value) -> Result<()> {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if id == "prefs.get" && CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            crate::allocation::fail_next_for_test();
+        }
+        Ok(())
+    }
+    let original: Vec<Vec<u8>> = inputs.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    s.authorize = Some(fail_second_save);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":inputs,"destination":"saveAndClose","stopOnError":true,
+        "steps":[["image.adjustments.invert",{}],["prefs.get",{"path":"interface.uiScale"}]]}),
+        )
+        .unwrap();
+    s.authorize = None;
+    assert_eq!(result["files"], json!([inputs[0]]), "{result}");
+    assert_eq!(result["errors"][0]["file"], inputs[1]);
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("not enough memory for saving document"), "{result}");
+    assert_ne!(std::fs::read(&inputs[0]).unwrap(), original[0]);
+    assert_eq!(std::fs::read(&inputs[1]).unwrap(), original[1]);
+    assert_eq!(std::fs::read(&inputs[2]).unwrap(), original[2]);
+    assert_eq!(caller_state(&s), before);
+
+    let source = std::fs::read(&inputs[0]).unwrap();
+    open_bytes_as(&mut s, "a.png", &source, None, Some(inputs[0].clone())).unwrap();
+    let open_before = caller_state(&s);
+    assert!(s.execute("file.automate.batch", json!({"input":[inputs[0]],"destination":"saveAndClose","steps":[]})).is_err());
+    assert_eq!(caller_state(&s), open_before);
+    assert_eq!(std::fs::read(&inputs[0]).unwrap(), source);
+    s.close(s.documents().len() - 1);
+    let before = caller_state(&s);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[inputs[0]],"destination":"saveAndClose","stopOnError":true,
+        "steps":[["file.new",{"width":2,"height":2}]]}),
+        )
+        .unwrap();
+    assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("original source document"), "{result}");
+    assert_eq!(std::fs::read(&inputs[0]).unwrap(), source);
+    assert_eq!(caller_state(&s), before);
+    assert!(s.execute("file.automate.batch", json!({"input":[inputs[0]],"destination":"saveAndClose","format":"jpg","steps":[]})).is_err());
+    assert_eq!(std::fs::read(&inputs[0]).unwrap(), source);
+    assert_eq!(caller_state(&s), before);
+}
+
+/// In-place TIFF keeps layers by default; explicit flattening is allowed only when it loses no layer data.
+#[test]
+fn batch_save_and_close_keeps_tiff_layers() {
+    let dir = tmp("batch-save-close-tiff");
+    let path = join(&dir, "layered.tif");
+    let mut source = session(3, 2, 8);
+    source.execute("layer.new.layer", json!({"name":"Overlay"})).unwrap();
+    let names: Vec<_> = doc(&source).layers.iter().map(|layer| layer.name.clone()).collect();
+    save_doc(doc(&source), &path, super::save::SaveOpts { tiff_layers: true, ..Default::default() }).unwrap();
+    let mut s = Session::new();
+    let result = s.execute("file.automate.batch", json!({"input":[path],"destination":"saveAndClose","steps":[]})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(photocraft_codecs::tiff_photoshop_tags(&bytes).1.is_some());
+    let back = photocraft_io::import("layered.tif", &bytes).unwrap().document;
+    assert_eq!(back.layers.iter().map(|layer| layer.name.clone()).collect::<Vec<_>>(), names);
+    let result = s.execute("file.automate.batch", json!({"input":[path],"destination":"saveAndClose","tiffLayers":false,"steps":[]})).unwrap();
+    assert!(result["files"].as_array().unwrap().is_empty(), "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("TIFF layer data"), "{result}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    // Existing Folder defaults still write a flat copy; that flat source may explicitly keep layers off.
+    let copies = join(&dir, "copies");
+    let result = s.execute("file.automate.batch", json!({"input":[path],"output":copies,"steps":[]})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let flat = result["files"][0].as_str().unwrap();
+    let flat_bytes = std::fs::read(flat).unwrap();
+    assert!(photocraft_codecs::tiff_photoshop_tags(&flat_bytes).1.is_none());
+    let result = s.execute("file.automate.batch", json!({"input":[flat],"destination":"saveAndClose","tiffLayers":false,"steps":[]})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(result["files"], json!([flat]));
+}
+
+/// Read a small saved Batch result with the same import/compositor oracle as the existing fixtures.
+fn batch_open_pixel(path: &str) -> [f32; 4] {
+    let loaded = photocraft_io::import("result.png", &std::fs::read(path).unwrap()).unwrap().document;
+    photocraft_compose::render(&loaded, Rect::new(0, 0, 1, 1)).px[0]
+}
+
+/// Called and conditional actions and scripts retain Open settings and use each selected input.
+#[test]
+fn batch_override_open_follows_called_conditional_and_script_steps() {
+    let dir = tmp("batch-override-open");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let second = png(&dir, "b.png", 3, 2, "#0000ff");
+    let recorded = png(&dir, "recorded.png", 3, 2, "#00ff00");
+    let mut s = session(7, 9, 8);
+    let caller = photocraft_format::save_to_bytes(doc(&s), &Default::default()).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), json!({"path":recorded,"as":"png"}))]));
+    let actions = serde_json::to_value(&s.actions.list).unwrap();
+    let steps = json!([["actions.conditional",{"if":"always","then":"Open"}],
+        ["file.scripts.browse",{"steps":[["file.closeAll",{}],["file.openAs",{"path":recorded,"as":"png"}]]}],
+        ["image.adjustments.invert",{}]]);
+    for enabled in [false, true] {
+        let output = join(&dir, if enabled { "redirected" } else { "legacy" });
+        let result = s
+            .execute(
+                "file.automate.batch",
+                json!({"input":[first,second],"output":output,"steps":steps,
+            "calledActions":s.actions.list,"overrideOpen":enabled}),
+            )
+            .unwrap();
+        assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+        assert_eq!(batch_open_pixel(&join(&output, "a.png")), if enabled { [0.0, 1.0, 1.0, 1.0] } else { [1.0, 0.0, 1.0, 1.0] });
+        assert_eq!(batch_open_pixel(&join(&output, "b.png")), if enabled { [1.0, 1.0, 0.0, 1.0] } else { [1.0, 0.0, 1.0, 1.0] });
+    }
+    let failed = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[first],"output":join(&dir,"forced-format"),"overrideOpen":true,
+        "steps":[["file.openAs",{"path":recorded,"as":"pdn"}]]}),
+        )
+        .unwrap();
+    assert_eq!(failed["errors"].as_array().unwrap().len(), 1, "nondefault Open settings must still affect decoding: {failed}");
+    assert!(!std::path::Path::new(&join(&dir, "forced-format/a.png")).exists());
+    let invalid = join(&dir, "invalid-override");
+    assert!(s.execute("file.automate.batch", json!({"input":[first],"output":invalid,"steps":[],"overrideOpen":"true"})).is_err());
+    assert!(!std::path::Path::new(&invalid).exists());
+    assert_eq!(serde_json::to_value(&s.actions.list).unwrap(), actions);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert_eq!(photocraft_format::save_to_bytes(doc(&s), &Default::default()).unwrap(), caller);
+    assert!(s.batch_open.is_none());
+}
+
+/// Both authorization gates see the actual input; a denied file keeps its source and output intact.
+#[test]
+fn batch_override_open_authorizes_effective_path_and_carries_failure_budget() {
+    static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn gate(id: &str, p: &Value) -> Result<()> {
+        if id == "file.openAs" {
+            OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if p["as"] != "png" || p["path"].as_str().is_none_or(|path| file_name(path) != "a.png") {
+                return Err(EngineError::Other("effective Open denied".into()));
+            }
+        }
+        Ok(())
+    }
+    let dir = tmp("batch-open-authorization");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let second = png(&dir, "b.png", 3, 2, "#0000ff");
+    let original = std::fs::read(&second).unwrap();
+    let output = join(&dir, "out");
+    std::fs::create_dir_all(&output).unwrap();
+    let existing = png(&output, "b.png", 3, 2, "#4488aa");
+    let intact = std::fs::read(&existing).unwrap();
+    let mut s = Session::new();
+    s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), json!({"path":"/recorded.png","as":"png"}))]));
+    s.batch_open = Some(BatchOpen { path: first.clone(), sources: Vec::new(), raw_ppi: 300.0, read_only: false });
+    assert!(matches!(s.execute("file.openAs", json!([1])), Err(EngineError::BadParams { .. })));
+    assert!(s.documents().is_empty());
+    s.batch_open = None;
+    s.authorize = Some(gate);
+    let driver = crate::actions_cmds::Action::new("Driver", vec![]);
+    let recording = crate::actions_cmds::begin_playback(&mut s, &driver).unwrap();
+    OPENS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[first,second],"output":output,"overrideOpen":true,"stopOnError":true,
+        "steps":[["actions.play",{"action":"Open"}]]}),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([join(&output, "a.png")]), "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("effective Open denied"));
+    assert_eq!(OPENS.load(std::sync::atomic::Ordering::SeqCst), 3, "two gates for the first Open, preauthorization denies the second");
+    assert_eq!(s.actions.playback_steps, 4);
+    assert_eq!(std::fs::read(&second).unwrap(), original);
+    assert_eq!(std::fs::read(&existing).unwrap(), intact);
+    assert!(s.documents().is_empty());
+    assert!(s.batch_open.is_none());
+    crate::actions_cmds::finish_playback(&mut s, recording, &driver, 0);
+}
+
+/// Inner Batch bindings do not replace outer input provenance or the shared logical-step budget.
+#[test]
+fn batch_override_open_nested_binding_and_save_close_preserve_sources() {
+    let dir = tmp("batch-open-nested");
+    let first = png(&dir, "a.png", 3, 2, "#ff0000");
+    let second = png(&dir, "b.png", 3, 2, "#0000ff");
+    let output = join(&dir, "outer");
+    let inner = join(&dir, "inner");
+    let open = json!({"path":"/recorded.png","as":"png"});
+    let mut s = Session::new();
+    s.actions.list.push(crate::actions_cmds::Action::new("Open", vec![("file.openAs".into(), open.clone())]));
+    let steps = json!([["actions.play",{"action":"Open"}],
+        ["file.automate.batch",{"input":[second],"output":inner,"overrideOpen":true,"steps":[["file.openAs",open],["image.adjustments.invert",{}]]}],
+        ["file.closeAll",{}],["file.openAs",open],["image.adjustments.invert",{}]]);
+    let driver = crate::actions_cmds::Action::new("Driver", vec![]);
+    let recording = crate::actions_cmds::begin_playback(&mut s, &driver).unwrap();
+    s.actions.playback_steps = crate::actions_cmds::MAX_PLAYBACK_STEPS - 8;
+    let result = s.execute("file.automate.batch", json!({"input":[first],"output":output,"overrideOpen":true,"steps":steps})).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(batch_open_pixel(&join(&output, "a.png")), [0.0, 1.0, 1.0, 1.0]);
+    assert_eq!(batch_open_pixel(&join(&inner, "b.png")), [1.0, 1.0, 0.0, 1.0]);
+    assert_eq!(s.actions.playback_steps, crate::actions_cmds::MAX_PLAYBACK_STEPS);
+    crate::actions_cmds::finish_playback(&mut s, recording, &driver, 0);
+    let original = std::fs::read(&first).unwrap();
+    for steps in [
+        json!([["image.adjustments.invert", {}]]),
+        json!([["file.new",{"width":2,"height":2}],["file.saveAs",{}]]),
+        json!([["file.openAs",open],["file.new",{"width":2,"height":2}],["file.saveAs",{}]]),
+    ] {
+        let result = s.execute("file.automate.batch", json!({"input":[first],"destination":"saveAndClose","overrideOpen":true,"steps":steps})).unwrap();
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+        assert_eq!(std::fs::read(&first).unwrap(), original);
+    }
+    let result = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[first],"destination":"saveAndClose","overrideOpen":true,
+        "steps":[["file.openAs",open],["image.adjustments.invert",{}],["file.saveAs",{}],["file.close",{}]]}),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(batch_open_pixel(&first), [0.0, 1.0, 1.0, 1.0]);
+    assert!(s.documents().is_empty());
+    assert!(s.batch_open.is_none());
+}
+
+/// Profile suppression uses caller settings without silencing import errors or changing the caller.
+#[test]
+fn batch_quiet_profile_open_uses_caller_policy_and_retains_diagnostics() {
+    let dir = tmp("batch-quiet-profile");
+    let source = png(&dir, "a.png", 3, 2, "#4488aa");
+    let mut fixture = Session::new();
+    fixture.execute("file.openAs", json!({"path":source})).unwrap();
+    fixture.execute("edit.assignProfile", json!({"profile":"display-p3"})).unwrap();
+    fixture.execute("file.saveACopy", json!({"path":source,"overwrite":true})).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let bad = join(&dir, "b.png");
+    std::fs::write(&bad, b"not an image").unwrap();
+    let mut s = Session::new();
+    s.execute("edit.colorSettings", json!({"workingRgb":"srgb","policyRgb":"convert","askOnMismatch":true,"askOnMissing":true})).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    let settings = s.color.settings.clone();
+    let policy = s.color.open_question(doc(&fixture)).unwrap();
+    assert_eq!(policy["ask"], true);
+    let output = join(&dir, "out");
+    let result = s.execute("file.automate.batch", json!({"input":[source,bad],"output":output,"suppressWarnings":true,"stopOnError":true,"steps":[]})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["notices"][0]["color"]["action"], "converted");
+    assert_eq!(result["notices"][0]["color"]["ask"], false);
+    let saved = photocraft_io::import("a.png", &std::fs::read(join(&output, "a.png")).unwrap()).unwrap().document;
+    let profile = photocraft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
+    assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()));
+    // A script calling an action with a failing inner Batch still retains both import reports.
+    let inner = join(&dir, "inner");
+    s.actions.list.push(crate::actions_cmds::Action::new(
+        "Quiet inner",
+        vec![("file.automate.batch".into(), json!({"input":[source,bad],"output":inner,"suppressWarnings":true,"stopOnError":true,"steps":[]}))],
+    ));
+    let nested = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[source],"output":join(&dir,"nested-root"),"suppressWarnings":true,
+        "steps":[["file.scripts.browse",{"steps":[["actions.play",{"action":"Quiet inner"}]]}]]}),
+        )
+        .unwrap();
+    assert_eq!(nested["errors"].as_array().unwrap().len(), 1, "{nested}");
+    let notices = nested["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 2, "one outer and one inner import, no duplicate: {nested}");
+    assert!(notices.iter().all(|notice| notice["color"]["action"] == "converted" && notice["color"]["ask"] == false));
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(s.color.settings, settings);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert!(s.batch_open_notices.is_none());
+    let invalid = join(&dir, "invalid");
+    assert!(s.execute("file.automate.batch", json!({"input":[source],"output":invalid,"steps":[],"suppressWarnings":"true"})).is_err());
+    assert!(!std::path::Path::new(&invalid).exists());
+}
+
+/// The sentinel bounds even the broken version: named live-document cycles must reject first,
+/// while an acyclic action preserves the caller's recorder and surrounding playback stack.
+#[test]
+fn named_open_document_batch_keeps_cycle_context_and_live_recorder() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn gate(id: &str, _: &Value) -> Result<()> {
+        if id == "file.automate.batch" && CALLS.fetch_add(1, Ordering::SeqCst) >= 4 {
+            return Err(EngineError::Other("bounded Batch recursion sentinel".into()));
+        }
+        Ok(())
+    }
+    for mutual in [false, true] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":8,"height":8})).unwrap();
+        let nested = |name| ("file.automate.batch".into(), json!({"source":"open","action":name}));
+        s.actions.list = vec![
+            crate::actions_cmds::Action::new("Recorder", vec![]),
+            crate::actions_cmds::Action::new("Loop A", vec![nested(if mutual { "Loop B" } else { "Loop A" })]),
+            crate::actions_cmds::Action::new("Loop B", vec![nested("Loop A")]),
+            crate::actions_cmds::Action::new("Leaf", vec![("actions.play".into(), json!({"action":0}))]),
+        ];
+        let definitions = s.actions.list[1..].to_vec();
+        s.actions.playback_stack = vec!["Enclosing".into()];
+        s.actions.recording = Some((s.journal.len(), 0));
+        let take = s.actions.take;
+        s.authorize = Some(gate);
+        CALLS.store(0, Ordering::SeqCst);
+        let result = batch(&mut s, &json!({"source":"open","action":"Loop A"})).unwrap();
+        assert!(result["errors"][0]["error"].as_str().unwrap().contains("recursive action"), "{result}");
+        assert!(CALLS.load(Ordering::SeqCst) <= 2, "the cycle check must beat the finite sentinel");
+        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
+        assert_eq!(s.actions.take, take);
+        assert_eq!(&s.actions.list[1..], definitions.as_slice());
+        let before = doc(&s).walk().len();
+        let embedded = vec![crate::actions_cmds::Action::new("Embedded", vec![("layer.new.layer".into(), json!({"name":"visited"}))])];
+        let result = batch(&mut s, &json!({"source":"open","action":"Leaf","calledActions":embedded})).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(doc(&s).walk().len(), before + 1);
+        assert_eq!(s.actions.playback_stack, ["Enclosing"]);
+        assert_eq!(s.actions.recording.map(|(_, owner)| owner), Some(0));
+        assert_eq!(s.actions.take, take);
+        assert_eq!(&s.actions.list[1..], definitions.as_slice());
+    }
+}
+
+/// Named live-document playback must normalize recorded targets and percentage coordinates,
+/// just as ordinary action playback does, before authorization sees execution params.
+#[test]
+fn named_open_document_batch_uses_effective_recorded_parameters() {
+    fn gate(id: &str, p: &Value) -> Result<()> {
+        if id == "type.create" && (p.get("xPercent").is_some() || p["x"] != json!(50.0) || p["y"] != json!(40.0)) {
+            return Err(EngineError::Other("type position was not normalized before authorization".into()));
+        }
+        if id == "layer.setProps" && p.get("_actionLayer").is_some() {
+            return Err(EngineError::Other("recorded visibility target leaked to execution".into()));
+        }
+        Ok(())
+    }
+    for through_batch in [false, true] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":200,"height":100})).unwrap();
+        let a = s.execute("layer.new.layer", json!({"name":"A"})).unwrap()["layer"].as_u64().unwrap();
+        let b = s.execute("layer.new.layer", json!({"name":"B"})).unwrap()["layer"].as_u64().unwrap();
+        s.actions.list.push(crate::actions_cmds::Action::new(
+            "Recorded",
+            vec![
+                ("layer.setProps".into(), json!({"visible":false,"_actionLayer":{"name":"A","ordinal":0}})),
+                ("type.create".into(), json!({"text":"x","size":12,"xPercent":25.0,"yPercent":40.0})),
+            ],
+        ));
+        if through_batch {
+            s.authorize = Some(gate);
+            let result = s.execute("file.automate.batch", json!({"source":"open","action":"Recorded"})).unwrap();
+            assert_eq!(result["errors"], json!([]), "{result}");
+        } else {
+            let result = s.execute("actions.play", json!({"action":"Recorded"})).unwrap();
+            assert_eq!(result["ran"], 2, "{result}");
+        }
+        assert!(!doc(&s).layer(photocraft_doc::LayerId(a)).unwrap().visible);
+        assert!(doc(&s).layer(photocraft_doc::LayerId(b)).unwrap().visible);
+        assert_eq!(doc(&s).walk().iter().filter(|(_, _, layer)| matches!(layer.content, photocraft_doc::LayerContent::Text(_))).count(), 1);
+    }
+}
+
+/// Structured outputs reject a repeated live-document destination before editing that document;
+/// the ordinary native template control retains main's intentional later-file-wins behavior.
+#[test]
+fn structured_open_document_batch_guards_destinations_before_editing() {
+    let dir = tmp("batch-open-collision-policy");
+    for structured in [false, true] {
+        let mut s = Session::new();
+        for color in ["#ff0000", "#0000ff"] {
+            s.execute("file.new", json!({"width":2,"height":2,"background":color})).unwrap();
+        }
+        let before = s.documents()[1].history.past_len();
+        let output = join(&dir, if structured { "structured" } else { "ordinary" });
+        let mut p = json!({"source":"open","output":output,"format":"png","stopOnError":true,
+            "steps":[["image.adjustments.invert",{}]]});
+        if structured {
+            p["namingComponents"] = json!([{"text":"same.png"}]);
+        } else {
+            p["naming"] = json!("same.png");
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        let saved = photocraft_io::import("same.png", &std::fs::read(join(&output, "same.png")).unwrap()).unwrap().document;
+        let pixel = photocraft_compose::render(&saved, Rect::new(0, 0, 1, 1)).px[0];
+        if structured {
+            assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+            assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("not written"));
+            assert_eq!(pixel, [0.0, 1.0, 1.0, 1.0], "the first result remains intact");
+            assert_eq!(s.documents()[1].history.past_len(), before);
+            assert_eq!(photocraft_compose::render(&s.documents()[1].doc, Rect::new(0, 0, 1, 1)).px[0], [0.0, 0.0, 1.0, 1.0]);
+        } else {
+            assert_eq!(result["files"].as_array().unwrap().len(), 2, "{result}");
+            assert_eq!(result["errors"], json!([]), "{result}");
+            assert_eq!(pixel, [1.0, 1.0, 0.0, 1.0], "native naming keeps the later result");
+            assert_eq!(s.documents()[1].history.past_len(), before + 1);
+        }
+    }
+}
+
+/// A background recorded Batch keeps quiet opening, structured content and collision refusal
+/// through the shared cancellation/write runner; the duplicate never replaces the first result.
+#[test]
+fn background_recorded_batch_keeps_opening_and_destination_policies() {
+    let dir = tmp("batch-recorded-background");
+    let source = png(&dir, "source.png", 3, 2, "#4488aa");
+    let other = png(&dir, "other.png", 3, 2, "#ff0000");
+    let mut fixture = Session::new();
+    fixture.execute("file.openAs", json!({"path":source})).unwrap();
+    fixture.execute("edit.assignProfile", json!({"profile":"display-p3"})).unwrap();
+    fixture.execute("file.saveACopy", json!({"path":source,"overwrite":true})).unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let missing = join(&dir, "missing.png");
+    let output = join(&dir, "out");
+    let mut s = Session::new();
+    s.execute("edit.colorSettings", json!({"workingRgb":"srgb","policyRgb":"convert","askOnMismatch":true,"askOnMissing":true})).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    let settings = s.color.settings.clone();
+    let job = match s
+        .start(
+            "file.automate.batch",
+            json!({
+                "input":[source,other,missing],"output":output,"format":"png",
+                "namingComponents":[{"text":"result.jpg"}],"flatOutput":true,
+                "suppressWarnings":true,"includeNonImages":true,"stopOnError":true,
+                "overrideSaveAs":true,"steps":[["file.saveAs",{}],["file.close",{}]]
+            }),
+        )
+        .unwrap()
+    {
+        crate::jobs::Started::Job(id) => id,
+        crate::jobs::Started::Done(_) => panic!("a started folder Batch must run in the background"),
+    };
+    let result = s.wait_job(job).unwrap();
+    let saved_path = join(&output, "result.jpg");
+    assert_eq!(result["files"], json!([saved_path]), "{result}");
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("not written"), "{result}");
+    assert_eq!(result["skipped"], json!([missing]), "Stop For Errors leaves the third input unprocessed");
+    assert_eq!(result["notices"].as_array().unwrap().len(), 1, "{result}");
+    assert_eq!(result["notices"][0]["color"]["action"], "converted");
+    assert_eq!(result["notices"][0]["color"]["ask"], false);
+    let bytes = std::fs::read(saved_path).unwrap();
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "the structured suffix does not choose the encoder");
+    let saved = photocraft_io::import("result.png", &bytes).unwrap().document;
+    let profile = photocraft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
+    assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()));
+    assert_eq!(std::fs::read(source).unwrap(), original);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert_eq!(s.color.settings, settings);
+    assert!(s.documents().is_empty());
+}
+
+/// Quiet RAW opening applies supported prior XMP and refuses settings or reads it cannot honor.
+#[test]
+fn batch_quiet_raw_applies_prior_settings_and_workflow_without_touching_inputs() {
+    use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    let dir = tmp("batch-quiet-raw");
+    let path = join(&dir, "raw.dng");
+    let (w, h) = (24, 16);
+    let bytes = DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535)).build();
+    std::fs::write(&path, &bytes).unwrap();
+    let sidecar = join(&dir, "raw.xmp");
+    let settings = photocraft_algo::camera_raw::CameraRaw { exposure: 1.0, ..Default::default() };
+    let xmp = photocraft_io::camera_raw_xmp::save(&settings);
+    std::fs::write(&sidecar, &xmp).unwrap();
+    let mut s = Session::new();
+    s.execute("prefs.set", json!({"path":"rawDefaults.resolution","value":240})).unwrap();
+    let prefs = serde_json::to_value(s.prefs()).unwrap();
+    let output = join(&dir, "out");
+    let p = json!({"input":[path],"output":output,"format":"psd","suppressOpenOptions":true,"suppressWarnings":true,"steps":[]});
+    let result = s.execute("file.automate.batch", p.clone()).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let actual = photocraft_io::import("raw.psd", &std::fs::read(join(&output, "raw.psd")).unwrap()).unwrap().document;
+    assert_eq!(actual.resolution_dpi, 240.0);
+    let (expected, _) =
+        photocraft_io::raw::import_raw_tuned("raw.dng", &bytes, &photocraft_io::raw::RawTuning { exposure: 1.0, ..Default::default() }).unwrap();
+    let mut oracle = Session::new();
+    oracle.add_document(expected.document, None);
+    oracle.execute("edit.convertToProfile", json!({"profile":s.prefs().raw_defaults.color_space.profile_id(),"intent":"relative"})).unwrap();
+    let area = Rect::new(0, 0, w as i32, h as i32);
+    let got = photocraft_compose::render(&actual, area);
+    let want = photocraft_compose::render(doc(&oracle), area);
+    assert!(got.px.iter().zip(&want.px).all(|(got, want)| got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1.0 / 65535.0)));
+    let saved = std::fs::read(join(&output, "raw.psd")).unwrap();
+    std::fs::write(&sidecar, xmp.replace("crs:Exposure2012=", "crs:Temperature=")).unwrap();
+    let failed = s.execute("file.automate.batch", p.clone()).unwrap();
+    assert!(failed["errors"][0]["error"].as_str().unwrap().contains("Temperature"), "{failed}");
+    assert_eq!(std::fs::read(join(&output, "raw.psd")).unwrap(), saved);
+    fn allow(_: &str, _: &Value) -> Result<()> {
+        Ok(())
+    }
+    s.authorize = Some(allow);
+    let failed = s.execute("file.automate.batch", p).unwrap();
+    assert!(failed["errors"][0]["error"].as_str().unwrap().contains("no implicit read capability"), "{failed}");
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
+    assert!(s.batch_raw_open.is_none());
+    assert!(s.batch_open_notices.is_none());
+}
+
 fn tmp(name: &str) -> String {
-    let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("photocraft-file-cmds-{}-{name}-{id}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d.to_string_lossy().into_owned()
+}
+
+/// Concurrent tests may reuse a descriptive label without deleting another fixture's files.
+#[test]
+fn temporary_directories_with_the_same_label_are_isolated() {
+    let first = tmp("same-label");
+    let marker = join(&first, "source.png");
+    std::fs::write(&marker, b"original source").unwrap();
+    let second = tmp("same-label");
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(marker).unwrap(), b"original source");
+    assert!(std::path::Path::new(&second).is_dir());
 }
 
 fn session(w: u32, h: u32, depth: u32) -> Session {
@@ -29,6 +777,622 @@ fn png(dir: &str, name: &str, w: u32, h: u32, color: &str) -> String {
 fn composite(s: &Session, x: i32, y: i32) -> [f32; 4] {
     let b = photocraft_compose::render(doc(s), Rect::new(x, y, x + 1, y + 1));
     b.px[0]
+}
+
+fn batch_log(path: &str) -> String {
+    let bytes = std::fs::read(path).unwrap();
+    assert!(bytes.starts_with(&[0xff, 0xfe]), "Batch log needs a UTF-16 LE BOM");
+    let (pairs, remainder) = bytes[2..].as_chunks::<2>();
+    assert!(remainder.is_empty(), "UTF-16 bytes must have even length");
+    let words: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    String::from_utf16(&words).unwrap()
+}
+
+#[test]
+fn batch_stop_on_error_reports_skipped_inputs_and_writes_the_error_log() {
+    let dir = tmp("batch-stop-error-log");
+    let good = png(&dir, "good.png", 8, 6, "#00ff00");
+    let missing = join(&dir, "missing.png");
+    let output = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let result = Session::new()
+        .execute("file.automate.batch", json!({"steps": [], "input": [missing, good], "output": output, "stopOnError": true, "errorLog": log}))
+        .unwrap();
+    assert_eq!(result["files"], json!([]), "{result}");
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert_eq!(result["stopped"], json!(missing), "{result}");
+    assert_eq!(result["skipped"], json!([good]), "{result}");
+    let text = batch_log(&log);
+    assert!(text.starts_with("Batch Start\r\n\r\n") && text.contains("missing.png") && text.contains("File: \"") && text.contains("Error: "), "{text}");
+    assert!(text.ends_with("Batch End\r\n"), "{text}");
+    assert!(!std::path::Path::new(&join(&output, "good.png")).exists());
+}
+
+#[test]
+fn batch_writes_a_utf16_error_log_even_when_every_file_succeeds() {
+    let dir = tmp("batch-clean-log");
+    let input = png(&dir, "good.png", 8, 6, "#00ff00");
+    let output = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let result = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["errorLog"], json!(log));
+    assert_eq!(batch_log(&log), "Batch Start\r\n\r\nBatch End\r\n");
+}
+
+#[test]
+fn batch_cancelled_during_an_action_does_not_save_that_input() {
+    let dir = tmp("batch-cancel-current");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let out = join(&dir, "out/source.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result = super::batch_run::process_batch_outputs(72.0, vec![(input, out.clone())], "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+        ctx.cancel();
+        Ok(false)
+    })
+    .unwrap();
+    assert_eq!(result["files"], json!([]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+    assert!(!std::path::Path::new(&out).exists());
+}
+
+/// An action that saved and then closed its document has its saved snapshot written by the time
+/// it returns: a cancel landing then counts that file as written, not skipped.
+#[test]
+fn batch_cancel_after_a_saved_snapshot_is_written_keeps_that_file() {
+    let dir = tmp("batch-cancel-after-snapshot");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let first_out = join(&dir, "out/first.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let outputs = vec![(first, first_out.clone()), (second.clone(), join(&dir, "out/second.png"))];
+    let result = super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &ctx, &|s, out| {
+        save_doc(&s.active().unwrap().doc, out, None).unwrap();
+        ctx.cancel();
+        Ok(true)
+    })
+    .unwrap();
+    assert_eq!(result["files"], json!([first_out]), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+}
+
+/// A cancel that lands while an input fails on its own keeps that failure and its reason; only
+/// the inputs after it are skipped.
+#[test]
+fn batch_cancel_during_a_failing_input_keeps_its_error() {
+    let dir = tmp("batch-cancel-failing");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let outputs = vec![(first.clone(), join(&dir, "out/first.png")), (second.clone(), join(&dir, "out/second.png"))];
+    let result = super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+        ctx.cancel();
+        Err(EngineError::Other("boom".into()))
+    })
+    .unwrap();
+    assert_eq!(result["errors"], json!([{"file": first, "error": "boom"}]), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["cancelled"], json!(true), "{result}");
+}
+
+/// Esc during an input that fails on its own: Continue records the failure (not an interrupted
+/// input) and goes on with the next one.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_interruption_during_a_failing_input_keeps_its_error() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-failing");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let second_out = join(&dir, "out/second.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let outputs = vec![(first.clone(), join(&dir, "out/first.png")), (second, second_out.clone())];
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(72.0, outputs, "png", SaveOpts::default(), &policy, &worker_ctx, &|_, path| {
+            if path.ends_with("first.png") {
+                assert!(worker_ctx.request_batch_interrupt());
+                return Err(EngineError::Other("boom".into()));
+            }
+            Ok(false)
+        })
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.decide_batch_interrupt(true));
+    let result = worker.join().unwrap().unwrap();
+    assert_eq!(result["errors"], json!([{"file": first, "error": "boom"}]), "{result}");
+    assert_eq!(result["files"], json!([second_out]), "{result}");
+    assert!(result.get("skipped").is_none(), "{result}");
+}
+
+/// Once the last input is handled, Esc has nothing to interrupt and is refused, so the desktop
+/// never waits for a question that will not come.
+#[test]
+fn batch_refuses_esc_after_its_last_input() {
+    let dir = tmp("batch-late-esc");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let ctx = crate::jobs::JobCtx::new();
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result =
+        super::batch_run::process_batch_outputs(72.0, vec![(input, join(&dir, "out/source.png"))], "png", SaveOpts::default(), &policy, &ctx, &|_, _| {
+            Ok(false)
+        })
+        .unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(!ctx.request_batch_interrupt());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_interruption_continues_with_the_original_next_output() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-continue");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let first_out = join(&dir, "out/first_001.png");
+    let second_out = join(&dir, "out/second_002.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let first_action = std::sync::atomic::AtomicBool::new(true);
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(
+            72.0,
+            vec![(first, first_out.clone()), (second, second_out.clone())],
+            "png",
+            SaveOpts::default(),
+            &policy,
+            &worker_ctx,
+            &|_, _| {
+                if first_action.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    let _ = opened_tx.send(());
+                    let _ = resume_rx.recv_timeout(Duration::from_secs(10));
+                }
+                Ok(false)
+            },
+        )
+        .map(|result| (result, first_out, second_out))
+    });
+    opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let preview = ctx.batch_preview().expect("the real opened input is published before its action");
+    assert_eq!(preview.path, join(&dir, "first.png"));
+    assert_eq!((preview.document.size.width, preview.document.size.height), (8, 6));
+    assert!(ctx.request_batch_interrupt(), "Esc is accepted while the first action runs");
+    resume_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.batch_waiting_for_decision(), "the worker stopped before writing");
+    assert!(!std::path::Path::new(&join(&dir, "out/first_001.png")).exists());
+    assert!(ctx.decide_batch_interrupt(true));
+    let (result, first_out, second_out) = worker.join().unwrap().unwrap();
+    assert_eq!(result["files"], json!([second_out]), "Continue keeps the original serial: {result}");
+    assert!(!std::path::Path::new(&first_out).exists());
+    assert!(std::path::Path::new(&second_out).exists());
+    assert!(ctx.batch_preview().is_none(), "the preview closes after the last input");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_stop_after_interruption_preserves_prior_outputs_and_never_saves_current() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-stop");
+    let first = png(&dir, "first.png", 8, 6, "#ff0000");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let third = png(&dir, "third.png", 8, 6, "#0000ff");
+    let out = join(&dir, "out");
+    let first_out = join(&out, "first.png");
+    let second_out = join(&out, "second.png");
+    let third_out = join(&out, "third.png");
+    let ctx = crate::jobs::JobCtx::new();
+    let worker_ctx = ctx.clone();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+        super::batch_run::process_batch_outputs(
+            72.0,
+            vec![(first, first_out), (second, second_out), (third, third_out)],
+            "png",
+            SaveOpts::default(),
+            &policy,
+            &worker_ctx,
+            &|_, path| {
+                if path.ends_with("second.png") {
+                    let _ = opened_tx.send(());
+                    let _ = resume_rx.recv_timeout(Duration::from_secs(10));
+                }
+                Ok(false)
+            },
+        )
+    });
+    opened_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(ctx.request_batch_interrupt());
+    resume_tx.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(ctx.batch_waiting_for_decision());
+    assert!(ctx.decide_batch_interrupt(false));
+    let result = worker.join().unwrap().unwrap();
+    assert_eq!(result["files"], json!([join(&out, "first.png")]), "{result}");
+    assert_eq!(result["cancelled"], true, "{result}");
+    assert_eq!(result["skipped"], json!([join(&dir, "second.png"), join(&dir, "third.png")]), "{result}");
+    assert!(std::path::Path::new(&join(&out, "first.png")).exists());
+    assert!(!std::path::Path::new(&join(&out, "second.png")).exists());
+    assert!(!std::path::Path::new(&join(&out, "third.png")).exists());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_continue_keeps_errors_before_and_after_the_interruption_in_one_log() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-error-log");
+    let second = png(&dir, "second.png", 8, 6, "#00ff00");
+    let fourth = png(&dir, "fourth.png", 8, 6, "#0000ff");
+    let before = join(&dir, "missing-before.png");
+    let after = join(&dir, "missing-after.png");
+    let out = join(&dir, "out");
+    let log = join(&dir, "errors.txt");
+    let ctx = crate::jobs::JobCtx::new();
+    let decider_ctx = ctx.clone();
+    let decider = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !decider_ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !decider_ctx.batch_waiting_for_decision() {
+            decider_ctx.cancel();
+            return false;
+        }
+        decider_ctx.decide_batch_interrupt(true)
+    });
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: Some(log.clone()) };
+    let result = super::batch_run::process_batch_outputs(
+        72.0,
+        vec![
+            (before.clone(), join(&out, "missing-before.png")),
+            (second.clone(), join(&out, "second.png")),
+            (after.clone(), join(&out, "missing-after.png")),
+            (fourth, join(&out, "fourth.png")),
+        ],
+        "png",
+        SaveOpts::default(),
+        &policy,
+        &ctx,
+        &|_, path| {
+            if path.ends_with("second.png") {
+                assert!(ctx.request_batch_interrupt());
+            }
+            Ok(false)
+        },
+    )
+    .unwrap();
+    assert!(decider.join().unwrap());
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(2), "{result}");
+    assert_eq!(result["skipped"], json!([second]), "{result}");
+    assert_eq!(result["files"], json!([join(&out, "fourth.png")]), "{result}");
+    let text = batch_log(&log);
+    assert!(text.contains("missing-before.png") && text.contains("missing-after.png"), "{text}");
+    assert!(!text.contains("second.png"), "a skipped input is not an error: {text}");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn batch_continue_between_inputs_still_processes_the_next_input() {
+    use std::time::Duration;
+
+    let dir = tmp("batch-interrupt-between-inputs");
+    let input = png(&dir, "next.png", 8, 6, "#ff0000");
+    let output = join(&dir, "out/next.png");
+    let ctx = crate::jobs::JobCtx::new();
+    assert!(ctx.request_batch_interrupt());
+    let decider_ctx = ctx.clone();
+    let decider = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !decider_ctx.batch_waiting_for_decision() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if !decider_ctx.batch_waiting_for_decision() {
+            decider_ctx.cancel();
+            return false;
+        }
+        decider_ctx.decide_batch_interrupt(true)
+    });
+    let policy = super::batch_run::BatchPolicy { stop_on_error: false, error_log: None };
+    let result =
+        super::batch_run::process_batch_outputs(72.0, vec![(input, output.clone())], "png", SaveOpts::default(), &policy, &ctx, &|_, _| Ok(false)).unwrap();
+    assert!(decider.join().unwrap());
+    assert_eq!(result["files"], json!([output]), "the unopened input is still next: {result}");
+    assert!(result.get("skipped").is_none(), "{result}");
+}
+
+#[test]
+fn batch_error_log_cannot_replace_an_input_or_result() {
+    let dir = tmp("batch-error-log-collision");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let original = std::fs::read(&input).unwrap();
+    let output = join(&dir, "out");
+    for log in [input.clone(), join(&output, "source.png"), join(&output, "./source.png"), join(&output, "../out/source.png")] {
+        let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+        assert!(error.to_string().contains("errorLog"), "{error}");
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        assert!(!std::path::Path::new(&join(&output, "source.png")).exists());
+    }
+}
+
+#[test]
+fn batch_naming_rejects_an_input_alias_through_a_missing_parent() {
+    let dir = tmp("batch-missing-parent-alias");
+    let first = png(&dir, "a.png", 8, 6, "#ff0000");
+    let second = png(&dir, "b.png", 8, 6, "#00ff00");
+    let original = std::fs::read(&second).unwrap();
+    let output = join(&dir, "missing/..");
+    let error =
+        Session::new().execute("file.automate.batch", json!({"steps": [], "input": [first, second], "output": output, "naming": "b.{ext}"})).unwrap_err();
+    assert!(error.to_string().contains("replace an input"), "{error}");
+    assert_eq!(std::fs::read(&second).unwrap(), original);
+    assert!(!std::path::Path::new(&join(&dir, "missing")).exists());
+}
+
+#[test]
+fn flat_batch_cannot_replace_a_later_unread_input() {
+    let dir = tmp("batch-flat-input-alias");
+    let input_png = png(&dir, "a.png", 8, 6, "#0000ff");
+    let mut s = session(8, 6, 8);
+    save_doc(doc(&s), &join(&dir, "a.jpg"), None).unwrap();
+    let before = std::fs::read(&input_png).unwrap();
+    let result = s.execute("file.automate.batch", json!({"steps": [], "input": dir, "output": dir, "format": "png"}));
+    assert!(result.as_ref().is_err_and(|e| e.to_string().contains("input")), "{result:?}");
+    assert_eq!(std::fs::read(&input_png).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_error_log_rejects_a_symlink_parent_alias() {
+    use std::os::unix::fs::symlink;
+    let dir = tmp("batch-symlink-parent-alias");
+    let source_dir = join(&dir, "in");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let input = png(&source_dir, "result.png", 8, 6, "#ff0000");
+    let other = join(&dir, "other");
+    std::fs::create_dir_all(join(&other, "child")).unwrap();
+    symlink(join(&other, "child"), join(&dir, "link")).unwrap();
+    let output = other;
+    let log = join(&dir, "link/../result.png");
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&join(&output, "result.png")).exists());
+}
+
+#[test]
+fn batch_error_log_rejects_an_uncreated_output_alias() {
+    let dir = tmp("batch-error-log-future-alias");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let output = join(&dir, "new-output");
+    std::fs::create_dir_all(join(&output, "alias")).unwrap();
+    let log = join(&output, "alias/../source.png");
+    assert!(same_destination(&log, join(&output, "source.png")));
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&join(&dir, "new-output/source.png")).exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_distinct_case_destinations_are_not_the_same_file() {
+    let dir = tmp("batch-case-sensitive-destinations");
+    assert!(!same_destination(join(&dir, "Image.png"), join(&dir, "image.png")));
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn unicode_case_variants_follow_destination_volume() {
+    let dir = tmp("batch-unicode-case-destinations");
+    let existing = join(&dir, "Ä-probe");
+    std::fs::write(&existing, b"probe").unwrap();
+    let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
+    assert_eq!(same_destination(join(&dir, "Ä.png"), join(&dir, "ä.png")), volume_aliases_case);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn future_folder_case_variants_follow_the_nearest_existing_ancestor() {
+    let dir = tmp("batch-future-folder-case");
+    let existing = join(&dir, "Ä-probe");
+    std::fs::write(&existing, b"probe").unwrap();
+    let volume_aliases_case = same_file(&existing, join(&dir, "ä-probe"));
+    let first = join(&dir, "new/nested/Image.png");
+    let second = join(&dir, "new/nested/image.png");
+    assert_eq!(super::paths::case_sensitive_destination(std::path::Path::new(&first)), Some(!volume_aliases_case));
+    assert_eq!(same_destination(first, second), volume_aliases_case);
+    assert!(!std::path::Path::new(&join(&dir, "new")).exists());
+}
+
+#[test]
+fn batch_open_source_edits_each_live_document_and_restores_the_active_one() {
+    let dir = tmp("batch-open-documents");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    session.execute("file.new", json!({"name": "Second", "width": 12, "height": 5})).unwrap();
+    session.set_active(0);
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({"source": "open", "steps": [["image.imageRotation.90cw", {}]], "output": dir, "format": "png", "naming": "{serial:2}_{NAME}.{EXT}"}),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    assert_eq!(result["documents"], 2);
+    assert_eq!(result["files"].as_array().map(Vec::len), Some(2), "{result}");
+    assert_eq!(session.active_index(), Some(0));
+    assert_eq!((session.documents()[0].doc.size.width, session.documents()[0].doc.size.height), (6, 8));
+    assert_eq!((session.documents()[1].doc.size.width, session.documents()[1].doc.size.height), (5, 12));
+    assert!(std::path::Path::new(&join(&dir, "01_FIRST.PNG")).is_file());
+    assert!(std::path::Path::new(&join(&dir, "02_SECOND.PNG")).is_file());
+}
+
+#[test]
+fn batch_open_source_exports_later_edits_if_saved_document_stays_active() {
+    let dir = tmp("batch-open-save-point");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    session.execute("file.new", json!({"name": "Second", "width": 12, "height": 5})).unwrap();
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({
+                "source": "open", "steps": [["document.activate", {"document": 1}], ["file.save", {}], ["image.imageRotation.90cw", {}]],
+                "output": dir, "format": "png", "naming": "{name}.{ext}"
+            }),
+        )
+        .unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let mut opened = Session::new();
+    opened.execute("file.openAs", json!({"path": join(&dir, "First.png"), "as": "png"})).unwrap();
+    assert_eq!((doc(&opened).size.width, doc(&opened).size.height), (5, 12), "the still-active saved document includes later edits");
+}
+
+#[test]
+fn batch_open_source_save_as_then_close_ask_writes_the_result() {
+    let dir = tmp("batch-open-save-close-ask");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({"source": "open", "steps": [["image.adjustments.invert", {}], ["file.saveAs", {}], ["file.close", {"save": "ask"}]], "output": dir, "format": "png"}),
+        )
+        .unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["files"], json!([join(&dir, "First.png")]), "{result}");
+    assert!(session.documents().is_empty());
+}
+
+#[test]
+fn batch_open_source_refuses_a_result_that_replaces_another_open_file() {
+    let dir = tmp("batch-open-replaces-input");
+    let mut session = Session::new();
+    // Saved as PNG under its default name, `a.jpg`'s result is the open `a.png`'s file.
+    for (name, format) in [("a.jpg", "jpg"), ("a.png", "png")] {
+        let path = png(&dir, name, 8, 6, "#ff0000");
+        session.execute("file.openAs", json!({"path": path, "as": format})).unwrap();
+    }
+    let before = std::fs::read(join(&dir, "a.png")).unwrap();
+    let error = session
+        .execute("file.automate.batch", json!({"source": "open", "steps": [["image.imageRotation.90cw", {}]], "output": dir, "format": "png"}))
+        .unwrap_err();
+    assert!(error.to_string().contains("replace another input"), "{error}");
+    assert_eq!(std::fs::read(join(&dir, "a.png")).unwrap(), before, "nothing is written before the refusal");
+}
+
+#[test]
+fn batch_open_source_save_step_leaves_an_unwritten_document_changed() {
+    let mut session = Session::new();
+    session.execute("file.new", json!({"name": "First", "width": 8, "height": 6})).unwrap();
+    let steps = json!([["image.adjustments.invert", {}], ["file.save", {}]]);
+    // No destination: nothing is written.
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(session.documents()[0].is_dirty(), "a document Batch did not write stays changed");
+    // A destination that can't be written: the result's name is taken by a folder, so the path
+    // resolves on every platform and the write itself fails.
+    let dir = tmp("batch-open-save-fails");
+    std::fs::create_dir_all(join(&dir, "First.png")).unwrap();
+    let result = session.execute("file.automate.batch", json!({"source": "open", "steps": steps, "output": dir, "format": "png"})).unwrap();
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(session.documents()[0].is_dirty(), "a failed write leaves the document changed");
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_error_log_rejects_a_dangling_link_to_a_planned_output() {
+    use std::os::unix::fs::symlink;
+    let dir = tmp("batch-dangling-error-log-alias");
+    let input = png(&dir, "source.png", 8, 6, "#ff0000");
+    let output = join(&dir, "out");
+    let result = join(&output, "source.png");
+    let log = join(&dir, "errors.txt");
+    symlink(&result, &log).unwrap();
+    let error = Session::new().execute("file.automate.batch", json!({"steps": [], "input": [input], "output": output, "errorLog": log})).unwrap_err();
+    assert!(error.to_string().contains("errorLog"), "{error}");
+    assert!(!std::path::Path::new(&result).exists(), "the batch must not write before rejecting the alias");
+}
+
+#[test]
+fn batch_reports_file_failures_even_if_error_log_cannot_be_written() {
+    let dir = tmp("batch-error-log-write-fails");
+    let mut session = session(8, 6, 8);
+    let result = session
+        .execute(
+            "file.automate.batch",
+            json!({
+                "source": "open", "steps": [["layer.select", {"layer": "does not exist"}]],
+                "output": dir, "format": "png", "errorLog": dir
+            }),
+        )
+        .unwrap();
+    assert_eq!(result["files"], json!([]));
+    assert_eq!(result["errors"].as_array().map(Vec::len), Some(1), "{result}");
+    assert!(result["errorLogError"].as_str().is_some(), "{result}");
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_batch_reports_an_unreadable_subfolder() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp("batch-unreadable-subfolder");
+    let sub = join(&dir, "locked");
+    std::fs::create_dir_all(&sub).unwrap();
+    png(&sub, "image.png", 8, 6, "#ff0000");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let inaccessible = std::fs::read_dir(&sub).is_err();
+    let result = list_images_tree(&dir, "", "file.automate.batch");
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if inaccessible {
+        assert!(result.is_err(), "an inaccessible input folder must not be omitted");
+    } else {
+        eprintln!("permission regression skipped: this user can read a mode-000 folder");
+        assert!(result.is_ok(), "a privileged reader should still process the folder");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn folder_listing_reports_metadata_denial_and_skips_broken_links() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = tmp("batch-list-metadata-denial");
+    let image = png(&dir, "image.png", 8, 6, "#ff0000");
+    symlink(join(&dir, "gone.png"), join(&dir, "broken.png")).unwrap();
+    assert_eq!(list_images(&dir).unwrap(), std::slice::from_ref(&image), "broken links are not inputs");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let denied = std::fs::metadata(&image).is_err();
+    let result = list_images(&dir);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if denied {
+        assert!(result.is_err(), "metadata denial must not turn a folder of images into an empty batch");
+    } else {
+        eprintln!("metadata denial regression skipped: this user can search a mode-0400 folder");
+        assert_eq!(result.unwrap(), [image]);
+    }
 }
 
 #[test]
@@ -86,7 +1450,8 @@ fn batch_same_format_saves_camera_raws_as_psd() {
         let mut files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
         files.sort();
         assert_eq!(files.len(), 2, "{r}");
-        assert!(files[0].contains("/IMG_0001") && files[0].ends_with(".psd") && files[1].contains("/b") && files[1].ends_with(".png"), "{files:?}");
+        let suffixes = if naming.is_some() { ("_001", "_002") } else { (".psd", ".png") };
+        assert!(files[0].contains("/IMG_0001") && files[0].ends_with(suffixes.0) && files[1].contains("/b") && files[1].ends_with(suffixes.1), "{files:?}");
         let psd = photocraft_io::import("IMG_0001.psd", &std::fs::read(&files[0]).unwrap()).unwrap().document;
         assert_eq!((psd.size.width, psd.size.height), (w as u32, h as u32));
     }
@@ -143,6 +1508,29 @@ fn revert_batch_and_stack_open_a_raw_at_the_raw_defaults_resolution() {
     assert_eq!(files.len(), 1, "{r}");
     let psd = photocraft_io::import("IMG_0003.psd", &std::fs::read(files[0].as_str().unwrap()).unwrap()).unwrap().document;
     assert_eq!(psd.resolution_dpi, 240.0, "Batch");
+    // A nested Override Open inherits the outer input's resolution, not scratch defaults.
+    let nested = join(&dir, "nested");
+    let r = s
+        .execute(
+            "file.automate.batch",
+            json!({"input":[path],"output":join(&dir,"outer"),"format":"psd","overrideOpen":true,
+        "steps":[["file.openAs",{"path":"/recorded.dng"}],
+            ["file.automate.batch",{"input":[path],"output":nested,"format":"psd","overrideOpen":true,
+                "steps":[["file.openAs",{"path":"/recorded.dng"}]]}]]}),
+        )
+        .unwrap();
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    let nested = photocraft_io::import("IMG_0003.psd", &std::fs::read(join(&nested, "IMG_0003.psd")).unwrap()).unwrap().document;
+    assert_eq!(nested.resolution_dpi, 240.0, "nested Override Open keeps the caller's RAW resolution");
+    let quiet = join(&dir, "quiet-raw");
+    let r = s.execute("file.automate.batch", json!({"input":[path],"output":quiet,"format":"psd","suppressWarnings":true,"steps":[]})).unwrap();
+    assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
+    assert!(
+        r["notices"][0]["warnings"].as_array().unwrap().iter().any(|warning| warning.as_str().unwrap().contains(photocraft_io::raw::DEVELOPED_NOTE)),
+        "{r}"
+    );
+    let quiet = photocraft_io::import("IMG_0003.psd", &std::fs::read(join(&quiet, "IMG_0003.psd")).unwrap()).unwrap().document;
+    assert_eq!(quiet.resolution_dpi, 240.0);
     s.execute("file.scripts.loadFilesIntoStack", json!({"paths": [path]})).unwrap();
     assert_eq!(doc(&s).resolution_dpi, 240.0, "Load Files into Stack");
 }
@@ -456,6 +1844,37 @@ fn maximize_compatibility_preference_controls_the_psd_merged_image() {
     }
 }
 
+/// Preferences › File Handling › Save Full-Size Composite in .pcraft Files decides whether a
+/// `.pcraft` save writes `composite/full.png` (off by default); a command's
+/// `"pcraftFullComposite"` overrides it.
+#[test]
+fn full_composite_preference_controls_the_pcraft_full_size_composite() {
+    let dir = tmp("full-composite");
+    let mut s = session(300, 200, 16);
+    let full = |path: &str| photocraft_format::read_full_composite(&std::fs::read(path).unwrap()).unwrap().is_some();
+    let out = join(&dir, "default.pcraft");
+    s.execute("file.saveACopy", json!({"path": out})).unwrap();
+    assert!(!full(&out), "off by default");
+    for on in [true, false] {
+        s.edit_prefs(|p| p.file_handling.pcraft_full_composite = on);
+        let out = join(&dir, &format!("{on}.pcraft"));
+        s.execute("file.saveACopy", json!({"path": out})).unwrap();
+        assert_eq!(full(&out), on, "preference {on}");
+        let out = join(&dir, &format!("{on} param.pcraft"));
+        s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": !on})).unwrap();
+        assert_eq!(full(&out), !on, "preference {on}, param {}", !on);
+    }
+    let out = join(&dir, "null param.pcraft");
+    s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": null})).unwrap();
+    assert!(!full(&out), "null takes the preference");
+    for bad in [json!("true"), json!(1)] {
+        let out = join(&dir, "bad param.pcraft");
+        let err = s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": bad})).unwrap_err().to_string();
+        assert!(err.contains("`pcraftFullComposite` must be true or false"), "{bad}: {err}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing is written");
+    }
+}
+
 #[test]
 fn open_as_forces_the_decoder() {
     let dir = tmp("openas");
@@ -652,6 +2071,12 @@ fn camera_data_formats_like_photoshop_and_falls_back_to_xmp() {
     assert_eq!(info(Some(0.5), Some(5.6), None), json!({"exposure": "1/2 s", "fNumber": "f/5.6"}));
     assert_eq!(info(Some(0.4), None, None), json!({"exposure": "0.4 s"}));
     assert_eq!(info(Some(1.0 / 2000.0), None, None), json!({"exposure": "1/2000 s"}));
+    // Non-standard fractions round to the nearest 1/n instead of losing digits (#6958).
+    assert_eq!(info(Some(0.031714), None, None), json!({"exposure": "1/32 s"}));
+    assert_eq!(info(Some(0.0215), None, None), json!({"exposure": "1/47 s"}));
+    assert_eq!(info(Some(1.0 / 3.0), None, None), json!({"exposure": "1/3 s"}));
+    // Too far from any whole denominator: three significant digits, not two decimals.
+    assert_eq!(info(Some(0.2731), None, None), json!({"exposure": "0.273 s"}));
     assert_eq!(info(Some(0.0), Some(0.0), Some(0.0)), json!({}));
     // No EXIF block (a raw import, XMP-only files): Photoshop's exif:/tiff:/aux: properties.
     let xmp = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
@@ -1257,6 +2682,314 @@ fn load_files_into_stack_and_image_processor_and_batch() {
     assert!(s.execute("file.automate.batch", json!({"steps": [["no.such.command", {}]], "input": input, "output": out})).is_err());
 }
 
+/// Named Batch and Play cycles hit production guards before the test-only authorization ceiling.
+#[test]
+fn named_batch_cycles_stop_before_the_test_ceiling() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn bounded(id: &str, _: &Value) -> Result<()> {
+        if id == "file.automate.batch" && CALLS.fetch_add(1, Ordering::SeqCst) >= 4 {
+            return Err(EngineError::Other("test recursion ceiling".into()));
+        }
+        Ok(())
+    }
+    // Play checks authorization both before dispatch and at command execution.
+    for (route, calls) in [("self", 2), ("mutual", 3), ("play-child", 3), ("play-parent", 2)] {
+        for source in ["folder", "open"] {
+            let dir = tmp(&format!("named-batch-recursion-{route}-{source}"));
+            let input = png(&dir, "red.png", 8, 8, "#ff0000");
+            let output = join(&dir, "out");
+            let params = json!({"action": "A", "source": source, "input": [input], "output": output, "format": "png"});
+            let mut child = params.clone();
+            child["action"] = json!(if route == "self" || route == "play-parent" { "A" } else { "B" });
+            let first = if route == "play-child" { ("actions.play".into(), json!({"action": "B"})) } else { ("file.automate.batch".into(), child) };
+            let mut s = Session::new();
+            if source == "open" {
+                s.execute("file.openAs", json!({"path": input})).unwrap();
+            }
+            s.actions.list = vec![
+                crate::actions_cmds::Action::new("A", vec![first]),
+                crate::actions_cmds::Action::new("B", vec![("file.automate.batch".into(), params.clone())]),
+            ];
+            s.authorize = Some(bounded);
+            CALLS.store(0, Ordering::SeqCst);
+            let result =
+                if route == "play-parent" { s.execute("actions.play", json!({"action": "A"})) } else { s.execute("file.automate.batch", params) }.unwrap();
+            assert_eq!(CALLS.load(Ordering::SeqCst), calls, "{route}: the test ceiling must not be needed: {result}");
+            let error = if route == "play-parent" { &result["failed"]["error"] } else { &result["errors"][0]["error"] };
+            assert!(error.as_str().unwrap().contains("recursive action call"), "{route}: {result}");
+            if route != "play-parent" {
+                assert_eq!(result["files"], json!([]), "{route}: {result}");
+            }
+            assert!(!std::path::Path::new(&output).exists());
+            assert_eq!(s.actions.playing, 0);
+            assert!(s.actions.playback_stack.is_empty());
+        }
+    }
+}
+
+/// Rejected and successful named batches preserve the caller's playback and recording state.
+#[test]
+fn named_batch_limits_nesting_and_keeps_the_callers_state() {
+    use crate::actions_cmds::Action;
+    for source in ["folder", "open"] {
+        let dir = tmp(&format!("named-batch-state-{source}"));
+        let input = png(&dir, "red.png", 8, 8, "#ff0000");
+        let output = join(&dir, "out");
+        let params = json!({"action": "Invert", "source": source, "input": [input], "output": output, "format": "png"});
+        let mut s = Session::new();
+        if source == "open" {
+            s.execute("file.openAs", json!({"path": input})).unwrap();
+        }
+        s.actions.list.push(Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]));
+        s.actions.playing = 16;
+        s.actions.playback_stack = (0..16).map(|i| format!("Parent{i}")).collect();
+        let before = s.actions.clone();
+        let error = s.execute("file.automate.batch", params.clone()).unwrap_err();
+        assert!(error.to_string().contains("nesting exceeds 16"), "{error}");
+        assert_eq!(s.actions, before);
+        assert!(!std::path::Path::new(&output).exists());
+
+        s.actions.playing = 0;
+        s.actions.playback_stack.clear();
+        s.execute("actions.record", json!({"name": "Recorder"})).unwrap();
+        let recording = s.actions.recording;
+        let mut missing_output = params.clone();
+        missing_output.as_object_mut().unwrap().remove("output");
+        if source == "open" {
+            missing_output["source"] = json!("invalid");
+        }
+        assert!(s.execute("file.automate.batch", missing_output).is_err());
+        assert_eq!(s.actions.recording, recording);
+        assert!(s.actions.playback_stack.is_empty());
+        let result = s.execute("file.automate.batch", params.clone()).unwrap();
+        assert_eq!(result["errors"], json!([]), "{result}");
+        assert_eq!(s.actions.recording, recording);
+        assert_eq!(s.actions.playing, 0);
+        assert!(s.actions.playback_stack.is_empty());
+        s.execute("actions.stop", json!({})).unwrap();
+        assert_eq!(s.actions.list[1].steps, vec![("file.automate.batch".into(), params)]);
+    }
+}
+
+/// Inputs and children share playback work, while a new top-level named batch starts fresh.
+#[test]
+fn named_batch_charges_the_existing_budget_across_inputs_and_children() {
+    use crate::actions_cmds::{Action, MAX_PLAYBACK_STEPS};
+    let dir = tmp("named-batch-budget");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let output = join(&dir, "out");
+    let mut s = Session::new();
+    s.actions.list.push(Action::new("Large", vec![("image.adjustments.invert".into(), json!({})); 100]));
+    let result = s.execute("file.automate.batch", json!({"action": "Large", "input": vec![input.clone(); 1001], "output": output})).unwrap_err();
+    assert!(result.to_string().contains("step limit"), "{result}");
+    assert!(!std::path::Path::new(&output).exists());
+    assert_eq!(s.actions.playing, 0);
+    assert!(s.actions.playback_stack.is_empty());
+
+    // A finished playback leaves its count behind; a new named Batch starts fresh.
+    s.actions.list = vec![Action::new("Empty", Vec::new())];
+    s.actions.playback_steps = MAX_PLAYBACK_STEPS;
+    let result = s.execute("file.automate.batch", json!({"action": "Empty", "input": [input], "output": join(&dir, "fresh")})).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert_eq!(result["files"].as_array().unwrap().len(), 1);
+
+    s.actions.list = vec![
+        Action::new("Outer", vec![("actions.play".into(), json!({"action": "Leaf"}))]),
+        Action::new("Leaf", vec![("select.deselect".into(), json!({})); 2]),
+    ];
+    s.actions.playing = 1;
+    s.actions.playback_stack = vec!["Parent".into()];
+    s.actions.playback_steps = MAX_PLAYBACK_STEPS - 4;
+    let result = s.execute("file.automate.batch", json!({"action": "Outer", "input": [input, input], "output": output, "naming": "{serial}"})).unwrap();
+    assert_eq!(result["files"].as_array().unwrap().len(), 1, "{result}");
+    assert!(result["errors"][0]["error"].as_str().unwrap().contains("step limit"), "{result}");
+    assert_eq!(s.actions.playback_steps, MAX_PLAYBACK_STEPS);
+    assert_eq!(s.actions.playing, 1);
+    assert_eq!(s.actions.playback_stack, ["Parent"]);
+}
+
+/// Nested named batches honor the caller's authorization and preserve its action state.
+#[test]
+fn named_batch_allows_nested_work_and_preserves_authorization() {
+    use crate::actions_cmds::Action;
+    fn deny_invert(id: &str, _: &Value) -> Result<()> {
+        if id == "image.adjustments.invert" { Err(EngineError::Other("invert denied".into())) } else { Ok(()) }
+    }
+    let dir = tmp("named-batch-nesting");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    for denied in [false, true] {
+        let output = join(&dir, &format!("out-{denied}"));
+        let inner = join(&dir, &format!("inner-{denied}"));
+        let child = json!({"action": "Leaf", "input": [input], "output": inner, "format": "png"});
+        let mut s = Session::new();
+        s.actions.list =
+            vec![Action::new("Outer", vec![("file.automate.batch".into(), child)]), Action::new("Leaf", vec![("image.adjustments.invert".into(), json!({}))])];
+        if denied {
+            s.authorize = Some(deny_invert);
+        }
+        let before = s.actions.clone();
+        let result = s.execute("file.automate.batch", json!({"action": "Outer", "input": [input], "output": output, "format": "png"})).unwrap();
+        if denied {
+            assert_eq!(result["files"], json!([]), "{result}");
+            assert!(result["errors"][0]["error"].as_str().unwrap().contains("invert denied"), "{result}");
+            assert!(!std::path::Path::new(&output).exists());
+            assert!(!std::path::Path::new(&inner).exists());
+        } else {
+            assert_eq!(result["errors"], json!([]), "{result}");
+            let saved = photocraft_io::import("red.png", &std::fs::read(join(&inner, "red.png")).unwrap()).unwrap().document;
+            assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0]);
+        }
+        assert_eq!(s.actions, before);
+    }
+}
+
+/// Action parents stop on child failure; direct scripts retain per-file results and continue.
+#[test]
+fn nested_batch_errors_stop_actions_but_direct_scripts_keep_results_and_continue() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("nested-batch-failure");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let output = join(&dir, "out");
+    let batch = json!({"input": [input], "output": output, "steps": [["file.close", {}]]});
+    let mut s = Session::new();
+    let result = s.execute("file.automate.batch", batch.clone()).unwrap();
+    assert_eq!(result["files"], json!([]));
+    assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(result["errors"][0].as_object().unwrap().len(), 2, "ordinary errors still contain only file/error");
+    let steps = vec![("file.automate.batch".into(), batch), ("file.new".into(), json!({"width": 2, "height": 2}))];
+    s.actions.list.push(Action::new("Caller", steps.clone()));
+    let result = s.execute("actions.play", json!({"action": "Caller"})).unwrap();
+    assert_eq!(result["ran"], 0, "{result}");
+    assert!(result["failed"]["error"].as_str().unwrap().contains("no active document"), "{result}");
+    let result = s.execute("file.scripts.browse", json!({"steps": steps})).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["results"].as_array().unwrap().len(), 2);
+    assert_eq!(result["results"][0]["result"]["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(s.documents().len(), 1, "the direct script reaches file.new");
+    assert_eq!(s.active().unwrap().doc.size, photocraft_doc::Size::new(2, 2));
+    assert!(!std::path::Path::new(&output).exists());
+    assert_eq!(crate::actions_cmds::nested_failure("file.automate.batch", &json!({"files": ["ok.png"], "errors": []})), None);
+    assert_eq!(crate::actions_cmds::nested_failure("file.automate.batch", &json!({"errors": "invalid"})), None);
+}
+
+/// Partial child outputs survive file, action and direct-script failure handling.
+#[test]
+fn nested_batch_partial_failures_keep_outputs_and_stop_only_action_parents() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("nested-batch-partial-failure");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let corrupt = join(&dir, "corrupt.png");
+    std::fs::write(&corrupt, b"not a PNG").unwrap();
+    for caller in ["batch", "action", "script"] {
+        let mut s = Session::new();
+        let output = join(&dir, caller);
+        let batch = json!({"input": [input, corrupt], "output": output, "steps": [], "format": "png"});
+        let steps = vec![("file.automate.batch".into(), batch.clone()), ("file.new".into(), json!({"width": 2, "height": 2}))];
+        let result = match caller {
+            "batch" => s.execute("file.automate.batch", batch).unwrap(),
+            "action" => {
+                s.actions.list.push(Action::new("Mixed", steps));
+                let result = s.execute("actions.play", json!({"action": "Mixed"})).unwrap();
+                assert_eq!(result["ran"], 0, "{result}");
+                let error = result["failed"]["error"].as_str().unwrap();
+                assert!(error.contains("1 file(s) failed") && error.contains("1 saved") && error.contains(&corrupt), "{error}");
+                result["failed"]["result"].clone()
+            }
+            _ => {
+                let result = s.execute("file.scripts.browse", json!({"steps": steps})).unwrap();
+                assert_eq!(result["ok"], true, "{result}");
+                assert_eq!(result["results"].as_array().unwrap().len(), 2);
+                assert!(result["results"][0].get("error").is_none(), "{result}");
+                result["results"][0]["result"].clone()
+            }
+        };
+        let saved = join(&output, "red.png");
+        assert_eq!(result["files"], json!([saved]), "{caller}: {result}");
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(result["errors"][0]["file"], corrupt);
+        assert!(std::path::Path::new(&saved).exists(), "{caller}: partial success remains saved");
+        if caller == "script" {
+            assert_eq!(s.documents().len(), 1, "the direct script reaches file.new");
+            assert_eq!(s.active().unwrap().doc.size, photocraft_doc::Size::new(2, 2));
+        } else {
+            assert!(s.documents().is_empty(), "{caller}: failed action parents stop");
+        }
+    }
+}
+
+/// A successful nested Batch lets the parent action reach its following step.
+#[test]
+fn successful_nested_batch_allows_later_action_steps() {
+    use crate::actions_cmds::Action;
+    let dir = tmp("nested-batch-success");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let mut s = Session::new();
+    let batch = json!({"input": [input], "output": join(&dir, "success"), "steps": [], "format": "png"});
+    s.actions.list.push(Action::new("Success", vec![("file.automate.batch".into(), batch), ("file.new".into(), json!({"width": 2, "height": 2}))]));
+    let result = s.execute("actions.play", json!({"action": "Success"})).unwrap();
+    assert!(result.get("failed").is_none(), "{result}");
+    assert_eq!(result["ran"], 2);
+    assert_eq!(s.documents().len(), 1, "a successful Batch reaches file.new");
+}
+
+/// Folder and live-document parents retain child outputs and failures, stopping later writes.
+#[test]
+fn nested_batches_retain_partial_results() {
+    let dir = tmp("nested-batch-results");
+    let input = png(&dir, "red.png", 8, 8, "#ff0000");
+    let corrupt = join(&dir, "corrupt.png");
+    std::fs::write(&corrupt, b"not a PNG").unwrap();
+    let mut s = Session::new();
+    for (source, naming) in [("folder", None), ("folder", Some("{serial}")), ("open", None)] {
+        let output = join(
+            &dir,
+            if source == "open" {
+                "open"
+            } else if naming.is_some() {
+                "named"
+            } else {
+                "default"
+            },
+        );
+        let outer = join(&output, "outer");
+        let later = join(&output, "later.png");
+        let mut params = json!({
+            "input": [input], "output": outer, "format": "png",
+            "steps": [
+                ["file.automate.batch", {"input": [input, corrupt], "output": output, "steps": [], "format": "png"}],
+                ["file.export.saveForWebLegacy", {"path": later, "format": "png"}]
+            ]
+        });
+        if let Some(naming) = naming {
+            params["naming"] = json!(naming);
+        }
+        if source == "open" {
+            s.execute("file.openAs", json!({"path": input})).unwrap();
+            params["source"] = json!("open");
+        }
+        let result = s.execute("file.automate.batch", params).unwrap();
+        assert_eq!(result["files"], json!([]), "{result}");
+        assert_eq!(result["errors"].as_array().unwrap().len(), 1);
+        if source == "open" {
+            assert!(result["errors"][0]["document"].is_string(), "{result}");
+        } else {
+            assert_eq!(result["errors"][0]["file"], input);
+        }
+        let error = result["errors"][0]["error"].as_str().unwrap();
+        assert!(error.contains("1 file(s) failed") && error.contains("1 saved"), "{error}");
+        let child = &result["errors"][0]["result"];
+        let saved = join(&output, "red.png");
+        assert_eq!(child["files"], json!([saved]), "{result}");
+        assert_eq!(child["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(child["errors"][0]["file"], corrupt);
+        assert!(std::path::Path::new(&saved).exists(), "the successful child output remains saved");
+        assert!(!std::path::Path::new(&outer).exists(), "the failed outer input is not written");
+        assert!(!std::path::Path::new(&later).exists(), "later steps do not execute");
+        assert_eq!(s.documents().len(), usize::from(source == "open"));
+    }
+}
+
 #[test]
 fn color_lookup_table_bakes_the_adjustment_stack() {
     let mut s = session(8, 8, 8);
@@ -1496,16 +3229,16 @@ fn batch_naming_serial_keeps_same_named_inputs_and_their_pixels() {
         )
         .unwrap();
     assert_eq!(result["errors"], json!([]), "{result}");
-    assert_eq!(result["files"], json!([join(&out, "photo_007.png"), join(&out, "photo_008.png")]));
-    for (name, expected) in [("photo_007.png", [1.0, 0.0, 0.0, 1.0]), ("photo_008.png", [0.0, 0.0, 1.0, 1.0])] {
-        let saved = photocraft_io::import(name, &std::fs::read(join(&out, name)).unwrap()).unwrap().document;
+    assert_eq!(result["files"], json!([join(&out, "photo_007"), join(&out, "photo_008")]));
+    for (name, expected) in [("photo_007", [1.0, 0.0, 0.0, 1.0]), ("photo_008", [0.0, 0.0, 1.0, 1.0])] {
+        let saved = photocraft_io::import("photo.png", &std::fs::read(join(&out, name)).unwrap()).unwrap().document;
         let pixel = photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0];
         assert_eq!(pixel, expected, "{name}");
     }
 }
 
-/// Two inputs with one output name: the first result is kept and the second is an error, never
-/// a silent overwrite listed as written (#422).
+/// Batch follows Photoshop's later-file-wins behavior. Image Processor and lens correction
+/// keep their existing collision error so their outputs are never silently replaced.
 #[test]
 fn batch_reports_inputs_that_share_an_output_name() {
     let dir = tmp("collide");
@@ -1529,12 +3262,16 @@ fn batch_reports_inputs_that_share_an_output_name() {
         let r = s.execute(cmd, p).unwrap();
         let files = r["files"].as_array().unwrap();
         let errors = r["errors"].as_array().unwrap();
-        // `a.*` and `B.png`/`b.tif` (names that differ only in case) each collide once.
-        assert_eq!((files.len(), errors.len()), (2, 2), "{cmd}: {r}");
-        assert!(errors.iter().all(|e| e["error"].as_str().unwrap().contains("not written")), "{r}");
-        let mut written: Vec<_> = files.iter().map(|f| f.as_str().unwrap().to_lowercase()).collect();
-        written.dedup();
-        assert_eq!(written.len(), 2, "each listed file is distinct: {r}");
+        if cmd == "file.automate.batch" {
+            assert_eq!((files.len(), errors.len()), (4, 0), "{cmd}: {r}");
+            assert_eq!(files[1], files[2], "the later a.png result replaces a.jpg: {r}");
+        } else {
+            assert_eq!((files.len(), errors.len()), (2, 2), "{cmd}: {r}");
+            assert!(errors.iter().all(|e| e["error"].as_str().unwrap().contains("not written")), "{r}");
+            let mut written: Vec<_> = files.iter().map(|f| f.as_str().unwrap().to_lowercase()).collect();
+            written.dedup();
+            assert_eq!(written.len(), 2, "each listed file is distinct: {r}");
+        }
     }
     // Keeping each file's format, nothing collides.
     let out = join(&dir, "same");
@@ -1548,10 +3285,10 @@ fn batch_reports_inputs_that_share_an_output_name() {
     std::fs::write(&droplet, json!({"photocraftDroplet": 1, "name": "d", "action": {"steps": []}, "options": {"format": "png"}}).to_string()).unwrap();
     let out = join(&dir, "droplet");
     let r = s.execute("file.automate.runDroplet", json!({"droplet": droplet, "input": [join(&input, "a.png"), other], "output": out})).unwrap();
-    assert_eq!((r["files"].as_array().unwrap().len(), r["errors"].as_array().unwrap().len()), (1, 1), "{r}");
+    assert_eq!((r["files"].as_array().unwrap().len(), r["errors"].as_array().unwrap().len()), (2, 0), "{r}");
     let kept = photocraft_io::import("a.png", &std::fs::read(join(&out, "a.png")).unwrap()).unwrap().document;
     let px = photocraft_compose::render(&kept, Rect::new(1, 1, 2, 2)).px[0];
-    assert!(px[0] > 0.99 && px[1] < 0.01, "the first input's result is kept: {px:?}");
+    assert!(px[0] > 0.99 && px[1] > 0.99, "the later input's result replaces the first: {px:?}");
 }
 
 /// `file.revealInFinder` (the document tab's Reveal, UI-217-6) reveals the clicked document's
@@ -1609,7 +3346,7 @@ fn batch_include_all_subfolders() {
     let out = join(&input, "batch");
     let r = s.execute("file.automate.batch", json!({"steps": [], "input": input, "output": out, "format": "png"})).unwrap();
     assert_eq!((r["files"].as_array().unwrap().len(), r["errors"].as_array().unwrap().len()), (1, 0), "{r}");
-    // With subfolders: every image, in folder order, results kept apart by subfolder; the output
+    // With subfolders: every image, in folder order, results saved flat; the output
     // folder (inside the input folder, holding last run's a.png) is not an input.
     let r = s
         .execute(
@@ -1620,12 +3357,12 @@ fn batch_include_all_subfolders() {
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
     let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
     let o = out.replace('\\', "/");
-    assert_eq!(files, vec![format!("{o}/a.png"), format!("{o}/sub/b.png"), format!("{o}/sub/deeper/a.png"), format!("{o}/z/a.png")]);
-    let deep = photocraft_io::import("a.png", &std::fs::read(join(&out, "sub/deeper/a.png")).unwrap()).unwrap().document;
-    let px = photocraft_compose::render(&deep, Rect::new(1, 1, 2, 2)).px[0];
-    assert!(px[0] > 0.99 && px[1] > 0.99 && px[2] < 0.01, "blue inverted to yellow: {px:?}");
+    assert_eq!(files, vec![format!("{o}/a.png"), format!("{o}/b.png"), format!("{o}/a.png"), format!("{o}/a.png")]);
+    let last = photocraft_io::import("a.png", &std::fs::read(join(&out, "a.png")).unwrap()).unwrap().document;
+    let px = photocraft_compose::render(&last, Rect::new(1, 1, 2, 2)).px[0];
+    assert!(px[0] < 0.01 && px[1] < 0.01 && px[2] < 0.01, "the last white input is inverted to black: {px:?}");
     std::fs::remove_dir_all(&out).unwrap();
-    // A naming template applies within each kept subfolder (output outside the input folder).
+    // A naming template applies across all inputs, with serials distinguishing the flat outputs.
     let named = join(&dir, "named");
     let r = s
         .execute("file.automate.batch", json!({"steps": [], "input": input, "includeSubfolders": true, "output": named, "format": "png", "naming": "{serial}"}))
@@ -1633,7 +3370,7 @@ fn batch_include_all_subfolders() {
     assert!(r["errors"].as_array().unwrap().is_empty(), "{r}");
     let files: Vec<String> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().replace('\\', "/")).collect();
     let n = named.replace('\\', "/");
-    assert_eq!(files, vec![format!("{n}/001.png"), format!("{n}/sub/002.png"), format!("{n}/sub/deeper/003.png"), format!("{n}/z/004.png")]);
+    assert_eq!(files, vec![format!("{n}/001"), format!("{n}/002"), format!("{n}/003"), format!("{n}/004")]);
     // Image Processor shares the option (with its results out of the input folder).
     let out = join(&dir, "jpg");
     let r = s.execute("file.scripts.imageProcessor", json!({"input": input, "includeSubfolders": true, "output": out})).unwrap();
@@ -1662,7 +3399,7 @@ fn batch_subfolder_walk_is_depth_limited() {
             std::fs::write(join(&deep, &format!("l{level}.png")), b"x").unwrap();
         }
     }
-    let found = list_images_tree(&dir, "", "test").unwrap();
+    let found = list_files_tree(&dir, "", "test", false).unwrap();
     let names: Vec<_> = found.iter().map(|i| file_name(&i.path)).collect();
     assert_eq!(names, vec![format!("l{MAX_SUBFOLDER_DEPTH}.png")], "{found:?}");
     assert_eq!(found[0].rel_dir.split('/').count(), MAX_SUBFOLDER_DEPTH);
@@ -1688,7 +3425,7 @@ fn batch_subfolder_walk_survives_symlink_loops() {
         eprintln!("skipped: cannot create a directory symlink here");
         return;
     }
-    let found = list_images_tree(&dir, "", "test").unwrap();
+    let found = list_files_tree(&dir, "", "test", false).unwrap();
     let names: Vec<_> = found.iter().map(|i| (i.rel_dir.as_str(), file_name(&i.path))).collect();
     assert_eq!(names, vec![("", "a.png".to_string()), ("sub", "b.png".to_string())]);
 }
@@ -1746,13 +3483,13 @@ fn batch_naming_keeps_serial_positions_after_errors_and_captures_the_utc_date() 
     assert_eq!(files.len(), 1, "{result}");
     let name = file_name(files[0].as_str().unwrap());
     assert!(
-        name == format!("{}_010_good.png", &before[..10]) || name == format!("{}_010_good.png", &after[..10]),
+        name == format!("{}_010_good", &before[..10]) || name == format!("{}_010_good", &after[..10]),
         "the missing input still consumes its serial: {name}"
     );
 }
 
 #[test]
-fn batch_naming_still_reports_collisions_instead_of_overwriting() {
+fn batch_naming_later_result_replaces_the_earlier_one() {
     let dir = tmp("naming-collision");
     let red = png(&dir, "red.png", 8, 8, "#ff0000");
     let blue = png(&dir, "blue.png", 8, 8, "#0000ff");
@@ -1766,11 +3503,10 @@ fn batch_naming_still_reports_collisions_instead_of_overwriting() {
             }),
         )
         .unwrap();
-    assert_eq!(result["files"], json!([join(&out, "constant.png")]));
-    assert_eq!(result["errors"].as_array().unwrap().len(), 1, "{result}");
-    assert!(result["errors"][0]["error"].as_str().unwrap().contains("not written"));
-    let saved = photocraft_io::import("constant.png", &std::fs::read(join(&out, "constant.png")).unwrap()).unwrap().document;
-    assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [1.0, 0.0, 0.0, 1.0]);
+    assert_eq!(result["files"], json!([join(&out, "constant"), join(&out, "constant")]));
+    assert_eq!(result["errors"], json!([]), "{result}");
+    let saved = photocraft_io::import("constant.png", &std::fs::read(join(&out, "constant")).unwrap()).unwrap().document;
+    assert_eq!(photocraft_compose::render(&saved, Rect::new(1, 1, 2, 2)).px[0], [0.0, 0.0, 1.0, 1.0]);
 }
 #[test]
 fn batch_naming_rejects_outputs_that_replace_inputs_before_processing() {
@@ -1785,7 +3521,7 @@ fn batch_naming_rejects_outputs_that_replace_inputs_before_processing() {
         .execute(
             "file.automate.batch",
             json!({
-                "input": [first, second], "output": join(&dir, "."), "steps": [], "naming": "{serial}"
+                "input": [first, second], "output": join(&dir, "."), "steps": [], "naming": "{serial}.{ext}"
             }),
         )
         .unwrap_err();
@@ -1826,6 +3562,28 @@ fn batch_saves_at_the_recorded_save_so_a_close_after_it_keeps_the_result() {
     let r = s.execute("file.automate.batch", json!({"input": [red], "output": out, "format": "png", "steps": [["file.close", {}]]})).unwrap();
     assert_eq!(r["files"], json!([]), "{r}");
     assert!(r["errors"][0]["error"].as_str().unwrap().contains("no active document"), "{r}");
+}
+
+/// "…; Save As; Close" with the Close recorded on a clean document (no `Svng`, `"save":"ask"`):
+/// Batch performs the Save As, so the document is saved when the Close asks, and every file is
+/// written. The Close used to refuse the still-changed scratch document and fail each file.
+#[test]
+fn batch_save_as_then_close_that_asks_processes_every_file() {
+    let dir = tmp("batch-save-close-ask");
+    let input = vec![png(&dir, "red.png", 8, 8, "#ff0000"), png(&dir, "blue.png", 8, 8, "#0000ff")];
+    let out = join(&dir, "out");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveAs", {}], ["file.close", {"save": "ask"}]]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": input, "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["errors"], json!([]), "{r}");
+    assert_eq!(r["files"].as_array().unwrap().len(), 2, "{r}");
+    let red = photocraft_io::import("red.png", &std::fs::read(join(&out, "red.png")).unwrap()).unwrap().document;
+    assert_eq!(photocraft_compose::render(&red, Rect::new(1, 1, 2, 2)).px[0], [0.0, 1.0, 1.0, 1.0], "the inverted red");
+    // A Save a Copy doesn't save the document itself: the Close that asks still refuses it.
+    let out = join(&dir, "copy");
+    let steps = json!([["image.adjustments.invert", {}], ["file.saveACopy", {}], ["file.close", {"save": "ask"}]]);
+    let r = Session::new().execute("file.automate.batch", json!({"input": input, "output": out, "format": "png", "steps": steps})).unwrap();
+    assert_eq!(r["files"], json!([]), "{r}");
+    assert_eq!(r["errors"].as_array().unwrap().len(), 2, "{r}");
 }
 
 /// The document a recorded save marked is the result, not the one left active after it closed.
@@ -1914,6 +3672,28 @@ fn folder_listing_takes_every_format_photocraft_opens() {
     assert!(!super::openable_name("a.avif"));
 }
 
+/// Save and Close never writes a source in a format other than its own: a Cineon source, which
+/// Batch saves as PSD, is refused and left as it was, while a PNG next to it is saved in place.
+#[test]
+fn batch_save_and_close_refuses_a_source_it_would_save_in_another_format() {
+    let dir = tmp("batch-save-close-cin");
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8, "background": "#ff0000"})).unwrap();
+    let cin = join(&dir, "a.cin");
+    save_doc(doc(&s), &cin, None).unwrap();
+    let png_path = png(&dir, "b.png", 8, 8, "#ff0000");
+    let (cin_before, png_before) = (std::fs::read(&cin).unwrap(), std::fs::read(&png_path).unwrap());
+    let r = Session::new()
+        .execute("file.automate.batch", json!({"input": dir, "destination": "saveAndClose", "steps": [["image.adjustments.invert", {}]]}))
+        .unwrap();
+    let errors = r["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1, "{r}");
+    assert!(errors[0]["file"].as_str().unwrap().ends_with("a.cin"), "{r}");
+    assert!(errors[0]["error"].as_str().unwrap().contains("needs Save As"), "{r}");
+    assert_eq!(std::fs::read(&cin).unwrap(), cin_before, "the Cineon source keeps its bytes");
+    assert_ne!(std::fs::read(&png_path).unwrap(), png_before, "the PNG is saved in place");
+}
+
 /// A batch over a folder processes PAM, PFM and DDS files instead of skipping them.
 #[test]
 fn batch_folder_processes_netpbm_and_dds_files() {
@@ -1973,6 +3753,36 @@ fn save_a_copy_writes_the_tiff_compression_asked_for() {
     }
 }
 
+/// #8827: `tiffPyramid` writes reduced-resolution levels after the image and `tiffTransparency`
+/// false composites a transparent document over white. Bad values are refused before anything is
+/// written.
+#[test]
+fn save_a_copy_writes_the_tiff_pyramid_and_transparency_asked_for() {
+    let dir = tmp("tiff-options");
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 200, "height": 100, "background": "transparent"})).unwrap();
+    let out = join(&dir, "p.tif");
+    s.execute("file.saveACopy", json!({"path": out, "tiffPyramid": true})).unwrap();
+    let bytes = std::fs::read(&out).unwrap();
+    let sizes: Vec<(u32, u32)> = photocraft_codecs::tiff_info(&bytes).unwrap().pages.iter().map(|p| (p.width, p.height)).collect();
+    assert_eq!(sizes, [(200, 100), (100, 50), (50, 25)]);
+    for (t, alpha) in [(None, true), (Some(true), true), (Some(false), false)] {
+        let mut p = json!({"path": out});
+        if let Some(t) = t {
+            p["tiffTransparency"] = json!(t);
+        }
+        s.execute("file.saveACopy", p).unwrap();
+        let img = photocraft_codecs::decode(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(img.layout().has_alpha(), alpha, "{t:?}");
+    }
+    for (key, bad) in [("tiffPyramid", json!("yes")), ("tiffPyramid", json!(1)), ("tiffTransparency", json!("off")), ("tiffTransparency", json!([]))] {
+        let out = join(&dir, "bad.tif");
+        let r = s.execute("file.saveACopy", json!({"path": out, key: bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{key} {bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{key} {bad}: nothing written");
+    }
+}
+
 #[test]
 fn sanitize_keeps_windows_device_names_off_the_disk() {
     assert_eq!(sanitize("nul"), "nul_");
@@ -1987,5 +3797,515 @@ fn sanitize_keeps_windows_device_names_off_the_disk() {
     // Names that only start like a device are files like any other.
     for name in ["console", "normal", "com10", "lpt0", "nullify", "con_", "com⁴", "com¹¹"] {
         assert_eq!(sanitize(name), name);
+    }
+}
+
+#[test]
+fn approve_memory_validates_parameters_and_unknown_ids() {
+    let mut s = session(4, 4, 8);
+    assert!(matches!(s.execute("file.approveMemory", json!({})), Err(EngineError::BadParams { .. })));
+    assert!(matches!(s.execute("file.approveMemory", json!({"id": "not_a_number"})), Err(EngineError::BadParams { .. })));
+    assert!(matches!(s.execute("file.approveMemory", json!({"id": 12345})), Err(EngineError::BadParams { .. })));
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "approve": false})), Err(EngineError::BadParams { .. })),
+        "unknown id on cancel must fail"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "approve": "true"})), Err(EngineError::BadParams { .. })),
+        "wrong approve type string must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "approve": 1})), Err(EngineError::BadParams { .. })),
+        "wrong approve type int must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.openAs", json!({"path": "a.psd", "approveHighMemory": "true"})), Err(EngineError::BadParams { .. })),
+        "wrong approveHighMemory on openAs must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.placeEmbedded", json!({"path": "a.psd", "approveHighMemory": 1})), Err(EngineError::BadParams { .. })),
+        "wrong approveHighMemory on placeEmbedded must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "background": "true"})), Err(EngineError::BadParams { .. })),
+        "wrong background type string must BadParams"
+    );
+    assert!(
+        matches!(s.execute("file.approveMemory", json!({"id": 12345, "background": 1})), Err(EngineError::BadParams { .. })),
+        "wrong background type int must BadParams"
+    );
+}
+
+#[test]
+fn approve_memory_cancels_and_removes_pending_preflight() {
+    let mut s = Session::new();
+    let id = s
+        .store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "test.psd".into(),
+            source: crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![1, 2, 3])),
+            fingerprint: crate::jobs::SourceFingerprint::of(&crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![1, 2, 3]))).unwrap(),
+            required: 1000,
+            soft_limit: 500,
+            hard_limit: 2000,
+            available_ram: Some(4000),
+            confirm_damage: true,
+        })
+        .unwrap();
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": false})).unwrap();
+    assert_eq!(res["approved"], false);
+    assert_eq!(res["cancelled"], true);
+    assert!(s.take_pending_preflight(id).is_none(), "preflight removed on cancel");
+}
+
+#[test]
+fn approve_memory_refuses_when_source_changes_before_confirmation() {
+    let dir = tmp("fingerprint_test");
+    let path = join(&dir, "change.psd");
+    std::fs::write(&path, b"initial content").unwrap();
+
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Path(path.clone());
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    let id = s
+        .store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "change.psd".into(),
+            source: src,
+            fingerprint: fp,
+            required: 1000,
+            soft_limit: 500,
+            hard_limit: 2000,
+            available_ram: Some(4000),
+            confirm_damage: true,
+        })
+        .unwrap();
+
+    // Modify file on disk
+    std::fs::write(&path, b"changed content longer").unwrap();
+
+    let res = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false}));
+    assert!(matches!(res, Err(EngineError::SourceChanged { .. })), "changed file must fail identity verification: {res:?}");
+}
+
+#[test]
+fn approve_memory_refuses_when_available_ram_decreases() {
+    let gb = 1u64 << 30;
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 16]));
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    let id = s
+        .store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "ram_drop.psd".into(),
+            source: src,
+            fingerprint: fp,
+            required: 8 * gb,
+            soft_limit: 6 * gb,
+            hard_limit: 9 * gb,
+            available_ram: Some(12 * gb),
+            confirm_damage: true,
+        })
+        .unwrap();
+
+    // Memory drops: only 6 GiB available -> H = 4.5 GiB < 8 GiB
+    let snap_low = photocraft_io::memory::MemorySnapshot { available_ram: Some(6 * gb), swap_free: None, commit_headroom: None };
+    photocraft_io::memory::with_mock_memory(snap_low, || {
+        let res = s.execute("file.approveMemory", json!({"id": id, "approve": true}));
+        assert!(res.is_err(), "decreased memory must refuse");
+    });
+}
+
+#[test]
+fn pending_preflights_cap_fails_closed() {
+    let mut s = Session::new();
+    let src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0; 4]));
+    let fp = crate::jobs::SourceFingerprint::of(&src).unwrap();
+    for i in 0..crate::Session::MAX_PENDING_PREFLIGHTS {
+        assert!(
+            s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+                id: 0,
+                name: format!("file_{i}.psd"),
+                source: src.clone(),
+                fingerprint: fp.clone(),
+                required: 1000,
+                soft_limit: 500,
+                hard_limit: 2000,
+                available_ram: Some(4000),
+                confirm_damage: true,
+            })
+            .is_ok()
+        );
+    }
+    assert!(
+        s.store_pending_preflight(crate::jobs::PendingPsdPreflight {
+            id: 0,
+            name: "overflow.psd".into(),
+            source: src,
+            fingerprint: fp,
+            required: 1000,
+            soft_limit: 500,
+            hard_limit: 2000,
+            available_ram: Some(4000),
+            confirm_damage: true,
+        })
+        .is_err()
+    );
+}
+
+/// A queued high-memory preflight for `source`, with fields a test can read.
+fn memory_preflight(name: &str, source: crate::jobs::OpenSource) -> crate::jobs::PendingPsdPreflight {
+    let fingerprint = crate::jobs::SourceFingerprint::of(&source).unwrap();
+    crate::jobs::PendingPsdPreflight {
+        id: 0,
+        name: name.into(),
+        source,
+        fingerprint,
+        required: 1000,
+        soft_limit: 500,
+        hard_limit: 2000,
+        available_ram: Some(4000),
+        confirm_damage: true,
+    }
+}
+
+#[test]
+fn pending_preflights_bound_retained_bytes_and_charge_a_shared_buffer_once() {
+    let mut s = Session::new();
+    let cap = 100;
+    let a_src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 40]));
+    let b_src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 40]));
+    let a_id = s.store_pending_preflight_with_limit(memory_preflight("a.psd", a_src.clone()), cap).unwrap();
+    let b_id = s.store_pending_preflight_with_limit(memory_preflight("b.psd", b_src), cap).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80);
+    // A second reference to the same allocation is already held: queued for free.
+    let a_again = s.store_pending_preflight_with_limit(memory_preflight("a-again.psd", a_src), cap).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80, "one shared buffer is charged once, not three times");
+    // A different buffer would carry the total over the cap: refused, and nothing is charged.
+    let c_src = crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 30]));
+    let err = s.store_pending_preflight_with_limit(memory_preflight("c.psd", c_src.clone()), cap).expect_err("a further 30 bytes must not fit beside 80");
+    assert!(err.to_string().contains("waiting for a memory approval"), "{err}");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80, "a refused preflight adds no charge");
+    // Cancelling one released its buffer; the refused one now fits; clearing releases the rest.
+    assert!(s.cancel_pending_preflight(a_again).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 80, "the other live reference still holds the buffer");
+    assert!(s.cancel_pending_preflight(a_id).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 40);
+    let c_id = s.store_pending_preflight_with_limit(memory_preflight("c.psd", c_src), cap).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 70);
+    s.clear_pending_preflights();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "clear releases every held buffer");
+    assert!(s.cancel_pending_preflight(b_id).is_none());
+    assert!(s.cancel_pending_preflight(c_id).is_none());
+}
+
+#[test]
+fn pending_preflights_charge_the_retained_allocation_not_the_visible_length() {
+    let mut s = Session::new();
+    let cap = 100;
+    // Room for 128 bytes but one byte of contents: what stays resident is the allocation, so a
+    // cap that fits the contents must still refuse it.
+    let mut grown = Vec::with_capacity(128);
+    grown.push(7u8);
+    let held = grown.capacity() as u64;
+    assert!(held >= 128, "the buffer really has the larger allocation: {held}");
+    let big = std::sync::Arc::new(grown);
+    let err = s
+        .store_pending_preflight_with_limit(memory_preflight("big.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::clone(&big))), cap)
+        .expect_err("the held capacity, not the one byte of contents, must be charged");
+    assert!(err.to_string().contains("waiting for a memory approval"), "{err}");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "a refused preflight adds no charge");
+
+    // A cap that admits the whole allocation accepts it, and shared clones count once.
+    let id = s.store_pending_preflight_with_limit(memory_preflight("big.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::clone(&big))), held).unwrap();
+    let shared =
+        s.store_pending_preflight_with_limit(memory_preflight("shared.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::clone(&big))), held).unwrap();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), held, "one shared allocation is charged once, whatever its length");
+    assert!(s.cancel_pending_preflight(shared).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), held, "the other shared reference still holds the allocation");
+    assert!(s.cancel_pending_preflight(id).is_some());
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "cancelling the last reference releases the allocation");
+    s.clear_pending_preflights();
+
+    // A buffer whose length was shrunk to zero still holds its allocation: the held capacity is
+    // measured, so it is charged even though `len()` says nothing is there.
+    let mut emptied = Vec::with_capacity(128);
+    emptied.push(1u8);
+    emptied.clear();
+    assert!(emptied.is_empty(), "the length is zero while the allocation stays");
+    let emptied = std::sync::Arc::new(emptied);
+    let emptied_held = emptied.capacity() as u64;
+    assert!(emptied_held >= 128, "clearing does not release the allocation: {emptied_held}");
+    let emptied_id = s
+        .store_pending_preflight_with_limit(memory_preflight("emptied.psd", crate::jobs::OpenSource::Bytes(emptied)), emptied_held)
+        .expect("the allocation fits the cap that admits it");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), emptied_held, "an empty length is not zero bytes held");
+    s.clear_pending_preflights();
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0, "clear releases every held allocation");
+    assert!(s.cancel_pending_preflight(emptied_id).is_none());
+}
+
+#[test]
+fn approve_memory_is_neither_journaled_nor_recorded_in_an_action() {
+    let mut s = Session::new();
+    let id = s.store_pending_preflight(memory_preflight("cancel.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 4])))).unwrap();
+    s.execute("actions.record", json!({"name": "Memory approvals"})).unwrap();
+    let r = s.execute("file.approveMemory", json!({"id": id, "approve": false})).unwrap();
+    assert_eq!((r["approved"].clone(), r["cancelled"].clone()), (json!(false), json!(true)));
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(s.journal.iter().all(|(command, _)| command != "file.approveMemory"), "one-shot approval must not become a journal entry: {:?}", s.journal);
+    let action = s.actions.list.first().expect("the recorded action");
+    assert!(action.steps.iter().all(|(command, _)| command != "file.approveMemory"), "one-shot approval must not replay from an action: {:?}", action.steps);
+}
+
+#[test]
+fn approve_memory_releases_the_preflight_when_the_hard_limit_refuses_it() {
+    let gb = 1u64 << 30;
+    let mut s = Session::new();
+    let preflight = crate::jobs::PendingPsdPreflight {
+        required: 8 * gb,
+        soft_limit: 6 * gb,
+        hard_limit: 9 * gb,
+        available_ram: Some(12 * gb),
+        ..memory_preflight("ram_drop.psd", crate::jobs::OpenSource::Bytes(std::sync::Arc::new(vec![0u8; 16])))
+    };
+    let id = s.store_pending_preflight(preflight).unwrap();
+    let snap_low = photocraft_io::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    let expected_limit = photocraft_io::memory::resolve_budget(snap_low, None).hard_limit;
+    photocraft_io::memory::with_mock_memory(snap_low, || {
+        let err = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false})).unwrap_err();
+        match &err {
+            EngineError::PsdHardBudget { name, required, limit } => {
+                assert_eq!(name, "ram_drop.psd");
+                assert_eq!((*required, *limit), (8 * gb, expected_limit));
+            }
+            other => panic!("the hard refusal must keep its fields, got {other}"),
+        }
+    });
+    assert!(s.take_pending_preflight(id).is_none(), "a hard refusal releases the held source");
+    assert_eq!(s.pending_preflight_bytes().unwrap(), 0);
+}
+
+#[test]
+fn open_as_and_place_keep_the_typed_hard_budget_fields() {
+    let gb = 1u64 << 30;
+    let dir = tmp("hard_budget");
+    let path = join(&dir, "big.psd");
+    let mut src = Session::new();
+    src.execute("file.new", json!({"width": 4, "height": 4, "depth": 8})).unwrap();
+    std::fs::write(&path, photocraft_io::export(&src.active().unwrap().doc, "x.psd", &Default::default()).unwrap().bytes).unwrap();
+    // An estimate over the resolved hard ceiling is refused, and no approval raises the ceiling.
+    // The estimate charge is a test seam so the fixture stays tiny.
+    let snap = photocraft_io::memory::MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
+    let hard = photocraft_io::memory::resolve_budget(snap, None).hard_limit;
+    assert!(hard < u64::MAX);
+    photocraft_io::memory::with_mock_memory(snap, || {
+        photocraft_io::psd_budget::with_test_estimate_charge(hard + 1, || {
+            let mut s = Session::new();
+            let err = s.execute("file.openAs", json!({"path": path.clone(), "approveHighMemory": true})).unwrap_err();
+            match &err {
+                EngineError::PsdHardBudget { name, required, limit } => {
+                    assert_eq!(name, &path);
+                    assert!(*required > hard && *limit == hard);
+                }
+                other => panic!("openAs must keep name/required/limit, got {other}"),
+            }
+            let mut s = session(8, 8, 8);
+            let err = s.execute("file.placeEmbedded", json!({"path": path.clone(), "approveHighMemory": true})).unwrap_err();
+            match &err {
+                EngineError::PsdHardBudget { required, limit, .. } => assert!(*required > hard && *limit == hard),
+                other => panic!("place must keep required/limit, got {other}"),
+            }
+        });
+    });
+}
+
+thread_local! { static REVIEW_CANCEL: std::cell::RefCell<Option<crate::jobs::JobCtx>> = const { std::cell::RefCell::new(None) }; }
+
+fn cancel_at_marker(id: &str, params: &Value) -> Result<()> {
+    if id == "layer.renameLayer" && params["name"] == "Cancel here" {
+        REVIEW_CANCEL.with(|ctx| ctx.borrow().as_ref().unwrap().cancel());
+        return Err(EngineError::Cancelled);
+    }
+    Ok(())
+}
+
+/// A Batch cancelled with no file errors stops the calling action at that step.
+#[test]
+fn playback_stops_after_a_cancelled_nested_batch() {
+    let dir = tmp("batch-cancel-parent");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    let mut s = session(4, 4, 8);
+    let ctx = crate::jobs::JobCtx::new();
+    s.set_inline_job_ctx(Some(ctx.clone()));
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+    s.authorize = Some(cancel_at_marker);
+    let batch = json!({"input": [input], "output": join(&dir, "out"), "steps": [["layer.renameLayer", {"name": "Cancel here"}]]});
+    s.actions.list.push(crate::actions_cmds::Action::new("Run", vec![("file.automate.batch".into(), batch), ("layer.new.layer".into(), json!({}))]));
+    let layers = doc(&s).layers.len();
+    let played = s.execute("actions.play", json!({"action": "Run"})).unwrap();
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = None);
+    assert!(ctx.cancelled());
+    assert_eq!(played["failed"]["step"], 0, "{played}");
+    assert_eq!(played["failed"]["result"]["cancelled"], true, "{played}");
+    assert_eq!(played["failed"]["result"]["errors"], json!([]), "{played}");
+    assert_eq!(doc(&s).layers.len(), layers, "the step after the cancelled Batch must not run");
+}
+
+/// Steps a Batch runs from inside a script count against the script's total, in both sources.
+#[test]
+fn batch_steps_inside_a_script_count_against_its_step_limit() {
+    let dir = tmp("batch-script-steps");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    for source in ["open", "folder"] {
+        let mut s = session(4, 4, 8);
+        s.actions.script_depth = 1;
+        s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS - 1;
+        let mut p = json!({"source": source, "output": join(&dir, source), "format": "png",
+            "steps": [["image.adjustments.invert", {}], ["image.adjustments.invert", {}]]});
+        if source == "folder" {
+            p["input"] = json!([input]);
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        let error = result["errors"][0]["error"].as_str().unwrap_or_default();
+        assert!(error.contains("steps in all"), "{source}: {result}");
+        assert_eq!(s.actions.script_steps, crate::automate_cmds::MAX_SCRIPT_STEPS, "{source}");
+    }
+}
+
+/// A recorded Save is a step too: with the script's budget spent, a Save-only Batch writes
+/// nothing, in both sources, and its result says the script ran out of steps.
+#[test]
+fn a_save_only_batch_writes_nothing_once_the_script_steps_are_spent() {
+    let dir = tmp("batch-script-save-only");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    for source in ["open", "folder"] {
+        let mut s = session(4, 4, 8);
+        s.actions.script_depth = 1;
+        s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS;
+        let out = join(&dir, &format!("out-{source}"));
+        let mut p = json!({"source": source, "output": out, "format": "png", "steps": [["file.save", {}]]});
+        if source == "folder" {
+            p["input"] = json!([input]);
+        }
+        let result = s.execute("file.automate.batch", p).unwrap();
+        assert_eq!(result["files"], json!([]), "{source}: {result}");
+        assert!(result["errors"][0]["error"].as_str().unwrap_or_default().contains("steps in all"), "{source}: {result}");
+        assert!(result["scriptLimitError"].is_string(), "{source}: {result}");
+        let written = std::fs::read_dir(&out).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(written, 0, "{source}: nothing may be written past the budget");
+    }
+}
+
+/// A direct Batch in a script that spends the script's last step makes the script fail there
+/// instead of reporting `ok: true` with the exhaustion hidden as a per-file error.
+#[test]
+fn a_direct_batch_that_spends_the_script_budget_fails_the_script() {
+    let dir = tmp("batch-script-budget-browse");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    for source in ["open", "folder"] {
+        let mut s = session(4, 4, 8);
+        // A nested script: the outer one has already spent all but two steps.
+        s.actions.script_depth = 1;
+        s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS - 2;
+        let mut batch = json!({"source": source, "output": join(&dir, &format!("out-{source}")), "format": "png",
+            "steps": [["image.adjustments.invert", {}], ["image.adjustments.invert", {}]]});
+        if source == "folder" {
+            batch["input"] = json!([input]);
+        }
+        let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch]]})).unwrap();
+        assert_eq!(r["ok"], false, "{source}: {r}");
+        assert!(r["results"][0]["error"].as_str().unwrap_or_default().contains("steps in all"), "{source}: {r}");
+        assert!(r["results"][0]["result"]["errors"].as_array().is_some_and(|e| !e.is_empty()), "{source}: {r}");
+    }
+}
+
+/// Per-file errors from a direct Batch stay script results, but a cancel or an error log that
+/// could not be written stops the script, also when files failed as well.
+#[test]
+fn a_direct_batch_in_a_script_stops_it_when_cancelled_or_its_log_fails() {
+    let dir = tmp("batch-script-stop");
+    let input = png(&dir, "in.png", 4, 4, "#ff0000");
+    let missing = join(&dir, "missing.png");
+    let next = json!(["layer.new.layer", {}]);
+
+    // Ordinary per-file errors: the script goes on.
+    let mut s = session(4, 4, 8);
+    let layers = doc(&s).layers.len();
+    let batch = json!({"input": [missing.clone()], "output": join(&dir, "out-plain"), "steps": []});
+    let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch], next.clone()]})).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(doc(&s).layers.len(), layers + 1, "{r}");
+
+    // A failed error log next to a failed file: the script stops at the Batch.
+    let mut s = session(4, 4, 8);
+    let layers = doc(&s).layers.len();
+    let batch = json!({"input": [missing], "output": join(&dir, "out-log"), "steps": [], "errorLog": dir.clone()});
+    let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch], next.clone()]})).unwrap();
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(r["results"][0]["error"].as_str().unwrap_or_default().contains("error log"), "{r}");
+    assert_eq!(doc(&s).layers.len(), layers, "the step after the Batch must not run: {r}");
+
+    // A cancel: the script stops at the Batch.
+    let mut s = session(4, 4, 8);
+    let ctx = crate::jobs::JobCtx::new();
+    s.set_inline_job_ctx(Some(ctx.clone()));
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
+    s.authorize = Some(cancel_at_marker);
+    let layers = doc(&s).layers.len();
+    let batch = json!({"input": [input], "output": join(&dir, "out-cancel"), "steps": [["layer.renameLayer", {"name": "Cancel here"}]]});
+    let r = s.execute("file.scripts.browse", json!({"steps": [["file.automate.batch", batch], next]})).unwrap();
+    REVIEW_CANCEL.with(|slot| *slot.borrow_mut() = None);
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["results"][0]["error"], "Batch was cancelled", "{r}");
+    assert_eq!(doc(&s).layers.len(), layers, "the step after the Batch must not run: {r}");
+}
+
+/// Two spellings of one destination through a symlinked folder are one output claim.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn output_claims_see_one_destination_through_a_symlinked_folder() {
+    let dir = tmp("batch-claims-symlink");
+    let real = join(&dir, "real");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = join(&dir, "link");
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&real, &link);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&real, &link);
+    if let Err(error) = linked {
+        eprintln!("skipped: cannot create a directory symlink here: {error}");
+        return;
+    }
+    let mut claims = OutputClaims::default();
+    claims.record(&join(&real, "a.png"), "first.png");
+    assert!(claims.check(&join(&link, "A.png")).is_err(), "the link reaches the earlier result");
+    assert!(claims.check(&join(&real, "b.png")).is_ok());
+}
+
+/// Save and Close never replaces a source that opened read-only, such as a Krita document
+/// named `.png`, whether Batch opens it or a recorded Open with Override Open does.
+#[test]
+fn save_and_close_refuses_a_read_only_source() {
+    let dir = tmp("batch-save-close-read-only");
+    let maindoc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DOC xmlns=\"http://www.calligra.org/DTD/krita\" syntaxVersion=\"2.0\">\
+        <IMAGE name=\"img\" width=\"4\" height=\"4\" colorspacename=\"RGBA\" x-res=\"72\" y-res=\"72\"><layers></layers></IMAGE></DOC>";
+    let mut zip = photocraft_format::zip::ZipWriter::new();
+    zip.add("mimetype", b"application/x-krita").unwrap();
+    zip.add("maindoc.xml", maindoc.as_bytes()).unwrap();
+    let bytes = zip.finish().unwrap();
+    let source = join(&dir, "source.png");
+    std::fs::write(&source, &bytes).unwrap();
+    assert!(photocraft_io::import("source.png", &bytes).unwrap().source_read_only, "the fixture opens read-only");
+    for override_open in [false, true] {
+        let mut p = json!({"input": [source], "destination": "saveAndClose", "steps": []});
+        if override_open {
+            p["overrideOpen"] = json!(true);
+            p["steps"] = json!([["file.openAs", {"path": join(&dir, "elsewhere.png")}]]);
+        }
+        let result = Session::new().execute("file.automate.batch", p).unwrap();
+        let error = result["errors"][0]["error"].as_str().unwrap_or_default();
+        assert!(error.contains("cannot replace this source"), "overrideOpen {override_open}: {result}");
+        assert_eq!(std::fs::read(&source).unwrap(), bytes, "overrideOpen {override_open}: the source is unchanged");
     }
 }

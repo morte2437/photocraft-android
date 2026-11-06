@@ -322,6 +322,46 @@ fn refuses_cubemaps_arrays_and_volumes() {
     unsupported(&compressed(4, 4, b"DXT2"), "premultiplied");
 }
 
+/// Face declarations matter even when the general cube flag is absent; padding does not.
+#[test]
+fn source_probe_distinguishes_extra_faces_from_single_images_and_padding() {
+    for caps in [0u32, 0x400, 0xc00, 0xfc00] {
+        let mut b = compressed(4, 4, b"DXT1");
+        b[112..116].copy_from_slice(&caps.to_le_bytes());
+        b.extend(bc1_block(RED, RED, [0; 4]));
+        for _ in 1..caps.count_ones() {
+            b.extend(bc1_block(BLUE, BLUE, [0; 4]));
+        }
+        assert!(decode(&b).unwrap().data().chunks(4).all(|p| p == [255, 0, 0, 255]));
+        assert_eq!(photocraft_codecs::has_unretained_source_data(&b).unwrap(), caps.count_ones() > 1);
+    }
+    // A FourCC-looking unused union and trailing bytes are not a DX10 declaration.
+    let mut single = header(1, 1, DDPF_RGB, b"DX10", 24, [0xff, 0xff00, 0xff_0000, 0]);
+    single.extend([1, 2, 3]);
+    single.extend([0xff; 64]);
+    assert_eq!(decode(&single).unwrap().data(), &[1, 2, 3]);
+    for mips in [0u32, 1] {
+        single[28..32].copy_from_slice(&mips.to_le_bytes());
+        assert!(!photocraft_codecs::has_unretained_source_data(&single).unwrap());
+    }
+}
+
+/// The metadata probe follows the same DX10 discriminator as preview decoding.
+#[test]
+fn source_probe_reads_dx10_array_and_cube_declarations() {
+    for (array, misc) in [(0, 0), (1, 0), (2, 0), (1, 4)] {
+        let mut b = dx10(1, 1, 28, 3, misc, array);
+        b.extend([1, 2, 3, 4]);
+        let multiple = array > 1 || misc == 4;
+        assert_eq!(photocraft_codecs::has_unretained_source_data(&b).unwrap(), multiple);
+        if multiple {
+            assert!(matches!(decode(&b), Err(CodecError::Unsupported { .. })));
+        } else {
+            assert_eq!(decode(&b).unwrap().data(), &[1, 2, 3, 4]);
+        }
+    }
+}
+
 #[test]
 fn rejects_truncated_files_at_every_length_without_panicking() {
     let mut b = dx10(5, 3, 77, 3, 0, 1); // BC3_UNORM: two 16-byte blocks

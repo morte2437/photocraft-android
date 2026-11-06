@@ -1185,3 +1185,56 @@ fn layers_panel_mask_target_isolates_the_curve_channel() {
     let row = isolated_curve_channel_for(s.active().unwrap(), true).expect("quick mask wins");
     assert_eq!((row.name.as_str(), row.gray), ("Quick Mask", Some(GraySurface::QuickMask)));
 }
+
+/// An opened RGB or CMYK document shows its spot channels (they print over the composite) and
+/// hides its alpha channels; a Multichannel document's inks are its composite, so their eyes stay off.
+#[test]
+fn opened_documents_show_their_spot_channels() {
+    use photocraft_color::{Color, ColorMode, PixelFormat};
+    for mode in [ColorMode::Rgb, ColorMode::Cmyk, ColorMode::Multichannel] {
+        let mut d = Document::new("spots", photocraft_doc::Size::new(4, 4), mode, SampleType::U8);
+        let fmt = PixelFormat::new(ColorMode::Grayscale, SampleType::U8, false);
+        d.channels.push(AlphaChannel::new("Alpha 1", photocraft_raster::Surface::new(fmt)));
+        d.channels.push(AlphaChannel { spot: Some((Color::rgb(0.0, 0.6, 0.65), 0.0)), ..AlphaChannel::new("teal", photocraft_raster::Surface::new(fmt)) });
+        let mut s = Session::new();
+        s.open_document(d, None);
+        let v = &s.active().unwrap().channel_view;
+        let spot_on = mode != ColorMode::Multichannel;
+        assert_eq!((v.alpha_shown(0), v.alpha_shown(1)), (false, spot_on), "{mode:?}");
+        assert_eq!(v.visible_colors(color_count(&s.active().unwrap().doc)), color_count(&s.active().unwrap().doc), "{mode:?}: the composite stays on");
+    }
+}
+
+/// Split Channels closes the original, so as in the reference application it splits only an
+/// image with a single layer: two layers (even with one hidden) or a lone group are refused and
+/// the document stays open with its layers; a flattened image or a lone normal layer still
+/// splits (a played `SplC` step goes through the same check).
+#[test]
+fn split_refuses_an_image_with_more_than_one_layer() {
+    let mut s = session();
+    s.execute("edit.fill", json!({"color": "#ff8000"})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    assert!(!s.is_enabled("channel.split"));
+    let err = s.execute("channel.split", json!({})).unwrap_err();
+    assert!(err.to_string().contains("flatten"), "{err}");
+    assert_eq!(s.documents().len(), 1, "the layered document stays open");
+    assert_eq!(doc(&s).layers.len(), 2, "with its layers");
+    std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).layers[1].visible = false;
+    assert!(s.execute("channel.split", json!({})).is_err(), "a hidden second layer still counts");
+    assert_eq!((s.documents().len(), doc(&s).layers.len()), (1, 2));
+    s.execute("layer.flattenImage", json!({})).unwrap();
+    assert!(s.is_enabled("channel.split"));
+    assert_eq!(s.execute("channel.split", json!({})).unwrap()["documents"].as_array().unwrap().len(), 3);
+    // A lone normal layer (Layer 0) splits too.
+    let mut s = session();
+    s.execute("layer.new.layerFromBackground", json!({})).unwrap();
+    assert!(!doc(&s).is_background(doc(&s).layers[0].id));
+    assert!(s.is_enabled("channel.split"));
+    assert_eq!(s.execute("channel.split", json!({})).unwrap()["documents"].as_array().unwrap().len(), 3);
+    // A lone group is a layer the split would lose.
+    let mut s = session();
+    std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).layers = vec![Layer::group("Group 1", vec![])];
+    assert!(!s.is_enabled("channel.split"));
+    assert!(s.execute("channel.split", json!({})).is_err());
+    assert_eq!(s.documents().len(), 1);
+}

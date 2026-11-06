@@ -360,6 +360,8 @@ async fn bridge_doc_save_rejects_headless_only_options_instead_of_saving_with_de
         json!({"path": "out.jpg", "quality": 50}),
         json!({"path": "out.png", "format": "png"}),
         json!({"path": "out.tif", "tiffLayers": true}),
+        json!({"path": "out.pcraft", "pcraftFullComposite": true}),
+        json!({"path": "out.pcraft", "pcraftFullComposite": false}),
         json!({"path": "out.pcraft", "index": 0}),
     ] {
         let r = call(&client, "doc_save", params.clone()).await;
@@ -460,6 +462,53 @@ async fn headless_doc_save_writes_dds_options() {
     let r = call(&client, "doc_export", json!({"path": "bad.dds", "ddsCompression": "bc7"})).await;
     assert_eq!(r.is_error, Some(true), "{}", text(&r));
     assert!(!dir.join("bad.dds").exists());
+    client.cancel().await.unwrap();
+    cleanup(&dir);
+}
+
+/// TIFF Options (#8827) reach the app's `app.save` through the bridge; a bad compression is
+/// refused before anything is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_doc_save_forwards_tiff_options() {
+    let (addr, app) = fake_app().await;
+    let client = connect(PhotocraftMcp::bridge(&addr, CONTROL_TOKEN).unwrap()).await;
+    let saved = json_of(&call(&client, "doc_save", json!({"path": "out.tif", "tiffCompression": "lzw", "tiffTransparency": false, "tiffPyramid": true})).await);
+    assert_eq!(saved, json!({"saved": {"path": "out.tif", "tiffCompression": "lzw", "tiffTransparency": false, "tiffPyramid": true}}));
+    for bad in [json!({"path": "out.tif", "tiffCompression": "jpeg"}), json!({"path": "out.tif", "tiffPyramid": "yes"})] {
+        let r = call(&client, "doc_save", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}: {}", text(&r));
+    }
+    client.cancel().await.unwrap();
+    app.abort();
+}
+
+/// Headless `doc_save`/`doc_export` write the TIFF Options asked for (#8827): compression,
+/// Save Transparency and Save Image Pyramid.
+#[tokio::test(flavor = "multi_thread")]
+async fn headless_doc_save_writes_tiff_options() {
+    let dir = tmp("tiff-options");
+    let client = connect(headless_in(&dir)).await;
+    call(&client, "doc_new", json!({"width": 200, "height": 100, "background": "transparent"})).await;
+    // (params, compression tag, alpha, directories)
+    for (tool, params, compression, alpha, dirs) in [
+        ("doc_export", json!({"path": "plain.tif"}), 1, true, 1),
+        ("doc_export", json!({"path": "lzw.tif", "tiffCompression": "lzw"}), 5, true, 1),
+        ("doc_save", json!({"path": "zip.tif", "tiffCompression": "zip", "tiffTransparency": false}), 8, false, 1),
+        ("doc_save", json!({"path": "pyr.tif", "tiffPyramid": true, "tiffTransparency": true}), 1, true, 3),
+    ] {
+        let r = call(&client, tool, params.clone()).await;
+        assert_ne!(r.is_error, Some(true), "{params}: {}", text(&r));
+        let bytes = std::fs::read(dir.join(params["path"].as_str().unwrap())).unwrap();
+        let info = photocraft_codecs::tiff_info(&bytes).unwrap();
+        assert!(info.pages.iter().all(|p| p.compression == compression), "{params}: {:?}", info.pages);
+        assert_eq!(info.pages.len(), dirs, "{params}");
+        assert_eq!(photocraft_codecs::decode(&bytes).unwrap().layout().has_alpha(), alpha, "{params}");
+    }
+    for bad in [json!({"path": "bad.tif", "tiffCompression": "jpeg"}), json!({"path": "bad.tif", "tiffTransparency": "off"})] {
+        let r = call(&client, "doc_export", bad.clone()).await;
+        assert_eq!(r.is_error, Some(true), "{bad}: {}", text(&r));
+    }
+    assert!(!dir.join("bad.tif").exists());
     client.cancel().await.unwrap();
     cleanup(&dir);
 }
@@ -1256,10 +1305,14 @@ async fn command_batch_step_without_waiting_starts_a_background_job() {
 async fn bridge_command_batch_forwards_each_steps_wait() {
     let (addr, app) = fake_app().await;
     let client = connect(PhotocraftMcp::bridge(&addr, CONTROL_TOKEN).unwrap()).await;
-    let r = json_of(&call(&client, "command_batch", json!({"steps": [{"id": "filter.blur.gaussianBlur", "wait": false}, {"id": "layer.new.layer"}]})).await);
-    assert_eq!(r["completed"], 2, "{r}");
+    let steps = json!([{"id": "filter.blur.gaussianBlur", "wait": false}, {"id": "layer.new.layer"}, {"id": "view.zoomIn"}]);
+    let r = json_of(&call(&client, "command_batch", json!({"steps": steps})).await);
+    assert_eq!(r["completed"], 3, "{r}");
     assert_eq!(r["results"][0]["result"]["wait"], false, "{r}");
-    assert_eq!(r["results"][1]["result"]["wait"], true, "{r}");
+    // A waited engine command starts without waiting too: the bridge polls a job it starts (#8130).
+    assert_eq!(r["results"][1]["result"]["wait"], false, "{r}");
+    // A UI command can't be polled, so the app waits on it.
+    assert_eq!(r["results"][2]["result"]["wait"], true, "{r}");
     client.cancel().await.unwrap();
     app.abort();
 }
@@ -1337,6 +1390,58 @@ async fn convention_tools_have_titles_hints_and_strict_schemas() {
             assert!(value["annotations"][hint].is_boolean(), "{value}");
         }
         assert_eq!(value["inputSchema"]["additionalProperties"], false, "{value}");
+    }
+    client.cancel().await.unwrap();
+}
+
+/// The hints say what each tool does, not just that hints exist (#8129): `jobs_list` was
+/// advertised as destructive. A new tool fails here until it is classified.
+#[tokio::test(flavor = "multi_thread")]
+async fn convention_tool_hints_match_what_each_tool_does() {
+    // (read-only, destructive, idempotent)
+    const READ: (bool, bool, bool) = (true, false, true);
+    const ADDS: (bool, bool, bool) = (false, false, false);
+    const EDITS: (bool, bool, bool) = (false, true, false);
+    let expected = [
+        ("command_list", READ),
+        ("doc_inspect", READ),
+        ("session_list", READ),
+        ("render_preview", READ),
+        ("doc_render_preview", READ),
+        ("ui_inspect", READ),
+        ("ui_screenshot", READ),
+        ("jobs_list", READ),
+        ("doc_new", ADDS),
+        ("doc_open", ADDS),
+        ("doc_place", ADDS),
+        ("doc_export_layers", ADDS),
+        ("doc_export_data_sets", ADDS),
+        ("doc_select", (false, false, true)),
+        ("doc_save", EDITS),
+        ("doc_replace_smart_object", EDITS),
+        ("doc_export", EDITS),
+        ("doc_close", EDITS),
+        ("doc_import_data_sets", EDITS),
+        ("command_run", EDITS),
+        ("command_batch", EDITS),
+        ("jobs_cancel", EDITS),
+        ("ui_pointer", EDITS),
+        ("ui_menu_invoke", EDITS),
+        ("ui_set", EDITS),
+        ("control_call", EDITS),
+    ];
+    let client = connect(PhotocraftMcp::headless()).await;
+    let tools = client.list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), expected.len(), "classify every tool here");
+    for tool in tools {
+        let value = serde_json::to_value(&tool).unwrap();
+        let hints = &value["annotations"];
+        let actual = (hints["readOnlyHint"] == true, hints["destructiveHint"] == true, hints["idempotentHint"] == true);
+        let want = expected.iter().find(|(name, _)| *name == tool.name).map(|(_, hints)| *hints);
+        assert_eq!(Some(actual), want, "{}: {hints}", tool.name);
+        assert_eq!(hints["openWorldHint"], false, "{}", tool.name);
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(!description.contains("  "), "{}: a run of spaces in {description:?}", tool.name);
     }
     client.cancel().await.unwrap();
 }

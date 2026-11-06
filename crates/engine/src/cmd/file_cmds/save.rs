@@ -9,7 +9,8 @@ pub fn tiff_would_write_layers(doc: &Document) -> bool {
 }
 
 /// What a headless save writes beyond the format: JPEG quality and format, TIFF layers, Targa
-/// bits, DPX bits, DDS compression and mipmaps, PSD previews and the PSD merged image.
+/// bits, DPX bits, DDS compression and mipmaps, PSD previews, the PSD merged image and the
+/// `.pcraft` full-size composite.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SaveOpts {
     /// Photoshop's 0–12 JPEG scale.
@@ -25,6 +26,13 @@ pub(crate) struct SaveOpts {
     pub dpx_bits: Option<photocraft_io::DpxBits>,
     /// TIFF: the image compression (`"tiffCompression": "none" | "lzw" | "zip"`); unset, none.
     pub tiff_compression: Option<photocraft_codecs::TiffCompression>,
+    /// TIFF: Save Transparency (`"tiffTransparency": bool`); unset, the transparency is kept
+    /// unless the document has alpha or spot channels ([`photocraft_io::ExportOptions::tiff_transparency`]).
+    pub tiff_transparency: Option<bool>,
+    /// Protect RGB Targa24 alpha and flat-TIFF transparency for Save and Close; not a user option.
+    pub preserve_alpha: bool,
+    /// TIFF: Save Image Pyramid (`"tiffPyramid": bool`); unset, off.
+    pub tiff_pyramid: bool,
     /// DDS: the compression and whether to write the mip chain (`"ddsCompression"`,
     /// `"ddsMipmaps"`); unset, uncompressed without mipmaps.
     pub dds: photocraft_io::DdsOptions,
@@ -33,6 +41,10 @@ pub(crate) struct SaveOpts {
     /// PSD/PSB: write the real merged image (Preferences › File Handling › Maximize PSD and PSB
     /// File Compatibility).
     pub psd_maximize_compatibility: bool,
+    /// `.pcraft`: request the full-size composite (`"pcraftFullComposite"`; unset, Preferences ›
+    /// File Handling › Save Full-Size Composite in .pcraft Files, off by default). The save may
+    /// omit it; check the manifest's `full_composite` member.
+    pub pcraft_full_composite: bool,
 }
 
 impl Default for SaveOpts {
@@ -44,9 +56,13 @@ impl Default for SaveOpts {
             tga_bits: None,
             dpx_bits: None,
             tiff_compression: None,
+            tiff_transparency: None,
+            preserve_alpha: false,
+            tiff_pyramid: false,
             dds: photocraft_io::DdsOptions::default(),
             image_previews: true,
             psd_maximize_compatibility: true,
+            pcraft_full_composite: false,
         }
     }
 }
@@ -56,7 +72,8 @@ impl SaveOpts {
     /// `jpegFormat` it doesn't name or a `tgaBits` other than 24 or 32 is an error); the image
     /// previews and the PSD merged image from the session's File Handling preferences (Ask When
     /// Saving has no dialog here, so it saves them, as Photoshop's Save As checkbox and its
-    /// Maximize Compatibility checkbox both start on).
+    /// Maximize Compatibility checkbox both start on). The `.pcraft` full-size composite comes from
+    /// `pcraftFullComposite`, or without it from the File Handling preference.
     pub(crate) fn from_params(s: &Session, p: &Value, cmd: &str) -> Result<Self> {
         let file_handling = &s.prefs().file_handling;
         Ok(SaveOpts {
@@ -66,9 +83,13 @@ impl SaveOpts {
             tga_bits: tga_bits_param(p, cmd)?,
             dpx_bits: dpx_bits_param(p, cmd)?,
             tiff_compression: tiff_compression_param(p, cmd)?,
+            tiff_transparency: tiff_bool_param(p, "tiffTransparency", cmd)?,
+            preserve_alpha: false,
+            tiff_pyramid: tiff_bool_param(p, "tiffPyramid", cmd)?.unwrap_or(false),
             dds: dds_param(p, cmd)?.unwrap_or_default(),
             image_previews: file_handling.image_previews != crate::prefs::Ask::Never,
             psd_maximize_compatibility: file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never,
+            pcraft_full_composite: pcraft_full_composite_param(p, cmd)?.unwrap_or(file_handling.pcraft_full_composite),
         })
     }
 
@@ -98,6 +119,18 @@ pub fn tga_bits_param(p: &Value, cmd: &str) -> Result<Option<photocraft_io::TgaB
     }
 }
 
+/// Whether `p` asks a `.pcraft` save for the full-size composite (`"pcraftFullComposite": bool`;
+/// absent or null: `None`, the caller's default). Anything else is a bad parameter of command `cmd`.
+pub fn pcraft_full_composite_param(p: &Value, cmd: &str) -> Result<Option<bool>> {
+    match p.get("pcraftFullComposite") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`pcraftFullComposite` must be true or false, got {v}") }),
+    }
+}
+
 /// The TIFF compression in `p` (`"tiffCompression": "none" | "lzw" | "zip"`, Photoshop's TIFF
 /// Options; absent or null: none). Anything else is a bad parameter of command `cmd` (#5301).
 pub fn tiff_compression_param(p: &Value, cmd: &str) -> Result<Option<photocraft_codecs::TiffCompression>> {
@@ -110,6 +143,17 @@ pub fn tiff_compression_param(p: &Value, cmd: &str) -> Result<Option<photocraft_
             Some("zip") => Ok(Some(TiffCompression::Deflate)),
             _ => Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("`tiffCompression` must be \"none\", \"lzw\" or \"zip\", got {v}") }),
         },
+    }
+}
+
+/// A TIFF Options checkbox in `p`: `"tiffTransparency"` (Save Transparency) or `"tiffPyramid"`
+/// (Save Image Pyramid), `true` or `false`; absent or null: unset. Anything else is a bad
+/// parameter of command `cmd` (#8827).
+pub fn tiff_bool_param(p: &Value, key: &str, cmd: &str) -> Result<Option<bool>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(v) => Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("`{key}` must be true or false, got {v}") }),
     }
 }
 
@@ -175,9 +219,12 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
     let save = save.into();
     let mut opts = photocraft_io::ExportOptions {
         tiff_layers: save.tiff_layers,
+        tiff_transparency: save.tiff_transparency,
+        preserve_alpha: save.preserve_alpha,
         tga_bits: save.tga_bits,
         image_previews: save.image_previews,
         psd_maximize_compatibility: save.psd_maximize_compatibility,
+        pcraft_full_composite: save.pcraft_full_composite,
         // Linked files a PSD embeds are resolved against the document being worked on.
         document_path: crate::doc_path::current(),
         // An untrusted session's stored paths are document data: embed none of them.
@@ -191,6 +238,7 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
     if let Some(c) = save.tiff_compression {
         opts.encode.tiff_compression = c;
     }
+    opts.encode.tiff_pyramid = save.tiff_pyramid;
     opts.encode.dds = save.dds;
     if let Some(q) = save.quality {
         let q = jpeg_quality(q);
@@ -207,6 +255,13 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
 
 pub(crate) fn save_doc(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> Result<Vec<String>> {
     let (bytes, warnings) = encode(doc, path, save)?;
+    write_file(path, &bytes)?;
+    Ok(warnings)
+}
+
+/// Save Batch bytes in the chosen format even when its naming rules omit or replace the suffix.
+pub(crate) fn save_doc_as(doc: &Document, path: &str, format: &str, save: impl Into<SaveOpts>) -> Result<Vec<String>> {
+    let (bytes, warnings) = encode(doc, format, save)?;
     write_file(path, &bytes)?;
     Ok(warnings)
 }

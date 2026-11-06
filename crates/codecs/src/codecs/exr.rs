@@ -33,9 +33,63 @@ fn map_exr(e: exr::error::Error) -> CodecError {
     }
 }
 
+/// Refuses headers whose `preview` attributes declare more pixels than their value holds.
+///
+/// The `exr` crate sizes a preview's pixel buffer from its declared dimensions (up to 4 MiB at
+/// once, zero-filled) before it finds the attribute too short, and in the non-pedantic mode
+/// every reader here uses it then skips the attribute and goes on: thousands of tiny malformed
+/// previews would each cost that allocation. This walks the raw headers (name, type, size,
+/// value per attribute; an empty name ends a header, an empty header ends a multi-part list)
+/// and checks each preview against its own size, so the crate only reads consistent ones.
+/// Anything else odd is left to the crate to report.
+pub(crate) fn check_previews(b: &[u8]) -> Result<(), CodecError> {
+    if b.get(..4) != Some(&[0x76, 0x2f, 0x31, 0x01][..]) {
+        return Ok(());
+    }
+    let Some(flags) = b.get(4..8).and_then(|v| <[u8; 4]>::try_from(v).ok()).map(u32::from_le_bytes) else { return Ok(()) };
+    let multipart = flags & 0x1000 != 0;
+    let cstr = |at: usize| -> Option<(&[u8], usize)> {
+        let rest = b.get(at..)?;
+        let n = rest.iter().position(|&c| c == 0)?;
+        Some((rest.get(..n)?, at + n + 1))
+    };
+    let u32_at = |at: usize| b.get(at..at.checked_add(4)?).and_then(|v| <[u8; 4]>::try_from(v).ok()).map(u32::from_le_bytes);
+    let mut at = 8;
+    loop {
+        // One header's attributes.
+        loop {
+            let Some((name, next)) = cstr(at) else { return Ok(()) };
+            at = next;
+            if name.is_empty() {
+                break;
+            }
+            let Some((kind, next)) = cstr(at) else { return Ok(()) };
+            let Some(size) = u32_at(next).and_then(|n| i32::try_from(n).ok()).and_then(|n| usize::try_from(n).ok()) else { return Ok(()) };
+            let value = next + 4;
+            let end = match value.checked_add(size) {
+                Some(end) if end <= b.len() => end,
+                _ => return Ok(()),
+            };
+            if kind == b"preview" {
+                let declared =
+                    u32_at(value).zip(u32_at(value + 4)).and_then(|(w, h)| u64::from(w).checked_mul(u64::from(h))?.checked_mul(4)).filter(|_| size >= 8);
+                if declared.is_none_or(|n| n > (size - 8) as u64) {
+                    return Err(err("a preview attribute declares more pixels than it holds"));
+                }
+            }
+            at = end;
+        }
+        // A multi-part list ends with an empty header (a lone NUL).
+        if !multipart || b.get(at) == Some(&0) {
+            return Ok(());
+        }
+    }
+}
+
 /// Read the headers without the `exr` crate's validation (it rejects deep parts outright),
 /// after checking every part's declared size against the limits, before any pixel allocation.
 pub(super) fn read_meta(bytes: &[u8], limits: &Limits) -> Result<MetaData, CodecError> {
+    check_previews(bytes)?;
     let meta = MetaData::read_from_buffered(Cursor::new(bytes), false).map_err(err)?;
     // Flat decoding reads every part at once, so the parts' sizes are also capped together.
     let mut total: u64 = 0;
@@ -74,12 +128,20 @@ fn part_info(index: usize, header: &exr::meta::header::Header) -> ExrPartInfo {
         // U32 channels (Arnold ID buffers) are listed as F32: exact up to 2^24.
         exr::meta::attribute::SampleType::F32 | exr::meta::attribute::SampleType::U32 => SampleType::F32,
     };
+    let display = &header.shared_attributes.display_window;
     ExrPartInfo {
         index,
         name: header.own_attributes.layer_name.as_ref().map(|n| n.to_string()),
         view: header.own_attributes.view_name.as_ref().map(|v| v.to_string()),
         width: w,
         height: h,
+        data_window: (header.own_attributes.layer_position.0, header.own_attributes.layer_position.1, w, h),
+        display_window: (
+            display.position.0,
+            display.position.1,
+            u32::try_from(display.size.0).unwrap_or(u32::MAX),
+            u32::try_from(display.size.1).unwrap_or(u32::MAX),
+        ),
         deep: header.deep,
         tiled: matches!(header.blocks, exr::meta::BlockDescription::Tiles(_)),
         channels: header.channels.list.iter().map(|c| ExrChannelInfo { name: c.name.to_string(), sample: sample(c.sample_type) }).collect(),
@@ -130,6 +192,7 @@ impl<'s, C: ReadChannels<'s>> ReadChannels<'s> for OnlyPart<C> {
 /// Decode one part's flat layer via the `exr` crate (it handles every flat compression).
 /// Other parts are not decompressed, so an AOV file costs one part per request, not the file.
 pub(super) fn read_layer(bytes: &[u8], index: usize) -> Result<Layer<AnyChannels<FlatSamples>>, CodecError> {
+    check_previews(bytes)?;
     let only = OnlyPart { inner: read().no_deep_data().largest_resolution_level().all_channels(), index, seen: std::cell::Cell::new(0) };
     only.first_valid_layer().all_attributes().from_buffered(Cursor::new(bytes)).map(|image| image.layer_data).map_err(map_exr)
 }
@@ -333,4 +396,46 @@ pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Ve
     let mut cursor = Cursor::new(Vec::new());
     image.write().to_buffered(&mut cursor).map_err(|e| CodecError::encode(F, e))?;
     Ok(cursor.into_inner())
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use exr::meta::attribute::Preview;
+    use exr::prelude::{ImageAttributes, IntegerBounds};
+
+    /// A 2x2 single-part file whose layer carries a 2x1 preview.
+    fn with_preview() -> Vec<u8> {
+        let mut attrs = LayerAttributes::named("rgb");
+        attrs.preview = Some(Preview { size: exr::math::Vec2(2, 1), pixel_data: vec![7; 8] });
+        let list = ["R", "G", "B"].into_iter().map(|n| AnyChannel::new(n, FlatSamples::F32(vec![0.5; 4]))).collect();
+        let layer = Layer::new(
+            (2, 2),
+            attrs,
+            Encoding { compression: Compression::Uncompressed, blocks: Blocks::ScanLines, line_order: LineOrder::Increasing },
+            AnyChannels::sort(list),
+        );
+        let image = exr::image::Image::from_layers(ImageAttributes::new(IntegerBounds::new((0, 0), (2, 2))), vec![layer]);
+        let mut out = Cursor::new(Vec::new());
+        image.write().to_buffered(&mut out).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_preview_declaring_more_pixels_than_it_holds_is_refused_before_the_crate_reads_it() {
+        let good = with_preview();
+        check_previews(&good).unwrap();
+        assert_eq!(decode(&good, &Limits::default()).unwrap().dimensions(), (2, 2));
+        // Patch the preview to 1024x1024 (4 MiB) while its value still holds 8 bytes.
+        let tag = b"preview\0preview\0";
+        let at = good.windows(tag.len()).position(|w| w == tag).unwrap() + tag.len() + 4;
+        let mut bad = good.clone();
+        bad[at..at + 4].copy_from_slice(&1024u32.to_le_bytes());
+        bad[at + 4..at + 8].copy_from_slice(&1024u32.to_le_bytes());
+        for r in [check_previews(&bad), decode(&bad, &Limits::default()).map(|_| ()), read_layer(&bad, 0).map(|_| ())] {
+            assert!(matches!(&r, Err(CodecError::Malformed { message, .. }) if message.contains("preview")), "{r:?}");
+        }
+        // A header cut off mid-attribute is left to the crate.
+        check_previews(&good[..at]).unwrap();
+    }
 }

@@ -476,6 +476,136 @@ fn rasterize_renders_the_whole_drawing_at_a_scale() {
     assert!(svg::rasterize(huge.as_bytes(), 64.0).is_err(), "a render past the pixel cap is an error, not an allocation");
 }
 
+/// resvg's morphology, convolution and turbulence cost pixels × radius², × order² and × octaves:
+/// such a drawing is refused up front instead of rendering for minutes.
+#[test]
+fn filters_too_costly_to_render_are_refused_not_run() {
+    let drawing = |side: u32, fe: &str| {
+        format!(
+            "<svg {NS} width=\"{side}\" height=\"{side}\"><filter id=\"f\">{fe}</filter><rect width=\"{side}\" height=\"{side}\" fill=\"red\" filter=\"url(#f)\"/></svg>"
+        )
+    };
+    let kernel = vec!["1"; 100 * 100].join(" ");
+    // Masks, patterns and embedded drawings filter at the scale of the element using them: a
+    // 20-unit radius-10 morphology drawn 100× larger.
+    let f = "<filter id=\"f\"><feMorphology radius=\"10\"/></filter>";
+    let inner = format!("<svg {NS} width=\"20\" height=\"20\">{f}<rect width=\"20\" height=\"20\" filter=\"url(#f)\"/></svg>");
+    let embedded = base64_data_url("image/svg+xml", inner.as_bytes());
+    for svg in [
+        drawing(2000, "<feMorphology operator=\"dilate\" radius=\"1000\"/>"),
+        drawing(2000, &format!("<feConvolveMatrix order=\"100\" kernelMatrix=\"{kernel}\"/>")),
+        drawing(2000, "<feTurbulence baseFrequency=\"0.01\" numOctaves=\"1000000\"/>"),
+        format!(
+            "<svg {NS} width=\"2000\" height=\"2000\" viewBox=\"0 0 20 20\">{f}<mask id=\"m\"><rect width=\"20\" height=\"20\" fill=\"white\" filter=\"url(#f)\"/></mask><rect width=\"20\" height=\"20\" mask=\"url(#m)\"/></svg>"
+        ),
+        format!(
+            "<svg {NS} width=\"2000\" height=\"2000\">{f}<pattern id=\"p\" width=\"20\" height=\"20\" patternUnits=\"userSpaceOnUse\" patternTransform=\"scale(100)\"><rect width=\"20\" height=\"20\" filter=\"url(#f)\"/></pattern><rect width=\"2000\" height=\"2000\" fill=\"url(#p)\"/></svg>"
+        ),
+        format!("<svg {NS} width=\"2000\" height=\"2000\"><image width=\"2000\" height=\"2000\" href=\"{embedded}\"/></svg>"),
+    ] {
+        let head: String = svg.chars().take(300).collect();
+        let e = import("x.svg", svg.as_bytes()).err().unwrap_or_else(|| panic!("opened: {head}"));
+        assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
+        assert!(svg::rasterize(svg.as_bytes(), 1.0).is_err(), "rendered: {head}");
+        // The budgeted paths (smart-object contents and their renders) refuse it too.
+        let e = svg::import_svg_bounded_images("x.svg", svg.as_bytes(), 1 << 24).err().unwrap_or_else(|| panic!("opened bounded: {head}"));
+        assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
+        let e = svg::rasterize_bounded(svg.as_bytes(), 1.0, 1 << 24).err().unwrap_or_else(|| panic!("rendered bounded: {head}"));
+        assert!(matches!(&e, IoError::Svg(m) if m.contains("filter")), "{e}");
+    }
+    // Ordinary filters still open and render.
+    let ordinary = drawing(500, "<feGaussianBlur stdDeviation=\"8\"/><feMorphology radius=\"3\"/><feTurbulence baseFrequency=\"0.05\" numOctaves=\"4\"/>");
+    assert!(!open(&ordinary).document.layers.is_empty());
+    assert!(svg::rasterize(ordinary.as_bytes(), 1.0).is_ok());
+    // The smart-object render counts its scale: cheap at 1×, refused at 40×.
+    let small = drawing(100, "<feMorphology radius=\"20\"/>");
+    assert!(svg::rasterize(small.as_bytes(), 1.0).is_ok());
+    assert!(svg::rasterize(small.as_bytes(), 40.0).is_err());
+}
+
+/// Patterns that fill and stroke with the next one double resvg's work at every level: past the
+/// check's element budget the drawing is refused, not walked (or rendered) for hours.
+#[test]
+fn patterns_nested_too_deep_are_refused_not_walked() {
+    let chain = |depth: usize| {
+        let defs: String = (0..depth)
+            .map(|i| {
+                let paint = if i + 1 < depth { format!("url(#p{})", i + 1) } else { "red".into() };
+                format!("<pattern id=\"p{i}\" width=\"4\" height=\"4\" patternUnits=\"userSpaceOnUse\"><rect width=\"4\" height=\"4\" fill=\"{paint}\" stroke=\"{paint}\"/></pattern>")
+            })
+            .collect();
+        format!("<svg {NS} width=\"8\" height=\"8\">{defs}<rect width=\"8\" height=\"8\" fill=\"url(#p0)\"/></svg>")
+    };
+    let deep = chain(24);
+    let e = import("x.svg", deep.as_bytes()).err().unwrap_or_else(|| panic!("opened a 2^24-use pattern chain"));
+    assert!(matches!(&e, IoError::Svg(m) if m.contains("too costly")), "{e}");
+    assert!(svg::rasterize(deep.as_bytes(), 1.0).is_err());
+    // A few levels still open.
+    assert!(!open(&chain(4)).document.layers.is_empty());
+}
+
+/// usvg keeps a chain of single-use patterns past the check's recursion cutoff and resvg draws
+/// every one of them: a costly filter at the end of the chain is refused, not rendered unseen.
+#[test]
+fn a_costly_filter_past_the_pattern_recursion_cutoff_is_refused() {
+    let chain = |depth: usize, fe: &str| {
+        let defs: String = (0..depth)
+            .map(|i| {
+                let body = if i + 1 < depth {
+                    format!("<rect width=\"500\" height=\"500\" fill=\"url(#p{})\"/>", i + 1)
+                } else {
+                    "<rect width=\"500\" height=\"500\" fill=\"red\" filter=\"url(#f)\"/>".into()
+                };
+                format!("<pattern id=\"p{i}\" width=\"500\" height=\"500\" patternUnits=\"userSpaceOnUse\">{body}</pattern>")
+            })
+            .collect();
+        format!("<svg {NS} width=\"500\" height=\"500\"><filter id=\"f\">{fe}</filter>{defs}<rect width=\"500\" height=\"500\" fill=\"url(#p0)\"/></svg>")
+    };
+    // Just over the budget (about 3.5 billion reads), so a regression fails in seconds, not hours.
+    let fe = "<feMorphology operator=\"dilate\" radius=\"50\"/>";
+    assert!(import("x.svg", chain(4, fe).as_bytes()).is_err(), "the filter alone is over the budget");
+    let deep = chain(210, fe);
+    let e = import("x.svg", deep.as_bytes()).err().unwrap_or_else(|| panic!("opened a costly filter 210 patterns deep"));
+    assert!(matches!(&e, IoError::Svg(m) if m.contains("too costly")), "{e}");
+    assert!(svg::rasterize(deep.as_bytes(), 1.0).is_err());
+    // A short chain with an ordinary filter still opens, and so do groups nested past the cutoff.
+    assert!(!open(&chain(4, "<feGaussianBlur stdDeviation=\"2\"/>")).document.layers.is_empty());
+    let groups =
+        format!("<svg {NS} width=\"10\" height=\"10\">{}<rect width=\"10\" height=\"10\"/>{}</svg>", "<g opacity=\"0.99\">".repeat(250), "</g>".repeat(250));
+    assert!(!open(&groups).document.layers.is_empty());
+}
+
+#[test]
+fn drawings_the_svg_renderer_panics_on_are_errors_not_crashes() {
+    // usvg panics laying out an embedded SVG image of a zero-ish width.
+    let nested = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10'/%3E%3C/svg%3E";
+    let bad_image = format!("<svg {NS} width=\"100\" height=\"100\"><image width=\"1e-30\" height=\"50\" href=\"{nested}\"/></svg>");
+    let e = import("image.svg", bad_image.as_bytes()).err().unwrap_or_else(|| panic!("opened"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    // The budgeted parse (placed and embedded drawings) is guarded too.
+    let e = svg::import_svg_bounded_images("image.svg", bad_image.as_bytes(), 1 << 24).err().unwrap_or_else(|| panic!("opened"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    // resvg panics rendering an offset past the pixmap's size: that element is dropped with a
+    // warning, the rest of the drawing still opens.
+    let offset = "<filter id=\"f\"><feOffset dx=\"3e9\" dy=\"-3e9\"/></filter>\
+                  <rect width=\"50\" height=\"50\" filter=\"url(#f)\"/><rect id=\"plain\" x=\"60\" y=\"60\" width=\"20\" height=\"20\"/>";
+    let svg = format!("<svg {NS} width=\"100\" height=\"100\">{offset}</svg>");
+    let r = open(&svg);
+    assert_eq!(r.document.layers.len(), 1, "{:?}", r.document.layers.iter().map(|l| &l.name).collect::<Vec<_>>());
+    assert!(matches!(r.document.layers[0].content, LayerContent::Shape(_)));
+    assert!(r.warnings.iter().any(|w| w.contains("could not be rendered")), "{:?}", r.warnings);
+    // The same drawing as a smart object, and past the element limit (opened as one pixel layer).
+    let e = svg::rasterize(svg.as_bytes(), 1.0).err().unwrap_or_else(|| panic!("rendered"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    let e = svg::rasterize_bounded(svg.as_bytes(), 1.0, 1 << 24).err().unwrap_or_else(|| panic!("rendered"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    let many = format!("<svg {NS} width=\"100\" height=\"100\">{offset}{}</svg>", "<rect width=\"1\" height=\"1\"/>".repeat(2_000));
+    let r = open(&many);
+    assert!(r.document.layers.is_empty());
+    assert!(r.warnings.iter().any(|w| w.contains("could not be rendered")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("nothing to draw")), "not an empty drawing: {:?}", r.warnings);
+}
+
 #[test]
 fn an_svg_round_trips_through_pcraft_as_shapes() {
     let r = open(&format!(

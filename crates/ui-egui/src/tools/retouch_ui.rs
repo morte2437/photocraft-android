@@ -50,7 +50,11 @@ pub(crate) fn clone_params(app: &PhotocraftApp) -> Option<Value> {
 /// History Brush params for the live preview and the commit (without `points` and `target`): the
 /// options bar's Mode, which is the tool's own brush's.
 pub(crate) fn history_brush_params(app: &PhotocraftApp) -> Value {
-    json!({"mode": app.session.tools.brush.mode.label()})
+    json!({
+        "mode": app.session.tools.brush.mode.label(),
+        "opacity": app.session.tools.brush.opacity * 100.0,
+        "flow": app.session.tools.brush.flow * 100.0,
+    })
 }
 
 /// The command and options-bar params (without `points` and `target`) of a sequential-dab tool:
@@ -132,7 +136,7 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
                 remove_pending_add(app, points);
                 return true;
             }
-            ("paint.remove", remove_params(&o))
+            ("paint.remove", remove_params(&o, crate::canvas::paint_target(app).as_str() == Some("pixels")))
         }
         Tool::MixerBrush => ("paint.mixerBrush", json!({})),
         Tool::ColorReplacement => ("paint.colorReplacement", color_replacement_params(app)),
@@ -158,6 +162,7 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
                 "style": o.art_history_style,
                 "area": o.art_history_area,
                 "tolerance": o.art_history_tolerance,
+                "opacity": app.session.tools.brush.opacity * 100.0,
             }),
         ),
         Tool::Blur | Tool::Sharpen | Tool::Smudge | Tool::Dodge | Tool::Burn | Tool::Sponge => match dab_params(app, tool) {
@@ -198,8 +203,8 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
 }
 
 /// `paint.remove` params from the options bar (without the strokes).
-fn remove_params(o: &crate::state::ToolOptions) -> Value {
-    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer})
+fn remove_params(o: &crate::state::ToolOptions, composite: bool) -> Value {
+    json!({"sampleAllLayers": o.sample_all.remove, "newLayer": o.remove_new_layer && composite})
 }
 
 /// The selection a queued Remove stroke was drawn against. A later selection must not
@@ -248,7 +253,7 @@ pub fn remove_pending_commit(app: &mut PhotocraftApp) -> bool {
     let strokes = std::mem::take(&mut app.remove_pending);
     app.remove_trail = None;
     app.remove_pending_target = None;
-    let mut p = remove_params(&app.ui.tool_options);
+    let mut p = remove_params(&app.ui.tool_options, crate::canvas::paint_target(app).as_str() == Some("pixels"));
     p["strokes"] = json!(strokes);
     p["target"] = crate::canvas::paint_target(app);
     app.ui.status.clear();
@@ -503,6 +508,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     {
         return false;
     }
+    let composite = crate::canvas::paint_target(app).as_str() == Some("pixels");
     let o = &mut app.ui.tool_options;
     match tool {
         Tool::SpotHealing => {
@@ -520,7 +526,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             // Photoshop's options bar: Sample All Layers, Create a new layer, Remove after each
             // stroke; with strokes waiting, ✓ applies them and ⊘ drops them.
             crate::widgets::checkbox(ui, &mut o.sample_all.remove, tl!("Sample All Layers"));
-            crate::widgets::checkbox(ui, &mut o.remove_new_layer, tl!("Create a new layer"));
+            ui.add_enabled_ui(composite, |ui| crate::widgets::checkbox(ui, &mut o.remove_new_layer, tl!("Create a new layer")));
             crate::widgets::checkbox(ui, &mut o.remove_after_each_stroke, tl!("Remove after each stroke"));
             if !app.remove_pending.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -664,7 +670,28 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::value_field(ui, &mut o.cr_tolerance, 0.0..=100.0, "%", 62.0);
             crate::widgets::checkbox(ui, &mut o.cr_anti_alias, tl!("Anti-alias"));
         }
-        Tool::HistoryBrush => opt(ui, tl!("Paints from the History panel's source state")),
+        Tool::HistoryBrush => {
+            let label = app.session.active().and_then(|st| match photocraft_engine::history_source_cmds::source(st)? {
+                photocraft_engine::history_source_cmds::HistorySource::Snapshot(id) => {
+                    let s = st.snapshots.iter().find(|s| s.id == id)?;
+                    Some(crate::i18n::fmt(tl!("Source: {name}"), &[("name", &s.name)]))
+                }
+                photocraft_engine::history_source_cmds::HistorySource::State(idx) => {
+                    let entries = st.history.entries();
+                    let name =
+                        if idx < entries.len() { entries.get(idx).cloned() } else { st.history.redo_labels().nth(idx - entries.len()).map(str::to_string) }?;
+                    if idx == 0 && name == "Open" {
+                        Some(tl!("Paints from the document's opening state").to_string())
+                    } else {
+                        Some(crate::i18n::fmt(tl!("Source: {name}"), &[("name", &name)]))
+                    }
+                }
+            });
+            match label {
+                Some(text) => opt(ui, &text),
+                None => opt(ui, tl!("The History Brush source was deleted: set a new source in the History panel")),
+            }
+        }
         Tool::ArtHistoryBrush => {
             opt(ui, tl!("Style"));
             let styles = [

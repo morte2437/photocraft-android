@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "name": "changed-ruler-units",
+  "steps": [
+    {
+      "event": {
+        "op": "begin"
+      },
+      "expect": {
+        "editing": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0,
+        "preview": {
+          "vertical": [
+            10,
+            20
+          ]
+        }
+      }
+    },
+    {
+      "event": {
+        "op": "command",
+        "id": "prefs.set",
+        "params": {
+          "path": "unitsAndRulers.rulers",
+          "value": "inches"
+        }
+      },
+      "expect": {
+        "preview": null,
+        "invalid": true
+      }
+    },
+    {
+      "event": {
+        "op": "confirm"
+      },
+      "expect": {
+        "rejected": true,
+        "vertical": [
+          10,
+          20
+        ],
+        "history": 2,
+        "editCommands": 0
+      }
+    }
+  ]
+}

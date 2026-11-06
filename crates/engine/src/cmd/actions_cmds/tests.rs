@@ -114,6 +114,48 @@ fn recorded_eye_visibility_replays_on_another_document_and_duplicate_names() {
     assert!(s.active().unwrap().doc.layer(photocraft_doc::LayerId(target)).unwrap().visible);
 }
 
+/// ⌘-clicking a layer's thumbnail that is not the selected layer records the layer by name (the
+/// Background as the Background), so the step saves in strict Save Actions and replays on the
+/// same-named layer of another document.
+#[test]
+fn recorded_thumbnail_click_on_another_layer_saves_and_replays_by_name() {
+    use photocraft_geom::Rect;
+    let fixture = |s: &mut Session| {
+        s.execute("file.new", json!({"width": 4, "height": 1})).unwrap();
+        let source = s.execute("layer.new.layer", json!({"name": "Source"})).unwrap()["layer"].as_u64().unwrap();
+        s.edit("Pixels", |doc, _| {
+            doc.layer_mut(photocraft_doc::LayerId(source)).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 1, 1), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+        s.execute("layer.new.layer", json!({"name": "Active"})).unwrap();
+        source
+    };
+    let mut s = Session::new();
+    let source = fixture(&mut s);
+    let background = s.active().unwrap().doc.background().unwrap().id.0;
+    s.execute("actions.record", json!({"name": "Load"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": source, "operation": "new"})).unwrap();
+    s.execute("select.loadSelection", json!({"channel": "transparency", "layer": background, "operation": "new"})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let action = s.actions.list.iter().find(|a| a.name == "Load").unwrap().clone();
+    assert_eq!(
+        action.steps,
+        vec![
+            ("select.loadSelection".into(), json!({"channel": "transparency", "layer": {"name": "Source"}, "operation": "new"})),
+            ("select.loadSelection".into(), json!({"channel": "transparency", "layer": {"background": true}, "operation": "new"})),
+        ]
+    );
+    crate::atn_cmds::export("Set", &[&action], &[], false).unwrap();
+    // Replayed in another document, the first step loads its Source layer.
+    let mut other = Session::new();
+    fixture(&mut other);
+    let (id, params) = &action.steps[0];
+    other.execute(id, params.clone()).unwrap();
+    let doc = &other.active().unwrap().doc;
+    assert_eq!(doc.selection.as_ref().unwrap().read_region(Rect::new(0, 0, 4, 1)), vec![1.0, 0.0, 0.0, 0.0]);
+}
+
 #[test]
 fn rename_keeps_calls_and_function_key_and_rejects_bad_names() {
     let mut s = Session::new();
@@ -340,6 +382,78 @@ fn record_explicit_transform_keeps_one_replayable_step() {
 }
 
 #[test]
+fn recording_folds_one_run_of_move_tool_nudges() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for (dx, dy, run) in [(1, 0, "nudge:1"), (1, 0, "nudge:1"), (1, 10, "nudge:1"), (0, 1, "nudge:2")] {
+        s.execute("layer.translate", json!({"dx": dx, "dy": dy, "coalesce": run})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    let steps = &s.actions.list[0].steps;
+    assert_eq!(steps, &[("layer.translate".into(), json!({"dx": 3.0, "dy": 10.0})), ("layer.translate".into(), json!({"dx": 0.0, "dy": 1.0}))]);
+}
+
+/// Each nudge moves by whole pixels, so two 0.6 px steps fold into the 2 px they moved, not 1.2.
+#[test]
+fn folded_nudges_add_whole_pixel_steps() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for _ in 0..2 {
+        s.execute("layer.translate", json!({"dx": 0.6, "dy": 0.0, "coalesce": "nudge:1"})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("layer.translate".into(), json!({"dx": 2.0, "dy": 0.0}))]);
+}
+
+#[test]
+fn recording_document_activation_uses_opening_order_offset() {
+    let mut s = Session::new();
+    for name in ["First", "Second"] {
+        s.execute("file.new", json!({"width": 8, "height": 8, "name": name})).unwrap();
+    }
+    s.execute("actions.record", json!({"name": "Switch"})).unwrap();
+    s.execute("document.activate", json!({"document": 0})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps, [("document.activate".into(), json!({"offset": -1}))]);
+}
+
+#[test]
+fn recorded_point_text_position_scales_with_the_playback_canvas() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100, "background": "transparent"})).unwrap();
+    s.execute("actions.record", json!({"name": "Caption"})).unwrap();
+    s.execute("type.create", json!({"x": 20, "y": 30, "text": "Hi", "size": 12})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(s.actions.list[0].steps[0].1["xPercent"], json!(20.0));
+    assert_eq!(s.actions.list[0].steps[0].1["yPercent"], json!(30.0));
+    s.execute("file.new", json!({"width": 200, "height": 300, "background": "transparent"})).unwrap();
+    let played = s.execute("actions.play", json!({"action": "Caption"})).unwrap();
+    assert!(played.get("failed").is_none(), "{played}");
+    let info = s.execute("type.info", json!({})).unwrap();
+    assert_eq!(info["transform"][4], json!(40.0));
+    assert_eq!(info["transform"][5], json!(90.0));
+}
+
+#[test]
+fn recorded_point_text_rejects_invalid_relative_positions() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 100})).unwrap();
+    for params in [
+        json!({"xPercent": 20}),
+        json!({"xPercent": "20", "yPercent": 30}),
+        json!({"xPercent": 20, "yPercent": 30, "x": 20}),
+        json!({"xPercent": 20, "yPercent": 30, "box": [0, 0, 10, 10]}),
+        json!({"xPercent": 1e100, "yPercent": 30}),
+    ] {
+        assert!(playback_params(&s, "type.create", &params).is_err(), "{params}");
+    }
+}
+
+#[test]
 fn recorded_single_layer_transform_replays_after_layer_ids_shift() {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 20, "height": 8, "background": "transparent"})).unwrap();
@@ -430,9 +544,12 @@ fn record_keeps_only_replayable_steps() {
 }
 
 #[test]
+/// Playback on a different document must match native edits at every depth, independent of history grouping.
 fn play_on_another_document_matches_pixels_at_each_depth() {
     for depth in [8, 16, 32] {
         let mut s = Session::new();
+        // This control checks the optional, per-step history behavior.
+        s.execute("actions.setHistory", json!({"singleState": false})).unwrap();
         record_red(&mut s, depth);
         s.execute("file.new", json!({"width": 40, "height": 40, "depth": depth})).unwrap();
         let before = s.active().unwrap().history.past_len();
@@ -1124,9 +1241,12 @@ fn button_color_is_one_of_the_photoshop_swatches() {
 }
 
 #[test]
+/// An arrangement that cannot move the layer must not create a grouped history entry.
 fn arrange_that_cannot_move_is_a_noop_in_playback() {
     // #8453: imported actions make an adjustment layer, then Bring it to Front, where it already is.
     let mut s = Session::new();
+    // Keep individual rows visible so grouping cannot hide an extra no-op record.
+    s.execute("actions.setHistory", json!({"singleState": false})).unwrap();
     s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
     let steps = vec![
         ("layer.newAdjustmentLayer.curves".to_string(), json!({})),
@@ -1175,4 +1295,229 @@ fn arrange_that_cannot_move_is_a_noop_in_playback() {
     let played = s.execute("actions.play", json!({"action": 1})).unwrap();
     assert_eq!(played["ran"], 0, "{played}");
     assert!(played["failed"].is_object(), "{played}");
+}
+
+/// A deep route cannot consume the only visit to a dependency reachable near the root.
+#[test]
+fn called_actions_keeps_dependencies_reachable_by_a_shallow_route() {
+    let mut list = vec![Action::new("Leaf", Vec::new()), Action::new("Shared", vec![("actions.play".into(), json!({"action": "Leaf"}))])];
+    for i in 0..15 {
+        let next = if i == 14 { "Shared".to_string() } else { format!("D{}", i + 1) };
+        list.push(Action::new(format!("D{i}"), vec![("actions.play".into(), json!({"action": next}))]));
+    }
+    let mut steps = vec![("file.automate.batch".into(), json!({"action": "Shared"})), ("actions.play".into(), json!({"action": "D0"}))];
+    let called = called_actions(&list, &mut steps);
+    assert!(called.iter().any(|a| a.name == "Leaf"));
+    assert_eq!(called.len(), list.len());
+}
+
+/// Extra source copies cannot turn deferred missing indices into valid action calls.
+#[test]
+fn scoped_source_slots_do_not_bind_previously_missing_references() {
+    let list = vec![
+        Action::new("Leaf", Vec::new()),
+        Action::new("Shared", vec![("actions.play".into(), json!({"action": 0}))]),
+        Action::new("Bad", vec![("actions.play".into(), json!({"action": 3}))]),
+    ];
+    let mut steps = vec![
+        ("actions.play".into(), json!({"action": "Shared"})),
+        ("file.automate.batch".into(), json!({"action": "Shared", "calledActions": []})),
+        ("actions.play".into(), json!({"action": "Bad"})),
+    ];
+    for id in ["actions.play", "file.automate.batch"] {
+        for action in [json!(3), json!(3.25), json!(-1), json!("Missing"), json!(null)] {
+            steps.push((id.into(), json!({"action": action})));
+            if id == "file.automate.batch" {
+                steps.push((id.into(), json!({"action": action, "calledActions": []})));
+            }
+        }
+    }
+    let called = called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 4);
+    assert_eq!(called.last(), list.get(1), "the raw source keeps its own indices");
+    for (id, params) in &steps[3..] {
+        assert!(resolve(&called, params, id).is_err(), "{id}: {params}");
+    }
+    let bad = called.iter().find(|a| a.name == "Bad").unwrap();
+    assert!(resolve(&called, &bad.steps[0].1, "actions.play").is_err());
+    // A scoped source runs its raw references in the embedded namespace. An index beyond
+    // the caller's library can therefore be valid there, even after capture adds a source copy.
+    let list =
+        vec![Action::new("Source", vec![("actions.play".into(), json!({"action": 3}))]), Action::new("Other", Vec::new()), Action::new("Last", Vec::new())];
+    let embedded = vec![
+        Action::new("Gap0", Vec::new()),
+        Action::new("Gap1", Vec::new()),
+        Action::new("Gap2", Vec::new()),
+        Action::new("Child", vec![("layer.new.layer".into(), json!({"name": "embedded child"}))]),
+    ];
+    let mut steps = vec![
+        ("actions.play".into(), json!({"action": 0})),
+        ("actions.play".into(), json!({"action": 1})),
+        ("actions.play".into(), json!({"action": 2})),
+        ("file.automate.batch".into(), json!({"source": "open", "action": "Source", "calledActions": embedded})),
+    ];
+    let called = called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 4);
+    assert_eq!(called.last(), list.first(), "the scoped source keeps its embedded index");
+    assert!(resolve(&called, &called[0].steps[0].1, "actions.play").is_err(), "the ordinary source still has a missing target");
+    let mut session = Session::new();
+    session.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    session.actions.list = called;
+    let (id, params) = steps.last().unwrap();
+    let result = session.execute(id, params.clone()).unwrap();
+    assert_eq!(result["errors"], json!([]), "{result}");
+    assert!(session.active().unwrap().doc.layers.iter().any(|layer| layer.name == "embedded child"));
+}
+
+/// #10459 review: recording into an existing set keeps that set's exact name, even one with
+/// surrounding spaces (from an older actions.json); a new set name is trimmed.
+#[test]
+fn record_keeps_an_existing_sets_exact_name() {
+    let mut s = Session::new();
+    s.actions.list.push(Action { set: Some(" Web ".into()), ..Action::new("Old", Vec::new()) });
+    s.execute("actions.record", json!({"name": "New", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set_of = |s: &Session, n: &str| s.actions.list.iter().find(|a| a.name == n).and_then(|a| a.set.clone());
+    assert_eq!(set_of(&s, "New").as_deref(), Some(" Web "), "the existing set");
+    s.execute("actions.record", json!({"name": "Fresh", "set": "  Print  "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(set_of(&s, "Fresh").as_deref(), Some("Print"), "a new set is trimmed");
+}
+
+/// CodeRabbit review on #10459: an empty set loaded from a `.atn` (or made by New Set) keeps its
+/// exact name too, so the first action recorded into it lands in that folder and saves with it.
+#[test]
+fn record_keeps_an_empty_loaded_sets_exact_name() {
+    let mut src = Session::new();
+    src.actions.sets.push(" Web ".into());
+    let saved = src.execute("actions.save", json!({"set": " Web "})).unwrap();
+    let mut s = Session::new();
+    assert_eq!(s.execute("actions.load", json!({"data": saved["data"]})).unwrap()["set"], " Web ");
+    s.execute("actions.record", json!({"name": "First", "set": " Web "})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    let set = s.actions.list.iter().find(|a| a.name == "First").and_then(|a| a.set.clone());
+    assert_eq!(set.as_deref(), Some(" Web "));
+    assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
+    assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
+}
+
+/// A droplet capturing two actions of one name (sets A and B) keeps each call on the action it
+/// reached: an index or set-qualified call to B's action still reaches B's copy, a name-only call
+/// still reaches A's, and a call to a uniquely named action stays a name.
+#[test]
+fn captured_calls_keep_their_target_among_same_named_actions() {
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.180")] {
+        let mut a = Action::new("Retouch", vec![(step.into(), json!({}))]);
+        a.set = Some(set.into());
+        list.push(a);
+    }
+    list.push(Action::new("Other", vec![("image.imageRotation.90cw".into(), json!({}))]));
+    let mut steps: Vec<(String, Value)> = vec![
+        ("actions.play".into(), json!({"action": 1})),
+        ("actions.play".into(), json!({"action": "Retouch"})),
+        ("file.automate.batch".into(), json!({"action": "Retouch", "set": "B", "input": [], "output": "/out"})),
+        ("actions.play".into(), json!({"action": 2})),
+    ];
+    let called = crate::actions_cmds::called_actions(&list, &mut steps);
+    assert_eq!(called.len(), 3, "{called:?}");
+    let set_of = |i: usize| called[i].set.clone();
+    assert_eq!(set_of(resolve(&called, &steps[0].1, "t").unwrap()), Some("B".into()), "{}", steps[0].1);
+    assert_eq!(set_of(resolve(&called, &steps[1].1, "t").unwrap()), Some("A".into()), "{}", steps[1].1);
+    assert_eq!(set_of(crate::file_cmds::batch_action(&called, &steps[2].1).unwrap()), Some("B".into()), "{}", steps[2].1);
+    assert_eq!(steps[3].1["action"], "Other", "a unique name stays a name");
+}
+
+/// Two actions of one name in different sets (a loaded library): renaming the second by index
+/// leaves the unqualified calls, which reach the first, and a Batch with explicit steps alone;
+/// only the Batch qualified with the second's set follows. Renaming the first moves them all.
+#[test]
+fn rename_leaves_calls_that_reach_a_same_named_action_in_another_set() {
+    let calls = || {
+        vec![
+            ("file.automate.batch".into(), json!({"action": "Target", "input": [], "output": "/out"})),
+            ("file.automate.batch".into(), json!({"action": "Target", "set": "B", "input": [], "output": "/out"})),
+            ("file.automate.batch".into(), json!({"action": "Target", "set": "B", "steps": [["image.adjustments.invert", {}]], "input": [], "output": "/out"})),
+            ("actions.play".into(), json!({"action": "Target"})),
+            ("actions.conditional".into(), json!({"if": "documentIsOpen", "then": "Target", "else": "Target"})),
+        ]
+    };
+    let session = || {
+        let mut s = Session::new();
+        for set in ["A", "B"] {
+            let mut target = Action::new("Target", vec![("image.adjustments.invert".into(), json!({}))]);
+            target.set = Some(set.into());
+            s.actions.list.push(target);
+        }
+        s.actions.list.push(Action::new("Caller", calls()));
+        s
+    };
+    let mut s = session();
+    s.execute("actions.rename", json!({"action": 1, "name": "Renamed"})).unwrap();
+    let caller = &s.actions.list[2].steps;
+    assert_eq!(caller[0].1["action"], "Target", "an unqualified Batch reaches set A's action");
+    assert_eq!(caller[1].1["action"], "Renamed", "the Batch qualified with set B follows");
+    assert_eq!(caller[2].1["action"], "Target", "explicit steps are left alone");
+    assert_eq!(caller[3].1["action"], "Target", "a nested Play reaches set A's action");
+    assert_eq!((&caller[4].1["then"], &caller[4].1["else"]), (&json!("Target"), &json!("Target")));
+    assert_eq!(crate::file_cmds::batch_action(&s.actions.list, &caller[0].1).unwrap(), 0);
+    assert_eq!(crate::file_cmds::batch_action(&s.actions.list, &caller[1].1).unwrap(), 1);
+
+    let mut s = session();
+    s.execute("actions.rename", json!({"action": 0, "name": "Renamed"})).unwrap();
+    let caller = &s.actions.list[2].steps;
+    assert_eq!(caller[0].1["action"], "Renamed");
+    assert_eq!(caller[1].1["action"], "Target", "the Batch qualified with set B still names B's action");
+    assert_eq!(caller[3].1["action"], "Renamed");
+    assert_eq!((&caller[4].1["then"], &caller[4].1["else"]), (&json!("Renamed"), &json!("Renamed")));
+}
+
+/// A saved named Batch step follows a renamed action, by name alone or within its own set;
+/// a Batch naming the same action in another set and an inline Batch stay as they were.
+#[test]
+fn rename_follows_named_batch_steps_in_their_set() {
+    let mut s = Session::new();
+    let mut target = Action::new("Target", vec![("image.adjustments.invert".into(), json!({}))]);
+    target.set = Some("S".into());
+    s.actions.list.push(target);
+    let steps = vec![
+        ("file.automate.batch".into(), json!({"action": "Target", "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": "Target", "set": "S", "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": "Target", "set": null, "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": "Target", "set": "Other", "input": [], "output": "/out"})),
+        ("file.automate.batch".into(), json!({"action": [["actions.play", {"action": "Target"}]], "input": [], "output": "/out"})),
+    ];
+    s.actions.list.push(Action::new("Caller", steps));
+    s.execute("actions.rename", json!({"action": "Target", "name": "Renamed"})).unwrap();
+    let caller = &s.actions.list[1].steps;
+    for step in &caller[..3] {
+        assert_eq!(step.1["action"], "Renamed", "{}", step.1);
+        assert_eq!(crate::file_cmds::batch_action(&s.actions.list, &step.1).unwrap(), 0, "{}", step.1);
+    }
+    assert_eq!(caller[1].1["set"], "S");
+    assert_eq!(caller[3].1["action"], "Target", "a Batch in another set names a different action");
+    assert!(caller[4].1["action"].is_array());
+}
+
+/// All Batch files saved, but the requested error log could not be written: the calling action
+/// stops at that step instead of going on as if the Batch had finished.
+#[test]
+fn playback_stops_when_a_nested_batch_cannot_write_its_error_log() {
+    let dir = std::env::temp_dir().join(format!("photocraft-actions-batch-log-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.to_string_lossy().into_owned();
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4})).unwrap();
+    // A folder as the log path: the log write fails while every file succeeds.
+    let batch = json!({"source": "open", "steps": [], "output": format!("{dir}/out"), "format": "png", "errorLog": dir});
+    s.actions.list.push(Action::new("Run", vec![("file.automate.batch".into(), batch), ("layer.new.layer".into(), json!({}))]));
+    let layers = s.active().unwrap().doc.layers.len();
+    let played = s.execute("actions.play", json!({"action": "Run"})).unwrap();
+    let failed = &played["failed"];
+    assert_eq!(failed["step"], 0, "{played}");
+    assert!(failed["error"].as_str().unwrap().contains("error log"), "{played}");
+    assert!(failed["result"]["errorLogError"].is_string(), "{played}");
+    assert_eq!(s.active().unwrap().doc.layers.len(), layers, "the step after the Batch must not run");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -4,7 +4,7 @@ use super::drag::Drag;
 use super::gesture::{finish_gesture, polygon_click, selection_mode};
 use super::selection::finish_selection_drag;
 use super::strokes::{HOLD_REPEAT_MS, begin_live_stroke, feed_live_stroke, paint_target, snap_aliased_tip, stroke_params, strokes_live};
-use super::{PhotocraftApp, Tool, json};
+use super::{PhotocraftApp, Tool, json, multiple_color_target};
 
 /// Abstract tool event, produced by the mouse or by automation (`ui.pointer`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -131,6 +131,10 @@ fn filter_event_before_tool(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::
     // can land outside the corner's grab area and turn a corner drag into a move of the whole box.
     let transform_ev = if matches!(raw, ToolEvent::Down { .. }) { raw } else { ev };
     if crate::transform_tool::pointer(app, transform_ev, mods) {
+        if matches!(transform_ev, ToolEvent::Up { .. }) && app.ui.frame_tool.auto_transform {
+            app.ui.frame_tool.auto_transform = false;
+            crate::transform_tool::commit(app);
+        }
         return None;
     }
     if crate::distort_ui::pointer(app, ev, mods) {
@@ -227,6 +231,10 @@ fn handle_move_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tool: Tool, mods:
                 let mut guide = crate::rulers::GuideDrag::existing(vertical, i, [x, y]);
                 guide.track([x, y], mods.alt);
                 app.guide_drag = Some(guide);
+                return true;
+            }
+            if multiple_color_target(app) {
+                app.ui.status = "Move and transforms on several colour channels are not implemented yet".into();
                 return true;
             }
             // Auto-Select (or ⌘-click while it is off) picks the layer under the pointer first

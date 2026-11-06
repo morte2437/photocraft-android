@@ -34,6 +34,7 @@ pub fn check(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if fault.is_out_of_memory() && app.gpu_oom_retries < OOM_AUTO_RETRIES && can_retry_now(app) {
             app.gpu_oom_retries += 1;
             if retry_now(app) {
+                app.retry_compositor(ctx);
                 log::warn!("{fault}; rebuilt the GPU canvas (automatic retry {} of {OOM_AUTO_RETRIES})", app.gpu_oom_retries);
                 app.ui.gpu_fallback_notice = None;
             }
@@ -154,6 +155,8 @@ pub fn fall_back(app: &mut PhotocraftApp, fault: &photocraft_gpu::Fault) {
     app.gpu_fault = Some(fault.clone());
     // Canvas caches pointed at GPU textures: rebuild them as egui textures.
     app.canvases.clear();
+    // Viewport pages lived on the GPU too: their work stops, and the CPU canvas draws instead.
+    app.streams.clear();
     app.proxy_uploaded = None;
     app.prefs_rt.gpu_style = None;
     app.perf.gpu = false;
@@ -290,10 +293,12 @@ pub fn show_fallback(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 }
             });
         });
-    if let Some(retry) = choice
-        && let Err(error) = choose_recovery(app, retry)
-    {
-        crate::notices::error(app, error);
+    if let Some(retry) = choice {
+        match choose_recovery(app, retry) {
+            Ok(()) if retry => app.retry_compositor(ctx),
+            Ok(()) => (),
+            Err(error) => crate::notices::error(app, error),
+        }
     }
 }
 

@@ -20,10 +20,11 @@ pub const MAX_SIDE: u32 = 160;
 /// Size of the header in front of the JFIF data.
 pub const HEADER_LEN: usize = 28;
 
-/// The 1036 resource for `doc`: its composite reduced to at most [`MAX_SIDE`], converted to
-/// sRGB through the document's profile, matted over white and JPEG-compressed.
+/// The 1036 resource for `doc`: its composite reduced to at most [`MAX_SIDE`] with its spot inks
+/// printed over it, converted to sRGB through the document's profile, matted over white and
+/// JPEG-compressed.
 pub(crate) fn resource(doc: &Document) -> Result<ImageResource, IoError> {
-    let mut buf = photocraft_compose::thumbnail_buffer(doc, MAX_SIDE);
+    let mut buf = photocraft_compose::multichannel::thumbnail_with_inks(doc, MAX_SIDE);
     let (w, h) = (buf.rect.width(), buf.rect.height());
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || buf.px.len() != (w as usize) * (h as usize) {
         return Err(IoError::Unsupported("the image preview could not be rendered".into()));
@@ -73,7 +74,7 @@ fn thumbnail_bytes(w: u32, h: u32, jfif: &[u8]) -> Result<Vec<u8>, IoError> {
 /// The profile of the compositor's RGB output for `doc`: an RGB document's own (embedded when it
 /// parses, else sRGB), a gray document's gray profile seen as RGB, and sRGB for CMYK and Lab
 /// (which the compositor renders in sRGB).
-fn composite_profile(doc: &Document) -> Profile {
+pub(crate) fn composite_profile(doc: &Document) -> Profile {
     let space = match doc.mode {
         ColorMode::Grayscale | ColorMode::Bitmap | ColorMode::Duotone => ColorSpace::Gray,
         ColorMode::Cmyk | ColorMode::Lab => return Builtin::Srgb.profile().clone(),

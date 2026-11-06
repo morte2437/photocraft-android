@@ -132,7 +132,7 @@
 
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -1355,6 +1355,7 @@
 	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Щелчок: выбрать узел · Перетаскивание: переместить узел, маркер или сегмент · {shift}-щелчок: добавить · {alt}-щелчок: весь подконтур
 	Draw with the Pen tool (P) or make a work path from a selection.	Нарисуйте пером (P) или создайте рабочий контур из выделения.
 	Source: not set ({key}-click with Clone Stamp)	Источник: не задан ({key}-клик штампом)
+	Source: {name}	Источник: {name}
 	Clone source {n} ({key}-click with Clone Stamp to set)	Источник клонирования {n} ({key}-клик штампом, чтобы задать)
 	{key}-click to set the source	{key}-клик, чтобы задать источник
 	Option-click to define a source point to clone from	Option-клик, чтобы задать точку источника клонирования
@@ -3230,6 +3231,9 @@ curves	Smooth	Сгладить
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} шаг пока не имеет эквивалента в PhotoCraft|{n} шага пока не имеют эквивалента в PhotoCraft|{n} шагов пока не имеют эквивалента в PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Сохранена {n} операция в {file}|Сохранены {n} операции в {file}|Сохранено {n} операций в {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Пропущен {n} шаг без эквивалента в Photoshop|Пропущены {n} шага без эквивалента в Photoshop|Пропущено {n} шагов без эквивалента в Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Загружен {n} файл операций|Загружены {n} файла операций|Загружено {n} файлов операций
+	{set} from {file} replaced the one from {earlier}	Набор {set} из {file} заменил набор из {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Не удалось загрузить {n} файл: {errors}|Не удалось загрузить {n} файла: {errors}|Не удалось загрузить {n} файлов: {errors}
 	File Naming	Именование файлов
 	Starting serial	Начальный порядковый номер
 	Insert Stop…	Вставить остановку…
@@ -3242,6 +3246,8 @@ curves	Smooth	Сгладить
 	Step {step} is waiting for its dialog	Шаг {step} ожидает своего диалога
 @plural	{n} action|{n} actions	{n} операция|{n} операции|{n} операций
 	Background (Default)	Фон (по умолчанию)
+	Background (default)	Фон (по умолчанию)
+	Transparent (default)	Прозрачный (по умолчанию)
 	Content-Aware Fill	Заливка с учётом содержимого
 	Include All Subfolders	Включить все вложенные папки
 	Auto Add/Delete	Автодобавление/удаление
@@ -3264,6 +3270,7 @@ curves	Smooth	Сгладить
 	Shadow Tint	Оттенок теней
 	Paints from the History panel's source state	Рисует из исходного состояния панели «История»
 	Sets the source for the history brush	Задаёт источник для кисти истории
+	The History Brush source was deleted: set a new source in the History panel	Источник кисти истории был удалён: задайте новый источник на панели «История»
 	Select Inverse	Инвертировать выделение
 	Pro (Light)	Pro (светлая)
 	Pro (Light Gray)	Pro (светло-серая)
@@ -3280,6 +3287,7 @@ curves	Smooth	Сгладить
 	Gray Value (Median)	Уровень серого (медиана)
 	Integrated Density	Интегральная плотность
 	Length	Длина
+	Memory usage percent	Использование памяти (%)
 	Show Favorite Fonts	Показать избранные шрифты
 	No favorite fonts yet: click the star beside a font to add it.	Избранных шрифтов пока нет: нажмите на звёздочку рядом со шрифтом, чтобы добавить его.
 	Favorite fonts	Избранные шрифты
@@ -3314,17 +3322,8 @@ curves	Smooth	Сгладить
 	Shadow Color	Цвет теней
 	Shadow Opacity	Непрозрачность теней
 	Check for Updates…	Проверить обновления…
-	PhotoCraft Updates	Обновления PhotoCraft
-	Checking for updates…	Проверка обновлений…
 	Open the release page to choose an installer for your system.	Откройте страницу выпуска и выберите установщик для своей системы.
-	Open Download Page	Открыть страницу загрузки
-	PhotoCraft is up to date.	Установлена последняя версия PhotoCraft.
-	Could not check for updates.	Не удалось проверить обновления.
-	Updates have not been checked yet.	Обновления ещё не проверялись.
-	Check Again	Проверить снова
 	Automatically Check for Updates	Автоматически проверять обновления
-	Installed version: {version}	Установленная версия: {version}
-	PhotoCraft {version} is available.	Доступна версия PhotoCraft {version}.
 	Use the embedded profile ({profile})	Использовать встроенный профиль ({profile})
 	Convert to the working space ({profile})	Преобразовать в рабочее пространство ({profile})
 	Remember this choice for future images	Запомнить этот выбор для следующих изображений
@@ -3338,6 +3337,7 @@ curves	Smooth	Сгладить
 	Chisel Soft	Мягкая огранка
 	Open color-less EXR as ACEScg	Открывать EXR без цветового профиля как ACEScg
 	Do not append "copy" to filename when saving a copy	Не добавлять «copy» к имени файла при сохранении копии
+	Save Full-Size Composite in .pcraft Files	Сохранять сведённое изображение в полном размере в файлах .pcraft
 	Edit Selected Guides	Изменить выбранные направляющие
 	Clear Selected Guides	Удалить выбранные направляющие
 	Bicubic Automatic	Бикубическая, автоматически
@@ -3393,6 +3393,7 @@ curves	Smooth	Сгладить
 	This document's layers: {needed} of {budget} for layers	Слои этого документа: {needed} из {budget} для слоёв
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Слоям этого документа нужно {needed}, но занимать они могут {budget}: весь документ перерисовывается на CPU
 	GPU Memory (MB, 0 = Automatic)	Память GPU (МБ, 0 = автоматически)
+	Scratch Size Limit (MB, 0 = No Limit)	Предел размера рабочего диска (МБ, 0 = без ограничения)
 	{path}: the path is not valid Unicode; save under another name.	{path}: путь не является допустимым Unicode; сохраните под другим именем.
 	Replace	Заменить
 	{name} was changed by another app after it was opened or saved here.	Файл {name} был изменён другим приложением после того, как его открыли или сохранили здесь.
@@ -3925,6 +3926,9 @@ curves	Smooth	Сгладить
 	There is no color table to save.	Нет таблицы цветов для сохранения.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Сохранён {n} цвет в {file}|Сохранены {n} цвета в {file}|Сохранено {n} цветов в {file}
 	GPU adapter	Адаптер GPU
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Содержимое AI/PDF/EPS будет редактироваться как SVG. Сохранение заменит встроенный источник; особенности исходного формата могут измениться.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Импортировать стили…
 	Export Selected Styles…	Экспортировать выбранные стили…
 	Export Styles…	Экспортировать стили…
@@ -4694,6 +4698,9 @@ shape	Appearance	Оформление
 	Font size presets	Наборы размеров шрифта
 	Leading presets	Наборы интерлиньяжа
 	Tracking presets	Наборы трекинга
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Недопустимое числовое значение. Требуется целое число от {min}% до {max}%. Вставлено предыдущее значение.
 	Color Aware	С учетом цвета
 	Decontaminate Colors	Очистить цвета
 	Edge Detection	Обнаружение краев
@@ -4710,3 +4717,48 @@ shape	Appearance	Оформление
 	Refine Hair needs hair detection, which isn't available yet	Для уточнения волос нужно распознавание волос, которое пока недоступно
 	Select and Mask was closed: its document is no longer the active one	Окно «Выделение и маска» закрыто: его документ больше не активен
 	Select and Mask was closed: another layer was selected	Окно «Выделение и маска» закрыто: выбран другой слой
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Недавно использованные цвета
+	Stop Color	Цвет контрольной точки
+	Shapes can't use patterns yet	Фигуры пока не могут использовать узоры
+	Edit Brush…	Изменить кисть…
+
+# Action Stop message (#8386)
+	Message	Сообщение
+# Playback Options (#5212)
+	Playback Options…	Параметры воспроизведения…
+	Playback Options	Параметры воспроизведения
+	Accelerated	Ускоренное
+	Step by Step	Пошаговое
+	Pause For:	Пауза на:
+	Pause For	Пауза на
+	seconds	с
+	Create a single history state	Создавать одно состояние истории
+	Drag to move the active shape's path or the Work Path	Перетащите, чтобы переместить контур активной фигуры или рабочий контур
+	Generator enabled	Генератор включён
+	Hidden	Скрыто
+	Move Up	Переместить вверх
+	Move Down	Переместить вниз
+	On your computer	На вашем компьютере
+	New file	Новый файл
+	Learn	Обучение
+	Website	Сайт
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Рамка поддерживает аффинные преобразования; для перспективных преобразований выберите её изображение
+	A frame supports affine transforms; select its image to warp it	Рамка поддерживает аффинные преобразования; для деформации выберите её изображение
+	Convert to Frame…	Преобразовать в рамку…
+	Create a new custom frame	Создать новую произвольную рамку
+	Create a new polygonal frame	Создать новую многоугольную рамку
+	Create a new triangular frame	Создать новую треугольную рамку
+	Fit Content to Frame	Подогнать содержимое под рамку
+	Fit Frame to Content	Подогнать рамку под содержимое
+	Frame coordinates must be finite and within 600000 pixels	Координаты рамки должны быть конечными и находиться в пределах 600000 пикселей
+	Import Image…	Импортировать изображение…
+	Invalid frame transform	Недопустимое преобразование рамки
+	Invalid nested file drop	Недопустимое вложенное перетаскивание файла
+	New Frame	Новая рамка
+	Replace Image…	Заменить изображение…
+	The frame is locked	Рамка заблокирована
+	The frame is unavailable	Рамка недоступна

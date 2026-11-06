@@ -3001,7 +3001,7 @@ fn levels_steps_match_photoshop() {
         let px = xs.iter().map(|&x| f32::from(x) / 255.0).map(|v| [v, v, v, 1.0]).collect();
         let mut b = Buffer { rect: Rect::new(0, 0, xs.len() as i32, 1), px };
         adjust::apply_depth(adj, &mut b, adjust::Transfer::Srgb, Some(SampleType::U8));
-        b.px
+        b.into_px()
     };
     let rgb = levels(ch(0.0, 213.0, 1.22, 48.0, 255.0), [ch(0.0, 255.0, 0.47, 0.0, 194.0), id.clone(), ch(61.0, 255.0, 0.47, 0.0, 213.0)]);
     let xs = [2, 8, 9, 15, 16, 43, 45, 48, 55, 61, 72, 79, 84, 89, 90, 101, 106, 120, 150, 180, 200];
@@ -3364,7 +3364,7 @@ fn render_bands_cover_the_rect_in_order() {
     render_bands(&d, r, 100, |b| -> Result<(), ()> {
         assert_eq!((b.rect.x0, b.rect.x1), (r.x0, r.x1));
         rows.push((b.rect.y0, b.rect.y1));
-        px.extend(b.px);
+        px.extend(b.into_px());
         Ok(())
     })
     .unwrap();
@@ -4469,13 +4469,13 @@ fn dissolve_adjustment_resolves_opacity_to_binary_coverage() {
     layer.blend = BlendMode::Dissolve;
     layer.opacity = 0.5;
     d.layers.push(layer);
-    let pixels = render(&d, d.bounds()).px;
+    let pixels = render(&d, d.bounds()).into_px();
     let black = pixels.iter().filter(|p| p[0] < 0.01).count();
     let white = pixels.iter().filter(|p| p[0] > 0.99).count();
     assert!(black > 0 && white > 0, "Dissolve must select both original and adjusted pixels");
     assert_eq!(black + white, pixels.len(), "no intermediate gray pixels");
     d.layers.last_mut().unwrap().blend = BlendMode::Normal;
-    let continuous = render(&d, d.bounds()).px;
+    let continuous = render(&d, d.bounds()).into_px();
     assert!(continuous.iter().all(|p| (p[0] - 0.5).abs() < E), "Normal remains continuously interpolated");
 }
 
@@ -4486,14 +4486,14 @@ fn clipped_dissolve_fill_matches_opaque_unclipped_coverage() {
     fill.blend = BlendMode::Dissolve;
     fill.opacity = 0.5;
     d.layers.push(fill);
-    let control = render(&d, d.bounds()).px;
+    let control = render(&d, d.bounds()).into_px();
     d.layers.last_mut().unwrap().clipped = true;
-    let clipped = render(&d, d.bounds()).px;
+    let clipped = render(&d, d.bounds()).into_px();
     assert_eq!(clipped, control, "clipping over a fully opaque base must preserve dissolve pixels");
     let black = clipped.iter().filter(|p| p[0] < 0.01).count();
     assert!(black > 0 && black < clipped.len());
     d.layers.last_mut().unwrap().blend = BlendMode::Normal;
-    let continuous = render(&d, d.bounds()).px;
+    let continuous = render(&d, d.bounds()).into_px();
     assert!(continuous.iter().all(|p| (p[0] - 0.5).abs() < E));
 }
 
@@ -4504,17 +4504,17 @@ fn dissolve_color_overlay_preserves_binary_layer_coverage() {
     layer.blend = BlendMode::Dissolve;
     layer.opacity = 0.5;
     d.layers.push(layer);
-    let control = render(&d, d.bounds()).px;
+    let control = render(&d, d.bounds()).into_px();
     d.layers
         .last_mut()
         .unwrap()
         .effects
         .items
         .push(photocraft_doc::Effect::ColorOverlay { common: photocraft_doc::FxCommon::new(BlendMode::Normal, 1.0), color: Color::BLACK });
-    let styled = render(&d, d.bounds()).px;
+    let styled = render(&d, d.bounds()).into_px();
     assert_eq!(styled, control, "an identity overlay should not turn dissolve pixels gray");
     d.layers.last_mut().unwrap().blend = BlendMode::Normal;
-    let continuous = render(&d, d.bounds()).px;
+    let continuous = render(&d, d.bounds()).into_px();
     assert!(continuous.iter().all(|p| (p[0] - 0.5).abs() < E));
 }
 
@@ -4600,5 +4600,44 @@ fn adjustment_blend_if_judges_the_result_before_opacity() {
         d.layers.push(inv);
         let got: Vec<i32> = px(&d, 0, 0)[..3].iter().map(|v| (v * 255.0).round() as i32).collect();
         assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1), "black {black} white {white}: {got:?} vs Photoshop {want:?}");
+    }
+}
+
+/// The reference application, measured: a 240 × 40 black document, an opaque white layer over
+/// its left 100 px (full height), Outer Glow Softer, white, Normal, 100 %, Spread 0, Noise 0,
+/// Size 60, Range 50 % and 100 % alike. Sampled at row 20, `d` px right of the edge, the glow
+/// reads 4 at 50 px, 1 at 54 and 0 from 56 to 70: it fades out just before Size, with no tail
+/// beyond it (#8039 added one; reverted). On black, the red value × 255 is the glow alpha × 255,
+/// compared as 8-bit levels. The tent gives 4, 1, 0, 0, 0 at Range 50 % and 2, 1, 0, 0, 0 at 100 %.
+#[test]
+fn softer_outer_glow_fades_out_before_its_size() {
+    let mut d = Document::with_background("t", Size::new(240, 40), ColorMode::Rgb, SampleType::U8, Color::BLACK);
+    for range in [0.5, 1.0] {
+        let mut l = solid_layer("shape", Rect::new(0, 0, 100, 40), [1.0; 4]);
+        l.effects.items = vec![Effect::OuterGlow(Glow {
+            common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0),
+            paint: FxPaint::Color(Color::WHITE),
+            technique: GlowTechnique::Softer,
+            spread: 0.0,
+            size: 60.0,
+            contour: photocraft_doc::Contour::Linear,
+            anti_alias: false,
+            range,
+            jitter: 0.0,
+            noise: 0.0,
+            source: GlowSource::Edge,
+        })];
+        d.layers.truncate(1);
+        d.layers.push(l);
+        let got: Vec<(i32, f32)> = [50, 54, 56, 60, 70].iter().map(|&dist| (dist, (255.0 * px(&d, 100 + dist, 20)[0]).round())).collect();
+        for &(dist, v) in &got {
+            let want = match dist {
+                50 => 4.0,
+                54 => 1.0,
+                _ => 0.0,
+            };
+            let tolerance = if dist >= 56 { 0.0 } else { 2.0 };
+            assert!((v - want).abs() <= tolerance, "range {range}, {dist} px: {v} vs the reference application's {want} ({got:?})");
+        }
     }
 }

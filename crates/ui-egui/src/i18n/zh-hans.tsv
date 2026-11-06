@@ -37,7 +37,7 @@
 
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -1973,6 +1973,7 @@
 	Soften	柔化
 	Source	源
 	Source: set	源：已设置
+	Source: {name}	源：{name}
 	Sponge Tool	海绵工具
 	Spot Healing Brush Tool	污点修复画笔工具
 	Spread	扩展
@@ -2923,6 +2924,9 @@ curves	Smooth	平滑
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} 个步骤在 PhotoCraft 中尚无对应功能
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	已将 {n} 个动作存储到 {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	已省略 {n} 个没有 Photoshop 对应功能的步骤
+@plural	{n} action file loaded|{n} action files loaded	已载入 {n} 个动作文件
+	{set} from {file} replaced the one from {earlier}	{file} 中的组 {set} 替换了 {earlier} 中的同名组
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} 个文件无法载入：{errors}
 	File Naming	文件命名
 	Starting serial	起始序号
 	Insert Stop…	插入停止…
@@ -2935,6 +2939,8 @@ curves	Smooth	平滑
 	Step {step} is waiting for its dialog	步骤 {step} 正在等待其对话框
 @plural	{n} action|{n} actions	{n} 个动作
 	Background (Default)	背景（默认）
+	Background (default)	背景（默认）
+	Transparent (default)	透明（默认）
 	Content-Aware Fill	内容识别填充
 	Include All Subfolders	包含所有子文件夹
 	Auto Add/Delete	自动添加/删除
@@ -2944,6 +2950,7 @@ curves	Smooth	平滑
 	Sent to {printer}	已发送到 {printer}
 	set in Print Settings…	在打印设置中设置…
 	ICO is limited to 256 × 256 pixels	ICO 最大为 256 × 256 像素
+	Memory usage percent	内存使用比例 (%)
 	Show Favorite Fonts	显示收藏的字体
 	No favorite fonts yet: click the star beside a font to add it.	还没有收藏的字体：点击字体旁边的星标即可添加。
 	Favorite fonts	收藏的字体
@@ -2983,19 +2990,11 @@ curves	Smooth	平滑
 	Kept {name}: written by another application	已保留 {name}：由其他应用程序写入
 	Shadow Tint	阴影色调
 	Check for Updates…	检查更新…
-	PhotoCraft Updates	PhotoCraft 更新
-	Checking for updates…	正在检查更新…
 	Open the release page to choose an installer for your system.	打开发布页，选择适合您系统的安装包。
-	Open Download Page	打开下载页面
-	PhotoCraft is up to date.	PhotoCraft 已是最新版本。
-	Could not check for updates.	无法检查更新。
-	Updates have not been checked yet.	尚未检查更新。
-	Check Again	重新检查
 	Automatically Check for Updates	自动检查更新
-	Installed version: {version}	已安装版本：{version}
-	PhotoCraft {version} is available.	PhotoCraft {version} 已发布。
 	Paints from the History panel's source state	从历史记录面板的源状态绘画
 	Sets the source for the history brush	设置历史记录画笔的源
+	The History Brush source was deleted: set a new source in the History panel	历史记录画笔的源已被删除：请在“历史记录”面板中设置新的源
 	Highlight Mode	高光模式
 	Highlight Color	高光颜色
 	Highlight Opacity	高光不透明度
@@ -3015,6 +3014,7 @@ curves	Smooth	平滑
 	Chisel Soft	雕刻柔和
 	Open color-less EXR as ACEScg	将无色彩空间信息的 EXR 以 ACEScg 打开
 	Do not append "copy" to filename when saving a copy	存储副本时不在文件名后添加“copy”
+	Save Full-Size Composite in .pcraft Files	在 .pcraft 文件中存储全尺寸合成图像
 	Color Profile	颜色配置文件
 	EXIF	EXIF
 	Edit Selected Guides	编辑所选参考线
@@ -3063,6 +3063,7 @@ curves	Smooth	平滑
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} 由系统保留，无法指定。
 	Low-Latency Drawing (vsync off, applies at next launch)	低延迟绘画（关闭垂直同步，下次启动时生效）
 	Reference point location	参考点位置
+	Toggle reference point	切换参考点
 	Free Transform is still being applied; try again when it has finished.	自由变换仍在应用中；请在完成后重试。
 	The transform couldn't be applied.	无法应用变换。
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	其图层需要 {needed} GPU 内存；预算只留给它们 {budget}。
@@ -3074,6 +3075,7 @@ curves	Smooth	平滑
 	This document's layers: {needed} of {budget} for layers	此文档的图层：图层可用 {budget} 中的 {needed}
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	此文档的图层需要 {needed}，但只能占用 {budget}：整个文档的重绘使用 CPU
 	GPU Memory (MB, 0 = Automatic)	GPU 内存（MB，0 = 自动）
+	Scratch Size Limit (MB, 0 = No Limit)	暂存盘大小上限（MB，0 = 无限制）
 	{path}: the path is not valid Unicode; save under another name.	{path}：路径不是有效的 Unicode；请以其他名称存储。
 	Replace	替换
 	{name} was changed by another app after it was opened or saved here.	{name} 在此处打开或存储后已被其他应用更改。
@@ -3112,6 +3114,9 @@ curves	Smooth	平滑
 	There is no color table to save.	没有可保存的色表。
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	已将 {n} 种颜色保存到 {file}
 	GPU adapter	GPU 适配器
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS 内容将以 SVG 格式编辑。保存会替换嵌入的源文件；格式特有的功能可能会发生变化。
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	导入样式…
 	Export Selected Styles…	导出所选样式…
 	Export Styles…	导出样式…
@@ -3177,6 +3182,9 @@ curves	Smooth	平滑
 	Font size presets	字号预设
 	Leading presets	行距预设
 	Tracking presets	字距调整预设
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	数值输入无效。需要介于 {min}% 和 {max}% 之间的整数。已插入先前的值。
 	Clear Selection	清除选区
 	Color Aware	颜色识别
 	Decontaminate Colors	净化颜色
@@ -3195,3 +3203,56 @@ curves	Smooth	平滑
 	Select and Mask was closed: its document is no longer the active one	已关闭“选择与蒙版”：其文档不再是当前文档
 	Select and Mask was closed: another layer was selected	已关闭“选择与蒙版”：已选择另一个图层
 	Drag to move the selected path	拖动以移动选中的路径
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	拾色器
+	Recently Used Colors	最近使用的颜色
+	Stop Color	色标颜色
+	Shapes can't use patterns yet	形状暂不支持图案
+	Solid Color	纯色
+	Tint Color	色调颜色
+	Edit Brush…	编辑画笔…
+
+# Action Stop message (#8386)
+	Message	信息
+# Playback Options (#5212)
+	Playback Options…	回放选项…
+	Playback Options	回放选项
+	Accelerated	加速
+	Step by Step	逐步
+	Pause For:	暂停：
+	Pause For	暂停
+	seconds	秒
+	Create a single history state	创建单个历史记录状态
+	Drag to move the active shape's path or the Work Path	拖动以移动当前形状的路径或工作路径
+	Generator enabled	启用生成器
+	Move Up	上移
+	Move Down	下移
+	Grid view	网格视图
+	List view	列表视图
+	On your computer	在您的计算机上
+	New file	新建文件
+	Learn	学习
+	No recent files	没有最近使用的文件
+	Website	网站
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	框架支持仿射变换；要进行透视变换，请选择框架中的图像
+	A frame supports affine transforms; select its image to warp it	框架支持仿射变换；要进行变形，请选择框架中的图像
+	Convert to Frame…	转换为框架…
+	Create a new custom frame	创建新的自定义框架
+	Create a new polygonal frame	创建新的多边形框架
+	Create a new triangular frame	创建新的三角形框架
+	Fit Content to Frame	使内容适合框架
+	Fit Frame to Content	使框架适合内容
+	Frame coordinates must be finite and within 600000 pixels	框架坐标必须为有限值，且在 600000 像素范围内
+	Import Image…	导入图像…
+	Invalid frame transform	无效的框架变换
+	Invalid nested file drop	无效的嵌套文件拖放
+	New Frame	新建框架
+	Replace Image…	替换图像…
+	The frame is locked	框架已锁定
+	The frame is unavailable	框架不可用
+	Frame	框架
+	X	X
+	Y	Y

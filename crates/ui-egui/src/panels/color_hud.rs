@@ -1,10 +1,11 @@
 //! Photoshop's HUD Color Picker (#6098): with a painting tool, Shift+Alt+right-click on the
-//! canvas opens a floating hue strip and saturation/value square anchored under the pointer.
+//! canvas opens a floating saturation/value square with a hue strip to its right, placed so the
+//! current colour sits under the pointer (as the reference application does).
 //! While the right button stays down, moving the pointer over the HUD picks the foreground colour
 //! live (`tools.setColors` calls sharing one `coalesce` key, so the gesture is one history step,
-//! Rule 1); releasing the button keeps the colour and closes the HUD, Escape restores the colour
-//! the gesture started from. A left press closes it too, which is how the control channel ends a
-//! gesture it opened with `ui.pointer`.
+//! Rule 1); releasing the button or pressing Escape closes the HUD and keeps the colour picked so
+//! far, as in the reference application (Undo takes it back). A left press closes it too, which is
+//! how the control channel ends a gesture it opened with `ui.pointer`.
 //!
 //! The HUD is drawn as plain meshes and hit-tested from the raw pointer position rather than with
 //! interactive widgets: the selection follows the pointer while the *right* button is held, which
@@ -26,19 +27,32 @@ use crate::state::UiState;
 const HUE_W: f32 = 16.0;
 /// Side of the saturation/value square, and the strip's height.
 const SQUARE: f32 = 128.0;
-/// Gap between the strip and the square.
+/// Gap between the square and the strip.
 const GAP: f32 = 8.0;
 /// The HUD's content size (the frame's chrome sits around it).
-pub const SIZE: [f32; 2] = [HUE_W + GAP + SQUARE, SQUARE];
+pub const SIZE: [f32; 2] = [SQUARE + GAP + HUE_W, SQUARE];
+
+/// The square (left) and the hue strip (right) inside the HUD's content rect.
+fn layout(content: Rect) -> (Rect, Rect) {
+    let square = Rect::from_min_size(content.min, vec2(SQUARE, SQUARE));
+    let strip = Rect::from_min_size(content.min + vec2(SQUARE + GAP, 0.0), vec2(HUE_W, SQUARE));
+    (strip, square)
+}
+
+/// Where the current colour (saturation, value) sits inside the content rect, from its top left.
+fn colour_offset(hsv: [f32; 3]) -> Vec2 {
+    let f = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    vec2(f(hsv[1]) * SQUARE, (1.0 - f(hsv[2])) * SQUARE)
+}
 
 /// The HUD Color Picker while it is open.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hud {
-    /// Where the gesture began, in screen points: the HUD anchors just below it.
+    /// Where the gesture began, in screen points: the HUD opens with the starting colour here.
     pub anchor: [f32; 2],
     /// The colour being picked: hue 0..360, saturation and value 0..1.
     pub hsv: [f32; 3],
-    /// The foreground colour when the gesture began; Escape restores it.
+    /// The foreground colour when the gesture began: where the HUD opens, and the alpha it keeps.
     pub start: [f32; 4],
     /// The `coalesce` key of this gesture's `tools.setColors` calls.
     pub key: u64,
@@ -162,31 +176,25 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             i.pointer.hover_pos(),
         )
     });
-    if esc {
-        let start = hud.start;
-        let changed = app.session.tools.foreground != start;
-        close(&mut app.ui);
-        if changed {
-            set_foreground(app, start, hud.key);
-        }
-        return;
-    }
-    if (hud.hold && released) || pressed_left {
+    if esc || (hud.hold && released) || pressed_left {
         close(&mut app.ui);
         return;
     }
-    // Keep the HUD on screen: anchored just under the press point, pulled in at the edges.
+    // The starting colour's spot in the square sits under the press point, as in the reference
+    // application; near a screen edge the HUD is pulled in so it stays whole.
     let screen = ctx.content_rect();
     let style = ctx.global_style();
-    let size = Vec2::from(SIZE) + style.spacing.menu_margin.sum() + egui::Vec2::splat(2.0 * style.visuals.window_stroke().width);
-    let at = egui::pos2(hud.anchor[0], hud.anchor[1] + 4.0);
+    let m = style.spacing.menu_margin;
+    let stroke = style.visuals.window_stroke().width;
+    let size = Vec2::from(SIZE) + m.sum() + egui::Vec2::splat(2.0 * stroke);
+    let start = rgb_to_hsb([hud.start[0], hud.start[1], hud.start[2]]);
+    let at = egui::pos2(hud.anchor[0], hud.anchor[1]) - colour_offset(start) - vec2(f32::from(m.left) + stroke, f32::from(m.top) + stroke);
     let pos = egui::pos2(at.x.min(screen.right() - size.x).max(screen.left()), at.y.min(screen.bottom() - size.y).max(screen.top()));
     let area = egui::Area::new(hud_id()).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         egui::Frame::popup(ui.style())
             .show(ui, |ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(SIZE[0], SIZE[1]), egui::Sense::hover());
-                let strip = Rect::from_min_size(rect.min, vec2(HUE_W, SQUARE));
-                let square = Rect::from_min_max(rect.min + vec2(HUE_W + GAP, 0.0), rect.max);
+                let (strip, square) = layout(rect);
                 let p = ui.painter();
                 paint_hue_strip(p, strip);
                 paint_sv_square(p, square, hud.hsv[0]);
@@ -203,9 +211,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             .inner
     });
     let (strip, square) = area.inner;
-    // Near a screen edge the clamped HUD can appear under the stationary pointer: picking starts
-    // only once the pointer has moved from where the gesture began, so the opening press alone
-    // never changes the colour.
+    // The HUD opens under the stationary pointer: picking starts only once the pointer has moved
+    // from where the gesture began, so the opening press alone never changes the colour.
     if hud.just_opened && hover.is_some_and(|p| p != egui::pos2(hud.anchor[0], hud.anchor[1])) {
         hud.just_opened = false;
     }
@@ -285,8 +292,7 @@ mod tests {
         let w = style.visuals.window_stroke().width;
         let inner =
             Rect::from_min_max(area.min + vec2(f32::from(m.left) + w, f32::from(m.top) + w), area.max - vec2(f32::from(m.right) + w, f32::from(m.bottom) + w));
-        let strip = Rect::from_min_size(inner.min, vec2(HUE_W, SQUARE));
-        (strip, Rect::from_min_max(inner.min + vec2(HUE_W + GAP, 0.0), inner.max))
+        layout(inner)
     }
 
     fn foreground(h: &Harness<'static, PhotocraftApp>) -> [f32; 4] {
@@ -304,10 +310,13 @@ mod tests {
         assert!(hud.hold);
         assert_eq!(hud.start, [0.0, 0.0, 1.0, 1.0], "seeded from the foreground");
         assert_eq!(h.state().ui.brush_picker, None, "the Brush Preset picker stays closed");
-        // The HUD shows under the pointer, on screen.
+        // The square is left of the strip, and the pointer sits on the current colour: blue is
+        // full saturation and value, the square's top-right corner.
         let (strip, square) = rects(&h);
         assert!(strip.height() > 100.0 && square.width() > 100.0);
-        assert!(square.right() < h.ctx.content_rect().right());
+        assert!(square.right() <= strip.left(), "square {square:?} left of strip {strip:?}");
+        assert!(strip.right() < h.ctx.content_rect().right());
+        assert!((square.right_top() - c).length() < 1.0, "the current colour {:?} is under the pointer {c:?}", square.right_top());
         // Nothing painted.
         assert!(!h.state().session.journal.iter().any(|(id, _)| id == "paint.stroke"));
     }
@@ -330,26 +339,43 @@ mod tests {
         assert!(h.state().ui.canvas_tool_menu.is_some(), "the selection menu opens, once");
     }
 
-    /// A press near the bottom-right edge clamps the HUD under the still pointer: the opening
-    /// press alone must not pick — the colour changes only once the pointer moves (#6098).
+    /// The HUD opens with the current colour under the still pointer: the opening press alone
+    /// must not pick, the colour changes only once the pointer moves (#6098). Near the
+    /// bottom-right edge the HUD is pulled in to stay on screen, and still picks nothing.
     #[test]
-    fn a_hud_clamped_under_the_still_pointer_picks_nothing_until_it_moves() {
+    fn the_opening_press_picks_nothing_until_the_pointer_moves() {
         let mut h = harness_size(1200, 800);
-        let near = egui::pos2(h.state().last_canvas_rect.max.x - 10.0, h.state().last_canvas_rect.max.y - 10.0);
-        h.event(egui::Event::PointerMoved(near));
+        h.state_mut().run("tools.setColors", json!({"foreground": [0.4, 0.3, 0.6, 1.0]})).unwrap();
+        let start = foreground(&h);
+        let c = h.state().last_canvas_rect.center();
+        h.event(egui::Event::PointerMoved(c));
         h.run_steps(1);
-        button(&mut h, near, true, SHIFT_ALT);
-        assert!(h.state().ui.color_hud.is_some_and(|hud| hud.just_opened), "the HUD opened under the pointer");
+        button(&mut h, c, true, SHIFT_ALT);
+        assert!(h.state().ui.color_hud.is_some_and(|hud| hud.just_opened), "the HUD opened");
         let (_strip, square) = rects(&h);
-        assert!(square.contains(near), "the clamped HUD sits under the pointer: {near:?} in {square:?}");
+        let hsv = rgb_to_hsb([start[0], start[1], start[2]]);
+        let spot = square.min + colour_offset([hsv[0], hsv[1], hsv[2]]);
+        assert!(square.contains(c) && (spot - c).length() < 1.0, "the current colour {spot:?} is under the pointer {c:?}");
         h.run_steps(4);
-        assert_eq!(foreground(&h), [0.0, 0.0, 1.0, 1.0], "the stationary opening pointer picks nothing");
+        assert_eq!(foreground(&h), start, "the stationary opening pointer picks nothing");
         // Moving inside the HUD now picks, as during any other gesture.
         let to = square.min + vec2(1.0, square.height() - 1.0);
         h.event(egui::Event::PointerMoved(to));
         h.run_steps(2);
-        assert_ne!(foreground(&h), [0.0, 0.0, 1.0, 1.0], "the move picks");
+        assert_ne!(foreground(&h), start, "the move picks");
         button(&mut h, to, false, SHIFT_ALT);
+        // At the bottom-right corner the HUD stays whole on screen, and the press alone picks nothing.
+        let near = egui::pos2(h.state().last_canvas_rect.max.x - 10.0, h.state().last_canvas_rect.max.y - 10.0);
+        let start = foreground(&h);
+        h.event(egui::Event::PointerMoved(near));
+        h.run_steps(1);
+        button(&mut h, near, true, SHIFT_ALT);
+        let (strip, square) = rects(&h);
+        let screen = h.ctx.content_rect();
+        assert!(screen.contains_rect(square.union(strip)), "on screen: {square:?} {strip:?} in {screen:?}");
+        h.run_steps(4);
+        assert_eq!(foreground(&h), start, "the press near the edge picks nothing");
+        button(&mut h, near, false, SHIFT_ALT);
     }
 
     #[test]
@@ -392,8 +418,10 @@ mod tests {
         assert_eq!(foreground(&h), kept);
     }
 
+    /// The reference application's Escape ends the pick where it is: the HUD closes, the colour
+    /// picked so far stays, and moving afterwards changes nothing.
     #[test]
-    fn escape_restores_the_starting_colour() {
+    fn escape_closes_the_hud_and_keeps_the_picked_colour() {
         let mut h = harness();
         let c = h.state().last_canvas_rect.center();
         h.event(egui::Event::PointerMoved(c));
@@ -402,11 +430,19 @@ mod tests {
         let (_strip, square) = rects(&h);
         h.event(egui::Event::PointerMoved(square.center()));
         h.run_steps(2);
-        assert_ne!(foreground(&h), [0.0, 0.0, 1.0, 1.0], "the pick is live");
+        let picked = foreground(&h);
+        assert_ne!(picked, [0.0, 0.0, 1.0, 1.0], "the pick is live");
         h.key_press(egui::Key::Escape);
         h.run_steps(2);
         assert_eq!(h.state().ui.color_hud, None);
-        assert_eq!(foreground(&h), [0.0, 0.0, 1.0, 1.0], "Escape restores the colour");
+        assert_eq!(foreground(&h), picked, "Escape keeps the picked colour");
+        h.event(egui::Event::PointerMoved(square.min + vec2(2.0, 2.0)));
+        h.run_steps(2);
+        assert_eq!(foreground(&h), picked, "moving after Escape picks nothing");
+        button(&mut h, square.min + vec2(2.0, 2.0), false, SHIFT_ALT);
+        assert_eq!(h.state().ui.color_hud, None);
+        assert_eq!(h.state().ui.brush_picker, None, "releasing the button afterwards opens nothing");
+        assert_eq!(foreground(&h), picked);
     }
 
     #[test]
@@ -490,13 +526,12 @@ mod tests {
 
     #[test]
     fn pick_at_maps_the_rects_and_ignores_the_gaps() {
-        let strip = Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(HUE_W, SQUARE));
-        let square = Rect::from_min_max(vec2(HUE_W + GAP, 0.0).to_pos2(), Pos2::new(HUE_W + GAP + SQUARE, SQUARE));
+        let (strip, square) = layout(Rect::from_min_size(Pos2::ZERO, Vec2::from(SIZE)));
         assert_eq!(pick_at([120.0, 0.5, 0.5], strip, square, square.center()), Some([120.0, 0.5, 0.5]));
         let p = pick_at([120.0, 0.5, 0.5], strip, square, square.left_top() + vec2(1.0, 1.0)).expect("in the square");
         assert!(p[0] == 120.0 && p[1] < 0.02 && p[2] > 0.98, "top-left is saturated and bright: {p:?}");
         assert_eq!(pick_at([0.0, 0.5, 0.5], strip, square, strip.center()), Some([180.0, 0.5, 0.5]));
-        assert_eq!(pick_at([0.0, 0.5, 0.5], strip, square, Pos2::new(HUE_W + GAP / 2.0, 10.0)), None, "the gap picks nothing");
+        assert_eq!(pick_at([0.0, 0.5, 0.5], strip, square, Pos2::new(SQUARE + GAP / 2.0, 10.0)), None, "the gap picks nothing");
         assert_eq!(pick_at([0.0, 0.5, 0.5], strip, square, Pos2::new(1e9, -1e9)), None);
     }
 }

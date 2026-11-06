@@ -232,3 +232,178 @@ fn direct_36mp_image_with_small_output_is_not_rejected() {
     let result = shape_blur(&src, Rect::new(3000, 3000, 3001, 3001), &ctx, 5.0, BlurShape::Circle);
     assert_eq!(result, vec![0.25; 4]);
 }
+
+/// An asymmetric weighted kernel detects mirroring independently of span accumulation.
+#[test]
+fn custom_shape_coverage_matches_point_convolution_without_mirroring() {
+    let mask = Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.0, 0.25, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0] };
+    let prepared = crate::shape_blur::Prepared::custom(1.0, &mask, &photocraft_raster::Interrupt::NONE).unwrap();
+    for (channels, alpha) in [(1, false), (4, true)] {
+        let src = image(Rect::new(-2, -2, 5, 5), channels, alpha);
+        let ctx = Ctx { bounds: src.rect, mode: ColorMode::Rgb, alpha };
+        let out = Rect::new(-3, -3, 6, 6);
+        let actual = prepared.run(&src, out, &ctx);
+        let mut expected = Vec::new();
+        for y in out.y0..out.y1 {
+            for x in out.x0..out.x1 {
+                let mut sums = vec![0.0f64; channels];
+                for ky in 0..3 {
+                    for kx in 0..3 {
+                        let weight = f64::from(mask.data[ky * 3 + kx]);
+                        let (sx, sy) = (x + 1 - kx as i32, y + 1 - ky as i32);
+                        let a = if alpha { src.get(sx, sy, channels - 1) } else { 1.0 };
+                        for (c, sum) in sums.iter_mut().enumerate() {
+                            let v = src.get(sx, sy, c);
+                            *sum += f64::from(if alpha && c + 1 < channels { v * a } else { v }) * weight;
+                        }
+                    }
+                }
+                let mut px: Vec<f32> = sums.iter().map(|sum| (sum / 1.75) as f32).collect();
+                unpremul_px(&mut px, alpha);
+                expected.extend(px);
+            }
+        }
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() < 1e-6, "{a} != {e}");
+        }
+    }
+    // The top-left kernel corner, rather than its mirror, receives the impulse.
+    let mut src = Image { rect: Rect::new(0, 0, 7, 7), ch: 1, data: vec![0.0; 49] };
+    src.data[3 * 7 + 3] = 1.0;
+    let ctx = Ctx { bounds: src.rect, mode: ColorMode::Grayscale, alpha: false };
+    let out = prepared.run(&src, src.rect, &ctx);
+    assert!((out[2 * 7 + 2] - 1.0 / 1.75).abs() < 1e-6);
+    assert_eq!(out[4 * 7 + 4], 0.0);
+}
+
+/// The custom path must agree with the existing square blur, including tiled boundaries.
+#[test]
+fn custom_square_preserves_builtin_result_and_tile_boundaries() {
+    let rect = Rect::new(-3, -2, 17, 14);
+    let src = image(rect, 4, true);
+    let ctx = Ctx { bounds: rect, mode: ColorMode::Rgb, alpha: true };
+    let mask = Image { rect: Rect::new(0, 0, 7, 7), ch: 1, data: vec![1.0; 49] };
+    let p = FilterParams::CustomShapeBlur { radius: 2.5, kernel: Some(std::sync::Arc::new(mask)) };
+    let actual = kernel(&p, &src, rect, &ctx);
+    let expected = shape_blur(&src, rect, &ctx, 2.5, BlurShape::Square);
+    exact(&actual, &expected);
+    let mut surface = Surface::new(PixelFormat { mode: ColorMode::Rgb, sample: SampleType::F32, alpha: true });
+    surface.write_region(rect, &src.data);
+    let tiled = apply_tiled(&surface, &p, rect, rect, None, 5, Some(rect));
+    let ordinary = apply_tiled(&surface, &FilterParams::ShapeBlur { radius: 2.5, shape: BlurShape::Square }, rect, rect, None, 5, Some(rect));
+    exact(&tiled.read_region(rect), &ordinary.read_region(rect));
+}
+
+/// Oversized and invalid kernel metadata must be rejected before proportional allocation.
+#[test]
+fn invalid_custom_kernels_are_refused_without_allocating_their_declared_size() {
+    for mask in [
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![0.0; 9] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![f32::NAN; 9] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.1; 9] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 4, data: vec![1.0; 36] },
+        Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.0] },
+        Image { rect: Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX), ch: 1, data: vec![] },
+    ] {
+        assert!(crate::shape_blur::Prepared::custom(1.0, &mask, &photocraft_raster::Interrupt::NONE).is_none());
+    }
+}
+
+/// Point-by-point weighted convolution of `src` (zero outside it) by a square `mask` of side
+/// `2 ri + 1`, normalized by the mask's total coverage: the reference for custom kernels.
+fn weighted_reference(mask: &Image, ri: i32, src: &Image, out: Rect, alpha: bool) -> Vec<f32> {
+    let size = (2 * ri + 1) as usize;
+    let channels = src.ch;
+    let total: f64 = mask.data.iter().map(|&v| f64::from(v)).sum();
+    let mut expected = Vec::new();
+    for y in out.y0..out.y1 {
+        for x in out.x0..out.x1 {
+            let mut sums = vec![0.0f64; channels];
+            for ky in 0..size {
+                for kx in 0..size {
+                    let weight = f64::from(mask.data[ky * size + kx]);
+                    let (sx, sy) = (x + ri - kx as i32, y + ri - ky as i32);
+                    let a = if alpha { src.get(sx, sy, channels - 1) } else { 1.0 };
+                    for (c, sum) in sums.iter_mut().enumerate() {
+                        let v = src.get(sx, sy, c);
+                        *sum += f64::from(if alpha && c + 1 < channels { v * a } else { v }) * weight;
+                    }
+                }
+            }
+            let mut px: Vec<f32> = sums.iter().map(|sum| (sum / total) as f32).collect();
+            unpremul_px(&mut px, alpha);
+            expected.extend(px);
+        }
+    }
+    expected
+}
+
+/// Custom weights reach both dispatch paths: the direct kernel and the tiled filter. An
+/// all-ones mask could not tell weights that were ignored or mirrored.
+#[test]
+fn nonuniform_custom_kernel_matches_weighted_reference_through_kernel_and_tiles() {
+    let rect = Rect::new(-3, -2, 13, 11);
+    let src = image(rect, 4, true);
+    let ctx = Ctx { bounds: rect, mode: ColorMode::Rgb, alpha: true };
+    // Asymmetric, with distinct weights in every row (5 x 5 for radius 2).
+    let data: Vec<f32> = (0..25).map(|i| [0.0, 0.125, 0.5, 1.0, 0.25, 0.75][(i * 7 + i / 5) % 6]).collect();
+    let mask = Image { rect: Rect::new(0, 0, 5, 5), ch: 1, data };
+    let expected = weighted_reference(&mask, 2, &src, rect, true);
+    let p = FilterParams::CustomShapeBlur { radius: 2.0, kernel: Some(std::sync::Arc::new(mask)) };
+    let close = |actual: &[f32], what: &str| {
+        assert_eq!(actual.len(), expected.len(), "{what}");
+        for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
+            assert!((a - e).abs() < 1e-5, "{what} sample {i}: {a} != {e}");
+        }
+    };
+    close(&kernel(&p, &src, rect, &ctx), "kernel");
+    let mut surface = Surface::new(PixelFormat { mode: ColorMode::Rgb, sample: SampleType::F32, alpha: true });
+    surface.write_region(rect, &src.data);
+    // No extent: tiles read transparency beyond the layer, as the reference's zero extension.
+    close(&apply_tiled(&surface, &p, rect, rect, None, 4, None).read_region(rect), "apply_tiled");
+}
+
+/// A fragmented custom mask (alternating coverage, about size² / 2 runs) would make every
+/// output row scan millions of windows; it is refused, while a smooth disc of the same radius
+/// and a fully fragmented small kernel are accepted.
+#[test]
+fn fragmented_large_custom_kernels_are_refused_before_convolution() {
+    use crate::shape_blur::{Prepared, max_spans};
+    let none = photocraft_raster::Interrupt::NONE;
+    let size = 2001usize;
+    let alternating = Image { rect: Rect::new(0, 0, size as i32, size as i32), ch: 1, data: (0..size * size).map(|i| (i % 2) as f32).collect() };
+    assert!(size * size / 2 > max_spans(size));
+    assert!(Prepared::custom(1000.0, &alternating, &none).is_none());
+    // Through the filter: refused before any tile is convolved.
+    let mut surface = Surface::new(PixelFormat { mode: ColorMode::Rgb, sample: SampleType::F32, alpha: true });
+    let r = Rect::new(0, 0, 4, 4);
+    surface.fill_rect(r, &[0.25, 0.5, 0.75, 1.0]);
+    let p = FilterParams::CustomShapeBlur { radius: 1000.0, kernel: Some(std::sync::Arc::new(alternating)) };
+    assert!(crate::apply_tiled_with(&surface, &p, r, r, None, 256, Some(r), &none).is_none());
+    // A disc of radius 1000 has one run per row.
+    let c = 1000.0f32;
+    let disc: Vec<f32> = (0..size * size).map(|i| f32::from(((i % size) as f32 - c).hypot((i / size) as f32 - c) <= c)).collect();
+    assert!(Prepared::custom(1000.0, &Image { rect: Rect::new(0, 0, size as i32, size as i32), ch: 1, data: disc }, &none).is_some());
+    // Every kernel of up to 256 x 256 is accepted, however fragmented.
+    let small = 255usize;
+    let fragmented =
+        Image { rect: Rect::new(0, 0, small as i32, small as i32), ch: 1, data: (0..small * small).map(|i| ((i % 4) as f32 + 1.0) / 4.0).collect() };
+    assert!(Prepared::custom(127.0, &fragmented, &none).is_some());
+}
+
+/// Kernel preparation and each tile's convolution poll cancellation, so a large custom kernel
+/// does not run a whole tile after Cancel.
+#[test]
+fn custom_kernel_preparation_and_convolution_stop_when_cancelled() {
+    use crate::shape_blur::Prepared;
+    let none = photocraft_raster::Interrupt::NONE;
+    let cancelled = photocraft_raster::Interrupt::cancel_only(&|| true);
+    let mask = Image { rect: Rect::new(0, 0, 3, 3), ch: 1, data: vec![1.0, 0.25, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5] };
+    assert!(Prepared::custom(1.0, &mask, &cancelled).is_none());
+    let prepared = Prepared::custom(1.0, &mask, &none).unwrap();
+    let src = image(Rect::new(0, 0, 6, 5), 4, true);
+    let ctx = Ctx { bounds: src.rect, mode: ColorMode::Rgb, alpha: true };
+    assert_eq!(prepared.checked_run(&src, src.rect, &ctx, &none).map(|v| v.len()), Some(6 * 5 * 4));
+    assert!(prepared.checked_run(&src, src.rect, &ctx, &cancelled).is_none());
+}

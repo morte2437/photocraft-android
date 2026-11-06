@@ -33,6 +33,80 @@ impl PhotocraftApp {
         self.prefs_rt.gpu_style = None;
     }
 
+    /// Begin preparing the compositor after the GPU canvas is initialized.
+    pub fn start_compositor(&mut self, ctx: &egui::Context) {
+        self.start_compositor_inner(ctx, false);
+    }
+
+    pub(crate) fn retry_compositor(&mut self, ctx: &egui::Context) {
+        self.start_compositor_inner(ctx, true);
+    }
+
+    fn start_compositor_inner(&mut self, ctx: &egui::Context, retry: bool) {
+        if self.session.prefs().performance.effective_rendering_mode() == photocraft_engine::prefs::RenderingMode::Cpu {
+            return;
+        }
+        let Some(gpu) = self.gpu.clone() else { return };
+        let compiler = self.services.shader_compiler.as_deref().unwrap_or("");
+        let key = gpu.compositor_memo_key(compiler);
+        let mut memo = self.load_gpu_memo();
+        let bypass = retry || std::env::var("PHOTOCRAFT_GPU_REBUILD").is_ok_and(|v| v == "1");
+        if bypass {
+            if memo.remove(&key) {
+                self.save_gpu_memo(&memo);
+            }
+        } else if let Some(entry) = memo.get(&key) {
+            gpu.remember_compositor_failure(&entry.error);
+            return;
+        }
+        gpu.start_compositor(ctx);
+    }
+
+    fn load_gpu_memo(&mut self) -> crate::gpu_memo::GpuMemo {
+        self.services
+            .load_gpu_memo
+            .as_mut()
+            .and_then(|load| load())
+            .and_then(|text| crate::gpu_memo::GpuMemo::parse(&text).map_err(|e| log::info!("ignoring GPU compositor memo: {e}")).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_gpu_memo(&mut self, memo: &crate::gpu_memo::GpuMemo) {
+        if let (Ok(text), Some(save)) = (memo.serialize(), self.services.save_gpu_memo.as_mut())
+            && let Err(error) = save(&text)
+        {
+            log::info!("could not save GPU compositor memo: {error}");
+        }
+    }
+
+    fn record_compositor_completion(&mut self) {
+        let Some(gpu) = self.gpu.clone() else { return };
+        let Some(result) = gpu.take_compositor_completion() else { return };
+        // A completed CPU redraw can leave a current texture and a temporary build reason.
+        // Recompute those documents on their next repaint, including any hidden documents.
+        for id in self.render_path.compositor_building_docs() {
+            if let Some(doc) = self.session.documents().iter().find(|st| st.doc.id.0 == id).map(|st| st.doc.id) {
+                crate::canvas::background_redraw::cancel(self, doc);
+                self.canvases.remove(&(doc, crate::canvas::GPU_OUTPUT));
+            }
+        }
+        let compiler = self.services.shader_compiler.as_deref().unwrap_or("");
+        let key = gpu.compositor_memo_key(compiler);
+        let mut memo = self.load_gpu_memo();
+        let changed = match result {
+            Ok(()) => memo.remove(&key),
+            Err((error, true)) if gpu.fault().is_none() => {
+                let now: chrono::DateTime<chrono::Utc> = std::time::SystemTime::now().into();
+                memo.remember(key, error, now.to_rfc3339());
+                true
+            }
+            Err(_) => false,
+        };
+        if changed {
+            self.save_gpu_memo(&memo);
+        }
+    }
+
     /// Whether the document canvas currently draws on the GPU (false on the CPU path, and after
     /// the device was lost).
     pub fn gpu_active(&self) -> bool {
@@ -72,5 +146,6 @@ impl PhotocraftApp {
     /// the CPU canvas after a device loss and runs the started hook.
     pub fn check_gpu(&mut self, ctx: &egui::Context) {
         gpu_status::check(self, ctx);
+        self.record_compositor_completion();
     }
 }

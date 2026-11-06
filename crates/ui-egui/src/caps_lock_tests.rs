@@ -7,6 +7,8 @@
 //! cursor of their own (the pens, Eyedropper, Color Sampler, Paint Bucket) swap it for the
 //! crosshair and back with caps lock (#4639).
 
+use std::sync::Arc;
+
 use egui::CursorIcon;
 use egui_kittest::Harness;
 use serde_json::json;
@@ -45,20 +47,31 @@ fn capslock_harness() -> Harness<'static, PhotocraftApp> {
     h
 }
 
+#[derive(Debug, PartialEq)]
+struct CursorImageFp {
+    size: [u16; 2],
+    hotspot: [u16; 2],
+    rgba: Arc<[u8]>,
+}
+
 /// Everything the cursor path can change in one frame: the cursor icon, the OS cursor bitmap
-/// (Windows) and the shapes painted on the canvas (the tool-cursor path paints the crosshair
+/// (Windows/macOS/Linux) and the shapes painted on the canvas (the tool-cursor path paints the crosshair
 /// and the brush tip outline). Comparison across two preference/caps-lock states of the same
 /// harness is platform-independent.
 #[derive(Debug, PartialEq)]
 struct CursorFp {
     icon: CursorIcon,
-    image: Option<[u16; 2]>,
+    image: Option<CursorImageFp>,
     shapes: Vec<egui::epaint::ClippedShape>,
 }
 
 fn fp(h: &Harness<'_, PhotocraftApp>) -> CursorFp {
     let out = h.output();
-    CursorFp { icon: out.platform_output.cursor_icon, image: out.platform_output.cursor_image.as_ref().map(|i| i.size), shapes: out.shapes.clone() }
+    CursorFp {
+        icon: out.platform_output.cursor_icon,
+        image: out.platform_output.cursor_image.as_ref().map(|i| CursorImageFp { size: i.size, hotspot: i.hotspot, rgba: Arc::clone(&i.rgba) }),
+        shapes: out.shapes.clone(),
+    }
 }
 
 fn painting(h: &mut Harness<'_, PhotocraftApp>, value: &str) {
@@ -142,10 +155,29 @@ fn caps_lock_swaps_the_other_cursors_between_their_icon_and_the_crosshair() {
         h.run_steps(2);
         other(&mut h, "standard");
         let standard = fp(&h);
-        assert_eq!(standard.icon, CursorIcon::None, "{tool:?}: the standard cursor is the tool's own icon, drawn");
+        if let Some(variant) = crate::canvas::tool_cursor::PenVariant::from_tool(tool) {
+            // #9122: Pen tools upload an OS cursor bitmap, while CursorLifecycle leaves a
+            // Crosshair fallback in platform output in case the OS compositor cannot upload the bitmap.
+            assert_eq!(standard.icon, CursorIcon::Crosshair, "{tool:?}: fallback crosshair is left behind native cursor bitmap");
+            let img = standard.image.as_ref().expect("native cursor bitmap set for Pen");
+            let expected = crate::canvas::tool_cursor::rasterize_pen(variant, 1.0).expect("variant rasterizes at scale 1.0");
+            assert_eq!(img.size, expected.size, "{tool:?}: bitmap dimensions match rasterized variant");
+            assert_eq!(img.hotspot, expected.hotspot, "{tool:?}: hotspot matches variant");
+            assert_eq!(img.rgba, expected.rgba, "{tool:?}: RGBA bitmap matches variant rasterization");
+        } else if tool == Tool::PaintBucket && cfg!(not(target_arch = "wasm32")) {
+            assert_eq!(standard.icon, CursorIcon::Crosshair, "PaintBucket: the OS bitmap has a visible fallback");
+            assert!(standard.image.is_some(), "PaintBucket: the standard cursor is the unified OS bitmap");
+        } else {
+            assert_eq!(standard.icon, CursorIcon::None, "{tool:?}: the standard cursor is the tool's own icon, drawn");
+            assert!(standard.image.is_none(), "{tool:?}: painted fallback has no native cursor bitmap");
+        }
         other(&mut h, "precise");
         let precise = fp(&h);
         assert_ne!(standard, precise, "{tool:?}: Standard and Precise differ");
+        assert_eq!(precise.icon, CursorIcon::Crosshair, "{tool:?}: Precise cursor is crosshair");
+        assert!(precise.image.is_some(), "{tool:?}: Precise cursor uses the native crosshair bitmap");
+        assert_ne!(precise.image, standard.image, "{tool:?}: Precise bitmap differs from the standard tool icon");
+
         caps(&mut h, true);
         assert_eq!(fp(&h), standard, "{tool:?}: caps lock turns the precise crosshair back into the icon");
         other(&mut h, "standard");

@@ -115,6 +115,7 @@ fn new_preset(s: &mut Session, p: &Value) -> Result<Value> {
         "healing",
         "spothealing",
         "historybrush",
+        "arthistorybrush",
         "blur",
         "sharpen",
         "smudge",

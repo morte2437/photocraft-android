@@ -8,6 +8,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 craft-print = { workspace = true }
 craft-ui = { workspace = true }
 photocraft-geom = { workspace = true }
@@ -29,6 +30,8 @@ photocraft-paint = { workspace = true }
 photocraft-format = { workspace = true }
 # Decoding the brand mark's PNG (`brand.rs`); already linked through photocraft-io.
 photocraft-codecs = { workspace = true }
+# Reading embedded thumbnail resources (1036/1033) for recent files in Home screen.
+photocraft-psd = { workspace = true }
 egui = { workspace = true }
 egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
 eframe = { workspace = true, features = ["wgpu", "accesskit", "clipboard"] }
@@ -50,12 +53,14 @@ rayon = { workspace = true }
 # Safe native UI-language APIs (Windows/macOS); no subprocess or web dependency.
 sys-locale = "=0.3.2"
 
-# Installed RAM for the GPU memory budget (`gpu_canvas::physical_memory`): the safe binding the
-# desktop app already uses, pinned to the same version.
+# Installed RAM for the GPU memory budget (`gpu_canvas::physical_memory`) and the user's decimal
+# symbol (`i18n::decimal_separator`, a registry read): the safe binding the desktop app already
+# uses, pinned to the same version.
 [target.'cfg(target_os = "windows")'.dependencies]
-winsafe = { version = "=0.0.29", default-features = false, features = ["kernel", "dxgi"] }
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel", "dxgi", "advapi"] }
 
 [dev-dependencies]
+photocraft-io = { workspace = true, features = ["testgen"] }
 # egui's own default fonts in tests: the oracle for egui_fonts.rs, and contexts made with
 # `Context::default()` (no install_fonts) can lay out text.
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
@@ -77,3 +82,7 @@ flate2 = { workspace = true }
 epaint_default_fonts = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 serde_json = { workspace = true }
 toml = "1"
+
+[[example]]
+name = "flat_open_bench"
+test = true

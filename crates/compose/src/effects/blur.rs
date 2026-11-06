@@ -210,14 +210,3 @@ fn tent_fast(m: &mut Map, w: f32) {
     rows_par(&t, &mut b, mh, twice);
     m.v = transpose_map(&b, mh, mw);
 }
-
-/// Raw coverage at the Size boundary, scaled through the glow's Range to a subtle one-percent tail.
-pub fn softer_glow_tail_amplitude(range: f32) -> f32 {
-    let range = if range.is_finite() { range.clamp(0.01, 1.0) } else { 1.0 };
-    0.005 * range
-}
-
-/// Width of the added fading tail on a Softer outer glow, capped so large settings stay local.
-pub fn softer_glow_tail_width(size: f32) -> f32 {
-    if size.is_finite() && size > 0.0 { (size * 0.1).clamp(1.0, 6.0) } else { 0.0 }
-}

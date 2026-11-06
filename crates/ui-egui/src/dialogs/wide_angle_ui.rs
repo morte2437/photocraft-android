@@ -11,8 +11,7 @@
 
 use egui::{Align2, Color32, FontId, Pos2, Rect as ERect, Sense, Stroke, TextureHandle, pos2, vec2};
 use photocraft_algo::transform::Interp;
-use photocraft_algo::wideangle::{self, Camera, Constraint, Orientation, WideAngle, WideModel};
-use photocraft_color::PixelFormat;
+use photocraft_algo::wideangle::{self, Camera, Constraint, Orientation, WideAngle, WideMesh, WideModel};
 use photocraft_doc::LayerId;
 use photocraft_geom::Rect;
 use photocraft_raster::Surface;
@@ -34,10 +33,14 @@ pub struct WideAngleDialog {
     frame: Rect,
     scale: f64,
     proxy: Surface,
+    target: Value,
     pw: usize,
     ph: usize,
     src_tex: Option<TextureHandle>,
     out_tex: Option<TextureHandle>,
+    /// The proxy warp used by both the rendered preview and its constraint overlays. It is
+    /// replaced only by `render`, so every edit to `params` must set `dirty`.
+    mesh: Option<WideMesh>,
     dirty: bool,
     pub preview: bool,
     drag: Option<([f64; 2], [f64; 2])>,
@@ -71,13 +74,29 @@ impl WideAngleDialog {
         p
     }
 
-    fn render(&mut self, ctx: &egui::Context) {
-        let t0 = crate::gpu_canvas::now_ms();
-        let pf = Rect::new(0, 0, self.pw as i32, self.ph as i32);
+    /// The proxy rectangle shared by the preview and overlays.
+    fn proxy_rect(&self) -> Rect {
+        Rect::new(0, 0, self.pw as i32, self.ph as i32)
+    }
+
+    fn preview_surface(&mut self) -> Result<Surface, String> {
+        let pf = self.proxy_rect();
         let p = self.proxy_params();
         let mesh = wideangle::solve(&p, pf);
         self.residual = mesh.residual / self.scale;
-        let out = photocraft_algo::warp::warp_triangles(&self.proxy, pf, &mesh.verts, &mesh.triangles(), Interp::Bilinear);
+        let mut out = photocraft_algo::warp::warp_triangles(&self.proxy, pf, &mesh.verts, &mesh.triangles(), Interp::Bilinear);
+        if let Some(colors) =
+            photocraft_engine::color_channels::explicit(&json!({"target":self.target}), self.proxy.format().mode.color_channels()).map_err(|e| e.to_string())?
+        {
+            photocraft_engine::color_channels::restrict_surface_in(&self.proxy, &mut out, colors, pf).map_err(|e| e.to_string())?;
+        }
+        self.mesh = Some(mesh);
+        Ok(out)
+    }
+
+    fn render(&mut self, ctx: &egui::Context) {
+        let t0 = crate::gpu_canvas::now_ms();
+        let Ok(out) = self.preview_surface() else { return };
         let img = tex_image(&out, self.pw, self.ph);
         match &mut self.out_tex {
             Some(t) => t.set(img, egui::TextureOptions::LINEAR),
@@ -100,27 +119,26 @@ impl WideAngleDialog {
     fn command_params(&self) -> Value {
         let mut v = serde_json::to_value(&self.params).unwrap_or(json!({}));
         v["layer"] = json!(self.layer.0);
-        v
+        crate::distort_ui::with_filter_target(v, &self.target)
     }
 }
 
 pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
     photocraft_engine::commands::find("filter.adaptiveWideAngle").map(|c| (c.enabled)(&app.session)).unwrap_or(Err("unknown command".into()))?;
-    let (layer, surf, _) = crate::distort_ui::active_pixels(app)?;
+    let (layer, surf, _) = crate::distort_ui::active_filter_target(app)?;
     let st = app.session.active().ok_or("no document")?;
     let frame = st.doc.bounds();
     let name = st.doc.layer(layer).map(|l| l.name.clone()).unwrap_or_default();
     let (w, h) = (frame.width() as usize, frame.height() as usize);
     let k = w.max(h).div_ceil(PROXY_SIDE).max(1);
     let (pw, ph) = (w.div_ceil(k), h.div_ceil(k));
-    let proxy = photocraft_algo::resample::resize_surface(
-        &surf.convert(PixelFormat::RGBA8),
-        1.0 / k as f64,
-        1.0 / k as f64,
-        photocraft_algo::resample::Resample::Bilinear,
-    );
+    let proxy = if k == 1 {
+        surf.clone()
+    } else {
+        photocraft_algo::resample::resize_surface(&surf, 1.0 / k as f64, 1.0 / k as f64, photocraft_algo::resample::Resample::Bilinear)
+    };
     // Normalise the proxy to start at the origin.
-    let mut px = Surface::new(PixelFormat::RGBA8);
+    let mut px = Surface::new(surf.format());
     let src_r = Rect::new(
         (frame.x0 as f64 / k as f64) as i32,
         (frame.y0 as f64 / k as f64) as i32,
@@ -139,10 +157,12 @@ pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> 
         frame,
         scale: 1.0 / k as f64,
         proxy: px,
+        target: crate::distort_ui::colour_set_target(app),
         pw,
         ph,
         src_tex: None,
         out_tex: None,
+        mesh: None,
         dirty: true,
         preview: true,
         drag: None,
@@ -333,10 +353,10 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             Orientation::Horizontal => t.warning,
             Orientation::Vertical => t.danger,
         };
-        let pf = Rect::new(0, 0, d.pw as i32, d.ph as i32);
-        let mesh = (!show_src && !d.params.constraints.is_empty()).then(|| wideangle::solve(&d.proxy_params(), pf));
+        let pf = d.proxy_rect();
+        let mesh = if show_src { None } else { d.mesh.as_ref() };
         for c in &d.params.constraints {
-            let pts: Vec<Pos2> = match &mesh {
+            let pts: Vec<Pos2> = match mesh {
                 Some(m) => cam
                     .arc(c.a, c.b, 24)
                     .iter()
@@ -447,6 +467,10 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             action = Some(if role == widgets::ButtonRole::Default { "ok" } else { "cancel" });
         }
         fu.label(egui::RichText::new(format!("{:.0} ms · straightness {:.1} px", d.render_ms, d.residual)).color(t.text_faint));
+        // Panel edits mark the warp dirty after the overlays were drawn: redraw so they catch up.
+        if d.dirty {
+            ctx.request_repaint();
+        }
     });
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         action = Some("cancel");
@@ -465,6 +489,34 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_component_wide_angle_previews_and_commit_keep_unselected_samples() {
+        for mode in ["rgb", "cmyk", "lab"] {
+            for depth in [8, 16, 32] {
+                for alpha in [true, false] {
+                    let fixture = crate::distort_ui::component_tests::app(mode, depth);
+                    let mut app = if alpha { fixture } else { crate::distort_ui::component_tests::without_alpha(fixture) };
+                    open(&mut app, &egui::Context::default()).unwrap();
+                    let d = app.wide_angle.as_mut().unwrap();
+                    d.params.model = WideModel::Fisheye;
+                    d.params.focal_length = 10.0;
+                    d.params.constraints.push(Constraint { a: [8.0, 8.0], b: [56.0, 16.0], orientation: Orientation::Horizontal });
+                    let layer = d.layer;
+                    let before = d.proxy.clone();
+                    let bounds = Rect::new(0, 0, d.pw as i32, d.ph as i32);
+                    let preview = d.preview_surface().unwrap();
+                    crate::distort_ui::component_tests::protected(&before, &preview, bounds);
+                    assert_ne!(preview.read_region(bounds), before.read_region(bounds));
+                    app.run("channel.target", json!({"channel":{"color":1}})).unwrap();
+                    commit(&mut app).unwrap();
+                    let after = app.session.active().unwrap().doc.layer(layer).unwrap().surface().unwrap();
+                    crate::distort_ui::component_tests::protected(&before, after, bounds);
+                    assert_ne!(after.read_region(bounds), before.read_region(bounds));
+                }
+            }
+        }
+    }
 
     #[test]
     fn dialog_adds_constraints_and_commits() {
@@ -506,6 +558,75 @@ mod tests {
     /// Open the dialog with one free constraint across the middle of the layer.
     fn open_with_a_constraint(app: &mut PhotocraftApp, ctx: &egui::Context) {
         menu(app, ctx, "filter.adaptiveWideAngle", &json!({"ui": {"add": {"a": [20, 50], "b": [140, 50]}}})).unwrap().unwrap();
+    }
+
+    #[test]
+    fn constraint_overlay_reuses_the_preview_mesh_on_redraw() {
+        fn constraint_line(shape: &egui::Shape) -> Option<&[Pos2]> {
+            match shape {
+                egui::Shape::Path(p) if p.points.len() == 25 => Some(&p.points),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(constraint_line),
+                _ => None,
+            }
+        }
+        let mut app = grey_layer();
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, Default::default());
+        open_with_a_constraint(&mut app, &ctx);
+        let input = || egui::RawInput { screen_rect: Some(ERect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0))), ..Default::default() };
+        // Baseline: the source-space line, from which the screen scale and centre are measured.
+        app.wide_angle.as_mut().unwrap().preview = false;
+        // egui panics if a frame's texture uploads are dropped unhandled, hence `clear`.
+        ctx.run_ui(input(), |ui| show(&mut app, ui.ctx())).textures_delta.clear();
+        let mut output = ctx.run_ui(input(), |ui| show(&mut app, ui.ctx()));
+        output.textures_delta.clear();
+        let line = output.shapes.iter().find_map(|s| constraint_line(&s.shape)).expect("baseline constraint line");
+        let (first, last) = (line.first().unwrap().x, line.last().unwrap().x);
+        let base_x = (first + last) * 0.5;
+        // The constraint spans x = 20..140 of the 160 px layer; the proxy is 1:1 with it.
+        let px = (last - first) / 120.0;
+        // Move only the cached warp. A fresh solve would draw the original line instead.
+        let d = app.wide_angle.as_mut().unwrap();
+        for (out, _) in &mut d.mesh.as_mut().unwrap().verts {
+            out[0] += 10.0;
+        }
+        let verts = d.mesh.as_ref().unwrap().verts.clone();
+        let render_ms = d.render_ms;
+        for (preview, dragging, shifted) in [(true, false, true), (false, false, false), (true, true, false), (true, false, true)] {
+            let d = app.wide_angle.as_mut().unwrap();
+            d.preview = preview;
+            d.drag = dragging.then_some(([20.0, 30.0], [140.0, 30.0]));
+            let mut output = ctx.run_ui(input(), |ui| show(&mut app, ui.ctx()));
+            output.textures_delta.clear();
+            let line = output.shapes.iter().find_map(|s| constraint_line(&s.shape)).expect("painted constraint line");
+            // The source line is centred on the image; the altered cached warp moves its
+            // centre ten proxy pixels to the right. Measure against the unshifted baseline.
+            let centre_x = (line.first().unwrap().x + line.last().unwrap().x) * 0.5;
+            let expected_x = base_x + if shifted { 10.0 * px } else { 0.0 };
+            assert!((centre_x - expected_x).abs() < 0.1, "preview={preview}, dragging={dragging}: centre={centre_x}, expected={expected_x}");
+            let d = app.wide_angle.as_ref().unwrap();
+            assert_eq!(d.mesh.as_ref().unwrap().verts, verts, "redraw retains the cached warp");
+            assert_eq!(d.render_ms, render_ms, "redraw does not render the preview again");
+        }
+    }
+
+    #[test]
+    fn preview_mesh_refreshes_after_edits_and_history_steps() {
+        let mut app = grey_layer();
+        let ctx = egui::Context::default();
+        open_with_a_constraint(&mut app, &ctx);
+        let original = app.wide_angle.as_ref().unwrap().mesh.as_ref().unwrap().verts.clone();
+        menu(&mut app, &ctx, "filter.adaptiveWideAngle", &json!({"ui": {"set": {"scale": 120.0}}})).unwrap().unwrap();
+        let edited = app.wide_angle.as_ref().unwrap().mesh.as_ref().unwrap().verts.clone();
+        assert_ne!(edited, original);
+        for (step, expected) in [(Step::Undo, &original), (Step::Redo, &edited)] {
+            let d = app.wide_angle.as_mut().unwrap();
+            d.step(step);
+            assert!(d.dirty);
+            d.render(&ctx);
+            assert!(!d.dirty);
+            assert_eq!(&d.mesh.as_ref().unwrap().verts, expected);
+        }
     }
 
     /// `orient` sets a constraint's orientation, as the right-click menu does; a bad index is

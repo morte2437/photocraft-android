@@ -23,8 +23,7 @@ as the other Crafting Apps do.
 ## Provenance
 
 The owner's original drawing, made in ArtCraft (2880 px, engraving style, keyed to the palette),
-vectorised with craftrules `assets/logo-options/_tools/vectorize_tile.py`. The source PNG stays in
-craftrules at `assets/app-icons/photocraft/source.png`. License: see `LICENSE.txt`.
+vectorised. License: see `LICENSE.txt`.
 
 ## Files
 

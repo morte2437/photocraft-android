@@ -46,7 +46,11 @@ fn main() {
     // Two points a pixel apart: the generator places the first dab at once (a lone point waits).
     r.push(&[StrokePoint::new(3000.0, 2000.0, 1.0), StrokePoint::new(3001.0, 2000.0, 1.0)]);
     let push = t.elapsed();
-    println!("  push (rasterize+accumulate): {:>5.1} ms  (accumulate ≈ {:.1} ms)", push.as_secs_f64() * 1e3, push.saturating_sub(raster).as_secs_f64() * 1e3);
+    println!(
+        "  push (rasterize+accumulate): {:>5.1} ms  (push − warm rasterize, first dab ≈ {:.1} ms)",
+        push.as_secs_f64() * 1e3,
+        push.saturating_sub(raster).as_secs_f64() * 1e3
+    );
     let t = Instant::now();
     let dmg = r.composite(&pre, &mut target, None, false, false);
     let comp = t.elapsed();

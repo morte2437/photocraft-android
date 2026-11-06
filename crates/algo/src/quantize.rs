@@ -286,7 +286,7 @@ fn sort_along(b: &mut Vec<([f32; 3], u32)>, axis: usize) {
 }
 
 /// Median cut over `pts` (feature vectors + weights) into at most `n` boxes; returns box means.
-pub(crate) fn median_cut(pts: &[([f32; 3], u32)], n: usize) -> Vec<[f32; 3]> {
+fn median_cut(pts: &[([f32; 3], u32)], n: usize) -> Vec<[f32; 3]> {
     if pts.is_empty() || n == 0 {
         return Vec::new();
     }
@@ -334,7 +334,7 @@ pub(crate) fn median_cut(pts: &[([f32; 3], u32)], n: usize) -> Vec<[f32; 3]> {
 }
 
 /// Lloyd refinement of `centers` over weighted points.
-pub(crate) fn kmeans(pts: &[([f32; 3], u32)], centers: &mut [[f32; 3]], iters: usize) {
+fn kmeans(pts: &[([f32; 3], u32)], centers: &mut [[f32; 3]], iters: usize) {
     if centers.is_empty() {
         // No room left (the forced colours fill the palette): nothing to refine.
         return;

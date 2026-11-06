@@ -62,6 +62,73 @@ pub use shapes::{create_shape, draw_shape_preview, finish_shape, is_shape_tool, 
 #[cfg(test)]
 use shapes::{shape_geometry, shape_preview};
 
+// "Set as default" is a temporary UI choice, not a document property.
+#[derive(Clone, Copy, Default)]
+struct ArrowDefaultLink {
+    target: Option<(u64, u64)>,
+    enabled: bool,
+}
+
+fn arrow_default_link_id() -> egui::Id {
+    egui::Id::unique("arrow-default-link")
+}
+
+/// Reset the checkbox whenever the selected document, layer or shape changes.
+pub(crate) fn track_arrow_default_selection(app: &PhotocraftApp, ctx: &egui::Context) {
+    let target = app.session.active().and_then(|st| {
+        let id = st.active_layer?;
+        let layer = st.doc.layer(id)?;
+        match &layer.content {
+            LayerContent::Shape(sh) if matches!(sh.live.as_ref(), Some(photocraft_doc::vector::LiveShape::ArrowLine { .. })) => Some((st.doc.id.0, id.0)),
+            _ => None,
+        }
+    });
+
+    ctx.data_mut(|data| {
+        let key = arrow_default_link_id();
+        let previous = data.get_temp::<ArrowDefaultLink>(key).unwrap_or_default();
+        if previous.target != target {
+            data.insert_temp(key, ArrowDefaultLink { target, enabled: false });
+        }
+    });
+}
+
+/// Copy only the selected arrow's live parameters into new-arrow defaults.
+/// Existing shapes and geometry are not modified.
+fn copy_arrow_to_tool_defaults(app: &mut PhotocraftApp, id: photocraft_doc::LayerId) {
+    let values = app.session.active().and_then(|st| st.doc.layer(id)).and_then(|layer| match &layer.content {
+        LayerContent::Shape(sh) => match sh.live.as_ref() {
+            Some(photocraft_doc::vector::LiveShape::ArrowLine { start, end, width, length, concavity, weight, .. }) => {
+                {
+                    // Live dimensions may exceed new-arrow input limits after scaling.
+                    // Clamp only the defaults, never the existing shape.
+                    let bounded = |v: f64, min: f64, max: f64| -> f32 { if v.is_finite() { v.clamp(min, max) as f32 } else { min as f32 } };
+                    Some((
+                        *start,
+                        *end,
+                        bounded(*width, 1.0, 4096.0),
+                        bounded(*length, 1.0, 4096.0),
+                        bounded(*concavity, 0.0, 100.0),
+                        bounded(*weight, 1.0, 10000.0),
+                    ))
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    });
+
+    if let Some((start, end, width, length, concavity, weight)) = values {
+        let o = &mut app.ui.tool_options;
+        o.arrow_start = start;
+        o.arrow_end = end;
+        o.arrow_width = width;
+        o.arrow_length = length;
+        o.arrow_concavity = concavity;
+        o.line_weight = weight;
+    }
+}
+
 /// Pen tool path under construction: knots as [anchor, in, out] (document px).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PenPath {

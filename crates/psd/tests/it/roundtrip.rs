@@ -313,3 +313,21 @@ fn spec_order_density_only_mask_round_trips_as_a_model() {
     assert_eq!(g.layers()[0].decode_channel(-2, 8, Version::Psd).unwrap(), vec![64]);
     assert_eq!(g.to_bytes().unwrap(), b, "byte stability");
 }
+
+/// Embedded data (smart-object files, and the like) is large next to the headers, so the output
+/// is reserved at its exact size up front: no growth by doubling, which on the web is a single
+/// unrecoverable multi-gigabyte `realloc` (#10024).
+#[test]
+fn to_bytes_reserves_the_whole_output_up_front() {
+    for version in [Version::Psd, Version::Psb] {
+        let mut f = testgen::small(version, Compression::Rle);
+        f.global_blocks.push(TaggedBlock::new(*b"Q3Dx", vec![0x5a; 3 << 20]));
+        f.layers_mut()[0].blocks.push(TaggedBlock::new(*b"Vid!", vec![0xab; 1 << 20]));
+        let b = f.to_bytes().unwrap();
+        assert_eq!(b.capacity(), b.len(), "{version:?}: the output buffer grew past its reserve");
+        assert_eq!(b.len() as u64, f.encoded_len().unwrap());
+        let p = PsdFile::from_bytes(&b).unwrap();
+        assert_eq!(p, f);
+        assert_eq!(p.to_bytes().unwrap(), b);
+    }
+}

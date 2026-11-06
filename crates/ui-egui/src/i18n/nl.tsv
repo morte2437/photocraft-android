@@ -1871,6 +1871,7 @@
 	Soften	Verzachten
 	Source	Bron
 	Source: set	Bron: ingesteld
+	Source: {name}	Bron: {name}
 	Sponge Tool	Sponsgereedschap
 	Spot Healing Brush Tool	Snel herstelpenseel
 	Spread	Spreiden
@@ -4026,6 +4027,9 @@ curves	Smooth	Vloeiend maken
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} stap heeft nog geen equivalent in PhotoCraft|{n} stappen hebben nog geen equivalent in PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	{n} handeling opgeslagen in {file}|{n} handelingen opgeslagen in {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} stap zonder Photoshop-equivalent weggelaten|{n} stappen zonder Photoshop-equivalent weggelaten
+@plural	{n} action file loaded|{n} action files loaded	{n} handelingenbestand geladen|{n} handelingenbestanden geladen
+	{set} from {file} replaced the one from {earlier}	Set {set} uit {file} heeft die uit {earlier} vervangen
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} bestand kon niet worden geladen: {errors}|{n} bestanden konden niet worden geladen: {errors}
 	File Naming	Bestandsnamen
 	Starting serial	Beginnummer
 	Insert Stop…	Stop invoegen…
@@ -4038,6 +4042,8 @@ curves	Smooth	Vloeiend maken
 	Step {step} is waiting for its dialog	Stap {step} wacht op zijn dialoogvenster
 @plural	{n} action|{n} actions	{n} handeling|{n} handelingen
 	Background (Default)	Achtergrond (standaard)
+	Background (default)	Achtergrond (standaard)
+	Transparent (default)	Transparant (standaard)
 	Include All Subfolders	Alle submappen opnemen
 	Auto Add/Delete	Automatisch toevoegen/verwijderen
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Schakel niet ook Spiegelbeeld in bij de afdrukinstellingen: de twee spiegelingen heffen elkaar op.
@@ -4046,6 +4052,7 @@ curves	Smooth	Vloeiend maken
 	Sent to {printer}	Verzonden naar {printer}
 	set in Print Settings…	instellen in de afdrukinstellingen…
 	ICO is limited to 256 × 256 pixels	ICO is beperkt tot 256 × 256 pixels
+	Memory usage percent	Geheugengebruik (%)
 	Show Favorite Fonts	Favoriete lettertypen tonen
 	No favorite fonts yet: click the star beside a font to add it.	Nog geen favoriete lettertypen: klik op de ster naast een lettertype om het toe te voegen.
 	Favorite fonts	Favoriete lettertypen
@@ -4085,19 +4092,11 @@ curves	Smooth	Vloeiend maken
 	Kept {name}: written by another application	{name} behouden: geschreven door een andere toepassing
 	Shadow Tint	Schaduwtint
 	Check for Updates…	Controleren op updates…
-	PhotoCraft Updates	PhotoCraft-updates
-	Checking for updates…	Controleren op updates…
 	Open the release page to choose an installer for your system.	Open de releasepagina om een installatieprogramma voor uw systeem te kiezen.
-	Open Download Page	Downloadpagina openen
-	PhotoCraft is up to date.	PhotoCraft is bijgewerkt.
-	Could not check for updates.	Kan niet controleren op updates.
-	Updates have not been checked yet.	Er is nog niet op updates gecontroleerd.
-	Check Again	Opnieuw controleren
 	Automatically Check for Updates	Automatisch op updates controleren
-	Installed version: {version}	Geïnstalleerde versie: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} is beschikbaar.
 	Paints from the History panel's source state	Schildert vanuit de bronstatus van het deelvenster Geschiedenis
 	Sets the source for the history brush	Stelt de bron voor het historiepenseel in
+	The History Brush source was deleted: set a new source in the History panel	De bron voor het historiepenseel is verwijderd: stel een nieuwe bron in het deelvenster Geschiedenis in
 	Highlight Mode	Hooglichtmodus
 	Highlight Color	Hooglichtkleur
 	Highlight Opacity	Hooglichtdekking
@@ -4117,6 +4116,7 @@ curves	Smooth	Vloeiend maken
 	Chisel Soft	Beitel zacht
 	Open color-less EXR as ACEScg	EXR zonder kleurruimte als ACEScg openen
 	Do not append "copy" to filename when saving a copy	Geen "copy" aan de bestandsnaam toevoegen bij het opslaan van een kopie
+	Save Full-Size Composite in .pcraft Files	Samengestelde afbeelding op volle grootte opslaan in .pcraft-bestanden
 	Edit Selected Guides	Geselecteerde hulplijnen bewerken
 	Clear Selected Guides	Geselecteerde hulplijnen wissen
 	Bicubic Automatic	Bicubisch automatisch
@@ -4169,6 +4169,7 @@ curves	Smooth	Vloeiend maken
 	This document's layers: {needed} of {budget} for layers	Lagen van dit document: {needed} van {budget} voor lagen
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	De lagen van dit document hebben {needed} nodig maar mogen {budget} gebruiken: het hele document wordt op de CPU opnieuw getekend
 	GPU Memory (MB, 0 = Automatic)	GPU-geheugen (MB, 0 = Automatisch)
+	Scratch Size Limit (MB, 0 = No Limit)	Groottelimiet voor werkschijf (MB, 0 = geen limiet)
 	{path}: the path is not valid Unicode; save under another name.	{path}: het pad is geen geldige Unicode; sla op onder een andere naam.
 	{name} was changed by another app after it was opened or saved here.	{name} is door een andere app gewijzigd nadat het hier is geopend of bewaard.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Vervang het door dit document, of annuleer en gebruik Bestand › Opslaan als om beide te houden.
@@ -4204,6 +4205,9 @@ curves	Smooth	Vloeiend maken
 	There is no color table to save.	Er is geen kleurtabel om op te slaan.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	{n} kleur opgeslagen in {file}|{n} kleuren opgeslagen in {file}
 	GPU adapter	GPU-adapter
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS-inhoud wordt als SVG bewerkt. Opslaan vervangt de ingesloten bron; formaatspecifieke eigenschappen kunnen veranderen.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Stijlen importeren…
 	Export Selected Styles…	Geselecteerde stijlen exporteren…
 	Export Styles…	Stijlen exporteren…
@@ -4253,6 +4257,9 @@ curves	Smooth	Vloeiend maken
 	Font size presets	Voorinstellingen lettergrootte
 	Leading presets	Voorinstellingen interlinie
 	Tracking presets	Voorinstellingen spatiëring
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Ongeldige numerieke invoer. Er is een geheel getal tussen {min}% en {max}% vereist. De vorige waarde is ingevoegd.
 	Color Aware	Kleurbewust
 	Decontaminate Colors	Kleuren zuiveren
 	Edge Detection	Randdetectie
@@ -4270,3 +4277,48 @@ curves	Smooth	Vloeiend maken
 	Select and Mask was closed: its document is no longer the active one	Selecteren en maskeren is gesloten: het document is niet meer het actieve document
 	Select and Mask was closed: another layer was selected	Selecteren en maskeren is gesloten: er is een andere laag geselecteerd
 	Select Layer Under Cursor	Laag onder cursor selecteren
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Recent gebruikte kleuren
+	Stop Color	Kleur van het punt
+	Shapes can't use patterns yet	Vormen kunnen nog geen patronen gebruiken
+	Edit Brush…	Penseel bewerken…
+
+# Action Stop message (#8386)
+	Message	Bericht
+# Playback Options (#5212)
+	Playback Options…	Afspeelopties…
+	Playback Options	Afspeelopties
+	Accelerated	Versneld
+	Step by Step	Stap voor stap
+	Pause For:	Pauzeren gedurende:
+	Pause For	Pauzeren gedurende
+	seconds	seconden
+	Create a single history state	Eén historiestatus maken
+	Generator enabled	Generator ingeschakeld
+	Move Up	Omhoog
+	Move Down	Omlaag
+	Grid view	Rasterweergave
+	List view	Lijstweergave
+	On your computer	Op je computer
+	New file	Nieuw bestand
+	Learn	Leren
+	Website	Website
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Een kader ondersteunt affiene transformaties; selecteer de afbeelding voor perspectieftransformaties
+	A frame supports affine transforms; select its image to warp it	Een kader ondersteunt affiene transformaties; selecteer de afbeelding om deze te verdraaien
+	Convert to Frame…	Omzetten naar kader…
+	Create a new custom frame	Nieuw aangepast kader maken
+	Create a new polygonal frame	Nieuw veelhoekig kader maken
+	Create a new triangular frame	Nieuw driehoekig kader maken
+	Fit Content to Frame	Inhoud aanpassen aan kader
+	Fit Frame to Content	Kader aanpassen aan inhoud
+	Frame coordinates must be finite and within 600000 pixels	Kadercoördinaten moeten eindig zijn en binnen 600000 pixels liggen
+	Import Image…	Afbeelding importeren…
+	Invalid frame transform	Ongeldige kadertransformatie
+	Invalid nested file drop	Ongeldige geneste bestandsneerzetting
+	New Frame	Nieuw kader
+	Replace Image…	Afbeelding vervangen…
+	The frame is locked	Het kader is vergrendeld
+	The frame is unavailable	Het kader is niet beschikbaar

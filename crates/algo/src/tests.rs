@@ -4,6 +4,67 @@ mod ext;
 mod mosaic;
 mod selection_mix;
 
+#[test]
+fn relight_admission_tracks_the_document_dependent_working_set() {
+    let params = FilterParams::Relight { angle: 0.0, elevation: 45.0, intensity: 50.0, ambient: 50.0, warmth: 0.0, softness: 100.0 };
+    let small = Rect::new(0, 0, 128, 128);
+    let large = Rect::new(0, 0, 86400, 43200);
+    assert!(working_bytes(&params, small, small, 4) < working_bytes(&params, small, large, 4));
+    assert_eq!(working_bytes(&params, Rect::EMPTY, large, 4), 0);
+    // A tiny image must not reserve the 256 MiB group budget three times over.
+    let tiny = Rect::new(0, 0, 24, 18);
+    assert!(working_bytes(&params, tiny, tiny, 4) < 64 << 20, "{}", working_bytes(&params, tiny, tiny, 4));
+}
+
+/// Shape Blur admits each worker's f64 prefix sums over its halo-expanded tile, and a custom
+/// shape also the kernel mask it keeps for the whole run and its worst-case coverage runs.
+#[test]
+fn shape_blur_admission_counts_prefix_sums_and_the_retained_kernel() {
+    let area = Rect::new(0, 0, 4096, 4096);
+    let radius = 100.0f32;
+    let plain = FilterParams::ShapeBlur { radius, shape: BlurShape::Circle };
+    let Halo::Radius(reach) = plain.halo_for(area) else { panic!("Shape Blur has a radius halo") };
+    let threads = rayon::current_num_threads().max(1) as u64;
+    let tile = auto_tile(&plain, area) as u64;
+    let window = tile + 2 * reach as u64;
+    // The float windows every radius filter admits (4 channels of f32), then the f64 prefix sums.
+    let windows = (area.size().area() * 16).min(RESULT_BUDGET as u64) * 3 + (window * window + tile * tile * 3) * 16 * threads;
+    let prefix = (window + 1) * (window + 1) * 4 * 8 * threads;
+    assert_eq!(working_bytes(&plain, area, area, 4), windows + prefix);
+
+    let size = (2 * shape_blur::radius(radius).ceil() as usize + 1) as i32;
+    let mask = Image { rect: Rect::new(0, 0, size, size), ch: 1, data: vec![1.0; (size * size) as usize] };
+    let custom = FilterParams::CustomShapeBlur { radius, kernel: Some(std::sync::Arc::new(mask)) };
+    let kernel = (size * size) as u64 * 4 + shape_blur::max_spans(size as usize) as u64 * 20;
+    assert_eq!(working_bytes(&custom, area, area, 4), working_bytes(&plain, area, area, 4) + kernel);
+    // Unresolved, it holds no kernel yet.
+    assert_eq!(working_bytes(&FilterParams::CustomShapeBlur { radius, kernel: None }, area, area, 4), working_bytes(&plain, area, area, 4));
+}
+
+/// Only as many workers as there are tiles hold a tile's windows at once: a 24 MP Shape Blur
+/// at radius 500 (24 tiles of 1024 px) counts 24 workers' windows, not one per thread.
+#[test]
+fn radius_filter_admission_counts_no_more_workers_than_tiles() {
+    let area = Rect::new(0, 0, 6000, 4000);
+    let plain = FilterParams::ShapeBlur { radius: 500.0, shape: BlurShape::Heart };
+    let Halo::Radius(reach) = plain.halo_for(area) else { panic!("Shape Blur has a radius halo") };
+    let tile = auto_tile(&plain, area) as u64;
+    let tiles = 6000u64.div_ceil(tile) * 4000u64.div_ceil(tile);
+    let workers = (rayon::current_num_threads().max(1) as u64).min(tiles);
+    let window = tile + 2 * reach as u64;
+    let windows = (area.size().area() * 16).min(RESULT_BUDGET as u64) * 3 + (window * window + tile * tile * 3) * 16 * workers;
+    let prefix = (window + 1) * (window + 1) * 4 * 8 * workers;
+    assert_eq!(working_bytes(&plain, area, area, 4), windows + prefix);
+    // One tile: one worker, whatever the thread count.
+    let small = Rect::new(0, 0, 200, 200);
+    let one = FilterParams::ShapeBlur { radius: 10.0, shape: BlurShape::Circle };
+    let Halo::Radius(r) = one.halo_for(small) else { panic!("Shape Blur has a radius halo") };
+    let t = auto_tile(&one, small) as u64;
+    let w = t + 2 * r as u64;
+    let single = (small.size().area() * 16).min(RESULT_BUDGET as u64) * 3 + (w * w + t * t * 3) * 16 + (w + 1) * (w + 1) * 4 * 8;
+    assert_eq!(working_bytes(&one, small, small, 4), single);
+}
+
 fn fmt(s: SampleType) -> PixelFormat {
     PixelFormat::new(ColorMode::Rgb, s, true)
 }

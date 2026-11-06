@@ -143,7 +143,7 @@ fn a_channel_overlay_follows_a_size_changing_preview() {
             canvas_view(&mut app, ui, 0, Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0)), view.clone(), true);
         });
         output.textures_delta.clear();
-        let overlay = crate::channel_view::ensure(&mut app, &ctx, 0).expect("the channel overlay");
+        let overlay = crate::channel_view::ensure(&mut app, &ctx, 0, None).expect("the channel overlay");
         let mesh = output
             .shapes
             .iter()
@@ -369,6 +369,31 @@ fn drive_until(app: &mut PhotocraftApp, ctx: &egui::Context, what: &str, done: i
         ensure_filter_preview(app, 0, ctx);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_held_preview_frame_stays_on_the_canvas_when_the_proxy_factor_changes() {
+    // #10474: Minimum and Maximum take their proxy factor from the radius, so a radius drag across
+    // a whole pixel changes `FilterPreviewKey::k`. The frame for the old factor stays on the
+    // canvas, drawn at its own factor, until the one for the new factor lands.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 2400, "height": 2200})).unwrap();
+    app.background_jobs = true;
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 0.25;
+    crate::filter_dialog::open(&mut app, "filter.other.maximum").unwrap();
+    app.ui.dialogs[0].fields.insert("radius".into(), json!(6.0));
+    let ctx = egui::Context::default();
+    drive_until(&mut app, &ctx, "the first frame", |a| a.filter_preview.as_ref().is_some_and(|p| p.result.is_some()));
+    assert_eq!(app.filter_preview.as_ref().map(|p| p.key.k), Some(2), "6 px on a reduced document previews on the proxy");
+
+    // 1.5 px previews at full resolution: a new request at a new factor, computed on the worker.
+    app.ui.dialogs[0].fields.insert("radius".into(), json!(1.5));
+    let (k, _, size) = ensure_filter_preview(&mut app, 0, &ctx).expect("the held frame stays on the canvas");
+    assert_eq!((k, size), (2, [1200, 1100]), "drawn at its own factor");
+    drive_until(&mut app, &ctx, "the full-resolution frame", |a| a.filter_preview.as_ref().is_some_and(|p| p.key.k == 1 && p.result.is_some()));
+    let (k, _, size) = ensure_filter_preview(&mut app, 0, &ctx).expect("the new frame");
+    assert_eq!((k, size), (1, [2400, 2200]));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1394,8 +1419,10 @@ fn start_screen_buttons_stay_inside_a_narrow_canvas() {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
         h.state_mut().1 = true;
         h.run_steps(3);
-        for label in ["New document", "Join us on Discord"] {
-            for node in h.query_all_by_label_contains(label) {
+        for label in ["New file", "Open…"] {
+            let nodes: Vec<_> = h.query_all_by_label(label).collect();
+            assert!(!nodes.is_empty(), "`{label}` is rendered in a {width}-point-wide canvas");
+            for node in nodes {
                 let r = node.rect();
                 assert!(r.left() >= 0.0 && r.right() <= width, "`{label}` is clipped in a {width}-point-wide canvas: {r:?}");
             }
@@ -1425,6 +1452,27 @@ fn home_recent_list_hides_when_the_preference_is_off() {
     h.run_steps(3);
     assert!(h.query_by_label("hidden.psd").is_none(), "hidden when off");
     assert_eq!(h.state().0.ui.recent_files.len(), 1, "the list itself is kept");
+}
+
+#[test]
+fn start_screen_narrow_window_renders_actions_row() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.push_recent("/tmp/photocraft-narrow/test.psd");
+    // Window narrower than 640px (e.g. 500px width split-screen)
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(500.0, 600.0)).build_ui_state(
+        |ui, (app, ready): &mut (PhotocraftApp, bool)| {
+            if *ready {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| document_area(app, ui));
+            }
+        },
+        (app, false),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
+    h.state_mut().1 = true;
+    h.run_steps(3);
+    assert!(h.query_by_label("New file").is_some(), "New file button must be present in narrow mode");
+    assert!(h.query_all_by_label("Open…").next().is_some(), "Open… button must be present in narrow mode");
 }
 
 /// The Home screen's × takes a file off Recent without opening it, and its right-click menu
@@ -1681,7 +1729,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 app.ui.tool = Tool::Brush;
                 let ctx = egui::Context::default();
                 ctx.input_mut(|i| i.max_texture_side = 256);
-                let tex = crate::channel_view::ensure(&mut app, &ctx, 0).unwrap();
+                let tex = crate::channel_view::ensure(&mut app, &ctx, 0, None).unwrap();
                 ctx.tex_manager().write().take_delta().clear();
                 let revision = app.session.documents()[0].revision;
                 let steps = app.session.documents()[0].history.past_len();
@@ -1692,7 +1740,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                     tool_event(&mut app, ToolEvent::Move { x, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
                     let shown = display_doc(&mut app, 0).0;
                     assert!(shown.layer(layer).unwrap().mask.as_ref().unwrap().value(x as i32, 30) < 0.1);
-                    assert_eq!(crate::channel_view::ensure(&mut app, &ctx, 0), Some(tex));
+                    assert_eq!(crate::channel_view::ensure(&mut app, &ctx, 0, None), Some(tex));
                     let mut delta = ctx.tex_manager().write().take_delta();
                     let uploads = delta.set.get(&tex).unwrap_or_else(|| panic!("{depth}-bit {mode}: live mask texture must upload before release at {x}"));
                     assert_eq!(uploads.len(), 1);
@@ -1717,7 +1765,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                     assert_eq!(app.session.documents()[0].revision, revision);
                     assert_eq!(app.session.documents()[0].history.past_len(), steps);
                     assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
-                    crate::channel_view::ensure(&mut app, &ctx, 0);
+                    crate::channel_view::ensure(&mut app, &ctx, 0, None);
                     assert!(ctx.tex_manager().write().take_delta().set.is_empty(), "idle frame does not upload");
                 }
                 tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, egui::Modifiers::NONE);
@@ -1725,7 +1773,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 assert_eq!(st.history.past_len(), steps + 1);
                 assert!(st.doc.layer(layer).unwrap().mask.as_ref().unwrap().value(50, 30) < 0.1);
                 assert_eq!(st.doc.layer(layer).unwrap().content, original.content);
-                crate::channel_view::ensure(&mut app, &ctx, 0);
+                crate::channel_view::ensure(&mut app, &ctx, 0, None);
                 let mut delta = ctx.tex_manager().write().take_delta();
                 // The commit takes the live stroke's pixels, which the texture already shows: at
                 // most a partial upload, never the whole mask again.
@@ -1733,7 +1781,7 @@ fn mask_view_uploads_each_live_stroke_before_release() {
                 delta.clear();
                 app.session.undo();
                 assert_eq!(app.session.documents()[0].doc.layer(layer).unwrap(), &original);
-                crate::channel_view::ensure(&mut app, &ctx, 0);
+                crate::channel_view::ensure(&mut app, &ctx, 0, None);
                 let mut delta = ctx.tex_manager().write().take_delta();
                 let upload = &delta.set.get(&tex).unwrap()[0];
                 let egui::ImageData::Color(image) = &upload.image;
@@ -1778,14 +1826,14 @@ fn channel_views_show_live_targets_and_discarded_strokes() {
         app.run("tools.setBrush", json!({"brush": {"size": 12, "hardness": 1.0, "smoothing": {"amount": 0.0}}})).unwrap();
         app.ui.tool = Tool::Brush;
         let ctx = egui::Context::default();
-        let tex = crate::channel_view::ensure(&mut app, &ctx, 0).unwrap();
+        let tex = crate::channel_view::ensure(&mut app, &ctx, 0, None).unwrap();
         ctx.tex_manager().write().take_delta().clear();
         let original = app.session.documents()[0].doc.clone();
         let steps = app.session.documents()[0].history.past_len();
         tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         let shown = display_doc(&mut app, 0).0;
-        crate::channel_view::ensure(&mut app, &ctx, 0);
+        crate::channel_view::ensure(&mut app, &ctx, 0, None);
         let mut delta = ctx.tex_manager().write().take_delta();
         let upload = &delta.set.get(&tex).expect("live channel upload")[0];
         let pos = upload.pos.expect("partial channel upload");
@@ -1824,7 +1872,7 @@ fn channel_views_show_live_targets_and_discarded_strokes() {
         // document revision did not change. There is no committed damage rectangle to use.
         app.drag = None;
         app.live_stroke = None;
-        crate::channel_view::ensure(&mut app, &ctx, 0);
+        crate::channel_view::ensure(&mut app, &ctx, 0, None);
         let mut delta = ctx.tex_manager().write().take_delta();
         let upload = &delta.set.get(&tex).unwrap()[0];
         assert!(upload.pos.is_none(), "discarding a preview refreshes the view");

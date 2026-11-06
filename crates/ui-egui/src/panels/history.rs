@@ -160,11 +160,11 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if ctx.input(|i| i.pointer.any_released()) {
         ctx.data_mut(|d| d.remove::<HistoryDrag>(history_drag_key()));
     }
-    // An open Free Transform owns Undo (transform_tool::intercept): stepping the document's history under
-    // its box would leave it transforming pixels that changed.
     if snapshot_dialog {
         crate::snapshot_dialog::open(app);
     }
+    // An open Free Transform owns Undo (transform_tool::intercept): stepping the document's history under
+    // its box would leave it transforming pixels that changed.
     // Selecting a snapshot changes the document, so it waits for an open transform like the rows.
     let snap_cmd = snap_cmd.filter(|(cmd, _)| *cmd != "history.selectSnapshot" || app.ui.transform.is_none());
     if let Some((cmd, p)) = footer_cmd.filter(|_| app.ui.transform.is_none()).or(snap_cmd) {
@@ -253,17 +253,18 @@ pub(crate) fn selected_snapshot(ctx: &egui::Context, st: &photocraft_engine::Doc
     live.then_some(id)
 }
 
-/// The History panel's snapshot rows (#2966), under the opening row, each with its thumbnail and
-/// name: a click returns to the snapshot (a new state) and selects it, a double-click or
-/// right-click › Rename… edits the name in place (Enter or a click elsewhere keeps it, Escape
-/// cancels), right-click › Delete removes it, and a drag onto the trash too (#5324). Returns the
-/// command a row asks for.
+/// The History panel's snapshot rows (#2966), at the top of the panel (the first is the document
+/// as opened), each with its thumbnail and name: a click returns to the snapshot (a new state)
+/// and selects it, a double-click or right-click › Rename… edits the name in place (Enter or a
+/// click elsewhere keeps it, Escape cancels), right-click › Delete removes it, and a drag onto the
+/// trash too (#5324). Returns the command a row asks for.
 fn snapshot_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, selected: Option<u64>) -> Option<(&'static str, Value)> {
     let t = Tokens::get(ui.ctx());
     let st = app.session.active()?;
     let (doc_id, snaps) = (st.doc.id, st.snapshots.clone());
     let source = photocraft_engine::history_source_cmds::source(st);
     let live: Vec<u64> = snaps.iter().map(|s| s.id).collect();
+    app.retain_snapshot_thumbs(doc_id, &live);
     // Per document: snapshot ids restart in each, and a tab switch must not carry the edit over.
     let rename_id = egui::Id::unique(("history-snapshot-rename", doc_id));
     let mut renaming: Option<(u64, String)> = ui.data(|d| d.get_temp(rename_id)).flatten();
@@ -283,7 +284,7 @@ fn snapshot_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, selected: Option<u6
         }
         let thumb = Rect::from_min_size(pos2(rect.left() + 28.0, rect.center().y - 14.0), vec2(28.0, 28.0));
         widgets::checker(ui.painter(), thumb, 4.0);
-        let tex = app.snapshot_thumb(&ctx, doc_id, snap, &live);
+        let tex = app.snapshot_thumb(&ctx, doc_id, snap);
         ui.painter().image(tex, thumb, Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
         ui.painter().rect_stroke(thumb, 0.0, Stroke::new(1.0, t.separator), StrokeKind::Outside);
         match renaming.as_mut().filter(|(id, _)| *id == snap.id) {

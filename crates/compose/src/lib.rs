@@ -24,6 +24,7 @@ pub mod effects;
 pub mod fill_layout;
 pub mod filter_mask;
 pub mod gradient_fill;
+pub mod lut_rows;
 pub mod masks;
 pub mod multichannel;
 pub mod native;
@@ -33,6 +34,7 @@ pub mod proxy;
 pub mod psblend;
 pub mod shape_split;
 mod uniform;
+pub mod viewport;
 
 use photocraft_color::blend::BlendMode;
 use photocraft_doc::{Document, Fill, Layer, LayerContent, Pattern};
@@ -68,7 +70,9 @@ pub use extents::{
 };
 #[cfg(test)]
 use extents::{mask_k, shapeless_stroke_bounds, trim_to_painted};
-pub use fx_cache::{DEFAULT_FX_CACHE_BUDGET, effect_cache_budget, effect_cache_bytes, purge_effect_cache, set_effect_cache_budget};
+pub use fx_cache::{
+    DEFAULT_FX_CACHE_BUDGET, discard_unreadable_pixel_caches, effect_cache_budget, effect_cache_bytes, purge_effect_cache, set_effect_cache_budget,
+};
 #[cfg(test)]
 use fx_cache::{effect_maps, effect_region, fx_region_bytes};
 pub use reduced::{PROXY_THUMBNAIL_PIXELS, render_reduced, render_reduced_damage, render_reduced_rect, thumbnail, thumbnail_buffer, thumbnail_size};
@@ -79,23 +83,44 @@ use render::in_blend_space;
 use render::render_tiled_with;
 pub(crate) use render::visible_layers;
 pub use render::{
-    BAND_PIXELS, MAX_RENDER_PIXELS, band_rows_for, cmyk_space, composite_to_surface, flatten, flatten_to_surface, render, render_bands, render_layer,
-    render_layer_in, render_tiled,
+    BAND_PIXELS, MAX_RENDER_PIXELS, band_rows_for, cmyk_space, composite_to_surface, composite_to_surface_with_interrupt, flatten, flatten_to_surface, render,
+    render_bands, render_layer, render_layer_in, render_tiled,
 };
 
 /// Straight-alpha RGBA float buffer covering a rectangle.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// The pixel storage comes from, and goes back to, the scratch pool.
+#[derive(Debug, PartialEq)]
 pub struct Buffer {
     pub rect: Rect,
     pub px: Vec<[f32; 4]>,
 }
 
+impl Clone for Buffer {
+    fn clone(&self) -> Self {
+        let mut px = photocraft_raster::scratch::take(self.px.len(), [0.0; 4]);
+        px.copy_from_slice(&self.px);
+        Self { rect: self.rect, px }
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        photocraft_raster::scratch::give(std::mem::take(&mut self.px));
+    }
+}
+
 impl Buffer {
     pub fn transparent(rect: Rect) -> Self {
-        Self { rect, px: vec![[0.0; 4]; rect.width() as usize * rect.height() as usize] }
+        Self::filled(rect, [0.0; 4])
     }
     pub fn filled(rect: Rect, c: [f32; 4]) -> Self {
-        Self { rect, px: vec![c; rect.width() as usize * rect.height() as usize] }
+        Self { rect, px: photocraft_raster::scratch::take(rect.width() as usize * rect.height() as usize, c) }
+    }
+    /// The pixels, taken out of the buffer (it can't be destructured: it returns them to the
+    /// pool on drop).
+    pub fn into_px(mut self) -> Vec<[f32; 4]> {
+        std::mem::take(&mut self.px)
     }
     #[inline]
     pub fn get(&self, x: i32, y: i32) -> [f32; 4] {

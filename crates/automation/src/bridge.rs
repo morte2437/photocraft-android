@@ -1,8 +1,8 @@
 //! Client for the desktop app's JSON-lines control protocol
 //! (`docs/control-protocol.md`): one JSON request per line, replies matched
-//! by `id`. Keeps one connection, reconnecting after a failure — or before
-//! a call, once the connection has been idle long enough that the app
-//! (which closes idle control connections after
+//! by `id`. Keeps one connection, reconnecting after a failure or a call
+//! dropped before its reply — or before a call, once the connection has been
+//! idle long enough that the app (which closes idle control connections after
 //! [`IO_TIMEOUT`](crate::security::IO_TIMEOUT)) may already have closed it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -148,41 +148,31 @@ impl BridgeClient {
             *guard = Some((conn, Instant::now()));
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let Some((conn, _)) = guard.as_mut() else {
+        // Out of the cache until answered: a call dropped mid-exchange (a cancelled wait) closes
+        // its connection, so no later call shares a socket with a half-sent request or a reply
+        // the app is still working on.
+        let Some((mut conn, _)) = guard.take() else {
             return Err(Failure::NotSent(format!("not connected to {}", self.addr)));
         };
-        let outcome = tokio::time::timeout(self.timeout, exchange(conn, id, method, params)).await;
+        let outcome = tokio::time::timeout(self.timeout, exchange(&mut conn, id, method, params)).await;
         match outcome {
-            Ok(Ok(Err(error @ AutomationError::BadRequest(_)))) => {
-                // An oversized frame leaves unread bytes. Drop this connection and
-                // report the budget failure without retrying a possibly completed edit.
-                *guard = None;
-                Err(Failure::Definite(error))
-            }
+            // An oversized frame leaves unread bytes. Drop this connection and
+            // report the budget failure without retrying a possibly completed edit.
+            Ok(Ok(Err(error @ AutomationError::BadRequest(_)))) => Err(Failure::Definite(error)),
             Ok(Ok(Ok(v))) => {
-                if let Some((_, last_used)) = guard.as_mut() {
-                    *last_used = Instant::now();
-                }
+                *guard = Some((conn, Instant::now()));
                 Ok(v)
             }
             Ok(Ok(Err(e))) => {
                 // The app answered: the operation did not apply — except the app's own
                 // deadline reply, which fires while the command may still be running.
-                if let Some((_, last_used)) = guard.as_mut() {
-                    *last_used = Instant::now();
-                }
+                *guard = Some((conn, Instant::now()));
                 Err(Failure::Definite(e))
             }
             // A failed write or lost reply does not prove the edit was not applied.
             // Reconnect on the next call; only a vouched read may resend (#1007).
-            Ok(Err(e)) => {
-                *guard = None;
-                Err(Failure::Transport(e.to_string()))
-            }
-            Err(_) => {
-                *guard = None;
-                Err(Failure::TimedOut(()))
-            }
+            Ok(Err(e)) => Err(Failure::Transport(e.to_string())),
+            Err(_) => Err(Failure::TimedOut(())),
         }
     }
 }
@@ -227,17 +217,38 @@ async fn exchange(conn: &mut Conn, id: u64, method: &str, params: &Value) -> Res
         if v.get("id").and_then(Value::as_u64) != Some(id) {
             continue; // stale reply from an earlier, timed-out request
         }
-        return Ok(if v.get("ok").and_then(Value::as_bool) == Some(true) {
-            Ok(v.get("result").cloned().unwrap_or(Value::Null))
-        } else {
-            Err(AutomationError::App(v.get("error").and_then(Value::as_str).unwrap_or("unknown error").to_owned()))
-        });
+        return Ok(reply_result(&v));
     }
+}
+
+/// An app reply as the caller's result. A failed reply can still carry a `result`: a cancelled
+/// Batch lists the outputs it already wrote, so the error keeps it rather than dropping it.
+fn reply_result(v: &Value) -> Result<Value, AutomationError> {
+    if v.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+    }
+    let error = v.get("error").and_then(Value::as_str).unwrap_or("unknown error");
+    Err(AutomationError::App(match v.get("result") {
+        Some(result) if !result.is_null() => format!("{error}; partial result: {result}"),
+        _ => error.to_owned(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_reply_keeps_its_partial_result() {
+        assert_eq!(reply_result(&json!({"ok": true, "result": {"files": ["a.png"]}})).unwrap(), json!({"files": ["a.png"]}));
+        let Err(AutomationError::App(message)) = reply_result(&json!({"ok": false, "error": "cancelled", "result": {"files": ["a.png"], "cancelled": true}}))
+        else {
+            panic!("a failed reply is an app error")
+        };
+        assert!(message.starts_with("cancelled; partial result: ") && message.contains("a.png"), "{message}");
+        let Err(AutomationError::App(message)) = reply_result(&json!({"ok": false, "error": "cancelled"})) else { panic!("a failed reply is an app error") };
+        assert_eq!(message, "cancelled");
+    }
 
     #[test]
     fn the_call_timeout_stays_below_the_app_reply_deadline() {

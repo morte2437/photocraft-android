@@ -1,7 +1,7 @@
 use super::convert::clip_name;
 use super::descriptors::{
-    PCT, PX, Target, ang, class, color_desc, color_hex, desc, enm, get_bool, get_enum, get_num, get_obj, get_ref, get_text, jbool, jnum, jstr, long, path_text,
-    path_value, pct, px, target, target_ref, text, trimmed,
+    PCT, PT, PX, Target, ang, class, color_desc, color_hex, desc, enm, get_bool, get_enum, get_num, get_obj, get_ref, get_text, jbool, jnum, jstr, long,
+    path_text, path_value, pct, px, target, target_ref, text, trimmed,
 };
 use super::fields::{Mapped, none, step, steps};
 use super::tables::{ALIGN, EXTENSION, INTENT, INTERPOLATION, MODES, PROFILES, PURGE, SAVE_FORMATS, lookup, lookup_back};
@@ -27,14 +27,21 @@ pub(super) fn place_to(id: &str, p: &Value) -> Option<Descriptor> {
 
 /// `open`: File › Open of a recorded path.
 pub(super) fn open_from(d: &Descriptor) -> Mapped {
+    if d.items.len() != 1 || !d.class_id.is("null") || !d.name.to_string_lossy().is_empty() {
+        return Mapped::Unsupported { harmless: false };
+    }
     match d.get("null").and_then(path_text) {
         Some(path) => step("file.openAs", json!({"path": path})),
         None => Mapped::Unsupported { harmless: false },
     }
 }
 
+/// Export the represented Open path; refuse settings without a supported wire mapping.
 pub(super) fn open_to(_: &str, p: &Value) -> Option<Descriptor> {
-    Some(desc("null").with("null", path_value(jstr(p, "path")?)))
+    if p.as_object()?.len() != 1 {
+        return None;
+    }
+    Some(desc("null").with("null", path_value(jstr(p, "path").filter(|path| !path.is_empty())?)))
 }
 
 fn path_extension(path: &str) -> Option<String> {
@@ -44,9 +51,12 @@ fn path_extension(path: &str) -> Option<String> {
 }
 
 /// `save`: a plain Save, or a Save As (`As` format, `In` destination, `Cpy` As a Copy).
-/// Only a destination that is a file of the recorded format imports: a folder (#5430), a missing
-/// or unknown format or a mismatched extension stays a kept Photoshop step, so playback stops
-/// before writing rather than saving over the played file (#7102).
+/// A destination that is a file of the recorded format imports with its path. "Save in
+/// directory" (`DIDr`, recorded when the suggested name was kept) imports as a folder step, so
+/// playback saves each document under its own name in that folder (#5305). Anything else (a
+/// missing or unknown format, a mismatched extension, a copy into a folder) stays a kept
+/// Photoshop step, so playback stops before writing rather than saving over the played file
+/// (#7102).
 pub(super) fn save_from(d: &Descriptor) -> Mapped {
     let unsupported = Mapped::Unsupported { harmless: false };
     if d.get("As  ").is_none() && d.get("In  ").is_none() {
@@ -56,11 +66,16 @@ pub(super) fn save_from(d: &Descriptor) -> Mapped {
     // with a format that isn't a descriptor) the step is kept.
     let Some(format) = get_obj(d, "As  ") else { return unsupported };
     let Some(path) = d.get("In  ").and_then(path_text) else { return unsupported };
+    let class = trimmed(&format.class_id);
     if get_bool(d, "DIDr") == Some(true) {
-        return unsupported;
+        // `In` is the folder alone. Save a Copy has no folder step: it stays kept.
+        let Some(ext) = SAVE_FORMATS.iter().find(|(c, _)| *c == class).and_then(|(_, exts)| exts.first()) else { return unsupported };
+        if get_bool(d, "Cpy ") == Some(true) {
+            return unsupported;
+        }
+        return step("file.saveAs", json!({"folder": path, "extension": ext}));
     }
     let Some(ext) = path_extension(&path) else { return unsupported };
-    let class = trimmed(&format.class_id);
     let Some((_, exts)) = SAVE_FORMATS.iter().find(|(c, _)| *c == class) else { return unsupported };
     if !exts.contains(&ext.as_str()) {
         return unsupported;
@@ -72,7 +87,15 @@ pub(super) fn save_to(id: &str, p: &Value) -> Option<Descriptor> {
     if id == "file.save" {
         return Some(desc("null"));
     }
-    let path = jstr(p, "path")?;
+    let Some(path) = jstr(p, "path").filter(|v| !v.is_empty()) else {
+        // A Save As recorded with the document's own name: "save in directory" (#5305).
+        let (folder, ext) = (jstr(p, "folder")?, jstr(p, "extension")?.to_ascii_lowercase());
+        if id != "file.saveAs" {
+            return None;
+        }
+        let (class, _) = SAVE_FORMATS.iter().find(|(_, exts)| exts.contains(&ext.as_str()))?;
+        return Some(desc("null").with("As  ", D::Descriptor(desc(class))).with("In  ", path_value(folder)).with("DIDr", D::Boolean(true)));
+    };
     let ext = path_extension(path)?;
     let (class, _) = SAVE_FORMATS.iter().find(|(_, exts)| exts.contains(&ext.as_str()))?;
     let d = desc("null").with("As  ", D::Descriptor(desc(class))).with("In  ", path_value(path));
@@ -113,9 +136,14 @@ pub(super) fn conditional_to(_: &str, p: &Value) -> Option<Descriptor> {
     Some(d)
 }
 
-/// `close`: Photoshop's Save prompt answer becomes a Save step before the Close.
+/// Import Close's save policy: absent asks, Yes saves first, and No explicitly discards.
 pub(super) fn close_from(d: &Descriptor) -> Mapped {
-    if get_enum(d, "Svng").as_deref() == Some("Ys") { steps(vec![("file.save", json!({})), ("file.close", json!({}))]) } else { none("file.close") }
+    match d.get("Svng") {
+        None => step("file.close", json!({"save": "ask"})),
+        Some(D::Enumerated { value, .. }) if value.is("Ys  ") => steps(vec![("file.save", json!({})), ("file.close", json!({}))]),
+        Some(D::Enumerated { value, .. }) if value.is("N   ") => none("file.close"),
+        _ => Mapped::Unsupported { harmless: false },
+    }
 }
 
 /// A Close of an explicit document has no mapping here: written as a plain Close it would
@@ -124,7 +152,12 @@ pub(super) fn close_to(_: &str, p: &Value) -> Option<Descriptor> {
     if p.get("document").is_some_and(|d| !d.is_null()) {
         return None;
     }
-    Some(desc("null").with("Svng", enm("YsN ", "N   ")))
+    match p.get("save").filter(|v| !v.is_null()) {
+        Some(v) if v == "ask" => Some(desc("null")),
+        Some(Value::Bool(false)) => Some(desc("null").with("Svng", enm("YsN ", "N   "))),
+        Some(v) if v != "discard" => None,
+        _ => Some(desc("null").with("Svng", enm("YsN ", "N   "))),
+    }
 }
 
 const WEB_FORMATS: &[(&str, &str)] = &[("PN24", "png24"), ("PN8", "png8"), ("JPEG", "jpeg"), ("GIFf", "gif"), ("WBMP", "wbmp")];
@@ -134,7 +167,8 @@ pub(super) fn export_from(d: &Descriptor) -> Mapped {
     let unsupported = Mapped::Unsupported { harmless: false };
     let Some(u) = get_obj(d, "Usng") else { return unsupported };
     let Some(path) = d.get("In  ").and_then(path_text) else { return unsupported };
-    let mut p = json!({"path": path});
+    // "Save in directory": `In` is only the folder, and each document saves under its own name.
+    let mut p = if get_bool(u, "DIDr") == Some(true) { json!({"folder": path}) } else { json!({"path": path}) };
     if let Some(f) = get_enum(u, "Fmt ") {
         match lookup(WEB_FORMATS, &f) {
             Some(f) => p["format"] = json!(f),
@@ -161,8 +195,16 @@ pub(super) fn export_from(d: &Descriptor) -> Mapped {
 }
 
 pub(super) fn export_to(_: &str, p: &Value) -> Option<Descriptor> {
-    let path = jstr(p, "path")?;
+    // A step recorded with the document's own name keeps only its folder (#5305).
+    let (path, in_folder) = match (jstr(p, "path").filter(|v| !v.is_empty()), jstr(p, "folder")) {
+        (Some(path), _) => (path, false),
+        (None, Some(folder)) => (folder, true),
+        (None, None) => return None,
+    };
     let mut u = desc("SaveForWeb").with("Op  ", enm("SWOp", "OpSa")).with("Fmt ", enm("IRFm", lookup_back(WEB_FORMATS, jstr(p, "format").unwrap_or("png24"))?));
+    if in_folder {
+        u = u.with("DIDr", D::Boolean(true));
+    }
     for (key, param, default) in [
         ("Intr", "interlaced", false),
         ("Trns", "transparency", true),
@@ -192,7 +234,14 @@ pub(super) fn export_to(_: &str, p: &Value) -> Option<Descriptor> {
     Some(desc("null").with("Usng", D::Descriptor(u)).with("In  ", path_value(path)))
 }
 
+/// Import layer-retaining conversions; keep unsupported destructive choices verbatim.
 pub(super) fn convert_mode_from(d: &Descriptor) -> Mapped {
+    let layer_options = d.get("Fltt").is_some() || d.get("Rstr").is_some();
+    for key in ["Fltt", "Rstr"] {
+        if !matches!(d.get(key), None | Some(D::Boolean(false))) {
+            return Mapped::Unsupported { harmless: false };
+        }
+    }
     if let Some(depth) = get_num(d, "Dpth") {
         return match depth as i64 {
             8 => none("image.mode.bits8"),
@@ -210,7 +259,13 @@ pub(super) fn convert_mode_from(d: &Descriptor) -> Mapped {
         _ => return Mapped::Unsupported { harmless: false },
     };
     if mode == "BtmM" {
+        if layer_options {
+            return Mapped::Unsupported { harmless: false };
+        }
         return bitmap_from(options);
+    }
+    if mode == "Mltc" && layer_options {
+        return Mapped::Unsupported { harmless: false };
     }
     // Bitmap to Grayscale records a size ratio; only 1 keeps the pixels as they are.
     if options.and_then(|o| get_num(o, "Rt  ")).is_some_and(|r| (r - 1.0).abs() > 1e-9) {
@@ -248,26 +303,46 @@ fn bitmap_to(p: &Value) -> Option<Descriptor> {
     Some(desc("null").with("T   ", D::Descriptor(desc("BtmM").with("Mthd", enm("Mthd", method)))))
 }
 
+/// Write mode classes and the native CMS conversion's explicit layer-retaining policy.
 pub(super) fn convert_mode_to(id: &str, p: &Value) -> Option<Descriptor> {
     Some(match id {
         "image.mode.bits8" => desc("null").with("Dpth", long(8.0)),
         "image.mode.bits16" => desc("null").with("Dpth", long(16.0)),
         "image.mode.bits32" => desc("null").with("Dpth", long(32.0)),
         "image.mode.bitmap" => bitmap_to(p)?,
-        _ => desc("null").with("T   ", enm("ClrS", lookup_back(MODES, id.strip_prefix("image.mode.")?)?)),
+        _ => {
+            let mode = id.strip_prefix("image.mode.")?;
+            let mut d = desc("null").with("T   ", D::Class(class(lookup_back(MODES, mode)?)));
+            if mode != "multichannel" {
+                d = d.with("Fltt", D::Boolean(false)).with("Rstr", D::Boolean(false));
+            }
+            d
+        }
     })
 }
 
+/// Import canvas dimensions, anchors and explicit extension-colour choices.
 pub(super) fn canvas_size_from(d: &Descriptor) -> Mapped {
     let mut p = Map::new();
+    let mut units = None;
     for (k, param) in [("Wdth", "width"), ("Hght", "height")] {
         match d.get(k) {
-            Some(D::UnitFloat { unit: PX, value }) => {
-                p.insert(param.into(), value.round().into());
+            Some(D::UnitFloat { unit, value }) if (*unit == PX || *unit == PCT) && value.is_finite() => {
+                if units.is_some_and(|previous| previous != *unit) || (*unit == PCT && *value <= 0.0) {
+                    return Mapped::Unsupported { harmless: false };
+                }
+                units = Some(*unit);
+                p.insert(param.into(), if *unit == PX { value.round() } else { *value }.into());
             }
             Some(_) => return Mapped::Unsupported { harmless: false },
             None => {}
         }
+    }
+    if units == Some(PCT) {
+        if !matches!(d.get("Rltv"), None | Some(D::Boolean(false))) {
+            return Mapped::Unsupported { harmless: false };
+        }
+        p.insert("units".into(), "percent".into());
     }
     if let Some(r) = get_bool(d, "Rltv") {
         p.insert("relative".into(), r.into());
@@ -287,23 +362,42 @@ pub(super) fn canvas_size_from(d: &Descriptor) -> Mapped {
         _ => return Mapped::Unsupported { harmless: false },
     };
     p.insert("anchor".into(), anchor.into());
-    if let Some(c) = get_enum(d, "canvasExtensionColorType") {
+    if d.get("canvasExtensionColorType").is_some() {
+        let Some(c) = get_enum(d, "canvasExtensionColorType") else { return Mapped::Unsupported { harmless: false } };
         match lookup(EXTENSION, &c) {
             Some(c) => {
                 p.insert("extensionColor".into(), c.into());
             }
-            None => match get_obj(d, "canvasExtensionColor").and_then(color_hex) {
+            None if c == "Clr" || c == "Othr" => match get_obj(d, "canvasExtensionColor").and_then(color_hex) {
                 Some(hex) => {
                     p.insert("extensionColor".into(), hex.into());
                 }
                 None => return Mapped::Unsupported { harmless: false },
             },
+            None => return Mapped::Unsupported { harmless: false },
         }
     }
     step("image.canvasSize", Value::Object(p))
 }
 
+/// Write canvas geometry and canonical extension-colour identifiers.
 pub(super) fn canvas_size_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let units = match p.get("units") {
+        None => PX,
+        Some(Value::String(unit)) if unit == "px" => PX,
+        Some(Value::String(unit)) if unit == "percent" && jbool(p, "relative") != Some(true) => PCT,
+        _ => return None,
+    };
+    if units == PCT {
+        for key in ["width", "height"] {
+            if p.get(key).is_some_and(|value| !value.is_null() && value.as_f64().is_none_or(|number| !number.is_finite() || number <= 0.0)) {
+                return None;
+            }
+        }
+        if jnum(p, "width").is_none() && jnum(p, "height").is_none() {
+            return None;
+        }
+    }
     let anchor = jstr(p, "anchor").unwrap_or("center");
     let v = if anchor.starts_with("top") {
         "Top "
@@ -324,38 +418,68 @@ pub(super) fn canvas_size_to(_: &str, p: &Value) -> Option<Descriptor> {
         d = d.with("Rltv", D::Boolean(r));
     }
     if let Some(w) = jnum(p, "width") {
-        d = d.with("Wdth", px(w));
+        if units == PCT && w <= 0.0 {
+            return None;
+        }
+        d = d.with("Wdth", D::UnitFloat { unit: units, value: w });
     }
     if let Some(hh) = jnum(p, "height") {
-        d = d.with("Hght", px(hh));
+        if units == PCT && hh <= 0.0 {
+            return None;
+        }
+        d = d.with("Hght", D::UnitFloat { unit: units, value: hh });
     }
     d = d.with("Hrzn", enm("HrzL", h)).with("Vrtc", enm("VrtL", v));
     if let Some(c) = jstr(p, "extensionColor") {
         d = match lookup_back(EXTENSION, c) {
             Some(e) => d.with("canvasExtensionColorType", enm("canvasExtensionColorType", e)),
-            None => d.with("canvasExtensionColorType", enm("canvasExtensionColorType", "Othr")).with("canvasExtensionColor", D::Descriptor(color_desc(c)?)),
+            None => d.with("canvasExtensionColorType", enm("canvasExtensionColorType", "Clr ")).with("canvasExtensionColor", D::Descriptor(color_desc(c)?)),
         };
     }
     Some(d)
 }
 
+/// Keep recorded physical dimensions until playback can use the current document's dpi.
+/// Import pixel or percentage dimensions and their recorded style-scaling option.
 pub(super) fn image_size_from(d: &Descriptor) -> Mapped {
     let mut p = Map::new();
     let mut percent: Option<f64> = None;
+    let mut physical = false;
     for (k, param) in [("Wdth", "width"), ("Hght", "height")] {
         match d.get(k) {
             Some(D::UnitFloat { unit: PX, value }) => {
+                if physical {
+                    return Mapped::Unsupported { harmless: false };
+                }
                 p.insert(param.into(), value.round().into());
             }
-            // Percent scales both sides at playback; two different percentages, or physical
-            // units, need the document's size and resolution and stay unsupported.
-            Some(D::UnitFloat { unit: PCT, value }) => match percent {
+            Some(D::UnitFloat { unit: PT, value }) if value.is_finite() && *value > 0.0 => {
+                if percent.is_some() || (!physical && !p.is_empty()) {
+                    return Mapped::Unsupported { harmless: false };
+                }
+                physical = true;
+                p.insert(param.into(), (*value).into());
+            }
+            // Percent scales both sides; retain the existing pixel/percent precedence.
+            Some(D::UnitFloat { unit: PCT, value }) if !physical => match percent {
                 Some(other) if (other - value).abs() > 1e-9 => return Mapped::Unsupported { harmless: false },
                 _ => percent = Some(*value),
             },
             Some(_) => return Mapped::Unsupported { harmless: false },
             None => {}
         }
+    }
+    if physical {
+        // A simultaneous dpi change or an ambiguous aspect choice needs its own reference form.
+        if d.get("Rslt").is_some()
+            || !matches!(d.get("Intr"), Some(D::Enumerated { type_id, .. }) if type_id.is("Intp"))
+            || !matches!(d.get("CnsP"), None | Some(D::Boolean(_)))
+            || (get_bool(d, "CnsP") == Some(false) && (p.contains_key("width") != p.contains_key("height")))
+            || (get_bool(d, "CnsP") == Some(true) && p.contains_key("width") && p.contains_key("height"))
+        {
+            return Mapped::Unsupported { harmless: false };
+        }
+        p.insert("units".into(), "pt".into());
     }
     if let Some(pc) = percent {
         p.insert("percent".into(), pc.into());
@@ -380,10 +504,25 @@ pub(super) fn image_size_from(d: &Descriptor) -> Mapped {
     if p.is_empty() {
         return Mapped::Unsupported { harmless: false };
     }
+    // An omitted recorded flag preserves style sizes; native calls still default to scaling.
+    let scale_styles = match d.get("scaleStyles") {
+        None => false,
+        Some(D::Boolean(value)) => *value,
+        Some(_) => return Mapped::Unsupported { harmless: false },
+    };
+    p.insert("scaleStyles".into(), scale_styles.into());
     step("image.imageSize", Value::Object(p))
 }
 
+/// Export the recorded unit, avoiding sizes the native no-resample operation ignores.
+/// Export effective style scaling with the existing Image Size dimensions.
 pub(super) fn image_size_to(_: &str, p: &Value) -> Option<Descriptor> {
+    let unit = match p.get("units") {
+        None => PX,
+        Some(Value::String(unit)) if unit == "px" => PX,
+        Some(Value::String(unit)) if unit == "pt" => PT,
+        _ => return None,
+    };
     // Resolution only with Resample on imports as keep-print-size; a command without it cannot be told apart.
     if jnum(p, "resolution").is_some()
         && jnum(p, "width").is_none()
@@ -399,6 +538,19 @@ pub(super) fn image_size_to(_: &str, p: &Value) -> Option<Descriptor> {
     // descriptor has no "none" (it is the absence of `Intr`), so writing the ignored size would
     // turn the step into a pixel resize on playback (#7189).
     let resolution_only = jstr(p, "resample") == Some("none");
+    if unit == PT && !resolution_only {
+        for key in ["width", "height"] {
+            if p.get(key).is_some_and(|value| !value.is_null() && value.as_f64().is_none_or(|number| !number.is_finite() || number <= 0.0)) {
+                return None;
+            }
+        }
+        if jnum(p, "width").is_none() && jnum(p, "height").is_none() {
+            return None;
+        }
+    }
+    if unit == PT && !resolution_only && ["resolution", "percent"].iter().any(|key| p.get(*key).is_some_and(|value| !value.is_null())) {
+        return None;
+    }
     if resolution_only && jnum(p, "resolution").is_none() {
         // Nothing left to record: the step changes nothing.
         return None;
@@ -407,16 +559,32 @@ pub(super) fn image_size_to(_: &str, p: &Value) -> Option<Descriptor> {
         d = d.with("Wdth", pct(pc)).with("Hght", pct(pc)).with("CnsP", D::Boolean(true));
     }
     if let Some(w) = jnum(p, "width").filter(|_| !resolution_only) {
-        d = d.with("Wdth", px(w));
+        if unit == PT && w <= 0.0 {
+            return None;
+        }
+        d = d.with("Wdth", D::UnitFloat { unit, value: w });
     }
     if let Some(h) = jnum(p, "height").filter(|_| !resolution_only) {
-        d = d.with("Hght", px(h));
+        if unit == PT && h <= 0.0 {
+            return None;
+        }
+        d = d.with("Hght", D::UnitFloat { unit, value: h });
+    }
+    if unit == PT && !resolution_only {
+        d = d.with("CnsP", D::Boolean(jnum(p, "width").is_none() || jnum(p, "height").is_none()));
     }
     if let Some(r) = jnum(p, "resolution") {
         d = d.with("Rslt", D::UnitFloat { unit: *b"#Rsl", value: r });
     }
-    if let Some(i) = jstr(p, "resample").filter(|r| *r != "none") {
+    // Point sizes need an interpolation entry; omission uses the native bicubic default.
+    let resample = jstr(p, "resample").or_else(|| (unit == PT).then_some("bicubic"));
+    if let Some(i) = resample.filter(|r| *r != "none") {
         d = d.with("Intr", enm("Intp", lookup_back(INTERPOLATION, i)?));
+    }
+    // A recorded step without the key keeps style sizes, so only scaling needs the key: an
+    // Image Size step recorded without it saves back unchanged.
+    if jbool(p, "scaleStyles").unwrap_or(true) {
+        d = d.with("scaleStyles", D::Boolean(true));
     }
     Some(d)
 }
@@ -475,11 +643,51 @@ pub(super) fn stop_to(_: &str, p: &Value) -> Option<Descriptor> {
 }
 
 pub(super) fn paste_from(d: &Descriptor) -> Mapped {
+    // As is a class, not text or an enum; unknown forms must not fall back to raster paste.
+    if let Some(value) = d.get("As  ") {
+        // `Pxel` is what an ordinary Paste and Paste in Place record; it keeps the ordinary route
+        // (layer recreation, mask and channel targets, in place). Only a vector form is explicit.
+        let mode = match value {
+            D::Class(value) if value.class_id.is("Pxel") => None,
+            D::Class(value) if value.class_id.is("Path") => Some("path"),
+            D::Class(value) if value.class_id.is("shapeClass") => Some("shape"),
+            _ => return Mapped::Unsupported { harmless: false },
+        };
+        let in_place = match d.get("inPlace") {
+            None => false,
+            Some(D::Boolean(value)) => *value,
+            Some(_) => return Mapped::Unsupported { harmless: false },
+        };
+        if (in_place && mode.is_some()) || d.get("null").is_some() {
+            return Mapped::Unsupported { harmless: false };
+        }
+        if d.get("AntA").is_some_and(|v| !matches!(v, D::Enumerated { type_id, value } if type_id.is("Annt") && value.is("Anno"))) {
+            return Mapped::Unsupported { harmless: false };
+        }
+        if let Some(mode) = mode {
+            return step("edit.paste", json!({"as": mode}));
+        }
+    }
     none(if get_bool(d, "inPlace") == Some(true) { "edit.pasteSpecial.pasteInPlace" } else { "edit.paste" })
 }
 
-pub(super) fn paste_to(id: &str, _: &Value) -> Option<Descriptor> {
+pub(super) fn paste_to(id: &str, p: &Value) -> Option<Descriptor> {
     let mut d = desc("null");
+    if let Some(mode) = p.get("as") {
+        if id != "edit.paste"
+            || ["center", "inPlace", "clampToCanvas", "document", "layer", "layers", "path"].iter().any(|key| p.get(key).is_some())
+            || p.get("target").is_some_and(|v| v.as_str() != Some("pixels"))
+        {
+            return None;
+        }
+        let id = match mode.as_str()? {
+            "pixels" => "Pxel",
+            "path" => "Path",
+            "shape" => "shapeClass",
+            _ => return None,
+        };
+        d = d.with("As  ", D::Class(class(id)));
+    }
     if id == "edit.pasteSpecial.pasteInPlace" {
         d = d.with("inPlace", D::Boolean(true));
     }
@@ -528,12 +736,28 @@ pub(super) fn reset_to(_: &str, _: &Value) -> Option<Descriptor> {
     Some(desc("null").with("null", D::Reference(vec![ReferenceItem::Property { class: class("Clr "), key: Id::new("Clrs") }])))
 }
 
+/// Resolve an assigned or converted profile, preserving a supported rendering intent.
+/// Import represented RGB targets and strict profile flags; keep other destination modes intact.
 pub(super) fn profile_from(d: &Descriptor, id: &str) -> Mapped {
     let name = get_text(d, "T   ").or_else(|| get_text(d, "profile"));
     let Some(profile) = name.as_deref().and_then(|n| lookup(PROFILES, n)) else { return Mapped::Unsupported { harmless: false } };
     let mut p = json!({"profile": profile});
     if id == "edit.convertToProfile" {
-        if let Some(i) = get_enum(d, "Inte").and_then(|i| lookup(INTENT, &i)) {
+        // All mapped PROFILES are RGB; the reference application records -1 for these RGB
+        // targets. Other values need their own target mapping.
+        if !matches!(d.get("sdwM"), None | Some(D::Integer(-1))) {
+            return Mapped::Unsupported { harmless: false };
+        }
+        for (key, param) in [("Dthr", "dither"), ("Fltt", "flatten"), ("rasterizePlaced", "rasterizePlaced")] {
+            let value = match d.get(key) {
+                None => false,
+                Some(D::Boolean(value)) => *value,
+                Some(_) => return Mapped::Unsupported { harmless: false },
+            };
+            p[param] = json!(value);
+        }
+        if d.get("Inte").is_some() {
+            let Some(i) = get_enum(d, "Inte").and_then(|i| lookup(INTENT, &i)) else { return Mapped::Unsupported { harmless: false } };
             p["intent"] = json!(i);
         }
         if let Some(b) = get_bool(d, "MpBl") {
@@ -543,14 +767,28 @@ pub(super) fn profile_from(d: &Descriptor, id: &str) -> Mapped {
     step(id, p)
 }
 
+/// Export the supported profile and canonical rendering-intent identifier.
+/// Export effective native flags explicitly, with the `sdwM` value recorded for RGB targets.
 pub(super) fn profile_to(id: &str, p: &Value) -> Option<Descriptor> {
     let name = lookup_back(PROFILES, jstr(p, "profile")?)?;
     let mut d = desc("null").with("null", target_ref("Dcmn"));
     if id == "edit.convertToProfile" {
+        if p.get("sdwM").is_some() {
+            return None;
+        }
         d = d
             .with("T   ", text(name))
             .with("Inte", enm("Inte", lookup_back(INTENT, jstr(p, "intent").unwrap_or("relative"))?))
-            .with("MpBl", D::Boolean(jbool(p, "bpc").unwrap_or(true)));
+            .with("MpBl", D::Boolean(jbool(p, "bpc").unwrap_or(true)))
+            .with("sdwM", D::Integer(-1));
+        for (key, param) in [("Dthr", "dither"), ("Fltt", "flatten"), ("rasterizePlaced", "rasterizePlaced")] {
+            let value = match p.get(param) {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => return None,
+            };
+            d = d.with(key, D::Boolean(value));
+        }
     } else {
         d = d.with("profile", text(name));
     }

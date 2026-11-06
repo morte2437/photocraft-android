@@ -1,7 +1,7 @@
 //! Undoable layer colour labels. A group applies the label to its existing descendants,
 //! without changing pixels, visibility, locks or the layer selection.
 
-use photocraft_doc::{LabelColor, LayerId};
+use photocraft_doc::LabelColor;
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -18,15 +18,19 @@ fn enabled(s: &Session) -> std::result::Result<(), String> {
     if st.selected_layers().is_empty() { Err("no layer selected".into()) } else { Ok(()) }
 }
 
+/// Label an explicit layer or the selected layers, including a group's descendants.
 fn set_label(s: &mut Session, p: &Value) -> Result<Value> {
-    let p = p.as_object().ok_or_else(|| bad("expected an object"))?;
+    p.as_object().ok_or_else(|| bad("expected an object"))?;
     let color =
         p.get("color").and_then(Value::as_str).and_then(LabelColor::from_id).ok_or_else(|| {
             bad("`color` must be a layer colour id (none, red, orange, yellow, green, seafoam, blue, indigo, magenta, fuchsia, violet, gray)")
         })?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let roots = match p.get("layer") {
-        Some(v) => vec![LayerId(v.as_u64().ok_or_else(|| bad("`layer` must be an unsigned integer"))?)],
+    if p.get("layer") == Some(&Value::Null) {
+        return Err(bad("`layer` must name a layer when supplied"));
+    }
+    let roots = match crate::commands::explicit_layer(s, p)? {
+        Some(id) => vec![id],
         None => st.selected_layers(),
     };
     if roots.is_empty() {
@@ -63,13 +67,14 @@ fn set_label(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"color": color.id(), "layers": targets.iter().map(|(_, id)| id.0).collect::<Vec<_>>(), "changed": changed}))
 }
 
+/// Register the undoable layer-label command and its target options.
 pub fn specs() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: ID,
         label: "Layer Color",
         menu: &[],
         shortcut: None,
-        params: r#"{"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray","layer":id?} (no layer: selected layers; groups include descendants)"#,
+        params: r#"{"color":"none|red|orange|yellow|green|seafoam|blue|indigo|magenta|fuchsia|violet|gray","layer":id|name|{"background":true}?} (no layer: selected layers; groups include descendants)"#,
         enabled,
         run: set_label,
         journal: true,

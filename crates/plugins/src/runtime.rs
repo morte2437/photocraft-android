@@ -167,6 +167,26 @@ fn check_code_section(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// What a file that is not WebAssembly actually is, judged from its magic number, so the install
+/// error can name the format the person picked instead of only the one we wanted (public format
+/// facts: the PE/COFF, ELF, Mach-O and zip signatures). `None` for anything else. Reads with
+/// `starts_with`/`get`, so a file shorter than the signature is fine.
+fn format_hint(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"MZ") {
+        return Some("a Windows native executable or library (a .dll, or a Photoshop plug-in such as .8bf/.8bt)");
+    }
+    if bytes.get(..4) == Some(&[0x7f, b'E', b'L', b'F']) {
+        return Some("a Linux native library (ELF)");
+    }
+    if matches!(bytes.get(..4), Some(&[0xce, 0xfa, 0xed, 0xfe] | &[0xcf, 0xfa, 0xed, 0xfe] | &[0xca, 0xfe, 0xba, 0xbe] | &[0xbe, 0xba, 0xfe, 0xca])) {
+        return Some("a macOS native binary (Mach-O, thin or fat)");
+    }
+    if matches!(bytes.get(..4), Some(&[0x50, 0x4b, 0x03, 0x04] | &[0x50, 0x4b, 0x05, 0x06])) {
+        return Some("a zip archive");
+    }
+    None
+}
+
 impl Plugin {
     /// Validates and loads a module: checks the ABI version and reads the manifest.
     pub fn load(bytes: &[u8], limits: Limits) -> Result<Plugin> {
@@ -174,7 +194,11 @@ impl Plugin {
             return Err(Error::Module(format!("module is {} bytes (limit {})", bytes.len(), limits.max_module_bytes)));
         }
         if !bytes.starts_with(b"\0asm") {
-            return Err(Error::Module("not a WebAssembly binary (missing \\0asm header)".into()));
+            let msg = "not a WebAssembly binary (missing \\0asm header)";
+            return Err(Error::Module(match format_hint(bytes) {
+                Some(hint) => format!("{msg}; this file looks like {hint} - PhotoCraft plug-ins are WebAssembly modules (.wasm)"),
+                None => msg.to_string(),
+            }));
         }
         check_code_section(bytes)?;
         let mut config = Config::default();

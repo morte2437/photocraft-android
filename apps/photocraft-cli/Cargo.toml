@@ -7,9 +7,12 @@ license.workspace = true
 build = "build.rs"
 
 [features]
+default = ["gpu"]
 # Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]
+# Optional native GPU rendering backend, enabled by default in native CLI builds.
+gpu = ["photocraft-automation/gpu"]
 
 [lints]
 workspace = true
@@ -22,10 +25,16 @@ path = "src/lib.rs"
 name = "photocraft-cli"
 path = "src/main.rs"
 
+[[example]]
+name = "gpu_bench"
+required-features = ["gpu"]
+
 [dependencies]
 photocraft-automation = { path = "../../crates/automation" }
+photocraft-doc = { workspace = true }
 photocraft-engine = { workspace = true }
 photocraft-io = { workspace = true }
+photocraft-raster = { workspace = true }
 photocraft-format = { path = "../../crates/format" }
 photocraft-codecs = { workspace = true }
 clap = { workspace = true }
@@ -34,12 +43,16 @@ thiserror = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
+serde = { workspace = true }
+tempfile = "3"
 # Synthetic camera raws (#7789).
 photocraft-raw = { workspace = true, features = ["testgen"] }
 # Shell completions and man pages (examples/man-and-completions.rs, for the packages); not in
 # the binary.
 clap_complete = { workspace = true }
 clap_mangen = { workspace = true }
+# The PSD write recipe runner (tests/it/psd_write_oracle.rs).
+xtask = { path = "../../xtask" }
 
 [build-dependencies]
 # Icon + VERSIONINFO for photocraft-cli.exe; build.rs only uses it when targeting Windows.

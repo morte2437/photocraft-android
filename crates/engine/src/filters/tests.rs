@@ -80,6 +80,28 @@ const ALL: [&str; 24] = [
 ];
 
 #[test]
+fn enormous_global_filter_is_refused_before_allocating_and_preserves_document() {
+    let mut s = Session::new();
+    // A sparse document exercises admission without allocating a giant background first.
+    s.add_document(
+        photocraft_doc::Document::new("large", photocraft_doc::Size::new(300000, 300000), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8),
+        None,
+    );
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.edit("one pixel", |doc, active| {
+        doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().write_pixel(0, 0, &[0.2, 0.4, 0.6, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let before = s.active().unwrap().doc.clone();
+    let revision = s.active().unwrap().revision;
+    let err = s.execute("filter.distort.twirl", json!({})).unwrap_err().to_string();
+    assert!(err.contains("working memory"), "{err}");
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().doc, before);
+}
+
+#[test]
 fn every_filter_command_runs_changes_pixels_and_undoes() {
     for id in ALL {
         let mut s = session();
@@ -363,6 +385,7 @@ fn smart_object_records_smart_filter() {
                 smart_filters: vec![],
                 cache: Some(cache),
                 psd_raw: None,
+                vector_preview: None,
                 filters_enabled: true,
                 filter_mask: None,
                 warp: None,
@@ -512,4 +535,16 @@ fn displace_on_a_smart_object_embeds_its_map() {
     let d = s.active().unwrap();
     let LayerContent::Smart(sm) = &d.doc.layer(d.active_layer.unwrap()).unwrap().content else { panic!("not a smart object") };
     assert_eq!(first_value(&sm.smart_filters[1].params), 0.0, "the black map, not the passed-back white one");
+}
+
+/// A filter that yields nothing without a cancellation (a custom Shape Blur kernel it could not
+/// allocate or accept) reports a failure; only a cancelled job reports `Cancelled`.
+#[test]
+fn filter_without_output_is_cancelled_only_when_the_job_was() {
+    assert!(matches!(filter_output(None, true), Err(EngineError::Cancelled)));
+    let failure = filter_output(None, false).unwrap_err();
+    assert!(!matches!(failure, EngineError::Cancelled), "{failure:?}");
+    assert!(failure.to_string().contains("could not prepare"), "{failure}");
+    let surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+    assert!(filter_output(Some(surface), true).is_ok());
 }

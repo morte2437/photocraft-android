@@ -7,6 +7,16 @@ pub fn transcode_blocks(data: &[u8], version: Version, from: ByteOrder, to: Byte
     Ok(t.finish())
 }
 
+/// [`transcode_blocks`] written after `prefix`, in one buffer sized for both.
+pub fn transcode_blocks_after(prefix: &[u8], data: &[u8], version: Version, from: ByteOrder, to: ByteOrder) -> Result<(Vec<u8>, Vec<String>)> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(prefix.len().saturating_add(data.len())).map_err(|_| PsdError::OutOfMemory("not enough memory for the layer data"))?;
+    out.extend_from_slice(prefix);
+    let mut t = Tx::appending(out, data, version, from, to);
+    t.blocks()?;
+    Ok(t.finish())
+}
+
 /// Converts a layer-info body (the data of a `Layr` / `Lr16` / `Lr32` block) between orders.
 pub fn transcode_layer_info(data: &[u8], version: Version, from: ByteOrder, to: ByteOrder) -> Result<(Vec<u8>, Vec<String>)> {
     let mut t = Tx::new(data, version, from, to);
@@ -61,8 +71,13 @@ macro_rules! copy_int {
 
 impl<'a> Tx<'a> {
     fn new(data: &'a [u8], version: Version, from: ByteOrder, to: ByteOrder) -> Self {
+        Self::appending(Vec::with_capacity(data.len()), data, version, from, to)
+    }
+
+    /// A walker that appends to `out`.
+    fn appending(out: Vec<u8>, data: &'a [u8], version: Version, from: ByteOrder, to: ByteOrder) -> Self {
         let r = if from.is_little() { Reader::new_little(data) } else { Reader::new(data) };
-        Tx { r, out: Vec::with_capacity(data.len()), from, to, version, warnings: Vec::new(), depth: 0 }
+        Tx { r, out, from, to, version, warnings: Vec::new(), depth: 0 }
     }
 
     fn finish(self) -> (Vec<u8>, Vec<String>) {

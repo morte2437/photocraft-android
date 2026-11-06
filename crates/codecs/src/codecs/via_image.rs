@@ -2,7 +2,7 @@
 //! GIF, BMP, TGA, ICO, QOI, Radiance HDR, and AVIF encode (feature `avif`). Targa is written by
 //! [`super::tga`] and only read here.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use image::{DynamicImage, ImageDecoder, ImageFormat};
 
@@ -91,6 +91,11 @@ fn open<'a>(f: Format, bytes: &'a [u8], limits: &Limits) -> Result<impl ImageDec
     il.max_image_height = Some(limits.max_height);
     il.max_alloc = Some(limits.max_alloc);
     reader.limits(il);
+    if f == Format::Ico {
+        // The ICO decoder builds its embedded PNG decoder without limits, which inflates an
+        // iCCP profile up to usize::MAX while the reader is constructed, before `il` applies.
+        ico_png_profiles_fit(bytes, limits)?;
+    }
     let dec = reader.into_decoder().map_err(|e| map_err(f, e))?;
     let (w, h) = dec.dimensions();
     let bpp = dec.color_type().bytes_per_pixel() as u64;
@@ -98,21 +103,100 @@ fn open<'a>(f: Format, bytes: &'a [u8], limits: &Limits) -> Result<impl ImageDec
     // `DynamicImage::from_decoder` allocates the whole image before reading a pixel, so a
     // header-only file must not be able to ask for gigabytes (#8597). GIF's LZW tops out near
     // 11000:1 of RGBA output and TGA's and QOI's runs far below; AVIF has already decoded by now.
-    // Radiance HDR's old-style RLE repeat markers multiply their counts by 256 each in a row, and
-    // a BMP's RLE escapes (end of line, end of bitmap, delta) leave pixels unwritten, so no ratio
-    // bounds a valid file: only the allocation limit above applies to them.
+    // Radiance HDR's old-style RLE repeat markers multiply their counts by 256 each in a row, so
+    // no ratio bounds a valid file: only the allocation limit above applies to it.
     let declared = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bpp);
-    // A GIF's first frame is what the file must hold: the logical screen around it needs no
-    // data, so up to 256 MiB of screen (8192x8192) is free and only the rest must be backed.
-    let frame = if f == Format::Gif { gif_first_frame(bytes) } else { None };
-    let declared = match frame {
-        Some((fw, fh)) => u64::from(fw).saturating_mul(u64::from(fh)).saturating_mul(bpp).max(declared.saturating_sub(1 << 28)),
-        _ => declared,
-    };
-    if !(matches!(f, Format::Avif | Format::Hdr) || f == Format::Bmp && bmp_is_rle(bytes)) {
-        Limits::check_plausible(declared, bytes.len(), 1 << 14)?;
+    match f {
+        Format::Avif | Format::Hdr => {}
+        Format::Gif => gif_plausible(bytes, w, h, bpp)?,
+        // A BMP's RLE escapes (end of line, end of bitmap, delta) leave pixels unwritten, so no
+        // ratio bounds a valid file either. The decoder still allocates and clears the whole
+        // canvas, so like a GIF's screen only `UNBACKED_CANVAS` of it is free of data.
+        Format::Bmp if bmp_is_rle(bytes) => Limits::check_plausible(declared.saturating_sub(UNBACKED_CANVAS), bytes.len(), 1 << 14)?,
+        _ => Limits::check_plausible(declared, bytes.len(), 1 << 14)?,
     }
     Ok(dec)
+}
+
+/// Canvas bytes a GIF's logical screen or a sparse RLE BMP may declare without data behind
+/// them (256 MiB: an 8192x8192 RGBA screen). Past this, the file must back the rest.
+const UNBACKED_CANVAS: u64 = 1 << 28;
+
+/// Whether a GIF whose `w`x`h` logical screen decodes to `bpp` bytes a pixel is plausible for
+/// its file size. The first frame is what the file must hold: the logical screen around it needs
+/// no data, so up to [`UNBACKED_CANVAS`] of screen is free and only the rest must be backed.
+/// Shared by the first-frame decode and the animation decode ([`super::gif_frames`]), whose
+/// backend also initializes the whole screen before reading the first frame.
+pub(crate) fn gif_plausible(bytes: &[u8], w: u32, h: u32, bpp: u64) -> Result<(), CodecError> {
+    let declared = u64::from(w).saturating_mul(u64::from(h)).saturating_mul(bpp);
+    let declared = match gif_first_frame(bytes) {
+        Some((fw, fh)) => u64::from(fw).saturating_mul(u64::from(fh)).saturating_mul(bpp).max(declared.saturating_sub(UNBACKED_CANVAS)),
+        None => declared,
+    };
+    Limits::check_plausible(declared, bytes.len(), 1 << 14)
+}
+
+/// Most bytes one embedded iCCP profile of an icon may inflate to: 255 APP2 segments of a JPEG,
+/// the largest profile any of our formats carries, and far past any real one.
+const MAX_ICO_ICC_BYTES: u64 = 255 * 65_519;
+/// Most bytes all of an icon's embedded iCCP profiles may inflate to together while checked.
+/// Entries may point into overlapping chunk chains, so this bounds the check's own work.
+const MAX_ICO_ICC_TOTAL: u64 = 64 << 20;
+
+/// Refuses an icon whose embedded PNG images carry an iCCP profile larger than the profile cap
+/// (or `max_alloc`). The `image` crate's ICO decoder opens the PNG with no limits, and the `png`
+/// crate inflates the profile while the decoder is built: a few kilobytes of zlib would ask for
+/// gigabytes. Each profile is inflated here into a sink, so the check itself allocates nothing.
+fn ico_png_profiles_fit(b: &[u8], limits: &Limits) -> Result<(), CodecError> {
+    const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let u16_at = |at: usize| b.get(at..at + 2).and_then(|b| b.try_into().ok()).map(u16::from_le_bytes);
+    let u32_at = |at: usize| b.get(at..at.checked_add(4)?).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    let be32 = |at: usize| b.get(at..at.checked_add(4)?).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+    let cap = MAX_ICO_ICC_BYTES.min(limits.max_alloc);
+    let Some(count) = u16_at(4) else { return Ok(()) };
+    let mut offsets: Vec<usize> = (0..usize::from(count)).filter_map(|i| u32_at(6 + 16 * i + 12)).filter_map(|o| usize::try_from(o).ok()).collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    let mut total = 0u64;
+    // Chunk offsets already walked by any start: a walk from here repeats the earlier one, so stop.
+    let mut visited = std::collections::HashSet::new();
+    for start in offsets {
+        if b.get(start..start.saturating_add(8)) != Some(&PNG_SIGNATURE[..]) {
+            continue;
+        }
+        // Chunks up to the image data: the png crate parses iCCP only before IDAT.
+        let mut at = start + 8;
+        while let (Some(len), Some(kind)) = (be32(at), b.get(at.saturating_add(4)..at.saturating_add(8))) {
+            if !visited.insert(at) {
+                break;
+            }
+            let data_at = at + 8;
+            let Some(data) = usize::try_from(len).ok().and_then(|n| b.get(data_at..data_at.checked_add(n)?)) else { break };
+            match kind {
+                b"IDAT" | b"IEND" => break,
+                b"iCCP" => {
+                    // Profile name, NUL, compression method, then the zlib stream.
+                    let Some(z) = data.iter().position(|&c| c == 0).and_then(|n| data.get(n + 2..)) else { break };
+                    // Count what inflates before a corrupt stream fails too: the png crate
+                    // allocates that much before it finds the error.
+                    let mut inflated = flate2::read::ZlibDecoder::new(z).take(cap.saturating_add(1));
+                    let (mut n, mut buf) = (0u64, [0u8; 8192]);
+                    while let Ok(got @ 1..) = inflated.read(&mut buf) {
+                        n += got as u64;
+                    }
+                    total = total.saturating_add(n);
+                    if n > cap || total > MAX_ICO_ICC_TOTAL {
+                        return Err(CodecError::LimitExceeded(format!("an icon's embedded colour profile inflates past {cap} bytes")));
+                    }
+                    // The png crate refuses a second iCCP chunk without inflating it.
+                    break;
+                }
+                _ => {}
+            }
+            at = data_at + data.len() + 4;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn decode(f: Format, bytes: &[u8], limits: &Limits) -> Result<Image, CodecError> {
@@ -162,9 +246,16 @@ fn gif_first_frame(b: &[u8]) -> Option<(u32, u32)> {
 
 /// Counts a GIF's frames (image descriptors) by walking its blocks, without decompressing any.
 /// The total is unknown when the blocks end before the trailer or break off.
-fn gif_more_frames(b: &[u8]) -> Option<DecodeWarning> {
+pub(crate) fn gif_more_frames(b: &[u8]) -> Option<DecodeWarning> {
     let (frames, total) = gif_walk(b, |_| true);
     (frames > 1).then_some(DecodeWarning::MoreFrames { total })
+}
+
+/// Whether a GIF holds more than one frame, or None when the walk stops before the trailer
+/// after at most one frame (so frames past the break could not be counted).
+pub(crate) fn gif_has_more_frames(b: &[u8]) -> Option<bool> {
+    let (frames, total) = gif_walk(b, |_| true);
+    if frames > 1 { Some(true) } else { total.map(|_| false) }
 }
 
 /// Walks a GIF's blocks without decompressing any, handing `frame` the offset of each image
@@ -308,6 +399,48 @@ mod indexed_tests {
         assert_eq!(bmp_palette_len(&bytes[..30]), None);
         bytes[14..18].copy_from_slice(&7u32.to_le_bytes());
         assert_eq!(bmp_palette_len(&bytes), None);
+    }
+
+    /// A 64x48 icon holding one PNG with an iCCP chunk of `profile` bytes (zeros).
+    fn icon_with_profile(profile: usize) -> Vec<u8> {
+        use std::io::Write;
+        let img = Image::from_u8(64, 48, ChannelLayout::Rgba, vec![128; 64 * 48 * 4]).unwrap();
+        let png = crate::encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(&vec![0u8; profile]).unwrap();
+        let mut data = b"icc\0\0".to_vec();
+        data.extend_from_slice(&z.finish().unwrap());
+        let mut crc = flate2::Crc::new();
+        crc.update(b"iCCP");
+        crc.update(&data);
+        let mut chunk = (data.len() as u32).to_be_bytes().to_vec();
+        chunk.extend_from_slice(b"iCCP");
+        chunk.extend_from_slice(&data);
+        chunk.extend_from_slice(&crc.sum().to_be_bytes());
+        // Signature (8) and IHDR (25), then the profile.
+        let mut png_icc = png[..33].to_vec();
+        png_icc.extend_from_slice(&chunk);
+        png_icc.extend_from_slice(&png[33..]);
+        let mut ico = vec![0, 0, 1, 0, 1, 0, 64, 48, 0, 0, 1, 0, 32, 0];
+        ico.extend_from_slice(&(png_icc.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&22u32.to_le_bytes());
+        ico.extend_from_slice(&png_icc);
+        ico
+    }
+
+    #[test]
+    fn an_icon_profile_inflating_past_the_cap_is_refused_before_the_png_opens() {
+        let small = icon_with_profile(4096);
+        let img = decode(Format::Ico, &small, &Limits::default()).unwrap();
+        assert_eq!(img.dimensions(), (64, 48));
+        let huge = icon_with_profile(MAX_ICO_ICC_BYTES as usize + 1);
+        assert!(huge.len() < 64 << 10, "{} bytes", huge.len());
+        for r in [decode(Format::Ico, &huge, &Limits::default()).map(|_| ()), probe(Format::Ico, &huge, &Limits::default()).map(|_| ())] {
+            assert!(matches!(&r, Err(CodecError::LimitExceeded(m)) if m.contains("colour profile")), "{r:?}");
+        }
+        // max_alloc lowers the cap.
+        let tight = Limits { max_alloc: 2048, ..Limits::default() };
+        assert!(matches!(decode(Format::Ico, &small, &tight), Err(CodecError::LimitExceeded(_))));
     }
 
     #[test]

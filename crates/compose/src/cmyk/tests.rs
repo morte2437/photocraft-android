@@ -119,6 +119,11 @@ fn ref_blend(mode: BlendMode, b: f32, s: f32) -> f32 {
     1.0 - crate::psblend::blend_rgb(mode, [1.0 - b; 3], [1.0 - s; 3])[0]
 }
 
+/// [`ref_blend`] for the special eight at `fill` below 100%: Fill changes the blend itself.
+fn ref_blend_fill(mode: BlendMode, b: f32, s: f32, fill: f32) -> f32 {
+    1.0 - crate::psblend::blend_rgb_fill(mode, [1.0 - b; 3], [1.0 - s; 3], fill)[0]
+}
+
 /// The general compositing formula (W3C / PDF), written out on each ink.
 fn over_mode(mode: BlendMode, b: Cmyka, s: Cmyka, opacity: f32, text: bool) -> Cmyka {
     if mode == BlendMode::Normal {
@@ -214,20 +219,26 @@ fn ref_adjust(adj: &Adjustment, p: Cmyka) -> Cmyka {
 }
 
 /// An adjustment layer `l` (adjusting `p`, then `clipped` onto that) mixed into `p` in its blend
-/// mode by its opacity and mask; coverage stays.
-fn ref_adjusted(l: &Layer, adj: &Adjustment, clipped: &[Layer], p: Cmyka, x: i32, y: i32) -> Cmyka {
+/// mode by its opacity and mask; coverage stays. For an unclipped adjustment (`fill_special`)
+/// the special eight below 100% Fill are part of the blend and only Opacity covers; clipped onto
+/// a base, Fill stays coverage as on the compositor.
+fn ref_adjusted(l: &Layer, adj: &Adjustment, clipped: &[Layer], fill_special: bool, p: Cmyka, x: i32, y: i32) -> Cmyka {
     let mut a = ref_adjust(adj, p);
     if p[4] > 0.0 {
         a = ref_clip(clipped, a, x, y);
     }
-    let k = l.opacity * l.fill_opacity * ref_mask(l, x, y);
+    let opacity = l.opacity * l.fill_opacity;
     if l.blend == BlendMode::Dissolve {
         // Opacity and mask are the chance the pixel takes the adjustment fully.
+        let k = opacity * ref_mask(l, x, y);
         return if k > 0.0 && crate::dissolve_noise(x, y) < k { [a[0], a[1], a[2], a[3], p[4]] } else { p };
     }
+    let special = fill_special && l.fill_opacity < 1.0 && crate::psblend::fill_is_special(l.blend);
+    let k = if special { l.opacity } else { opacity } * ref_mask(l, x, y);
     let mut o = p;
     for c in 0..4 {
-        o[c] = p[c] + (ref_blend(l.blend, p[c], a[c]) - p[c]) * k;
+        let m = if special { ref_blend_fill(l.blend, p[c], a[c], l.fill_opacity) } else { ref_blend(l.blend, p[c], a[c]) };
+        o[c] = p[c] + (m - p[c]) * k;
     }
     o
 }
@@ -236,7 +247,7 @@ fn ref_adjusted(l: &Layer, adj: &Adjustment, clipped: &[Layer], p: Cmyka, x: i32
 fn ref_clip(clipped: &[Layer], mut content: Cmyka, x: i32, y: i32) -> Cmyka {
     for c in clipped.iter().filter(|c| c.visible) {
         if let LayerContent::Adjustment(adj) = &c.content {
-            content = ref_adjusted(c, adj, &[], content, x, y);
+            content = ref_adjusted(c, adj, &[], false, content, x, y);
         } else if content[4] > 0.0 {
             let a = content[4];
             let r = over_layer(c, [content[0], content[1], content[2], content[3], 1.0], ref_own(c, x, y), c.opacity * c.fill_opacity, Some((x, y)));
@@ -292,7 +303,7 @@ fn ref_layer(l: &Layer, clipped: &[Layer], x: i32, y: i32, b: Cmyka) -> Cmyka {
             o[4] = a;
             return o;
         }
-        LayerContent::Adjustment(adj) => return ref_adjusted(l, adj, clipped, b, x, y),
+        LayerContent::Adjustment(adj) => return ref_adjusted(l, adj, clipped, true, b, x, y),
         LayerContent::Group(g) => {
             let mut c = ref_stack(&g.children, x, y, [0.0; 5]);
             c[4] *= ref_mask(l, x, y);
@@ -1186,6 +1197,100 @@ fn adjustment_stacks_match_the_reference() {
     assert_routes_agree(&d);
 }
 
+/// A CMYK document at the requested sample depth.
+fn doc_at(depth: SampleType, w: u32, h: u32) -> Document {
+    Document::new("c", Size::new(w, h), ColorMode::Cmyk, depth)
+}
+
+/// A special blend mode's Fill below 100% on an adjustment layer changes the blend itself and
+/// leaves coverage to Opacity, as the RGB compositor mixes it (#9501); the split route runs that
+/// compositor on stand-ins, so both ink routes agree, at 8 and 16 bits. Clipped onto a base,
+/// Fill stays coverage, exactly as the compositor's `composite_atop_any` does. Each structure is
+/// also checked alone over its own paper, and every prefix of the combined stack, so a
+/// disagreement names the layer it starts at.
+#[test]
+fn special_fill_adjustments_agree_with_the_split_route() {
+    use photocraft_doc::adjust::LevelsChannel;
+
+    /// The split route gives the exact path's inks on `d`, saying where they first differ.
+    fn check_routes(d: &Document, ctx: &str) {
+        eprintln!("{ctx}: checking split against exact");
+        assert!(supports(d) && split::supports(d), "{ctx}: unsupported document");
+        let via = split_render(d);
+        let exact = render_cmyk(d, via.rect).unwrap_or_else(|| panic!("{ctx}: supported"));
+        let width = via.rect.width() as usize;
+        for (i, (g, w)) in via.px.iter().zip(&exact.px).enumerate() {
+            let differs = (g[4] - w[4]).abs() > 1e-5 || (w[4] > 1e-4 && (0..4).any(|c| (g[c] - w[c]).abs() > 1e-5));
+            if differs {
+                let (x, y) = (via.rect.x0 + (i % width) as i32, via.rect.y0 + (i / width) as i32);
+                panic!("{ctx}: ({x},{y}) split {g:?} vs exact {w:?}");
+            }
+        }
+        eprintln!("{ctx}: split and exact agree");
+    }
+
+    let d0 = LevelsChannel::default;
+    for depth in [SampleType::U8, SampleType::U16] {
+        let cmyka = PixelFormat { mode: ColorMode::Cmyk, sample: depth, alpha: true };
+        let cmyk = PixelFormat { mode: ColorMode::Cmyk, sample: depth, alpha: false };
+        let pix = |rects: &[(Rect, Cmyka)]| {
+            let mut l = Layer::raster("l", cmyka);
+            if let Some(s) = l.surface_mut() {
+                for (r, c) in rects {
+                    s.fill_rect(*r, c);
+                }
+            }
+            l
+        };
+        let mut paper_l = Layer::raster("bg", cmyk);
+        if let Some(s) = paper_l.surface_mut() {
+            s.fill_rect(Rect::new(0, 0, 6, 4), &[0.15, 0.35, 0.05, 0.1]);
+        }
+        // LinearDodge Levels and Posterize, each with a low Fill.
+        for adj in [cmyk_levels(LevelsChannel { in_white: 0.6, gamma: 1.7, ..d0() }, d0()), Adjustment::Posterize { levels: 3 }] {
+            let mut a = adjustment(adj.clone());
+            a.blend = BlendMode::LinearDodge;
+            a.fill_opacity = 0.2;
+            // Through a pass-through group: the adjustment acts on the backdrop below it.
+            let mut pass = Layer::group("pass", vec![a.clone()]);
+            pass.blend = BlendMode::PassThrough;
+            // Inside an isolated group: the adjustment acts on the group's own rendering.
+            let mut inner = a.clone();
+            inner.opacity = 0.75;
+            let mut iso = Layer::group("iso", vec![pix(&[(Rect::new(0, 0, 4, 4), [0.0, 0.6, 0.2, 0.4, 0.8])]), inner]);
+            iso.blend = BlendMode::Normal;
+            // Clipped onto a pixel base: Fill is coverage there.
+            let mut clipped = a.clone();
+            clipped.clipped = true;
+            let base = pix(&[(Rect::new(0, 0, 6, 4), [0.3, 0.1, 0.5, 0.2, 0.9])]);
+
+            // Each structure on its own, over its own paper.
+            let mut pass_doc = doc_at(depth, 6, 4);
+            pass_doc.layers.extend([paper_l.clone(), pass.clone()]);
+            check_routes(&pass_doc, &format!("depth {depth:?}, {adj:?}, pass-through group alone"));
+            let mut iso_doc = doc_at(depth, 6, 4);
+            iso_doc.layers.extend([paper_l.clone(), iso.clone()]);
+            check_routes(&iso_doc, &format!("depth {depth:?}, {adj:?}, isolated group alone"));
+            let mut clipped_doc = doc_at(depth, 6, 4);
+            clipped_doc.layers.extend([paper_l.clone(), base.clone(), clipped.clone()]);
+            check_routes(&clipped_doc, &format!("depth {depth:?}, {adj:?}, clipped onto a base alone"));
+
+            // The combined stack, one layer at a time.
+            let mut d = doc_at(depth, 6, 4);
+            let steps =
+                [("paper", paper_l.clone()), ("pass-through adjustment", pass), ("isolated group", iso), ("alpha base", base), ("clipped adjustment", clipped)];
+            let total = steps.len();
+            for (n, (name, l)) in steps.into_iter().enumerate() {
+                d.layers.push(l);
+                check_routes(&d, &format!("depth {depth:?}, {adj:?}, combined prefix {}/{total} ({name})", n + 1));
+            }
+            if depth == SampleType::U8 {
+                assert_matches_reference(&d);
+            }
+        }
+    }
+}
+
 /// In a 32-bit document (no rounding to levels), inks an adjustment leaves alone come out
 /// bit for bit, at full strength and through blend modes that pick an input.
 #[test]
@@ -1857,4 +1962,95 @@ fn every_cmyk_route_rounds_after_an_adjustment_layer() {
         let export = render_cmyk(&d, rect).unwrap_or_else(|| panic!("supported")).px[0][4];
         assert_eq!((display, export), (105.0 / 255.0, 105.0 / 255.0), "opacity {opacity}");
     }
+}
+
+/// An adjustment layer in one of the special eight below 100% Fill: Fill is part of the blend and
+/// Opacity alone mixes it in, on the ink path as on the RGB compositor (#9512; Linear Burn at
+/// Fill 71% put Y 0.957 where the split route gives 0.988).
+#[test]
+fn adjustment_layers_keep_the_special_fill_rule() {
+    let levels = AdjSpec::Levels { channel: 3, levels: [0.125, 0.8, 1.1, 0.14, 0.78] };
+    let s = Spec {
+        w: 3,
+        h: 1,
+        layers: vec![
+            raster_spec(BlendMode::Normal, (Rect::new(0, 0, 3, 1), [0.0, 0.0, 0.88, 1.0, 1.0]), 1.0, false),
+            LayerSpec::Pixels {
+                kind: Kind::Adjust(levels.clone()),
+                blend: BlendMode::LinearBurn,
+                fills: vec![],
+                opacity: 0.9,
+                fill: 0.71,
+                clipped: false,
+                visible: true,
+                mask: None,
+            },
+        ],
+    };
+    assert_split_matches_exact(&s);
+    for mode in SEPARABLE.iter().copied().filter(|m| crate::psblend::fill_is_special(*m)) {
+        let mut d = doc(4, 2);
+        d.layers.push(paper(4, 2, [0.2, 0.5, 0.1, 0.1]));
+        d.layers.push(layer(&[(Rect::new(0, 0, 3, 2), [0.6, 0.1, 0.4, 0.2, 0.8])]));
+        let mut a = build(&LayerSpec::Pixels {
+            kind: Kind::Adjust(levels.clone()),
+            blend: mode,
+            fills: vec![],
+            opacity: 0.9,
+            fill: 0.4,
+            clipped: false,
+            visible: true,
+            mask: None,
+        });
+        a.mask = Some(mask(&[(Rect::new(2, 0, 4, 2), 0.5)], 1.0, 1.0, true));
+        d.layers.push(a);
+        assert_matches_reference(&d);
+        assert_routes_agree(&d);
+    }
+}
+
+/// A one-pixel 32-bit CMYK document: a raster `base` backdrop and an Invert adjustment layer in
+/// `blend` at `fill`; `clipped`, when given, is a fully covering clipped Normal raster that
+/// replaces the adjusted inks exactly.
+fn special_fill_doc(base: Cmyka, blend: BlendMode, fill: f32, clipped: Option<Cmyka>) -> Document {
+    let format = PixelFormat { mode: ColorMode::Cmyk, sample: SampleType::F32, alpha: true };
+    let pixel = Rect::new(0, 0, 1, 1);
+    let mut d = Document::new("fill", Size::new(1, 1), ColorMode::Cmyk, SampleType::F32);
+    let mut backdrop = Layer::raster("base", format);
+    backdrop.surface_mut().unwrap().fill_rect(pixel, &base);
+    d.layers.push(backdrop);
+    let mut adjust = adjustment(Adjustment::Invert);
+    adjust.blend = blend;
+    adjust.fill_opacity = fill;
+    d.layers.push(adjust);
+    if let Some(ink) = clipped {
+        let mut clip = Layer::raster("clip", format);
+        clip.surface_mut().unwrap().fill_rect(pixel, &ink);
+        clip.clipped = true;
+        d.layers.push(clip);
+    }
+    d
+}
+
+/// Zero Fill leaves the backdrop bit-exact in all of the special eight. Linear Burn and Linear
+/// Light used to round trip through brightness (0.7 came back as 0.70000005).
+#[test]
+fn adjustment_zero_fill_keeps_backdrop_inks_exact() {
+    let base = [0.1, 0.4, 0.7, 0.3, 1.0];
+    for mode in SEPARABLE.iter().copied().filter(|m| crate::psblend::fill_is_special(*m)) {
+        let d = special_fill_doc(base, mode, 0.0, None);
+        assert!(supports(&d));
+        assert_eq!(render1(&d, 0, 0), base, "{mode:?}");
+    }
+}
+
+/// Two F32 inks can share one brightness; zero Fill keeps the backdrop's, not the source's.
+#[test]
+fn adjustment_zero_fill_preserves_colliding_brightness() {
+    let base = [f32::from_bits(0x3dcccccc), 0.4, 0.7, 0.3, 1.0];
+    let source = [f32::from_bits(0x3dcccccd), 0.4, 0.7, 0.3, 1.0];
+    assert_ne!(base[0], source[0]);
+    assert_eq!(1.0 - base[0], 1.0 - source[0]);
+    let d = special_fill_doc(base, BlendMode::Difference, 0.0, Some(source));
+    assert_eq!(render1(&d, 0, 0), base);
 }

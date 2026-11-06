@@ -34,7 +34,7 @@ fn run_file(path: &str) {
     println!("mode {:?} depth {:?} layers {} warnings {:?} light {:?}", doc.mode, doc.depth, doc.layer_count(), imp.warnings, doc.global_light);
     print_layer_details(doc);
     dump_filter_effects(&file);
-    let ours = photocraft_compose::flatten(doc).px;
+    let ours = photocraft_compose::flatten(doc).into_px();
     let merged = photocraft_io::merged_composite(&file).unwrap();
     compare_modes(doc, &ours, &merged);
 }
@@ -487,7 +487,7 @@ fn corpus_summary(root: &std::path::Path) {
             return (name, None);
         }
         let Ok(merged) = photocraft_io::merged_composite(&file) else { return (name, None) };
-        let ours = photocraft_compose::flatten(&imp.document).px;
+        let ours = photocraft_compose::flatten(&imp.document).into_px();
         let mut m = 0.0f32;
         let mut bad = 0usize;
         for (a, b) in ours.iter().zip(merged) {

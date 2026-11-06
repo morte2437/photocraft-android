@@ -42,6 +42,12 @@ quick_args = ["--quick", "--cpu", "--group", "layered"]
 note = "the layered #209 rows on the forced CPU compositor (#9330); run with perf_scenarios so the machine class keeps the GPU"
 
 [[bench]]
+name = "flat_open_bench"
+package = "photocraft-ui-egui"
+quick_args = ["--quick"]
+note = "opening ordinary JPEG/PNG files (24 and 36 MP, 8/16-bit, alpha, EXIF orientation) phase by phase, each case in its own process for its peak memory (#10259)"
+
+[[bench]]
 name = "interactive_bench"
 package = "photocraft-ui-egui"
 args = ["--reps", "5"]
@@ -103,6 +109,15 @@ package = "photocraft-algo"
 args = ["4", "2", "--reps", "5"]
 quick_args = ["2", "0.25", "--reps", "3"]
 note = "synthetic Photomerge multi-band blend; resident-set peak includes input/output buffers"
+
+# Pen cursor native bitmap and warm cache benchmark (#9122)
+[[bench]]
+name = "cursor_bench"
+package = "photocraft-ui-egui"
+requires = "crates/ui-egui/examples/cursor_bench.rs"
+args = ["--moves", "1000", "--reps", "5"]
+quick_args = ["--moves", "200", "--reps", "2"]
+note = "native Pen cursor rasterization, warm lookup, and painted baseline (#9122)"
 
 # ---- #209: interactive edits on layered documents (20 MP, styled layers) ---------------------
 
@@ -752,6 +767,28 @@ bench = "perf_scenarios"
 row = "zoomed-out reduced composite of the huge document with one painted layer"
 enforce = false  # tracked only
 
+# ---- #9157: background compositor startup ------------------------------------------------------
+
+[[scenario]]
+id = "B2a"
+title = "First document: UI-thread time to first pixels"
+issue = 9157
+bench = "perf_scenarios"
+row = "first document: UI-thread time to first pixels"
+metric = "p95"
+budget_ms = 100
+enforce = false  # nightly Metal baseline not recorded yet
+
+[[scenario]]
+id = "B2b"
+title = "First document: GPU compositor ready"
+issue = 9157
+bench = "perf_scenarios"
+row = "first document: GPU compositor ready"
+metric = "p95"
+budget_ms = 2000
+enforce = false  # informational until a nightly Metal baseline exists
+
 [[scenario]]
 id = "P80"
 title = "App frame: full CPU refresh of a 24 MP document"
@@ -780,4 +817,42 @@ title = "Fill a 2 % selection on a full-canvas 24 MP layer + refresh"
 issue = 9329
 bench = "perf_scenarios"
 row = "fill a 2 % selection on a full-canvas 24 MP layer + refresh"
+enforce = false  # new; no baseline yet
+
+# ---- #10259: opening ordinary JPEG/PNG files (track only) -------------------------------------
+
+[[scenario]]
+id = "P83"
+title = "Open a 36 MP JPEG (RGB 8-bit): import (decode + tiles) (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP JPEG RGB8: import"
+budget_ms = 300
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P84"
+title = "Open a 36 MP PNG (RGB 8-bit): import (decode + tiles) (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP PNG RGB8: import"
+budget_ms = 400
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P85"
+title = "Open a 36 MP PNG (RGB 16-bit): import (decode + tiles) (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP PNG RGB16: import"
+budget_ms = 700
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P86"
+title = "Open a 36 MP JPEG (RGB 8-bit): import + session admission + first composite (#10259)"
+issue = 10259
+bench = "flat_open_bench"
+row = "open 36 MP JPEG RGB8: editable"
+budget_ms = 500
 enforce = false  # new; no baseline yet

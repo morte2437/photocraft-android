@@ -8,8 +8,8 @@
 //!   being drawn;
 //! - inside the frame, a drag moves it;
 //! - on an edge or corner, a drag resizes it along the frame's own (possibly turned) axes; ⇧ keeps
-//!   the frame's aspect ratio, ⌥ resizes about the centre, and an options-bar ratio preset always
-//!   holds;
+//!   the frame's aspect ratio (on a corner the pointer is followed along the frame's diagonal),
+//!   ⌥ resizes about the centre, and an options-bar ratio preset always holds;
 //! - outside the frame (off its handles) the pointer is the rotate cursor and a drag turns the
 //!   frame about its centre, ⇧ in 15° steps, with the angle beside the pointer (#1792). As in
 //!   Photoshop, a new frame is drawn after the pending one is committed or cancelled;
@@ -49,8 +49,18 @@ pub struct CropState {
     /// `UiState::crop_rect` is the untouched default frame ([`ensure_frame`]): a drag inside it
     /// draws a new frame (as in Photoshop) instead of moving it, and committing it does nothing.
     pub default_frame: bool,
+    /// That untouched default frame came from a selection's bounds (not the whole canvas): the
+    /// preset dropdown names it "Selection" until the frame is edited (#10872).
+    pub frame_from_selection: bool,
     /// The document (index and size) the default frame was made for.
     frame_for: Option<(usize, u32, u32)>,
+    /// The document (id and size) whose frame [`hide_frame`] hid: no default frame is made for it
+    /// while this matches. Keyed by id, not tab index, so closing it never hides the frame of the
+    /// tab that takes its place.
+    dismissed: Option<(photocraft_doc::DocId, u32, u32)>,
+    /// The pending frame [`reset`] left when a W x H x Resolution preset kept it a crop: Reset
+    /// stays disabled while the frame is still that one.
+    reset_to: Option<[f64; 4]>,
     /// The frame is being edited (pressed since it was made): the canvas shows what lies past it.
     pub editing: bool,
     /// The document the pending frame (or gesture) belongs to ([`cancel_stale`], #1918).
@@ -71,6 +81,10 @@ struct CropStep {
     rect: Option<[f64; 4]>,
     angle: f64,
     default_frame: bool,
+    /// That default frame came from a selection's bounds ([`CropState::frame_from_selection`]).
+    frame_from_selection: bool,
+    /// The canvas shows the pixels past the frame ([`shows_beyond_canvas`]).
+    editing: bool,
 }
 
 /// A crop gesture in progress. Rects are `[x0, y0, x1, y1]` in document coordinates.
@@ -94,8 +108,9 @@ pub enum CropDrag {
     MoveImage { start: [f64; 2], rect: [f64; 4], view: Option<crate::crop_mode::PressView> },
     /// Default mode, outside the box: the image turns about the frame's `center` (which stays put
     /// on screen). `grab` is the pointer's direction from it at the press (radians, in the press
-    /// `view`), `from` the frame's angle then (degrees).
-    TurnImage { center: [f64; 2], grab: f64, from: f64, view: Option<crate::crop_mode::PressView> },
+    /// `view`), `from` the frame's angle then (degrees) and `rect` the frame then, which the turn
+    /// keeps inside the turned image (`crop_mode::keep_inside`).
+    TurnImage { center: [f64; 2], grab: f64, from: f64, rect: [f64; 4], view: Option<crate::crop_mode::PressView> },
 }
 
 /// What the pointer is over, relative to a crop frame.
@@ -204,6 +219,30 @@ pub fn resized_turned(r: [f64; 4], deg: f64, hx: i8, hy: i8, d: [f64; 2], ratio:
     [nc[0] - hw, nc[1] - hh, nc[0] + hw, nc[1] + hh]
 }
 
+/// Drag `d` on corner (`hx`, `hy`) of frame `r` turned `deg` degrees, projected onto the frame's
+/// diagonal through that corner: a ⇧ corner drag with a free ratio slides the corner along it, as
+/// in Photoshop (#10871). A corner drag on a ratio otherwise lets the larger relative extent win,
+/// so (−100, −50) on 800 × 500 gave 720 × 450 instead of Photoshop's 706 × 441.
+fn along_diagonal(r: [f64; 4], deg: f64, hx: i8, hy: i8, d: [f64; 2]) -> [f64; 2] {
+    let v = turn([f64::from(hx) * (r[2] - r[0]), f64::from(hy) * (r[3] - r[1])], [0.0, 0.0], deg);
+    let vv = v[0] * v[0] + v[1] * v[1];
+    let t = (d[0] * v[0] + d[1] * v[1]) / vv;
+    if vv > 0.0 && t.is_finite() { [t * v[0], t * v[1]] } else { d }
+}
+
+/// The pointer at `q` of a resize drag on handle (`hx`, `hy`) of frame `rect`, pressed at
+/// `start`, as the resize reads it. ⇧ on a corner with no ratio preset and no ⌥ follows the
+/// frame's diagonal ([`along_diagonal`]); a preset, ⌥ ⇧ and the edge handles keep the
+/// larger-extent rule, and the point is unchanged. The resize, Auto Center Preview and handle
+/// snapping all read the pointer through this, so the handle snaps where it is drawn.
+pub(crate) fn resize_point(app: &PhotocraftApp, rect: [f64; 4], hx: i8, hy: i8, start: [f64; 2], q: [f64; 2], mods: Modifiers) -> [f64; 2] {
+    if !(mods.shift && !mods.alt && hx != 0 && hy != 0 && preset_ratio(app).is_none()) {
+        return q;
+    }
+    let d = along_diagonal(rect, angle(app), hx, hy, [q[0] - start[0], q[1] - start[1]]);
+    [start[0] + d[0], start[1] + d[1]]
+}
+
 /// `[x0, y0, x1, y1]` with x0 ≤ x1, y0 ≤ y1.
 fn normalized(a: [f64; 2], b: [f64; 2]) -> [f64; 4] {
     [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])]
@@ -244,7 +283,20 @@ pub(crate) fn apply_ratio(app: &mut PhotocraftApp) {
     if app.ui.tool != Tool::Crop || app.crop.drag.is_some() {
         return;
     }
+    // A ratio or size chosen after a commit fits a frame, not nothing.
+    show_frame(app);
     frame(app);
+    // On the untouched frame of a selection's bounds, a picked ratio drops it for the largest
+    // centred frame of that ratio on the canvas, as measured in the reference application (#10872).
+    if app.crop.default_frame
+        && app.crop.frame_from_selection
+        && preset_ratio(app).is_some()
+        && let Some(b) = app.session.active().map(|st| st.doc.bounds())
+        && !b.is_empty()
+    {
+        app.ui.crop_rect = Some([f64::from(b.x0), f64::from(b.y0), f64::from(b.x1), f64::from(b.y1)]);
+        app.crop.frame_from_selection = false;
+    }
     fit_frame(app);
     crate::crop_mode::sync_frame(app);
 }
@@ -280,6 +332,9 @@ fn fit_frame(app: &mut PhotocraftApp) {
         // stays a pending crop even on the default frame.
         if fitted != r && !sized && app.crop.default_frame {
             app.ui.crop_rect = Some(fitted);
+            // The frame is no longer the selection's bounds, so the temporary "Selection" entry
+            // must not come back when the ratio is cleared again (#10872).
+            app.crop.frame_from_selection = false;
         } else {
             keyed(app, fitted);
         }
@@ -339,12 +394,33 @@ pub fn set_space(app: &mut PhotocraftApp, down: bool) {
     app.crop.space = down;
 }
 
+/// The options bar's Fill entry (#10872): what a turned or extending crop puts where the image
+/// doesn't reach. With Delete Cropped Pixels on that is the background colour; with it off it is
+/// transparency, as in Photoshop. Both are the stored `false` of `crop_content_aware`; only the
+/// label changes.
+pub fn fill_label(delete_cropped_pixels: bool) -> &'static str {
+    if delete_cropped_pixels { tl!("Background (default)") } else { tl!("Transparent (default)") }
+}
+
 /// As in Photoshop, the Crop tool always shows a frame: on picking the tool, and after a crop is
 /// cancelled or committed, it frames the selection's bounds, or the whole canvas. In default mode
 /// the view then follows the frame being edited (`crop_mode::sync`).
 pub fn ensure_frame(app: &mut PhotocraftApp) {
     frame(app);
     crate::crop_mode::sync(app, None);
+}
+
+/// The frame a new crop starts from: the selection's bounds, or the whole canvas.
+/// The default frame: the selection's bounds, or the whole canvas; and whether it is the
+/// selection's (the preset dropdown's temporary "Selection" entry, #10872).
+fn default_rect(app: &PhotocraftApp) -> Option<([f64; 4], bool)> {
+    let st = app.session.active()?;
+    let canvas = st.doc.bounds();
+    // Computed once per new frame, not per frame drawn.
+    let selection = st.doc.selection.as_ref().map(|s| s.content_bounds().intersect(&canvas)).filter(|b| !b.is_empty());
+    let from_selection = selection.is_some();
+    let r = selection.unwrap_or(canvas);
+    (!r.is_empty()).then(|| ([f64::from(r.x0), f64::from(r.y0), f64::from(r.x1), f64::from(r.y1)], from_selection))
 }
 
 fn frame(app: &mut PhotocraftApp) {
@@ -356,6 +432,7 @@ fn frame(app: &mut PhotocraftApp) {
         if app.crop.default_frame {
             app.ui.crop_rect = None;
             app.crop.default_frame = false;
+            app.crop.frame_from_selection = false;
         }
         if app.ui.crop_rect.is_some() && !keeps_pending(app) {
             commit_on_leave(app);
@@ -377,15 +454,15 @@ fn frame(app: &mut PhotocraftApp) {
     if app.ui.crop_rect.is_some() || app.crop.drag.is_some() {
         return;
     }
-    let Some(st) = app.session.active() else { return };
-    let canvas = st.doc.bounds();
-    // Computed once per new frame, not per frame drawn.
-    let r = st.doc.selection.as_ref().map(|s| s.content_bounds().intersect(&canvas)).filter(|b| !b.is_empty()).unwrap_or(canvas);
-    if r.is_empty() {
+    // A committed crop or Esc hid the frame: it stays hidden for this document until the next press.
+    if app.crop.dismissed.is_some() && app.crop.dismissed == dismiss_key(app) {
         return;
     }
-    app.ui.crop_rect = Some([f64::from(r.x0), f64::from(r.y0), f64::from(r.x1), f64::from(r.y1)]);
+    app.crop.dismissed = None;
+    let Some((r, from_selection)) = default_rect(app) else { return };
+    app.ui.crop_rect = Some(r);
     app.crop.default_frame = true;
+    app.crop.frame_from_selection = from_selection;
     app.crop.frame_for = key;
     app.crop.editing = false;
     app.crop.undo.clear();
@@ -412,6 +489,9 @@ fn commit_on_leave(app: &mut PhotocraftApp) {
         cancel(app);
     }
     app.ui.tool = tool;
+    // Committed by leaving the tool: back on it the default frame shows at once, as in Photoshop
+    // (only a commit with the Crop tool still picked hides it).
+    app.crop.dismissed = None;
 }
 
 /// A crop gesture is in progress: Space repositions the frame rather than panning.
@@ -433,6 +513,76 @@ pub fn cancel(app: &mut PhotocraftApp) {
     crate::crop_straighten::reset(app);
 }
 
+/// After a committed crop, with the Crop tool picked: no new default frame for the cropped
+/// document until a press on the canvas (or a ratio), so its corners don't make the applied crop
+/// look still pending. Picking the tool again, also after another tool, keeps it hidden, as in
+/// Photoshop.
+pub fn hide_frame(app: &mut PhotocraftApp) {
+    if app.ui.tool == Tool::Crop {
+        app.crop.dismissed = dismiss_key(app);
+    }
+}
+
+/// Ends [`hide_frame`] and makes the default frame now, so what follows acts on it as on any
+/// default frame: a press records it as the box's Undo step, a ratio fits it.
+pub(crate) fn show_frame(app: &mut PhotocraftApp) {
+    if app.crop.dismissed.take().is_some() {
+        frame(app);
+    }
+}
+
+/// Esc or the options bar's cancel: [`cancel`], then [`hide_frame`], so the frame disappears as in
+/// Photoshop (#10370) and stays hidden as after a commit.
+pub fn dismiss(app: &mut PhotocraftApp) {
+    cancel(app);
+    hide_frame(app);
+}
+
+/// The active document's identity for [`CropState::dismissed`].
+fn dismiss_key(app: &PhotocraftApp) -> Option<(photocraft_doc::DocId, u32, u32)> {
+    app.session.active().map(|st| (st.doc.id, st.doc.size.width, st.doc.size.height))
+}
+
+/// The frame was drawn, moved, resized or turned since it was last framed by default, so
+/// [`reset`] has something to undo.
+pub fn modified(app: &PhotocraftApp) -> bool {
+    app.ui.tool == Tool::Crop
+        && app.ui.crop_rect.is_some()
+        && app.crop.drag.is_none()
+        && (app.ui.crop_angle != 0.0 || (!app.crop.default_frame && app.ui.crop_rect != app.crop.reset_to))
+}
+
+/// Reset the crop box (the options bar's Reset): the default frame again, upright, with the
+/// straighten line gone. The tool stays up and the old frame is a box Undo step, unlike
+/// [`cancel`], which drops the box's history.
+pub fn reset(app: &mut PhotocraftApp) {
+    if !modified(app) {
+        return;
+    }
+    let Some((rect, from_selection)) = default_rect(app) else { return };
+    let before = step_of(app);
+    app.ui.crop_rect = Some(rect);
+    app.ui.crop_angle = 0.0;
+    app.crop.default_frame = true;
+    app.crop.frame_from_selection = from_selection;
+    app.crop.frame_for = app.session.active_index().zip(app.session.active()).map(|(i, st)| (i, st.doc.size.width, st.doc.size.height));
+    app.crop.editing = false;
+    app.crop.press_step = None;
+    claim(app);
+    crate::crop_straighten::reset(app);
+    // As a new default frame is: held to the ratio preset (or output size) picked in the bar.
+    fit_frame(app);
+    // A W x H x Resolution preset keeps the reset frame a pending crop (`fit_frame`), so remember
+    // it: Reset has nothing more to do until it changes.
+    app.crop.reset_to = app.ui.crop_rect.filter(|_| !app.crop.default_frame);
+    if step_of(app) != before {
+        app.crop.undo.push(before);
+        app.crop.redo.clear();
+    }
+    crate::crop_mode::sync_frame(app);
+    crate::crop_mode::auto_center(app);
+}
+
 /// Drop the box's own Undo/Redo (leaving the tool, cancelling or committing a crop).
 pub fn clear_history(app: &mut PhotocraftApp) {
     app.crop.undo.clear();
@@ -442,7 +592,13 @@ pub fn clear_history(app: &mut PhotocraftApp) {
 
 /// The frame's current state, as an undo step.
 fn step_of(app: &PhotocraftApp) -> CropStep {
-    CropStep { rect: app.ui.crop_rect, angle: app.ui.crop_angle, default_frame: app.crop.default_frame }
+    CropStep {
+        rect: app.ui.crop_rect,
+        angle: app.ui.crop_angle,
+        default_frame: app.crop.default_frame,
+        frame_from_selection: app.crop.frame_from_selection,
+        editing: app.crop.editing,
+    }
 }
 
 /// Put a frame state back.
@@ -450,6 +606,8 @@ fn apply_step(app: &mut PhotocraftApp, s: CropStep) {
     app.ui.crop_rect = s.rect;
     app.ui.crop_angle = s.angle;
     app.crop.default_frame = s.default_frame;
+    app.crop.frame_from_selection = s.frame_from_selection;
+    app.crop.editing = s.editing;
 }
 
 /// The pending frame, its box Undo/Redo and the view's turn, kept while `image.crop` runs so a
@@ -666,12 +824,30 @@ pub fn sizing(app: &PhotocraftApp) -> Option<[f64; 2]> {
     frame_size(app.ui.crop_rect?)
 }
 
+/// The Info panel's W and H while the Crop tool shows a frame: the frame's size (its own, before
+/// any turn), as Photoshop's Info panel shows it, so its ratio can be matched (#3145). `None`
+/// with another tool or no frame, and the panel shows the selection's size.
+pub fn info_size(app: &PhotocraftApp) -> Option<[f64; 2]> {
+    if app.ui.tool != Tool::Crop {
+        return None;
+    }
+    frame_size(app.ui.crop_rect?)
+}
+
 /// The Crop tool owns the arrow keys and X: a pending frame and no gesture in progress.
 pub fn takes_keys(app: &PhotocraftApp) -> bool {
     app.ui.tool == Tool::Crop && app.crop.drag.is_none() && app.ui.transform.is_none() && app.ui.crop_rect.is_some_and(|r| r.iter().all(|v| v.is_finite()))
 }
 
 /// The frame now set by the keys: a real frame (no longer the default), being edited.
+/// The dropdown's temporary "Selection" entry chosen (#10872): the untouched frame on the
+/// selection's bounds becomes a live crop, unchanged.
+pub(crate) fn take_selection_frame(app: &mut PhotocraftApp) {
+    if let Some(r) = app.ui.crop_rect.filter(|_| app.crop.default_frame && app.crop.frame_from_selection) {
+        keyed(app, r);
+    }
+}
+
 fn keyed(app: &mut PhotocraftApp, r: [f64; 4]) {
     if r.iter().all(|v| v.is_finite()) {
         app.ui.crop_rect = Some(r);
@@ -708,6 +884,18 @@ pub fn swapped(r: [f64; 4]) -> [f64; 4] {
     [c[0] - hh, c[1] - hw, c[0] + hh, c[1] + hw]
 }
 
+/// The options bar's ⇄ with a ratio set: the frame turns with the ratio about its centre, as X
+/// does, so fitting the swapped ratio afterwards doesn't shrink it (#7738).
+pub(crate) fn turn_frame(app: &mut PhotocraftApp) {
+    // A square frame doesn't change, so an untouched default frame stays one (and isn't
+    // committed on leaving the tool).
+    if let Some(r) = app.ui.crop_rect.filter(|_| takes_keys(app) && preset_ratio(app).is_some())
+        && swapped(r) != r
+    {
+        keyed(app, swapped(r));
+    }
+}
+
 /// The options-bar ratio `key` with its sides swapped (what the bar's ⇄ button does), `None` when
 /// no ratio is set; "original" becomes the document's size turned on its side.
 pub fn swapped_ratio(key: &str, doc_w: f64, doc_h: f64) -> Option<String> {
@@ -727,8 +915,11 @@ pub fn swap_orientation(app: &mut PhotocraftApp) -> bool {
     {
         app.ui.tool_options.crop_ratio = k;
     }
-    // The frame turns first: fitting the swapped ratio inside the old frame would shrink it.
-    keyed(app, swapped(r));
+    // The frame turns first: fitting the swapped ratio inside the old frame would shrink it. A
+    // square frame doesn't change, so an untouched default frame stays one.
+    if swapped(r) != r {
+        keyed(app, swapped(r));
+    }
     if preset_ratio(app).is_some() {
         apply_ratio(app);
     } else {
@@ -796,6 +987,11 @@ fn straighten(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers, p: [f64; 
     if !crate::crop_straighten::pointer(app, ev, mods) {
         return false;
     }
+    // A press it takes brings the hidden frame back like any other press, even when the line is
+    // too short to turn the frame.
+    if matches!(ev, ToolEvent::Down { .. }) {
+        show_frame(app);
+    }
     claim(app);
     // Default mode: the image turns so the line ends up level.
     // The turn is one box Undo step, like any other frame gesture.
@@ -815,6 +1011,7 @@ fn straighten(app: &mut PhotocraftApp, ev: ToolEvent, mods: Modifiers, p: [f64; 
 
 /// Starts the drag a press at `p` selects: resize, move, turn or draw.
 fn begin_drag(app: &mut PhotocraftApp, p: [f64; 2]) {
+    show_frame(app);
     claim(app);
     app.crop.editing = true;
     app.crop.press_step = Some(step_of(app));
@@ -851,7 +1048,7 @@ fn outside_drag(app: &PhotocraftApp, p: [f64; 2], rect: [f64; 4], deg: f64) -> C
     let c = center(rect);
     let grab = (p[1] - c[1]).atan2(p[0] - c[0]);
     if crate::crop_mode::moves_image(app) {
-        CropDrag::TurnImage { center: c, grab, from: deg, view: crate::crop_mode::press_view(app) }
+        CropDrag::TurnImage { center: c, grab, from: deg, rect, view: crate::crop_mode::press_view(app) }
     } else {
         // Outside the frame a drag turns it, as in Photoshop (#1792).
         CropDrag::Rotate { center: c, grab, from: deg }
@@ -919,13 +1116,14 @@ fn update(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) {
 fn follow_view_drag(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> bool {
     match app.crop.drag {
         Some(CropDrag::Rotate { center, grab, from }) => app.ui.crop_angle = turned_angle(center, grab, from, p, mods.shift),
-        Some(CropDrag::TurnImage { center, grab, from, view }) => {
+        Some(CropDrag::TurnImage { center, grab, from, rect, view }) => {
             // The image turns with the pointer's sweep on screen, so the frame turns against it.
             let at = crate::crop_mode::to_press(app, view, p);
             let turned = from - ((at[1] - center[1]).atan2(at[0] - center[0]) - grab).to_degrees();
             if turned.is_finite() {
                 app.ui.crop_angle = normalized_angle(if mods.shift { (turned / 15.0).round() * 15.0 } else { turned });
                 crate::crop_mode::sync_frame(app);
+                crate::crop_mode::keep_inside(app, rect, from, mods.command);
             }
         }
         Some(CropDrag::MoveImage { start, rect, view }) => {
@@ -935,7 +1133,7 @@ fn follow_view_drag(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> bo
         }
         Some(CropDrag::Resize { hx, hy, start, rect, view: Some(view) }) => {
             // Auto Center Preview keeps the box centred while the handle follows the pointer.
-            let at = crate::crop_mode::to_press(app, Some(view), p);
+            let at = resize_point(app, rect, hx, hy, start, crate::crop_mode::to_press(app, Some(view), p), mods);
             let ratio = resize_ratio(app, rect, mods);
             let deg = angle(app);
             crate::crop_mode::live_resize(app, crate::crop_mode::LiveResize { rect, deg, hx, hy, start, q: at, ratio, alt: mods.alt }, view);
@@ -950,6 +1148,10 @@ fn dragged_frame(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> Optio
     let ratio = preset_ratio(app);
     let space = app.crop.space;
     let deg = angle(app);
+    let resize_at = match app.crop.drag {
+        Some(CropDrag::Resize { hx, hy, start, rect, .. }) => resize_point(app, rect, hx, hy, start, p, mods),
+        _ => p,
+    };
     match app.crop.drag.as_mut()? {
         CropDrag::Draw { anchor, cur, last, .. } => {
             if space {
@@ -973,7 +1175,7 @@ fn dragged_frame(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers) -> Optio
                 (w > 0.0 && h > 0.0).then(|| w / h)
             };
             let ratio = ratio.or_else(|| if mods.shift { keep() } else { None });
-            Some(resized_turned(*rect, deg, *hx, *hy, [p[0] - start[0], p[1] - start[1]], ratio, mods.alt))
+            Some(resized_turned(*rect, deg, *hx, *hy, [resize_at[0] - start[0], resize_at[1] - start[1]], ratio, mods.alt))
         }
         CropDrag::Rotate { .. } | CropDrag::TurnImage { .. } | CropDrag::MoveImage { .. } => None,
     }

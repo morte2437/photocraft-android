@@ -45,8 +45,8 @@ pub fn color_param(value: &Value, original: Color, mode: ColorMode) -> Result<Co
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
-    if !p.is_object() || p.get("layer").is_some_and(|v| v.as_u64().is_none()) {
-        return Err(bad("params must be an object and layer an unsigned id"));
+    if !p.is_object() {
+        return Err(bad("params must be an object"));
     }
     let st = s.active().ok_or(EngineError::NoDocument)?;
     if let Some(document) = p.get("document")
@@ -84,7 +84,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Solid Color…",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id? (default active),"document":id? (reject a stale dialog),"color":"#rrggbb"|"#rrggbbaa"|[r,g,b,a?]|{mode,c:[f32;4],alpha:f32},"cmyk":[c,m,y,k]? (inks 0..1 the colour was picked as: a CMYK document keeps exactly these)}; RGB values without alpha preserve it; stored Color preserves its model and precision"##,
+        params: r##"{"layer":id|name? (default active),"document":id? (reject a stale dialog),"color":"#rrggbb"|"#rrggbbaa"|[r,g,b,a?]|{mode,c:[f32;4],alpha:f32},"cmyk":[c,m,y,k]? (inks 0..1 the colour was picked as: a CMYK document keeps exactly these)}; RGB values without alpha preserve it; stored Color preserves its model and precision"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: set,
         journal: true,
@@ -94,6 +94,16 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_nonactive_solid_fill_can_be_edited() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+        let id = s.execute("layer.newFillLayer.solidColor", json!({"color": "#000000"})).unwrap()["layer"].as_u64().unwrap();
+        let name = s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().name.clone();
+        s.execute("layer.new.layer", json!({"name": "Top"})).unwrap();
+        assert_eq!(s.execute(SET, json!({"layer": name, "color": "#ff0000"})).unwrap()["layer"], id);
+    }
 
     /// #8568: CMYK 50/50/50/100 entered for a Solid Color fill in a CMYK document stays exactly
     /// those inks, on creation and on edit, instead of what its sRGB stand-in converts back to

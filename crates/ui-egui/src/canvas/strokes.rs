@@ -701,6 +701,18 @@ pub fn paint_target(app: &PhotocraftApp) -> serde_json::Value {
         ChannelTarget::Alpha(i) if i < st.doc.channels.len() => return json!({ "channel": i }),
         ChannelTarget::Composite if st.doc.quick_mask.is_some() => return json!("quickMask"),
         ChannelTarget::LayerMask => return json!("mask"),
+        ChannelTarget::Color(_) => {
+            if let Some(view) = photocraft_engine::mask_view_cmds::current(st) {
+                return json!(if view.filter { "filterMask" } else { "mask" });
+            }
+            // A colour set edits a raster layer's own pixels. The rows stay selected across layer
+            // switches, so an adjustment layer's mask and a layer that needs rasterizing first
+            // keep the layer's own target below.
+            let raster = st.active_layer.and_then(|id| st.doc.layer(id)).is_some_and(|l| matches!(l.content, photocraft_doc::LayerContent::Raster(_)));
+            if raster && let Some(colors) = photocraft_engine::color_channels::selected(&app.session) {
+                return colors.params();
+            }
+        }
         _ => {}
     }
     // A smart object's targeted (or shown) filter mask takes the paint (FILE-215-3).
@@ -712,4 +724,13 @@ pub fn paint_target(app: &PhotocraftApp) -> serde_json::Value {
     let viewing = photocraft_engine::mask_view_cmds::current(st).is_some_and(|v| !v.filter);
     let mask = app.ui.mask_target || viewing || crate::adjustment_layer_active(st);
     json!(if mask && has_mask { "mask" } else { "pixels" })
+}
+
+/// Colour rows can remain selected behind a viewed mask; restrictions follow what is edited.
+/// Several rows stop Move and transforms on any layer, which the engine refuses there too.
+pub(crate) fn multiple_color_target(app: &PhotocraftApp) -> bool {
+    let Some(st) = app.session.active() else { return false };
+    matches!(st.channel_view.target, photocraft_engine::channel_cmds::ChannelTarget::Color(_))
+        && photocraft_engine::mask_view_cmds::current(st).is_none()
+        && photocraft_engine::color_channels::selected(&app.session).is_some_and(|colors| colors.len() > 1)
 }

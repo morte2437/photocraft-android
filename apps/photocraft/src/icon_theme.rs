@@ -202,17 +202,22 @@ pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
         image_href_resolver: usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) },
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_data(svg, &opts).ok()?;
-    let size = tree.size();
-    let side = size.width().max(size.height());
-    if !side.is_finite() || side <= 0.0 {
-        return None;
-    }
-    let s = px as f32 / side;
-    let (dx, dy) = ((px as f32 - size.width() * s) / 2.0, (px as f32 - size.height() * s) / 2.0);
-    let mut pixmap = tiny_skia::Pixmap::new(px, px)?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), &mut pixmap.as_mut());
-    Some(pixmap.data().as_chunks::<4>().0.iter().map(|[_, _, _, a]| *a).collect())
+    // usvg and resvg panic on some malformed drawings: such an icon is unreadable, not a crash.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let tree = usvg::Tree::from_data(svg, &opts).ok()?;
+        let size = tree.size();
+        let side = size.width().max(size.height());
+        if !side.is_finite() || side <= 0.0 {
+            return None;
+        }
+        let s = px as f32 / side;
+        let (dx, dy) = ((px as f32 - size.width() * s) / 2.0, (px as f32 - size.height() * s) / 2.0);
+        let mut pixmap = tiny_skia::Pixmap::new(px, px)?;
+        resvg::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), &mut pixmap.as_mut());
+        Some(pixmap.data().as_chunks::<4>().0.iter().map(|[_, _, _, a]| *a).collect())
+    }))
+    .ok()
+    .flatten()
 }
 
 #[cfg(test)]
@@ -301,6 +306,15 @@ mod tests {
         assert!(rasterize_mask(b"not svg", 16).is_none());
         assert!(rasterize_mask(SQUARE.as_bytes(), 0).is_none());
         assert!(rasterize_mask(SQUARE.as_bytes(), 100_000).is_none());
+    }
+
+    /// resvg panics rendering an offset past the pixmap's size: the icon is unreadable instead.
+    #[test]
+    fn a_mask_the_renderer_panics_on_is_none() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+            <filter id="f"><feOffset dx="3e9" dy="-3e9"/></filter><rect width="16" height="16" filter="url(#f)"/>
+        </svg>"##;
+        assert!(rasterize_mask(svg.as_bytes(), 16).is_none());
     }
 
     /// An icon's `<image>` is never loaded: not a device file, not an embedded picture.

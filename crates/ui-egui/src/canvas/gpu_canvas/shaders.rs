@@ -9,7 +9,7 @@ struct View {
     g: vec4<f32>, // gamut warning rgb, 32-bit preview 1 / gamma
     h: vec4<f32>, // cos, sin, center_doc_x, center_doc_y
 };
-struct Tile { r: vec4<f32> }; // x, y, w, h in doc px
+struct Tile { r: vec4<f32>, core: vec4<f32> }; // x, y, w, h in doc px; drawn x0, y0, x1, y1
 
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var samp: sampler;
@@ -163,6 +163,8 @@ fn fs_tile(in: VOut) -> @location(0) vec4<f32> {
     let p = in.pos.xy;
     let scale = view.a.z;
     let d = px_to_doc(p) - view.d.xy;      // document pixel coordinates (within this copy)
+    // A viewport page's apron is only sampled; its neighbour draws those pixels.
+    if (any(d < tile.core.xy) || any(d >= tile.core.zw)) { discard; }
     let size = tile.r.zw;
     let t = d - tile.r.xy;                 // texel coordinates within this tile
     let mode = view.c.x;

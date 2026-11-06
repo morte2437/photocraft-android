@@ -3,7 +3,8 @@
 //! - **Default mode** (Photoshop's default, Use Classic Mode off): the crop box stays upright on
 //!   screen and the image turns behind it. A drag outside the box turns the image about the box's
 //!   centre (⇧ in 15° steps; the readout beside the pointer is the image's turn, clockwise
-//!   positive), a drag inside moves the image under the box (the box stays put; with View › Snap
+//!   positive) and keeps the frame inside the turned image ([`keep_inside`]; not with ⌘ held), a
+//!   drag inside moves the image under the box (the box stays put; with View › Snap
 //!   on, the upright frame's edges and centre snap as a Classic Mode frame's do, #8580), the arrow
 //!   keys nudge the image, and the handles resize the box on screen as usual. With **Auto Center
 //!   Preview** on (the default), a box being resized keeps its centre where it is on screen (also
@@ -112,6 +113,74 @@ pub fn image_turn(frame_angle: f64) -> f64 {
     let a = crate::crop_ui::normalized_angle(-frame_angle);
     // Never "-0.0°".
     if a == 0.0 { 0.0 } else { a }
+}
+
+/// How far (document px) a turned frame's corner may lie past the canvas and still count as on
+/// it: rounding, not a visible gap.
+const FIT_TOLERANCE: f64 = 1e-6;
+
+/// Frame `rect` turned `deg` degrees about its centre, kept inside a `cw`×`ch` canvas (#10869):
+/// `rect` itself when it fits; else moved the shortest way in; else shrunk about its centre,
+/// keeping its proportions, to the largest size that fits anywhere, then moved in. `None` when a
+/// size or the angle isn't finite, or a size isn't positive.
+pub fn kept_inside(rect: [f64; 4], deg: f64, cw: f64, ch: f64) -> Option<[f64; 4]> {
+    let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+    if ![w, h, cw, ch, deg].iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 || cw <= 0.0 || ch <= 0.0 {
+        return None;
+    }
+    let (s, c) = deg.to_radians().sin_cos();
+    let (s, c) = (s.abs(), c.abs());
+    // Half the turned frame's bounds: its corners are on the canvas when these are.
+    let (ex, ey) = ((w * c + h * s) / 2.0, (w * s + h * c) / 2.0);
+    let m = crate::crop_ui::center(rect);
+    // A frame that fits stays bit for bit, also one whose corners a rounding error puts a hair
+    // past the edges (a frame fitted by an earlier turn touches them).
+    let fits = |v: f64, e: f64, len: f64| v - e >= -FIT_TOLERANCE && v + e <= len + FIT_TOLERANCE;
+    if fits(m[0], ex, cw) && fits(m[1], ey, ch) {
+        return Some(rect);
+    }
+    // The scale that makes the bounds fit the canvas; a rounding error short of 1 (180°) fits.
+    let k = (cw / (2.0 * ex)).min(ch / (2.0 * ey));
+    let k = if k >= 1.0 - 1e-9 { 1.0 } else { k };
+    // Each axis on its own: the nearest centre that keeps the bounds on the canvas.
+    let along = |v: f64, e: f64, len: f64| if 2.0 * e >= len { len / 2.0 } else { v.clamp(e, len - e) };
+    let n = [along(m[0], ex * k, cw), along(m[1], ey * k, ch)];
+    let r = if k == 1.0 {
+        // Kept size: moved by exactly the offset.
+        let d = [n[0] - m[0], n[1] - m[1]];
+        [rect[0] + d[0], rect[1] + d[1], rect[2] + d[0], rect[3] + d[1]]
+    } else {
+        let (hw, hh) = (w * k / 2.0, h * k / 2.0);
+        [n[0] - hw, n[1] - hh, n[0] + hw, n[1] + hh]
+    };
+    r.iter().all(|v| v.is_finite()).then_some(r)
+}
+
+/// A default-mode turn keeps the frame inside the turned image, as in Photoshop (#10869): the
+/// frame the drag started from, `rect` (turned `from` degrees then), keeps its size and place
+/// when it fits the image at the frame's angle now, else [`kept_inside`] moves it in or shrinks
+/// it. Each step starts from the press frame, so turning back gives the frame back. The view
+/// moves with the frame's centre, so the box stays put on screen. With ⌘ (Ctrl) `held` the frame
+/// stays as it was at the press and ↵ fills the uncovered corners.
+///
+/// Not measured in Photoshop, so they keep the frame as before: Fill set to Content-Aware Fill,
+/// and a frame that already reached past the canvas at the press.
+pub fn keep_inside(app: &mut PhotocraftApp, rect: [f64; 4], from: f64, held: bool) {
+    let Some(now) = finite_frame(app) else { return };
+    let Some((cw, ch)) = app.session.active().map(|st| (f64::from(st.doc.size.width), f64::from(st.doc.size.height))) else { return };
+    let inside_at_press = kept_inside(rect, from, cw, ch) == Some(rect);
+    let want = if held || app.ui.tool_options.crop_content_aware || !inside_at_press {
+        rect
+    } else {
+        kept_inside(rect, crate::crop_ui::angle(app), cw, ch).unwrap_or(rect)
+    };
+    if want == now {
+        return;
+    }
+    // Moves the frame's centre and the view together (the box stays put), then sets the size.
+    let (a, b) = (crate::crop_ui::center(now), crate::crop_ui::center(want));
+    shift_image(app, [a[0] - b[0], a[1] - b[1]]);
+    app.ui.crop_rect = Some(want);
 }
 
 /// A live-centred resize ([`live_resize`]): the frame `rect` and handle (`hx`, `hy`) at the press,

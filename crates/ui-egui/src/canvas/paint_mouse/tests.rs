@@ -5,6 +5,8 @@ use serde_json::json;
 use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
+mod right_click;
+
 fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
@@ -170,6 +172,9 @@ fn shift_right_mode_picker_cancels_and_other_gestures_keep_their_routes() {
     h.state_mut().ui.tool = Tool::Pencil;
     h.run_steps(2);
     assert!(h.state().ui.brush_mode_menu.is_none());
+    // Spot Healing has no Shift+right-click menu here: its right-click keeps the picker.
+    h.state_mut().ui.tool = Tool::SpotHealing;
+    h.run_steps(1);
     mode_right_click(&mut h, Modifiers::SHIFT);
     assert!(h.state().ui.brush_mode_menu.is_none() && h.state().ui.brush_picker.is_some());
     h.state_mut().ui.brush_picker = None;
@@ -560,6 +565,29 @@ fn the_brush_is_a_per_tool_option_that_presets_keep() {
     tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 5.0 }, Modifiers::NONE);
 }
 
+/// #10263: the Art History Brush starts at full opacity the first time it is picked, though it
+/// keeps the rest of the brush the old tool left (other tools still take its opacity).
+#[test]
+fn art_history_brush_starts_at_full_opacity() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.ui.tool = Tool::Brush;
+    sync_tool_brush(&mut app);
+    app.run("tools.setBrush", json!({"brush": {"size": 40, "opacity": 0.3}})).unwrap();
+    app.ui.tool = Tool::ArtHistoryBrush;
+    sync_tool_brush(&mut app);
+    assert_eq!(app.session.tools.brush.opacity, 1.0, "Art History starts at 100%");
+    assert_eq!(app.session.tools.brush.size, 40.0, "and inherits the size");
+    app.ui.tool = Tool::CloneStamp;
+    sync_tool_brush(&mut app);
+    assert_eq!(app.session.tools.brush.opacity, 1.0, "the Clone Stamp takes the Art History brush's opacity");
+    app.ui.tool = Tool::Brush;
+    sync_tool_brush(&mut app);
+    app.ui.tool = Tool::Eraser;
+    sync_tool_brush(&mut app);
+    assert_eq!(app.session.tools.brush.opacity, 0.3, "other tools still inherit opacity");
+}
+
 /// #218: Photoshop keeps a brush per painting tool, so the size, hardness, mode, opacity and
 /// dynamics of one tool never leak into another's, and each tool gets its own back.
 #[test]
@@ -689,4 +717,309 @@ fn one_frame_feeds_every_pointer_move_not_just_the_latest() {
     let end = *queued.last().unwrap();
     press(&mut h, end, PointerButton::Primary, false);
     assert_committed_points(&h, &queued);
+}
+
+/// Shift+right-click with `tool` and the labels of the menu it opened (empty: none opened).
+fn open_tool_menu(h: &mut Harness<'static, PhotocraftApp>, tool: Tool) -> Vec<&'static str> {
+    h.state_mut().ui.tool = tool;
+    h.run_steps(1);
+    mode_right_click(h, Modifiers::SHIFT);
+    if h.state().ui.brush_mode_menu.is_none() { Vec::new() } else { crate::brush_mode_menu::labels(tool) }
+}
+
+fn choose_row(h: &mut Harness<'static, PhotocraftApp>, label: &str) {
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label(label).click();
+    h.run_steps(2);
+    assert!(h.state().ui.brush_mode_menu.is_none(), "choosing {label} closes the menu");
+}
+
+#[test]
+fn shift_right_menu_lists_each_tools_own_rows_in_order() {
+    use crate::brush_mode_menu::{Item, items};
+    use egui_kittest::kittest::Queryable;
+    let blend: Vec<&'static str> = photocraft_doc::BlendMode::LAYER_MODES.iter().map(|m| m.label()).collect();
+    let with = |extra: &[&'static str]| {
+        let mut v = blend.clone();
+        for (i, l) in extra.iter().enumerate() {
+            v.insert(2 + i, l);
+        }
+        v
+    };
+    let edit = |rest: Vec<&'static str>| std::iter::once("Edit Brush…").chain(rest).collect::<Vec<_>>();
+    for (tool, want) in [
+        (Tool::Brush, edit(with(&["Behind", "Clear"]))),
+        (Tool::Pencil, edit(with(&["Behind", "Clear"]))),
+        (Tool::CloneStamp, edit(with(&[]))),
+        (Tool::Eraser, vec!["Brush", "Pencil", "Block"]),
+        (Tool::Dodge, edit(vec!["Shadows", "Midtones", "Highlights"])),
+        (Tool::Sponge, edit(vec!["Desaturate", "Saturate"])),
+        (Tool::PaintBucket, with(&["Clear"])),
+        (Tool::MixerBrush, vec!["Edit Brush…"]),
+        (Tool::Healing, vec!["Normal", "Multiply", "Screen", "Darken", "Lighten", "Color", "Luminosity"]),
+        (Tool::SpotHealing, vec![]),
+        (Tool::MagicEraser, vec![]),
+    ] {
+        let mut h = harness(None);
+        let journal = h.state().session.journal.len();
+        assert_eq!(open_tool_menu(&mut h, tool), want, "{tool:?}");
+        assert_eq!(h.state().session.journal.len(), journal, "{tool:?}: opening changes nothing");
+        if want.is_empty() {
+            continue;
+        }
+        assert!(h.state().ui.brush_picker.is_none(), "{tool:?}");
+        // A separator after Edit Brush…, and the blend modes in their groups.
+        let rows = items(tool);
+        if rows.first() == Some(&Item::EditBrush) && rows.len() > 1 {
+            assert_eq!(rows.get(1), Some(&Item::Separator), "{tool:?}");
+        }
+        if want.contains(&"Darken") && want.contains(&"Dissolve") {
+            let at = rows.iter().position(|i| *i == Item::Blend(photocraft_doc::BlendMode::Darken)).unwrap();
+            assert_eq!(rows[at - 1], Item::Separator, "{tool:?}");
+        }
+        // The rows the menu shows first are drawn, top to bottom, in that order.
+        let tops: Vec<f32> = want.iter().take(4).map(|l| h.get_by_label(l).rect().top()).collect();
+        assert!(tops.windows(2).all(|w| w[0] < w[1]), "{tool:?}: {tops:?}");
+    }
+}
+
+#[test]
+fn shift_right_menu_rows_set_what_the_options_bar_sets() {
+    use photocraft_doc::BlendMode;
+    let mut h = harness(None);
+    // Pencil: Clear is the Pencil's own flag, Behind its brush's, both through tools.setBrush.
+    open_tool_menu(&mut h, Tool::Pencil);
+    choose_row(&mut h, "Clear");
+    assert!(h.state().ui.tool_options.pencil_clear && !h.state().ui.tool_options.brush_clear);
+    open_tool_menu(&mut h, Tool::Pencil);
+    choose_row(&mut h, "Behind");
+    assert!(!h.state().ui.tool_options.pencil_clear && h.state().session.tools.brush.behind);
+    assert_eq!(h.state().session.journal.last().unwrap(), &("tools.setBrush".into(), json!({"brush": {"mode": "Normal", "behind": true}})));
+    // Clone Stamp: its own brush's mode, as the options bar's Mode dropdown.
+    open_tool_menu(&mut h, Tool::CloneStamp);
+    choose_row(&mut h, "Multiply");
+    assert_eq!(h.state().session.tools.brush.mode, BlendMode::Multiply);
+    assert_eq!(h.state().session.journal.last().unwrap(), &("tools.setBrush".into(), json!({"brush": {"mode": "Multiply"}})));
+    assert_eq!(crate::blend_keys::tool_mode(h.state_mut()), Some(BlendMode::Multiply));
+    h.state_mut().ui.tool = Tool::Brush;
+    h.run_steps(1);
+    assert_eq!(h.state().session.tools.brush.mode, BlendMode::Normal, "the Brush keeps its own mode");
+    // Healing Brush: the short list.
+    open_tool_menu(&mut h, Tool::Healing);
+    choose_row(&mut h, "Luminosity");
+    assert_eq!(h.state().session.tools.brush.mode, BlendMode::Luminosity);
+    // Tool options: Eraser Mode, Dodge Range, Sponge Mode, Paint Bucket and Gradient modes.
+    open_tool_menu(&mut h, Tool::Eraser);
+    choose_row(&mut h, "Block");
+    assert_eq!(h.state().ui.tool_options.eraser_mode, "block");
+    open_tool_menu(&mut h, Tool::Dodge);
+    choose_row(&mut h, "Highlights");
+    assert_eq!(h.state().ui.tool_options.tone_range, "highlights");
+    open_tool_menu(&mut h, Tool::Sponge);
+    choose_row(&mut h, "Saturate");
+    assert_eq!(h.state().ui.tool_options.sponge_mode, "saturate");
+    open_tool_menu(&mut h, Tool::PaintBucket);
+    choose_row(&mut h, "Clear");
+    assert!(h.state().ui.tool_options.bucket_clear);
+    open_tool_menu(&mut h, Tool::PaintBucket);
+    choose_row(&mut h, "Screen");
+    assert!(!h.state().ui.tool_options.bucket_clear);
+    assert_eq!(h.state().ui.tool_options.bucket_blend_mode, BlendMode::Screen);
+    open_tool_menu(&mut h, Tool::Gradient);
+    choose_row(&mut h, "Overlay");
+    assert_eq!(h.state().ui.tool_options.gradient_blend_mode, BlendMode::Overlay);
+    // The checked row is the current one.
+    open_tool_menu(&mut h, Tool::Eraser);
+    assert_eq!(crate::brush_mode_menu::current(h.state(), Tool::Eraser), Some(crate::brush_mode_menu::Item::Eraser("block")));
+}
+
+#[test]
+fn edit_brush_opens_the_brush_preset_picker_at_the_click() {
+    for tool in [Tool::Brush, Tool::CloneStamp, Tool::MixerBrush, Tool::Dodge] {
+        let mut h = harness(None);
+        open_tool_menu(&mut h, tool);
+        let at = h.state().ui.brush_mode_menu.unwrap();
+        let journal = h.state().session.journal.len();
+        choose_row(&mut h, "Edit Brush…");
+        assert_eq!(h.state().ui.brush_picker, Some(at), "{tool:?}");
+        assert_eq!(h.state().session.journal.len(), journal, "{tool:?}");
+        h.run_steps(2);
+        assert!(h.state().ui.brush_picker.is_some(), "{tool:?}: the picker stays open");
+    }
+}
+
+#[test]
+fn behind_and_clear_are_greyed_on_the_background_layer() {
+    use crate::brush_mode_menu::{Item, enabled, find};
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(None);
+    let (bg, top) = {
+        let doc = &h.state().session.active().unwrap().doc;
+        (doc.layers[0].id, doc.layers[1].id)
+    };
+    h.state_mut().session.active_mut().unwrap().active_layer = Some(bg);
+    for tool in [Tool::Brush, Tool::Pencil, Tool::PaintBucket] {
+        open_tool_menu(&mut h, tool);
+        assert!(!enabled(h.state(), Item::Clear), "{tool:?}");
+        assert!(find(h.state(), "Clear").is_err(), "{tool:?}");
+        assert!(enabled(h.state(), Item::Blend(photocraft_doc::BlendMode::Multiply)));
+        let journal = h.state().session.journal.len();
+        h.get_by_label("Clear").click();
+        h.run_steps(2);
+        let o = &h.state().ui.tool_options;
+        assert!(!o.brush_clear && !o.pencil_clear && !o.bucket_clear, "{tool:?}");
+        assert_eq!(h.state().session.journal.len(), journal, "{tool:?}: a greyed row does nothing");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+    }
+    assert!(!enabled(h.state(), Item::Behind));
+    // On a normal layer they are available again.
+    h.state_mut().session.active_mut().unwrap().active_layer = Some(top);
+    assert!(enabled(h.state(), Item::Behind) && enabled(h.state(), Item::Clear));
+}
+
+/// A right press at the canvas centre, a move of `by` and the release there, with `mods` held
+/// throughout; returns where the button went down.
+fn right_drag_by(h: &mut Harness<'static, PhotocraftApp>, by: egui::Vec2, mods: Modifiers) -> Pos2 {
+    let c = h.state().last_canvas_rect.center();
+    h.event(egui::Event::ModifiersChanged(mods));
+    h.event(egui::Event::PointerMoved(c));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: c, button: PointerButton::Secondary, pressed: true, modifiers: mods });
+    h.run_steps(1);
+    for i in 1..=4 {
+        h.event(egui::Event::PointerMoved(c + by * (i as f32 / 4.0)));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerButton { pos: c + by, button: PointerButton::Secondary, pressed: false, modifiers: mods });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    c
+}
+
+/// A high-DPI mouse moves a few pixels while its right button goes down, past egui's click
+/// distance: the right-click still opens the picker or the canvas menu, where the button went
+/// down (#10183). A right drag a gesture used (Alt+right brush resize, a right-erase stroke) opens
+/// nothing.
+#[test]
+fn a_right_click_that_moved_still_opens_its_menu() {
+    for by in [vec2(7.0, 3.0), vec2(14.0, -9.0)] {
+        let mut h = harness(None);
+        let at = right_drag_by(&mut h, by, Modifiers::NONE);
+        assert_eq!(h.state().ui.brush_picker, Some([at.x, at.y]), "moved {by:?}: the picker opens where the button went down");
+        assert!(strokes(&h).is_empty(), "and nothing paints");
+        // The canvas tool menu (Pen) and the layer menu (Move tool) read the same right-click.
+        let mut h = harness(None);
+        h.state_mut().ui.tool = Tool::Pen;
+        right_drag_by(&mut h, by, Modifiers::NONE);
+        assert!(h.state().ui.canvas_tool_menu.is_some(), "moved {by:?}: the Pen's menu opens");
+    }
+    // Alt+right drag resizes the brush: no picker after it.
+    let mut h = harness(None);
+    let size = h.state().session.tools.brush.size;
+    right_drag_by(&mut h, vec2(14.0, 0.0), Modifiers::ALT);
+    assert_ne!(h.state().session.tools.brush.size, size, "the drag resized the brush");
+    assert_eq!(h.state().ui.brush_picker, None, "a resize is no right-click");
+    // ... and the next plain right-click is one again.
+    right_drag_by(&mut h, vec2(8.0, 0.0), Modifiers::NONE);
+    assert!(h.state().ui.brush_picker.is_some());
+    // With right-erase on, a right drag erases and opens nothing.
+    let mut h = harness(Some("erase"));
+    right_drag_by(&mut h, vec2(14.0, 0.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.brush_picker, None);
+    assert_eq!(h.state().ui.canvas_tool_menu, None);
+    // Released off the canvas: no click.
+    let mut h = harness(None);
+    let rect = h.state().last_canvas_rect;
+    right_drag_by(&mut h, vec2(rect.width(), 0.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.brush_picker, None, "released outside the canvas");
+}
+
+/// The Hand tool pans with the left button, and the right one is its view menu, as in
+/// Photoshop: a right drag no longer pans and then opens the menu on release (#10183).
+#[test]
+fn a_right_drag_with_the_hand_opens_its_menu_without_panning() {
+    let mut h = harness(None);
+    h.state_mut().ui.tool = Tool::Hand;
+    h.state_mut().ui.views[0].zoom = 4.0;
+    h.run_steps(2);
+    let center = h.state().ui.views[0].center;
+    right_drag_by(&mut h, vec2(14.0, 7.0), Modifiers::NONE);
+    assert_eq!(h.state().ui.views[0].center, center, "a right drag does not pan");
+    let menu = h.state().ui.canvas_tool_menu.as_ref().map(|m| m.tool);
+    assert_eq!(menu, Some(Tool::Hand), "it opens the Hand's view menu");
+    // A left drag still pans, and opens no menu.
+    h.state_mut().ui.canvas_tool_menu = None;
+    drag(&mut h, PointerButton::Primary);
+    assert_ne!(h.state().ui.views[0].center, center, "a left drag pans");
+    assert!(h.state().ui.canvas_tool_menu.is_none());
+    // The middle button still pans with any tool.
+    h.state_mut().ui.tool = Tool::Brush;
+    let center = h.state().ui.views[0].center;
+    drag(&mut h, PointerButton::Middle);
+    assert_ne!(h.state().ui.views[0].center, center, "a middle drag pans");
+    assert!(strokes(&h).is_empty());
+}
+
+/// A right-click whose move past the click distance and release arrive in one frame (a slow
+/// frame): egui reports neither a click nor a drag stop, and the menu still opens (#10183).
+/// `split` puts the press in an earlier frame; otherwise press, move and release share one.
+/// The events go straight into the frame's input: `Harness::event` runs a frame per event.
+fn right_click_in_one_frame(h: &mut Harness<'static, PhotocraftApp>, from: Pos2, to: Pos2, split: bool) {
+    h.event(egui::Event::PointerMoved(from));
+    h.run_steps(1);
+    let press = egui::Event::PointerButton { pos: from, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE };
+    let release =
+        [egui::Event::PointerMoved(to), egui::Event::PointerButton { pos: to, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE }];
+    if split {
+        h.input_mut().events.push(press);
+        h.run_steps(1);
+        h.input_mut().events.extend(release);
+    } else {
+        h.input_mut().events.extend([press].into_iter().chain(release));
+    }
+    h.run_steps(2);
+}
+
+#[test]
+fn a_right_click_moved_and_released_in_one_frame_still_opens_its_menu() {
+    for split in [true, false] {
+        let mut h = harness(None);
+        let c = h.state().last_canvas_rect.center();
+        let at = c + vec2(14.0, 6.0);
+        right_click_in_one_frame(&mut h, c, at, split);
+        let picker = h.state().ui.brush_picker.map(|p| (p[0] - c.x).abs() < 0.5 && (p[1] - c.y).abs() < 0.5);
+        assert_eq!(picker, Some(true), "split {split}: the picker opens where the button went down");
+        assert!(strokes(&h).is_empty(), "and nothing paints");
+        // The canvas tool menu reads the same click.
+        let mut h = harness(None);
+        h.state_mut().ui.tool = Tool::Pen;
+        right_click_in_one_frame(&mut h, c, at, split);
+        assert!(h.state().ui.canvas_tool_menu.is_some(), "split {split}: the Pen's menu opens");
+        // Released outside the canvas: no click.
+        let mut h = harness(None);
+        let out = c + vec2(h.state().last_canvas_rect.width(), 0.0);
+        right_click_in_one_frame(&mut h, c, out, split);
+        assert_eq!(h.state().ui.brush_picker, None, "split {split}: released outside the canvas");
+        // Pressed outside the canvas, released over it: no click either.
+        let mut h = harness(None);
+        right_click_in_one_frame(&mut h, out, c, split);
+        assert_eq!(h.state().ui.brush_picker, None, "split {split}: pressed outside the canvas");
+    }
+    // A right-erase stroke that ends with a fast move and release opens nothing.
+    let mut h = harness(Some("erase"));
+    let c = h.state().last_canvas_rect.center();
+    h.event(egui::Event::PointerMoved(c));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: c, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    for i in 1..=4 {
+        h.event(egui::Event::PointerMoved(c + vec2(10.0 * i as f32, 0.0)));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerMoved(c + vec2(80.0, 0.0)));
+    h.event(egui::Event::PointerButton { pos: c + vec2(80.0, 0.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().ui.brush_picker, None);
+    assert_eq!(h.state().ui.canvas_tool_menu, None);
 }

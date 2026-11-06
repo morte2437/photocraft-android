@@ -40,8 +40,12 @@ impl<'a> Rd<'a> {
     fn u64(&mut self) -> Option<u64> {
         self.take(8).map(|b| u64::from_be_bytes(b.try_into().unwrap_or([0; 8])))
     }
+    /// Decode a bounded metadata filename without trusting its declared allocation size.
     fn unicode(&mut self) -> Option<String> {
         let n = self.u32()? as usize;
+        if n > 32_768 {
+            return None;
+        } // A file name is metadata, never an unbounded allocation.
         let raw = self.take(n.checked_mul(2)?)?;
         let units: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
         Some(String::from_utf16_lossy(&units).trim_end_matches('\0').to_string())
@@ -95,6 +99,12 @@ pub fn embedded_file_name(meta: &Metadata, uuid: &str) -> Option<String> {
     })
 }
 
+/// Borrow the selected item payload without copying it.
+fn item_data(item: &[u8]) -> Option<(String, String, &[u8])> {
+    let (uuid, name, start, len) = item_header(item)?;
+    Some((uuid, name, item.get(start..start.checked_add(len)?)?))
+}
+
 /// Every embedded (`liFD`) file in one linked-layer block's data.
 pub fn parse_linked_files(data: &[u8]) -> Vec<LinkedFile> {
     let mut out = Vec::new();
@@ -111,6 +121,34 @@ pub fn parse_linked_files(data: &[u8]) -> Vec<LinkedFile> {
 /// The embedded file for smart-object `uuid` among the document's preserved PSD global blocks.
 pub fn find_linked_file(meta: &Metadata, uuid: &str) -> Option<LinkedFile> {
     find_in_blocks(meta.psd_global_blocks.iter().map(|(_, k, d)| (k, d.as_slice())), uuid)
+}
+
+/// Borrow only the selected embedded payload, without copying other smart objects or reading disk.
+pub fn embedded_payload<'a>(meta: &'a Metadata, uuid: &str) -> Option<(String, &'a [u8])> {
+    embedded_payload_in_blocks(meta.psd_global_blocks.iter().map(|(_, key, data)| (key, data.as_slice())), uuid)
+}
+
+/// Borrow one selected payload from PSD global blocks without copying unrelated files.
+pub fn embedded_payload_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8])>, uuid: &str) -> Option<(String, &'a [u8])> {
+    if uuid.is_empty() {
+        return None;
+    }
+    for (key, data) in blocks {
+        if !matches!(key, b"lnk2" | b"lnk3" | b"lnkD") {
+            continue;
+        }
+        let mut r = Rd { d: data, p: 0 };
+        while let Some(len) = r.u64().and_then(|n| usize::try_from(n).ok()) {
+            let Some(item) = r.take(len) else { break };
+            if let Some((id, name, bytes)) = item_data(item)
+                && id == uuid
+            {
+                return Some((name, bytes));
+            }
+            r.p = r.p.checked_add(3)? & !3;
+        }
+    }
+    None
 }
 
 /// The embedded file for smart-object `uuid` among PSD global blocks given as (key, data).
@@ -595,5 +633,28 @@ mod tests {
         // A literal replacement character can itself be a valid UTF-8 identity.
         let valid_unicode = encode_linked_file(&LinkedFile { uuid: "\u{fffd}".into(), file_name: "unicode.psb".into(), bytes: vec![4; 2] });
         assert!(select_items(&valid_unicode, &|uuid, _| uuid == "\u{fffd}").unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod bounded_payload_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn selected_payload_is_borrowed_and_other_sources_are_not_copied() {
+        let a = LinkedFile { uuid: "a".into(), file_name: "Other.psb".into(), bytes: vec![1; 1024 * 1024] };
+        let b = LinkedFile { uuid: "b".into(), file_name: "Logo.ai".into(), bytes: b"%PDF-1.6".to_vec() };
+        let mut data = encode_linked_file(&a);
+        data.extend(encode_linked_file(&b));
+        let mut meta = Metadata::default();
+        meta.psd_global_blocks.push((*b"8BIM", *b"lnk2", Arc::new(data)));
+        let (name, bytes) = embedded_payload(&meta, "b").unwrap();
+        assert_eq!(name, "Logo.ai");
+        assert_eq!(bytes, b.bytes);
+        let original = meta.psd_global_blocks[0].2.as_slice();
+        assert!((original.as_ptr_range()).contains(&bytes.as_ptr()));
+        assert!(embedded_payload(&meta, "").is_none());
+        assert!(embedded_payload(&meta, "/dev/zero").is_none());
     }
 }

@@ -22,6 +22,10 @@ pub(crate) use paste_target;
 /// Pixels on the session clipboard, with where they came from (for Paste in Place).
 #[derive(Clone, Debug)]
 pub struct Clip {
+    /// Original SVG snapshot, when available. The raster mirror belongs to the same source.
+    pub svg: Option<std::sync::Arc<Vec<u8>>>,
+    /// Native colour indices for a multi-component clip, in channel order. Singletons are grayscale.
+    pub components: Option<Vec<usize>>,
     pub surface: Surface,
     pub bounds: Rect,
     /// The copied layer itself, when Copy took a whole layer that Paste should recreate rather
@@ -34,6 +38,17 @@ pub struct Clip {
     /// The document the pixels were copied from: Paste keeps them in place only there, and
     /// centres them in any other (#8945). None for an image from another app.
     pub source: Option<DocId>,
+    /// The artboard the pixels were copied from (its id and rect at the time), when they came
+    /// from one: Paste into another board of the same document keeps their place on the board
+    /// ([`board_shift`], #8788). None outside boards, across several, or for a copied board.
+    pub board: Option<(LayerId, Rect)>,
+}
+
+impl Clip {
+    /// Prepare bounded original SVG and its raster mirror before installing the clipboard.
+    pub fn from_svg(bytes: &[u8]) -> Result<Self> {
+        super::vector_clipboard::from_svg(bytes)
+    }
 }
 
 /// Photoshop's layer-based copy (CC 2018 on): with no selection, Copy takes the active layer
@@ -198,7 +213,7 @@ fn lift(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Result<Clip> {
     };
     let mut out = Surface::new(with_alpha);
     if area.is_empty() {
-        return Ok(Clip { surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None });
+        return Ok(Clip { svg: None, components: None, surface: out, bounds: Rect::EMPTY, layers: None, resolution: None, source: None, board: None });
     }
     // Only the selected area is read: converting the whole layer (a 24 MP Background gaining
     // alpha) cost about a second per Layer via Copy (#668).
@@ -220,7 +235,7 @@ fn lift(src: &Surface, sel: Option<&Surface>, canvas: Rect) -> Result<Clip> {
     out.put_tiles(shared);
     out.prune();
     let bounds = out.content_bounds();
-    Ok(Clip { surface: out, bounds, layers: None, resolution: None, source: None })
+    Ok(Clip { svg: None, components: None, surface: out, bounds, layers: None, resolution: None, source: None, board: None })
 }
 
 /// [`lift`] over one rectangle: `src`'s pixels with alpha (`n` channels), the selection
@@ -281,7 +296,7 @@ fn copy(s: &mut Session, merged: bool) -> Result<Value> {
             copy_linked_sources(&d.doc, copies)?;
         }
         match (d.doc.layer(id).and_then(Layer::surface).filter(|_| several.is_empty()), &layers) {
-            (Some(surf), _) => Clip { layers, ..lift(surf, d.doc.selection.as_ref(), canvas)? },
+            (Some(surf), _) => Clip { components: None, layers, ..lift(surf, d.doc.selection.as_ref(), canvas)? },
             // A group or fill layer has no pixels of its own: the clipboard pixels are what it
             // shows. Adjustment layers show nothing by themselves, so their clip spans the canvas
             // they apply to: Paste places them as a full-canvas layer, and the UI still mirrors
@@ -293,7 +308,7 @@ fn copy(s: &mut Session, merged: bool) -> Result<Value> {
                 }
                 let clip = lift(&merged_surface(&shown), None, canvas)?;
                 let bounds = if clip.bounds.is_empty() { canvas } else { clip.bounds };
-                Clip { layers, bounds, ..clip }
+                Clip { components: None, layers, bounds, ..clip }
             }
             (None, None) => return Err(EngineError::Other("the active layer has no pixels".into())),
         }
@@ -302,9 +317,95 @@ fn copy(s: &mut Session, merged: bool) -> Result<Value> {
         return Err(EngineError::Other("Could not copy: the selected area is empty".into()));
     }
     let b = clip.bounds;
-    let clip = Clip { resolution: Some(d.doc.resolution_dpi), source: Some(d.doc.id), ..clip };
+    let board = source_board(d, merged, b);
+    let clip = Clip { resolution: Some(d.doc.resolution_dpi), source: Some(d.doc.id), board, ..clip };
     s.clipboard = Some(clip);
     Ok(json!({"bounds": [b.x0, b.y0, b.width(), b.height()]}))
+}
+
+/// The artboard a Copy took its pixels from (#8788): the board the copied layers sit in (the
+/// layers Copy actually takes: every selected layer only when it copies them whole,
+/// [`multi_copy_ids`], else the active one), or for Copy Merged the board under the middle of the
+/// copied area. None outside boards, when the copied layers span several, or when a board itself
+/// was copied (a pasted board is placed as a board, not on another one).
+fn source_board(d: &crate::DocState, merged: bool, bounds: Rect) -> Option<(LayerId, Rect)> {
+    let board = if merged {
+        // The same middle a pasted layer is placed by, so a clip leaves and joins boards alike.
+        let (cx, cy) = crate::layer_place::centre(bounds);
+        d.doc.artboards().into_iter().rev().find(|(_, _, b)| b.rect.contains(cx, cy)).map(|(id, _, _)| id)?
+    } else {
+        let several = multi_copy_ids(d);
+        let ids = if several.is_empty() { vec![d.active_layer?] } else { several };
+        let mut boards = ids.iter().map(|id| d.doc.layer(*id).filter(|l| l.artboard().is_none()).and_then(|_| d.doc.artboard_of(*id)));
+        let first = boards.next()??;
+        if !boards.all(|b| b == Some(first)) {
+            return None;
+        }
+        first
+    };
+    Some((board, d.doc.layer(board)?.artboard()?.rect))
+}
+
+/// Paste into another artboard than the one the pixels were copied from (#8788): they keep
+/// their place on the board, moved by the offset between the two boards' origins, as a layer
+/// dragged between boards does. Copying a design from one board and pasting it with another
+/// board's layer selected puts it at the same spot there, instead of where it was on the first
+/// board (outside the second, which hid it) or in the middle of the view. Only within one
+/// document, and not for Paste Into / Outside (`"clampToCanvas": false`), which centre on the
+/// selection. `active` is the layer the paste lands beside; the board is its board. Returns the
+/// shift and that board, which the pasted layer then joins ([`join_board`]).
+pub(crate) fn board_shift(clip: &Clip, doc: &Document, active: Option<LayerId>, p: &Value, new_layer: bool) -> Option<(i32, i32, LayerId)> {
+    if p.get("clampToCanvas").and_then(Value::as_bool) == Some(false) || clip.source != Some(doc.id) {
+        return None;
+    }
+    let (from, src) = clip.board?;
+    let active = active?;
+    let to = doc.artboard_of(active)?;
+    if to == from {
+        return None;
+    }
+    // Pasted with a locked board itself selected, the layer goes above the board, not into it
+    // (`layer_place`'s rule for layers edited right after they are made), so it keeps its usual
+    // place instead of one on a board it isn't on. A layer inside a locked board is placed by its
+    // own rules and still lands on the board. A paste into the board's own mask (`new_layer`
+    // false) adds no layer and mask edits don't check position locks, so it always takes the
+    // board's shift.
+    let board = doc.layer(to)?;
+    if new_layer && active == to && !takes_pastes(board) {
+        return None;
+    }
+    let dst = board.artboard()?.rect;
+    // Boards more than the 32-bit coordinate range apart (#10538 review): the pixels can't be
+    // moved that far, so the paste keeps its usual placement (in place for Paste in Place)
+    // rather than wrapping around to an unrelated spot.
+    Some((dst.x0.checked_sub(src.x0)?, dst.y0.checked_sub(src.y0)?, to))
+}
+
+/// Does `board` take a pasted layer into it? Not with a lock that refuses editing it
+/// (`layer_place`'s rule for layers edited right after they are made).
+fn takes_pastes(board: &Layer) -> bool {
+    let k = board.locks;
+    !(k.all || k.pixels || k.transparency || k.position)
+}
+
+/// Puts pasted layer `id` on `board`, on top of its stack, when placement left it outside. A paste
+/// moved onto a board belongs to it even when its middle falls past a smaller board's edge; the
+/// board clips what lies beyond, as it clips anything on it (#10538 review). `clipped` is the
+/// copy's own clipping flag (the one it had before placement, which set it for the slot it left):
+/// on top of the board's stack it keeps it while a layer below can be its base, as a new layer
+/// does ([`crate::layer_place::insert_new`]), and drops it on an empty board.
+fn join_board(doc: &mut Document, id: LayerId, board: LayerId, clipped: bool) {
+    if doc.artboard_of(id) == Some(board) || !doc.layer(board).is_some_and(takes_pastes) {
+        return;
+    }
+    let Some(mut layer) = doc.remove(id) else { return };
+    match doc.layer_mut(board).and_then(Layer::children_mut) {
+        Some(children) => {
+            layer.clipped = clipped && !children.is_empty();
+            children.push(layer);
+        }
+        None => doc.layers.push(layer),
+    }
 }
 
 /// Copy the targeted layer mask (`"target":"mask"`, #2928) or smart-filter mask
@@ -349,7 +450,7 @@ fn copy_mask(s: &mut Session, filter: bool) -> Result<Value> {
     }
     let b = bounds;
     let (resolution, source) = (Some(d.doc.resolution_dpi), Some(d.doc.id));
-    s.clipboard = Some(Clip { surface, bounds: b, layers: None, resolution, source });
+    s.clipboard = Some(Clip { svg: None, components: None, surface, bounds: b, layers: None, resolution, source, board: None });
     Ok(json!({"bounds": [b.x0, b.y0, b.width(), b.height()], "target": if filter { "filterMask" } else { "mask" }}))
 }
 
@@ -358,6 +459,15 @@ fn clear_selected(doc: &mut Document, id: LayerId, background: [f32; 4]) -> Resu
     let canvas = doc.bounds();
     let area = sel.as_ref().map_or(canvas, |m| m.content_bounds().intersect(&canvas));
     clear_area(doc, id, area, sel.as_ref(), background)
+}
+
+/// Clear/Cut fill the selected mask samples with background gray, preserving layer pixels.
+pub(crate) fn clear_mask(doc: &mut Document, id: LayerId, background: [f32; 4], params: &Value) -> Result<()> {
+    let sel = doc.selection.clone();
+    let canvas = doc.bounds();
+    let area = sel.as_ref().map_or(canvas, |m| m.content_bounds().intersect(&canvas));
+    let mask = crate::commands::paint_surface(doc, id, params)?;
+    crate::fill_cmds::fill_color(mask, area, [background[0], background[1], background[2], 1.0], sel.as_ref())
 }
 
 /// Cut / Clear on a layer: makes the selected pixels transparent. The Background can't hold
@@ -378,24 +488,43 @@ pub(crate) fn clear_area(doc: &mut Document, id: LayerId, area: Rect, sel: Optio
 /// Paste as a new layer (or into the targeted mask or channel: [`paste_to_target`]). `in_place` keeps the original position; otherwise the pixels are centred
 /// on `center` (the view centre from the UI) or the canvas, unless they already overlap the canvas.
 fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
+    let mode = super::vector_clipboard::mode(p)?;
+    if let Some(mode) = mode {
+        super::vector_clipboard::validate(s, p, in_place)?;
+        if mode != super::vector_clipboard::Mode::Pixels || s.clipboard.as_ref().is_some_and(|clip| clip.svg.is_some()) {
+            return super::vector_clipboard::paste(s, p, mode);
+        }
+        super::vector_clipboard::layer_target(s)?;
+    }
     crate::allocation::checkpoint("pasting pixels")?;
     let clip = s.clipboard.clone().ok_or(EngineError::Other("the clipboard is empty".into()))?;
     let Some(d) = s.active() else {
         // Nothing open to paste into: the clipboard becomes a document of its own (#368).
         return new_from_clipboard(s);
     };
-    if crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels {
+    if mode.is_none() && crate::channel_cmds::target_of(p) != crate::channel_cmds::Target::Pixels {
         return paste_to_target(s, p, in_place, None, "Paste");
     }
+    if mode.is_none()
+        && let Some(colors) = crate::color_channels::target(s, p)?.filter(|c| c.len() > 1 || p.get("target").is_some() || clip.components.is_some())
+    {
+        return crate::channel_clip::paste_colors(s, p, colors, in_place, None, "Paste");
+    }
     // A targeted colour channel takes the paste instead of a new layer (#2307).
-    if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
+    if mode.is_none()
+        && let Some(k) = crate::channel_clip::paste_color_target(s, p)
+    {
         return crate::channel_clip::paste(s, p, k, in_place, None, "Paste");
     }
     let canvas = d.doc.bounds();
     let fmt = d.doc.pixel_format();
-    let (dx, dy) = paste_offset(&clip, d.doc.id, canvas, p, in_place);
-    if let Some(layers) = clip.layers.as_deref().filter(|_| crate::layer_copy_cmds::layered(d.doc.mode)) {
-        return paste_layers(s, layers, dx, dy);
+    let shift = board_shift(&clip, &d.doc, d.active_layer, p, true);
+    let board = shift.map(|(_, _, b)| b);
+    let (dx, dy) = shift.map(|(dx, dy, _)| (dx, dy)).unwrap_or_else(|| paste_offset(&clip, d.doc.id, canvas, p, in_place));
+    if mode.is_none()
+        && let Some(layers) = clip.layers.as_deref().filter(|_| crate::layer_copy_cmds::layered(d.doc.mode))
+    {
+        return paste_layers(s, layers, dx, dy, board);
     }
     let moved = shifted(&clip.surface, dx, dy);
     let target = PixelFormat::new(fmt.mode, fmt.sample, true);
@@ -404,6 +533,10 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
         let mut l = Layer::raster(doc.next_layer_name("Layer"), target);
         *crate::pixels_mut(&mut l)? = surf;
         let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::AutoEditable);
+        if let Some(b) = board {
+            // Pixels pasted as a new layer start unclipped.
+            join_board(doc, id, b, false);
+        }
         *active = Some(id);
         doc.selection = None;
         Ok(id)
@@ -414,8 +547,9 @@ fn paste(s: &mut Session, p: &Value, in_place: bool) -> Result<Value> {
 
 /// Paste of a whole copied layer ([`whole_layer`]): fresh copies (a group's children too),
 /// converted to the document's colour, moved as the pixels would be, above the active layer. A pasted smart object gets its
-/// own contents, independent of the copied one (as across documents).
-fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32) -> Result<Value> {
+/// own contents, independent of the copied one (as across documents). Moved onto `board` (see
+/// [`board_shift`]), they join it.
+fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32, board: Option<LayerId>) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let mut copies = layers.clone();
     for l in &mut copies.layers {
@@ -447,9 +581,19 @@ fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32) -> Result<
         doc.metadata.psd_global_blocks.extend(linked);
         // The first pasted layer goes where a new layer would; the rest stack above it.
         let mut place = crate::layer_place::Place::AutoEditable;
+        let mut pasted = Vec::with_capacity(copies.layers.len());
         for l in copies.layers {
-            *active = Some(crate::layer_place::insert_new(doc, *active, l, place));
+            let clipped = l.clipped;
+            let id = crate::layer_place::insert_new(doc, *active, l, place);
+            pasted.push((id, clipped));
+            *active = Some(id);
             place = crate::layer_place::Place::Above;
+        }
+        // Bottom to top, so they keep their order on the board.
+        if let Some(b) = board {
+            for (id, clipped) in pasted {
+                join_board(doc, id, b, clipped);
+            }
         }
         crate::cmd::layer_multi_cmds::check_group_depth(doc, "Paste")?;
         doc.selection = None;
@@ -497,8 +641,8 @@ pub(crate) fn shifted(surface: &Surface, dx: i32, dy: i32) -> Surface {
 }
 
 /// Paste into the targeted layer mask, alpha channel or Quick Mask (`"target"`) instead of as a
-/// new layer (Photoshop, #1035): the pasted pixels' luminosity, placed as a paste places them,
-/// over what was there. Their transparency, and `limit` (Paste Into / Outside), let it show
+/// new layer (Photoshop, #1035): the pasted pixels' luminosity, placed as a paste places them
+/// (into a mask on another artboard too), over what was there. Their transparency, and `limit` (Paste Into / Outside), let it show
 /// through. One history step.
 pub(crate) fn paste_to_target(s: &mut Session, p: &Value, in_place: bool, limit: Option<&Surface>, label: &str) -> Result<Value> {
     crate::allocation::checkpoint("pasting pixels")?;
@@ -506,7 +650,13 @@ pub(crate) fn paste_to_target(s: &mut Session, p: &Value, in_place: bool, limit:
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let canvas = d.doc.bounds();
     let layer = d.active_layer;
-    let (dx, dy) = paste_offset(&clip, d.doc.id, canvas, p, in_place);
+    // Into a layer's mask on another board of this document, the pixels keep their place on the
+    // board, as a layer paste beside the same layer does ([`board_shift`]). An alpha channel or
+    // the Quick Mask covers the whole document, on no board, so the active layer's board doesn't
+    // move what goes into it.
+    let shift = if crate::channel_cmds::is_channel_target(p) { None } else { board_shift(&clip, &d.doc, layer, p, false) };
+    let shift = shift.map(|(dx, dy, _)| (dx, dy));
+    let (dx, dy) = shift.unwrap_or_else(|| paste_offset(&clip, d.doc.id, canvas, p, in_place));
     let src = shifted(&clip.surface, dx, dy);
     let area = src.content_bounds().intersect(&canvas);
     s.edit(label, |doc, _| {
@@ -573,6 +723,8 @@ fn layer_via(s: &mut Session, cut: bool) -> Result<Value> {
             dup.name = doc.copy_name(&src.name);
             dup.locks = Default::default();
             let nid = doc.insert_above(Some(id), dup);
+            // A lone copy joins its original's link group, as in the reference application (#11217).
+            crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
             *active = Some(nid);
             Ok(nid)
         })?;
@@ -1016,31 +1168,61 @@ pub fn specs() -> Vec<CommandSpec> {
         };
     }
     vec![
-        spec!("edit.cut", "Cut", &["Edit"], Some("Cmd+X"), "{} (a targeted colour channel cuts that channel only)", has_pixels, |s, p| {
-            // Refuse a locked layer before copying, so a refused Cut leaves the clipboard alone.
-            let id = active_id(s)?;
-            crate::commands::check_pixels_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
-            // A targeted colour channel cuts that channel only (#2698).
-            if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
-                return crate::channel_clip::cut(s, id, k);
+        spec!(
+            "edit.cut",
+            "Cut",
+            &["Edit"],
+            Some("Cmd+X"),
+            r##"{"target":"mask|filterMask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active (colour targets only)} (a targeted mask or colour channel cuts that channel only; a colour set cuts its selected components)"##,
+            has_pixels,
+            |s, p| {
+                if crate::commands::is_mask_target(p) {
+                    let id = active_id(s)?;
+                    crate::commands::check_all_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+                    let result = copy_mask(s, crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::FilterMask)?;
+                    let bg = s.tools.background;
+                    s.edit("Cut Mask", |doc, _| clear_mask(doc, id, bg, p))?;
+                    return Ok(result);
+                }
+                // Refuse a locked layer before copying, so a refused Cut leaves the clipboard alone.
+                let colors = crate::color_channels::target(s, p)?.filter(|c| c.len() > 1 || p.get("target").is_some() || p.get("layer").is_some());
+                // Composite Cut retains Copy's active-layer semantics. A native colour target uses
+                // the same resolved destination for both the copied planes and the cleared samples.
+                let id = if colors.is_some() { crate::commands::layer_param(s, p)? } else { active_id(s)? };
+                crate::commands::check_pixels_unlocked(&s.active().ok_or(EngineError::NoDocument)?.doc, id)?;
+                if let Some(colors) = colors {
+                    let result = crate::channel_clip::copy_colors(s, p, colors)?;
+                    let bg = s.tools.background;
+                    s.edit("Cut Pixels", |doc, _| {
+                        for k in colors.indices() {
+                            crate::channel_cmds::clear_color_channel(doc, id, k, bg)?;
+                        }
+                        Ok(())
+                    })?;
+                    return Ok(result);
+                }
+                // A targeted colour channel cuts that channel only (#2698).
+                if let Some(k) = crate::channel_clip::paste_color_target(s, p) {
+                    return crate::channel_clip::cut(s, id, k);
+                }
+                let r = copy(s, false)?;
+                let bg = s.tools.background;
+                s.edit("Cut Pixels", |doc, _| clear_selected(doc, id, bg))?;
+                Ok(r)
             }
-            let r = copy(s, false)?;
-            let bg = s.tools.background;
-            s.edit("Cut Pixels", |doc, _| clear_selected(doc, id, bg))?;
-            Ok(r)
-        }),
+        ),
         spec!(
             "edit.copy",
             "Copy",
             &["Edit"],
             Some("Cmd+C"),
-            r##"{"target":"mask|filterMask"? = the targeted mask, copied as grayscale (#2928)} (a targeted colour or alpha channel copies that channel, as grayscale)"##,
+            r##"{"target":"mask|filterMask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active (colour targets only)} (a targeted mask, colour or alpha channel copies that channel as grayscale; a colour set copies its selected components)"##,
             can_copy,
             |s, p| {
                 if crate::commands::is_mask_target(p) {
                     return copy_mask(s, crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::FilterMask);
                 }
-                match crate::channel_clip::copy(s)? {
+                match crate::channel_clip::copy(s, p)? {
                     Some(r) => Ok(r),
                     None => copy(s, false),
                 }
@@ -1053,7 +1235,7 @@ pub fn specs() -> Vec<CommandSpec> {
             &["Edit"],
             Some("Cmd+V"),
             concat!(
-                r#"{"center":[x,y]? (view centre; default keeps the position when it overlaps the canvas),"clampToCanvas":bool=true (keep the paste on the canvas, or at its top-left when larger),"#,
+                r#"{"as":"pixels|path|shape"? (explicit mode: active layered document/composite only; SVG canvas is centred, Path/Shape require retained vector source),"center":[x,y]? (finite explicit coordinates within ±10 million; default keeps raster position when it overlaps the canvas),"clampToCanvas":bool=true (legacy mode only; keep the paste on the canvas, or at its top-left when larger),"#,
                 paste_target!(),
                 "} (with no document open: a new document from the clipboard)"
             ),

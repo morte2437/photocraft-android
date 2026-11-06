@@ -41,7 +41,7 @@
 
 
 
-# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# About ▸ Contributors / Models (credits)
 
 # Swatches panel
 # Layer Style > Blending Options (Advanced Blending)
@@ -1850,6 +1850,7 @@
 	Paints from the document's opening state	Slika iz stanja dokumenta pri otvaranju
 	Paints from the History panel's source state	Slika iz izvornog stanja panela Istorija
 	Sets the source for the history brush	Postavlja izvor za četkicu istorije
+	The History Brush source was deleted: set a new source in the History panel	Izvor četkice istorije je izbrisan: postavite novi izvor u panelu Istorija
 	Path Selection Tool	Alatka za selekciju putanje
 	Direct Selection Tool	Alatka za direktnu selekciju
 	Add Anchor Point Tool	Alatka za dodavanje sidrišne tačke
@@ -1913,6 +1914,7 @@
 	Soften	Omekšaj
 	Source	Izvor
 	Source: set	Izvor: postavljen
+	Source: {name}	Izvor: {name}
 	Sponge Tool	Alatka sunđer
 	Spot Healing Brush Tool	Alatka četkica za tačkastu popravku
 	Spread	Raširenost
@@ -3860,6 +3862,8 @@ layerLabel	No Color	Bez boje
 	Color Table	Tabela boja
 	Conditional Mode Change	Uslovna promena režima
 	Background (Default)	Pozadina (podrazumevano)
+	Background (default)	Pozadina (podrazumevano)
+	Transparent (default)	Providno (podrazumevano)
 	Content-Aware Fill	Popuna prema sadržaju
 	Convert to Linked	Pretvori u povezani
 	Convert to Profile	Pretvori u profil
@@ -4292,6 +4296,9 @@ shape	Appearance	Izgled
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} korak još nema ekvivalent u PhotoCraftu|{n} koraka još nemaju ekvivalent u PhotoCraftu|{n} koraka još nema ekvivalent u PhotoCraftu
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Sačuvana je {n} radnja u {file}|Sačuvane su {n} radnje u {file}|Sačuvano je {n} radnji u {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Izostavljen je {n} korak bez ekvivalenta u Photoshopu|Izostavljena su {n} koraka bez ekvivalenta u Photoshopu|Izostavljeno je {n} koraka bez ekvivalenta u Photoshopu
+@plural	{n} action file loaded|{n} action files loaded	Učitana je {n} datoteka radnji|Učitane su {n} datoteke radnji|Učitano je {n} datoteka radnji
+	{set} from {file} replaced the one from {earlier}	Skup {set} iz {file} zamenio je skup iz {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Nije moguće učitati {n} datoteku: {errors}|Nije moguće učitati {n} datoteke: {errors}|Nije moguće učitati {n} datoteka: {errors}
 	Insert Stop…	Umetni zaustavljanje…
 	Save Set…	Sačuvaj skup…
 	Message:	Poruka:
@@ -4331,6 +4338,7 @@ shape	Appearance	Izgled
 	Kept {name}: written by another application	{name} je zadržan: upisala ga je druga aplikacija
 	Shadow Tint	Nijansa senki
 	Redrawing	Ponovno iscrtavanje
+	Memory usage percent	Проценат употребе меморије
 	Show Favorite Fonts	Прикажи омиљене фонтове
 	No favorite fonts yet: click the star beside a font to add it.	Још нема омиљених фонтова: кликните на звездицу поред фонта да бисте га додали.
 	Favorite fonts	Омиљени фонтови
@@ -4393,6 +4401,7 @@ shape	Appearance	Izgled
 	Chisel Soft	Meko klesanje
 	Open color-less EXR as ACEScg	Otvori EXR bez podatka o bojama kao ACEScg
 	Do not append "copy" to filename when saving a copy	Ne dodaji „copy“ u ime fajla pri čuvanju kopije
+	Save Full-Size Composite in .pcraft Files	Čuvaj složenu sliku u punoj veličini u .pcraft fajlovima
 	Show home recent files	Prikaži nedavne datoteke na početnom ekranu
 	Edit Selected Guides	Uredi izabrane vodilje
 	Clear Selected Guides	Ukloni izabrane vodilje
@@ -4469,6 +4478,7 @@ shape	Appearance	Izgled
 	This document's layers: {needed} of {budget} for layers	Slojevi ovog dokumenta: {needed} od {budget} za slojeve
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Slojevima ovog dokumenta treba {needed}, a smeju da zauzmu {budget}: ceo dokument se ponovo iscrtava na CPU-u
 	GPU Memory (MB, 0 = Automatic)	GPU memorija (MB, 0 = Automatski)
+	Scratch Size Limit (MB, 0 = No Limit)	Ograničenje veličine radnog diska (MB, 0 = bez ograničenja)
 	{path}: the path is not valid Unicode; save under another name.	{path}: putanja nije ispravan Unicode; sačuvajte pod drugim imenom.
 	{name} was changed by another app after it was opened or saved here.	Datoteku {name} je izmenila druga aplikacija nakon što je ovde otvorena ili sačuvana.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Zameni je ovim dokumentom ili otkaži i koristi Datoteka › Sačuvaj kao da zadržiš obe.
@@ -4504,6 +4514,18 @@ shape	Appearance	Izgled
 	There is no color table to save.	Нема табеле боја за чување.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Сачувана је {n} боја у {file}|Сачуване су {n} боје у {file}|Сачувано је {n} боја у {file}
 	GPU adapter	GPU adapter
+smartSvg	Choose executable…	Izaberi izvršnu datoteku…
+smartSvg	Choose the application used to edit this SVG:	Izaberite aplikaciju za uređivanje ovog SVG-a:
+smartSvg	Edit SVG Smart Object	Uredi SVG pametni objekat
+smartSvg	Other application	Druga aplikacija
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (interni uređivač)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	SVG uređivač je otvoren. Sačuvajte SVG da biste ažurirali ovaj pametni objekat.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Sačuvajte u otvorenu SVG datoteku. Svaka sačuvana izmena postaje jedan korak opoziva u PhotoCraft-u.
+smartSvg	Stop syncing this Smart Object	Zaustavi sinhronizaciju ovog pametnog objekta
+smartSvg	Updates wait while another document or an editing dialog is active.	Ažuriranja čekaju dok je aktivan drugi dokument ili dijalog za uređivanje.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	AI/PDF/EPS садржај ће се уређивати као SVG. Чување замењује уграђени извор; својства специфична за формат могу се променити.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Uvezi stilove…
 	Export Selected Styles…	Izvezi izabrane stilove…
 	Export Styles…	Izvezi stilove…
@@ -4524,17 +4546,8 @@ shape	Appearance	Izgled
 	Not rendered: this adjustment ({key}) is kept as imported.	Није приказано: ово прилагођавање ({key}) је задржано онако како је увезено.
 	Print preview image	Print preview image
 	Check for Updates…	Proveri ažuriranja…
-	PhotoCraft Updates	Ažuriranja za PhotoCraft
-	Checking for updates…	Provera ažuriranja…
 	Open the release page to choose an installer for your system.	Otvorite stranicu izdanja da biste izabrali instalacioni program za svoj sistem.
-	Open Download Page	Otvori stranicu za preuzimanje
-	PhotoCraft is up to date.	PhotoCraft je ažuran.
-	Could not check for updates.	Nije moguće proveriti ažuriranja.
-	Updates have not been checked yet.	Ažuriranja još nisu proverena.
-	Check Again	Proveri ponovo
 	Automatically Check for Updates	Automatski proveravaj ažuriranja
-	Installed version: {version}	Instalirana verzija: {version}
-	PhotoCraft {version} is available.	Dostupan je PhotoCraft {version}.
 	Hue Cube	Kocka nijanse
 	Brightness Cube	Kocka osvetljenosti
 	Color Wheel	Točak boja
@@ -4565,6 +4578,9 @@ shape	Appearance	Izgled
 	Font size presets	Unapred podešene veličine fonta
 	Leading presets	Unapred podešeni proredi
 	Tracking presets	Unapred podešeni razmaci slova
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Neispravan numerički unos. Potreban je ceo broj između {min}% i {max}%. Umetnuta je prethodna vrednost.
 	Color Aware	Prema boji
 	Decontaminate Colors	Dekontaminiraj boje
 	Edge Detection	Detekcija ivice
@@ -4583,3 +4599,47 @@ shape	Appearance	Izgled
 	Select and Mask was closed: another layer was selected	Izaberi i maskiraj je zatvoren: izabran je drugi sloj
 	Select Layer Under Cursor	Izaberi sloj ispod kursora
 	Drag to move the selected path	Prevucite da pomerite izabranu putanju
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Recently Used Colors	Nedavno korišćene boje
+	Stop Color	Boja tačke
+	Shapes can't use patterns yet	Oblici još ne mogu da koriste šare
+	Edit Brush…	Uredi četkicu…
+
+# Action Stop message (#8386)
+	Message	Poruka
+# Playback Options (#5212)
+	Playback Options…	Opcije reprodukcije…
+	Playback Options	Opcije reprodukcije
+	Accelerated	Ubrzano
+	Step by Step	Korak po korak
+	Pause For:	Pauza od:
+	Pause For	Pauza od
+	seconds	sekundi
+	Create a single history state	Napravi jedno stanje istorije
+	Generator enabled	Generator je omogućen
+	This Layer:	Ovaj sloj:
+	Move Up	Pomeri nagore
+	Move Down	Pomeri nadole
+	On your computer	На вашем рачунару
+	New file	Novi fajl
+	Learn	Učenje
+	Website	Veb-sajt
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Оквир подржава афине трансформације; за перспективне трансформације изаберите његову слику
+	A frame supports affine transforms; select its image to warp it	Оквир подржава афине трансформације; за изобличавање изаберите његову слику
+	Convert to Frame…	Претвори у оквир…
+	Create a new custom frame	Направи нови прилагођени оквир
+	Create a new polygonal frame	Направи нови многоугаони оквир
+	Create a new triangular frame	Направи нови троугаони оквир
+	Fit Content to Frame	Прилагоди садржај оквиру
+	Fit Frame to Content	Прилагоди оквир садржају
+	Frame coordinates must be finite and within 600000 pixels	Координате оквира морају бити коначне и унутар 600000 пиксела
+	Import Image…	Увези слику…
+	Invalid frame transform	Неважећа трансформација оквира
+	Invalid nested file drop	Неважеће угнежђено испуштање датотеке
+	New Frame	Нови оквир
+	Replace Image…	Замени слику…
+	The frame is locked	Оквир је закључан
+	The frame is unavailable	Оквир није доступан

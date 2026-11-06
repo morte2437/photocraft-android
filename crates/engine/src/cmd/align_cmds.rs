@@ -31,7 +31,7 @@ use photocraft_raster::{Surface, to_rgba};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
-use crate::photo_cmds::{NO_DETAIL, plane_matrix, register, register_direct, seam_blend, seam_order, warp_placed};
+use crate::photo_cmds::{BlendOptions, NO_DETAIL, plane_matrix, register, register_direct, seam_blend, seam_order, warp_placed};
 use crate::{EngineError, Result, Session};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -264,7 +264,8 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
         let order = seam_order(&surfs, 0);
         // Seamless Tones and Colors also evens out exposure and colour between the layers (gain
         // compensation over their overlaps), as in Photomerge.
-        let b = seam_blend(&surfs, area, &order, seamless, seamless, None);
+        let opt = BlendOptions { seamless, gains: seamless, geometry: None, budget: None };
+        let b = seam_blend(surfs, area, &order, opt, None)?;
         let weights: Vec<Vec<f32>> = b.layers.iter().map(|(_, m)| m.read_region(area)).collect();
         let blended = seamless.then(|| b.composite.read_region(area));
         (weights, blended)

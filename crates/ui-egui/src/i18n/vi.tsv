@@ -2726,6 +2726,7 @@ shape	Appearance	Diện mạo
 	Smart Filters	Các bộ lọc thông minh
 	Soft	Mềm
 	Source: set	Nguồn: bộ
+	Source: {name}	Nguồn: {name}
 	Square, 12 x 12	Vuông, 12 x 12
 	Square, 5 x 5	Vuông, 5 x 5
 	Studio (Dark)	Studio (Tối)
@@ -3725,6 +3726,9 @@ curves	Smooth	Làm mượt
 @plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} bước chưa có chức năng tương ứng trong PhotoCraft
 @plural	Saved {n} action to {file}|Saved {n} actions to {file}	Đã lưu {n} hành động vào {file}
 @plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	Đã bỏ qua {n} bước không có chức năng tương ứng trong Photoshop
+@plural	{n} action file loaded|{n} action files loaded	Đã nạp {n} tệp hành động
+	{set} from {file} replaced the one from {earlier}	Bộ {set} từ {file} đã thay thế bộ từ {earlier}
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	Không thể nạp {n} tệp: {errors}
 	File Naming	Đặt tên tệp
 	Starting serial	Số thứ tự bắt đầu
 	Insert Stop…	Chèn điểm dừng…
@@ -3741,6 +3745,8 @@ curves	Smooth	Làm mượt
 	Clear History	Xóa lịch sử
 	History Options…	Tùy chọn lịch sử…
 	Background (Default)	Nền (mặc định)
+	Background (default)	Nền (mặc định)
+	Transparent (default)	Trong suốt (mặc định)
 	Allow Non-Linear History	Cho phép lịch sử không tuyến tính
 	Make Layer Visibility Changes Undoable	Cho phép hoàn tác thay đổi hiển thị lớp
 	Presentation	Trình bày
@@ -3755,6 +3761,7 @@ curves	Smooth	Làm mượt
 	Sent to {printer}	Đã gửi tới {printer}
 	set in Print Settings…	đặt trong thiết lập in…
 	ICO is limited to 256 × 256 pixels	ICO giới hạn ở 256 × 256 pixel
+	Memory usage percent	Tỷ lệ sử dụng bộ nhớ
 	Show Favorite Fonts	Hiển thị phông chữ yêu thích
 	No favorite fonts yet: click the star beside a font to add it.	Chưa có phông chữ yêu thích: nhấp vào ngôi sao bên cạnh phông chữ để thêm.
 	Favorite fonts	Phông chữ yêu thích
@@ -3794,19 +3801,11 @@ curves	Smooth	Làm mượt
 	Kept {name}: written by another application	Đã giữ {name}: do ứng dụng khác ghi
 	Shadow Tint	Sắc độ bóng tối
 	Check for Updates…	Kiểm tra bản cập nhật…
-	PhotoCraft Updates	Bản cập nhật PhotoCraft
-	Checking for updates…	Đang kiểm tra bản cập nhật…
 	Open the release page to choose an installer for your system.	Mở trang phát hành để chọn bộ cài đặt cho hệ thống của bạn.
-	Open Download Page	Mở trang tải xuống
-	PhotoCraft is up to date.	PhotoCraft đã được cập nhật.
-	Could not check for updates.	Không thể kiểm tra bản cập nhật.
-	Updates have not been checked yet.	Chưa kiểm tra bản cập nhật.
-	Check Again	Kiểm tra lại
 	Automatically Check for Updates	Tự động kiểm tra bản cập nhật
-	Installed version: {version}	Phiên bản đã cài: {version}
-	PhotoCraft {version} is available.	PhotoCraft {version} đã có sẵn.
 	Paints from the History panel's source state	Vẽ từ trạng thái nguồn của bảng Lịch sử
 	Sets the source for the history brush	Đặt nguồn cho cọ lịch sử
+	The History Brush source was deleted: set a new source in the History panel	Nguồn của cọ lịch sử đã bị xóa: đặt nguồn mới trong bảng Lịch sử
 	Highlight Mode	Chế độ vùng sáng
 	Highlight Color	Màu vùng sáng
 	Highlight Opacity	Độ mờ vùng sáng
@@ -3826,6 +3825,7 @@ curves	Smooth	Làm mượt
 	Chisel Soft	Đục mềm
 	Open color-less EXR as ACEScg	Mở EXR không khai báo màu sắc dưới dạng ACEScg
 	Do not append "copy" to filename when saving a copy	Không thêm "copy" vào tên tệp khi lưu bản sao
+	Save Full-Size Composite in .pcraft Files	Lưu ảnh tổng hợp kích thước đầy đủ trong tệp .pcraft
 	Edit Selected Guides	Sửa đường căn đã chọn
 	Clear Selected Guides	Xóa đường căn đã chọn
 	Bicubic Automatic	Bicubic tự động
@@ -3892,6 +3892,7 @@ curves	Smooth	Làm mượt
 	{shortcut} is reserved by the system and can't be assigned.	{shortcut} được hệ thống dành riêng và không thể gán.
 	Low-Latency Drawing (vsync off, applies at next launch)	Vẽ độ trễ thấp (tắt vsync, áp dụng ở lần khởi động sau)
 	Reference point location	Vị trí điểm tham chiếu
+	Toggle reference point	Bật/tắt điểm tham chiếu
 	Free Transform is still being applied; try again when it has finished.	Biến đổi tự do vẫn đang được áp dụng; hãy thử lại khi hoàn tất.
 	The transform couldn't be applied.	Không thể áp dụng phép biến đổi.
 	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Các lớp cần {needed} bộ nhớ GPU; ngân sách chỉ dành cho chúng {budget}.
@@ -3903,6 +3904,7 @@ curves	Smooth	Làm mượt
 	This document's layers: {needed} of {budget} for layers	Các lớp của tài liệu này: {needed} trên {budget} dành cho lớp
 	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Các lớp của tài liệu này cần {needed} nhưng chỉ được dùng {budget}: vẽ lại toàn bộ tài liệu dùng CPU
 	GPU Memory (MB, 0 = Automatic)	Bộ nhớ GPU (MB, 0 = Tự động)
+	Scratch Size Limit (MB, 0 = No Limit)	Giới hạn dung lượng đĩa tạm (MB, 0 = Không giới hạn)
 	{path}: the path is not valid Unicode; save under another name.	{path}: đường dẫn không phải Unicode hợp lệ; hãy lưu với tên khác.
 	Replace	Thay thế
 	{name} was changed by another app after it was opened or saved here.	{name} đã bị một ứng dụng khác thay đổi sau khi được mở hoặc lưu ở đây.
@@ -3940,6 +3942,18 @@ curves	Smooth	Làm mượt
 	There is no color table to save.	Không có bảng màu nào để lưu.
 @plural	Saved {n} color to {file}|Saved {n} colors to {file}	Đã lưu {n} màu vào {file}
 	GPU adapter	Bộ điều hợp GPU
+smartSvg	Choose executable…	Chọn tệp thực thi…
+smartSvg	Choose the application used to edit this SVG:	Chọn ứng dụng dùng để chỉnh sửa SVG này:
+smartSvg	Edit SVG Smart Object	Chỉnh sửa Đối tượng thông minh SVG
+smartSvg	Other application	Ứng dụng khác
+smartSvg	PhotoCraft (internal editor)	PhotoCraft (trình chỉnh sửa nội bộ)
+smartSvg	SVG editor opened. Save the SVG to update this Smart Object.	Đã mở trình chỉnh sửa SVG. Lưu SVG để cập nhật Đối tượng thông minh này.
+smartSvg	Save to the opened SVG file. Each saved change becomes one undo step in PhotoCraft.	Lưu vào tệp SVG đã mở. Mỗi lần lưu thay đổi tạo một bước hoàn tác trong PhotoCraft.
+smartSvg	Stop syncing this Smart Object	Dừng đồng bộ Đối tượng thông minh này
+smartSvg	Updates wait while another document or an editing dialog is active.	Các cập nhật sẽ chờ khi tài liệu khác hoặc hộp thoại chỉnh sửa đang hoạt động.
+smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded source; format-specific features may change.	Nội dung AI/PDF/EPS sẽ được chỉnh sửa dưới dạng SVG. Lưu sẽ thay thế nguồn nhúng; các tính năng riêng của định dạng có thể thay đổi.
+
+# Styles panel: Import / Export Styles (.asl)
 	Import Styles…	Nhập kiểu…
 	Export Selected Styles…	Xuất các kiểu đã chọn…
 	Export Styles…	Xuất kiểu…
@@ -3992,6 +4006,9 @@ curves	Smooth	Làm mượt
 	Font size presets	Cỡ chữ đặt sẵn
 	Leading presets	Giãn dòng đặt sẵn
 	Tracking presets	Khoảng cách chữ đặt sẵn
+
+	The GPU compositor is still being prepared	The GPU compositor is still being prepared
+	Invalid numeric entry. An integer between {min}% and {max}% is required. Previous value was inserted.	Giá trị số không hợp lệ. Cần một số nguyên từ {min}% đến {max}%. Đã chèn giá trị trước đó.
 	Clear Selection	Xóa vùng chọn
 	Color Aware	Nhận biết màu
 	Decontaminate Colors	Khử nhiễm màu
@@ -4010,3 +4027,50 @@ curves	Smooth	Làm mượt
 	Select and Mask was closed: its document is no longer the active one	Đã đóng Chọn và Mặt nạ: tài liệu của nó không còn là tài liệu đang hoạt động
 	Select and Mask was closed: another layer was selected	Đã đóng Chọn và Mặt nạ: một lớp khác đã được chọn
 	Select Layer Under Cursor	Chọn lớp dưới con trỏ
+
+# Shape Fill/Stroke popover and colour swatches opening the Color Picker
+	Color Picker	Bộ chọn màu
+	Recently Used Colors	Màu dùng gần đây
+	Stop Color	Màu điểm dừng
+	Shapes can't use patterns yet	Hình chưa thể dùng mẫu tô
+	Edit Brush…	Chỉnh sửa cọ…
+
+# Action Stop message (#8386)
+	Message	Thông báo
+# Playback Options (#5212)
+	Playback Options…	Tùy chọn phát…
+	Playback Options	Tùy chọn phát
+	Accelerated	Tăng tốc
+	Step by Step	Từng bước
+	Pause For:	Tạm dừng trong:
+	Pause For	Tạm dừng trong
+	seconds	giây
+	Create a single history state	Tạo một trạng thái lịch sử duy nhất
+	Generator enabled	Đã bật bộ tạo
+	Move Up	Di chuyển lên
+	Move Down	Di chuyển xuống
+	Grid view	Chế độ xem lưới
+	List view	Chế độ xem danh sách
+	On your computer	Trên máy tính của bạn
+	New file	Tệp mới
+	Learn	Học hỏi
+	No recent files	Không có tệp gần đây
+	Website	Trang web
+
+# Frame Tool and other branch translations.
+	A frame supports affine transforms; select its image for perspective transforms	Khung hỗ trợ các phép biến đổi affine; chọn ảnh trong khung để biến đổi phối cảnh
+	A frame supports affine transforms; select its image to warp it	Khung hỗ trợ các phép biến đổi affine; chọn ảnh trong khung để làm cong
+	Convert to Frame…	Chuyển thành khung…
+	Create a new custom frame	Tạo khung tùy chỉnh mới
+	Create a new polygonal frame	Tạo khung đa giác mới
+	Create a new triangular frame	Tạo khung tam giác mới
+	Fit Content to Frame	Khớp nội dung với khung
+	Fit Frame to Content	Khớp khung với nội dung
+	Frame coordinates must be finite and within 600000 pixels	Tọa độ khung phải hữu hạn và nằm trong giới hạn 600000 pixel
+	Import Image…	Nhập ảnh…
+	Invalid frame transform	Phép biến đổi khung không hợp lệ
+	Invalid nested file drop	Thả tệp lồng nhau không hợp lệ
+	New Frame	Khung mới
+	Replace Image…	Thay ảnh…
+	The frame is locked	Khung đã bị khóa
+	The frame is unavailable	Khung không khả dụng

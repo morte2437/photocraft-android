@@ -33,7 +33,7 @@ mod dock;
 pub mod histogram_panel;
 mod history;
 pub mod history_menu_ui;
-mod info;
+pub(crate) mod info;
 mod layer_drag;
 pub mod layer_filter_ui;
 pub mod layer_menu_ui;
@@ -110,7 +110,9 @@ pub use status_bar::{status_bar, status_bar_heights};
 use title_bar::title_x;
 pub use title_bar::{sync_window_title, system_title_bar, title_bar, window_title};
 #[cfg(test)]
-use toolbar::{STUDIO_CHIP, TOOL_SECTIONS, chips_height, color_chips, tool_flyout_drag_open, tool_flyout_release, toolbar_icon_size, visible_sections};
+use toolbar::{
+    STUDIO_CHIP, TOOL_SECTIONS, chips_height, color_chips, next_slot_tool, tool_flyout_drag_open, tool_flyout_release, toolbar_icon_size, visible_sections,
+};
 pub use toolbar::{paint_toolbar_flyout_indicator, toolbar};
 
 fn c32(c: [f32; 4]) -> Color32 {
@@ -145,7 +147,7 @@ mod title_tests {
 
     #[test]
     fn without_the_preference_the_mark_stays() {
-        // The default (e.g. the web build or the snapshot example): no custom bar, no preference.
+        // The default (e.g. the web build or snapshot example): the integrated title bar.
         let app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         assert!(!system_title_bar(&app));
     }
@@ -999,6 +1001,35 @@ mod snapshot_row_tests {
         assert!(h.state().ui.dialogs.is_empty());
     }
 
+    /// Snapshot thumbnails belong to the snapshot's document (#6087): closing a document drops
+    /// them, and a document reopened with the same id (a `.pcraft` keeps it) gets fresh ones
+    /// rather than the closed document's, even before the views are synced.
+    #[test]
+    fn snapshot_thumbnails_follow_their_document() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+        let doc = (*app.session.active().unwrap().doc).clone();
+        let doc_id = doc.id;
+        let mut h = Harness::builder().with_size(vec2(300.0, 400.0)).build_ui_state(|ui, app: &mut PhotocraftApp| history(app, ui), app);
+        h.run_steps(2);
+        let thumb = |h: &Harness<'static, PhotocraftApp>| h.state().snapshot_thumbs.get(&(doc_id, 0)).map(|(_, t)| t.id());
+        let first = thumb(&h).expect("the first snapshot's thumbnail");
+        // Closed: its thumbnails go with it.
+        h.state_mut().session.close(0);
+        h.state_mut().sync_views();
+        assert!(h.state().snapshot_thumbs.keys().all(|(d, _)| *d != doc_id), "closing drops them");
+        h.state_mut().session.add_document(doc.clone(), None);
+        h.run_steps(2);
+        let reopened = thumb(&h).expect("a thumbnail for the reopened document");
+        assert_ne!(reopened, first);
+        // Closed and reopened between two frames, with no sync in between: still a fresh one.
+        h.state_mut().session.close(0);
+        h.state_mut().session.add_document(doc, None);
+        assert_eq!(h.state().session.active().unwrap().doc.id, doc_id, "same id");
+        h.run_steps(2);
+        assert_ne!(thumb(&h).unwrap(), reopened);
+    }
+
     /// Renaming belongs to one document: snapshot ids restart in each, so switching tabs must not
     /// carry the edit over to the other document's snapshot with the same id.
     #[test]
@@ -1523,7 +1554,10 @@ mod embedding_tests {
     fn whole_app(rail: bool, menu_bar: bool) -> egui_kittest::Harness<'static, PhotocraftApp> {
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1280.0, 800.0)).with_max_steps(64).build_eframe(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
-            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            let mut session = photocraft_engine::Session::new();
+            // An empty workspace with its docks, not the Home screen.
+            session.edit_prefs(|p| p.general.auto_show_home_screen = false);
+            let mut app = PhotocraftApp::new(session, crate::Services::default());
             app.ui.panels.rail = rail;
             app.ui.panels.menu_bar = menu_bar;
             app

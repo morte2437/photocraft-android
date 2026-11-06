@@ -27,7 +27,7 @@ pub fn open_web(app: &mut PhotocraftApp) -> u64 {
         .unwrap_or_else(|| json!({"format": "jpeg", "quality": 60}));
     if let Value::Object(m) = last {
         for (k, v) in m {
-            if !matches!(k.as_str(), "path" | "dir" | "width" | "height" | "percent" | "colorTable" | "colorTableEdits") {
+            if !matches!(k.as_str(), "path" | "dir" | "folder" | "width" | "height" | "percent" | "colorTable" | "colorTableEdits") {
                 f.insert(k, v);
             }
         }
@@ -119,7 +119,7 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
             };
             let buf = photocraft_compose::flatten(&wd);
             let v = (
-                Arc::new(buf.px),
+                Arc::new(buf.into_px()),
                 wd.size.width,
                 wd.size.height,
                 (fw * fh) / (f64::from(wd.size.width) * f64::from(wd.size.height)).max(1.0),
@@ -265,7 +265,12 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
     }
     let p = params(f);
     f.insert("__previewRects".into(), json!([]));
-    let area = egui::vec2((ui.available_width() - 270.0 - ui.spacing().item_spacing.x).max(260.0), (ui.available_height() - 48.0).max(180.0));
+    // Whole physical pixels, rounded down: the dialog grows to fit its contents, so a preview a
+    // fraction of a pixel too wide at a fractional scale widened it on every repaint (#10675).
+    let ppp = ui.ctx().pixels_per_point();
+    let floor = |v: f32| (v * ppp).floor() / ppp;
+    let area = egui::vec2(floor((ui.available_width() - 270.0 - ui.spacing().item_spacing.x).max(260.0)), floor((ui.available_height() - 48.0).max(180.0)));
+    let (half_w, half_h) = (floor(area.x / 2.0 - 4.0), floor(area.y / 2.0 - 4.0));
     ui.horizontal_top(|ui| {
         // Previews grow with the dialog; settings retain their compact width.
         ui.vertical(|ui| {
@@ -275,13 +280,13 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
                 "optimized" => web_pane(app, ui, area, Some(&p), f, 1, frame),
                 "2up" => {
                     ui.horizontal(|ui| {
-                        web_pane(app, ui, egui::vec2(area.x / 2.0 - 4.0, area.y), None, f, 0, frame);
-                        web_pane(app, ui, egui::vec2(area.x / 2.0 - 4.0, area.y), Some(&p), f, 1, frame);
+                        web_pane(app, ui, egui::vec2(half_w, area.y), None, f, 0, frame);
+                        web_pane(app, ui, egui::vec2(half_w, area.y), Some(&p), f, 1, frame);
                     });
                 }
                 _ => {
                     let v = variants(&p);
-                    let cell = egui::vec2(area.x / 2.0 - 4.0, area.y / 2.0 - 4.0);
+                    let cell = egui::vec2(half_w, half_h);
                     ui.horizontal(|ui| {
                         web_pane(app, ui, cell, None, f, 0, frame);
                         web_pane(app, ui, cell, Some(&v[0]), f, 1, frame);
@@ -375,13 +380,7 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
                     }
                 }
                 if !matches!(fmt.as_str(), "png24" | "webp") || !b(f, "transparency", true) {
-                    ui.horizontal(|ui| {
-                        let matte_label = ui.label(egui::RichText::new(tl!("Matte")).color(t.text_dim));
-                        let mut m = s(f, "matte", "#ffffff");
-                        if ui.add(egui::TextEdit::singleline(&mut m).desired_width(80.0)).labelled_by(matte_label.id).changed() {
-                            f.insert("matte".into(), json!(m));
-                        }
-                    });
+                    ui.horizontal(|ui| matte_field(ui, f));
                 }
                 ui.add_space(6.0);
                 check(ui, f, "convertToSrgb", tl!("Convert to sRGB"), true);
@@ -418,6 +417,43 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
             });
         });
     });
+}
+
+/// Save for Web's Matte: `#rrggbb` or `none`. While it has focus the field shows exactly what is
+/// typed and only a whole colour reaches the settings, so the previews never see a partial one
+/// such as `#1111` mid-type (#8830); what is not a colour snaps back when focus leaves.
+/// Both sides ask `Memory::has_focus`, which ignores whether the OS window is focused: egui keeps
+/// focus on the field while the user alt-tabs away, and `Response::has_focus` would drop the typed
+/// text for those frames and restore the saved colour when the window comes back.
+/// Focus is asked twice, because the two sides ask different questions. The state *before* `ui.add`
+/// decides what this frame shows - that is the frame the user is looking at. The state *after*
+/// `ui.add` decides whether typed text goes into the cache: egui can move focus into the field
+/// during the add itself, and a middle-click paste on an unfocused field inserts the pasted text and
+/// then calls `Memory::request_focus` inside the add (pinned egui fork, text_edit/builder.rs:933-974;
+/// `Memory::request_focus` is effective the same frame, memory/mod.rs:945-950), so caching against
+/// the pre-add state would drop that paste and restore the saved colour the next frame.
+fn matte_field(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
+    let t = Tokens::get(ui.ctx());
+    let label = ui.label(egui::RichText::new(tl!("Matte")).color(t.text_dim));
+    let id = ui.make_persistent_id("web-matte");
+    let was_focused = ui.memory(|m| m.has_focus(id));
+    let typed = if was_focused { ui.data(|d| d.get_temp::<String>(id)) } else { None };
+    let mut text = typed.unwrap_or_else(|| s(f, "matte", "#ffffff"));
+    let resp = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(80.0)).labelled_by(label.id);
+    if ui.memory(|m| m.has_focus(id)) {
+        ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    if !resp.changed() {
+        return;
+    }
+    let matte = crate::color_picker_ui::parse_hex(&text)
+        .map(crate::color_picker_ui::hex)
+        .or_else(|| text.trim().eq_ignore_ascii_case("none").then(|| "none".to_string()));
+    if let Some(matte) = matte {
+        f.insert("matte".into(), json!(matte));
+    }
 }
 
 /// A size row in a two-column grid: the label, then a field showing `shown`. Returns the typed
@@ -526,7 +562,11 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
         authorize(&prepared)?;
         p = prepared;
     }
-    if p.get("path").is_some() || p.get("dir").is_some() {
+    // A null or empty destination is none: the picker asks for one.
+    if let Some(fields) = p.as_object_mut() {
+        fields.retain(|key, value| !(matches!(key.as_str(), "path" | "dir" | "folder") && (value.is_null() || value.as_str() == Some(""))));
+    }
+    if p.get("path").is_some() || p.get("dir").is_some() || p.get("folder").is_some() {
         return save_for_web(app, p);
     }
     let doc = app.session.active().ok_or("no document")?.doc.clone();
@@ -541,11 +581,28 @@ pub(super) fn web_confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Re
             let dir = path.rfind(['/', '\\']).map(|i| path[..i].to_string()).unwrap_or_else(|| ".".into());
             p["dir"] = json!(dir);
             p["html"] = json!(html);
+        } else if let Some(folder) = kept_name_folder(&path, &base, st.format.ext())
+            // A save that renamed the document meanwhile: the engine would name the file after
+            // the new name, not the one picked.
+            && app.session.active().is_some_and(|state| photocraft_doc::slices::base_name(&state.doc) == base)
+        {
+            // The suggested name kept: only the folder, so a recorded action saves each
+            // document under its own name, as in Photoshop (#5305).
+            p["folder"] = json!(folder);
         } else {
             p["path"] = json!(path);
         }
         save_for_web(app, p)
     })
+}
+
+/// The folder of `path` when its file is the one Save for Web suggests and writes from a folder
+/// alone: `base` (a name usable on Windows as it is) with the format's own extension `ext`.
+fn kept_name_folder(path: &str, base: &str, ext: &str) -> Option<String> {
+    let file = std::path::Path::new(path);
+    let portable = photocraft_engine::file_cmds::portable_device_name(base.to_string()) == base;
+    let kept = portable && file.file_stem().is_some_and(|s| s.to_string_lossy() == base) && file.extension().is_some_and(|e| e.to_string_lossy() == ext);
+    kept.then(|| file.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
 /// Runs Save for Web with `p`, which says where to write.

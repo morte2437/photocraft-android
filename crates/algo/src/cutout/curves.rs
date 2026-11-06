@@ -1,5 +1,5 @@
-//! Curves: each chain fitted once, with its corners kept, its runs simplified (Douglas–Peucker)
-//! and drawn as Catmull-Rom curves.
+//! Outlines: each chain fitted once into a straight-sided polyline, with its corners kept and its
+//! runs simplified (Douglas–Peucker).
 
 use super::{Pt, Settings};
 
@@ -13,7 +13,7 @@ fn len(a: Pt) -> f32 {
     (a[0] * a[0] + a[1] * a[1]).sqrt()
 }
 
-/// Fits one chain: corners kept, runs simplified and smoothed. Its ends stay where they are, so
+/// Fits one chain: corners kept, runs simplified to straight segments. Its ends stay where they are, so
 /// chains meeting at a junction still meet.
 pub(super) fn fit(pts: &[Pt], closed: bool, s: &Settings) -> Vec<Pt> {
     let n = pts.len();
@@ -93,7 +93,11 @@ pub(super) fn fit(pts: &[Pt], closed: bool, s: &Settings) -> Vec<Pt> {
     }
     let v: Vec<Pt> = verts.iter().map(|&i| p[i]).collect();
     let corner: Vec<bool> = verts.iter().map(|&i| is_corner[i]).collect();
-    let out = curves(&v, &corner, closed);
+    let _ = &corner;
+    let mut out = v.clone();
+    if closed {
+        out.extend(v.first().copied());
+    }
     if closed {
         let before = signed_area(original);
         let after = signed_area(&out);
@@ -185,54 +189,6 @@ fn simplify(p: &[Pt], a: usize, b: usize, tol: f32, marks: &mut [bool]) {
             stack.push((best.0, b));
         }
     }
-}
-
-/// Catmull-Rom curves through `v` (one-sided at corners), flattened to a polyline.
-fn curves(v: &[Pt], corner: &[bool], closed: bool) -> Vec<Pt> {
-    let m = v.len();
-    if m < 2 {
-        return v.to_vec();
-    }
-    let at = |i: isize| v[i.rem_euclid(m as isize) as usize];
-    let sharp = |i: isize| (!closed && (i <= 0 || i >= m as isize - 1)) || corner[i.rem_euclid(m as isize) as usize];
-    let mut out = vec![v[0]];
-    let segs = if closed { m } else { m - 1 };
-    for i in 0..segs as isize {
-        let (p0, p1) = (at(i), at(i + 1));
-        let d = len(sub(p1, p0));
-        let (s0, s1) = (sharp(i), sharp(i + 1));
-        if s0 && s1 || d < 1e-6 {
-            out.push(p1);
-            continue;
-        }
-        // Tangents scaled to this segment, so short and long neighbours don't overshoot.
-        let t0 = if s0 {
-            sub(p1, p0)
-        } else {
-            let dp = len(sub(p0, at(i - 1)));
-            let k = d / (dp + d).max(1e-6);
-            let t = sub(p1, at(i - 1));
-            [t[0] * k, t[1] * k]
-        };
-        let t1 = if s1 {
-            sub(p1, p0)
-        } else {
-            let dn = len(sub(at(i + 2), p1));
-            let k = d / (d + dn).max(1e-6);
-            let t = sub(at(i + 2), p0);
-            [t[0] * k, t[1] * k]
-        };
-        let c1 = [p0[0] + t0[0] / 3.0, p0[1] + t0[1] / 3.0];
-        let c2 = [p1[0] - t1[0] / 3.0, p1[1] - t1[1] / 3.0];
-        let steps = ((d / 1.5).ceil() as usize).clamp(2, 24);
-        for k in 1..=steps {
-            let t = k as f32 / steps as f32;
-            let u = 1.0 - t;
-            let (b0, b1, b2, b3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
-            out.push([b0 * p0[0] + b1 * c1[0] + b2 * c2[0] + b3 * p1[0], b0 * p0[1] + b1 * c1[1] + b2 * c2[1] + b3 * p1[1]]);
-        }
-    }
-    out
 }
 
 /// Bounding box `[x0, y0, x1, y1]` of `pts`.
@@ -328,18 +284,6 @@ mod tests {
             let out = fit(&p, false, &settings(f));
             assert_eq!((out.first(), out.last()), (p.first(), p.last()), "fidelity {f}");
         }
-    }
-
-    #[test]
-    fn curves_pass_through_their_vertices() {
-        let v = [[0.0, 0.0], [4.0, 3.0], [8.0, 0.0], [12.0, 4.0]];
-        let out = curves(&v, &[false; 4], false);
-        for p in v {
-            assert!(out.iter().any(|q| close(*q, p)), "{p:?} missed: {out:?}");
-        }
-        assert!(out.len() > 8, "flattened into steps: {}", out.len());
-        // Between two corners a segment is straight.
-        assert_eq!(curves(&v, &[true; 4], false), v.to_vec());
     }
 
     #[test]

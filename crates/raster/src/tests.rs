@@ -41,7 +41,7 @@ fn previous_read_region(surface: &Surface, r: Rect) -> Vec<f32> {
                     Some(t) => {
                         let base = (((y - tc.ty * TILE_SIZE) as usize) * TILE_SIZE as usize + (x - tc.tx * TILE_SIZE) as usize) * n;
                         for i in 0..n {
-                            out[o + i] = read_sample(&t.data, surface.format.sample, base + i);
+                            out[o + i] = read_sample(&t.bytes(), surface.format.sample, base + i);
                         }
                     }
                     None => out[o..o + n].copy_from_slice(&dp),
@@ -137,7 +137,7 @@ fn write_region_reference(surface: &mut Surface, r: Rect, data: &[f32]) {
                 let o = (((y - r.y0) as usize) * w + (x - r.x0) as usize) * n;
                 let base = (((y - tc.ty * TILE_SIZE) as usize) * TILE_SIZE as usize + (x - tc.tx * TILE_SIZE) as usize) * n;
                 for i in 0..n {
-                    write_sample(&mut t.data, sample, base + i, data[o + i]);
+                    write_sample(&mut t.bytes_mut(), sample, base + i, data[o + i]);
                 }
             }
         }
@@ -336,6 +336,30 @@ fn fallible_region_write_rejects_bad_input_without_mutating_surface() {
     let before = surface.clone();
     assert_eq!(surface.try_write_region(Rect::new(0, 0, 2, 2), &[1.0]), Err(AllocationError::SizeOverflow));
     assert_eq!(surface, before);
+}
+
+#[test]
+fn fallible_interleaved_write_matches_the_infallible_one_and_rejects_bad_lengths() {
+    for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+        // Across tile edges, at a negative origin.
+        let r = Rect::new(-3, 250, 300, 517);
+        let bytes: Vec<u8> = (0..r.width() as usize * r.height() as usize * fmt.bytes_per_pixel()).map(|i| (i * 31 % 251) as u8).collect();
+        let mut a = Surface::new(fmt);
+        a.write_interleaved(r, &bytes);
+        let mut b = Surface::new(fmt);
+        b.try_write_interleaved(r, &bytes).unwrap();
+        assert_eq!(a, b);
+        let before = b.clone();
+        let got = bytes.len() - 1;
+        assert_eq!(b.try_write_interleaved(r, &bytes[1..]), Err(AllocationError::LengthMismatch { expected: bytes.len(), got }));
+        assert_eq!(b, before);
+        // Tiles an undo snapshot shares are copied, not written through.
+        let again: Vec<u8> = bytes.iter().map(|v| v ^ 0x5a).collect();
+        b.try_write_interleaved(r, &again).unwrap();
+        a.write_interleaved(r, &again);
+        assert_eq!(a, b);
+        assert_eq!(before.to_interleaved(r), bytes);
+    }
 }
 
 #[test]
@@ -547,13 +571,13 @@ fn tile_content_bounds_match_a_per_pixel_scan() {
                 for &s in &spots {
                     data[s - s % bpp + byte] ^= 0x5a;
                 }
-                let t = Tile { data: data.into_boxed_slice() };
+                let t = Tile::from_vec(data);
                 assert_eq!(t.content_bounds(&dp), per_pixel(&t, &dp), "bpp {bpp}, spots {spots:?}, byte {byte}");
             }
         }
         let mut data = dp.repeat(TILE_SIZE as usize * TILE_SIZE as usize);
         data[row * 3 + 9 * bpp..row * 3 + 10 * bpp].iter_mut().for_each(|b| *b = !*b);
-        let t = Tile { data: data.into_boxed_slice() };
+        let t = Tile::from_vec(data);
         assert_eq!(t.content_bounds(&dp), Some((9, 3, 10, 4)), "bpp {bpp}");
     }
 }
@@ -809,4 +833,144 @@ fn content_bounds_with_tile_skipping() {
     s.fill_rect(Rect::new(0, 0, 2000, 1500), &[1.0]);
     s.fill_rect(Rect::new(-700, 4000, -699, 4001), &[0.5]);
     assert_eq!(s.content_bounds(), Rect::new(-700, 0, 2000, 4001));
+}
+
+#[test]
+fn fallible_interleaved_writes_match_encoded_pixels_and_reject_bad_lengths() {
+    for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let format = PixelFormat::new(ColorMode::Rgb, sample, true);
+        let rect = Rect::new(-2, -1, 3, 2);
+        let bytes: Vec<u8> = (0..rect.width() as usize * rect.height() as usize * format.bytes_per_pixel()).map(|i| (i % 251) as u8).collect();
+        let mut surface = Surface::new(format);
+        assert!(surface.try_write_interleaved(rect, &bytes[..bytes.len() - 1]).is_err());
+        assert!(surface.tiles.is_empty());
+        surface.try_write_interleaved(rect, &bytes).unwrap();
+        assert_eq!(surface.to_interleaved(rect), bytes);
+        let mut shared = surface.clone();
+        let replacement = vec![0; bytes.len()];
+        shared.try_write_interleaved(rect, &replacement).unwrap();
+        assert_eq!(surface.to_interleaved(rect), bytes);
+        assert_eq!(shared.to_interleaved(rect), replacement);
+    }
+}
+
+/// The byte a row-callback test writes at pixel (x, y).
+fn row_byte(x: i32, y: i32) -> u8 {
+    (x.wrapping_mul(7).wrapping_add(y.wrapping_mul(13)) & 0xff) as u8
+}
+
+fn fill_row_bytes(y: i32, x0: i32, dst: &mut [u8]) {
+    for (i, b) in dst.iter_mut().enumerate() {
+        *b = row_byte(x0 + i as i32, y);
+    }
+}
+
+#[test]
+fn write_rows_empty_rect_writes_nothing() {
+    let mut s = Surface::new(PixelFormat::GRAY8);
+    let called = std::sync::atomic::AtomicBool::new(false);
+    for r in [Rect::new(5, 5, 5, 9), Rect::new(0, 0, 10, 0), Rect::new(10, 10, 2, 2), Rect::EMPTY] {
+        s.try_write_rows_with(r, |_, _, _| called.store(true, std::sync::atomic::Ordering::Relaxed)).expect("empty is fine");
+    }
+    assert!(!called.load(std::sync::atomic::Ordering::Relaxed), "no rows in an empty rect");
+    assert_eq!(s.tile_count(), 0);
+}
+
+#[test]
+fn write_rows_overflowing_rect_is_an_error_not_a_panic() {
+    let mut s = Surface::new(PixelFormat::GRAY8);
+    let r = Rect::new(0, 0, 1, 1);
+    s.try_write_rows_with(r, |_, _, dst| dst.fill(42)).unwrap();
+    let before = s.clone();
+    let huge = Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX);
+    assert!(s.try_write_rows_with(huge, |_, _, _| {}).is_err());
+    assert_eq!(s.tile_count(), 1);
+    assert_eq!(s.to_interleaved(r), vec![42]);
+    assert!(std::sync::Arc::ptr_eq(s.tiles.values().next().unwrap(), before.tiles.values().next().unwrap()));
+}
+
+#[test]
+fn write_rows_negative_origin_and_unaligned_rect() {
+    let mut s = Surface::with_default(PixelFormat::GRAY8, &[0.5]);
+    let r = Rect::new(-300, -5, 270, 260);
+    s.try_write_rows_with(r, fill_row_bytes).expect("memory");
+    let got = s.to_interleaved(Rect::new(-320, -10, 300, 270));
+    let w = 620;
+    for (i, &b) in got.iter().enumerate() {
+        let (x, y) = (-320 + (i % w) as i32, -10 + (i / w) as i32);
+        let want = if x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1 { row_byte(x, y) } else { 128 };
+        assert_eq!(b, want, "({x}, {y})");
+    }
+}
+
+#[test]
+fn write_rows_matches_write_interleaved_at_every_depth() {
+    for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F, PixelFormat::GRAY8] {
+        let bpp = fmt.bytes_per_pixel();
+        let r = Rect::new(3, 2, 520, 300);
+        let w = r.width() as usize;
+        let bytes: Vec<u8> = (0..w * r.height() as usize * bpp).map(|i| (i % 251) as u8).collect();
+        let mut a = Surface::new(fmt);
+        a.write_interleaved(r, &bytes);
+        let mut b = Surface::new(fmt);
+        b.try_write_rows_with(r, |y, x0, dst| {
+            let o = (((y - r.y0) as usize) * w + (x0 - r.x0) as usize) * bpp;
+            dst.copy_from_slice(&bytes[o..o + dst.len()]);
+        })
+        .expect("memory");
+        assert_eq!(a.tile_count(), b.tile_count());
+        for (c, t) in a.tiles() {
+            assert!(b.tiles().any(|(c2, t2)| c2 == c && t2 == t), "{fmt:?}: tile {c:?} differs");
+        }
+    }
+}
+
+#[test]
+fn write_rows_copies_tiles_a_clone_still_shares() {
+    let mut s = Surface::new(PixelFormat::GRAY8);
+    s.try_write_rows_with(Rect::new(0, 0, 300, 300), |_, _, dst| dst.fill(9)).expect("memory");
+    let before = s.clone();
+    let snapshot = before.to_interleaved(Rect::new(0, 0, 300, 300));
+    s.try_write_rows_with(Rect::new(100, 100, 280, 290), fill_row_bytes).expect("memory");
+    assert_eq!(before.to_interleaved(Rect::new(0, 0, 300, 300)), snapshot, "the clone is unchanged");
+    assert_eq!(s.to_interleaved(Rect::new(150, 150, 151, 151)), vec![row_byte(150, 150)]);
+    assert_eq!(s.to_interleaved(Rect::new(10, 10, 11, 11)), vec![9], "pixels outside the rect keep their value");
+}
+
+#[test]
+fn failed_row_preparation_preserves_existing_tiles() {
+    let mut surface = Surface::new(PixelFormat::GRAY8);
+    let r = Rect::new(0, 0, 300, 1);
+    surface.try_write_rows_with(Rect::new(0, 0, 1, 1), |_, _, dst| dst.fill(42)).unwrap();
+    let before = surface.clone();
+    let result = surface.try_prepare_rows(r, |tiles, _, _| {
+        fill_tile(&mut tiles[0], r, &PixelFormat::GRAY8, &[0], &|_, _, dst: &mut [u8]| dst.fill(7), &|| Ok::<(), AllocationError>(()))?;
+        Err(AllocationError::NotEnoughMemory { bytes: 1 })
+    });
+    assert!(matches!(result, Err(AllocationError::NotEnoughMemory { .. })));
+    assert_eq!(surface.tile_count(), 1);
+    assert_eq!(surface.to_interleaved(Rect::new(0, 0, 1, 1)), vec![42]);
+    assert!(std::sync::Arc::ptr_eq(surface.tiles.values().next().unwrap(), before.tiles.values().next().unwrap()));
+}
+
+#[test]
+fn cancelled_row_write_stops_during_tile_and_preserves_surface() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let mut surface = Surface::new(PixelFormat::GRAY8);
+    let r = Rect::new(0, 0, 1, 100);
+    surface.try_write_rows_with(r, |_, _, dst| dst.fill(42)).unwrap();
+    let before = surface.clone();
+    let cancelled = AtomicBool::new(false);
+    let rows = AtomicUsize::new(0);
+    let check = || cancelled.load(Ordering::SeqCst);
+    let result = surface.try_write_rows_with_interrupt(r, &Interrupt::cancel_only(&check), |_, _, dst| {
+        dst.fill(7);
+        rows.fetch_add(1, Ordering::SeqCst);
+        cancelled.store(true, Ordering::SeqCst);
+    });
+    assert_eq!(result, Err(RowWriteError::Cancelled(Cancelled)));
+    assert_eq!(rows.load(Ordering::SeqCst), 1);
+    assert_eq!(surface.to_interleaved(r), before.to_interleaved(r));
+    assert!(std::sync::Arc::ptr_eq(surface.tiles.values().next().unwrap(), before.tiles.values().next().unwrap()));
 }

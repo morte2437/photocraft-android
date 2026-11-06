@@ -13,6 +13,9 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     if let Some((params, path)) = crate::vector_ui::free_transform_path(app) {
         return begin_path(app, ctx, params, path);
     }
+    if crate::canvas::multiple_color_target(app) {
+        return Err("Move and transforms on several colour channels are not implemented yet".into());
+    }
     if app.session.active().is_some_and(|st| photocraft_engine::float_cmds::floating(st).is_some()) {
         app.run("select.drop", json!({}))?;
     }
@@ -26,10 +29,16 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     let id = st.active_layer.ok_or("no active layer")?;
     // Several layers selected: one box moves them all, as in Photoshop (#6501).
     let targets = photocraft_engine::transform_cmds::selection_targets(st);
+    // The selection takes its linked layers along, as `edit.transform` does: in Photoshop the box
+    // over one linked layer frames and moves the whole link group (#11217), but not a linked
+    // Background (`box_targets`). Unlinked, unchanged.
+    let targets = photocraft_engine::transform_cmds::box_targets(&doc, &targets);
     if targets != [id] {
         return begin_several(app, ctx, doc, revision, id, targets);
     }
     let layer = doc.layer(id).ok_or("no layer")?;
+    let frame_only =
+        app.ui.tool == crate::state::Tool::Frame && layer.frame.is_some() && crate::frame_tool::target(app, layer) == crate::frame_tool::Target::Frame;
     if photocraft_engine::transform_cmds::locked_for_transform(&doc, id) {
         // Photoshop refuses before the box opens rather than when it is committed (#2585).
         app.ui.open_dialog(crate::state::DialogKind::Error, json!({"message": tl!(LOCKED)}).as_object().cloned().unwrap_or_default());
@@ -71,12 +80,12 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
     app.transform_preview = Some(TransformPreview {
         session,
-        doc: Arc::new(pd),
+        doc: if frame_only { doc.clone() } else { Arc::new(pd) },
         texture,
         opacity: layer.opacity * layer.fill_opacity,
-        above: Some(above),
-        styled: styled.then(|| crate::transform_fx::StyledPreview::new(format!("transform-{session}-styled"))),
-        follow: Some(Follow { revision, hidden: if lifted.is_none() { vec![id] } else { Vec::new() } }),
+        above: (!frame_only).then_some(above),
+        styled: (styled && !frame_only).then(|| crate::transform_fx::StyledPreview::new(format!("transform-{session}-styled"))),
+        follow: Some(Follow { revision, hidden: if lifted.is_none() && !frame_only { vec![id] } else { Vec::new() } }),
         committing: None,
         gesture: None,
         warp_drag: None,
@@ -99,7 +108,7 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         interpolation: default_interpolation(app).into(),
         warp: None,
         selection: false,
-        target: None,
+        target: frame_only.then(|| json!({"frame": id.0})),
         path: None,
         made: None,
         mode: Default::default(),
@@ -248,6 +257,19 @@ pub const WARP_ONE_LAYER: &str = "Warp works on one layer at a time: select a si
 /// its selected pixels, as Layer via Copy) and transforms the copy (#352).
 pub fn begin_copy(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
     let selection = app.session.active().is_some_and(|d| d.doc.selection.is_some());
+    // A linked layer without a selection: the reference application makes no copy and frames the
+    // whole link group, as Free Transform does (measured, #11217). Unlinked layers get the copy,
+    // and so does a targeted mask (a lone target).
+    let target = crate::canvas::paint_target(app);
+    let linked = !selection
+        && app.session.active().is_some_and(|st| {
+            let lone = photocraft_engine::transform_cmds::lone_target(&st.doc, st.active_layer, &json!({ "target": target }));
+            let targets = photocraft_engine::transform_cmds::selection_targets(st);
+            matches!(lone, Ok(None)) && photocraft_engine::transform_cmds::box_targets(&st.doc, &targets) != targets
+        });
+    if linked {
+        return begin(app, ctx);
+    }
     let params = if selection { json!({}) } else { json!({"inPlace": true}) };
     app.run(if selection { "layer.new.layerViaCopy" } else { "layer.duplicate" }, params)?;
     let made = app.session.active().and_then(|st| st.active_layer.map(|layer| (st.doc.id, layer)));

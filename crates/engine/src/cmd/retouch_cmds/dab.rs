@@ -389,6 +389,7 @@ pub struct LiveDab {
     effect: DabEffect,
     neighborhood: DabNeighborhood,
     pre_surf: Surface,
+    colors: Option<crate::color_channels::ColorChannels>,
     work: WorkTiles,
     id: Option<LayerId>,
     params: Value,
@@ -453,11 +454,18 @@ impl LiveDab {
         neighborhood: DabNeighborhood,
         effect: impl FnOnce(&Surface) -> DabEffect,
     ) -> Result<Self> {
+        let captured = crate::channel_cmds::inject_target(s, cmd, p.clone());
+        let p = &captured;
         let st = s.active().ok_or(EngineError::NoDocument)?;
         let base = (st.doc.id, st.revision);
         let doc = (*st.doc).clone();
         let mut live = Self::with_neighborhood_on(doc, cmd, p, stroke, id, neighborhood, effect)?;
         live.base = Some(base);
+        live.colors = crate::color_channels::target(s, p)?;
+        if let Some(colors) = live.colors {
+            let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut live.doc), live.id, &live.params)?;
+            crate::color_channels::restrict_region(&live.pre_surf, surf, colors, live.bounds)?;
+        }
         Ok(live)
     }
 
@@ -484,6 +492,7 @@ impl LiveDab {
         neighborhood: DabNeighborhood,
         effect: impl FnOnce(&Surface) -> DabEffect,
     ) -> Result<Self> {
+        let colors = crate::color_channels::explicit(p, crate::channel_cmds::color_count(&doc))?;
         let sel = doc.selection.clone();
         let (surf, lock) = crate::channel_cmds::target_surface(&mut doc, id, p)?;
         let pre_surf = surf.clone();
@@ -504,6 +513,7 @@ impl LiveDab {
             neighborhood,
             work: WorkTiles::new(pre_surf.channels()),
             pre_surf,
+            colors,
             id,
             params: p.clone(),
             opacity: stroke.brush.opacity,
@@ -567,6 +577,15 @@ impl LiveDab {
     /// Invalid coordinates reject the whole batch without changing the preview.
     /// Only the position and pressure of `pts` are used: the commands take no tilt or times.
     pub fn push(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
+        let damage = self.push_inner(pts)?;
+        if let Some(colors) = self.colors {
+            let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.id, &self.params)?;
+            crate::color_channels::restrict_region(&self.pre_surf, surf, colors, damage)?;
+        }
+        Ok(damage)
+    }
+
+    fn push_inner(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
         crate::brush_cmds::check_coords(pts, &self.cmd)?;
         let pts: Vec<_> = pts.iter().map(|q| StrokePoint::new(q.x, q.y, q.pressure)).collect();
         self.points.extend_from_slice(&pts);
@@ -629,6 +648,9 @@ impl LiveDab {
         }
         self.bounds = self.bounds.union(&dmg);
         let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.id, &self.params)?;
+        if let Some(colors) = self.colors {
+            crate::color_channels::restrict_region(&self.pre_surf, surf, colors, shown)?;
+        }
         let surface = surf.clone();
         Ok(crate::brush_cmds::LiveCommit {
             mixer: None,

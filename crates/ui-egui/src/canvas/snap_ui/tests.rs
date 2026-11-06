@@ -754,3 +754,162 @@ fn grid_snapping_uses_preferences() {
     let sel = app.session.active().unwrap().doc.selection.as_ref().unwrap().content_bounds();
     assert_eq!((sel.x0, sel.y0, sel.x1, sel.y1), (150, 125, 200, 175));
 }
+
+fn free_transform(app: &mut PhotocraftApp, reference_point: bool) {
+    app.ui.tool_options.transform_reference_point = reference_point;
+    crate::menus::invoke(app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+}
+
+fn drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2], mods: egui::Modifiers) -> [f64; 2] {
+    crate::canvas::tool_event(app, ToolEvent::Down { x: from[0], y: from[1], pressure: 1.0 }, mods);
+    crate::canvas::tool_event(app, ToolEvent::Move { x: to[0], y: to[1], pressure: 1.0 }, mods);
+    crate::canvas::tool_event(app, ToolEvent::Up { x: to[0], y: to[1] }, mods);
+    app.ui.transform.as_ref().unwrap().pivot
+}
+
+/// #5153: a reference point drag (or an Alt-drag inside the box) moves the point alone. It used to
+/// snap as a box move: the point stuck and snap lines showed at edges the box never reached.
+#[test]
+fn free_transform_reference_point_drag_snaps_the_point_not_the_box() {
+    let mut app = app_with_box();
+    free_transform(&mut app, true);
+    let t = app.ui.transform.as_ref().unwrap();
+    let (quad, pivot) = (t.quad, t.pivot);
+    assert_eq!(pivot, [65.0, 60.0]);
+    let alt = egui::Modifiers::ALT;
+    // Moving the box's right edge by the same amount would land it 2 px from the target's left
+    // edge (x = 300), but the point alone moves, so nothing pulls it there.
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 65.0, y: 60.0, pressure: 1.0 }, alt);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 273.0, y: 60.0, pressure: 1.0 }, alt);
+    assert!(app.prefs_rt.snap_lines.is_empty(), "{:?}", app.prefs_rt.snap_lines);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 273.0, y: 60.0 }, alt);
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.pivot, [273.0, 60.0]);
+    assert_eq!(t.quad, quad, "the box stays put");
+    // Alt-dragging from inside the box places the reference point the same way.
+    assert_eq!(drag(&mut app, [50.0, 50.0], [258.0, 50.0], alt), [258.0, 50.0]);
+    // A plain drag of the reference point moves it too.
+    assert_eq!(drag(&mut app, [258.0, 50.0], [80.0, 63.0], egui::Modifiers::NONE), [80.0, 63.0]);
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, quad, "the box stays put");
+}
+
+/// A box dragged from inside doesn't snap back to the selection it transforms (measured in the
+/// reference application: a 6 px drag moves it 6 px).
+#[test]
+fn free_transform_of_a_selection_never_snaps_back_to_it() {
+    let mut app = app_with_box();
+    app.run("select.rect", json!({"x": 40, "y": 40, "width": 50, "height": 40})).unwrap();
+    free_transform(&mut app, false);
+    let quad = app.ui.transform.as_ref().unwrap().quad;
+    let m = egui::Modifiers::NONE;
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 50.0, y: 50.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 53.0, y: 50.0, pressure: 1.0 }, m);
+    assert!(app.prefs_rt.snap_lines.is_empty(), "{:?}", app.prefs_rt.snap_lines);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 53.0, y: 50.0 }, m);
+    let q = app.ui.transform.as_ref().unwrap().quad;
+    assert_eq!(q[0][0], quad[0][0] + 3.0, "{q:?}");
+}
+
+/// The reference point snaps to the turned box's nine points, and only to them: not to guides,
+/// other layers or the canvas, and with View > Snap off or Ctrl held too, as in the reference
+/// application.
+#[test]
+fn reference_point_snaps_to_the_turned_box_points_only() {
+    let mut app = app_with_box();
+    app.run("view.newGuide", json!({"orientation": "vertical", "position": 150.0})).unwrap();
+    free_transform(&mut app, true);
+    // Turn the box 30 degrees about its centre: its points leave the lines point snapping knows.
+    let t = app.ui.transform.as_mut().unwrap();
+    let (c, (sin, cos)) = (t.pivot, 30f64.to_radians().sin_cos());
+    t.quad = t.quad.map(|q| [c[0] + (q[0] - c[0]) * cos - (q[1] - c[1]) * sin, c[1] + (q[0] - c[0]) * sin + (q[1] - c[1]) * cos]);
+    let q = t.quad;
+    let m = egui::Modifiers::NONE;
+    let on = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9;
+    // To 2 px off the turned top-right corner: lands on it.
+    let p = drag(&mut app, c, [q[1][0] - 2.0, q[1][1] + 1.0], m);
+    assert!(on(p, q[1]), "{p:?} vs {:?}", q[1]);
+    // On the corner, a press grabs the point ahead of the corner handle, and it lands on the
+    // bottom edge's midpoint.
+    let mid = [(q[2][0] + q[3][0]) / 2.0, (q[2][1] + q[3][1]) / 2.0];
+    let p = drag(&mut app, [q[1][0] + 1.0, q[1][1]], [mid[0] + 1.5, mid[1] - 1.5], m);
+    assert!(on(p, mid), "{p:?} vs {mid:?}");
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, q, "the box never moved");
+    // Ctrl held during the drag doesn't turn the pull off.
+    let ctrl = egui::Modifiers { ctrl: true, command: true, ..egui::Modifiers::NONE };
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: p[0], y: p[1], pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: c[0] + 2.0, y: c[1], pressure: 1.0 }, ctrl);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: c[0] + 2.0, y: c[1] }, ctrl);
+    assert!(on(app.ui.transform.as_ref().unwrap().pivot, c));
+    // Nor View > Snap off.
+    app.ui.extras.snap = false;
+    assert!(on(drag(&mut app, c, [q[1][0] - 2.0, q[1][1] + 1.0], m), q[1]));
+    app.ui.extras.snap = true;
+    // 2 px off the guide (x = 150) and the target layer's left edge (x = 300): stays put.
+    let p = drag(&mut app, q[1], [148.0, 120.0], m);
+    assert_eq!(p, [148.0, 120.0]);
+    let p = drag(&mut app, p, [298.0, 150.0], m);
+    assert_eq!(p, [298.0, 150.0]);
+    assert!(app.prefs_rt.snap_lines.is_empty());
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, q, "the box never moved");
+}
+
+/// With Toggle Reference Point off the point has no handle, but an Alt-drag still places it and
+/// it snaps to the box's points.
+#[test]
+fn hidden_reference_point_alt_drag_snaps_to_the_box_points() {
+    let mut app = app_with_box();
+    free_transform(&mut app, false);
+    let quad = app.ui.transform.as_ref().unwrap().quad;
+    let p = drag(&mut app, [55.0, 50.0], [88.0, 42.0], egui::Modifiers::ALT);
+    assert_eq!(p, quad[1], "the top-right corner");
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, quad);
+}
+
+/// Alt over the box, or outside it in the rotation zone, shows the reference point's pointer: a
+/// press there places the point.
+#[test]
+fn alt_over_the_box_shows_the_reference_point_pointer() {
+    let mut app = app_with_box();
+    free_transform(&mut app, false);
+    let xf = crate::canvas::ViewXform::active(&app).unwrap();
+    let alt = egui::Modifiers::ALT;
+    for p in [[55.0, 52.0], [30.0, 30.0], [200.0, 200.0]] {
+        assert_eq!(crate::transform_tool::cursor(&app, &xf, p, alt), Some(egui::CursorIcon::Crosshair), "{p:?}");
+    }
+    assert_eq!(crate::transform_tool::cursor(&app, &xf, [55.0, 52.0], egui::Modifiers::NONE), Some(egui::CursorIcon::Move));
+    assert_ne!(crate::transform_tool::cursor(&app, &xf, [40.0, 40.0], alt), Some(egui::CursorIcon::Crosshair), "a corner handle stays a handle");
+}
+
+/// Free Transform Path leaves the selection where it is, so the box still snaps to the selection's
+/// edges; Transform Selection moves the outline itself and never snaps back to it.
+#[test]
+fn a_path_box_snaps_to_a_stationary_selection_edge() {
+    let mut app = app_with_box();
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": true, "knots": [[40.0, 40.0], [90.0, 40.0], [90.0, 80.0], [40.0, 80.0]]}]}}))
+        .unwrap();
+    app.run("select.rect", json!({"x": 240, "y": 150, "width": 50, "height": 50})).unwrap();
+    app.ui.tool = Tool::PathSelection;
+    app.ui.selected_path = Some("work".into());
+    free_transform(&mut app, false);
+    let t = app.ui.transform.as_ref().unwrap();
+    assert!(t.path.is_some(), "Free Transform Path");
+    assert_eq!(t.quad[0], [40.0, 40.0]);
+    // 148 px right puts the box's right edge (x = 90) 2 px short of the selection's left edge.
+    let m = egui::Modifiers::NONE;
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 208.0, y: 60.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 208.0, y: 60.0 }, m);
+    let q = app.ui.transform.as_ref().unwrap().quad;
+    assert_eq!(q[1][0], 240.0, "snapped to the selection's edge: {q:?}");
+
+    // Transform Selection: a 3 px drag moves the outline 3 px, not back onto itself.
+    let mut app = app_with_box();
+    app.run("select.rect", json!({"x": 120, "y": 100, "width": 50, "height": 30})).unwrap();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "select.transformSelection", json!({})).unwrap();
+    assert!(app.ui.transform.as_ref().unwrap().selection);
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 140.0, y: 110.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 143.0, y: 110.0, pressure: 1.0 }, m);
+    assert!(app.prefs_rt.snap_lines.is_empty(), "{:?}", app.prefs_rt.snap_lines);
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 143.0, y: 110.0 }, m);
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad[0][0], 123.0);
+}

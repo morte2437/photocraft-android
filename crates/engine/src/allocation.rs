@@ -27,6 +27,18 @@ pub(crate) fn capacity<T>(len: usize, purpose: &str) -> Result<Vec<T>> {
     Ok(out)
 }
 
+/// `Vec::push` that reports an allocation failure instead of aborting; each call is one
+/// attempt for the test failpoints.
+pub(crate) fn try_push<T>(out: &mut Vec<T>, value: T, purpose: &str) -> Result<()> {
+    #[cfg(test)]
+    if failpoint_hits() {
+        return Err(error(purpose, "not enough memory"));
+    }
+    out.try_reserve(1).map_err(|_| error(purpose, "the buffer could not grow"))?;
+    out.push(value);
+    Ok(())
+}
+
 /// Check an operation boundary where downstream encoders/decoders allocate internally.
 /// The test-only failpoint lets command tests prove their transaction boundary.
 pub(crate) fn checkpoint(purpose: &str) -> Result<()> {

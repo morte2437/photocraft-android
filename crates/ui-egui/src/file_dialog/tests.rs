@@ -322,6 +322,39 @@ fn menu_place_starts_transform_for_each_chosen_image() {
     }
 }
 
+/// #10031: File › Place decodes in the background; Free Transform starts when the layer lands, and
+/// a second place is refused while the first runs.
+#[test]
+fn menu_place_runs_in_the_background_and_starts_transform_when_it_lands() {
+    let (mut app, open, _) = app();
+    app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+    let bytes = photocraft_io::export(&app.session.active().unwrap().doc, "source.png", &Default::default()).unwrap().bytes;
+    app.background_jobs = true;
+    let ctx = egui::Context::default();
+    let layers = app.session.active().unwrap().doc.layer_count();
+    menus::invoke(&mut app, &ctx, "file.placeEmbedded", json!({})).unwrap();
+    app.poll_file_dialog(&ctx, None);
+    answer(&open, Some(FileDialogAnswer::Contents("drawing.png".into(), bytes.clone())));
+    app.poll_file_dialog(&ctx, None);
+    let place = app.jobs.place.clone().expect("being placed");
+    assert_eq!(place.name, "drawing.png");
+    assert!(app.ui.transform.is_none(), "Free Transform waits for the layer");
+    assert_eq!(app.session.active().unwrap().doc.layer_count(), layers);
+    // Another place is refused while this one runs, and the first one stays tracked.
+    assert!(crate::jobs_ui::start_place_bytes(&mut app, "other.png", bytes, None, &serde_json::json!({})).is_err());
+    assert_eq!(app.jobs.place.as_ref().map(|p| p.job), Some(place.job));
+    let t = std::time::Instant::now();
+    while app.jobs.place.is_some() {
+        assert!(t.elapsed() < std::time::Duration::from_secs(30), "the place did not finish");
+        crate::jobs_ui::tick(&mut app, &ctx);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer_count(), layers + 1);
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "drawing");
+    assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
+}
+
 #[test]
 fn cancelled_or_invalid_menu_place_does_not_start_transform() {
     for command in ["file.placeEmbedded", "file.placeLinked"] {

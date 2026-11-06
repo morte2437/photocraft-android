@@ -229,14 +229,12 @@ pub fn composite_to_surface(doc: &Document, rect: Rect, fmt: photocraft_color::P
     let mut s = Surface::new(fmt);
     let n = fmt.channels();
     let empty = s.default_pixel();
-    let mut data = Vec::new();
     let _ = render_bands(doc, rect, 0, |band| -> Result<(), ()> {
         let band = match background {
             Some(bg) => band.over_background(bg),
             None => band,
         };
-        data.clear();
-        data.resize(band.px.len() * n, 0.0);
+        let mut data = photocraft_raster::scratch::take(band.px.len() * n, 0.0f32);
         photocraft_color::convert::with_cmyk_space(space.as_ref(), || {
             for (p, out) in band.px.iter().zip(data.chunks_exact_mut(n)) {
                 if fmt.alpha && (p[3] <= 0.0 || p[3].is_nan()) && empty.len() == n {
@@ -247,6 +245,7 @@ pub fn composite_to_surface(doc: &Document, rect: Rect, fmt: photocraft_color::P
             }
         });
         s.write_region(band.rect, &data);
+        photocraft_raster::scratch::give(data);
         Ok(())
     });
     s.prune();
@@ -357,4 +356,31 @@ pub fn render_layer_in(doc: &Document, layer: &Layer, rect: Rect) -> Buffer {
         in_blend_space(lab, hdr, || composite_stack_at(std::slice::from_ref(layer), &mut buf, &cx, advanced::Scope::ROOT));
         buf
     })
+}
+
+/// Composite in bounded bands, retaining native colour-model paths, with cancellation.
+pub fn composite_to_surface_with_interrupt(
+    doc: &Document,
+    rect: Rect,
+    fmt: photocraft_color::PixelFormat,
+    background: Option<[f32; 3]>,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<Surface, photocraft_raster::Cancelled> {
+    ctl.check()?;
+    let mut out = Surface::new(fmt);
+    let rows = band_rows_for(rect.width(), 64);
+    let mut y = rect.y0;
+    while y < rect.y1 {
+        ctl.check()?;
+        let end = y.saturating_add(rows).min(rect.y1);
+        let band = Rect::new(rect.x0, y, rect.x1, end);
+        let part = composite_to_surface(doc, band, fmt, background);
+        ctl.check()?;
+        let mut pixels = Vec::new();
+        part.read_region_into(band, &mut pixels);
+        out.write_region(band, &pixels);
+        y = end;
+    }
+    out.prune();
+    Ok(out)
 }

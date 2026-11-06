@@ -1023,10 +1023,15 @@ fn selected_tool_survives_a_restart_without_option_changes() {
     let (mut app, store) = app_with_store();
     let ctx = egui::Context::default();
     tick(&mut app, &ctx);
-    assert_eq!(app.ui.tool, Tool::Brush);
-    // Every tool, including flyout-only tools, can be restored. Return to Brush last to
+    assert_eq!(app.ui.tool, Tool::Move);
+    // Start from a non-default tool so selecting every tool (including Move) is an
+    // explicit change that gets persisted.
+    app.ui.tool = Tool::Brush;
+    crate::tool_memory::persist(&mut app, &ctx);
+    tick(&mut app, &ctx);
+    // Every tool, including flyout-only tools, can be restored. Return to Move last to
     // prove selecting the default overwrites a previously remembered nondefault tool.
-    for tool in Tool::ALL.into_iter().chain([Tool::Brush]) {
+    for tool in Tool::ALL.into_iter().chain([Tool::Move]) {
         app.ui.tool = tool;
         crate::tool_memory::persist(&mut app, &ctx);
         tick(&mut app, &ctx);
@@ -1041,10 +1046,10 @@ fn selected_tool_survives_a_restart_without_option_changes() {
 #[test]
 fn selected_tool_is_flushed_on_exit_without_another_frame() {
     let (mut app, store) = app_with_store();
-    app.ui.tool = crate::state::Tool::Move;
+    app.ui.tool = crate::state::Tool::Brush;
     crate::tool_memory::save_on_exit(&mut app).unwrap();
     let (app2, _) = app_with_saved(store.lock().unwrap().clone());
-    assert_eq!(app2.ui.tool, crate::state::Tool::Move);
+    assert_eq!(app2.ui.tool, crate::state::Tool::Brush);
 }
 
 #[test]
@@ -1081,7 +1086,7 @@ fn invalid_selected_tool_preserves_other_preferences() {
             })
             .to_string(),
         ));
-        assert_eq!(app.ui.tool, crate::state::Tool::Brush, "{bad}");
+        assert_eq!(app.ui.tool, crate::state::Tool::Move, "{bad}");
         assert_eq!(app.ui.tool_options.feather, 12.0);
     }
 }
@@ -1091,19 +1096,19 @@ fn selected_tool_excludes_temporary_switches() {
     use crate::state::Tool;
     let (mut app, store) = app_with_store();
     let ctx = egui::Context::default();
-    app.ui.tool = Tool::Move;
+    app.ui.tool = Tool::Brush;
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
     app.tool_override = Some(Tool::Hand);
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
-    assert_eq!(stored(&store)["selectedTool"], json!("Move"));
+    assert_eq!(stored(&store)["selectedTool"], json!("Brush"));
     app.tool_override = None;
     app.ui.tool = Tool::Zoom;
-    crate::spring_tools::pressed(&mut app, 'Z', Tool::Move, true, 0.0);
+    crate::spring_tools::pressed(&mut app, 'Z', Tool::Brush, true, 0.0);
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
-    assert_eq!(stored(&store)["selectedTool"], json!("Move"));
+    assert_eq!(stored(&store)["selectedTool"], json!("Brush"));
     // A quick tap commits the choice after spring_tools clears the pending switch.
     crate::spring_tools::tick(&mut app, &ctx);
     crate::tool_memory::persist(&mut app, &ctx);
@@ -1439,8 +1444,8 @@ fn unimplemented_preferences_are_hidden_from_the_dialog() {
     let values = prefs::Preferences::default().to_json();
     assert!(has_visible_fields(&values, "general"));
     assert!(has_visible_fields(&values, "fileHandling"));
-    // Every setting of this section is still unimplemented.
-    assert!(!has_visible_fields(&values, "scratchDisks"), "scratchDisks");
+    assert!(has_visible_fields(&values, "scratchDisks"));
+    assert!(!prefs::is_hidden("scratchDisks.disks"));
     // Allow Agent Control and Control Port are read at launch (apps/photocraft main.rs).
     assert!(has_visible_fields(&values, "integrations"));
     assert!(!prefs::is_hidden("integrations.allowAgentControl"));

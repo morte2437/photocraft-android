@@ -170,6 +170,7 @@ fn run_waiting(app: &mut PhotocraftApp, wait: bool, run: impl FnOnce(&mut Photoc
 const SHELL_DIALOG: &str = "shell";
 
 pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    app.frame_tool_ctx = Some(ctx.clone());
     let saved = app.session.authorize;
     if let Some(gate) = app.services.automation_authorize {
         app.session.authorize = Some(gate);

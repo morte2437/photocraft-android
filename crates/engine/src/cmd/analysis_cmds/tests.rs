@@ -552,3 +552,18 @@ fn iso_from_unix_matches_the_old_cycle_conversion_including_beyond_chrono() {
     assert_eq!(iso_from_unix(i64::MAX), "292277026596-12-04T15:30:07Z");
     assert_eq!(iso_from_unix(i64::MIN), "-292277022657-01-27T08:29:52Z");
 }
+
+#[test]
+fn geometric_features_match_full_measurements_without_gray() {
+    let mask = [true, true, false, false, false, false, false, true, true];
+    let gray = [0.2; 9];
+    let full = measure_features(&mask, &gray, 3, 3, (4, 7), 255.0);
+    let geometric = measure_features_impl(&mask, None, 3, 3, (4, 7), 255.0);
+    assert_eq!(full.len(), 2);
+    for (a, b) in full.iter().zip(&geometric) {
+        assert_eq!(a.area, b.area);
+        assert_eq!(a.perimeter, b.perimeter);
+        assert_eq!(a.bounds, b.bounds);
+        assert!(b.histogram.is_empty());
+    }
+}

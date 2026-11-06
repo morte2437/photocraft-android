@@ -59,6 +59,10 @@ pub struct DocState {
     /// The snapshot set as the History Brush's source (`history.setSource {snapshot}`); `None`:
     /// the source is a state, kept by the history ([`photocraft_ops::History::brush_source`]).
     pub(crate) source_snapshot: Option<u64>,
+    /// Names the user gave layers (Rename Layer, Duplicate Layer's Name, `type.edit`'s name): a
+    /// type layer keeps such a name although it looks like a copy's ("Title copy 2"), while a
+    /// name Duplicate Layer made still follows the text (#9023). Kept for the session only.
+    pub(crate) typed_names: std::collections::HashMap<LayerId, String>,
 }
 
 impl DocState {
@@ -81,6 +85,11 @@ impl DocState {
         let mut history = History::default();
         let target = LayerTarget { active: active_layer, selected: active_layer.into_iter().collect() };
         history.set_current_layers(target.clone());
+        // Spot channels open visible, printing over the composite; alpha channels open hidden.
+        let channel_view = channel_cmds::ChannelView {
+            alpha_visible: (0..doc.channels.len()).map(|i| photocraft_compose::multichannel::is_overprint_spot(&doc, i)).collect(),
+            ..Default::default()
+        };
         let doc = Arc::new(doc);
         // Photoshop's first snapshot: the document as opened, named after it, so the History
         // panel's top row can always bring it back (#2966).
@@ -99,7 +108,7 @@ impl DocState {
             view_revision: 0,
             last_damage: None,
             coalesce: None,
-            channel_view: Default::default(),
+            channel_view,
             isolated_layers: Vec::new(),
             symmetry: None,
             perspective_view: Default::default(),
@@ -110,6 +119,7 @@ impl DocState {
             snapshots: vec![first],
             next_snapshot: 1,
             source_snapshot: None,
+            typed_names: Default::default(),
         }
     }
     /// The selected layers in bottom-to-top document order, always including the active layer.

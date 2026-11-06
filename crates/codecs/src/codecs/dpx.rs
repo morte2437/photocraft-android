@@ -146,6 +146,11 @@ struct Header {
     element: Element,
 }
 
+/// The decoder opens only element zero; protect the other declared elements from flat saves.
+pub(crate) fn has_additional_images(bytes: &[u8]) -> Result<bool, CodecError> {
+    Ok(parse(bytes)?.elements > 1)
+}
+
 fn parse(b: &[u8]) -> Result<Header, CodecError> {
     let o = order(b).ok_or_else(|| err("missing SDPX/XPDS magic number"))?;
     let missing = |what: &str| err(format!("the header ends before {what}"));

@@ -24,6 +24,7 @@ pub fn display_rows(doc: &Document, show_all: bool) -> Vec<(usize, &Layer)> {
         for l in layers.iter().rev() {
             out.push((depth, l));
             if let LayerContent::Group(g) = &l.content
+                && l.frame.is_none()
                 && (g.expanded || show_all)
             {
                 rec(&g.children, depth + 1, show_all, out);
@@ -54,6 +55,9 @@ pub fn triangle_rect(row: Rect, x: f32) -> Rect {
 /// Paint and handle a group row's disclosure triangle at `*x` (advancing it). Returns true when
 /// it was clicked this frame, so the row doesn't also treat the click as a selection.
 pub fn disclosure(ui: &mut egui::Ui, row: Rect, x: &mut f32, l: &Layer, actions: &mut Vec<(String, Value)>) -> bool {
+    if l.frame.is_some() {
+        return false;
+    }
     let LayerContent::Group(g) = &l.content else { return false };
     let hit = triangle_rect(row, *x);
     let resp = ui.interact(hit, ui.scope_id().with(("disclosure", l.id.0)), Sense::click());

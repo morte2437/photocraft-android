@@ -188,7 +188,13 @@ impl<'a> File<'a> {
             let count = if self.big { self.u64_at(e.checked_add(4)?)? } else { u64::from(self.u32_at(e.checked_add(4)?)?) };
             let field = e.checked_add(if self.big { 12 } else { 8 })?;
             // Unknown types are skipped, as the specification says.
-            let Some(size) = type_size(ty) else { continue };
+            let Some(size) = type_size(ty) else {
+                // Keep an unreadable child declaration visible to the completeness check.
+                if tag == TAG_SUB_IFDS {
+                    entries.push(Entry { tag, ty, count, value_at: field });
+                }
+                continue;
+            };
             let fits = count.checked_mul(size).is_some_and(|len| len <= inline);
             let value_at = if fits {
                 field
@@ -236,18 +242,33 @@ impl<'a> File<'a> {
 
     /// The first value of a numeric tag as a float: RATIONAL, FLOAT, DOUBLE or an integer.
     pub fn tag_f64(&self, ifd: &Ifd, tag: u16) -> Option<f64> {
+        self.float(ifd.get(tag)?, 0)
+    }
+
+    /// The values of a numeric tag as floats, when it holds exactly `n` (`None` for any other
+    /// count or an unreadable value).
+    pub fn tag_f64s(&self, ifd: &Ifd, tag: u16, n: u64) -> Option<Vec<f64>> {
         let e = ifd.get(tag)?;
-        if e.count == 0 {
+        if e.count != n {
             return None;
         }
+        (0..n).map(|i| self.float(e, i)).collect()
+    }
+
+    /// Value `i` of a numeric entry as a float: RATIONAL, FLOAT, DOUBLE or an integer.
+    fn float(&self, e: &Entry, i: u64) -> Option<f64> {
+        if i >= e.count {
+            return None;
+        }
+        let at = e.value_at.checked_add(i.checked_mul(type_size(e.ty)?)?)?;
         match e.ty {
             5 => {
-                let (n, d) = (self.u32_at(e.value_at)?, self.u32_at(e.value_at.checked_add(4)?)?);
+                let (n, d) = (self.u32_at(at)?, self.u32_at(at.checked_add(4)?)?);
                 (d != 0).then(|| f64::from(n) / f64::from(d))
             }
-            11 => Some(f64::from(f32::from_bits(self.u32_at(e.value_at)?))),
-            12 => Some(f64::from_bits(self.u64_at(e.value_at)?)),
-            _ => self.uint(e, 0).map(|v| v as f64),
+            11 => Some(f64::from(f32::from_bits(self.u32_at(at)?))),
+            12 => Some(f64::from_bits(self.u64_at(at)?)),
+            _ => self.uint(e, i).map(|v| v as f64),
         }
     }
 
@@ -258,12 +279,27 @@ impl<'a> File<'a> {
     }
 
     /// SubIFD offsets of a directory (tag 330 as LONG, IFD, LONG8 or IFD8).
-    fn sub_ifds(&self, ifd: &Ifd) -> Vec<u64> {
-        let Some(e) = ifd.get(TAG_SUB_IFDS) else { return Vec::new() };
-        if !matches!(e.ty, 4 | 13 | 16 | 18) {
-            return Vec::new();
+    fn sub_ifds(&self, ifd: &Ifd) -> (Vec<u64>, bool) {
+        let mut entries = ifd.entries.iter().filter(|e| e.tag == TAG_SUB_IFDS);
+        let Some(e) = entries.next() else { return (Vec::new(), true) };
+        let mut complete = entries.next().is_none() && e.count <= MAX_SUBIFDS;
+        if e.count == 0 {
+            return (Vec::new(), complete);
         }
-        (0..e.count.min(MAX_SUBIFDS)).map_while(|i| self.uint(e, i)).filter(|&o| o != 0).collect()
+        if !matches!(e.ty, 4 | 13 | 16 | 18) {
+            return (Vec::new(), false);
+        }
+        let mut children = Vec::new();
+        for i in 0..e.count.min(MAX_SUBIFDS) {
+            let Some(at) = self.uint(e, i) else {
+                complete = false;
+                break;
+            };
+            if at != 0 {
+                children.push(at);
+            }
+        }
+        (children, complete)
     }
 }
 
@@ -323,8 +359,8 @@ pub struct TiffInfo {
     pub little_endian: bool,
     /// Main-chain directories in file order, each followed by its SubIFDs (depth first).
     pub pages: Vec<TiffPage>,
-    /// `false` when the walk stopped early: an unreadable directory, a cycle, or more than
-    /// 10 000 directories. The pages listed up to that point are still valid.
+    /// `false` for unreadable directories or child lists, cycles, or directory/depth/count limits.
+    /// The pages listed up to that point are still valid.
     pub complete: bool,
 }
 
@@ -407,10 +443,14 @@ impl Walk<'_, '_> {
             };
             let index = self.pages.len();
             self.pages.push(describe(self.f, &ifd, parent));
+            let (children, complete) = self.f.sub_ifds(&ifd);
+            self.complete &= complete;
             if depth < MAX_SUB_DEPTH {
-                for sub in self.f.sub_ifds(&ifd) {
+                for sub in children {
                     self.chain(sub, Some(index), depth + 1);
                 }
+            } else if !children.is_empty() {
+                self.complete = false;
             }
             at = ifd.next;
         }

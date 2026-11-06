@@ -605,7 +605,7 @@ fn alt_scroll_zooms_while_a_temporary_tool_is_held() {
     assert!((zoom(&h) / z0 - 1.1f32.powi(2)).abs() < 1e-3, "{z0} -> {}", zoom(&h));
     h.event(egui::Event::Key { key: Key::Space, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
     h.run_steps(2);
-    assert_eq!(h.state().ui.tool, crate::state::Tool::Brush);
+    assert_eq!(h.state().ui.tool, crate::state::Tool::Move);
 }
 
 /// #8049 (Windows 11): the Alt key's press arrives, but the modifier state stays without Alt, so
@@ -1006,20 +1006,56 @@ fn eyedropper_and_alt_sampling_show_a_pipette() {
     assert_eq!(precise(&mut h), (egui::CursorIcon::Crosshair, desktop));
 }
 
-/// The Paint Bucket shows a bucket instead of the crosshair (#3968); Precise Other Cursors keeps
-/// the crosshair.
+/// The bucket and fill target share one pointer bitmap or one painted image, and Precise Other Cursors hides both.
 #[test]
 fn paint_bucket_shows_a_bucket_cursor() {
+    fn cursor_area_visible(h: &Harness<'static, PhotocraftApp>, id: &str) -> bool {
+        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique(id));
+        h.ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer))
+    }
+
     let mut h = harness();
     let p = h.state().last_canvas_rect.center();
     h.state_mut().ui.tool = crate::state::Tool::PaintBucket;
     h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::None, "the bucket replaces the pointer");
+
+    let output = h.output();
+    if cfg!(not(target_arch = "wasm32")) {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::Crosshair, "the bitmap keeps a visible fallback");
+        let cursor = output.platform_output.cursor_image.as_ref().expect("native root viewport uses the unified bucket bitmap");
+        let [hot_x, hot_y] = cursor.hotspot;
+        let hot_pixel = (usize::from(hot_y) * usize::from(cursor.size[0]) + usize::from(hot_x)) * 4 + 3;
+        assert_eq!(cursor.rgba[hot_pixel], 0, "the Gradient-style crosshair leaves its exact bitmap hotspot open");
+        let side = usize::from(cursor.size[0]);
+        assert!(
+            cursor.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, pixel)| {
+                let x = (i % side) as u16;
+                let y = (i / side) as u16;
+                pixel[3] > 200 && x + 2 < hot_x && y + 2 < hot_y
+            }),
+            "the bucket artwork is opaque above-left of the same hotspot"
+        );
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "native cursor has no frame-painted icon overlay");
+        assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "native cursor does not create a painted cursor Area");
+    } else {
+        assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::None, "the painted image hides the OS arrow");
+        assert!(cursor_area_visible(&h, "pc-tool-cursor"), "scaled or web cursor uses one unified image Area");
+        assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "the old icon overlay is absent");
+    }
+    assert_eq!(h.ctx.pointer_latest_pos(), Some(p), "the click target stays at the cursor hotspot");
+
     h.state_mut().run("prefs.set", json!({"values": {"cursors.other": "precise"}})).unwrap();
-    h.hover_at(p);
     h.run_steps(2);
-    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::Crosshair, "Precise keeps the crosshair");
+    let precise = h.output();
+    assert_eq!(precise.platform_output.cursor_icon, egui::CursorIcon::Crosshair);
+    assert_eq!(
+        precise.platform_output.cursor_image.is_some(),
+        cfg!(not(target_arch = "wasm32")),
+        "Precise uses its crosshair bitmap on native and the system cursor on web"
+    );
+    assert!(!cursor_area_visible(&h, "pc-icon-cursor"), "Precise omits the bucket artwork");
+    assert!(!cursor_area_visible(&h, "pc-tool-cursor"), "Precise omits the painted bucket image");
 }
 
 #[test]
@@ -1284,6 +1320,40 @@ fn wheel_zoom_over_the_image_still_anchors_on_the_pointer() {
     h.run_steps(20);
     let d1 = doc_at(&h, p);
     assert!((d1[0] - d0[0]).abs() < 0.1 && (d1[1] - d0[1]).abs() < 0.1, "{d0:?} -> {d1:?}");
+}
+
+/// #10488: a Windows reporter pressed Ctrl + Alt + the wheel over the canvas and nothing happened.
+/// winit reports a held Ctrl as both `ctrl` and `command`, so the Alt zoom gesture has to accept
+/// `command` when `ctrl` is set as well. Ctrl + Alt + wheel now zooms like ⌥ + wheel, ×1.1 a notch
+/// around the pointer, and holds the document point under it fixed.
+#[test]
+fn ctrl_alt_wheel_zooms_the_canvas_like_alt_wheel() {
+    let mut h = harness();
+    // Animated Zoom off: a notch is one instant step, so the frame count does not matter here.
+    h.state_mut().session.edit_prefs(|p| p.general.animated_zoom = false);
+    let r = h.state().last_canvas_rect;
+    let p = pos2(r.center().x - 150.0, r.center().y - 100.0);
+    h.hover_at(p);
+    h.run_steps(2);
+    let (z0, d0) = (zoom(&h), doc_at(&h, p));
+    assert!(d0[0] > 0.0 && d0[1] > 0.0, "the pointer starts on the image: {d0:?}");
+    let ctrl_alt = Modifiers { alt: true, ctrl: true, command: true, ..Modifiers::NONE };
+    for _ in 0..5 {
+        wheel(&h, 1.0, ctrl_alt);
+        h.run_steps(3);
+    }
+    h.run_steps(20);
+    let (z1, d1) = (zoom(&h), doc_at(&h, p));
+    assert!((z1 / z0 - 1.1f32.powi(5)).abs() < 1e-3, "five Ctrl + Alt notches, ×1.1 each: {z0} -> {z1}");
+    assert!((d1[0] - d0[0]).abs() < 0.1 && (d1[1] - d0[1]).abs() < 0.1, "the point under the pointer held: {d0:?} -> {d1:?}");
+    // A plain Ctrl + wheel keeps its sideways scroll (#635).
+    let ca = h.state().ui.views[0].center;
+    let za = zoom(&h);
+    wheel(&h, -1.0, Modifiers { ctrl: true, command: true, ..Modifiers::NONE });
+    h.run_steps(40);
+    assert_eq!(zoom(&h), za, "Ctrl + wheel does not zoom");
+    let c1 = h.state().ui.views[0].center;
+    assert!(c1[0] > ca[0] && c1[1] == ca[1], "Ctrl + wheel still pans sideways: {ca:?} -> {c1:?}");
 }
 
 /// #4658: with the Move tool's Show Transform Controls, the band just outside the box shows the

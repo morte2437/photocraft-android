@@ -5,6 +5,7 @@ use super::params::{
     input_object, merged_object, modifiers_from, num_field, ok, screen_point, uint_field, whole_object,
 };
 use super::{ControlRequest, DialogKind, Outcome, PhotocraftApp, SHELL_DIALOG, Tool, ToolEvent, Value, json, run_waiting, tool_event, wrap};
+use photocraft_engine::jobs::{CancelReport, JobId};
 
 /// A domain handler: `Some` when it owns the request's method, `None` to let the next one try.
 type Handler = fn(&mut PhotocraftApp, &egui::Context, &ControlRequest) -> Option<Outcome>;
@@ -51,6 +52,9 @@ fn engine_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReq
 
 fn context_choose(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     let Some(id) = str_param(p, "id") else { return err("missing `id`") };
+    if app.ui.canvas_tool_menu.is_none() && app.ui.brush_mode_menu.is_some() {
+        return mode_menu_choose(app, ctx, id);
+    }
     let Some(menu) = app.ui.canvas_tool_menu.as_ref() else { return err("no canvas context menu is open") };
     if !crate::canvas_tool_menu::available(app, menu, id) {
         return err("context action is unavailable");
@@ -64,6 +68,22 @@ fn context_choose(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Ou
     }
     crate::canvas_tool_menu::choose(app, ctx, id);
     ok(json!({"command": id, "dialog": app.ui.dialogs.last().map(|d| d.id)}))
+}
+
+/// A row of the painting tools' Shift+right-click menu, by its English label (`brushModeMenu.choices`).
+fn mode_menu_choose(app: &mut PhotocraftApp, ctx: &egui::Context, label: &str) -> Outcome {
+    let item = match crate::brush_mode_menu::find(app, label) {
+        Ok(item) => item,
+        Err(e) => return err(e),
+    };
+    if let Some((command, params)) = crate::brush_mode_menu::engine_call(app, app.ui.tool, item)
+        && let Some(authorize) = app.services.automation_command.as_ref()
+        && let Err(error) = authorize(command, &params)
+    {
+        return err(error);
+    }
+    crate::brush_mode_menu::choose(app, ctx, item);
+    ok(json!({"choice": label, "brushPicker": app.ui.brush_picker.is_some()}))
 }
 
 fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
@@ -104,18 +124,27 @@ fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRe
 fn jobs_cancel(app: &mut PhotocraftApp, p: &Value) -> Outcome {
     let all = p.get("job").is_none_or(Value::is_null);
     match p.get("job").and_then(Value::as_u64) {
-        Some(j) if app.session.job(photocraft_engine::jobs::JobId(j)).is_some() => {
-            let cancelled = crate::jobs_ui::cancel(app, photocraft_engine::jobs::JobId(j));
-            ok(json!({"cancelled": usize::from(cancelled)}))
-        }
+        // Same reply as the engine's `jobs.cancel`: `{cancelled: n}`, plus `notCancelled:
+        // [{job, reason}]` for the jobs left running (a save already writing its file, a print).
+        Some(j) if app.session.job(JobId(j)).is_some() => ok(cancel_each(app, vec![JobId(j)]).to_json()),
         Some(j) => err(format!("no running job {j}")),
         None if all => {
             let ids: Vec<_> = app.session.jobs().into_iter().map(|j| j.id).collect();
-            let cancelled = ids.into_iter().filter(|j| crate::jobs_ui::cancel(app, *j)).count();
-            ok(json!({"cancelled": cancelled}))
+            ok(cancel_each(app, ids).to_json())
         }
         None => err("`job` must be a job id"),
     }
+}
+
+fn cancel_each(app: &mut PhotocraftApp, ids: Vec<JobId>) -> CancelReport {
+    let mut report = CancelReport::default();
+    for id in ids {
+        match crate::jobs_ui::try_cancel(app, id) {
+            Ok(()) => report.cancelled.push(id),
+            Err(why) => report.refused.push((id, why)),
+        }
+    }
+    report
 }
 
 // ---- the shell: view state, windows, GPU, focus, screenshots ----
@@ -237,6 +266,9 @@ impl UiSet {
 
     /// Apply (nothing but the final `brushSize` command can fail).
     fn apply(mut self, app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> std::result::Result<Value, String> {
+        // All fields are validated. Select the requested frame thumbnail before applying the
+        // remaining view state, so a denied selection leaves the other fields intact.
+        self.tools.select_frame_target(app)?;
         self.tools.apply(app);
         self.crop.apply(app);
         self.panels.apply_options(app);
@@ -267,6 +299,9 @@ fn theme_param(p: &Value) -> std::result::Result<Option<crate::theme::ThemeKind>
 struct ToolSet {
     gradient_blend: Option<photocraft_color::BlendMode>,
     shape_stroke: Option<Option<photocraft_doc::ShapeStroke>>,
+    frame_shape: Option<String>,
+    frame_sides: Option<u32>,
+    frame_target: Option<crate::frame_tool::Target>,
     tool: Option<Tool>,
     gradient_classic: Option<bool>,
     stroke_trace: Option<&'static str>,
@@ -274,6 +309,7 @@ struct ToolSet {
     eyedropper_sample: Option<String>,
     eyedropper_ring: Option<bool>,
     cam_transform_on_drop: Option<bool>,
+    move_show_transform: Option<bool>,
     tile_grid: Option<bool>,
     layer_filter: Option<crate::layer_filter_ui::Filter>,
     pen_mode: Option<String>,
@@ -281,10 +317,14 @@ struct ToolSet {
 }
 
 impl ToolSet {
+    /// Validate the complete tool patch before applying any field; omitted settings are retained.
     fn parse(app: &PhotocraftApp, p: &Value) -> std::result::Result<Self, String> {
         Ok(Self {
             gradient_blend: gradient_blend_param(p)?,
             shape_stroke: shape_stroke_param(app, p)?,
+            frame_shape: frame_shape_param(p)?,
+            frame_sides: frame_sides_param(p)?,
+            frame_target: frame_target_param(p)?,
             tool: tool_param(p)?,
             gradient_classic: bool_field(p, "gradientClassic")?,
             stroke_trace: stroke_trace_param(p)?,
@@ -294,6 +334,7 @@ impl ToolSet {
             eyedropper_ring: bool_field(p, "eyedropperRing")?,
             // Content-Aware Move's Transform On Drop checkbox.
             cam_transform_on_drop: bool_field(p, "camTransformOnDrop")?,
+            move_show_transform: bool_field(p, "moveShowTransform")?,
             // Developer overlay of the active layer's storage tiles (tile_overlay.rs).
             tile_grid: bool_field(p, "tileGrid")?,
             layer_filter: p.get("layerFilter").map(|v| crate::layer_filter_ui::patched(&app.ui, v)).transpose()?,
@@ -302,7 +343,26 @@ impl ToolSet {
         })
     }
 
+    fn select_frame_target(&self, app: &mut PhotocraftApp) -> std::result::Result<(), String> {
+        let Some(target) = self.frame_target else { return Ok(()) };
+        if let Some(id) = crate::frame_tool::selected(app).map(|l| l.id) {
+            crate::frame_tool::select_result(app, id, target)?;
+        } else {
+            app.ui.frame_tool.target = target;
+            app.ui.frame_tool.selected = None;
+        }
+        Ok(())
+    }
+
+    /// Apply a validated patch, selecting the tool before its per-tool settings.
     fn apply(self, app: &mut PhotocraftApp) {
+        if let Some(shape) = &self.frame_shape {
+            app.ui.frame_tool.ellipse = shape == "ellipse";
+            app.ui.frame_tool.shape.clone_from(shape);
+        }
+        if let Some(sides) = self.frame_sides {
+            app.ui.frame_tool.sides = sides;
+        }
         if let Some(stroke) = &self.shape_stroke {
             if let Some(stroke) = stroke {
                 app.ui.tool_options.stroke_width = stroke.width;
@@ -329,6 +389,9 @@ impl ToolSet {
         }
         if let Some(on) = self.cam_transform_on_drop {
             app.ui.tool_options.cam_transform_on_drop = on;
+        }
+        if let Some(on) = self.move_show_transform {
+            app.ui.tool_options.move_show_transform = on;
         }
         if let Some(on) = self.tile_grid {
             app.ui.view.tile_grid = on;
@@ -359,6 +422,32 @@ impl ToolSet {
             crate::gradient_ui::options_changed(app, &gradient_before);
         }
     }
+}
+
+fn frame_shape_param(p: &Value) -> std::result::Result<Option<String>, String> {
+    p.get("frameShape")
+        .filter(|v| !v.is_null())
+        .map(|v| {
+            v.as_str()
+                .filter(|s| ["rectangle", "ellipse", "triangle", "polygon", "custom"].contains(s))
+                .map(str::to_string)
+                .ok_or_else(|| "frameShape must be rectangle, ellipse, triangle, polygon or custom".to_string())
+        })
+        .transpose()
+}
+
+fn frame_sides_param(p: &Value) -> std::result::Result<Option<u32>, String> {
+    match uint_field(p, "frameSides")? {
+        Some(n) if !(3..=100).contains(&n) => Err("frameSides must be 3..=100".into()),
+        n => Ok(n.map(|n| n as u32)),
+    }
+}
+
+fn frame_target_param(p: &Value) -> std::result::Result<Option<crate::frame_tool::Target>, String> {
+    p.get("frameTarget")
+        .filter(|v| !v.is_null())
+        .map(|v| serde_json::from_value::<crate::frame_tool::Target>(v.clone()).map_err(|_| "frameTarget must be frame, content or both".to_string()))
+        .transpose()
 }
 
 /// The Pen tools' options bar (#1397): Path or Shape mode.
@@ -451,7 +540,8 @@ impl CropSet {
         let overlay = crop_overlay_param(p)?;
         let overlay_show = crop_overlay_show_param(p)?;
         let orientation = crop_orientation_param(p)?;
-        // The Crop tool's Fill (#3823): "background" (Background (Default)) or "contentAware".
+        // The Crop tool's Fill (#3823): "background" (Background (default), or Transparent
+        // (default) with Delete Cropped Pixels off) or "contentAware".
         let content_aware = crop_fill_param(p)?;
         // The Crop tool's gear menu: Show Cropped Area and the shield (#1919).
         let shield = merged_object(&app.ui.tool_options.crop_shield, p.get("cropShield"), "cropShield")?;
@@ -586,6 +676,9 @@ impl PanelSet {
             app.ui.mask_target = m;
             app.ui.properties_layer = None;
             app.ui.vector_mask_target &= !m;
+            if m {
+                app.target_mask_over_colour_rows();
+            }
             app.sync_mask_targets();
         }
         if let Some(open) = self.updates_open {
@@ -997,14 +1090,24 @@ fn discard_dialog_confirm(app: &mut PhotocraftApp, ctx: &egui::Context, choice: 
 fn dialog_set(app: &mut PhotocraftApp, p: &Value) -> Outcome {
     let (Some(id), Some(field)) = (u64_param(p, "dialog"), str_param(p, "field")) else { return err("need `dialog` and `field`") };
     let value = p.get("value").cloned().unwrap_or(Value::Null);
+    // A Color Picker previewing in this dialog owns its fields until its OK or Cancel: an edit now
+    // would be undone by the picker putting the dialog back as it was.
+    let previewed = crate::color_picker_ui::live_preview::previewed_dialogs(app).contains(&id);
     match app.ui.dialog_mut(id) {
         // A continuation belongs to the dialog that paused it, even when another
         // action has a valid token. Replacing it would resume or cancel that action.
         Some(_) if field == crate::actions::RESUME => err("the paused action token is read-only"),
+        Some(_) if previewed => err("confirm or cancel the color picker first"),
+        // A Color Picker's target is fixed when it opens: OK must set the field it previewed in.
+        Some(d) if matches!(field, "__colorPicker" | "__dialog" | "__field") && crate::color_picker_ui::owns(&d.fields) => {
+            err("a Color Picker's target is fixed when it opens")
+        }
         // A marker picks the handler OK runs: a dialog keeps the ones it was opened with.
         Some(d) if !d.fields.contains_key(field) && crate::dialogs::is_route_marker(field) => err(format!("`{field}` is set only by the dialog it belongs to")),
         Some(d) => {
             d.fields.insert(field.to_string(), value);
+            // A Color Picker's colour shows in its target dialog at once, as a drag would.
+            crate::color_picker_ui::live_preview::sync(app);
             ok(Value::Null)
         }
         None => err(format!("no dialog {id}")),
@@ -1124,6 +1227,7 @@ struct PointerGesture {
     mods: egui::Modifiers,
 }
 
+/// Validate every sample before starting a gesture, then respect modal, button and temporary-tool ownership.
 fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     // Every field and event is validated before the first event runs, so a rejected call
     // changes nothing (#2449).
@@ -1150,11 +1254,36 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
             continue;
         }
         if !pointer_event_intercepted(app, ctx, &gesture, &sample) {
+            if modal_blocks_move_pointer(app, sample.ev, gesture.mods) {
+                continue;
+            }
+            if app.ui.tool == Tool::Move && !gesture.secondary && !gesture.middle && !gesture.space && matches!(sample.ev, ToolEvent::Down { .. }) {
+                app.begin_move_transform_controls(ctx, sample.x, sample.y);
+            }
             forward_pointer_event(app, &gesture, sample);
         }
     }
     app.stylus.feed.set(None);
     ok(json!({"status": app.ui.status}))
+}
+
+/// Dialog samplers run first; block new Move gestures while allowing an active one to finish.
+/// The Move tool is the one the event acts as: ⌘ makes most other tools the Move tool.
+fn modal_blocks_move_pointer(app: &PhotocraftApp, event: ToolEvent, mods: egui::Modifiers) -> bool {
+    crate::canvas::event_tool(app, mods) == Tool::Move
+        && (!app.ui.dialogs.is_empty()
+            || app.ui.layers_panel_dialog.is_some()
+            || app.discard.is_some()
+            || app.camera_raw.is_some()
+            || app.smart_svg.modal_open()
+            || app.distort.gallery.is_some()
+            || app.wide_angle.is_some())
+        && (matches!(event, ToolEvent::Down { .. })
+            || (app.drag.is_none()
+                && app.layer_box.is_none()
+                && app.guide_drag.is_none()
+                // Existing transform sessions, including Warp, only finish or ignore Move/Up.
+                && app.ui.transform.is_none()))
 }
 
 fn parse_pointer(p: &Value) -> std::result::Result<ParsedPointer, String> {
@@ -1191,7 +1320,22 @@ fn parse_pointer_event(i: usize, e: &Value) -> std::result::Result<PointerSample
 
 /// Whether a modal tool, picker or context menu took the event instead of the canvas.
 fn pointer_event_intercepted(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
-    pointer_eyedropper_took(app, ctx, g, s) || color_range_took(app, g, s) || (g.secondary && secondary_menu_took(app, ctx, g, s))
+    let took = pointer_eyedropper_took(app, ctx, g, s) || color_range_took(app, g, s) || (g.secondary && secondary_menu_took(app, ctx, g, s));
+    if took && matches!(s.ev, ToolEvent::Up { .. }) && !g.secondary && !g.middle {
+        release_taken_drag(app, g);
+    }
+    took
+}
+
+/// A sampler (Color Picker, Curves/Levels or Properties eyedroppers, Curves ⌘-click, Color
+/// Range) took the primary release: a transform handle drag or Move drag begun before it
+/// ends, so later moves can't resume either without a new press. The Move drag ends where it
+/// last was, since the release's coordinates belong to the sampler.
+fn release_taken_drag(app: &mut PhotocraftApp, g: &PointerGesture) {
+    crate::tools::transform_tool::release_handle_drag(app);
+    if let Some([x, y]) = app.drag.as_ref().map(|d| d.points.last().map_or(d.start, |p| [p[0], p[1]])) {
+        tool_event(app, ToolEvent::Up { x, y }, g.mods);
+    }
 }
 
 fn pointer_eyedropper_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
@@ -1347,7 +1491,11 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     let p = &req.params;
     Some(match req.method.as_str() {
         "app.open" => match str_param(p, "path") {
-            Some(path) => app_open(app, path),
+            Some(path) => match p.get("approveHighMemory") {
+                None | Some(Value::Null) => app_open(app, path, false),
+                Some(Value::Bool(approved)) => app_open(app, path, *approved),
+                Some(_) => err("expected boolean for `approveHighMemory`"),
+            },
             None => err("missing `path`"),
         },
         "app.save" => match crate::FormatChoices::from_params(p, "app.save") {
@@ -1366,7 +1514,9 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
     })
 }
 
-fn app_open(app: &mut PhotocraftApp, path: &str) -> Outcome {
+/// The `app.open` control method: opens a path through the configured automation read
+/// capability, with optional high-memory approval.
+fn app_open(app: &mut PhotocraftApp, path: &str, approved: bool) -> Outcome {
     if let Some(outcome) = open_pcraft_directory(app, path) {
         return outcome;
     }
@@ -1376,7 +1526,7 @@ fn app_open(app: &mut PhotocraftApp, path: &str) -> Outcome {
     };
     wrap(opened.and_then(|(name, bytes)| {
         let name = app.open_name(&name);
-        let warnings = app.open_automation_bytes(&name, &bytes)?;
+        let warnings = app.open_automation_bytes_with_approval(&name, &bytes, approved)?;
         // Brushes/gradients go to the preset libraries: no document, no Open Recent entry.
         if !crate::preset_files_ui::is_preset_file(&name) {
             app.opened_from(path);

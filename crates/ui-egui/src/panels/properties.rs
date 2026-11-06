@@ -151,6 +151,10 @@ fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         && crate::mask_props_ui::targeted(app, layer)
     {
         crate::props_layout::header(ui, layer);
+        if layer.frame.is_some() {
+            crate::frame_tool::properties(app, ui, layer);
+            return;
+        }
         crate::mask_props_ui::properties(app, ui, layer);
         return;
     }
@@ -186,6 +190,8 @@ fn properties_body_inner(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         adjustment_controls(app, ui, id, adj);
     } else if layer.artboard().is_some() {
         crate::artboard_ui::properties(app, ui, layer);
+    } else if layer.frame.is_some() {
+        crate::frame_tool::properties(app, ui, layer);
     } else if t.pro {
         // Transform, Align, the kind's sections and Quick Actions.
         crate::layer_props_ui::properties(app, ui, layer);

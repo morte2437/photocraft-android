@@ -28,6 +28,7 @@ pub mod move_hover;
 pub mod move_lock;
 pub mod move_mods;
 pub mod object_finder;
+pub(super) mod paint_picker;
 pub mod path_components;
 pub mod perspective_crop_ui;
 pub mod perspective_ruler_ui;
@@ -53,3 +54,6 @@ pub(super) mod type_transform;
 pub mod vector_ui;
 pub mod warp_preview;
 pub mod zoom_tool;
+
+#[cfg(test)]
+mod crop_options_labels_tests;

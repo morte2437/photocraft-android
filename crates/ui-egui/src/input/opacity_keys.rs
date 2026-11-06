@@ -32,7 +32,7 @@ enum Target {
 
 fn target(tool: Tool) -> Target {
     match tool {
-        Tool::Brush | Tool::Eraser => Target::Brush { flow: true },
+        Tool::Brush | Tool::Eraser | Tool::CloneStamp | Tool::HistoryBrush => Target::Brush { flow: true },
         Tool::Pencil => Target::Brush { flow: false },
         Tool::Gradient | Tool::PaintBucket => Target::ToolOpacity,
         // Their options-bar number is a strength, exposure or tolerance, not this opacity.
@@ -107,6 +107,9 @@ fn apply(app: &mut PhotocraftApp, percent: f32, shift: bool) {
     let shift = shift ^ (build_up && matches!(target(tool), Target::Brush { flow: true }));
     match (target(app.ui.tool), shift) {
         (Target::Brush { .. }, false) => {
+            // Clone Stamp's and History Brush's Opacity fields (and their strokes) start at 1%, so
+            // `00` sets the 1% they actually paint with rather than showing a 0% they can't do.
+            let v = if matches!(tool, Tool::CloneStamp | Tool::HistoryBrush) { v.max(0.01) } else { v };
             let _ = app.run("tools.setBrush", json!({ "brush": { "opacity": v } }));
         }
         // The options bar's Flow field starts at 1%.
@@ -199,6 +202,32 @@ mod tests {
         press(&mut e, 7, false, 5000.0);
         assert!((e.session.tools.brush.opacity - 0.7).abs() < 1e-6);
         assert!((e.session.tools.brush.flow - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn history_brush_and_clone_stamp_digits_set_brush_opacity_and_flow() {
+        for tool in [Tool::HistoryBrush, Tool::CloneStamp] {
+            let mut a = app(tool);
+            press(&mut a, 7, false, 0.0);
+            assert!((a.session.tools.brush.opacity - 0.7).abs() < 1e-6);
+            press(&mut a, 4, true, 1000.0);
+            assert!((a.session.tools.brush.flow - 0.4).abs() < 1e-6);
+            assert_eq!(layer(&a), (1.0, 1.0), "the layer is untouched");
+        }
+    }
+
+    #[test]
+    fn double_zero_gives_history_brush_and_clone_stamp_their_one_percent_minimum() {
+        for tool in [Tool::HistoryBrush, Tool::CloneStamp] {
+            let mut a = app(tool);
+            press(&mut a, 0, false, 0.0);
+            press(&mut a, 0, false, 100.0);
+            assert!((a.session.tools.brush.opacity - 0.01).abs() < 1e-6, "{tool:?}");
+        }
+        let mut a = app(Tool::Brush);
+        press(&mut a, 0, false, 0.0);
+        press(&mut a, 0, false, 100.0);
+        assert!(a.session.tools.brush.opacity.abs() < 1e-6, "the Brush itself still goes to 0%");
     }
 
     #[test]

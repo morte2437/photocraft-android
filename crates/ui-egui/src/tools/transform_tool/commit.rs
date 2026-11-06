@@ -22,6 +22,17 @@ pub fn commit(app: &mut PhotocraftApp) {
     let type_layer = warps_type(app);
     let Some(t) = app.ui.transform.take() else { return };
     let mut preview = app.transform_preview.take();
+    if crate::frame_tool::frame_transform(&t) {
+        app.frame_preview = None;
+        if t.quad != corners(t.rect) {
+            let result = crate::frame_tool::transformed_frame(app, &t)
+                .and_then(|transform| app.run("layer.frame.set", json!({"layer": t.layer, "transform": transform.m})));
+            if let Err(error) = result {
+                keep_open(app, t, preview, error);
+            }
+        }
+        return;
+    }
     if let Some(options) = &t.content_aware {
         crate::cas_transform::commit(app, &t, options);
         return;
@@ -122,6 +133,7 @@ pub fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
     if committing(app) != Some(e.id) {
         return;
     }
+    let after = app.after_transform_commit.take();
     let (Some(t), Some(mut pv)) = (app.ui.transform.take(), app.transform_preview.take()) else { return };
     // A refused commit (a result over the pixel budget, #3773) keeps the box open, as inline,
     // unless picking another tool or layer started it: then the box ends, as Esc would.
@@ -133,7 +145,16 @@ pub fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
         }
         return;
     }
-    finish(app, Some(pv.doc.id), LayerId(t.layer), t.made, matches!(e.outcome, JobOutcome::Done(_)));
+    let document = pv.doc.id;
+    let landed = matches!(e.outcome, JobOutcome::Done(_));
+    finish(app, Some(document), LayerId(t.layer), t.made, landed);
+    // Not in another tab, which the click wasn't meant for.
+    if let Some((id, params)) = after.filter(|_| landed && app.session.active().is_some_and(|st| st.doc.id == document))
+        && let Err(e) = app.run(&id, params)
+    {
+        // A notice, as the commit's own status replaces the status bar's text next (jobs_ui).
+        crate::notices::error(app, e);
+    }
 }
 
 /// A commit the engine refused (a result over the pixel budget, #3773): the box stays open as it
@@ -232,6 +253,11 @@ pub fn follow_edits(app: &mut PhotocraftApp) {
 }
 
 pub fn cancel(app: &mut PhotocraftApp) {
+    if app.ui.transform.as_ref().is_some_and(crate::frame_tool::frame_transform) {
+        app.frame_preview = None;
+    }
+    // A frame drag's session (frame or content) ends here; a later one must not commit on release.
+    app.ui.frame_tool.auto_transform = false;
     // Esc while the commit runs cancels the job; the session ends when it does.
     if let Some(job) = committing(app) {
         crate::jobs_ui::cancel(app, job);
@@ -284,6 +310,12 @@ pub(crate) const SAVE_FOR_WEB: &str = "file.export.saveForWebLegacy";
 /// While transforming, Undo and Redo apply to the box: `Some(enabled)` for those commands (and
 /// Toggle Last State, which would change the document under the box), `None` for the rest.
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
+    if (matches!(id, "edit.freeTransform" | "edit.freeTransformCopy") || id.starts_with("edit.transform."))
+        && crate::vector_ui::free_transform_path(app).is_none()
+        && crate::canvas::multiple_color_target(app)
+    {
+        return Some(false);
+    }
     let t = app.ui.transform.as_ref()?;
     if committing(app).is_some() {
         return box_command(id).then_some(false);

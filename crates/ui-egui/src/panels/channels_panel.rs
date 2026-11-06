@@ -34,6 +34,17 @@ impl Row {
             Row::LayerMask => json!("mask"),
         }
     }
+
+    /// The `channel.target` reference a click records: a colour row by the mode's colour name,
+    /// which a recorded action can save as Photoshop's component select (an index can't be).
+    fn target_reference(self, mode: photocraft_doc::ColorMode) -> Value {
+        let names = channel_cmds::color_names(mode);
+        match self {
+            Row::QuickMask => json!("composite"),
+            Row::Color(k) if names.len() > 1 => names.get(k).map_or_else(|| self.reference(), |name| json!({ "color": name.to_ascii_lowercase() })),
+            _ => self.reference(),
+        }
+    }
 }
 
 /// ⌘ = new selection, ⌘⇧ add, ⌘⌥ subtract, ⌘⌥⇧ intersect (Photoshop's thumbnail ⌘-clicks).
@@ -113,8 +124,8 @@ fn handle_channel_row_click(ui: &egui::Ui, row: &mut RowInteractions<'_>) {
     if matches!(row.row, Row::Composite | Row::Color(_)) {
         *row.mask_click = Some(false);
     }
-    let target = if row.row == Row::QuickMask { json!("composite") } else { row.row.reference() };
-    row.actions.push(("channel.target".into(), json!({ "channel": target })));
+    let target = row.row.target_reference(row.doc.pixel_format().mode);
+    row.actions.push(("channel.target".into(), json!({ "channel": target, "extend": modifiers.shift && matches!(row.row, Row::Color(_)) })));
 }
 
 fn handle_channel_row_double_click(ui: &mut egui::Ui, row: &mut RowInteractions<'_>, rename_id: egui::Id) {
@@ -260,7 +271,8 @@ fn row_presentation(row: Row, context: &RowPresentationContext<'_>, mask_visible
             1 + k,
             Some(3 + k),
             context.view.color_visible(k) && !context.gray_view,
-            (context.view.target == ChannelTarget::Composite && !context.quick && !context.mask_targeted) || context.view.target == ChannelTarget::Color(k),
+            (context.view.target == ChannelTarget::Composite && !context.quick && !context.mask_targeted)
+                || context.view.color_selection(context.colors).is_some_and(|c| c.contains(k)),
         ),
         Row::Alpha(i) => (
             context.doc.channels[i].name.clone(),

@@ -313,7 +313,8 @@ fn rgb_only_export_uses_direct_composite_not_reseparated_cmyk() {
     let doc = document(SampleType::U16, 0.5);
     let rgb = photocraft_compose::flatten(&doc);
     let expected =
-        photocraft_codecs::Image::from_normalized(8, 8, ChannelLayout::Rgba, CodecSample::U16, &rgb.px.into_iter().flatten().collect::<Vec<_>>()).unwrap();
+        photocraft_codecs::Image::from_normalized(8, 8, ChannelLayout::Rgba, CodecSample::U16, &rgb.into_px().into_iter().flatten().collect::<Vec<_>>())
+            .unwrap();
 
     let result = export(&doc, "png", &ExportOptions::default()).unwrap();
 

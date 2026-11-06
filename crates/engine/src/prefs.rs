@@ -295,7 +295,8 @@ pub struct Interface {
     pub show_bounding_box_when_dragging_layer: bool,
     /// Windows and Linux: use the system's title bar and window buttons instead of PhotoCraft's
     /// own one-row title bar (tiling window managers, desktops that draw their own decorations;
-    /// #1271, #1316). Read when the app starts. macOS always uses the system's.
+    /// #1271, #1316). The integrated title bar remains the default on Linux and Windows;
+    /// the system frame is opt-in. Read when the app starts. macOS always uses the system's.
     pub system_title_bar: bool,
     /// Show the active document's file name in the title bar and the OS window title. The tabs
     /// already name the file, so this can be turned off for a plain "PhotoCraft" title (#5037).
@@ -449,7 +450,7 @@ pub use shortcuts::{
     reserved_shortcut,
 };
 use store::read_lenient;
-pub use store::{InvalidPref, PREFS_VERSION, PrefsStore};
+pub use store::{InvalidPref, PREFS_VERSION, PrefsStore, read_section};
 pub use validate::{HIDDEN_UNTIL_IMPLEMENTED, LINUX_ONLY, SECTIONS, choices, gpu_adapter_matches, is_color, is_hidden, parse_hex, range};
 use validate::{check_value, get_path, keyed, set_path};
 
@@ -492,6 +493,9 @@ pub struct FileHandling {
     pub exr_aces_cg: bool,
     pub ask_before_saving_layered_tiff: bool,
     pub maximize_psd_compatibility: Ask,
+    /// A `.pcraft` save also writes the flattened document at its canvas size as
+    /// `composite/full.png`. Off by default.
+    pub pcraft_full_composite: bool,
     /// SVG groups deeper than this are rasterised on import; parser and document safety caps remain fixed.
     pub rasterize_svg_groups_deeper_than: u32,
     pub recent_file_count: u32,
@@ -524,6 +528,7 @@ impl Default for FileHandling {
             exr_aces_cg: false,
             ask_before_saving_layered_tiff: true,
             maximize_psd_compatibility: Ask::Always,
+            pcraft_full_composite: false,
             rasterize_svg_groups_deeper_than: photocraft_doc::MAX_GROUP_DEPTH as u32,
             recent_file_count: 20,
             recent_files: Vec::new(),
@@ -563,13 +568,41 @@ impl Default for Export {
 pub const DEFAULT_MEMORY_USAGE_MB: u32 = 8192;
 
 /// The most Memory Usage the web build honours, in MB: a wasm module's linear memory tops out at
-/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything.
+/// 4 GiB, so a larger allowance (the desktop default is 8 GiB) would never trim anything. The
+/// effect cache is capped at it on every 32-bit build ([`SMALL_ADDRESS_SPACE`]).
 const WASM_MEMORY_USAGE_CAP_MB: u32 = 1536;
+
+/// A 32-bit address space (wasm32, 32-bit Windows): an effect cache budget beyond
+/// [`WASM_MEMORY_USAGE_CAP_MB`] would never evict before allocation fails.
+const SMALL_ADDRESS_SPACE: bool = cfg!(target_pointer_width = "32");
 
 /// The Memory Usage a build honours for a `stored` preference: capped on the web build (`web`).
 /// Separate from the target check so native tests exercise both.
 fn honoured_memory_usage_mb(stored: u32, web: bool) -> u32 {
     if web { stored.min(WASM_MEMORY_USAGE_CAP_MB) } else { stored }
+}
+
+/// The smallest Effect Cache the Preferences dialog and `prefs.set` accept, in MB.
+const EFFECT_CACHE_MIN_MB: u32 = 16;
+
+/// The largest Effect Cache the Preferences dialog and `prefs.set` accept, in MB: on a build with
+/// a 32-bit address space (`small`) the cap there, so the field shows the budget the cache gets.
+fn effect_cache_max_mb(small: bool) -> u32 {
+    if small { WASM_MEMORY_USAGE_CAP_MB } else { 65536 }
+}
+
+/// The nearest Effect Cache the field accepts to a `stored` preference, in MB, on a build with a
+/// 32-bit address space (`small`) or not. Separate from the target check so native tests exercise
+/// both.
+fn accepted_effect_cache_mb(stored: u32, small: bool) -> u32 {
+    stored.clamp(EFFECT_CACHE_MIN_MB, effect_cache_max_mb(small))
+}
+
+/// The layer-effect cache budget a build honours for a `stored` preference, in bytes: within the
+/// range the field accepts, so a hand-edited 0 reports 16 MB, not 0. Separate from the target
+/// check so native tests exercise both.
+fn effect_cache_budget_bytes_for(stored: u32, small: bool) -> u64 {
+    u64::from(accepted_effect_cache_mb(stored, small)) << 20
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -578,6 +611,9 @@ pub struct Performance {
     /// Memory PhotoCraft may use, in MB: bounds each document's pixels plus its History (the
     /// oldest states are dropped beyond it), and the result of one transform.
     pub memory_usage_mb: u32,
+    /// Percent of physical RAM for the complete process; None preserves the legacy MB limit.
+    #[serde(default)]
+    pub memory_usage_percent: Option<u8>,
     /// Undo steps kept per document (History panel states).
     pub history_states: u32,
     /// Cache Levels, 1–8: the highest cache level the Histogram panel counts a large document at
@@ -638,6 +674,31 @@ impl Performance {
     pub fn history_budget_bytes(&self) -> usize {
         (self.effective_memory_usage_mb() as usize).saturating_mul(1 << 20)
     }
+
+    /// The byte limit History enforces now: none (only History States) while the scratch disk
+    /// is spilling, since tiles only History holds go to disk instead; otherwise
+    /// [`Self::history_budget_bytes`].
+    pub fn history_cap_bytes(&self) -> usize {
+        if photocraft_raster::spill::enabled() { 0 } else { self.history_budget_bytes() }
+    }
+
+    /// Pixel bytes kept in memory before tiles move to the scratch disk: half of Memory Usage
+    /// (the rest is for the GPU canvas, caches and the app). `PHOTOCRAFT_TILE_BUDGET_MB`
+    /// overrides it (tests, stress runs).
+    pub fn tile_budget_bytes(&self) -> usize {
+        let bytes = std::env::var("PHOTOCRAFT_TILE_BUDGET_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(|mb| mb.saturating_mul(1 << 20))
+            .unwrap_or_else(|| u64::from(self.effective_memory_usage_mb()).saturating_mul(1 << 20) / 2);
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+
+    /// The layer-effect cache budget the build honours, in bytes: [`Performance::effect_cache_mb`],
+    /// capped at 1536 MB on 32-bit builds (the web and 32-bit Windows).
+    pub fn effect_cache_budget_bytes(&self) -> usize {
+        usize::try_from(effect_cache_budget_bytes_for(self.effect_cache_mb, SMALL_ADDRESS_SPACE)).unwrap_or(usize::MAX)
+    }
 }
 
 impl Default for Performance {
@@ -645,6 +706,7 @@ impl Default for Performance {
     fn default() -> Self {
         Self {
             memory_usage_mb: DEFAULT_MEMORY_USAGE_MB,
+            memory_usage_percent: Some(70),
             history_states: 50,
             cache_levels: 4,
             cache_tile_size: 8192,
@@ -674,11 +736,15 @@ pub struct ScratchDisk {
 pub struct ScratchDisks {
     /// Disks for spilling tiles once the memory budget is reached (in priority order).
     pub disks: Vec<ScratchDisk>,
+    /// Largest the scratch file may grow, in MB; 0 = no limit. Reaching it pauses spilling
+    /// like a full disk (History's byte limit applies again). At least max(1 GB, 5 % of the
+    /// volume) is always left free, whatever this is set to.
+    pub size_limit_mb: u32,
 }
 
 impl Default for ScratchDisks {
     fn default() -> Self {
-        Self { disks: vec![ScratchDisk { path: "(system temp)".into(), enabled: true }] }
+        Self { disks: vec![ScratchDisk { path: "(system temp)".into(), enabled: true }], size_limit_mb: 0 }
     }
 }
 
@@ -1019,6 +1085,40 @@ impl Default for Integrations {
     }
 }
 
+choice!(
+    /// Playback Options › Performance: how fast a person's Play runs an action's steps.
+    PlaybackPerformance { Accelerated = "accelerated", StepByStep = "step", Pause = "pause" } default Accelerated
+);
+
+/// Actions panel Playback Options. These are saved independently of an action library.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Actions {
+    pub create_single_history_state: bool,
+    /// Accelerated, Step by Step or Pause For. Agents and headless playback always run at once.
+    pub performance: PlaybackPerformance,
+    /// Pause For's whole seconds between steps, 1 to 60 (the dialog keeps it while another mode
+    /// is chosen, as the reference application does).
+    pub pause_seconds: u8,
+}
+
+impl Default for Actions {
+    fn default() -> Self {
+        Self { create_single_history_state: true, performance: PlaybackPerformance::Accelerated, pause_seconds: 1 }
+    }
+}
+
+impl Actions {
+    /// Shortest and longest Pause For, in seconds.
+    pub const PAUSE_SECONDS: std::ops::RangeInclusive<u8> = 1..=60;
+
+    /// Pause For's seconds, within [`Self::PAUSE_SECONDS`] also when a hand-edited file holds
+    /// another number.
+    pub fn pause_seconds(&self) -> u8 {
+        self.pause_seconds.clamp(*Self::PAUSE_SECONDS.start(), *Self::PAUSE_SECONDS.end())
+    }
+}
+
 /// The History panel's History Options… (not part of Edit › Preferences in Photoshop either).
 /// Photoshop's snapshot options come with #3634.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1103,6 +1203,7 @@ impl LayerMaskOverlay {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
+    pub actions: Actions,
     pub general: General,
     pub interface: Interface,
     pub workspace: Workspace,
@@ -1179,6 +1280,9 @@ pub struct Preferences {
     /// targets that differ from their defaults, saved as the user toggles them and restored at
     /// launch, as Photoshop keeps them between sessions (#3762). JSON owned by the shell.
     pub view_extras: Value,
+    /// Recently Used Colors (`"#rrggbb"`, newest first), shown by the shape Fill and Stroke
+    /// popovers and kept between sessions as in Photoshop. Owned by the shell.
+    pub recent_colors: Vec<String>,
     /// File › Scripts › Script Events Manager: event → script bindings.
     pub script_events: crate::automate_cmds::ScriptEvents,
     /// Layer Mask Display Options: the layer mask rubylith's colour and opacity.
@@ -1322,9 +1426,12 @@ impl Session {
     /// linearity, the transform and layer-effect cache budgets and the text engine's
     /// missing-glyph protection.
     pub fn apply_prefs(&mut self) {
+        self.scratch_runtime.get_or_insert_with(crate::scratch::Runtime::default);
+        crate::scratch::configure(self.prefs());
+        self.scratch_epoch = photocraft_raster::spill::epoch();
         let n = self.prefs().performance.history_states.max(1) as usize;
-        let bytes = self.prefs().performance.history_budget_bytes();
-        let budget = self.prefs().performance.effect_cache_mb as usize;
+        let bytes = self.prefs().performance.history_cap_bytes();
+        let budget = self.prefs().performance.effect_cache_budget_bytes();
         let non_linear = self.prefs().history_options.allow_non_linear_history;
         for st in &mut self.docs {
             st.history.max_states = n;
@@ -1332,11 +1439,30 @@ impl Session {
             st.history.non_linear = non_linear;
             st.trim_history();
         }
-        photocraft_compose::set_effect_cache_budget(budget << 20);
+        photocraft_compose::set_effect_cache_budget(budget);
         crate::transform_cmds::set_budget(u64::from(self.prefs().performance.effective_memory_usage_mb()) << 20);
         // Without waiting for the system font scan: this runs on the UI thread at launch.
         photocraft_text::set_shared_missing_glyph_protection(self.prefs().type_.missing_glyph_protection());
         crate::plugin_cmds::sync_prefs(self);
+    }
+
+    /// Re-apply History's byte limit after the scratch disk paused (a write, create or
+    /// free-space failure) or resumed since it was last applied: while spilling is paused,
+    /// History again bounds the pixel memory it holds, as with no scratch disk. Runs before
+    /// every command; a single atomic load when nothing changed.
+    pub(crate) fn sync_scratch_state(&mut self) {
+        let epoch = photocraft_raster::spill::epoch();
+        if self.scratch_epoch == epoch {
+            return;
+        }
+        self.scratch_epoch = epoch;
+        let bytes = self.prefs().performance.history_cap_bytes();
+        for st in &mut self.docs {
+            if st.history.max_bytes != bytes {
+                st.history.max_bytes = bytes;
+                st.trim_history();
+            }
+        }
     }
 
     /// Everything persisted as one JSON document: the preferences plus `colorSettings`.
@@ -1396,7 +1522,11 @@ impl Session {
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
         let mut invalid = Vec::new();
-        let prefs: Preferences = read_lenient(v, &[], &mut invalid);
+        let mut prefs: Preferences = read_lenient(v, &[], &mut invalid);
+        // An Effect Cache the field no longer accepts (above the 32-bit cap, saved before the cap
+        // or by a 64-bit build; a hand-edited 0) loads as the nearest value it does. Otherwise
+        // Apply from another Preferences tab, which validates every value, would reject it.
+        prefs.performance.effect_cache_mb = accepted_effect_cache_mb(prefs.performance.effect_cache_mb, SMALL_ADDRESS_SPACE);
         if let Some(c) = color {
             self.color.settings = read_lenient(c, &["colorSettings"], &mut invalid);
             photocraft_compose::psblend::set_text_gamma(self.color.settings.blend_text_gamma);
@@ -1468,6 +1598,9 @@ impl Session {
             }
         } else {
             next.set(path, value)?;
+        }
+        if next.actions.create_single_history_state != self.prefs().actions.create_single_history_state && crate::actions_cmds::history_policy_in_use(self) {
+            return Err("cannot change action history settings during playback".into());
         }
         // Old `prefs.set interface.theme` clients (by path or inside a section object) still
         // select a visible theme.

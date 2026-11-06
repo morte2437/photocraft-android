@@ -41,6 +41,29 @@ fn place_embedded_enablement_does_not_require_native_doc() {
 }
 
 #[test]
+fn data_sets_as_files_enablement_respects_target_platform() {
+    let (app, _) = app_with(1);
+    let enabled = is_enabled_with_engine(&app, "file.export.dataSetsAsFiles", || true);
+    if cfg!(target_arch = "wasm32") {
+        assert_eq!(enabled, Some(false));
+    } else {
+        assert_eq!(enabled, Some(true));
+    }
+}
+
+#[test]
+fn data_sets_as_files_dialog_respects_target_platform() {
+    let (mut app, ctx) = app_with(1);
+    app.run("image.variables.dataSets", json!({"dataSets": [{"name": "Set 1", "values": []}]})).unwrap();
+    let res = front(&mut app, &ctx, "file.export.dataSetsAsFiles", &json!({}));
+    if cfg!(target_arch = "wasm32") {
+        assert!(matches!(res, Some(Err(msg)) if msg.contains("unavailable on the web")));
+    } else {
+        assert!(matches!(res, Some(Ok(v)) if v.get("dialog").is_some()));
+    }
+}
+
+#[test]
 fn show_snap_extras_and_screen_modes_are_state() {
     let (mut app, ctx) = app_with(1);
     for id in [
@@ -256,6 +279,46 @@ fn type_menu_checkmarks_follow_the_layer() {
 }
 
 #[test]
+fn numerals_checkmark_follows_the_selection() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.numerals.tabularLining";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.lining"), Some(false));
+    menu(&mut app, &ctx, "type.openType.numerals.default", json!({})).unwrap();
+    assert_eq!(checked(&app, "type.openType.numerals.default"), Some(true));
+    assert_eq!(checked(&app, id), Some(false));
+    assert_eq!(checked(&app, "type.openType.numerals.notAStyle"), None);
+}
+
+#[test]
+fn stylistic_set_checkmark_follows_the_toggle() {
+    let (mut app, ctx) = app_with(1);
+    let id = "type.openType.stylisticSets.set4";
+    assert!(!crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), None, "no type layer");
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Type", "size": 24})).unwrap();
+    assert!(crate::menus::is_enabled(&app, id));
+    assert_eq!(checked(&app, id), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(true));
+    assert_eq!(checked(&app, "type.openType.stylisticSets.set5"), Some(false));
+    menu(&mut app, &ctx, id, json!({})).unwrap();
+    assert_eq!(checked(&app, id), Some(false));
+    for bad in ["set0", "set21", "set04", "set", "set-1", "setx", "set100"] {
+        // Not through `checked`, which only finds catalog items: these ids must reach the resolver.
+        assert_eq!(super::dispatch::checked(&app, &format!("type.openType.stylisticSets.{bad}")), None, "{bad}");
+    }
+}
+
+#[test]
 fn batch_menu_requires_a_recorded_action() {
     let (mut app, ctx) = app_with(1);
     assert!(!crate::menus::is_enabled(&app, "file.automate.batch"));
@@ -267,6 +330,93 @@ fn batch_menu_requires_a_recorded_action() {
     assert!(crate::menus::is_enabled(&app, "file.automate.batch"));
     let dialog = menu(&mut app, &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
     assert_eq!(app.ui.dialog_mut(dialog).unwrap().fields["action"], "Invert");
+}
+
+/// Two actions of one name in sets A and B (a loaded library): the Batch form lists the name once
+/// and both sets, starts on the selected action's set, and runs that set's action.
+#[test]
+fn batch_menu_runs_the_selected_sets_action_among_same_named_ones() {
+    let (mut app, ctx) = app_with(0);
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    let mut list = Vec::new();
+    for (set, step) in [("A", "image.adjustments.invert"), ("B", "image.imageRotation.90cw")] {
+        let mut action = photocraft_engine::actions_cmds::Action::new("Retouch", vec![(step.into(), json!({}))]);
+        action.set = Some(set.into());
+        list.push(action);
+    }
+    app.session.actions.list = list;
+    app.ui.actions.selected = Some(1);
+    let id = menu(&mut app, &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    assert_eq!(fields["__choices"]["action"], json!(["Retouch"]));
+    assert_eq!(fields["__choices"]["set"], json!(["A", "B"]));
+    assert_eq!((&fields["action"], &fields["set"]), (&json!("Retouch"), &json!("B")));
+    fields.insert("input".into(), json!([input.clone()]));
+    fields.insert("output".into(), json!(output));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    let saved = std::fs::read_dir(&output).unwrap().next().unwrap().unwrap().path();
+    let image = photocraft_io::import("out.png", &std::fs::read(saved).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2), "set B's action (a rotation) ran");
+}
+
+/// Choosing a different action changes the output; cancelled or deleted choices write nothing.
+#[test]
+fn batch_menu_runs_the_action_chosen_in_the_form() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let (mut app, _) = app_with(0);
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.png").to_string_lossy().into_owned();
+    let output = dir.path().join("out").to_string_lossy().into_owned();
+    app.run("file.new", json!({"width": 2, "height": 1})).unwrap();
+    app.run("file.saveACopy", json!({"path": input})).unwrap();
+    app.session.actions.list = vec![
+        photocraft_engine::actions_cmds::Action::new("Invert", vec![("image.adjustments.invert".into(), json!({}))]),
+        photocraft_engine::actions_cmds::Action::new("RotateRGB", vec![("image.imageRotation.90cw".into(), json!({}))]),
+    ];
+    app.ui.actions.selected = Some(0);
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                crate::dialogs::show(app, ui.ctx());
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    let ctx = h.ctx.clone();
+    let id = menu(h.state_mut(), &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut h.state_mut().ui.dialog_mut(id).unwrap().fields;
+    assert!(!fields.contains_key("steps"));
+    fields.insert("input".into(), json!([input]));
+    fields.insert("output".into(), json!(output));
+    h.run_steps(4);
+    h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Action").click();
+    h.run_steps(2);
+    h.get_by_label("RotateRGB").click();
+    h.run_steps(2);
+    assert_eq!(h.state_mut().ui.dialog_mut(id).unwrap().fields["action"], "RotateRGB");
+    let result = crate::dialogs::confirm(h.state_mut(), id).unwrap();
+    assert_eq!(result["errors"], json!([]));
+    let image = photocraft_io::import("source.png", &std::fs::read(result["files"][0].as_str().unwrap()).unwrap()).unwrap().document;
+    assert_eq!((image.size.width, image.size.height), (1, 2));
+
+    let cancelled = dir.path().join("cancelled");
+    let id = menu(h.state_mut(), &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("output".into(), json!(cancelled.to_string_lossy()));
+    crate::dialogs::cancel(h.state_mut(), id).unwrap();
+    assert!(!cancelled.exists());
+
+    let id = menu(h.state_mut(), &ctx, "file.automate.batch", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    let fields = &mut h.state_mut().ui.dialog_mut(id).unwrap().fields;
+    fields.insert("action".into(), json!("RotateRGB"));
+    fields.insert("output".into(), json!(cancelled.to_string_lossy()));
+    h.state_mut().session.actions.list.retain(|action| action.name != "RotateRGB");
+    assert!(crate::dialogs::confirm(h.state_mut(), id).unwrap_err().contains("no action named"));
+    assert!(!cancelled.exists());
 }
 
 #[test]
@@ -437,12 +587,22 @@ fn batch_dialogs_include_all_subfolders() {
         let fields = &mut app.ui.dialog_mut(d).unwrap().fields;
         assert_eq!(fields["includeSubfolders"], json!(false), "{id}");
         assert_eq!(fields["__labels"]["includeSubfolders"], json!("Include All Subfolders"), "{id}");
+        if id == "file.automate.batch" {
+            assert_eq!(fields["source"], json!("folder"));
+            assert_eq!(fields["stopOnError"], json!(false));
+            assert_eq!(fields["errorLog"], json!(""));
+        }
         fields.insert("input".into(), json!(input));
         fields.insert("output".into(), json!(dir.join(out).to_string_lossy()));
         fields.insert("includeSubfolders".into(), json!(true));
         let r = crate::dialogs::confirm(&mut app, d).unwrap();
         assert_eq!(r["files"].as_array().map(Vec::len), Some(1), "{id}: {r}");
-        assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        if id == "file.automate.batch" {
+            assert!(dir.join(out).join("a.png").is_file(), "{id} writes subfolder inputs flat: {r}");
+            assert!(!dir.join(out).join("sub").exists());
+        } else {
+            assert!(dir.join(out).join("sub").is_dir(), "{id} keeps the subfolder: {r}");
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

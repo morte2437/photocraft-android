@@ -28,12 +28,17 @@ fn a_plain_click_far_outside_accepts_transform_but_a_rotation_drag_does_not() {
     let before = app.session.active().unwrap().history.past_len();
     let t = app.ui.transform.as_mut().unwrap();
     t.quad = t.quad.map(|[x, y]| [x + 6.0, y]);
-    let outside = [44.0, 44.0];
+    // A click outside the box on the image keeps it open; only the pasteboard commits (#11100).
     let none = egui::Modifiers::NONE;
+    let on_image = [44.0, 44.0];
+    assert!(pointer(&mut app, ToolEvent::Down { x: on_image[0], y: on_image[1], pressure: 1.0 }, none));
+    assert!(pointer(&mut app, ToolEvent::Up { x: on_image[0], y: on_image[1] }, none));
+    assert!(app.ui.transform.is_some(), "a click on the image does not commit");
+    let outside = [-12.0, 44.0];
     assert!(pointer(&mut app, ToolEvent::Down { x: outside[0], y: outside[1], pressure: 1.0 }, none));
     assert!(app.ui.transform.is_some(), "press alone does not accept");
     assert!(pointer(&mut app, ToolEvent::Up { x: outside[0], y: outside[1] }, none));
-    assert!(app.ui.transform.is_none(), "a release without a drag commits");
+    assert!(app.ui.transform.is_none(), "a release without a drag on the pasteboard commits");
     assert_eq!(app.session.active().unwrap().history.past_len(), before + 1, "one undo step for the transform");
     let st = app.session.active().unwrap();
     let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
@@ -612,20 +617,23 @@ fn another_tool_or_layer_applies_a_transform_committed_in_the_background() {
 }
 
 /// #5667: New Layer while a dropped file is in Free Transform applies the transform first. When
-/// the commit runs in the background the command is refused until it has landed, then runs: the
-/// place (which takes the move into its step) and the new layer each stay their own step, in
-/// that order.
+/// the commit runs in the background a click waits for it to land, then runs (#9974): the place
+/// (which takes the move into its step) and the new layer each stay their own step, in that
+/// order. A script is refused instead, as it needs an answer now.
 #[test]
 fn new_layer_applies_the_open_transform() {
+    let (mut script, ..) = moved_place();
+    script.automation_input = true;
+    let err = script.run("layer.new.layer", json!({})).unwrap_err();
+    assert!(err.contains("Free Transform is still being applied"), "a script is refused while the commit runs: {err}");
+
     let (mut app, placed, frame, steps) = moved_place();
     let layers = app.session.active().unwrap().doc.layers.len();
-    let err = app.run("layer.new.layer", json!({})).unwrap_err();
-    assert!(err.contains("Free Transform is still being applied"), "refused while the commit runs: {err}");
+    app.run("layer.new.layer", json!({})).unwrap();
     assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "no layer yet");
     land_jobs(&mut app);
     assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "the box ended");
     assert_eq!(frame_of(&app, placed), Some(frame.translate(8, 0)), "applied as it showed, not the original");
-    app.run("layer.new.layer", json!({})).unwrap();
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.layers.len(), layers + 1);
     assert_eq!(st.history.past_len(), steps + 2, "the place with its move, then New Layer");
@@ -633,6 +641,26 @@ fn new_layer_applies_the_open_transform() {
     app.session.undo();
     assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "one undo takes back the new layer");
     assert_eq!(frame_of(&app, placed), Some(frame.translate(8, 0)), "the transform stays");
+}
+
+/// #9974: only a click waits for the commit. A control request (authorized, not automation
+/// input) needs its answer now, and a second click while one waits is refused, not queued.
+#[test]
+fn only_one_click_waits_for_the_commit() {
+    let (mut control, ..) = moved_place();
+    control.session.authorize = Some(|_, _| Ok(()));
+    let layers = control.session.active().unwrap().doc.layers.len();
+    let err = control.run("layer.new.layer", json!({})).unwrap_err();
+    assert!(err.contains("Free Transform is still being applied"), "a control request is refused: {err}");
+    land_jobs(&mut control);
+    assert_eq!(control.session.active().unwrap().doc.layers.len(), layers, "and nothing runs later");
+
+    let (mut app, ..) = moved_place();
+    let layers = app.session.active().unwrap().doc.layers.len();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert!(app.run("layer.new.layer", json!({})).is_err(), "a second click is refused");
+    land_jobs(&mut app);
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the waiting click ran once");
 }
 
 /// #5665, the report's second case through the UI with background jobs on, as in the desktop
@@ -774,6 +802,11 @@ fn the_nearest_handle_wins_on_a_small_box() {
     assert_eq!(hit(&s, [8.0, -1.0], 12.0), Hit::Edge(0));
     assert_eq!(hit(&s, [8.0, 8.0], 12.0), Hit::Pivot);
     assert_eq!(hit(&s, [40.0, 40.0], 12.0), Hit::Outside);
+    // A reference point on a handle wins the press, as in the reference application (#5153).
+    s.pivot = [0.0, 0.0];
+    assert_eq!(hit(&s, [0.0, 0.0], 12.0), Hit::Pivot);
+    assert_eq!(hit(&s, [1.0, 1.0], 12.0), Hit::Pivot);
+    assert_eq!(hit(&s, [16.0, 17.0], 12.0), Hit::Corner(2));
 }
 
 #[test]
@@ -1385,7 +1418,7 @@ fn selecting_another_layer_applies_the_transform_and_the_next_one_follows() {
     assert_eq!((t.layer, t.rect), (second.0, [40.0, 40.0, 56.0, 60.0]), "the next box is on the selected layer");
 }
 
-/// The screen rectangle the marching ants cover as [`draw_selection`] paints them over the
+/// The screen rectangle the marching ants cover as [`selection_ants`] places them over the
 /// active document's selection; `None` when it leaves them to the canvas.
 fn ants_bounds(app: &PhotocraftApp, xf: &ViewXform) -> Option<egui::Rect> {
     let st = app.session.active().unwrap();
@@ -1395,7 +1428,9 @@ fn ants_bounds(app: &PhotocraftApp, xf: &ViewXform) -> Option<egui::Rect> {
     let mut drawn = false;
     let mut output = ctx.run_ui(Default::default(), |ui| {
         let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("ants-test")));
-        drawn = draw_selection(app, &painter, xf, st.doc.id, &segs, 0.0);
+        let ants = selection_ants(app, &painter, xf, st.doc.id, &segs, 0.0);
+        drawn = ants.is_some();
+        painter.extend(ants.unwrap_or_default());
     });
     output.textures_delta.clear();
     // The ants are a mesh of straight dashes and line shapes for the slanted ones.
@@ -1545,16 +1580,15 @@ fn press_drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2], m: egui::Mo
 }
 
 #[test]
-fn distort_mode_moves_one_corner_and_ignores_rotate_and_edges() {
+fn distort_mode_moves_one_corner_and_ignores_rotate() {
     let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
     app.ui.extras.snap = false;
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut app, &ctx, "edit.transform.distort", json!({})).unwrap();
     let q0 = app.ui.transform.as_ref().unwrap().quad;
     assert_eq!(app.ui.transform.as_ref().unwrap().mode, TransformMode::Distort);
-    // Outside (rotate) and an edge handle do nothing in Distort.
+    // Outside (rotate) does nothing in Distort.
     press_drag(&mut app, [44.0, 44.0], [54.0, 10.0], egui::Modifiers::NONE);
-    press_drag(&mut app, [24.0, 16.0], [34.0, 16.0], egui::Modifiers::NONE);
     assert_eq!(app.ui.transform.as_ref().unwrap().quad, q0);
     // A corner moves alone, with no keys held.
     press_drag(&mut app, q0[1], [q0[1][0] + 7.0, q0[1][1] - 5.0], egui::Modifiers::NONE);
@@ -1564,6 +1598,110 @@ fn distort_mode_moves_one_corner_and_ignores_rotate_and_edges() {
     // Free Transform from the menu switches the live box back.
     crate::menus::invoke(&mut app, &ctx, "edit.freeTransform", json!({})).unwrap();
     assert_eq!(app.ui.transform.as_ref().unwrap().mode, TransformMode::Free);
+}
+
+/// #10085: in Distort a side handle moves its edge freely, both of its corners by exactly the
+/// drag, and the opposite edge stays. ⇧ and ⌥ change nothing, as on a Distort corner.
+#[test]
+fn distort_mode_moves_an_edge_by_the_drag() {
+    let distort = TransformMode::Distort;
+    let none = egui::Modifiers::NONE;
+    // Top edge (corners 0 and 1) up and to the right.
+    let top = [[12.0, -7.0], [112.0, -7.0], [100.0, 50.0], [0.0, 50.0]];
+    assert_eq!(drag_in(distort, [50.0, 0.0], [62.0, -7.0], none), top);
+    // Right edge (corners 1 and 2) in and down.
+    assert_eq!(drag_in(distort, [100.0, 25.0], [90.0, 40.0], none), [[0.0, 0.0], [90.0, 15.0], [90.0, 65.0], [0.0, 50.0]]);
+    // Bottom (2, 3) and left (3, 0) edges.
+    assert_eq!(drag_in(distort, [50.0, 50.0], [45.0, 58.0], none), [[0.0, 0.0], [100.0, 0.0], [95.0, 58.0], [-5.0, 58.0]]);
+    assert_eq!(drag_in(distort, [0.0, 25.0], [-6.0, 21.0], none), [[-6.0, -4.0], [100.0, 0.0], [100.0, 50.0], [-6.0, 46.0]]);
+    for mods in [egui::Modifiers::SHIFT, egui::Modifiers::ALT, egui::Modifiers::COMMAND, egui::Modifiers::SHIFT | egui::Modifiers::ALT] {
+        assert_eq!(drag_in(distort, [50.0, 0.0], [62.0, -7.0], mods), top, "{mods:?}");
+    }
+    // The reference point keeps its place in the box.
+    let mut s = session();
+    let g = Gesture { hit: Hit::Edge(0), start: [50.0, 0.0], quad0: s.quad, pivot0: s.pivot };
+    apply_mode_drag(&mut s, g, [62.0, -7.0], distort, false, none);
+    assert_eq!(s.pivot, carry_pivot(g.quad0, top, g.pivot0));
+}
+
+/// #10085: a Distort edge dragged onto or past the opposite one stops short of folding the box
+/// flat, as a corner does (#1323); the opposite edge never moves.
+#[test]
+fn distort_mode_edge_stops_before_the_box_collapses() {
+    let distort = TransformMode::Distort;
+    let start = turns(&corners([0.0, 0.0, 100.0, 50.0]));
+    for to in [[50.0, 50.0], [50.0, 90.0], [-200.0, 50.0], [50.0, f64::MAX]] {
+        let q = drag_in(distort, [50.0, 0.0], to, egui::Modifiers::NONE);
+        assert_eq!((q[2], q[3]), ([100.0, 50.0], [0.0, 50.0]), "the bottom edge stays: {to:?}");
+        assert!(turns(&q).iter().zip(start).all(|(t, t0)| t * t0.signum() > 0.0), "still convex, not flat: {to:?} {q:?}");
+        assert!(q.iter().flatten().all(|v| v.is_finite()), "{q:?}");
+        // The top edge still moved together, by the same offset.
+        assert_eq!([q[1][0] - q[0][0], q[1][1] - q[0][1]], [100.0, 0.0], "{to:?} {q:?}");
+    }
+}
+
+/// #10085 with real pointer events: a Distort side handle drags in the canvas, the committed
+/// layer is the quad the box showed (pixels inside it, none outside), in one history step.
+#[test]
+fn distort_mode_edge_drag_commits_what_it_shows_in_one_step() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    app.ui.extras.snap = false;
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "edit.transform.distort", json!({})).unwrap();
+    let steps = app.session.active().unwrap().history.past_len();
+    let q0 = app.ui.transform.as_ref().unwrap().quad;
+    // The right edge's handle, 8 px right and 8 px down.
+    press_drag(&mut app, [24.0, 16.0], [32.0, 24.0], egui::Modifiers::NONE);
+    let shown = app.ui.transform.as_ref().unwrap().quad;
+    assert_eq!(shown, [q0[0], [q0[1][0] + 8.0, q0[1][1] + 8.0], [q0[2][0] + 8.0, q0[2][1] + 8.0], q0[3]]);
+    commit(&mut app);
+    assert!(app.ui.transform.is_none(), "{}", app.ui.status);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.history.past_len(), steps + 1, "one undo step");
+    let s = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap();
+    let alpha = |x: i32, y: i32| {
+        let mut p = [0.0f32; 4];
+        s.read_pixel(x, y, &mut p);
+        p[3]
+    };
+    // The parallelogram (8, 8) (32, 16) (32, 32) (8, 24): its slanted top and bottom edges.
+    assert!(alpha(28, 22) > 0.99 && alpha(10, 20) > 0.99, "inside {} {}", alpha(28, 22), alpha(10, 20));
+    assert!(alpha(28, 11) < 0.01 && alpha(10, 28) < 0.01, "outside {} {}", alpha(28, 11), alpha(10, 28));
+    let b = s.content_bounds();
+    // Within the resampling filter's pixel of the quad's bounds (8, 8)..(32, 32).
+    assert!((7..=8).contains(&b.x0) && (7..=8).contains(&b.y0) && (32..=33).contains(&b.x1) && (32..=33).contains(&b.y1), "{b:?}");
+}
+
+/// Perspective mode's side handles skew, as in Photoshop: the edge slides along itself only.
+#[test]
+fn perspective_mode_edge_slides_along_itself() {
+    let persp = TransformMode::Perspective;
+    let none = egui::Modifiers::NONE;
+    assert_eq!(drag_in(persp, [50.0, 0.0], [62.0, 7.0], none), [[12.0, 0.0], [112.0, 0.0], [100.0, 50.0], [0.0, 50.0]]);
+    assert_eq!(drag_in(persp, [100.0, 25.0], [94.0, 33.0], none), [[0.0, 0.0], [100.0, 8.0], [100.0, 58.0], [0.0, 50.0]]);
+    // ⌥: the opposite edge goes the other way.
+    assert_eq!(drag_in(persp, [50.0, 0.0], [62.0, 7.0], egui::Modifiers::ALT), [[12.0, 0.0], [112.0, 0.0], [88.0, 50.0], [-12.0, 50.0]]);
+}
+
+/// A Perspective side handle on a box whose opposite edge isn't parallel (here its right side
+/// already pulled out by a vertical corner pair) stops before the box folds over, as its
+/// corners do (#1323): a long slide along the top edge turned it concave.
+#[test]
+fn perspective_mode_edge_slide_stops_before_the_box_folds() {
+    let mut s = session();
+    s.quad = [[0.0, 0.0], [100.0, -20.0], [100.0, 70.0], [0.0, 50.0]];
+    let start = turns(&s.quad);
+    // Along the top edge, (5, -1), 100 steps the other way.
+    let g = Gesture { hit: Hit::Edge(0), start: [50.0, -10.0], quad0: s.quad, pivot0: s.pivot };
+    apply_mode_drag(&mut s, g, [-450.0, 90.0], TransformMode::Perspective, false, egui::Modifiers::NONE);
+    let q = s.quad;
+    assert!(turns(&q).iter().zip(start).all(|(t, t0)| t * t0.signum() > 0.0), "still convex: {q:?}");
+    assert!(q.iter().flatten().all(|v| v.is_finite()), "{q:?}");
+    assert_eq!((q[2], q[3]), (g.quad0[2], g.quad0[3]), "the other corners stay");
+    // The top edge only slid along itself, and some way.
+    assert!(((q[0][0] - g.quad0[0][0]) + (q[0][1] - g.quad0[0][1]) * 5.0).abs() < 1e-9, "{q:?}");
+    assert!(([q[1][0] - q[0][0] - 100.0, q[1][1] - q[0][1] + 20.0]).iter().all(|v| v.abs() < 1e-9), "{q:?}");
+    assert!(q[0][0] < -1.0, "it still slid: {q:?}");
 }
 
 /// #3941: Edit › Transform › Rotate must rotate from a corner handle, not scale.
@@ -1961,6 +2099,122 @@ fn app_with_square(size: u32, fill: photocraft_geom::Rect) -> PhotocraftApp {
     app
 }
 
+/// `app_with_square` (A, red over 8..24) plus B (x 40..56, y 8..24) and C (x 8..24, y 40..56)
+/// over it. A and B are linked; C isn't. Only A is selected, and active: (app, A, B, C).
+fn linked_layers_app() -> (PhotocraftApp, LayerId, LayerId, LayerId) {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let add = |app: &mut PhotocraftApp, fill: photocraft_geom::Rect| {
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, l| {
+                doc.layer_mut(l.unwrap()).unwrap().surface_mut().unwrap().fill_rect(fill, &[0.0, 0.0, 1.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        app.session.active().unwrap().active_layer.unwrap()
+    };
+    let b = add(&mut app, photocraft_geom::Rect::new(40, 8, 56, 24));
+    let c = add(&mut app, photocraft_geom::Rect::new(8, 40, 24, 56));
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    (app, a, b, c)
+}
+
+/// #11217: ⌥⌘T on a linked layer without a selection makes no copy in the reference application
+/// (measured): it frames and moves the whole link group, as Free Transform does. An unlinked
+/// layer still gets its copy.
+#[test]
+fn free_transform_a_copy_of_a_linked_layer_boxes_the_link_group_without_a_copy() {
+    let ctx = egui::Context::default();
+    let (mut app, a, b, c) = linked_layers_app();
+    let layers = app.session.active().unwrap().doc.layers.len();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "no copy of a linked layer");
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.made, None, "nothing made to take back");
+    assert_eq!(t.layers, [a.0, b.0], "the box frames the link group");
+    cancel(&mut app);
+    app.session.execute("layer.select", json!({"layer": c.0})).unwrap();
+    crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "an unlinked layer is copied");
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(MadeLayer::Copy));
+    cancel(&mut app);
+}
+
+/// #11217: the box over one selected linked layer frames, previews and commits its whole link
+/// group, as in Photoshop. It used to frame A alone; B only moved at the commit.
+#[test]
+fn free_transform_of_a_linked_layer_boxes_its_link_group() {
+    let (mut app, a, b, c) = linked_layers_app();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!(t.layer, a.0, "the active layer stays the session's");
+    assert_eq!(t.layers, [a.0, b.0], "a box over the link group, in stack order");
+    assert_eq!(t.rect, [8.0, 8.0, 56.0, 24.0], "framing A and B together");
+    let pv = app.transform_preview.as_ref().unwrap();
+    assert!(pv.several.as_ref().is_some_and(|sv| sv.ids == [a, b]), "the preview moves both");
+    // The moving pixels hold B's blue block where B is, beside A's red one: B moves with the box
+    // on the canvas, not only at the commit.
+    assert_eq!(moving_texel(&app, [48, 16]).0, Some(Color32::BLUE), "the linked layer's pixels are in the preview");
+    assert_eq!(moving_texel(&app, [16, 16]).0, Some(Color32::RED), "and the active layer's");
+    assert_eq!(moving_texel(&app, [16, 48]).0, None, "the unlinked layer is outside the moving pixels");
+    let t = app.ui.transform.as_mut().unwrap();
+    t.quad = t.quad.map(|[x, y]| [x + 4.0, y]);
+    commit(&mut app);
+    assert!(app.ui.transform.is_none(), "{}", app.ui.status);
+    let st = app.session.active().unwrap();
+    let bounds = |id: LayerId| st.doc.layer(id).unwrap().surface().unwrap().content_bounds();
+    assert_eq!(bounds(a), photocraft_geom::Rect::new(12, 8, 28, 24));
+    assert_eq!(bounds(b), photocraft_geom::Rect::new(44, 8, 60, 24));
+    assert_eq!(bounds(c), photocraft_geom::Rect::new(8, 40, 24, 56), "an unlinked layer stays put");
+}
+
+/// #11217: a layer without linked layers still opens the one-layer box.
+#[test]
+fn free_transform_of_an_unlinked_layer_boxes_that_layer_alone() {
+    let (mut app, _, _, c) = linked_layers_app();
+    app.session.execute("layer.select", json!({"layer": c.0})).unwrap();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!((t.layer, t.rect), (c.0, [8.0, 40.0, 24.0, 56.0]));
+    assert!(t.layers.is_empty(), "a one-layer session");
+    assert!(app.transform_preview.as_ref().unwrap().several.is_none());
+}
+
+/// #11217 review: a layer linked to the Background opens the one-layer box: the link doesn't pull
+/// the Background into the box, as the selection doesn't either (#6501).
+#[test]
+fn free_transform_of_a_layer_linked_to_the_background_boxes_that_layer_alone() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    let bg = app.session.active().unwrap().doc.layers[0].id;
+    app.session.execute("layer.select", json!({"layer": bg.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_ref().unwrap();
+    assert_eq!((t.layer, t.rect), (a.0, [8.0, 8.0, 24.0, 24.0]), "the box frames A, not the canvas-sized Background");
+    assert!(t.layers.is_empty(), "a one-layer session");
+    let pv = app.transform_preview.as_ref().unwrap();
+    assert!(pv.several.is_none());
+    assert!(pv.doc.layer(bg).unwrap().visible, "the Background stays under the box");
+}
+
+/// #11217: a locked layer in the link group refuses the box before it opens, as a locked layer
+/// among several selected ones does.
+#[test]
+fn a_locked_linked_layer_refuses_the_box_over_its_link_group() {
+    let (mut app, a, b, _) = linked_layers_app();
+    app.session.execute("layer.setProps", json!({"layer": b.0, "locks": {"position": true}})).unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    assert_eq!(begin(&mut app, &egui::Context::default()), Err(LOCKED.to_string()));
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+}
+
 /// #2439: a layer under others keeps its place in the stack while the box is open. The
 /// canvas under the box shows only the layers below it; the ones over it are composited on
 /// their own and drawn over the moving pixels.
@@ -1997,6 +2251,53 @@ fn free_transform_keeps_the_layer_under_the_layers_over_it() {
     cancel(&mut app);
 }
 
+/// #9387: a layer under others keeps its place in the stack when something over it blends or
+/// adjusts (a PSD usually has one): the plain layers over the moving one still cover it.
+#[test]
+fn plain_layers_still_cover_the_moving_one_under_a_blend_or_adjustment_layer() {
+    use photocraft_color::BlendMode;
+    for adjustment in [false, true] {
+        let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+        let red = app.session.active().unwrap().active_layer.unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(16, 16, 40, 40), &[0.0, 0.0, 1.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        let blue = app.session.active().unwrap().active_layer.unwrap();
+        let bg = app.session.active().unwrap().doc.layers[0].id;
+        let top = if adjustment {
+            app.session.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap();
+            app.session.active().unwrap().active_layer.unwrap()
+        } else {
+            app.session.execute("layer.new.layer", json!({})).unwrap();
+            let top = app.session.active().unwrap().active_layer.unwrap();
+            app.session
+                .edit("blend", |doc, _| {
+                    doc.layer_mut(top).unwrap().blend = BlendMode::Multiply;
+                    Ok(())
+                })
+                .unwrap();
+            top
+        };
+        app.session.execute("layer.select", json!({"layer": red.0})).unwrap();
+        begin(&mut app, &gpu_ctx()).unwrap();
+        let pv = app.transform_preview.as_ref().unwrap();
+        assert!(!pv.doc.layer(blue).unwrap().visible, "adjustment={adjustment}: the plain layer is drawn over the box, not under it");
+        assert!(pv.doc.layer(top).unwrap().visible, "adjustment={adjustment}: the layer that blends stays in the document under the box");
+        assert!(pv.doc.layer(bg).unwrap().visible);
+        let (texture, rect) = pv.above.as_ref().and_then(|a| a.shown.as_ref()).expect("the plain layer covers the moving one");
+        assert_eq!(*rect, photocraft_geom::Rect::new(16, 16, 40, 40), "adjustment={adjustment}");
+        let (image, _) = texture.level_image(0).unwrap();
+        let centre = image.pixels[12 * image.size[0] + 12];
+        // The adjustment is composited with the layer it covers: inverted blue is yellow.
+        assert_eq!(centre, if adjustment { Color32::from_rgb(255, 255, 0) } else { Color32::BLUE }, "adjustment={adjustment}");
+        cancel(&mut app);
+    }
+}
+
 #[test]
 fn plain_layers_from_the_top_cover_the_moving_one() {
     use photocraft_color::BlendMode;
@@ -2004,7 +2305,7 @@ fn plain_layers_from_the_top_cover_the_moving_one() {
     let px = |name: &str| Layer::raster(name, photocraft_color::PixelFormat::RGBA8);
     let covers = |layers: &[Layer], id: LayerId| {
         let mut out = Vec::new();
-        covering(layers, id, &mut out);
+        covering(layers, id, &mut out, &mut Vec::new());
         out
     };
     // In a group: the group's layers over it, then the ones over the group; never the layers
@@ -2017,7 +2318,7 @@ fn plain_layers_from_the_top_cover_the_moving_one() {
     assert_eq!(covers(&layers, c), [tp, inner], "a clipped layer: covered by what is over its clipping group");
 
     // Under the box, the covering layers leave the document; over it, they alone show.
-    let above = Above { ctx: egui::Context::default(), name: String::new(), max_side: 64, ids: vec![tp, inner], shown: None };
+    let above = Above { ctx: egui::Context::default(), name: String::new(), max_side: 64, ids: vec![tp, inner], applied: Vec::new(), shown: None };
     let mut under = layers.clone();
     above.hide_in(&mut under);
     let vis = |ls: &[Layer]| [ls[0].visible, ls[1].visible, ls[2].visible];
@@ -2031,20 +2332,50 @@ fn plain_layers_from_the_top_cover_the_moving_one() {
     };
     assert_eq!(inside, [false, false, true]);
 
-    // A layer that blends with what is under it stops the search: it and everything under it
-    // stay in the document under the box.
+    // A layer that blends with what is under it can't be drawn on its own: it stays in the
+    // document under the box, and the plain layers around it still cover (#9387).
     layers[2].blend = BlendMode::Multiply;
-    assert!(covers(&layers, t).is_empty());
+    assert_eq!(covers(&layers, t), [inner]);
     layers[2].blend = BlendMode::Normal;
     let mut multiply = px("multiply");
     multiply.blend = BlendMode::Multiply;
+    let m = multiply.id;
     layers.insert(2, multiply);
-    assert_eq!(covers(&layers, t), [tp]);
+    assert_eq!(covers(&layers, t), [tp, inner]);
+    assert!(!covers(&layers, t).contains(&m));
     // A group that isn't Normal or Pass Through keeps what is inside it.
     layers[1].blend = BlendMode::Screen;
     layers.remove(2);
     assert_eq!(covers(&layers, t), [tp]);
-    assert_eq!(covers(&layers, LayerId::fresh()), [tp], "not in the stack: down to the first layer that isn't plain");
+    assert_eq!(covers(&layers, LayerId::fresh()), [tp, layers[0].id], "not in the stack: every plain layer, the Screen group passed over");
+}
+
+/// #9387: an adjustment layer over covering layers is composited with them as well as staying
+/// under the box; one with nothing covering under it has nothing to adjust.
+#[test]
+fn adjustments_over_covering_layers_are_applied_to_them() {
+    use photocraft_doc::{Adjustment, Layer};
+    let px = |name: &str| Layer::raster(name, photocraft_color::PixelFormat::RGBA8);
+    let adjustment = |name: &str| Layer::new(name, LayerContent::Adjustment(Adjustment::Invert));
+    let find = |layers: &[Layer], id: LayerId| {
+        let (mut out, mut applied) = (Vec::new(), Vec::new());
+        covering(layers, id, &mut out, &mut applied);
+        (out, applied)
+    };
+    let (target, under, over, adj_top, adj_between, adj_under) =
+        (px("target"), px("under"), px("over"), adjustment("top"), adjustment("between"), adjustment("under"));
+    let (t, u, o, top, between, below) = (target.id, under.id, over.id, adj_top.id, adj_between.id, adj_under.id);
+    // Bottom to top: target, an adjustment with nothing to adjust over it, two plain layers
+    // around another adjustment, and an adjustment on top.
+    let layers = vec![target, adj_under, under, adj_between, over, adj_top];
+    let (covers, applied) = find(&layers, t);
+    assert_eq!(covers, [o, u]);
+    assert_eq!(applied, [top, between], "adjustments over a covering layer, top down");
+    assert!(!applied.contains(&below), "nothing covers under it");
+
+    // Nothing covers: no adjustment applies.
+    let alone = vec![px("a"), adjustment("b")];
+    assert_eq!(find(&alone, alone[0].id), (Vec::new(), Vec::new()));
 }
 
 /// A context that reports a real GPU's texture limit (the default reports 2048).
@@ -2952,6 +3283,58 @@ fn targeted_unlinked_mask_transforms_alone_through_the_box() {
 }
 
 #[test]
+fn mask_view_keeps_move_and_transform_available_behind_a_colour_set() {
+    for view in ["gray", "overlay"] {
+        let mut app = masked_app(false);
+        app.run("channel.target", json!({"colors":[0,2]})).unwrap();
+        app.run("view.layerMask", json!({"mode":view})).unwrap();
+        assert!(crate::menus::is_enabled(&app, "edit.freeTransform"));
+        let st = app.session.active().unwrap();
+        let layer = st.active_layer.unwrap();
+        let original = st.doc.layer(layer).unwrap().surface().unwrap().clone();
+        begin(&mut app, &egui::Context::default()).unwrap();
+        let transform = app.ui.transform.as_mut().unwrap();
+        assert_eq!(transform.target, Some(json!("mask")));
+        transform.quad = transform.quad.map(|[x, y]| [x + 20.0, y]);
+        commit(&mut app);
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        app.ui.tool = crate::state::Tool::Move;
+        app.ui.tool_options.move_auto_select = false;
+        app.ui.extras.snap = false;
+        app.ui.view.show.smart_guides = false;
+        let mods = egui::Modifiers::NONE;
+        crate::canvas::tool_event(&mut app, crate::canvas::ToolEvent::Down { x: 28.0, y: 30.0, pressure: 1.0 }, mods);
+        crate::canvas::tool_event(&mut app, crate::canvas::ToolEvent::Move { x: 38.0, y: 30.0, pressure: 1.0 }, mods);
+        crate::canvas::tool_event(&mut app, crate::canvas::ToolEvent::Up { x: 38.0, y: 30.0 }, mods);
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        let actual = app.session.active().unwrap().doc.layer(layer).unwrap();
+        assert_eq!(actual.surface().unwrap(), &original);
+        let mask = &actual.mask.as_ref().unwrap().surface;
+        assert!(mask.sample_channel(24, 30, 0) > 0.99 && mask.sample_channel(40, 30, 0) < 0.01, "only the mask moved");
+    }
+}
+
+/// Batch 16 review: ⌥⌘T with the unlinked mask of a linked layer targeted still copies; only the
+/// layer's own pixels take the link group's box without a copy.
+#[test]
+fn free_transform_a_copy_of_a_targeted_mask_on_a_linked_layer_still_copies() {
+    let mut app = masked_app(false);
+    let a = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    let b = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.session.execute("layer.select", json!({"layer": b.0, "mode": "add"})).unwrap();
+    assert_eq!(app.session.execute("layer.linkLayers", json!({})).unwrap()["linked"], true);
+    app.session.execute("layer.select", json!({"layer": a.0})).unwrap();
+    app.ui.mask_target = true;
+    let layers = app.session.active().unwrap().doc.layers.len();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransformCopy", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers + 1, "the layer is copied");
+    assert_eq!(app.ui.transform.as_ref().unwrap().made, Some(MadeLayer::Copy));
+    cancel(&mut app);
+}
+
+#[test]
 fn linked_mask_target_transforms_the_layer() {
     let mut app = masked_app(true);
     app.ui.mask_target = true;
@@ -3199,11 +3582,11 @@ fn handle_pointers_follow_what_the_drag_does() {
     // A Skew-mode corner slides along one edge, with or without Cmd; its edges skew.
     assert_eq!(indicators("edit.transform.skew", cmd()), (None, Some(Skew)));
     assert_eq!(indicators("edit.transform.skew", none), (None, Some(Skew)));
-    // Distort mode leaves the edges alone, Cmd or not.
-    assert_eq!(indicators("edit.transform.distort", none), (Some(Distort), None));
-    assert_eq!(indicators("edit.transform.distort", cmd()), (Some(Distort), None));
-    // Perspective mode: corners move in pairs; Cmd on an edge skews (`apply_drag`).
-    assert_eq!(indicators("edit.transform.perspective", none), (Some(Distort), None));
+    // Distort mode distorts from every handle, Cmd or not (#10085).
+    assert_eq!(indicators("edit.transform.distort", none), (Some(Distort), Some(Distort)));
+    assert_eq!(indicators("edit.transform.distort", cmd()), (Some(Distort), Some(Distort)));
+    // Perspective mode: corners move in pairs, and an edge skews along itself, Cmd or not.
+    assert_eq!(indicators("edit.transform.perspective", none), (Some(Distort), Some(Skew)));
     assert_eq!(indicators("edit.transform.perspective", cmd()), (Some(Distort), Some(Skew)));
     assert_eq!(indicators("edit.transform.scale", cmd()), (Some(Distort), Some(Skew)));
 }
@@ -3279,4 +3662,23 @@ fn several_layers_reuse_the_transform_interpolation_preference() {
     let transform = app.ui.transform.as_ref().unwrap();
     assert_eq!(transform.layers.len(), 2);
     assert_eq!(transform.interpolation, "nearest");
+}
+
+/// #9974: the click waiting for the commit acts on the layer selected when it was made: no other
+/// layer can be picked while the commit runs (the engine refuses document commands meanwhile).
+#[test]
+fn a_waiting_new_layer_click_keeps_the_layer_it_was_made_on() {
+    let (mut app, placed, ..) = moved_place();
+    let below = app.session.active().unwrap().doc.layers.iter().map(|l| l.id).find(|id| *id != placed).unwrap();
+    let before: Vec<_> = app.session.active().unwrap().doc.layers.iter().map(|l| l.id).collect();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let err = app.run("layer.select", json!({"layer": below.0})).unwrap_err();
+    assert!(err.contains("still running"), "{err}");
+    land_jobs(&mut app);
+    let st = app.session.active().unwrap();
+    let order: Vec<_> = st.doc.layers.iter().map(|l| l.id).collect();
+    let new = *order.iter().find(|id| !before.contains(id)).expect("the new layer");
+    let at = |id| order.iter().position(|l| *l == id).unwrap();
+    assert_eq!(at(new), at(placed) + 1, "the new layer sits right above the layer selected at the click: {order:?}");
+    assert_eq!(st.active_layer, Some(new));
 }

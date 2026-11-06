@@ -1374,7 +1374,13 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
 /// The workspace's keys (unless a text field has the keyboard): tools, brush size, views, undo.
 pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
     use egui::{Key, Modifiers};
+    let picker = crate::color_picker_ui::any_open(app);
     let Some(w) = app.distort.select_mask.as_mut() else { return };
+    if picker {
+        // The overlay colour's Color Picker takes the keys, as the swatch popup did.
+        w.hide_view = false;
+        return;
+    }
     let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
     if ctx.input_mut(|i| i.consume_key(cmd_shift, Key::Z)) {
         redo(w);
@@ -1573,7 +1579,7 @@ fn properties(ui: &mut egui::Ui, w: &mut SelectMaskWorkspace, t: &Tokens) -> Opt
         if w.opts.view == Mode::Overlay {
             ui.horizontal(|ui| {
                 ui.label(tl!("Color"));
-                widgets::color_edit_button_srgb(ui, &mut w.opts.overlay_color);
+                widgets::color_edit_button_srgb(ui, &mut w.opts.overlay_color, &crate::color_picker_ui::title_for(tl!("Overlay Color")));
                 ui.add_space(8.0);
                 ui.label(tl!("Indicates"));
                 widgets::dropdown(

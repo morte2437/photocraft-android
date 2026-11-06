@@ -43,7 +43,7 @@ pub enum HistorySource {
 
 /// The document's History Brush source, `None` once the source state or snapshot is gone.
 pub fn source(st: &DocState) -> Option<HistorySource> {
-    match st.source_snapshot {
+    match st.source_snapshot.or_else(|| st.history.brush_source_snapshot()) {
         Some(id) => st.snapshots.iter().any(|s| s.id == id).then_some(HistorySource::Snapshot(id)),
         None => st.history.brush_source().map(HistorySource::State),
     }

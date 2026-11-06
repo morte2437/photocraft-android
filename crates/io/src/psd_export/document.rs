@@ -67,6 +67,7 @@ fn export_supported_document(
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
     let version = psd_version(doc, opts.force_psb);
     let mut ex = Ex {
+        ctl: *ctl,
         fmt,
         dpi: doc.resolution_dpi,
         document: opts.document_path.clone(),
@@ -88,6 +89,10 @@ fn export_supported_document(
         smart: SmartOut::new(doc, depth),
         patterns: doc.patterns.clone(),
         background: psd_background(doc),
+        stage: {
+            let raw = doc.size.area().saturating_mul(fmt.bytes_per_pixel() as u64).saturating_mul(doc.walk().len() as u64 + 1);
+            super::stage::Stage::for_document(raw, opts.stage_on_scratch_from)
+        },
     };
     add_format_warnings(doc, opts, fmt, big, duotone_inks.is_some(), &mut ex.warnings);
     index_layer_ids_and_text(doc, &mut ex);
@@ -167,10 +172,11 @@ fn export_supported_document(
         })
         .collect();
     let previous = (!text_layers.is_empty()).then(|| preserved.iter().find(|(_, key, _)| key == b"Txt2").map(|(_, _, data)| data.to_vec())).flatten();
-    // A fresh document of ordinary (Metrics) text has nothing to put in `Txt2`, and Photoshop never
-    // writes its empty `<< /0 << >> >>` stub — readers such as Photopea reject it (#3514). Keep the
-    // block when the file had one (round-trip its pen positions/extras) or a layer is Optical (the
-    // one mode EngineData can't carry; #1348).
+    // A fresh document of ordinary (Metrics) text with no Txt2-only OpenType settings has nothing
+    // to put in `Txt2`, and Photoshop never writes its empty `<< /0 << >> >>` stub — readers such
+    // as Photopea reject it (#3514). Keep the block when the file had one (round-trip its pen
+    // positions/extras), a layer is Optical (#1348), or a layer carries stylistic sets / other
+    // Txt2-only features (#10308).
     let txt2 = (previous.is_some() || photocraft_text::psd::needs_txt2(&text_layers))
         .then(|| photocraft_text::psd::build_txt2_at(&text_layers, previous.as_deref(), ex.dpi));
     for (sig, key, data) in preserved {
@@ -307,7 +313,7 @@ struct MergedExport<'a> {
 
 fn prepare_merged_planes<'a>(
     doc: &'a Document,
-    ex: &mut Ex,
+    ex: &mut Ex<'_>,
     opts: &PsdExportOptions,
     ctl: &Interrupt,
     fmt: PixelFormat,
@@ -331,13 +337,17 @@ fn prepare_merged_planes<'a>(
         data: planes,
         stored: None,
     });
+    let image_data = match &ex.stage {
+        Some(stage) => stage.image(image_data),
+        None => image_data,
+    };
     ctl.progress(1.0);
     MergedExport { header, image_data, extra, has_alpha, quick_mask_id, real_merged }
 }
 
 fn append_extra_channels<'a>(
     doc: &'a Document,
-    ex: &mut Ex,
+    ex: &mut Ex<'_>,
     planes: &mut Vec<u8>,
     has_alpha: bool,
     sample: SampleType,
@@ -387,7 +397,7 @@ fn merged_image(doc: &Document, opts: &PsdExportOptions, ctl: &Interrupt, fmt: &
     (planes, has_alpha)
 }
 
-fn index_layer_ids_and_text(doc: &Document, ex: &mut Ex) {
+fn index_layer_ids_and_text(doc: &Document, ex: &mut Ex<'_>) {
     // Assign layer ids up front (stable across round trips): keep unique
     // `psd_id`s, number the rest after them; dividers come after all.
     {

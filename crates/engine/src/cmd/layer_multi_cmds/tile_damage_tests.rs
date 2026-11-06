@@ -243,7 +243,7 @@ fn refreshing_type_layers_damages_only_those_layers() {
     let one = LayerId(s.execute("type.create", json!({"x": 100, "y": 100, "text": "One", "size": 20})).unwrap()["layer"].as_u64().unwrap());
     let two = LayerId(s.execute("type.create", json!({"x": 1000, "y": 800, "text": "Two", "size": 20})).unwrap()["layer"].as_u64().unwrap());
     let before = doc(&s);
-    let busy = s.refresh_type_layers(&[(before.id, one)]);
+    let busy = s.refresh_type_layers(&[crate::TypeLayerRef { doc: before.id, layer: one, first_snapshot: false }]);
     assert!(busy.is_empty());
     let after = doc(&s);
     let d = damage(&s).expect("a bounded refresh");

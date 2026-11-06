@@ -9,13 +9,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use egui::{FontData, FontFamily};
 
-use photocraft_doc::{DocId, LayerContent, LayerId, TextLayer};
+use photocraft_doc::{LayerContent, TextLayer};
+use photocraft_engine::TypeLayerRef;
 pub use photocraft_text::served::{ServedFont, add_families, add_fonts, is_relative_path, parse_manifest, request_for_languages, take_requests};
 
 use crate::PhotocraftApp;
 
 /// Layers whose document was busy with a background job when their font arrived.
-static PENDING: Mutex<Vec<(DocId, LayerId)>> = Mutex::new(Vec::new());
+static PENDING: Mutex<Vec<TypeLayerRef>> = Mutex::new(Vec::new());
 
 /// Served script fallbacks in the UI's font stack, by egui font name, unscaled: kept so the stack
 /// `theme::install_fonts` rebuilds on a language change includes them again.
@@ -89,17 +90,7 @@ pub fn install(app: &mut PhotocraftApp, ctx: &egui::Context, delivered: Vec<(Str
         let families: Vec<String> = delivered.iter().map(|(f, _)| f.clone()).collect();
         // Decided before the fonts are in: "shows our own layout" compares the layer's pixels
         // with what the engine draws now, that is with the fallback font.
-        for st in app.session.documents() {
-            for (_, _, l) in st.doc.walk() {
-                if let LayerContent::Text(t) = &l.content
-                    && redraws_for(t, &families)
-                    && crate::type_tool::shows_own_layout(&st.doc, t)
-                    && !layers.contains(&(st.doc.id, l.id))
-                {
-                    layers.push((st.doc.id, l.id));
-                }
-            }
-        }
+        pick(&app.session, &families, &mut layers);
         let fallbacks = photocraft_text::served::script_fallback_families();
         for (family, bytes) in &delivered {
             if fallbacks.contains(family) {
@@ -117,6 +108,36 @@ pub fn install(app: &mut PhotocraftApp, ctx: &egui::Context, delivered: Vec<(Str
     if !layers.is_empty() {
         let busy = app.session.refresh_type_layers(&layers);
         PENDING.lock().unwrap_or_else(PoisonError::into_inner).extend(busy);
+    }
+}
+
+/// Adds to `layers` the type layers to redraw once `families` arrive, in every open document and
+/// in its first History snapshot (the document as opened), which is checked on its own: since
+/// then its layers may have been edited (a PSD layer re-rendered) or deleted (#6087).
+fn pick(session: &photocraft_engine::Session, families: &[String], layers: &mut Vec<TypeLayerRef>) {
+    for st in session.documents() {
+        let first = st.snapshots.iter().find(|s| s.id == 0).map(|s| &s.doc);
+        // While it still is the open document, a layer picked there is picked in the snapshot too
+        // (without checking it twice): a busy document is refreshed later, and by then a finished
+        // job can have moved the open document on.
+        let shared = first.is_some_and(|f| Arc::ptr_eq(f, &st.doc));
+        let first = first.filter(|_| !shared);
+        for (doc, first_snapshot) in std::iter::once((&st.doc, false)).chain(first.map(|d| (d, true))) {
+            for (_, _, l) in doc.walk() {
+                if let LayerContent::Text(t) = &l.content
+                    && redraws_for(t, families)
+                    && crate::type_tool::shows_own_layout(doc, t)
+                {
+                    let also = (shared && !first_snapshot).then_some(true);
+                    for first_snapshot in std::iter::once(first_snapshot).chain(also) {
+                        let key = TypeLayerRef { doc: st.doc.id, layer: l.id, first_snapshot };
+                        if !layers.contains(&key) {
+                            layers.push(key);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -149,6 +170,34 @@ mod tests {
             style: photocraft_doc::text::CharStyle { font_family: "Inter".into(), postscript_name: Some("Lato-Bold".into()), ..Default::default() },
         }];
         assert!(uses_family(&psd, &["Lato".into()]));
+    }
+
+    /// #6087: the first History snapshot is picked on its own, so a type layer deleted since the
+    /// document opened still gets the font there, and one still shared with the open document is
+    /// picked in both without being checked twice.
+    #[test]
+    fn the_first_snapshot_is_picked_on_its_own() {
+        use photocraft_doc::LayerId;
+        use serde_json::json;
+        let family = "Served Test Pick";
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 200, "height": 100, "background": "transparent"})).unwrap();
+        let id = LayerId(s.execute("type.create", json!({"text": "Hello", "size": 24, "font": family})).unwrap()["layer"].as_u64().unwrap());
+        let doc = (*s.active().unwrap().doc).clone();
+        s.add_document(doc, None);
+        let doc_id = s.active().unwrap().doc.id;
+        let key = |first_snapshot| TypeLayerRef { doc: doc_id, layer: id, first_snapshot };
+        let picked = |s: &photocraft_engine::Session| {
+            let mut layers = Vec::new();
+            pick(s, &[family.into()], &mut layers);
+            layers.retain(|l| l.doc == doc_id);
+            layers
+        };
+        assert_eq!(picked(&s), [key(false), key(true)], "the snapshot still is the open document");
+        s.execute("layer.new.layer", json!({})).unwrap();
+        assert_eq!(picked(&s), [key(false), key(true)]);
+        s.execute("layer.delete", json!({"layer": id.0})).unwrap();
+        assert_eq!(picked(&s), [key(true)], "deleted from the open document, still in the snapshot");
     }
 
     #[test]

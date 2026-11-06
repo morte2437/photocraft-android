@@ -1,4 +1,17 @@
 use super::{Normal, Placement, par_map, par_rows};
+use photocraft_raster::AllocationError;
+
+fn alloc_plane(len: usize) -> Result<Vec<f32>, AllocationError> {
+    let bytes = len.checked_mul(std::mem::size_of::<f32>()).ok_or(AllocationError::SizeOverflow)?;
+    let mut v = Vec::new();
+    v.try_reserve_exact(len).map_err(|_| AllocationError::NotEnoughMemory { bytes })?;
+    v.resize(len, 0.0);
+    Ok(v)
+}
+
+fn plane_len(w: usize, h: usize, ch: usize) -> Result<usize, AllocationError> {
+    w.checked_mul(h).and_then(|n| n.checked_mul(ch)).ok_or(AllocationError::SizeOverflow)
+}
 
 // ---------- photometric ----------
 
@@ -311,29 +324,22 @@ pub fn blend_levels(w: usize, h: usize) -> usize {
     n
 }
 
-/// `a[i] ⊕ b[i]` for every `i` (the shorter length wins, like `zip`), in parallel on native
-/// targets. Purely elementwise, so the result is the serial result bit for bit.
-fn par_zip(a: &[f32], b: &[f32], f: impl Fn(f32, f32) -> f32 + Sync + Send) -> Vec<f32> {
+/// `a[i] = f(a[i], b[i])` for every `i` (the shorter length wins), in place and in parallel on
+/// native targets. Purely elementwise, so the result is the serial result bit for bit.
+fn par_zip_assign(a: &mut [f32], b: &[f32], f: impl Fn(f32, f32) -> f32 + Sync + Send) {
     const CHUNK: usize = 1 << 14;
-    let mut out = vec![0.0f32; a.len().min(b.len())];
-    let fill = |o: &mut [f32], a: &[f32], b: &[f32]| {
-        for ((o, &a), &b) in o.iter_mut().zip(a).zip(b) {
-            *o = f(a, b);
+    let fill = |a: &mut [f32], b: &[f32]| {
+        for (a, &b) in a.iter_mut().zip(b) {
+            *a = f(*a, b);
         }
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
         use rayon::prelude::*;
-        out.par_chunks_mut(CHUNK).zip(a.par_chunks(CHUNK)).zip(b.par_chunks(CHUNK)).for_each(|((o, a), b)| fill(o, a, b));
+        a.par_chunks_mut(CHUNK).zip(b.par_chunks(CHUNK)).for_each(|(a, b)| fill(a, b));
     }
     #[cfg(target_arch = "wasm32")]
-    out.chunks_mut(CHUNK).zip(a.chunks(CHUNK)).zip(b.chunks(CHUNK)).for_each(|((o, a), b)| fill(o, a, b));
-    out
-}
-
-/// `f(a[i])` for every `i`, in parallel on native targets (elementwise, so bit for bit serial).
-fn par_map1(a: &[f32], f: impl Fn(f32) -> f32 + Sync + Send) -> Vec<f32> {
-    par_zip(a, a, |x, _| f(x))
+    a.chunks_mut(CHUNK).zip(b.chunks(CHUNK)).for_each(|(a, b)| fill(a, b));
 }
 
 // `reduce`, `expand` and `push_pull` run one pyramid level for one image at a time, and the
@@ -342,11 +348,11 @@ fn par_map1(a: &[f32], f: impl Fn(f32) -> f32 + Sync + Send) -> Vec<f32> {
 // the one-thread loops they replace (rows never read each other's output), so the result is
 // bit for bit unchanged.
 
-pub(super) fn reduce(w: usize, h: usize, ch: usize, src: &[f32]) -> (usize, usize, Vec<f32>) {
+pub(super) fn reduce(w: usize, h: usize, ch: usize, src: &[f32]) -> Result<(usize, usize, Vec<f32>), AllocationError> {
     let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
     let k = [1.0f32, 4.0, 6.0, 4.0, 1.0];
     // Separable 5-tap binomial, then decimate.
-    let mut tmp = vec![0.0f32; nw * h * ch];
+    let mut tmp = alloc_plane(plane_len(nw, h, ch)?)?;
     par_rows(&mut tmp, nw, ch, |y, row| {
         let line = &src[y * w * ch..(y + 1) * w * ch];
         for x in 0..nw {
@@ -361,7 +367,7 @@ pub(super) fn reduce(w: usize, h: usize, ch: usize, src: &[f32]) -> (usize, usiz
             }
         }
     });
-    let mut out = vec![0.0f32; nw * nh * ch];
+    let mut out = alloc_plane(plane_len(nw, nh, ch)?)?;
     par_rows(&mut out, nw, ch, |y, row| {
         // Each output row is five source rows added in tap order: the same sum per element as
         // before (`0 + k0·a + k1·b + …`), but over whole rows so it vectorises.
@@ -375,21 +381,21 @@ pub(super) fn reduce(w: usize, h: usize, ch: usize, src: &[f32]) -> (usize, usiz
             *o /= 16.0;
         }
     });
-    (nw, nh, out)
+    Ok((nw, nh, out))
 }
 
-pub(super) fn expand(sw: usize, sh: usize, ch: usize, src: &[f32], w: usize, h: usize) -> Vec<f32> {
+pub(super) fn expand(sw: usize, sh: usize, ch: usize, src: &[f32], w: usize, h: usize) -> Result<Vec<f32>, AllocationError> {
     // Bilinear upsampling at half-pixel-aligned positions.
-    let mut out = vec![0.0f32; w * h * ch];
+    let mut out = alloc_plane(plane_len(w, h, ch)?)?;
     // Source columns and weights depend on x only: worked out once instead of for every row.
     // The clamped position is never negative, so truncating is `floor` (and spares the libm call).
-    let cols: Vec<(usize, usize, f32)> = (0..w)
-        .map(|x| {
-            let fx = ((x as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (sw - 1) as f32);
-            let x0 = fx as usize;
-            (x0 * ch, (x0 + 1).min(sw - 1) * ch, fx - x0 as f32)
-        })
-        .collect();
+    let mut cols = Vec::new();
+    cols.try_reserve_exact(w).map_err(|_| AllocationError::NotEnoughMemory { bytes: w.saturating_mul(std::mem::size_of::<(usize, usize, f32)>()) })?;
+    cols.extend((0..w).map(|x| {
+        let fx = ((x as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (sw - 1) as f32);
+        let x0 = fx as usize;
+        (x0 * ch, (x0 + 1).min(sw - 1) * ch, fx - x0 as f32)
+    }));
     par_rows(&mut out, w, ch, |y, row| {
         let fy = ((y as f32 + 0.5) / 2.0 - 0.5).clamp(0.0, (sh - 1) as f32);
         let y0 = fy as usize;
@@ -404,20 +410,20 @@ pub(super) fn expand(sw: usize, sh: usize, ch: usize, src: &[f32], w: usize, h: 
             }
         }
     });
-    out
+    Ok(out)
 }
 
 /// Fills pixels with zero `wt` from their surroundings (push-pull), so pyramid levels don't
 /// pull in black from outside an image.
-pub(super) fn push_pull(w: usize, h: usize, ch: usize, px: &mut [f32], wt: &[f32]) {
+pub(super) fn push_pull(w: usize, h: usize, ch: usize, px: &mut [f32], wt: &[f32]) -> Result<(), AllocationError> {
     if w <= 1 && h <= 1 {
-        return;
+        return Ok(());
     }
     let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
     // Coarse sums. A coarse row is fed by two fine rows; walking them in raster order adds each
     // coarse cell's (up to) four fine pixels in the order the serial scatter-add did, from zero.
-    let mut cpx = vec![0.0f32; nw * nh * ch];
-    let mut cw = vec![0.0f32; nw * nh];
+    let mut cpx = alloc_plane(plane_len(nw, nh, ch)?)?;
+    let mut cw = alloc_plane(plane_len(nw, nh, 1)?)?;
     par_rows(&mut cw, nw, 1, |cy, row| {
         for y in 2 * cy..(2 * cy + 2).min(h) {
             for (x, &a) in wt[y * w..(y + 1) * w].iter().enumerate() {
@@ -454,7 +460,7 @@ pub(super) fn push_pull(w: usize, h: usize, ch: usize, px: &mut [f32], wt: &[f32
         }
     }
     if cw.contains(&0.0) && cw.iter().any(|v| *v > 0.0) {
-        push_pull(nw, nh, ch, &mut cpx, &cw);
+        push_pull(nw, nh, ch, &mut cpx, &cw)?;
     }
     par_rows(px, w, ch, |y, row| {
         for x in 0..w {
@@ -468,6 +474,7 @@ pub(super) fn push_pull(w: usize, h: usize, ch: usize, px: &mut [f32], wt: &[f32
             }
         }
     });
+    Ok(())
 }
 
 /// One image's pyramid in [`multiband`]: the grid origin `(gx0, gy0)` at level 0, the Laplacian
@@ -491,50 +498,89 @@ fn band_row(band: &PyramidBand, l: usize, ch: usize, py: usize) -> Option<(usize
 /// uses a many-core machine better than one band's row-parallel work, and one at a time made the
 /// usual 2–4 image Photomerge 12–36% slower on a 32-thread desktop.
 #[cfg(not(target_arch = "wasm32"))]
-const BAND_BUDGET: usize = 5 << 30;
+pub const BAND_BUDGET: usize = 5 << 30;
 
 /// Without threads the bands of a batch are built one after another anyway, so each is added as
 /// soon as it is built (the browser's address space is 4 GB).
 #[cfg(target_arch = "wasm32")]
-const BAND_BUDGET: usize = 0;
+pub const BAND_BUDGET: usize = 0;
 
 /// Multi-band blend of `imgs` into a `w × h` panorama (origin 0,0) with one weight map per image
 /// over the same grid as its ROI (`weights[i]` has `w_i × h_i` entries). Returns the colour
-/// channels (`ch` per pixel) and the total coverage.
-pub fn multiband(w: usize, h: usize, imgs: &[RoiImage], weights: &[Vec<f32>], levels: usize) -> (Vec<f32>, Vec<f32>) {
-    multiband_batched(w, h, imgs, weights, levels, BAND_BUDGET)
+/// channels (`ch` per pixel) and the total coverage, or an error when a buffer can't be allocated.
+pub fn multiband(w: usize, h: usize, imgs: &[RoiImage], weights: &[Vec<f32>], levels: usize) -> Result<(Vec<f32>, Vec<f32>), AllocationError> {
+    try_multiband_batched(w, h, imgs, weights, levels, BAND_BUDGET, None)
+}
+
+/// The grid an image's band is built on: its ROI grown by a margin and aligned down to the
+/// coarsest level's grid, clipped to the `w × h` canvas. Returns `(x0, y0, width, height)`.
+fn band_grid(im: &RoiImage, w: usize, h: usize, levels: usize) -> (i32, i32, usize, usize) {
+    let align = 1i32 << (levels.max(1) - 1);
+    let margin = align * 4;
+    let gx0 = ((im.x0 - margin).max(0) / align) * align;
+    let gy0 = ((im.y0 - margin).max(0) / align) * align;
+    let gx1 = (im.x0 + im.w as i32 + margin).min(w as i32);
+    let gy1 = (im.y0 + im.h as i32 + margin).min(h as i32);
+    (gx0, gy0, (gx1 - gx0).max(1) as usize, (gy1 - gy0).max(1) as usize)
+}
+
+/// Estimated bytes of building one band: its grid's colour and weight planes about three times
+/// over (the pyramids are 4/3 of a plane, and the grid copy and `expand`/`reduce` scratch come
+/// on top). A safe upper bound: the build itself peaks lower.
+pub(super) fn band_cost(im: &RoiImage, w: usize, h: usize, ch: usize, levels: usize) -> usize {
+    let (_, _, gw, gh) = band_grid(im, w, h, levels);
+    gw.saturating_mul(gh).saturating_mul(ch + 1).saturating_mul(4 * 3)
+}
+
+/// An upper bound on `band_cost` (the estimate batching uses) for any ROI of `w × h` pixels on a `canvas_w × canvas_h`
+/// canvas: the grid grows the ROI by the margin on both sides and aligns its start down by up to
+/// `align - 1`, and never exceeds the canvas.
+pub fn band_bytes_bound(w: usize, h: usize, ch: usize, levels: usize, canvas_w: usize, canvas_h: usize) -> usize {
+    let align = 1usize << (levels.max(1) - 1).min(30);
+    let margin = align.saturating_mul(4);
+    let extent = |n: usize, canvas: usize| n.saturating_add(margin.saturating_mul(2)).saturating_add(align).min(canvas).max(1);
+    extent(w, canvas_w).saturating_mul(extent(h, canvas_h)).saturating_mul(ch.saturating_add(1)).saturating_mul(4 * 3)
 }
 
 /// [`multiband`], building at most `budget` estimated bytes of bands at a time (at least one
 /// image). Each pixel still adds the bands in image order, so the result doesn't depend on it.
-pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: &[Vec<f32>], levels: usize, budget: usize) -> (Vec<f32>, Vec<f32>) {
+/// With `max_band_budget`, a single band estimated above it is an error instead.
+pub fn try_multiband_batched(
+    w: usize,
+    h: usize,
+    imgs: &[RoiImage],
+    weights: &[Vec<f32>],
+    levels: usize,
+    budget: usize,
+    max_band_budget: Option<usize>,
+) -> Result<(Vec<f32>, Vec<f32>), AllocationError> {
     let ch = imgs.first().map_or(1, |i| i.ch);
     let levels = levels.max(1);
-    let align = 1i32 << (levels - 1);
+    let cost = |im: &RoiImage| band_cost(im, w, h, ch, levels);
+    if let Some(limit) = max_band_budget {
+        for im in imgs {
+            let bytes = cost(im);
+            if bytes > limit {
+                return Err(AllocationError::NotEnoughMemory { bytes });
+            }
+        }
+    }
     // Level sizes of the panorama.
     let mut sizes = vec![(w, h)];
     for _ in 1..levels {
         let Some(&(pw, ph)) = sizes.last() else { break };
         sizes.push((pw.div_ceil(2), ph.div_ceil(2)));
     }
-    let mut acc: Vec<Vec<f32>> = sizes.iter().map(|&(lw, lh)| vec![0.0; lw * lh * ch]).collect();
-    let mut wsum: Vec<Vec<f32>> = sizes.iter().map(|&(lw, lh)| vec![0.0; lw * lh]).collect();
-    let margin = align * 4;
-    // Each image on its ROI grown by a margin and aligned to the coarsest level's grid.
-    let grid = |im: &RoiImage| {
-        let gx0 = ((im.x0 - margin).max(0) / align) * align;
-        let gy0 = ((im.y0 - margin).max(0) / align) * align;
-        let gx1 = (im.x0 + im.w as i32 + margin).min(w as i32);
-        let gy1 = (im.y0 + im.h as i32 + margin).min(h as i32);
-        (gx0, gy0, (gx1 - gx0).max(1) as usize, (gy1 - gy0).max(1) as usize)
-    };
-    // Building one band holds its grid's colour and weight planes about three times over: the
-    // pyramids are 4/3 of a plane, and the grid copy, coverage and `expand` scratch come on top.
-    let cost = |im: &RoiImage| {
-        let (_, _, gw, gh) = grid(im);
-        gw.saturating_mul(gh).saturating_mul(ch + 1).saturating_mul(4 * 3)
-    };
-    let band = |k: usize| -> PyramidBand {
+    let mut acc: Vec<Vec<f32>> = Vec::with_capacity(sizes.len());
+    let mut wsum: Vec<Vec<f32>> = Vec::with_capacity(sizes.len());
+    for &(lw, lh) in &sizes {
+        let acc_len = lw.checked_mul(lh).and_then(|n| n.checked_mul(ch)).ok_or(AllocationError::SizeOverflow)?;
+        acc.push(alloc_plane(acc_len)?);
+        let wsum_len = lw.checked_mul(lh).ok_or(AllocationError::SizeOverflow)?;
+        wsum.push(alloc_plane(wsum_len)?);
+    }
+    let grid = |im: &RoiImage| band_grid(im, w, h, levels);
+    let band = |k: usize| -> Result<PyramidBand, AllocationError> {
         let im = &imgs[k];
         let (gx0, gy0, gw, gh) = grid(im);
         // Each grid pixel takes the image pixel that lands on it (every image pixel lands on at
@@ -543,7 +589,7 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
             let (x, y) = (gx as i64 + gx0 as i64 - im.x0 as i64, gy as i64 + gy0 as i64 - im.y0 as i64);
             (x >= 0 && y >= 0 && (x as usize) < im.w && (y as usize) < im.h).then(|| y as usize * im.w + x as usize)
         };
-        let mut px = vec![0.0f32; gw * gh * ch];
+        let mut px = alloc_plane(plane_len(gw, gh, ch)?)?;
         par_rows(&mut px, gw, ch, |gy, row| {
             for gx in 0..gw {
                 if let Some(i) = src_of(gx, gy) {
@@ -551,15 +597,7 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
                 }
             }
         });
-        let mut cov = vec![0.0f32; gw * gh];
-        par_rows(&mut cov, gw, 1, |gy, row| {
-            for (gx, o) in row.iter_mut().enumerate() {
-                if let Some(i) = src_of(gx, gy) {
-                    *o = im.alpha[i];
-                }
-            }
-        });
-        let mut wt = vec![0.0f32; gw * gh];
+        let mut wt = alloc_plane(plane_len(gw, gh, 1)?)?;
         par_rows(&mut wt, gw, 1, |gy, row| {
             for (gx, o) in row.iter_mut().enumerate() {
                 if let Some(i) = src_of(gx, gy) {
@@ -567,9 +605,16 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
                 }
             }
         });
-        let bin: Vec<f32> = par_map1(&cov, |a| if a > 0.5 { 1.0 } else { 0.0 });
-        drop(cov);
-        push_pull(gw, gh, ch, &mut px, &bin);
+        // Binary coverage straight from the alpha (0 outside the image), without a coverage plane.
+        let mut bin = alloc_plane(plane_len(gw, gh, 1)?)?;
+        par_rows(&mut bin, gw, 1, |gy, row| {
+            for (gx, o) in row.iter_mut().enumerate() {
+                if let Some(i) = src_of(gx, gy) {
+                    *o = if im.alpha[i] > 0.5 { 1.0 } else { 0.0 };
+                }
+            }
+        });
+        push_pull(gw, gh, ch, &mut px, &bin)?;
         drop(bin);
         // Laplacian of the colours, Gaussian of the weights. Planes move into the pyramids rather
         // than being copied: with one image built at a time, a copy is a serial pass over it.
@@ -582,17 +627,20 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
                 gau.push(cwt);
                 break;
             }
-            let (nw, nh, down) = reduce(cw, chh, ch, &cur);
-            let up = expand(nw, nh, ch, &down, cw, chh);
-            lap.push((cw, chh, par_zip(&cur, &up, |a, b| a - b)));
-            let (_, _, wdown) = reduce(cw, chh, 1, &cwt);
+            let (nw, nh, down) = reduce(cw, chh, ch, &cur)?;
+            let up = expand(nw, nh, ch, &down, cw, chh)?;
+            // The Laplacian replaces the level's colours in place (`cur - up`, elementwise).
+            par_zip_assign(&mut cur, &up, |a, b| a - b);
+            drop(up);
+            lap.push((cw, chh, cur));
+            let (_, _, wdown) = reduce(cw, chh, 1, &cwt)?;
             gau.push(cwt);
             cw = nw;
             chh = nh;
             cur = down;
             cwt = wdown;
         }
-        (gx0, gy0, lap, gau)
+        Ok((gx0, gy0, lap, gau))
     };
     // Build the bands a batch at a time and add each batch before building the next. Each pixel
     // adds the bands in the same order as the serial loop (per level, bands one after another;
@@ -601,14 +649,15 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
     let mut start = 0;
     while start < imgs.len() {
         let mut end = start + 1;
-        let mut bytes = cost(&imgs[start]);
+        let c = cost(&imgs[start]);
+        let mut bytes = c;
         while let Some(im) = imgs.get(end)
             && bytes.saturating_add(cost(im)) <= budget
         {
             bytes = bytes.saturating_add(cost(im));
             end += 1;
         }
-        let bands = par_map(end - start, |j| band(start + j));
+        let bands = par_map(end - start, |j| band(start + j)).into_iter().collect::<Result<Vec<_>, _>>()?;
         for l in 0..levels {
             let pw = sizes[l].0;
             par_rows(&mut wsum[l], pw, 1, |py, row| {
@@ -660,18 +709,28 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
             }
         });
     }
+    drop(wsum);
     // Collapse.
     // `levels ≥ 1`, so there is always a coarsest level.
-    let Some(mut cur) = acc.pop() else { return (vec![0.0; w * h * ch], vec![0.0; w * h]) };
+    let Some(mut cur) = acc.pop() else {
+        let total = w.checked_mul(h).and_then(|n| n.checked_mul(ch)).ok_or(AllocationError::SizeOverflow)?;
+        let cov_total = w.checked_mul(h).ok_or(AllocationError::SizeOverflow)?;
+        return Ok((alloc_plane(total)?, alloc_plane(cov_total)?));
+    };
     for l in (0..levels - 1).rev() {
         let (pw, ph) = sizes[l];
         let (sw, sh) = sizes[l + 1];
-        let up = expand(sw, sh, ch, &cur, pw, ph);
-        cur = par_zip(&acc[l], &up, |a, b| a + b);
+        let up = expand(sw, sh, ch, &cur, pw, ph)?;
+        // Add the upsampled coarser levels into this level's accumulator (`acc + up`, in place).
+        let mut level = std::mem::take(&mut acc[l]);
+        par_zip_assign(&mut level, &up, |a, b| a + b);
+        drop(up);
+        cur = level;
     }
     // Coverage: union of the images. Rows are independent; each walks the images in order, so a
     // pixel sees the same sequence of `max` calls as in the serial loop.
-    let mut cov = vec![0.0f32; w * h];
+    let cov_len = w.checked_mul(h).ok_or(AllocationError::SizeOverflow)?;
+    let mut cov = alloc_plane(cov_len)?;
     par_rows(&mut cov, w, 1, |py, row| {
         for im in imgs {
             let y = py as i64 - im.y0 as i64;
@@ -688,5 +747,5 @@ pub(super) fn multiband_batched(w: usize, h: usize, imgs: &[RoiImage], weights: 
             }
         }
     });
-    (cur, cov)
+    Ok((cur, cov))
 }

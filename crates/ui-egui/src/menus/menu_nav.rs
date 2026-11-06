@@ -341,8 +341,10 @@ impl Nav {
         let level = self.level.min(self.rows.len().saturating_sub(1));
         self.level = level;
         // A text field in the menu (Help › Search) keeps the keys that edit it: ← / → move its
-        // cursor and Space types a space.
-        let typing = ctx.text_edit_focused();
+        // cursor and Space types a space. A zoom field keeps the keyboard while a menu title is
+        // clicked (zoom_field.rs), but is not in the menu: the menu takes the keys, unless it has
+        // a text field of its own (Help › Search, which the zoom field keeps out).
+        let typing = ctx.text_edit_focused() && !(crate::zoom_field::is_focused(ctx) && !super::search::shown(ctx));
         let press = |k: Key| !(typing && matches!(k, Key::ArrowLeft | Key::ArrowRight | Key::Space)) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, k));
         let current = self.highlighted(level).and_then(|i| self.rows.get(level)?.get(i)).cloned();
         let switch = |by: usize| {
@@ -373,6 +375,7 @@ impl Nav {
                 switch(tops.len() - 1);
             }
         } else if press(Key::Enter) || press(Key::Space) {
+            crate::zoom_field::drop_text(ctx, ' ');
             match current {
                 Some(Row { enabled: true, command: Some(c), .. }) => {
                     *clicked = Some(c);

@@ -82,6 +82,68 @@ fn lut_rows(f: impl Fn(usize, f32) -> f32, rows: usize) -> Vec<[f32; 4096]> {
 
 type Program = (i32, [[f32; 4]; 4], Option<Vec<[f32; 4096]>>);
 
+/// What the LUT rows of `adj` at `depth` are built from, hashed bit for bit (so `-0.0` and `0.0`
+/// stay apart): every field the row builder reads and nothing else, so settings outside the
+/// tables (Hue/Saturation's master sliders) don't add entries. The settings are destructured in
+/// full (Hue/Saturation's builder takes only `ranges`), so a new field fails to compile here until
+/// it is placed. `None`: rows aren't cached.
+pub(super) fn row_key(adj: &Adjustment, depth: photocraft_color::SampleType) -> Option<u64> {
+    use photocraft_doc::adjust::{CurvePoint, HueRange, LevelsChannel};
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let level = |h: &mut std::collections::hash_map::DefaultHasher, c: &LevelsChannel| {
+        let LevelsChannel { in_black, in_white, gamma, out_black, out_white } = c;
+        [in_black, in_white, gamma, out_black, out_white].map(|v| v.to_bits()).hash(h);
+    };
+    let curve = |h: &mut std::collections::hash_map::DefaultHasher, c: &[CurvePoint]| {
+        c.len().hash(h);
+        for CurvePoint { input, output } in c {
+            (input.to_bits(), output.to_bits()).hash(h);
+        }
+    };
+    match adj {
+        // adjust::tone_luts_depth, which rounds to the depth's quantum.
+        Adjustment::Levels { master, per_channel, space, black } => {
+            (0u8, depth, *space as u8).hash(&mut h);
+            for c in [master, &per_channel[0], &per_channel[1], &per_channel[2], black] {
+                level(&mut h, c);
+            }
+        }
+        Adjustment::Curves { master, per_channel, space, black, pencil } => {
+            (1u8, depth, *space as u8, *pencil).hash(&mut h);
+            for c in [master, &per_channel[0], &per_channel[1], &per_channel[2], black] {
+                curve(&mut h, c);
+            }
+        }
+        // adjust::hue_range_tables reads only the ranges, at any depth.
+        Adjustment::HueSaturation { ranges, .. } => {
+            2u8.hash(&mut h);
+            for HueRange { hue, saturation, lightness, bounds } in ranges {
+                [hue, saturation, lightness].map(|v| v.to_bits()).hash(&mut h);
+                bounds.map(f32::to_bits).hash(&mut h);
+            }
+        }
+        // adjust::BalanceCurve::rgb, at any depth.
+        Adjustment::ColorBalance { shadows, midtones, highlights, preserve_luminosity } => {
+            (3u8, *preserve_luminosity).hash(&mut h);
+            for tone in [shadows, midtones, highlights] {
+                tone.map(f32::to_bits).hash(&mut h);
+            }
+        }
+        _ => return None,
+    }
+    Some(h.finish())
+}
+
+/// LUT rows for `adj` at `depth`, built by `build` once per [`row_key`] and reused by later plans
+/// (`compose::lut_rows`): the Levels tables alone took 1–2 ms per layer on every plan (#11498).
+fn cached_rows(adj: &Adjustment, depth: photocraft_color::SampleType, build: impl FnOnce() -> Vec<[f32; 4096]>) -> Vec<[f32; 4096]> {
+    match row_key(adj, depth) {
+        Some(key) => photocraft_compose::lut_rows::cached(key, build),
+        None => build(),
+    }
+}
+
 /// A CPU LUT (4096 entries) as one texture row.
 fn to_row(t: &[f32]) -> [f32; 4096] {
     let mut row = [0.0f32; 4096];
@@ -173,7 +235,7 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             }
             // p0.w: continue the curve past 0..1 (32-bit RGB Curves, #7157).
             p[0][3] = if adjust::float_tone_extrapolates(adj, Some(depth), mode) { 1.0 } else { 0.0 };
-            (7, p, Some(adjust::tone_luts_depth(adj, Some(depth)).iter().take(3).map(|t| to_row(t)).collect()))
+            (7, p, Some(cached_rows(adj, depth, || adjust::tone_luts_depth(adj, Some(depth)).iter().take(3).map(|t| to_row(t)).collect())))
         }
         Adjustment::HueSaturation { hue, saturation, lightness, colorize, ranges } => {
             let sat = adjust::colorize_saturation(saturation / 100.0, lightness / 100.0, *colorize, Some(depth));
@@ -181,7 +243,7 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             if !*colorize && ranges.iter().any(|r| !r.is_neutral()) {
                 // Range edits: hue-indexed rows (shift, saturation, lightness), as on the CPU.
                 p[1][0] = 1.0;
-                (8, p, Some(adjust::hue_range_tables(ranges).iter().map(|t| to_row(t)).collect()))
+                (8, p, Some(cached_rows(adj, depth, || adjust::hue_range_tables(ranges).iter().map(|t| to_row(t)).collect())))
             } else {
                 (8, p, None)
             }
@@ -234,8 +296,11 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
         }
         Adjustment::ColorBalance { shadows, midtones, highlights, preserve_luminosity } => {
             // Per-channel curves (compose::adjust::BalanceCurve), through the Levels kernel.
-            let curves = adjust::BalanceCurve::rgb([*shadows, *midtones, *highlights], *preserve_luminosity);
-            (7, p, Some(lut_rows(|ch, v| curves[ch].eval(v), 3)))
+            let rows = || {
+                let curves = adjust::BalanceCurve::rgb([*shadows, *midtones, *highlights], *preserve_luminosity);
+                lut_rows(|ch, v| curves[ch].eval(v), 3)
+            };
+            (7, p, Some(cached_rows(adj, depth, rows)))
         }
         Adjustment::SelectiveColor { relative, adjustments } => {
             // 9 ranges × CMYK don't fit the 16 params: they go in LUT row 0 (read texel-exact).

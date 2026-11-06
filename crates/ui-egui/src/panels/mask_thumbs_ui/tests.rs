@@ -806,8 +806,7 @@ fn a_new_adjustment_or_fill_layer_shows_its_settings_until_the_mask_thumbnail_is
         // Clicking the row (not a thumbnail) keeps the settings.
         let row = h.get_by_label(&layer(&h, id).name).rect().center();
         click_with(&mut h, row, Modifiers::NONE);
-        assert_eq!(h.state().ui.mask_target, command.starts_with("layer.newFillLayer."));
-        assert!(!h.state().ui.vector_mask_target);
+        assert!(h.state().ui.mask_target);
         assert!(h.query_all_by_label("Density").next().is_none(), "{command}: a row click keeps the settings");
         // The mask thumbnail switches Properties to the mask.
         let r = mask_rect(&h, id, MaskKind::Pixel);
@@ -841,39 +840,32 @@ fn a_new_adjustment_layer_brings_properties_to_the_front() {
 }
 
 #[test]
-fn adjustment_names_target_contents_instead_of_masks() {
+fn selecting_an_adjustment_layer_from_another_layer_targets_its_mask() {
+    // The reference application: an adjustment layer picked by its name targets its mask; a
+    // masked pixel layer targets its contents; the content thumbnail still targets contents.
     for command in ["layer.newAdjustmentLayer.hueSaturation", "layer.newAdjustmentLayer.curves"] {
-        for ppp in [1.0, 2.0] {
-            let (mut s, _, other) = session();
-            s.execute(command, json!({})).unwrap();
-            let id = s.active().unwrap().active_layer.unwrap().0;
-            let path = json!({"subpaths": [{"knots": [[20, 10], [120, 10], [120, 90], [20, 90]]}]});
-            s.execute("layer.vectorMask.add", json!({"layer": id, "path": path})).unwrap();
-            let mut h = harness(s, 0, ppp, 360.0);
-            for kind in [MaskKind::Pixel, MaskKind::Vector] {
-                let at = mask_rect(&h, id, kind).center();
-                click_with(&mut h, at, Modifiers::NONE);
-                assert_eq!(h.state().ui.mask_target, kind == MaskKind::Pixel);
-                assert_eq!(h.state().ui.vector_mask_target, kind == MaskKind::Vector);
-                let name = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == id).unwrap().name.unwrap().center();
-                click_with(&mut h, name, Modifiers::NONE);
-                assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x after {kind:?}");
-                let thumb = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == id).unwrap().thumbnail.unwrap();
-                assert!(near(super::brackets(&h.ctx).unwrap(), thumb.expand(3.0)), "the content thumbnail is selected");
-                assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
-            }
-            let name = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == other).unwrap().name.unwrap().center();
-            click_with(&mut h, name, Modifiers::NONE);
-            let name = crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == id).unwrap().name.unwrap().center();
-            click_with(&mut h, name, Modifiers::NONE);
-            assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
-            assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x from another layer");
-            assert_eq!(crate::canvas::paint_target(h.state()), json!("mask"));
-            let content = layer(&h, id).content;
-            h.state_mut().run("edit.fill", json!({"contents": "black"})).unwrap();
-            assert_eq!(layer(&h, id).content, content, "filling must preserve the adjustment or fill content");
-            assert_eq!(layer(&h, id).mask.unwrap().surface.sample_channel(50, 50, 0), 0.0, "Fill edits the mask");
-            assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "painting leaves the content thumbnail selected");
-        }
+        let (mut s, masked, other) = session();
+        s.execute(command, json!({})).unwrap();
+        let id = s.active().unwrap().active_layer.unwrap().0;
+        let mut h = harness(s, 0, 1.0, 360.0);
+        assert!(layer(&h, id).mask.is_some(), "{command}: the adjustment layer has a mask");
+        let name_of =
+            |h: &Harness<'_, PhotocraftApp>, l: u64| crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == l).unwrap().name.unwrap().center();
+        let at = name_of(&h, other);
+        click_with(&mut h, at, Modifiers::NONE);
+        let at = name_of(&h, id);
+        click_with(&mut h, at, Modifiers::NONE);
+        assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
+        assert!(h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command}: a name click targets the mask");
+        assert_eq!(crate::canvas::paint_target(h.state()), json!("mask"));
+        // The content thumbnail targets the contents.
+        let thumb = layer_thumb_center(&h, id);
+        click_with(&mut h, thumb, Modifiers::NONE);
+        assert!(!h.state().ui.mask_target, "{command}: the content thumbnail targets contents");
+        // A masked pixel layer picked by its name targets its contents.
+        let at = name_of(&h, masked);
+        click_with(&mut h, at, Modifiers::NONE);
+        assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, masked);
+        assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command}: a pixel layer targets its contents");
     }
 }

@@ -185,6 +185,20 @@ pub fn apply_filter_to_surface(
     selection: Option<&photocraft_raster::Surface>,
     canvas: photocraft_geom::Rect,
 ) -> Result<Option<photocraft_raster::Surface>> {
+    apply_filter_to_surface_in(id, params, surf, bounds, selection, canvas, &crate::jobs::JobCtx::new())
+}
+
+/// Render a stored filter with the caller's cancellation context, including custom kernel preparation.
+pub(crate) fn apply_filter_to_surface_in(
+    id: &str,
+    params: &Value,
+    surf: &photocraft_raster::Surface,
+    bounds: photocraft_geom::Rect,
+    selection: Option<&photocraft_raster::Surface>,
+    canvas: photocraft_geom::Rect,
+    ctx: &crate::jobs::JobCtx,
+) -> Result<Option<photocraft_raster::Surface>> {
+    ctx.check()?;
     // Replays bypass command dispatch; nested paths must still obey the requesting session's
     // authority, including adjustment LUTs and plug-ins, before any resolver can read them.
     crate::jobs::authorize_render_command(id, params)?;
@@ -207,13 +221,31 @@ pub fn apply_filter_to_surface(
     let Some(mut fp) = params_for(id, params) else { return Ok(None) };
     // A map that can no longer be read (moved or deleted since) leaves the pixels alone, like an
     // unknown filter; the command itself already refused an unreadable map when it was added.
-    if crate::filters_ext::resolve_map_path(&mut fp, params).is_err() {
-        return Ok(None);
+    // The stack owns progress across filters; this operation only inherits cancellation.
+    let cancelled = || ctx.cancelled();
+    let ctl = photocraft_raster::Interrupt::cancel_only(&cancelled);
+    match crate::filters_ext::resolve_map_path(&mut fp, params, &ctl) {
+        Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+        Err(e) if matches!(fp, FilterParams::CustomShapeBlur { .. }) => return Err(e),
+        Err(_) => return Ok(None),
+        Ok(()) => {}
     }
     let sel_bounds = selection.map(photocraft_raster::Surface::content_bounds);
     let content = surf.content_bounds();
     let area = algo::output_area(&fp, content, bounds, sel_bounds);
-    Ok(Some(algo::apply_in(surf, &fp, area, bounds, selection, canvas.union(&content))))
+    let out = algo::apply_in_with(surf, &fp, area, bounds, selection, canvas.union(&content), &ctl);
+    filter_output(out, ctx.cancelled()).map(Some)
+}
+
+/// A filter's result. The filter also yields nothing when it cannot prepare its working data (a
+/// custom Shape Blur kernel it cannot allocate or does not accept): that is a failure to report,
+/// not a cancellation, unless the job was cancelled.
+fn filter_output(out: Option<photocraft_raster::Surface>, cancelled: bool) -> Result<photocraft_raster::Surface> {
+    match out {
+        Some(surface) => Ok(surface),
+        None if cancelled => Err(EngineError::Cancelled),
+        None => Err(EngineError::Other("the filter could not prepare its working data (not enough memory, or an unusable kernel)".into())),
+    }
 }
 
 pub(crate) fn has_filterable_layer(s: &Session) -> std::result::Result<(), String> {
@@ -238,19 +270,18 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
     if id == "filter.distort.displace" {
         prepared = crate::filters_ext::displace_request(&prepared);
     }
+    crate::filters_ext::resolve_shape_path(s, id, &mut prepared)?;
     let p = &prepared;
     let mut fp = params_for(id, p).ok_or_else(|| EngineError::Other(format!("unknown filter {id}")))?;
     crate::filters_ext::resolve(s, &mut fp, p)?;
-    let layer = match p.get("layer").and_then(Value::as_u64) {
-        Some(l) => photocraft_doc::LayerId(l),
-        None => s.active().and_then(|d| d.active_layer).ok_or(EngineError::Other("no active layer".into()))?,
-    };
+    let layer = crate::commands::layer_param(s, p)?;
     let label = preset(id).map_or(fp.label(), |(name, _)| name).to_string();
     let msg = label.clone();
     let mut params = p.clone();
     if let Value::Object(m) = &mut params {
         m.remove("__kind");
     }
+    let colors = crate::color_channels::target(s, p)?;
     let id = id.to_string();
     let p = p.clone();
     let layer_id = layer.0;
@@ -260,8 +291,13 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
         s,
         &label,
         move |doc, _, ctx| {
+            ctx.check()?;
+            let prepare_kernel = |fp: &mut FilterParams| ctx.stage(0.0, 0.1, "Preparing filter", |ctl| crate::filters_ext::resolve_shape_kernel(fp, &p, ctl));
             let filter = |surf: &photocraft_raster::Surface, fp: &FilterParams, area, bounds, sel: Option<&photocraft_raster::Surface>, extent| {
-                ctx.stage(0.0, 1.0, &msg, |ctl| algo::apply_in_with(surf, fp, area, bounds, sel, extent, ctl)).ok_or(EngineError::Cancelled)
+                let _working = photocraft_raster::memory::try_reserve_operation(algo::working_bytes(fp, area, bounds, surf.format().channels()))
+                    .map_err(EngineError::Other)?;
+                let out = ctx.stage(0.1, 1.0, &msg, |ctl| algo::apply_in_with(surf, fp, area, bounds, sel, extent, ctl));
+                filter_output(out, ctx.cancelled())
             };
             let selection = doc.selection.clone();
             let sel_bounds = selection.as_ref().map(photocraft_raster::Surface::content_bounds);
@@ -272,6 +308,7 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
             // Neighbourhood filters repeat edge pixels at the canvas edge (or past it, where the
             // layer has off-canvas pixels) instead of fading in transparency, as Photoshop does.
             if let Some(surf) = crate::channel_cmds::channel_surface_for_filter(doc, Some(layer), &p)? {
+                prepare_kernel(&mut fp)?;
                 let content = doc_bounds.union(&surf.content_bounds());
                 let area = algo::output_area(&fp, content, bounds, sel_bounds);
                 *surf = filter(surf, &fp, area, bounds, selection.as_ref(), algo::separable::edge_extent(doc_bounds, content))?;
@@ -319,10 +356,34 @@ pub(crate) fn run_filter(s: &mut Session, id: &str, p: &Value) -> Result<Value> 
                     };
                     // Non-destructive: record the filter and re-render the smart object from its source.
                     let sf = SmartFilter { command: id.clone(), params, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true };
-                    return crate::smart_cmds::add_smart_filter(doc, layer, sf, selection.as_ref()).map(|()| fp);
+                    return crate::smart_cmds::add_smart_filter_in(doc, layer, sf, selection.as_ref(), ctx).map(|()| fp);
                 }
                 _ => return Err(EngineError::Other("not a pixel layer".into())),
             };
+            prepare_kernel(&mut fp)?;
+            if let Some(colors) = colors {
+                if fp.makes_transparency() {
+                    return Err(EngineError::Other("this filter requires composite channels".into()));
+                }
+                // A grayscale plane cannot distinguish an opaque black border from its zero
+                // default. Keep the native surface's extent when finding the filter support.
+                let content = surf.content_bounds();
+                let extent = doc_bounds.union(&content);
+                let opaque_default = !surf.format().alpha || surf.default_pixel().last().is_some_and(|alpha| *alpha > 0.0);
+                let support = if opaque_default { extent } else { content };
+                let mut area = algo::output_area(&fp, support, bounds, sel_bounds).intersect(&extent);
+                // Colour-only writes cannot create opacity, so generators need not materialize
+                // invisible samples across empty parts of a transparent layer.
+                if !opaque_default && fp.renders_from_nothing() {
+                    area = area.intersect(&content);
+                }
+                // Keep the full native input context: filters can read transparency as a depth
+                // or texture map, and colour-valued settings belong to the source colour model.
+                let before = surf.clone();
+                *surf = filter(surf, &fp, area, bounds, selection.as_ref(), extent)?;
+                crate::color_channels::restrict_surface_in(&before, surf, colors, extent)?;
+                return Ok(fp);
+            }
             let before = locks.transparency.then(|| surf.clone());
             let content = surf.content_bounds();
             let area = algo::output_area(&fp, content, bounds, sel_bounds);
@@ -376,6 +437,8 @@ pub(crate) fn keep_alpha(old: &photocraft_raster::Surface, new: &mut photocraft_
                 }
             }
             s.write_region(*r, &v);
+            photocraft_raster::scratch::give(o);
+            photocraft_raster::scratch::give(v);
             true
         })
         .reduce(|| true, |a, b| a && b);
@@ -477,8 +540,17 @@ pub fn specs() -> Vec<CommandSpec> {
                 has_filterable_layer(s)?;
                 last_filter(s).map(|_| ()).ok_or_else(|| "no filter applied yet".into())
             },
-            run: |s, _| {
-                let (id, params) = last_filter(s).ok_or_else(|| EngineError::Other("no filter applied yet".into()))?;
+            run: |s, p| {
+                let (id, mut params) = last_filter(s).ok_or_else(|| EngineError::Other("no filter applied yet".into()))?;
+                if let Some(target) = p.get("target") {
+                    if params.is_null() {
+                        params = json!({});
+                    }
+                    if let Some(object) = params.as_object_mut() {
+                        object.insert("target".into(), target.clone());
+                    }
+                }
+                crate::param_check::check(crate::commands::find(&id).ok_or_else(|| EngineError::Other("unknown saved filter".into()))?, &params)?;
                 run_filter(s, &id, &params)
             },
             journal: true,
@@ -493,6 +565,7 @@ pub fn last_filter(s: &Session) -> Option<(String, Value)> {
     let (id, mut params) = s.journal.iter().rev().find(|(id, _)| params_for(id, &Value::Null).is_some() && id.starts_with("filter.")).cloned()?;
     if let Value::Object(m) = &mut params {
         m.remove("layer");
+        m.remove("target");
     }
     Some((id, params))
 }

@@ -32,11 +32,14 @@ pub(crate) enum CliError {
     OutIsInput(PathBuf),
     #[error("--out {} is the --in folder, so the results would replace the originals: choose another --out folder, or pass --in-place to overwrite them", .0.display())]
     OutIsIn(PathBuf),
-    /// Another input already wrote this output ([`photocraft_engine::file_cmds::OutputClaims::check`]).
+    #[error("--naming: {0}")]
+    Naming(String),
     #[error("{0}")]
-    OutputClaimed(String),
+    BatchOption(String),
     #[error("{0} file(s) failed")]
     FilesFailed(usize),
+    #[error("{0}")]
+    Other(String),
 }
 
 pub(crate) type Result<T = (), E = CliError> = std::result::Result<T, E>;
