@@ -1288,6 +1288,94 @@ fn x_swaps_the_frame_orientation_not_the_colours() {
     assert!(!swap_orientation(&mut app));
 }
 
+/// #7738: with a ratio set, the options bar's ⇄ turns the frame with the ratio, as X does,
+/// instead of fitting the swapped ratio inside the old frame; a second click brings it back.
+#[test]
+fn the_swap_button_turns_the_ratio_frame() {
+    use egui_kittest::kittest::Queryable;
+    let a = app(SampleType::U8);
+    let mut h = swap_button_harness(a, "16:9", [60.0, 27.5, 140.0, 72.5]);
+    let near = |a: Option<[f64; 4]>, b: [f64; 4]| a.is_some_and(|a| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9));
+    h.get_by_label("Swaps height and width").click();
+    h.run_steps(2);
+    assert!(near(h.state().ui.crop_rect, [77.5, 10.0, 122.5, 90.0]), "45 x 80, not shrunk: {:?}", h.state().ui.crop_rect);
+    h.get_by_label("Swaps height and width").click();
+    h.run_steps(2);
+    assert!(near(h.state().ui.crop_rect, [60.0, 27.5, 140.0, 72.5]), "and back: {:?}", h.state().ui.crop_rect);
+}
+
+/// With W x H x Resolution the bar's ⇄ swaps W and H and turns the frame with them, as X
+/// does, instead of fitting the turned size inside the old frame.
+#[test]
+fn the_swap_button_turns_a_size_preset_frame() {
+    use egui_kittest::kittest::Queryable;
+    let whr = |a: &mut PhotocraftApp| {
+        let o = &mut a.ui.tool_options;
+        (o.crop_width, o.crop_height, o.crop_resolution) = ("1600 px".into(), "900 px".into(), "72".into());
+    };
+    let mut a = app(SampleType::U8);
+    whr(&mut a);
+    let mut h = swap_button_harness(a, crate::crop_size::WHR, [60.0, 27.5, 140.0, 72.5]);
+    let near = |a: Option<[f64; 4]>, b: [f64; 4]| a.is_some_and(|a| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9));
+    h.get_by_label("Swaps height and width").click();
+    h.run_steps(2);
+    let o = &h.state().ui.tool_options;
+    assert_eq!((o.crop_ratio.as_str(), o.crop_width.as_str(), o.crop_height.as_str()), (crate::crop_size::WHR, "900 px", "1600 px"));
+    assert!(near(h.state().ui.crop_rect, [77.5, 10.0, 122.5, 90.0]), "45 x 80, not shrunk: {:?}", h.state().ui.crop_rect);
+    h.get_by_label("Swaps height and width").click();
+    h.run_steps(2);
+    assert!(near(h.state().ui.crop_rect, [60.0, 27.5, 140.0, 72.5]), "and back: {:?}", h.state().ui.crop_rect);
+    // X does the same.
+    let mut a = app(SampleType::U8);
+    whr(&mut a);
+    a.ui.tool_options.crop_ratio = crate::crop_size::WHR.into();
+    a.ui.crop_rect = Some([60.0, 27.5, 140.0, 72.5]);
+    assert!(swap_orientation(&mut a));
+    assert_eq!((a.ui.tool_options.crop_width.as_str(), a.ui.tool_options.crop_height.as_str()), ("900 px", "1600 px"));
+    assert!(near(a.ui.crop_rect, [77.5, 10.0, 122.5, 90.0]), "X: 45 x 80, not shrunk: {:?}", a.ui.crop_rect);
+}
+
+/// A square default frame doesn't turn, so ⇄ leaves it untouched: not edited, and leaving the
+/// tool drops it instead of cropping.
+#[test]
+fn the_swap_button_leaves_a_square_default_frame_untouched() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = app(SampleType::U8);
+    a.crop.default_frame = true;
+    a.crop.editing = false;
+    let mut h = swap_button_harness(a, "1:1", [50.0, 0.0, 150.0, 100.0]);
+    h.get_by_label("Swaps height and width").click();
+    h.run_steps(2);
+    assert_eq!(h.state().ui.crop_rect, Some([50.0, 0.0, 150.0, 100.0]));
+    assert!(h.state().crop.default_frame && !h.state().crop.editing, "still the untouched default frame");
+    // X, the same swap from the keyboard.
+    let mut a = app(SampleType::U8);
+    a.crop.default_frame = true;
+    a.crop.editing = false;
+    a.crop.frame_for = a.session.active_index().zip(a.session.active()).map(|(i, st)| (i, st.doc.size.width, st.doc.size.height));
+    a.ui.tool_options.crop_ratio = "1:1".into();
+    a.ui.crop_rect = Some([50.0, 0.0, 150.0, 100.0]);
+    assert!(swap_orientation(&mut a));
+    assert_eq!(a.ui.crop_rect, Some([50.0, 0.0, 150.0, 100.0]));
+    assert!(a.crop.default_frame && !a.crop.editing, "X keeps it untouched too");
+}
+
+fn swap_button_harness(mut a: PhotocraftApp, ratio: &str, rect: [f64; 4]) -> egui_kittest::Harness<'static, PhotocraftApp> {
+    a.ui.tool_options.crop_ratio = ratio.into();
+    a.ui.crop_rect = Some(rect);
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 60.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::panels::options_bar(app, ui);
+            }
+        },
+        a,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ProMedium);
+    h.run_steps(4);
+    h
+}
+
 /// #1919: W × H beside the pointer while the frame is drawn or resized (its own size when
 /// turned), not while it moves or turns or between gestures.
 #[test]

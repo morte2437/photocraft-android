@@ -315,11 +315,15 @@ fn text_field(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, width
 }
 
 /// The W x H x Resolution fields of the options bar: W, ⇄, H, the resolution and its unit.
-pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) {
+/// Returns true when ⇄ swapped W and H, so the Crop tool turns its frame with them.
+pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) -> bool {
     text_field(ui, "crop-width", &mut o.crop_width, tl!("Width"), 64.0, normalize_length);
-    if crate::icons::button(ui, "arrow-left-right", 22.0, false, tl!("Swaps height and width")).clicked() {
+    // Always swaps (Perspective Crop shows the fields without the mode); true in W x H x Resolution
+    // mode, where the Crop tool turns its frame with W and H.
+    let swapped = crate::icons::button(ui, "arrow-left-right", 22.0, false, tl!("Swaps height and width")).clicked() && {
         swap_fields(o);
-    }
+        o.crop_ratio == WHR
+    };
     text_field(ui, "crop-height", &mut o.crop_height, tl!("Height"), 64.0, normalize_length);
     text_field(ui, "crop-resolution", &mut o.crop_resolution, tl!("Resolution"), 64.0, normalize_resolution);
     let units = [(PX_PER_IN.to_string(), "px/in"), (PX_PER_CM.to_string(), "px/cm")];
@@ -331,6 +335,7 @@ pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) {
             o.crop_resolution = crate::widgets::fmt_num2(v);
         }
     }
+    swapped
 }
 
 #[cfg(test)]

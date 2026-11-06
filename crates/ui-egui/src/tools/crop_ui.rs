@@ -884,6 +884,18 @@ pub fn swapped(r: [f64; 4]) -> [f64; 4] {
     [c[0] - hh, c[1] - hw, c[0] + hh, c[1] + hw]
 }
 
+/// The options bar's ⇄ with a ratio set: the frame turns with the ratio about its centre, as X
+/// does, so fitting the swapped ratio afterwards doesn't shrink it (#7738).
+pub(crate) fn turn_frame(app: &mut PhotocraftApp) {
+    // A square frame doesn't change, so an untouched default frame stays one (and isn't
+    // committed on leaving the tool).
+    if let Some(r) = app.ui.crop_rect.filter(|_| takes_keys(app) && preset_ratio(app).is_some())
+        && swapped(r) != r
+    {
+        keyed(app, swapped(r));
+    }
+}
+
 /// The options-bar ratio `key` with its sides swapped (what the bar's ⇄ button does), `None` when
 /// no ratio is set; "original" becomes the document's size turned on its side.
 pub fn swapped_ratio(key: &str, doc_w: f64, doc_h: f64) -> Option<String> {
@@ -903,8 +915,11 @@ pub fn swap_orientation(app: &mut PhotocraftApp) -> bool {
     {
         app.ui.tool_options.crop_ratio = k;
     }
-    // The frame turns first: fitting the swapped ratio inside the old frame would shrink it.
-    keyed(app, swapped(r));
+    // The frame turns first: fitting the swapped ratio inside the old frame would shrink it. A
+    // square frame doesn't change, so an untouched default frame stays one.
+    if swapped(r) != r {
+        keyed(app, swapped(r));
+    }
     if preset_ratio(app).is_some() {
         apply_ratio(app);
     } else {

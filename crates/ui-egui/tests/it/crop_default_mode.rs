@@ -138,18 +138,17 @@ fn the_swap_button_and_x_swap_the_ratio_about_the_centre() {
     let before = mid(screen_box(&h));
     h.get_by_label("Swaps height and width").click();
     h.run_steps(3);
+    // Both turn the frame instead of fitting the turned ratio inside it (#7057, #7738).
     let button = h.state().ui.crop_rect.unwrap();
     assert_eq!(h.state().ui.tool_options.crop_ratio, "2:3");
-    assert!(((button[2] - button[0]) / (button[3] - button[1]) - 2.0 / 3.0).abs() < 1e-10);
-    assert!(button[0] >= original[0] && button[2] <= original[2] && button[1] >= original[1] && button[3] <= original[3]);
+    assert_eq!(button, [70.0, -20.0, 230.0, 220.0]);
     assert!(mid(screen_box(&h)).distance(before) < 0.01);
     h.state_mut().ui.crop_rect = Some(original);
     h.state_mut().ui.tool_options.crop_ratio = "3:2".into();
     h.run_steps(3);
     h.key_press(Key::X);
     h.run_steps(3);
-    // X turns the frame instead of fitting the turned ratio inside it (#7057).
-    assert_eq!(h.state().ui.crop_rect, Some([70.0, -20.0, 230.0, 220.0]));
+    assert_eq!(h.state().ui.crop_rect, Some(button));
     assert!(mid(screen_box(&h)).distance(before) < 0.01);
 }
 
