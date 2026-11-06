@@ -105,6 +105,19 @@ const MAX_PEAK_PIXEL_BYTES: u64 = 3 << 29;
 const MAX_NODES: usize = 2_000;
 /// Nesting past which a subtree is rasterised instead of walked (bounded recursion).
 const MAX_RECURSION: usize = 200;
+/// Most filter work beyond the ordinary a drawing may ask of resvg, in pixel reads (see
+/// [`filter_cost`]): about ten seconds in a release build (resvg manages roughly 200 million reads
+/// a second, and its filters can't be interrupted).
+const MAX_FILTER_COST: u64 = 2_000_000_000;
+/// Reads per pixel any primitive may take for free (a 16 × 16 morphology window or kernel, 16
+/// turbulence octaves), so ordinary filters open on any canvas.
+const ORDINARY_FILTER_READS: u64 = 256;
+/// Most elements [`filter_cost`] visits, counting a shared mask, clip path or pattern once per
+/// use, as resvg renders it: patterns that fill and stroke with the next one double the work at
+/// each level, so a few dozen levels would keep the check (and the render) busy for hours.
+const MAX_FILTER_VISITS: usize = 10_000_000;
+/// One `feTurbulence` octave per pixel, in pixel reads (it measures about 15 times a read).
+const TURBULENCE_OCTAVE_COST: u64 = 16;
 /// Deepest element nesting accepted. The XML parser recurses once per level, so a file nested
 /// a few thousand deep (70 KB of `<g>`) overflows a 2 MB thread stack, an abort no guard can
 /// catch; real drawings stay under a hundred levels.
@@ -1007,6 +1020,7 @@ fn import_parsed_with_limits(
         warnings.push("SVG: the text needs a font and none is installed, so it was dropped".to_string());
     }
     let cv = canvas(&tree, &mut warnings);
+    check_filter_cost(&tree, cv.scale)?;
     let nodes = count_nodes(tree.root(), max_cached_pixels.is_some());
     let over_cache_budget = if let Some(budget) = max_cached_pixels {
         let area = cv.size.area();
@@ -1112,8 +1126,10 @@ pub fn rasterize_rgba8(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), IoError> {
     Ok((pixmap.width(), pixmap.height(), px))
 }
 
-/// `tree` drawn at `k` pixels per SVG unit on a transparent pixmap whose sides round up.
+/// `tree` drawn at `k` pixels per SVG unit on a transparent pixmap whose sides round up, refused
+/// when its filters would cost too much at that scale.
 fn render(tree: &usvg::Tree, k: f32) -> Result<tiny_skia::Pixmap, IoError> {
+    check_filter_cost(tree, k)?;
     let side = |v: f32| ((v * k).ceil() as u32).max(1);
     let (w, h) = (side(tree.size().width()), side(tree.size().height()));
     let mut pixmap = pixmap(w, h).ok_or_else(|| IoError::Svg(format!("{w} × {h} px is too large to rasterise")))?;
@@ -1174,6 +1190,92 @@ fn count_nodes_with_limit(root: &usvg::Group, include_text: bool, limit: usize, 
         }
     }
     n
+}
+
+/// The work beyond [`ORDINARY_FILTER_READS`] per pixel that resvg's filters would do to render
+/// the drawing through `base` (drawing units to canvas px), in pixel reads: its morphology reads
+/// the whole radius window per pixel, convolution the whole kernel, and turbulence runs every
+/// octave (usvg doesn't clamp `numOctaves`). Masks, clip paths, patterns and embedded drawings
+/// count too, at the scale of the element that uses them, as resvg renders them. Past `visits`
+/// elements, or with a referenced root nested past [`MAX_RECURSION`], the drawing counts as too
+/// costly.
+fn filter_cost(root: &usvg::Group, base: tiny_skia::Transform, rec: usize, visits: &mut usize) -> u64 {
+    use usvg::filter::Kind;
+    let mut cost = 0u64;
+    let mut stack: Vec<&usvg::Group> = vec![root];
+    while let Some(g) = stack.pop() {
+        let ts = base.pre_concat(g.abs_transform());
+        let (sx, sy) = ts.get_scale();
+        for f in g.filters() {
+            let Some(r) = f.rect().transform(ts) else { continue };
+            // Float-to-int casts saturate, so a huge region counts as huge.
+            let (w, h) = (r.width().ceil() as u64, r.height().ceil() as u64);
+            let window = |radius: f32, s: f32, side: u64| ((radius * s).ceil() as u64).saturating_mul(2).min(side);
+            for p in f.primitives() {
+                let reads = match p.kind() {
+                    Kind::ConvolveMatrix(c) => u64::from(c.matrix().columns()) * u64::from(c.matrix().rows()),
+                    Kind::Morphology(m) => window(m.radius_x().get(), sx, w).saturating_mul(window(m.radius_y().get(), sy, h)),
+                    Kind::Turbulence(t) => u64::from(t.num_octaves()).saturating_mul(TURBULENCE_OCTAVE_COST),
+                    _ => 0,
+                };
+                cost = cost.saturating_add(w.saturating_mul(h).saturating_mul(reads.saturating_sub(ORDINARY_FILTER_READS)));
+            }
+        }
+        for node in g.children() {
+            *visits = visits.saturating_sub(1);
+            if *visits == 0 {
+                return u64::MAX;
+            }
+            if let usvg::Node::Group(child) = node {
+                stack.push(child);
+            }
+            if rec >= MAX_RECURSION {
+                // usvg keeps referenced roots past this depth and resvg draws them: one the check
+                // would skip makes the drawing too costly. Ordinary children still count.
+                let mut skipped = false;
+                match node {
+                    usvg::Node::Path(p) => {
+                        skipped = [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())]
+                            .into_iter()
+                            .flatten()
+                            .any(|paint| matches!(paint, usvg::Paint::Pattern(_)))
+                    }
+                    _ => node.subroots(|_| skipped = true),
+                }
+                if skipped {
+                    return u64::MAX;
+                }
+                continue;
+            }
+            let world = base.pre_concat(node.abs_transform());
+            let mut sub = |root: &usvg::Group, ts: tiny_skia::Transform| cost = cost.saturating_add(filter_cost(root, ts, rec + 1, visits));
+            match node {
+                // resvg draws a pattern's tile at the path's scale times the pattern's own, and
+                // only that scale (`get_scale`, no skew or rotation): a skewed patternTransform
+                // whose full-affine bounds are slim still renders a large tile.
+                usvg::Node::Path(p) => {
+                    for paint in [p.fill().map(|f| f.paint()), p.stroke().map(|s| s.paint())].into_iter().flatten() {
+                        if let usvg::Paint::Pattern(pt) = paint {
+                            let (sx, sy) = world.pre_concat(pt.transform()).get_scale();
+                            sub(pt.root(), tiny_skia::Transform::from_scale(sx, sy));
+                        }
+                    }
+                }
+                _ => node.subroots(|root| sub(root, world)),
+            }
+        }
+    }
+    cost
+}
+
+/// An error when the drawing's filters are too costly to render at `scale` (see [`filter_cost`]).
+fn check_filter_cost(tree: &usvg::Tree, scale: f32) -> Result<(), IoError> {
+    if filter_cost(tree.root(), tiny_skia::Transform::from_scale(scale, scale), 0, &mut { MAX_FILTER_VISITS }) > MAX_FILTER_COST {
+        return Err(IoError::Svg(
+            "the drawing's filters are too costly to render (a huge morphology radius, convolution kernel or turbulence octave count, or patterns nested too deep)".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Converts a parsed tree into layers.

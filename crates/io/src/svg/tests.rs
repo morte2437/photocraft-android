@@ -166,6 +166,42 @@ fn sniffing_accepts_svg_and_rejects_other_xml() {
     assert!(!is_svg(b""));
 }
 
+/// Ordinary filters, however many and on the largest canvas, never count against the budget.
+#[test]
+fn ordinary_filters_cost_nothing_on_any_canvas() {
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{MAX_SIDE}\" height=\"{MAX_SIDE}\"><filter id=\"f\">\
+         <feGaussianBlur stdDeviation=\"20\"/><feOffset dx=\"5\" dy=\"5\"/><feFlood flood-color=\"black\"/>\
+         <feComposite operator=\"in\" in2=\"SourceAlpha\"/><feMerge><feMergeNode/><feMergeNode in=\"SourceGraphic\"/></feMerge>\
+         <feMorphology radius=\"8\"/><feConvolveMatrix order=\"5\" kernelMatrix=\"{}\"/><feTurbulence baseFrequency=\"0.02\" numOctaves=\"10\"/>\
+         </filter><rect width=\"{MAX_SIDE}\" height=\"{MAX_SIDE}\" filter=\"url(#f)\"/></svg>",
+        vec!["1"; 25].join(" ")
+    );
+    let tree = parse(svg.as_bytes()).unwrap().tree;
+    assert_eq!(filter_cost(tree.root(), tiny_skia::Transform::identity(), 0, &mut { MAX_FILTER_VISITS }), 0);
+    assert!(check_filter_cost(&tree, 1.0).is_ok());
+}
+
+/// resvg draws a pattern's tile under the scale part of its transform only (`get_scale`): a
+/// skewed patternTransform (determinant 1) whose full-affine bounds of a slim filter region are
+/// 180 × 181 px still draws that region at 2400 × 180 px, with a morphology window as large,
+/// about 2 × 10^11 reads. Never rendered here: only the estimate is checked.
+#[test]
+fn a_skewed_pattern_filter_counts_at_resvgs_tile_scale() {
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\">\
+        <filter id=\"f\"><feMorphology radius=\"1000\"/></filter>\
+        <pattern id=\"p\" width=\"20\" height=\"20\" patternUnits=\"userSpaceOnUse\" patternTransform=\"matrix(0 -0.01 100 100 0 0)\">\
+        <rect width=\"20\" height=\"1.5\" filter=\"url(#f)\"/></pattern>\
+        <rect width=\"100\" height=\"100\" fill=\"url(#p)\"/></svg>";
+    let tree = parse(svg.as_bytes()).unwrap().tree;
+    // The tile resvg would allocate: 20 × 20 units at get_scale ≈ (100, 100).
+    let (sx, sy) = tiny_skia::Transform::from_row(0.0, -0.01, 100.0, 100.0, 0.0, 0.0).get_scale();
+    assert!((sx * 20.0).round() >= 2000.0 && (sy * 20.0).round() >= 1999.0, "{sx} {sy}");
+    let cost = filter_cost(tree.root(), tiny_skia::Transform::identity(), 0, &mut { MAX_FILTER_VISITS });
+    assert!(cost > 50 * MAX_FILTER_COST, "charged only {cost} reads");
+    assert!(check_filter_cost(&tree, 1.0).is_err());
+}
+
 #[test]
 fn quadratics_become_cubics_and_closing_merges_the_start_knot() {
     let mut pb = tiny_skia::PathBuilder::new();
