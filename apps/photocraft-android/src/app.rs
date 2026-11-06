@@ -29,6 +29,11 @@ fn run(android: AndroidApp) -> Result<(), String> {
     // Settings imported last session (Edit › Preferences › Import Settings…) go into place before
     // anything reads them.
     crate::settings::apply_pending(&files_dir);
+    // Tile scratch files go in the app's cache (beside `files`): the system temp folder Rust
+    // knows on Android, /data/local/tmp, isn't writable by apps.
+    if let Some(cache) = files_dir.parent().map(|p| p.join("cache")) {
+        photocraft_engine::set_system_temp(cache);
+    }
     log::info!("PhotoCraft {} starting; data in {}", photocraft_engine::build_info::long_version(), files_dir.display());
     let bridge = Arc::new(Bridge::new(&files_dir).map_err(|e| format!("couldn't create the file bridge: {e}"))?);
 

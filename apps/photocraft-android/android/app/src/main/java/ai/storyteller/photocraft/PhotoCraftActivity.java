@@ -112,6 +112,14 @@ public class PhotoCraftActivity extends GameActivity {
 
     @Override
     protected void onCreate(Bundle state) {
+        // Before the native side starts (in super.onCreate): Rust's temp_dir() reads TMPDIR and
+        // otherwise falls back to /data/local/tmp, which apps can't write to. The tile scratch
+        // file (Preferences > Scratch Disks, "system temp") goes in the app's cache instead.
+        try {
+            android.system.Os.setenv("TMPDIR", getCacheDir().getAbsolutePath(), true);
+        } catch (android.system.ErrnoException e) {
+            Log.w(TAG, "couldn't set TMPDIR", e);
+        }
         super.onCreate(state);
         bridge = new File(getFilesDir(), "bridge");
         updater = new Updater(this);

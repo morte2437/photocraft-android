@@ -115,6 +115,23 @@ mod native {
     }
 }
 
+/// Where a "(system temp)" scratch disk goes, when the shell knows better than
+/// `std::env::temp_dir()`: on Android that's `/data/local/tmp`, which apps can't write to.
+#[cfg(not(target_arch = "wasm32"))]
+static SYSTEM_TEMP: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Sets the folder "(system temp)" scratch disks use (the app's cache on Android). Call it before
+/// the first session; later calls are ignored.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_system_temp(dir: std::path::PathBuf) {
+    let _ = SYSTEM_TEMP.set(dir);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn system_temp() -> std::path::PathBuf {
+    SYSTEM_TEMP.get().cloned().unwrap_or_else(std::env::temp_dir)
+}
+
 pub(crate) fn configure(prefs: &Preferences) {
     let budget = photocraft_raster::memory::configure(photocraft_raster::memory::Policy {
         percent: prefs.performance.memory_usage_percent,
@@ -128,7 +145,7 @@ pub(crate) fn configure(prefs: &Preferences) {
             .disks
             .iter()
             .find(|d| d.enabled && !d.path.trim().is_empty())
-            .map(|d| if d.path.trim() == "(system temp)" { std::env::temp_dir() } else { std::path::PathBuf::from(d.path.trim()) });
+            .map(|d| if d.path.trim() == "(system temp)" { system_temp() } else { std::path::PathBuf::from(d.path.trim()) });
         // An unusable or full directory pauses eviction without dropping resident pixels and
         // is retried with backoff; History's byte limit applies meanwhile (sync_scratch_state).
         // The reason is exposed in ui.inspect and the application's status bar.

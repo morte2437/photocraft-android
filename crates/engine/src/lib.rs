@@ -41,6 +41,8 @@ pub mod preset_store;
 pub mod presets;
 pub mod proof_sim;
 mod scratch;
+#[cfg(not(target_arch = "wasm32"))]
+pub use scratch::set_system_temp;
 pub mod select_mask_edits;
 pub mod shell_commands;
 pub mod shortcut_sets;

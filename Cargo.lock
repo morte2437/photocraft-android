@@ -5209,7 +5209,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-android"
-version = "0.17.0"
+version = "0.20.1"
 dependencies = [
  "android_logger",
  "craft-ui",
