@@ -614,6 +614,12 @@ impl eframe::App for Shell {
             let pressing = raw_input.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. } | egui::Event::Touch { .. }));
             if pressing { raw_input.events.insert(0, e) } else { raw_input.events.push(e) }
         }
+        // A mouse wheel or trackpad scroll (#29): under the pointer, before the modifiers are
+        // worked out, so Ctrl or Alt (a keyboard's or the Shortcut Pad's) zoom as on a desktop.
+        if let Some(s) = android::take_scroll() {
+            let ppp = ctx.pixels_per_point();
+            raw_input.events.extend(crate::mouse::wheel(egui::pos2(s.x / ppp, s.y / ppp), s.h, s.v));
+        }
         // A focused field the keyboard now covers: scroll its list until the field shows again, as
         // a finger would (a wheel over an empty part of the same list, never over a control, which
         // the wheel would change), a step a frame and no further than SCROLL_LIMIT. Its place is
@@ -769,6 +775,8 @@ impl eframe::App for Shell {
                 log::warn!("clipboard: {e}");
             }
         }
+        // The mouse pointer's shape (#27): hidden where a tool draws its own outline.
+        photocraft_tablet::android::set_pointer_icon(crate::mouse::pointer_icon(ui.ctx().output(|o| o.cursor_icon)));
         self.text_bar = self.show_text_bar(ui.ctx());
         // egui asks for the keyboard only while the focused field is on screen. When the layout
         // shrinks above the keyboard and the field ends up below it, the request would stop, the

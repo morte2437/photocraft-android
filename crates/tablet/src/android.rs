@@ -364,7 +364,9 @@ fn track_age(action: i32, tool_type: i32, age_ms: i32) {
 static HOVER_AT: Mutex<Option<Option<(f32, f32)>>> = Mutex::new(None);
 
 fn track_hover(action: i32, tool_type: i32, x: f32, y: f32) {
-    if tool_type != tool::STYLUS && tool_type != tool::ERASER {
+    // A mouse too (Samsung DeX, a Bluetooth mouse): winit drops its moves between presses, so
+    // without this the brush cursor never followed it (Android port #27).
+    if tool_type != tool::STYLUS && tool_type != tool::ERASER && tool_type != tool::MOUSE {
         return;
     }
     let at = match action {
@@ -443,6 +445,57 @@ pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeP
         POINTERS.lock().unwrap_or_else(PoisonError::into_inner).down(id, tool_type, buttons);
     }
     saw_pen(tool_type);
+}
+
+/// A mouse wheel or trackpad scroll since the last [`take_scroll`]: where the pointer was
+/// (window pixels) and the summed wheel steps, right and up positive.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Scroll {
+    pub x: f32,
+    pub y: f32,
+    pub h: f32,
+    pub v: f32,
+}
+
+static SCROLL: Mutex<Option<Scroll>> = Mutex::new(None);
+
+/// Adds one `ACTION_SCROLL` (its `AXIS_HSCROLL` and `AXIS_VSCROLL`) to the scroll waiting for the
+/// next frame. Non-finite values are dropped.
+fn add_scroll(x: f32, y: f32, h: f32, v: f32) {
+    if ![x, y, h, v].iter().all(|n| n.is_finite()) || (h == 0.0 && v == 0.0) {
+        return;
+    }
+    let mut s = SCROLL.lock().unwrap_or_else(PoisonError::into_inner);
+    let prev = s.unwrap_or_default();
+    *s = Some(Scroll { x, y, h: prev.h + h, v: prev.v + v });
+}
+
+/// A mouse wheel turned or a trackpad scrolled, from `PhotoCraftActivity.nativeScroll` (Java):
+/// winit doesn't pass `ACTION_SCROLL` on, so the wheel did nothing (Android port #29).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativeScroll(_env: *mut c_void, _this: *mut c_void, x: f32, y: f32, h: f32, v: f32) {
+    add_scroll(x, y, h, v);
+    layout_changed();
+}
+
+/// The wheel turned since the last call, if it did.
+pub fn take_scroll() -> Option<Scroll> {
+    SCROLL.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// The mouse pointer's `PointerIcon` type for the Activity (see [`set_pointer_icon`]).
+static POINTER_ICON: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1000);
+
+/// The pointer shape the app wants (an Android `PointerIcon` type; 0 hides it). The Activity
+/// reads it with each mouse event.
+pub fn set_pointer_icon(kind: i32) {
+    POINTER_ICON.store(kind, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The pointer shape for `PhotoCraftActivity` (Java), asked with each mouse event.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_photocraft_PhotoCraftActivity_nativePointerIcon(_env: *mut c_void, _this: *mut c_void) -> i32 {
+    POINTER_ICON.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Route the Activity's pen samples to `callback` (replacing an earlier one).

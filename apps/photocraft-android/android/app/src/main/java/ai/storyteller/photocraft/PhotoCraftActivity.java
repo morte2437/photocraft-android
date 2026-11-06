@@ -75,6 +75,10 @@ public class PhotoCraftActivity extends GameActivity {
      * right-click from a click (touch gestures,
      * palm rejection; photocraft-tablet's android.rs). */
     private static native void nativePointer(int id, int tool, int buttons);
+    /** A mouse wheel or trackpad scroll at (x, y): steps right and up. */
+    private static native void nativeScroll(float x, float y, float h, float v);
+    /** The pointer shape the app wants for a mouse (a PointerIcon type; 0 hides it). */
+    private static native int nativePointerIcon();
 
     /** The on-screen keyboard's height in pixels (0: hidden), for photocraft-tablet's android.rs. */
     private static native void nativeImeHeight(int px);
@@ -309,6 +313,7 @@ public class PhotoCraftActivity extends GameActivity {
         }
         inkEvent(e);
         forwardPen(e);
+        followPointerIcon(e);
         return super.dispatchTouchEvent(e);
     }
 
@@ -455,8 +460,40 @@ public class PhotoCraftActivity extends GameActivity {
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent e) {
         sideButtonHeld = false;
+        if (e.getActionMasked() == MotionEvent.ACTION_SCROLL) {
+            // A mouse wheel or trackpad scroll: winit drops it, so it goes to the native side here.
+            try {
+                nativeScroll(e.getX(), e.getY(), e.getAxisValue(MotionEvent.AXIS_HSCROLL), e.getAxisValue(MotionEvent.AXIS_VSCROLL));
+            } catch (UnsatisfiedLinkError err) {
+                // The library isn't loaded.
+            }
+            return true;
+        }
         forwardPen(e);
+        followPointerIcon(e);
         return super.dispatchGenericMotionEvent(e);
+    }
+
+    /** The PointerIcon type last set on the window (-1: the system's own). */
+    private int pointerIcon = -1;
+
+    /** A mouse gets the pointer shape the app asks for (none over the canvas while a brush draws its
+     * outline, #27); a pen or finger gets the system's own back. */
+    private void followPointerIcon(MotionEvent e) {
+        boolean mouse = e.getToolType(e.getActionIndex()) == MotionEvent.TOOL_TYPE_MOUSE;
+        int want = -1;
+        if (mouse) {
+            try {
+                want = nativePointerIcon();
+            } catch (UnsatisfiedLinkError err) {
+                return;
+            }
+        }
+        if (want == pointerIcon) {
+            return;
+        }
+        pointerIcon = want;
+        getWindow().getDecorView().setPointerIcon(want < 0 ? null : android.view.PointerIcon.getSystemIcon(this, want));
     }
 
     /** Samsung's first S Pen action with the side button held (see dispatchTouchEvent). */
