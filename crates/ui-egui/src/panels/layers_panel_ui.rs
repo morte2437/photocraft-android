@@ -423,6 +423,7 @@ mod tests {
             add_copy_to_copied_layers_and_groups: false,
             preview_on_canvas_when_reordering_layers: false,
             show_layer_mask_badges: true,
+            selection_checkboxes: Some(true),
         };
         app.ui.layers_panel_options = saved.clone();
         persist_options(&mut app);

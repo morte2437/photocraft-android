@@ -227,10 +227,14 @@ pub(super) fn layer_row(
     paint_row_background(&painter, &t, l, rect, selected, is_hovered);
     let mut x = rect.left() + 6.0;
     let eye_resp = eye_column(app, ui, l, row, rect, actions);
+    let check = crate::layer_row_ui::selection_checkboxes(app);
+    let check_resp = check.then(|| select_check(ui, l, selected, rect, actions));
+    let check_w = if check { crate::layer_row_ui::CHECK_W } else { 0.0 };
     // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
     // the indentation first, then the thumbnails (a layer with two masks has three).
     let others = 6.0
         + 28.0
+        + check_w
         + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
         + if l.clipped { 12.0 } else { 0.0 }
         + crate::layer_row_ui::reserved_width(l);
@@ -240,7 +244,7 @@ pub(super) fn layer_row(
     // triangle's column, so it sits right of its parent: with only its depth its thumbnail lined
     // up under the group's, hiding the hierarchy. Top-level rows don't move.
     let steps = if !l.is_group() && depth > 0 { depth + 1 } else { depth };
-    x += 28.0 + crate::layer_row_ui::indent(steps, rect.width(), fixed);
+    x += 28.0 + check_w + crate::layer_row_ui::indent(steps, rect.width(), fixed);
     let toggled = crate::layer_tree_ui::disclosure(ui, rect, &mut x, l, actions);
     if l.clipped {
         paint_clipping_indicator(&painter, pos2(x, rect.center().y), t.text_faint);
@@ -315,7 +319,14 @@ pub(super) fn layer_row(
         actions.push(("select.loadSelection".into(), p));
     } else if let Some(cmd) = mask_toggle {
         actions.push(cmd);
-    } else if resp.clicked() && !frame_clicked && !eye_resp.clicked() && !toggled && !fx_toggled && !masks.clicked {
+    } else if resp.clicked()
+        && !frame_clicked
+        && !eye_resp.clicked()
+        && !check_resp.as_ref().is_some_and(egui::Response::clicked)
+        && !toggled
+        && !fx_toggled
+        && !masks.clicked
+    {
         if l.frame.is_some() {
             app.ui.frame_tool.selected = Some(l.id.0);
             app.ui.frame_tool.target =
@@ -384,6 +395,23 @@ fn paint_row_background(painter: &egui::Painter, t: &Tokens, l: &Layer, rect: Re
         painter.line_segment([pos2(rect.left() + 30.0, rect.top()), pos2(rect.left() + 30.0, rect.bottom())], Stroke::new(1.0, t.separator));
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, t.separator));
     }
+}
+
+/// The selection checkbox right of the eye column: a tap adds the layer to the selection or
+/// takes it out, as ⌘-click does (for touch screens without a keyboard, Android port #28).
+fn select_check(ui: &mut egui::Ui, l: &Layer, selected: bool, rect: Rect, actions: &mut Vec<(String, Value)>) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let left = (rect.left() + 30.0).min(rect.right());
+    let cell = Rect::from_min_max(pos2(left, rect.top()), pos2((left + crate::layer_row_ui::CHECK_W).min(rect.right()), rect.bottom()));
+    let resp = ui.interact(cell, ui.scope_id().with(("select-check", l.id.0)), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let pressed = resp.is_pointer_button_down_on();
+    crate::widgets::check_box(ui.painter(), Rect::from_center_size(cell.center(), vec2(14.0, 14.0)), selected, resp.hovered(), pressed, &t);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, selected, crate::i18n::fmt(tl!("Select {name}"), &[("name", &l.name)])));
+    if resp.clicked() {
+        actions.push(("layer.select".into(), json!({"layer": l.id.0, "mode": "toggle"})));
+    }
+    resp
 }
 
 /// The eye column: visibility toggle (⌥ shows only this layer), sweep-drag and its colour menu.

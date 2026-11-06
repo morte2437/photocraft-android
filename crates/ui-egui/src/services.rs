@@ -435,6 +435,8 @@ pub struct Services {
     /// for a save picker with no list of file types (Android's document picker), where the
     /// format would otherwise always be the suggested one.
     pub save_format_prompt: bool,
+    /// Layers panel rows have selection checkboxes until the user turns them off (touch screens).
+    pub layer_checkboxes: bool,
     /// Encode and write in one step on a worker thread, so a large save doesn't freeze the
     /// window (#2017). With background jobs on, saves use it instead of `export` and `write`.
     pub save_file: Option<SaveFileFn>,

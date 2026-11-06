@@ -255,6 +255,14 @@ pub fn label(painter: &Painter, x: f32, cy: f32, right: f32, text: &str, font: F
     Some(r)
 }
 
+/// Whether Layers panel rows show selection checkboxes: the user's choice, else the platform's.
+pub fn selection_checkboxes(app: &crate::PhotocraftApp) -> bool {
+    app.ui.layers_panel_options.selection_checkboxes.unwrap_or(app.services.layer_checkboxes)
+}
+
+/// The width of the selection checkbox column, right of the eye column.
+pub const CHECK_W: f32 = 24.0;
+
 /// Photoshop-style Layers flyout commands. The dock owns tab-group controls, not this menu.
 pub fn panel_menu(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui) {
     use crate::layers_panel_ui::run_menu_command;
@@ -323,6 +331,12 @@ pub fn panel_menu(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui) {
         ui.close();
     }
     ui.separator();
+    let mut boxes = selection_checkboxes(app);
+    if crate::widgets::checkbox(ui, &mut boxes, tl!("Selection Checkboxes")).changed() {
+        app.ui.layers_panel_options.selection_checkboxes = Some(boxes);
+        crate::layers_panel_ui::persist_options(app);
+        ui.close();
+    }
     // Photoshop's Clip Thumbnails to Layer Bounds: frame each layer's pixels, not the canvas (#4281).
     let mut clip = app.session.prefs().interface.clip_thumbnails_to_layer_bounds;
     if crate::widgets::checkbox(ui, &mut clip, tl!("Clip Thumbnails to Layer Bounds")).changed() {

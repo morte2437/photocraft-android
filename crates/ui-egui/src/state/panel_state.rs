@@ -34,6 +34,10 @@ pub struct LayersPanelOptions {
     pub add_copy_to_copied_layers_and_groups: bool,
     pub preview_on_canvas_when_reordering_layers: bool,
     pub show_layer_mask_badges: bool,
+    /// A checkbox on each row that adds the layer to the selection or takes it out, like ⌘-click,
+    /// for touch screens with no keyboard (Android port #28). `None` until the user picks: then
+    /// [`crate::Services::layer_checkboxes`] decides.
+    pub selection_checkboxes: Option<bool>,
 }
 
 impl LayersPanelOptions {
@@ -48,6 +52,7 @@ impl LayersPanelOptions {
             add_copy_to_copied_layers_and_groups: true,
             preview_on_canvas_when_reordering_layers: true,
             show_layer_mask_badges: false,
+            selection_checkboxes: None,
         }
     }
 }

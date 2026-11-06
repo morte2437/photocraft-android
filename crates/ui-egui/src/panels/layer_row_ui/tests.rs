@@ -829,3 +829,54 @@ fn a_masked_artboards_thumbnail_retargets_it_and_ends_the_mask_view() {
     assert!(!h.state().ui.mask_target, "the board is targeted again");
     assert!(!viewing(&h), "and the mask view ends");
 }
+
+/// Android port #28: with selection checkboxes on, tapping a layer's box adds it to the
+/// selection and tapping again takes it out, as ⌘-click does, without a keyboard. Desktop starts
+/// without them; the panel menu turns them on and the choice is saved.
+#[test]
+fn selection_checkboxes_add_and_remove_layers() {
+    let session = || {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+        let ids: Vec<u64> =
+            ["One", "Two", "Three"].iter().map(|n| s.execute("layer.new.layer", json!({"name": n})).unwrap()["layer"].as_u64().unwrap()).collect();
+        s.execute("layer.select", json!({"layer": ids[0]})).unwrap();
+        (s, ids)
+    };
+    let selected = |h: &Harness<'_, PhotocraftApp>| {
+        let mut v: Vec<u64> = h.state().session.active().unwrap().selected_layers().iter().map(|l| l.0).collect();
+        v.sort();
+        v
+    };
+    let (s, ids) = session();
+    let mut h = Harness::builder().with_size(vec2(1440.0, 1000.0)).with_max_steps(64).build_eframe(move |cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        PhotocraftApp::new(s, crate::Services { layer_checkboxes: true, ..Default::default() })
+    });
+    h.run_steps(8);
+    let row_left = recorded(&h.ctx).iter().find(|r| r.layer == ids[2]).map(|r| r.row.left()).expect("row drawn");
+    let check = h.get_by_label("Select Three").rect();
+    assert!(check.left() >= row_left + 29.0, "right of the eye column");
+    click(&mut h, check.center());
+    assert_eq!(selected(&h), [ids[0], ids[2]], "the tap adds Three");
+    let check = h.get_by_label("Select One").rect().center();
+    click(&mut h, check);
+    assert_eq!(selected(&h), [ids[2]], "a second tap takes One out");
+    // Turned off in the panel menu: no boxes, and the choice is saved.
+    let group = crate::panel_docking::probe::group_rect(h.state(), &h.ctx, "layers").expect("layers group");
+    let menu = h.query_all_by_label("Panel menu").map(|n| n.rect()).find(|r| group.contains(r.center())).expect("Layers panel menu");
+    click(&mut h, menu.center());
+    let item = h.get_by_label("Selection Checkboxes").rect().center();
+    click(&mut h, item);
+    h.run_steps(2);
+    assert!(h.query_by_label("Select Two").is_none(), "boxes hidden");
+    assert_eq!(h.state().ui.layers_panel_options.selection_checkboxes, Some(false));
+    let saved = h.state().session.prefs().dialogs.get("ui.layersPanelOptions").cloned().expect("options saved");
+    assert_eq!(saved["selectionCheckboxes"], false);
+
+    // Desktop: none until the menu turns them on.
+    let (s, _) = session();
+    let h = harness(s, 1.0, "promedium", 290.0);
+    assert!(h.query_by_label("Select One").is_none());
+    assert!(!super::selection_checkboxes(h.state()));
+}
