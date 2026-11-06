@@ -175,6 +175,16 @@ pub use session::move_item;
 use session::restore_target;
 pub(crate) use session::{carry_visibility, fix_selection, visibility_changes};
 
+/// A type layer for [`Session::refresh_type_layers`]: in the open document, or in its first
+/// History snapshot (the document as opened) when `first_snapshot`. The caller picks each against
+/// that version of the layer, which may differ from the open one or be gone from it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeLayerRef {
+    pub doc: photocraft_doc::DocId,
+    pub layer: LayerId,
+    pub first_snapshot: bool,
+}
+
 /// The pixels of a raster layer (typically one a command just created), as an error instead
 /// of a panic if the layer has none.
 pub(crate) fn pixels_mut(l: &mut photocraft_doc::Layer) -> Result<&mut photocraft_raster::Surface> {

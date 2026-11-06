@@ -17,7 +17,12 @@ pub fn owns(fields: &Map<String, Value>) -> bool {
 }
 
 /// Open the dialog on the active document, suggesting the name the camera button would give.
+/// Not while a Free Transform is open: it owns the document until committed or cancelled, so the
+/// camera button does nothing then either (#6087).
 pub fn open(app: &mut PhotocraftApp) -> Option<u64> {
+    if app.ui.transform.is_some() {
+        return None;
+    }
     let name = photocraft_engine::history_cmds::next_snapshot_name(app.session.active()?);
     let mut f = Map::new();
     f.insert(MARK.into(), json!(true));
@@ -28,8 +33,17 @@ pub fn open(app: &mut PhotocraftApp) -> Option<u64> {
     Some(app.ui.open_dialog(crate::state::DialogKind::Command, f))
 }
 
+/// Takes the snapshot. A cleared Name gets the next default name, as the camera button would give
+/// (#6087); agents calling the command with an empty name still get an error.
 pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value, String> {
-    app.run(COMMAND, json!({"name": f.get("name"), "from": f.get("from")}))
+    let mut p = Map::new();
+    if let Some(name) = f.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) {
+        p.insert("name".into(), json!(name));
+    }
+    if let Some(from) = f.get("from") {
+        p.insert("from".into(), from.clone());
+    }
+    app.run(COMMAND, Value::Object(p))
 }
 
 fn label(ui: &mut egui::Ui, text: &str) {
@@ -47,11 +61,7 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         // Opens on the name, selected, so typing replaces it (Photoshop).
         if !ui.is_sizing_pass() && !f.contains_key("__named") {
             r.request_focus();
-            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), r.id) {
-                let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(name.chars().count()));
-                state.cursor.set_char_range(Some(all));
-                state.store(ui.ctx(), r.id);
-            }
+            crate::field_tab::select_all(ui.ctx(), r.id, &name);
             f.insert("__named".into(), json!(true));
         }
         f.insert("name".into(), json!(name));
@@ -68,4 +78,48 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
             f.insert("from".into(), json!(from));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::PhotocraftApp;
+
+    fn app() -> PhotocraftApp {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        app
+    }
+
+    /// An open Free Transform owns the document: New Snapshot does not open under it, whoever
+    /// asks (#6087).
+    #[test]
+    fn does_not_open_during_free_transform() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        crate::transform_tool::begin(&mut app, &ctx).unwrap();
+        assert!(app.ui.transform.is_some());
+        assert_eq!(super::open(&mut app), None);
+        assert!(app.ui.dialogs.is_empty());
+        crate::transform_tool::cancel(&mut app);
+        assert!(super::open(&mut app).is_some());
+    }
+
+    /// A cleared Name takes the default name on OK, as the camera button would (#6087); a typed
+    /// one is trimmed. The command itself still refuses an empty name.
+    #[test]
+    fn a_cleared_name_gets_the_default_name() {
+        let mut app = app();
+        for (typed, want) in [("", "Snapshot 1"), ("   ", "Snapshot 2"), ("  Mine ", "Mine")] {
+            let id = super::open(&mut app).unwrap();
+            let d = app.ui.dialogs.iter_mut().find(|d| d.id == id).unwrap();
+            d.fields.insert("name".into(), json!(typed));
+            crate::dialogs::confirm(&mut app, id).unwrap();
+            assert_eq!(app.session.active().unwrap().snapshots.last().unwrap().name, want);
+        }
+        assert!(app.run(super::COMMAND, json!({"name": ""})).is_err(), "agents still get the error");
+    }
 }

@@ -1001,6 +1001,35 @@ mod snapshot_row_tests {
         assert!(h.state().ui.dialogs.is_empty());
     }
 
+    /// Snapshot thumbnails belong to the snapshot's document (#6087): closing a document drops
+    /// them, and a document reopened with the same id (a `.pcraft` keeps it) gets fresh ones
+    /// rather than the closed document's, even before the views are synced.
+    #[test]
+    fn snapshot_thumbnails_follow_their_document() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+        let doc = (*app.session.active().unwrap().doc).clone();
+        let doc_id = doc.id;
+        let mut h = Harness::builder().with_size(vec2(300.0, 400.0)).build_ui_state(|ui, app: &mut PhotocraftApp| history(app, ui), app);
+        h.run_steps(2);
+        let thumb = |h: &Harness<'static, PhotocraftApp>| h.state().snapshot_thumbs.get(&(doc_id, 0)).map(|(_, t)| t.id());
+        let first = thumb(&h).expect("the first snapshot's thumbnail");
+        // Closed: its thumbnails go with it.
+        h.state_mut().session.close(0);
+        h.state_mut().sync_views();
+        assert!(h.state().snapshot_thumbs.keys().all(|(d, _)| *d != doc_id), "closing drops them");
+        h.state_mut().session.add_document(doc.clone(), None);
+        h.run_steps(2);
+        let reopened = thumb(&h).expect("a thumbnail for the reopened document");
+        assert_ne!(reopened, first);
+        // Closed and reopened between two frames, with no sync in between: still a fresh one.
+        h.state_mut().session.close(0);
+        h.state_mut().session.add_document(doc, None);
+        assert_eq!(h.state().session.active().unwrap().doc.id, doc_id, "same id");
+        h.run_steps(2);
+        assert_ne!(thumb(&h).unwrap(), reopened);
+    }
+
     /// Renaming belongs to one document: snapshot ids restart in each, so switching tabs must not
     /// carry the edit over to the other document's snapshot with the same id.
     #[test]

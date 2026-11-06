@@ -104,8 +104,9 @@ fn refreshing_type_layers_takes_no_history_step() {
         st.saved_revision = st.revision;
     }
     let rev = s.active().unwrap().revision;
-    let unknown = [(doc_id, LayerId(u64::MAX)), (photocraft_doc::DocId(u64::MAX), id)];
-    assert!(s.refresh_type_layers(&[&[(doc_id, id)][..], &unknown].concat()).is_empty());
+    let layers = [(doc_id, id), (doc_id, LayerId(u64::MAX)), (photocraft_doc::DocId(u64::MAX), id)];
+    let layers: Vec<_> = layers.iter().map(|&(doc, layer)| crate::TypeLayerRef { doc, layer, first_snapshot: false }).collect();
+    assert!(s.refresh_type_layers(&layers).is_empty());
     assert!(text_layer(&s, id.0).cache.is_some());
     let st = s.active().unwrap();
     assert!(st.revision > rev);
@@ -113,6 +114,94 @@ fn refreshing_type_layers_takes_no_history_step() {
     // The only history step is still the creation.
     assert!(s.undo());
     assert!(s.active().unwrap().doc.layer(id).is_none());
+}
+
+/// The first History snapshot is the document as opened, taken before a served font arrived:
+/// the refresh re-renders its type layers too, so returning to it keeps the real font (#6087).
+#[test]
+fn refreshing_type_layers_refreshes_the_first_snapshot() {
+    use crate::TypeLayerRef;
+    let mut s = session();
+    let id = LayerId(s.execute("type.create", json!({"text": "Hello", "size": 24})).unwrap()["layer"].as_u64().unwrap());
+    let mut stale = (*s.active().unwrap().doc).clone();
+    let Some(Layer { content: LayerContent::Text(t), .. }) = stale.layer_mut(id) else { panic!("not a type layer") };
+    t.cache = None;
+    let snap_cache = |s: &Session| match &s.active().unwrap().snapshots[0].doc.layer(id).unwrap().content {
+        LayerContent::Text(t) => t.cache.is_some(),
+        other => panic!("{}", other.kind_name()),
+    };
+    let open = |doc, layer| TypeLayerRef { doc, layer, first_snapshot: false };
+    let first = |doc, layer| TypeLayerRef { doc, layer, first_snapshot: true };
+    // Opened with the fallback font: the first snapshot is the open document itself.
+    s.add_document(stale.clone(), None);
+    let doc_id = s.active().unwrap().doc.id;
+    assert!(!snap_cache(&s));
+    assert!(s.refresh_type_layers(&[open(doc_id, id)]).is_empty());
+    assert!(text_layer(&s, id.0).cache.is_some());
+    assert!(snap_cache(&s), "the first snapshot is refreshed with the document");
+    let st = s.active().unwrap();
+    assert!(Arc::ptr_eq(&st.snapshots[0].doc, &st.doc), "and still shares it");
+    // Edited since it opened: the snapshot is refreshed on its own, the edit stays.
+    s.add_document(stale.clone(), None);
+    let doc_id = s.active().unwrap().doc.id;
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let layers = s.active().unwrap().doc.layers.len();
+    assert!(s.refresh_type_layers(&[open(doc_id, id), first(doc_id, id), first(doc_id, LayerId(9999))]).is_empty());
+    assert!(snap_cache(&s));
+    assert!(text_layer(&s, id.0).cache.is_some());
+    let st = s.active().unwrap();
+    assert_eq!(st.doc.layers.len(), layers);
+    assert_eq!(st.snapshots[0].doc.layers.len(), layers - 1, "the snapshot keeps the document as opened");
+    // Each version is refreshed only for the layers picked in it: one picked in the open
+    // document (e.g. a PSD layer edited since, while the snapshot keeps the file's pixels)
+    // leaves the snapshot alone, and the other way round.
+    s.add_document(stale.clone(), None);
+    let doc_id = s.active().unwrap().doc.id;
+    s.execute("layer.new.layer", json!({})).unwrap();
+    assert!(s.refresh_type_layers(&[open(doc_id, id)]).is_empty());
+    assert!(text_layer(&s, id.0).cache.is_some());
+    assert!(!snap_cache(&s), "the snapshot was not picked");
+    s.add_document(stale.clone(), None);
+    let doc_id = s.active().unwrap().doc.id;
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let rev = s.active().unwrap().revision;
+    assert!(s.refresh_type_layers(&[first(doc_id, id)]).is_empty());
+    assert!(snap_cache(&s));
+    assert!(text_layer(&s, id.0).cache.is_none(), "the open layer was not picked");
+    assert_eq!(s.active().unwrap().revision, rev, "and the open document did not change");
+    // The layer is gone from the open document: the snapshot still gets the real font.
+    s.add_document(stale, None);
+    let doc_id = s.active().unwrap().doc.id;
+    s.execute("layer.delete", json!({"layer": id.0})).unwrap();
+    assert!(s.active().unwrap().doc.layer(id).is_none());
+    assert!(s.refresh_type_layers(&[first(doc_id, id)]).is_empty());
+    assert!(snap_cache(&s), "a layer deleted since it opened is refreshed in the snapshot");
+}
+
+/// A layer picked in the first snapshot while the document had moved on is refreshed in the open
+/// document too when, by the time of the refresh (a busy document's retry), Undo has taken it back
+/// to the snapshot: the two share one document, which must not keep the fallback font.
+#[test]
+fn a_layer_picked_in_the_first_snapshot_refreshes_the_open_document_it_is_again() {
+    let mut s = session();
+    let id = LayerId(s.execute("type.create", json!({"text": "Hello", "size": 24})).unwrap()["layer"].as_u64().unwrap());
+    let mut stale = (*s.active().unwrap().doc).clone();
+    let Some(Layer { content: LayerContent::Text(t), .. }) = stale.layer_mut(id) else { panic!("not a type layer") };
+    t.cache = None;
+    s.add_document(stale, None);
+    let doc_id = s.active().unwrap().doc.id;
+    // Picked while the layer was deleted from the open document: only in the snapshot.
+    s.execute("layer.delete", json!({"layer": id.0})).unwrap();
+    let picked = [crate::TypeLayerRef { doc: doc_id, layer: id, first_snapshot: true }];
+    assert!(s.undo());
+    let st = s.active().unwrap();
+    assert!(Arc::ptr_eq(&st.snapshots[0].doc, &st.doc), "Undo is back at the snapshot itself");
+    let rev = st.revision;
+    assert!(s.refresh_type_layers(&picked).is_empty());
+    assert!(text_layer(&s, id.0).cache.is_some(), "the open document has the real font");
+    let st = s.active().unwrap();
+    assert!(Arc::ptr_eq(&st.snapshots[0].doc, &st.doc), "and still shares it with the snapshot");
+    assert!(st.revision > rev);
 }
 
 #[test]
