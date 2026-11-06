@@ -378,8 +378,17 @@ fn parse_with(bytes: &[u8], fonts: fn() -> Arc<usvg::fontdb::Database>) -> Resul
     // re-checks the gzip magic and would decompress a second time without our size limit if
     // the inflated content happened to start with a nested gzip stream.
     let text = std::str::from_utf8(&xml).map_err(|_| IoError::Svg("the SVG is not valid UTF-8".into()))?;
-    let tree = usvg::Tree::from_str(text, &opt).map_err(|e| IoError::Svg(e.to_string()))?;
+    let tree = guarded(|| usvg::Tree::from_str(text, &opt))
+        .ok_or_else(|| IoError::Svg("the SVG parser failed on this drawing".into()))?
+        .map_err(|e| IoError::Svg(e.to_string()))?;
     Ok(Parsed { tree, fontless_text })
+}
+
+/// `f` under `catch_unwind`, `None` when it panics: usvg, resvg and tiny-skia panic on some
+/// malformed drawings, which must fail like any unreadable file, not crash (as the HEIF and
+/// JPEG XL decoders are guarded). Where a panic aborts (wasm) this changes nothing.
+fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
 }
 
 const MAX_BOUNDED_SVG_BYTES: u64 = 16 << 20;
@@ -635,11 +644,11 @@ fn parse_image_bounded_with(
     // The bounded inflate above is the only decompression step. from_data would detect a
     // nested gzip payload and inflate it again without the source-byte limit.
     let text = std::str::from_utf8(&xml).map_err(|_| IoError::Svg("the SVG is not valid UTF-8".into()))?;
-    let tree = usvg::Tree::from_str(text, &opt);
+    let tree = guarded(|| usvg::Tree::from_str(text, &opt));
     if let Some(error) = budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner).error.clone() {
         return Err(IoError::Svg(error));
     }
-    let tree = tree.map_err(|e| IoError::Svg(e.to_string()))?;
+    let tree = tree.ok_or_else(|| IoError::Svg("the SVG parser failed on this drawing".into()))?.map_err(|e| IoError::Svg(e.to_string()))?;
     // Include nested SVG trees too. Paint servers can reuse one parsed raster in many
     // drawing nodes, so the work estimate must not assume every source is decoded once.
     let nodes = u64::try_from(count_nodes_with_limit(tree.root(), true, usize::MAX, false)).unwrap_or(u64::MAX);
@@ -1054,13 +1063,16 @@ fn import_parsed_with_limits(
         }
         let (w, h) = (cv.size.width, cv.size.height);
         if let Some(mut pixmap) = pixmap(w, h) {
-            resvg::render(&tree, global, &mut pixmap.as_mut());
-            doc.layers.push(Layer::new("Background", LayerContent::Raster(surface(&pixmap, doc.bounds(), fmt))));
+            if guarded(|| resvg::render(&tree, global, &mut pixmap.as_mut())).is_some() {
+                doc.layers.push(Layer::new("Background", LayerContent::Raster(surface(&pixmap, doc.bounds(), fmt))));
+            } else {
+                conv.note("raster-panic", "SVG: the drawing could not be rendered".to_string());
+            }
         }
     } else {
         doc.layers = conv.convert_children(tree.root().children(), 0, 0, tree.root().abs_transform());
     }
-    if doc.layers.is_empty() {
+    if doc.layers.is_empty() && !conv.noted.contains(&"raster-panic") {
         conv.warnings.push("SVG: nothing to draw (an empty drawing)".to_string());
     }
     Ok(ImportResult { document: doc, warnings: conv.warnings, source_read_only: false, preview_only: false })
@@ -1133,7 +1145,8 @@ fn render(tree: &usvg::Tree, k: f32) -> Result<tiny_skia::Pixmap, IoError> {
     let side = |v: f32| ((v * k).ceil() as u32).max(1);
     let (w, h) = (side(tree.size().width()), side(tree.size().height()));
     let mut pixmap = pixmap(w, h).ok_or_else(|| IoError::Svg(format!("{w} × {h} px is too large to rasterise")))?;
-    resvg::render(tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+    guarded(|| resvg::render(tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut()))
+        .ok_or_else(|| IoError::Svg("the drawing could not be rendered".into()))?;
     Ok(pixmap)
 }
 
@@ -1604,7 +1617,11 @@ impl Conv {
         // and shift so the pixmap starts at (x0, y0).
         let canvas = tiny_skia::Transform::from_row(k, 0.0, 0.0, k, -(x0 as f32), -(y0 as f32));
         let ts = canvas.pre_concat(parent).pre_translate(shift.x(), shift.y());
-        resvg::render_node(node, ts, &mut pixmap.as_mut())?;
+        let Some(rendered) = guarded(|| resvg::render_node(node, ts, &mut pixmap.as_mut())) else {
+            self.note("raster-panic", "SVG: an element that could not be rendered was dropped".to_string());
+            return None;
+        };
+        rendered?;
         let layer = Layer::new(name, LayerContent::Raster(surface(&pixmap, Rect::new(x0, y0, x1, y1), self.fmt)));
         let bytes = pixels * self.fmt.bytes_per_pixel() as u64;
         self.pixel_budget -= bytes;

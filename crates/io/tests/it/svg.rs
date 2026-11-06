@@ -576,6 +576,37 @@ fn a_costly_filter_past_the_pattern_recursion_cutoff_is_refused() {
 }
 
 #[test]
+fn drawings_the_svg_renderer_panics_on_are_errors_not_crashes() {
+    // usvg panics laying out an embedded SVG image of a zero-ish width.
+    let nested = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10'/%3E%3C/svg%3E";
+    let bad_image = format!("<svg {NS} width=\"100\" height=\"100\"><image width=\"1e-30\" height=\"50\" href=\"{nested}\"/></svg>");
+    let e = import("image.svg", bad_image.as_bytes()).err().unwrap_or_else(|| panic!("opened"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    // The budgeted parse (placed and embedded drawings) is guarded too.
+    let e = svg::import_svg_bounded_images("image.svg", bad_image.as_bytes(), 1 << 24).err().unwrap_or_else(|| panic!("opened"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    // resvg panics rendering an offset past the pixmap's size: that element is dropped with a
+    // warning, the rest of the drawing still opens.
+    let offset = "<filter id=\"f\"><feOffset dx=\"3e9\" dy=\"-3e9\"/></filter>\
+                  <rect width=\"50\" height=\"50\" filter=\"url(#f)\"/><rect id=\"plain\" x=\"60\" y=\"60\" width=\"20\" height=\"20\"/>";
+    let svg = format!("<svg {NS} width=\"100\" height=\"100\">{offset}</svg>");
+    let r = open(&svg);
+    assert_eq!(r.document.layers.len(), 1, "{:?}", r.document.layers.iter().map(|l| &l.name).collect::<Vec<_>>());
+    assert!(matches!(r.document.layers[0].content, LayerContent::Shape(_)));
+    assert!(r.warnings.iter().any(|w| w.contains("could not be rendered")), "{:?}", r.warnings);
+    // The same drawing as a smart object, and past the element limit (opened as one pixel layer).
+    let e = svg::rasterize(svg.as_bytes(), 1.0).err().unwrap_or_else(|| panic!("rendered"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    let e = svg::rasterize_bounded(svg.as_bytes(), 1.0, 1 << 24).err().unwrap_or_else(|| panic!("rendered"));
+    assert!(matches!(e, IoError::Svg(_)), "{e}");
+    let many = format!("<svg {NS} width=\"100\" height=\"100\">{offset}{}</svg>", "<rect width=\"1\" height=\"1\"/>".repeat(2_000));
+    let r = open(&many);
+    assert!(r.document.layers.is_empty());
+    assert!(r.warnings.iter().any(|w| w.contains("could not be rendered")), "{:?}", r.warnings);
+    assert!(!r.warnings.iter().any(|w| w.contains("nothing to draw")), "not an empty drawing: {:?}", r.warnings);
+}
+
+#[test]
 fn an_svg_round_trips_through_pcraft_as_shapes() {
     let r = open(&format!(
         "<svg {NS} width=\"50\" height=\"50\"><rect id=\"a\" width=\"25\" height=\"25\" fill=\"#123456\"/><circle cx=\"37\" cy=\"37\" r=\"10\" fill=\"#abcdef\"/></svg>"
