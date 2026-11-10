@@ -1,5 +1,6 @@
 //! Which fields hold numbers. They're dragged, scrubbed or set with a slider, so a touch screen
-//! doesn't open its keyboard for them: the Android shell asks [`number_focused`].
+//! doesn't open its keyboard for them: the Android shell asks [`number_focused`]. Except in a
+//! dialog (Canvas Size, New Document…), where a value is typed in (Android port #32).
 
 use egui::{Context, Id, Response, Ui};
 
@@ -7,8 +8,13 @@ fn key() -> Id {
     Id::unique("photocraft-number-fields")
 }
 
-/// `field` (a widget's id) is a number field this frame.
-pub fn mark(ctx: &Context, field: Id) {
+/// `field` (a widget's id) is a number field this frame, unless `ui` is in a dialog: there the
+/// value is typed in, so the keyboard opens as for text.
+pub fn mark(ui: &Ui, field: Id) {
+    if ui.stack().iter().any(|f| f.kind() == Some(egui::UiKind::Modal)) {
+        return;
+    }
+    let ctx = ui.ctx();
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
         let (at, ids) = d.get_temp_mut_or_default::<(u64, Vec<Id>)>(key());
@@ -29,7 +35,7 @@ pub fn number_focused(ctx: &Context) -> bool {
 /// Adds a [`egui::DragValue`], marked as a number field.
 pub fn drag_value(ui: &mut Ui, value: egui::DragValue<'_>) -> Response {
     let r = ui.add(value);
-    mark(ui.ctx(), r.id);
+    mark(ui, r.id);
     r
 }
 
@@ -58,5 +64,20 @@ mod tests {
             assert_eq!(number_focused(&ctx), want, "{focus:?}");
         }
         assert_ne!(ids.0, ids.1);
+    }
+
+    /// #32 (Android port): in a dialog a number is typed in, so it asks for the keyboard.
+    #[test]
+    fn a_number_field_in_a_dialog_is_typed_into() {
+        let ctx = Context::default();
+        let mut n = 5.0f32;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::Modal::new(Id::unique("dialog")).show(ui.ctx(), |ui| drag_value(ui, egui::DragValue::new(&mut n)).request_focus());
+            });
+            out.textures_delta.clear();
+        }
+        assert!(ctx.memory(|m| m.focused().is_some()), "focused");
+        assert!(!number_focused(&ctx), "the keyboard opens for it");
     }
 }

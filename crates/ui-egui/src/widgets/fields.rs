@@ -549,7 +549,7 @@ fn number_edit(
             }),
     );
     // A number: dragged or scrubbed, no on-screen keyboard (see `number_fields`).
-    super::number_fields::mark(ui.ctx(), resp.id);
+    super::number_fields::mark(ui, resp.id);
     if hold_typed {
         // A scrub always applies; a typed value applies unless this frame's guard vetoes it.
         let scrub = resp.dragged() || resp.drag_started() || resp.drag_stopped();
