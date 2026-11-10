@@ -2051,9 +2051,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     let size = [doc.size.width, doc.size.height];
     let aspect = sync_view_to_document(app, &ctx, &mut view, &doc, rect, ppp);
     // Phones: the image stays in view above a dialog that previews on it.
-    if primary && app.compact_layout {
-        fit_above_phone_dialog(&ctx, idx, &mut view, &doc, rect, ppp, aspect);
-    }
+    fit_above_phone_dialog(&ctx, (primary && app.compact_layout).then_some(idx), &mut view, &doc, rect, ppp, aspect);
     update_polygon_camera(app, &ctx, (idx, primary), rect, &mut view, ppp, aspect);
 
     let flip = app.ui.view.flip_horizontal;

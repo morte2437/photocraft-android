@@ -178,8 +178,10 @@ type PhoneDialogView = (usize, (f32, [f32; 2]), (f32, [f32; 2]));
 /// The phone layout puts a dialog that previews on the canvas (Layer Style, an adjustment, a
 /// filter) at the bottom of the window (`dialogs::previews_on_canvas`). While it's open the image
 /// is fitted into the part of the canvas above it; when it closes the camera goes back, unless
-/// the view was zoomed or panned meanwhile.
-pub(super) fn fit_above_phone_dialog(ctx: &egui::Context, idx: usize, view: &mut View, doc: &Document, rect: Rect, ppp: f32, aspect: f32) {
+/// the view was zoomed or panned meanwhile. `idx` is `None` (nothing to do) but for the primary
+/// view in the phone layout.
+pub(super) fn fit_above_phone_dialog(ctx: &egui::Context, idx: Option<usize>, view: &mut View, doc: &Document, rect: Rect, ppp: f32, aspect: f32) {
+    let Some(idx) = idx else { return };
     let key = egui::Id::unique("phone-dialog-view");
     let saved: Option<PhoneDialogView> = ctx.data(|m| m.get_temp(key));
     let top = ctx.data(|m| m.get_temp::<f32>(crate::dialogs::phone_dialog_top_id())).filter(|y| *y < rect.bottom() - 1.0 && *y > rect.top() + 80.0);
