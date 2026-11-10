@@ -335,11 +335,15 @@ pub fn panel_menu(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui) {
         ui.close();
     }
     ui.separator();
-    let mut boxes = selection_checkboxes(app);
-    if crate::widgets::checkbox(ui, &mut boxes, tl!("Selection Checkboxes")).changed() {
-        app.ui.layers_panel_options.selection_checkboxes = Some(boxes);
-        crate::layers_panel_ui::persist_options(app);
-        ui.close();
+    // Where the platform offers them (touch screens), or once turned on: the desktop menu is
+    // Photoshop's.
+    if app.services.layer_checkboxes || app.ui.layers_panel_options.selection_checkboxes.is_some() {
+        let mut boxes = selection_checkboxes(app);
+        if crate::widgets::checkbox(ui, &mut boxes, tl!("Selection Checkboxes")).changed() {
+            app.ui.layers_panel_options.selection_checkboxes = Some(boxes);
+            crate::layers_panel_ui::persist_options(app);
+            ui.close();
+        }
     }
     // Photoshop's Clip Thumbnails to Layer Bounds: frame each layer's pixels, not the canvas (#4281).
     let mut clip = app.session.prefs().interface.clip_thumbnails_to_layer_bounds;

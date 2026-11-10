@@ -831,8 +831,8 @@ fn a_masked_artboards_thumbnail_retargets_it_and_ends_the_mask_view() {
 }
 
 /// Android port #28: with selection checkboxes on, tapping a layer's box adds it to the
-/// selection and tapping again takes it out, as ⌘-click does, without a keyboard. Desktop starts
-/// without them; the panel menu turns them on and the choice is saved.
+/// selection and tapping again takes it out, as ⌘-click does, without a keyboard. The panel menu
+/// turns them off and the choice is saved. Desktop has neither the boxes nor the menu row.
 #[test]
 fn selection_checkboxes_add_and_remove_layers() {
     let session = || {
@@ -874,9 +874,13 @@ fn selection_checkboxes_add_and_remove_layers() {
     let saved = h.state().session.prefs().dialogs.get("ui.layersPanelOptions").cloned().expect("options saved");
     assert_eq!(saved["selectionCheckboxes"], false);
 
-    // Desktop: none until the menu turns them on.
+    // Desktop: no boxes, and Photoshop's panel menu.
     let (s, _) = session();
-    let h = harness(s, 1.0, "promedium", 290.0);
+    let mut h = harness(s, 1.0, "promedium", 290.0);
     assert!(h.query_by_label("Select One").is_none());
     assert!(!super::selection_checkboxes(h.state()));
+    let group = crate::panel_docking::probe::group_rect(h.state(), &h.ctx, "layers").expect("layers group");
+    let menu = h.query_all_by_label("Panel menu").map(|n| n.rect()).find(|r| group.contains(r.center())).expect("Layers panel menu");
+    click(&mut h, menu.center());
+    assert!(h.query_by_label("Collapse All Groups").is_some() && h.query_by_label("Selection Checkboxes").is_none());
 }
