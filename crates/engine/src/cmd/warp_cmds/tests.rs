@@ -166,9 +166,11 @@ fn smart_object_cylinder_is_stored_in_source_space() {
     assert_eq!(w.mesh.as_ref().map(|m| (m.nx(), m.ny())), Some((13, 4)));
 }
 
-/// Warp mode shows a stored cylinder as its mesh, and Enter commits that mesh untouched: the
-/// smart object keeps its cylinder (else the next PSD save writes no warp), while a moved
-/// point still makes it a custom warp.
+/// Warp mode shows a stored cylinder as a cylinder in document space (its handles edit the
+/// seven values), and Enter commits it untouched: the smart object keeps its cylinder (else the
+/// next PSD save writes no warp). The same holds for its mesh, which is what a rotated placement
+/// shows and what Warp mode showed before it had a cylinder editor. A changed value stays a
+/// cylinder; a moved mesh point makes it a custom warp.
 #[test]
 fn untouched_cylinder_committed_from_warp_mode_stays_a_cylinder() {
     for scale in [100, 150] {
@@ -188,28 +190,69 @@ fn untouched_cylinder_committed_from_warp_mode_stays_a_cylinder() {
         let cylinder = stored(&s);
         assert_eq!(cylinder.style, WarpStyle::Cylinder, "{scale}");
         let shown = smart_warp_doc_space(s.active().unwrap().doc.layer(id).unwrap()).unwrap();
-        assert_eq!(shown.style, WarpStyle::Custom);
-        s.execute("select.all", json!({})).unwrap();
-        let (sel, steps) = (s.active().unwrap().doc.selection.clone(), s.active().unwrap().history.past_len());
-        let r = s.execute("edit.transform.warp", json!({"layer": id.0, "rect": shown.bounds, "warp": shown, "interpolation": "bicubic"})).unwrap();
-        assert_eq!(r["changed"], false, "{scale}");
-        assert_eq!(stored(&s), cylinder, "{scale}: untouched");
-        let st = s.active().unwrap();
-        assert!(st.doc.selection == sel && st.history.past_len() == steps, "{scale}: no step, the selection stays");
+        assert_eq!(shown.style, WarpStyle::Cylinder, "{scale}: shown as a cylinder");
+        for (v, sv) in values.iter().zip(&shown.values) {
+            assert!((v - sv).abs() < 1e-6, "{scale}: the values come back in document space: {values:?} vs {:?}", shown.values);
+        }
+        let as_mesh = Warp::custom(shown.to_mesh(1, 1), shown.bounds);
+        for (what, untouched) in [("cylinder", shown.clone()), ("mesh", as_mesh.clone())] {
+            s.execute("select.all", json!({})).unwrap();
+            let (sel, steps) = (s.active().unwrap().doc.selection.clone(), s.active().unwrap().history.past_len());
+            let r = s.execute("edit.transform.warp", json!({"layer": id.0, "rect": untouched.bounds, "warp": untouched, "interpolation": "bicubic"})).unwrap();
+            assert_eq!(r["changed"], false, "{scale} {what}");
+            assert_eq!(stored(&s), cylinder, "{scale} {what}: untouched");
+            let st = s.active().unwrap();
+            assert!(st.doc.selection == sel && st.history.past_len() == steps, "{scale} {what}: no step, the selection stays");
+        }
         // The same mesh over another box is another warp.
-        let mut wider = shown.clone();
+        let mut wider = as_mesh.clone();
         wider.bounds[2] += 10.0;
         s.execute("edit.transform.warp", json!({"layer": id.0, "rect": wider.bounds, "warp": wider})).unwrap();
         assert_eq!(stored(&s).style, WarpStyle::Custom, "{scale}: other box");
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(stored(&s), cylinder);
-        let mut moved = shown.clone();
+        let mut moved = as_mesh.clone();
         if let Some(m) = moved.mesh.as_mut() {
             m.points[20][1] += 5.0;
         }
         s.execute("edit.transform.warp", json!({"layer": id.0, "rect": moved.bounds, "warp": moved})).unwrap();
-        assert_eq!(stored(&s).style, WarpStyle::Custom, "{scale}: edited");
+        assert_eq!(stored(&s).style, WarpStyle::Custom, "{scale}: edited mesh");
+        s.execute("edit.undo", json!({})).unwrap();
+        // A value changed by a handle commits as a cylinder with that value, one step.
+        let steps = s.active().unwrap().history.past_len();
+        let mut deeper = shown.values.clone();
+        deeper[4] = 0.45;
+        let r = s.execute("edit.transform.warp", json!({"layer": id.0, "rect": shown.bounds, "warp": Warp::cylinder(&deeper, shown.bounds).unwrap()})).unwrap();
+        assert_eq!(r["changed"], true, "{scale}: edited cylinder");
+        let after = stored(&s);
+        assert_eq!(after.style, WarpStyle::Cylinder, "{scale}: still a cylinder");
+        assert!((after.values[4] - 0.45 * cylinder.values[4] / 0.3).abs() < 1e-9, "{scale}: the depth follows, in source units: {:?}", after.values);
+        assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "{scale}: one step");
     }
+}
+
+/// Under a rotated placement a stored cylinder has no document-space values: Warp mode shows its
+/// mesh, and committing that mesh untouched still changes nothing.
+#[test]
+fn a_rotated_cylinder_is_shown_as_its_mesh() {
+    let mut s = session(8);
+    s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.smartObjects.warp", json!({"style": "cylinder", "values": CYL, "rect": [10, 10, 60, 40]})).unwrap();
+    s.execute("edit.transform", json!({"rotate": 30})).unwrap();
+    let stored = |s: &Session| {
+        let st = s.active().unwrap();
+        let LayerContent::Smart(sm) = &st.doc.layer(id).unwrap().content else { panic!("smart") };
+        sm.warp.clone().unwrap()
+    };
+    assert_eq!(stored(&s).style, WarpStyle::Cylinder, "the placement turned, the source warp stays");
+    let shown = smart_warp_doc_space(s.active().unwrap().doc.layer(id).unwrap()).unwrap();
+    assert_eq!(shown.style, WarpStyle::Custom);
+    assert!(shown.values.is_empty());
+    let steps = s.active().unwrap().history.past_len();
+    let r = s.execute("edit.transform.warp", json!({"layer": id.0, "rect": shown.bounds, "warp": shown})).unwrap();
+    assert_eq!(r["changed"], false);
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
 }
 
 #[test]

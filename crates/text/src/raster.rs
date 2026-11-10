@@ -17,6 +17,16 @@ impl Xform {
         let [oa, ob, oc, od, oe, of] = o.0;
         Xform([a * oa + c * ob, b * oa + d * ob, a * oc + c * od, b * oc + d * od, a * oe + c * of + e, b * oe + d * of + f])
     }
+    /// The inverse map, `None` when singular or not finite.
+    pub fn invert(&self) -> Option<Xform> {
+        let [a, b, c, d, e, f] = self.0;
+        let det = a * d - b * c;
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return None;
+        }
+        let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+        Some(Xform([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)]))
+    }
     /// Largest scale factor (for flattening tolerance).
     pub fn max_scale(&self) -> f64 {
         let [a, b, c, d, ..] = self.0;

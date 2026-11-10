@@ -1,6 +1,6 @@
 //! Rasterizes a [`TextLayout`] into a document-space [`Surface`] of any pixel format.
 
-use photocraft_color::{Color, PixelFormat, SampleType};
+use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::text::AntiAlias;
 use photocraft_geom::{Affine, Rect};
 use photocraft_raster::Surface;
@@ -8,6 +8,7 @@ use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use skrifa::outline::DrawSettings;
 use skrifa::{GlyphId, MetadataProvider};
 
+use crate::color_glyphs::{Ink, Limits, NoPaint, OutlineBounds, Painter, Shape};
 use crate::layout::{DecorationRect, GlyphOrient, PlacedGlyph, TextLayout};
 use crate::raster::{Bounds, Coverage, LineSink, Pen, Xform, rect_to};
 use crate::warp::{Placement, Warp};
@@ -17,10 +18,15 @@ use rayon::prelude::*;
 
 /// Faux-italic slant in degrees (Photoshop-like).
 pub const FAUX_ITALIC_DEG: f32 = 12.0;
-/// How far faux bold grows the outline on every side, as a fraction of the font size
-/// ([`crate::embolden`]): stems get twice this heavier, close to the weight of the earlier
-/// faux bold, which stamped the glyph at offsets of this radius.
-pub const FAUX_BOLD_RADIUS: f32 = 0.036;
+/// How far faux bold grows the outline on every side, in pixels (`crate::embolden`): stems get
+/// twice this heavier. Photoshop thickens by about `size/72`; the flat 3.6% of the size used
+/// before overshot its ink by 1.3–1.5× from 50 px up. So the ring follows the size, with a pixel
+/// floor that fades in below ~32 px (Photoshop's small type reads heavier than `size/72`) and a
+/// cap so a sub-pixel glyph does not grow into a blob.
+pub fn faux_bold_radius(size_px: f32) -> f32 {
+    (size_px / 72.0).max((size_px / 40.0).min(0.45))
+}
+
 /// Largest raster we produce (pixels), as a guard against absurd sizes.
 const MAX_PIXELS: u64 = 256 * 1024 * 1024;
 /// Cumulative coverage-pixel work budget across the colour passes of one render.
@@ -61,7 +67,7 @@ fn nothing(format: PixelFormat) -> Rendered {
 
 /// Maps raw area-coverage to the opacity Photoshop's anti-alias modes imply. Exponents above 1 thin
 /// the fringe (sharper); below 1 widen it (stronger smoothing).
-fn shape_antialias_coverage(cv: f32, mode: AntiAlias) -> f32 {
+pub(crate) fn shape_antialias_coverage(cv: f32, mode: AntiAlias) -> f32 {
     if !cv.is_finite() {
         return 0.0;
     }
@@ -123,14 +129,15 @@ fn glyph_is_placed(layout: &TextLayout, g: &PlacedGlyph, warp: Option<&Warp>) ->
     let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else {
         return false;
     };
-    if font.outline_glyphs().get(GlyphId::new(g.id)).is_none() {
+    let coords: Vec<NormalizedCoord> = face.coords.iter().map(|&c| NormalizedCoord::from_bits(c)).collect();
+    // A colour glyph paints its layers, so it counts even when its base glyph has no outline.
+    if font.outline_glyphs().get(GlyphId::new(g.id)).is_none() && color_glyph(&font, GlyphId::new(g.id), &coords).is_none() {
         return false;
     }
-    if let Some(w) = warp {
-        let coords: Vec<NormalizedCoord> = face.coords.iter().map(|&c| NormalizedCoord::from_bits(c)).collect();
-        if matches!(w.place_glyph(glyph_center(layout, g, &font, face.size_px, &coords)), Placement::Hidden) {
-            return false;
-        }
+    if let Some(w) = warp
+        && matches!(w.place_glyph(glyph_center(layout, g, &font, face.size_px, &coords)), Placement::Hidden)
+    {
+        return false;
     }
     true
 }
@@ -185,7 +192,7 @@ pub(crate) fn visible_color_passes(layout: &TextLayout, warp: Option<&Warp>) -> 
 
 /// Draws the glyphs and decorations of `layout` in `only` (or all of them when it is `None`) into `sink`, through `transform` (text space → sink space), bending
 /// the outlines with `warp` first (in text space). Faux bold glyphs are drawn from their outline
-/// thickened by [`FAUX_BOLD_RADIUS`] ([`crate::embolden`]).
+/// thickened by [`faux_bold_radius`] ([`crate::embolden`]).
 fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only: Option<&Pass>, warp: Option<&Warp>) {
     let glyphs: Box<dyn Iterator<Item = &PlacedGlyph>> = match only {
         Some(p) => Box::new(p.glyphs.iter().filter_map(|&i| layout.glyphs.get(i))),
@@ -197,23 +204,29 @@ fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only: 
         let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else {
             continue;
         };
+        let coords: Vec<NormalizedCoord> = face.coords.iter().map(|&c| NormalizedCoord::from_bits(c)).collect();
+        // Colour glyphs paint in their own colours ([`paint_color_glyphs`]); only their extent
+        // counts here.
+        if let Some(color) = color_glyph(&font, GlyphId::new(g.id), &coords) {
+            if only.is_none()
+                && let Some((glyph, bend)) = place(layout, g, &font, face.size_px, &coords, warp)
+            {
+                let unit = font_units(&font, face.size_px, &coords, glyph);
+                let outline = |shape: Shape, m: &Xform, s: &mut Bounds| shape_into(&font, &coords, shape, unit.mul(m), transform, bend, s);
+                let mut b = Bounds::default();
+                let _ = color.paint(LocationRef::new(&coords), &mut OutlineBounds::new(&mut b, outline));
+                if let Some([x0, y0, x1, y1]) = b.rect {
+                    rect_to(sink, &Xform::IDENTITY, x0, y0, x1, y1);
+                }
+            }
+            continue;
+        }
         let Some(outline) = font.outline_glyphs().get(GlyphId::new(g.id)) else {
             continue;
         };
-        let coords: Vec<NormalizedCoord> = face.coords.iter().map(|&c| NormalizedCoord::from_bits(c)).collect();
-        let mut glyph = glyph_xform(layout, g, face.skew_deg);
-        // Type on a path moves each glyph rigidly: turned to the curve at its centre.
-        let mut bend = warp;
-        if let Some(w) = warp {
-            match w.place_glyph(glyph_center(layout, g, &font, face.size_px, &coords)) {
-                Placement::Bend => {}
-                Placement::Hidden => continue,
-                Placement::Frame(m) => {
-                    glyph = Xform(m).mul(&glyph);
-                    bend = None;
-                }
-            }
-        }
+        let Some((glyph, bend)) = place(layout, g, &font, face.size_px, &coords, warp) else {
+            continue;
+        };
         let settings = || DrawSettings::unhinted(Size::new(face.size_px), LocationRef::new(&coords));
         // Faux bold thickens the outline in font units, before faux italic and scaling, so the
         // slant and proportions apply to the bold shape as they do to a real bold face. Other
@@ -224,7 +237,7 @@ fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only: 
             if outline.draw(settings(), &mut shape).is_err() {
                 continue;
             }
-            shape.embolden(f64::from(face.size_px * FAUX_BOLD_RADIUS));
+            shape.embolden(f64::from(faux_bold_radius(face.size_px)));
             bold = Some(shape);
         }
         let settings = settings();
@@ -249,6 +262,178 @@ fn draw(layout: &TextLayout, transform: &Xform, sink: &mut impl LineSink, only: 
             None => rect_to(sink, transform, d.x0 as f64, d.y0 as f64, d.x1 as f64, d.y1 as f64),
         }
     }
+}
+
+/// Where a placed glyph goes: its outline map (px-scaled font units, y up → text space) and the
+/// warp still to bend it with. `None` when type on a path hides it.
+fn place<'w>(
+    layout: &TextLayout,
+    g: &PlacedGlyph,
+    font: &skrifa::FontRef,
+    size_px: f32,
+    coords: &[NormalizedCoord],
+    warp: Option<&'w Warp>,
+) -> Option<(Xform, Option<&'w Warp>)> {
+    let face_skew = layout.faces.get(g.face as usize).map_or(0.0, |f| f.skew_deg);
+    let glyph = glyph_xform(layout, g, face_skew);
+    // Type on a path moves each glyph rigidly: turned to the curve at its centre.
+    match warp.map(|w| w.place_glyph(glyph_center(layout, g, font, size_px, coords))) {
+        None | Some(Placement::Bend) => Some((glyph, warp)),
+        Some(Placement::Hidden) => None,
+        Some(Placement::Frame(m)) => Some((Xform(m).mul(&glyph), None)),
+    }
+}
+
+/// `glyph` (see [`place`]) for unscaled font units, as colour glyphs paint in.
+fn font_units(font: &skrifa::FontRef, size_px: f32, coords: &[NormalizedCoord], glyph: Xform) -> Xform {
+    let upem = font.metrics(Size::unscaled(), LocationRef::new(coords)).units_per_em;
+    let k = if upem > 0 { f64::from(size_px) / f64::from(upem) } else { 0.0 };
+    glyph.mul(&Xform([k, 0.0, 0.0, k, 0.0, 0.0]))
+}
+
+/// Draws `outline` through `local` (font space → text space), bent by `bend`, then mapped by
+/// `transform` into `sink`.
+fn draw_outline(
+    outline: &skrifa::outline::OutlineGlyph,
+    settings: DrawSettings,
+    local: Xform,
+    transform: &Xform,
+    bend: Option<&Warp>,
+    sink: &mut impl LineSink,
+) {
+    match bend {
+        Some(w) => {
+            let mut ws = WarpSink { inner: sink, warp: w, post: *transform };
+            let mut pen = Pen::new(&mut ws, local);
+            if outline.draw(settings, &mut pen).is_ok() {
+                skrifa::outline::OutlinePen::close(&mut pen);
+            }
+        }
+        None => {
+            let mut pen = Pen::new(sink, transform.mul(&local));
+            if outline.draw(settings, &mut pen).is_ok() {
+                skrifa::outline::OutlinePen::close(&mut pen);
+            }
+        }
+    }
+}
+
+/// The colour glyph `id` paints as, when the font has one and skrifa can walk its paint graph.
+/// A graph it cannot walk (too deep, a cycle, a broken offset) leaves the glyph to its plain
+/// outline in the text colour instead of dropping it.
+fn color_glyph<'a>(font: &skrifa::FontRef<'a>, id: GlyphId, coords: &[NormalizedCoord]) -> Option<skrifa::color::ColorGlyph<'a>> {
+    let color = font.color_glyphs().get(id)?;
+    color.paint(LocationRef::new(coords), &mut NoPaint).is_ok().then_some(color)
+}
+
+/// A colour glyph's clip [`Shape`], unscaled font units through `local` (font units → text
+/// space), into `sink`: a glyph's outline, or a clip box, bent by `bend` like the outlines so it
+/// still crops what it was meant to.
+fn shape_into(
+    font: &skrifa::FontRef,
+    coords: &[NormalizedCoord],
+    shape: Shape,
+    local: Xform,
+    transform: &Xform,
+    bend: Option<&Warp>,
+    sink: &mut impl LineSink,
+) {
+    match shape {
+        Shape::Glyph(id) => {
+            if let Some(outline) = font.outline_glyphs().get(id) {
+                draw_outline(&outline, DrawSettings::unhinted(Size::unscaled(), LocationRef::new(coords)), local, transform, bend, sink);
+            }
+        }
+        Shape::Box(b) => {
+            let (x0, y0, x1, y1) = (f64::from(b.x_min), f64::from(b.y_min), f64::from(b.x_max), f64::from(b.y_max));
+            match bend {
+                Some(w) => rect_to(&mut WarpSink { inner: sink, warp: w, post: *transform }, &local, x0, y0, x1, y1),
+                None => rect_to(sink, &transform.mul(&local), x0, y0, x1, y1),
+            }
+        }
+    }
+}
+
+/// Paints the colour glyphs of `layout` in their own colours over the premultiplied accumulator
+/// (`w × h`, `format`'s colour channels then alpha): their palette's sRGB converted to the
+/// document's colour model, times the text colour's opacity. `None` when a glyph's buffers could
+/// not be reserved or `limits` ran out (see [`Limits`]).
+#[allow(clippy::too_many_arguments)]
+fn paint_color_glyphs(
+    layout: &TextLayout,
+    xf: &Xform,
+    warp: Option<&Warp>,
+    format: &PixelFormat,
+    antialias: AntiAlias,
+    acc: &mut [f32],
+    (w, h): (usize, usize),
+    mut limits: Limits,
+) -> Option<()> {
+    let n = format.mode.color_channels();
+    let stride = n + 1;
+    let opaque = PixelFormat { alpha: false, ..*format };
+    // Float documents keep extended (HDR, signed) colours, as the plain passes do.
+    let keep_range = |v: f32| if format.sample == SampleType::F32 && v.is_finite() { v } else { v.clamp(0.0, 1.0) };
+    for g in &layout.glyphs {
+        let (Some(st), Some(face)) = (layout.styles.get(g.style as usize), layout.faces.get(g.face as usize)) else { continue };
+        // A glyph the text colour's opacity hides paints nothing; walking it would only spend the
+        // budget the visible text needs (as the plain passes skip it, `visible_color_passes`).
+        let opacity = st.color.alpha.clamp(0.0, 1.0);
+        if opacity.is_nan() || opacity <= 0.0 {
+            continue;
+        }
+        let Ok(font) = skrifa::FontRef::from_index(face.font.data.as_ref(), face.font.index) else { continue };
+        let coords: Vec<NormalizedCoord> = face.coords.iter().map(|&c| NormalizedCoord::from_bits(c)).collect();
+        let Some(color) = color_glyph(&font, GlyphId::new(g.id), &coords) else { continue };
+        let Some((glyph, bend)) = place(layout, g, &font, face.size_px, &coords, warp) else { continue };
+        let unit = font_units(&font, face.size_px, &coords, glyph);
+        // The window the glyph can paint: its fills within their clips.
+        let mut b = Bounds::default();
+        let outline = |shape: Shape, m: &Xform, s: &mut Bounds| shape_into(&font, &coords, shape, unit.mul(m), xf, bend, s);
+        if color.paint(LocationRef::new(&coords), &mut OutlineBounds::new(&mut b, outline)).is_err() {
+            continue;
+        }
+        let Some([x0, y0, x1, y1]) = b.rect else { continue };
+        let clamp = |v: f64, hi: usize| v.clamp(0.0, hi as f64) as usize;
+        let (wx0, wy0, wx1, wy1) = (clamp(x0.floor() - 1.0, w), clamp(y0.floor() - 1.0, h), clamp(x1.ceil() + 1.0, w), clamp(y1.ceil() + 1.0, h));
+        if wx1 <= wx0 || wy1 <= wy0 {
+            continue;
+        }
+        let (ww, wh) = (wx1 - wx0, wy1 - wy0);
+        let to_window = Xform([1.0, 0.0, 0.0, 1.0, -(wx0 as f64), -(wy0 as f64)]).mul(xf);
+        let palettes = font.color_palettes();
+        let palette = palettes.get(0);
+        let [r, gr, bl] = st.color.to_rgb();
+        // Pixels in the text colour alone keep its own components, as plain glyphs do (a CMYK
+        // black stays K only instead of coming back from sRGB as a four-colour black).
+        let native = (format.mode != ColorMode::Rgb).then(|| color_in(format, &st.color));
+        let outline = |shape: Shape, m: &Xform, s: &mut Coverage| shape_into(&font, &coords, shape, unit.mul(m), &to_window, bend, s);
+        let ink = Ink { palette: palette.as_ref().map_or(&[][..], |p| p.colors()), foreground: [r, gr, bl, 1.0] };
+        let mut painter = Painter::new(ww, wh, outline, to_window.mul(&unit), ink, antialias, limits);
+        if color.paint(LocationRef::new(&coords), &mut painter).is_err() {
+            continue;
+        }
+        // Compositing the window into the text is one more pass over it.
+        limits.work = painter.work_left().checked_sub((ww as u64).checked_mul(wh as u64)?)?;
+        for (i, s) in painter.finish()?.iter().enumerate() {
+            let a = s[3] * opacity;
+            let o = ((wy0 + i / ww) * w + wx0 + i % ww) * stride;
+            let (true, Some(px)) = (a > 0.0, acc.get_mut(o..o + stride)) else { continue };
+            let straight = [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
+            let rgb = straight.map(keep_range);
+            let comps = match &native {
+                None => rgb.to_vec(),
+                Some(c) if straight.iter().zip([r, gr, bl]).all(|(v, f)| (v - f).abs() < 1e-5) => c.iter().copied().map(keep_range).collect(),
+                Some(_) => photocraft_raster::from_rgba(&opaque, [rgb[0], rgb[1], rgb[2], 1.0]),
+            };
+            let keep = 1.0 - a;
+            for (p, c) in px.iter_mut().zip(&comps).take(n) {
+                *p = c * a + *p * keep;
+            }
+            px[n] = a + px[n] * keep;
+        }
+    }
+    Some(())
 }
 
 /// One glyph into `pen`: its thickened `bold` outline when there is one, else the font's own.
@@ -437,6 +622,13 @@ pub(crate) fn rasterize_passes(
         let comps = color_in(&format, c);
         let a = c.alpha.clamp(0.0, 1.0);
         composite(&mut acc, w, sub, &cov, stride, &comps, a, antialias);
+    }
+    // Colour glyphs get what the plain passes left of both budgets: the bytes beside the
+    // accumulator and the output surface ([`fits_raster_budget`]), and the pixel work.
+    let deep = (w as u64).saturating_mul(h as u64).saturating_mul(stride as u64).saturating_mul(size_of::<f32>() as u64 + format.sample.bytes() as u64);
+    let limits = Limits { bytes: MAX_RASTER_BYTES.saturating_sub(deep), work: MAX_PASS_PIXELS.saturating_sub(pass_pixels) };
+    if paint_color_glyphs(layout, &xf, warp, &format, antialias, &mut acc, (w, h), limits).is_none() {
+        return nothing(format);
     }
     // Unpremultiply.
     unpremultiply(&mut acc, n, stride, format.sample);

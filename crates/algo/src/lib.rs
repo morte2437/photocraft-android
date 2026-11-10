@@ -21,6 +21,7 @@
 pub mod art_history;
 mod artistic;
 mod artistic_fx;
+mod average;
 mod blur;
 mod blur2;
 pub mod camera_raw;
@@ -208,6 +209,8 @@ pub enum PolarMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "filter", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum FilterParams {
+    /// Mean colour over the selected area, retaining each pixel's alpha.
+    Average,
     /// Radius = Gaussian standard deviation in pixels (0.1–1000).
     GaussianBlur {
         radius: f32,
@@ -592,7 +595,8 @@ impl FilterParams {
             FilterParams::Emboss { height, .. } => Halo::Radius(height.abs().ceil() as i32 + 2),
             FilterParams::FindEdges => Halo::Radius(1),
             FilterParams::AddNoise { .. } | FilterParams::Solarize | FilterParams::Invert | FilterParams::Desaturate => Halo::Radius(0),
-            FilterParams::RadialBlur { .. }
+            FilterParams::Average
+            | FilterParams::RadialBlur { .. }
             | FilterParams::Offset { .. }
             | FilterParams::Twirl { .. }
             | FilterParams::Pinch { .. }
@@ -634,14 +638,16 @@ impl FilterParams {
     }
 
     /// Whether the filter places and sizes its pattern by the canvas even with a selection
-    /// (Clouds, Fibers): its bounds are then the canvas, and the selection only masks the result.
+    /// (Clouds, Fibers), or limits its working area to the canvas (Average). The output
+    /// area is still clipped to the selection; Average also weights its mean by that coverage.
     pub fn sizes_by_canvas(&self) -> bool {
-        matches!(self, FilterParams::Clouds { .. } | FilterParams::Fibers { .. })
+        matches!(self, FilterParams::Average | FilterParams::Clouds { .. } | FilterParams::Fibers { .. })
     }
 
     /// Human-readable name.
     pub fn label(&self) -> &'static str {
         match self {
+            FilterParams::Average => "Average",
             FilterParams::GaussianBlur { .. } => "Gaussian Blur",
             FilterParams::BoxBlur { .. } => "Box Blur",
             FilterParams::MotionBlur { .. } => "Motion Blur",
@@ -766,6 +772,7 @@ pub struct Ctx {
 /// the halo, or the bounds for global filters). Returns interleaved samples.
 pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f32> {
     match params {
+        FilterParams::Average => average::kernel(src, out, ctx),
         FilterParams::GaussianBlur { radius } => blur::gaussian(src, out, ctx, *radius),
         FilterParams::BoxBlur { radius } => blur::boxed(src, out, ctx, *radius),
         FilterParams::MotionBlur { angle, distance } => blur::motion(src, out, ctx, *angle, *distance),
@@ -1140,6 +1147,9 @@ fn apply_tiled_with_impl(
     let mut out = surface.clone();
     if area.is_empty() {
         return Some(out);
+    }
+    if matches!(params, FilterParams::Average) {
+        return average::apply(surface, extent.map_or(area, |e| area.intersect(&e)), selection, ctl);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if prepare_fast_paths && let Some(result) = sharpen::fft::apply(surface, params, area, selection, extent, ctl) {

@@ -60,6 +60,16 @@ pub(super) fn nearest(xs: &[f32], x: f32) -> Option<u8> {
     xs.iter().enumerate().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map(|(i, _)| i as u8)
 }
 
+fn levels_drag_id(mem: egui::Id) -> egui::Id {
+    mem.with("levels-drag")
+}
+
+/// The Levels Input slider handle being dragged in the editor rooted at `mem` (0 black, 1 gamma,
+/// 2 white), as of its last frame.
+pub(crate) fn levels_drag(ctx: &egui::Context, mem: egui::Id) -> Option<u8> {
+    ctx.data(|d| d.get_temp::<Option<u8>>(levels_drag_id(mem))).flatten()
+}
+
 pub(super) fn levels(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let t = Tokens::get(ui.ctx());
     let channels = editor_channels(cx, space_of(v));
@@ -98,7 +108,9 @@ pub(super) fn levels(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let track = sr.shrink2(vec2(6.0, 0.0));
     let xpos = |val: f32| track.left() + val / 255.0 * track.width();
     let xval = |x: f32| ((x - track.left()) / track.width() * 255.0).clamp(0.0, 255.0);
-    let drag_id = cx.mem.with("levels-drag");
+    // Where 0 and 255 sit (tests press the handles there).
+    ui.data_mut(|d| d.insert_temp(cx.mem.with("levels-slider"), track));
+    let drag_id = levels_drag_id(cx.mem);
     let mut which: Option<u8> = ui.data(|d| d.get_temp(drag_id)).flatten();
     let ctx = ui.ctx().clone();
     let pressed = |r: &egui::Response| r.is_pointer_button_down_on() && ctx.input(|i| i.pointer.primary_pressed());

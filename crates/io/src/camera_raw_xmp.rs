@@ -12,6 +12,13 @@
 //! `IncrementalTemperature` / `IncrementalTint` (−100..=100), which are PhotoCraft's Temperature
 //! and Tint. The absolute `Temperature` (kelvin) / `Tint` of raw-file settings have no
 //! counterpart and are ignored.
+//!
+//! Crop (#9985): `crs:HasCrop="True"` with `crs:CropTop` / `CropLeft` / `CropBottom` /
+//! `CropRight`, fractions of the developed frame in the raw's stored orientation (before its
+//! Orientation tag turns it upright), is read into [`LoadReport::crop`]; the raw open crops the
+//! document with it ([`crate::raw::RawTuning::crop`]). The settings have no crop (Camera Raw
+//! Filter has none). Without `HasCrop`, or with `HasCrop="False"`, the crop keys are stale and
+//! mean nothing. A straightened crop (`CropAngle` other than 0) isn't applied.
 
 use photocraft_algo::camera_raw::{CameraRaw, validate_curve};
 
@@ -126,7 +133,6 @@ const METADATA: &[&str] = &[
     "Version",
     "ProcessVersion",
     "HasSettings",
-    "HasCrop",
     "WhiteBalance",
     "ToneCurveName2012",
     "CameraProfile",
@@ -147,16 +153,114 @@ const METADATA: &[&str] = &[
     "SortName",
     "Group",
     "Description",
+    // The raw file the sidecar belongs to (Lightroom and Camera Raw name it).
+    "RawFileName",
 ];
+
+/// The crop's keys besides `HasCrop`, and their values without a crop (the whole frame, level).
+pub const CROP_KEYS: [&str; 5] = ["CropTop", "CropLeft", "CropBottom", "CropRight", "CropAngle"];
+const NO_CROP: [f32; 5] = [0.0, 0.0, 1.0, 1.0, 0.0];
+
+/// A Camera Raw crop: fractions of the developed frame in the raw's stored orientation, before
+/// its Orientation tag turns it upright, with `0 <= left < right <= 1` and
+/// `0 <= top < bottom <= 1`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crop {
+    pub top: f32,
+    pub left: f32,
+    pub bottom: f32,
+    pub right: f32,
+}
+
+impl Crop {
+    /// The crop of the frame turned upright by TIFF orientation `o` (1–8; anything else is 1),
+    /// as fractions of the upright frame: the corners map as the pixels do.
+    pub fn oriented(self, o: u16) -> Crop {
+        let map = |u: f32, v: f32| match o {
+            2 => (1.0 - u, v),
+            3 => (1.0 - u, 1.0 - v),
+            4 => (u, 1.0 - v),
+            5 => (v, u),
+            6 => (1.0 - v, u),
+            7 => (1.0 - v, 1.0 - u),
+            8 => (v, 1.0 - u),
+            _ => (u, v),
+        };
+        let (ax, ay) = map(self.left, self.top);
+        let (bx, by) = map(self.right, self.bottom);
+        Crop { top: ay.min(by), left: ax.min(bx), bottom: ay.max(by), right: ax.max(bx) }
+    }
+
+    /// The crop on a `w × h` frame in pixels, `(x0, y0, x1, y1)` with `x1` and `y1` exclusive:
+    /// at least one pixel, inside the frame. `None` for an empty frame.
+    pub fn pixels(self, w: usize, h: usize) -> Option<(usize, usize, usize, usize)> {
+        let edge = |f: f32, n: usize| ((f64::from(f).clamp(0.0, 1.0) * n as f64).round() as usize).min(n);
+        let span = |a: f32, b: f32, n: usize| {
+            let lo = edge(a, n).min(n.checked_sub(1)?);
+            Some((lo, edge(b, n).max(lo + 1)))
+        };
+        let (x0, x1) = span(self.left, self.right, w)?;
+        let (y0, y1) = span(self.top, self.bottom, h)?;
+        Some((x0, y0, x1, y1))
+    }
+}
 
 /// What [`load`] applied.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoadReport {
-    /// How many settings were applied.
+    /// How many settings were applied (a crop counts as one).
     pub applied: usize,
     /// `crs:` settings without a PhotoCraft control (set to something other than their neutral
-    /// value), or with an unusable value, in file order.
+    /// value), or with an unusable value, in file order; then the keys of a crop that isn't
+    /// applied (straightened, unreadable or empty).
     pub ignored: Vec<String>,
+    /// The file's crop, when it has one that isn't the whole frame. The settings hold no crop,
+    /// so the caller applies it (a raw open crops the document) or reports it.
+    pub crop: Option<Crop>,
+}
+
+/// The crop keys as read, resolved by [`crop`] once the whole file is read.
+#[derive(Default)]
+struct CropFields {
+    has: Option<String>,
+    values: [Option<String>; 5],
+}
+
+/// The file's crop from its keys: applied when `HasCrop` is `True` and the values make a level,
+/// non-empty rectangle (fractions are clamped to 0..1); otherwise its keys are reported.
+fn crop(fields: &CropFields, report: &mut LoadReport) {
+    match fields.has.as_deref().map(str::trim) {
+        // No crop: the other keys are what Camera Raw left from an earlier or reset crop.
+        None => return,
+        Some(v) if v.eq_ignore_ascii_case("false") => return,
+        Some(v) if v.eq_ignore_ascii_case("true") => {}
+        Some(_) => {
+            report.ignored.push("HasCrop".into());
+            return;
+        }
+    }
+    let mut v = NO_CROP;
+    let mut usable = true;
+    for (slot, text) in v.iter_mut().zip(&fields.values) {
+        if let Some(text) = text {
+            match number(text) {
+                Some(n) => *slot = n,
+                None => usable = false,
+            }
+        }
+    }
+    let [top, left, bottom, right] = [v[0], v[1], v[2], v[3]].map(|f| f.clamp(0.0, 1.0));
+    // A straightened crop's rectangle is measured on the rotated frame: not applied.
+    usable &= v[4] == 0.0 && top < bottom && left < right;
+    if !usable {
+        let present = CROP_KEYS.iter().zip(&fields.values).filter(|(_, t)| t.is_some());
+        report.ignored.extend(present.map(|(k, _)| k.to_string()));
+        return;
+    }
+    if [top, left, bottom, right] != [0.0, 0.0, 1.0, 1.0] {
+        report.crop = Some(Crop { top, left, bottom, right });
+        report.applied += 1;
+    }
 }
 
 fn number(s: &str) -> Option<f32> {
@@ -197,8 +301,14 @@ fn neutral(name: &str, value: &str) -> bool {
     }
 }
 
-fn apply(params: &mut CameraRaw, report: &mut LoadReport, name: &str, value: &str) {
-    if let Some((_, field, lo, hi)) = SCALARS.iter().find(|(n, ..)| *n == name) {
+fn apply(params: &mut CameraRaw, report: &mut LoadReport, crop: &mut CropFields, name: &str, value: &str) {
+    if name == "HasCrop" {
+        crop.has = Some(value.to_string());
+    } else if let Some(i) = CROP_KEYS.iter().position(|k| *k == name) {
+        if let Some(slot) = crop.values.get_mut(i) {
+            *slot = Some(value.to_string());
+        }
+    } else if let Some((_, field, lo, hi)) = SCALARS.iter().find(|(n, ..)| *n == name) {
         match number(value) {
             Some(v) => {
                 *field(params) = v.clamp(*lo, *hi);
@@ -232,10 +342,11 @@ pub fn load(params: &mut CameraRaw, bytes: &[u8]) -> Result<LoadReport, String> 
     let mut next = params.clone();
     let mut report = LoadReport::default();
     let mut found = false;
+    let mut crop_fields = CropFields::default();
     for desc in doc.descendants().filter(|n| n.is_element() && n.tag_name().namespace() == Some(RDF_NS) && n.tag_name().name() == "Description") {
         for a in desc.attributes().filter(|a| a.namespace() == Some(CRS_NS)) {
             found = true;
-            apply(&mut next, &mut report, a.name(), a.value());
+            apply(&mut next, &mut report, &mut crop_fields, a.name(), a.value());
         }
         for c in desc.children().filter(|c| c.is_element() && c.tag_name().namespace() == Some(CRS_NS)) {
             found = true;
@@ -254,13 +365,14 @@ pub fn load(params: &mut CameraRaw, bytes: &[u8]) -> Result<LoadReport, String> 
                     report.ignored.push(name.to_string());
                 }
             } else {
-                apply(&mut next, &mut report, name, c.text().unwrap_or(""));
+                apply(&mut next, &mut report, &mut crop_fields, name, c.text().unwrap_or(""));
             }
         }
     }
     if !found {
         return Err("no Camera Raw settings in the file".into());
     }
+    crop(&crop_fields, &mut report);
     *params = next;
     Ok(report)
 }
@@ -295,6 +407,11 @@ pub fn is_photocraft_xmp(bytes: &[u8]) -> bool {
 
 /// Write `params` as a Camera Raw settings file Photoshop's Load Settings… reads.
 pub fn save(params: &CameraRaw) -> String {
+    save_with_crop(params, None)
+}
+
+/// [`save`] with a raw file's crop, so rewriting a sidecar keeps the crop it was opened with.
+pub fn save_with_crop(params: &CameraRaw, crop: Option<Crop>) -> String {
     let mut p = params.clone();
     let wb = if p.temperature != 0.0 || p.tint != 0.0 { "Custom" } else { "As Shot" };
     let mut out = String::from(
@@ -315,6 +432,12 @@ pub fn save(params: &CameraRaw) -> String {
     }
     let style = STYLES.iter().find(|(_, s)| *s == p.vignette_style).map_or("1", |(n, _)| n);
     out.push_str(&format!("   crs:PostCropVignetteStyle=\"{}\"\n", escape(style)));
+    if let Some(c) = crop {
+        out.push_str(&format!(
+            "   crs:HasCrop=\"True\"\n   crs:CropTop=\"{:.6}\"\n   crs:CropLeft=\"{:.6}\"\n   crs:CropBottom=\"{:.6}\"\n   crs:CropRight=\"{:.6}\"\n   crs:CropAngle=\"0\"\n",
+            c.top, c.left, c.bottom, c.right
+        ));
+    }
     out.push_str("   crs:ToneCurveName2012=\"Custom\"\n   crs:HasSettings=\"True\">\n");
     for (name, field) in CURVES {
         let points = field(&mut p);
@@ -433,7 +556,7 @@ mod tests {
             <crs:Clarity2012>abc</crs:Clarity2012></rdf:Description></rdf:RDF></x:xmpmeta>"#;
         let r = load(&mut p, xmp).unwrap();
         assert_eq!((p.exposure, p.contrast, p.clarity), (-5.0, 40.0, 0.0));
-        assert_eq!(r, LoadReport { applied: 1, ignored: vec!["Clarity2012".into()] });
+        assert_eq!(r, LoadReport { applied: 1, ignored: vec!["Clarity2012".into()], crop: None });
     }
 
     #[test]
@@ -478,5 +601,112 @@ mod tests {
         ] {
             assert!(!is_photocraft_xmp(other), "{}", String::from_utf8_lossy(other));
         }
+    }
+
+    /// A settings file with the `crs:` attributes `attrs`.
+    fn with(attrs: &str) -> String {
+        format!(
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:crs=\"{CRS_NS}\" crs:RawFileName=\"IMG_0004.CR2\" {attrs}/></rdf:RDF></x:xmpmeta>"
+        )
+    }
+
+    fn report(attrs: &str) -> LoadReport {
+        load(&mut CameraRaw::default(), with(attrs).as_bytes()).unwrap()
+    }
+
+    /// #9985: Lightroom's sidecar named the crop's bottom and right edges and the raw's file name
+    /// as unsupported; the crop is read now, and the file name is bookkeeping.
+    #[test]
+    fn reads_the_crop_and_not_the_file_name() {
+        let r = report(r#"crs:HasCrop="True" crs:CropTop="0.1" crs:CropLeft="0.2" crs:CropBottom="0.9" crs:CropRight="0.75" crs:CropAngle="0""#);
+        assert!(r.ignored.is_empty(), "{:?}", r.ignored);
+        assert_eq!(r.crop, Some(Crop { top: 0.1, left: 0.2, bottom: 0.9, right: 0.75 }));
+        assert_eq!(r.applied, 1);
+        // Element form, and the keys spread over two descriptions, read the same.
+        let xmp = format!(
+            "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:crs=\"{CRS_NS}\"><crs:HasCrop>True</crs:HasCrop><crs:CropBottom>0.5</crs:CropBottom></rdf:Description><rdf:Description xmlns:crs=\"{CRS_NS}\" crs:CropRight=\"0.5\"/></rdf:RDF>"
+        );
+        let r = load(&mut CameraRaw::default(), xmp.as_bytes()).unwrap();
+        assert_eq!(r.crop, Some(Crop { top: 0.0, left: 0.0, bottom: 0.5, right: 0.5 }), "missing edges are the frame's");
+        assert!(r.ignored.is_empty(), "{:?}", r.ignored);
+    }
+
+    #[test]
+    fn no_crop_without_has_crop_true() {
+        let keys = r#"crs:CropTop="0.1" crs:CropLeft="0.2" crs:CropBottom="0.9" crs:CropRight="0.75" crs:CropAngle="3""#;
+        for has in ["", r#"crs:HasCrop="False""#, r#"crs:HasCrop="false""#] {
+            let r = report(&format!("{has} {keys}"));
+            assert_eq!((r.crop, r.ignored.clone(), r.applied), (None, Vec::new(), 0), "{has:?}: {r:?}");
+        }
+        // The whole frame is no crop, and nothing to report.
+        let r = report(r#"crs:HasCrop="True" crs:CropTop="0" crs:CropLeft="0" crs:CropBottom="1" crs:CropRight="1" crs:CropAngle="0""#);
+        assert_eq!((r.crop, r.ignored.len()), (None, 0));
+        let r = report(r#"crs:HasCrop="yes" crs:CropBottom="0.5""#);
+        assert_eq!((r.crop, r.ignored), (None, vec!["HasCrop".to_string()]));
+    }
+
+    /// Hostile and straightened crops never panic: out-of-range fractions are clamped to the
+    /// frame; an inverted, empty, unreadable or straightened crop isn't applied and its keys are
+    /// named.
+    #[test]
+    fn unusable_crops_are_reported_not_applied() {
+        let r = report(r#"crs:HasCrop="True" crs:CropTop="-0.5" crs:CropLeft="0.25" crs:CropBottom="7" crs:CropRight="1.0000001""#);
+        assert_eq!(r.crop, Some(Crop { top: 0.0, left: 0.25, bottom: 1.0, right: 1.0 }));
+        assert!(r.ignored.is_empty(), "{:?}", r.ignored);
+        let all = || CROP_KEYS.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        for bad in [
+            r#"crs:CropTop="0.8" crs:CropLeft="0.1" crs:CropBottom="0.2" crs:CropRight="0.9" crs:CropAngle="0""#,
+            r#"crs:CropTop="0.5" crs:CropLeft="0.1" crs:CropBottom="0.5" crs:CropRight="0.9" crs:CropAngle="0""#,
+            r#"crs:CropTop="2" crs:CropLeft="0.1" crs:CropBottom="3" crs:CropRight="0.9" crs:CropAngle="0""#,
+            r#"crs:CropTop="NaN" crs:CropLeft="0.1" crs:CropBottom="0.9" crs:CropRight="0.9" crs:CropAngle="0""#,
+            r#"crs:CropTop="0.1" crs:CropLeft="inf" crs:CropBottom="0.9" crs:CropRight="0.9" crs:CropAngle="0""#,
+            r#"crs:CropTop="0.1" crs:CropLeft="0.1" crs:CropBottom="0.9" crs:CropRight="" crs:CropAngle="0""#,
+            r#"crs:CropTop="0.1" crs:CropLeft="0.1" crs:CropBottom="0.9" crs:CropRight="0.9" crs:CropAngle="1.38""#,
+            r#"crs:CropTop="0.1" crs:CropLeft="0.1" crs:CropBottom="0.9" crs:CropRight="0.9" crs:CropAngle="NaN""#,
+        ] {
+            let r = report(&format!(r#"crs:HasCrop="True" {bad}"#));
+            assert_eq!((r.crop, r.ignored, r.applied), (None, all(), 0), "{bad}");
+        }
+        let r = report(r#"crs:HasCrop="True" crs:CropAngle="-2.5""#);
+        assert_eq!(r.ignored, vec!["CropAngle".to_string()], "only the keys the file has");
+    }
+
+    /// Corners map as `photocraft-raw`'s orientation maps pixels (`develop::source_xy`).
+    #[test]
+    fn crops_follow_the_orientation() {
+        let c = Crop { top: 0.1, left: 0.2, bottom: 0.6, right: 0.5 };
+        let want = [
+            (1, Crop { top: 0.1, left: 0.2, bottom: 0.6, right: 0.5 }),
+            (2, Crop { top: 0.1, left: 0.5, bottom: 0.6, right: 0.8 }),
+            (3, Crop { top: 0.4, left: 0.5, bottom: 0.9, right: 0.8 }),
+            (4, Crop { top: 0.4, left: 0.2, bottom: 0.9, right: 0.5 }),
+            (5, Crop { top: 0.2, left: 0.1, bottom: 0.5, right: 0.6 }),
+            (6, Crop { top: 0.2, left: 0.4, bottom: 0.5, right: 0.9 }),
+            (7, Crop { top: 0.5, left: 0.4, bottom: 0.8, right: 0.9 }),
+            (8, Crop { top: 0.5, left: 0.1, bottom: 0.8, right: 0.6 }),
+            (0, Crop { top: 0.1, left: 0.2, bottom: 0.6, right: 0.5 }),
+        ];
+        for (o, w) in want {
+            let got = c.oriented(o);
+            let close = [got.top - w.top, got.left - w.left, got.bottom - w.bottom, got.right - w.right].iter().all(|d| d.abs() < 1e-6);
+            assert!(close, "orientation {o}: {got:?}");
+        }
+        assert_eq!(c.pixels(10, 20), Some((2, 2, 5, 12)));
+        assert_eq!(Crop { top: 0.5, left: 0.5, bottom: 0.5001, right: 0.5001 }.pixels(10, 10), Some((5, 5, 6, 6)), "at least a pixel");
+        assert_eq!(Crop { top: 0.999, left: 0.999, bottom: 1.0, right: 1.0 }.pixels(10, 10), Some((9, 9, 10, 10)), "inside the frame");
+        assert_eq!(c.pixels(0, 10), None);
+    }
+
+    #[test]
+    fn save_with_crop_round_trips() {
+        let p = CameraRaw { contrast: 20.0, ..CameraRaw::default() };
+        let crop = Crop { top: 0.125, left: 0.25, bottom: 0.875, right: 0.5 };
+        let text = save_with_crop(&p, Some(crop));
+        assert!(is_photocraft_xmp(text.as_bytes()));
+        let mut back = CameraRaw::default();
+        let r = load(&mut back, text.as_bytes()).unwrap();
+        assert_eq!((back, r.crop), (p.clone(), Some(crop)));
+        assert!(r.ignored.is_empty(), "{:?}", r.ignored);
+        assert_eq!(load(&mut CameraRaw::default(), save(&p).as_bytes()).unwrap().crop, None);
     }
 }

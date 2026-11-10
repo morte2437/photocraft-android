@@ -497,22 +497,35 @@ pub fn predict(buf: &mut [u8], layout: &PlaneLayout) -> Result<()> {
                 }
             }
             16 => {
-                for i in (1..w).rev() {
-                    let a = u16::from_be_bytes([row[2 * i], row[2 * i + 1]]);
-                    let b = u16::from_be_bytes([row[2 * i - 2], row[2 * i - 1]]);
-                    row[2 * i..2 * i + 2].copy_from_slice(&a.wrapping_sub(b).to_be_bytes());
+                // One forward pass: the previous *original* sample stays in a
+                // register, so nothing is re-read after being overwritten.
+                let mut prev = 0u16;
+                for s in row.as_chunks_mut::<2>().0 {
+                    let cur = u16::from_be_bytes(*s);
+                    *s = cur.wrapping_sub(prev).to_be_bytes();
+                    prev = cur;
                 }
             }
             32 => {
                 scratch.clear();
                 scratch.resize(rb, 0);
-                for i in 0..w {
-                    for k in 0..4 {
-                        scratch[k * w + i] = row[4 * i + k];
-                    }
+                // Split into four byte planes (MSB first) and delta the whole
+                // plane-major row. Plane k's first delta uses the last byte of
+                // plane k - 1, so seed each plane's "previous" with it.
+                let mut prev = [0u8; 4];
+                if let Some(l) = row.as_chunks::<4>().0.last() {
+                    prev = [0, l[0], l[1], l[2]];
                 }
-                for i in (1..rb).rev() {
-                    scratch[i] = scratch[i].wrapping_sub(scratch[i - 1]);
+                let (p0, rest) = scratch.split_at_mut(w);
+                let (p1, rest) = rest.split_at_mut(w);
+                let (p2, p3) = rest.split_at_mut(w);
+                let planes = p0.iter_mut().zip(p1.iter_mut()).zip(p2.iter_mut().zip(p3.iter_mut()));
+                for (s, ((o0, o1), (o2, o3))) in row.as_chunks::<4>().0.iter().zip(planes) {
+                    *o0 = s[0].wrapping_sub(prev[0]);
+                    *o1 = s[1].wrapping_sub(prev[1]);
+                    *o2 = s[2].wrapping_sub(prev[2]);
+                    *o3 = s[3].wrapping_sub(prev[3]);
+                    prev = [s[0], s[1], s[2], s[3]];
                 }
                 row.copy_from_slice(&scratch);
             }
@@ -538,22 +551,33 @@ pub fn unpredict(buf: &mut [u8], layout: &PlaneLayout) -> Result<()> {
                 }
             }
             16 => {
-                for i in 1..w {
-                    let a = u16::from_be_bytes([row[2 * i], row[2 * i + 1]]);
-                    let b = u16::from_be_bytes([row[2 * i - 2], row[2 * i - 1]]);
-                    row[2 * i..2 * i + 2].copy_from_slice(&a.wrapping_add(b).to_be_bytes());
+                // Running sum carried in a register; one pass over the row.
+                let mut acc = 0u16;
+                for s in row.as_chunks_mut::<2>().0 {
+                    acc = acc.wrapping_add(u16::from_be_bytes(*s));
+                    *s = acc.to_be_bytes();
                 }
             }
             32 => {
-                for i in 1..rb {
-                    row[i] = row[i].wrapping_add(row[i - 1]);
-                }
                 scratch.clear();
                 scratch.extend_from_slice(row);
-                for i in 0..w {
-                    for k in 0..4 {
-                        row[4 * i + k] = scratch[k * w + i];
-                    }
+                // The byte-wise running sum runs across the four planes, so
+                // plane k starts at the wrapping total of planes 0..k.
+                let (p0, rest) = scratch.split_at(w);
+                let (p1, rest) = rest.split_at(w);
+                let (p2, p3) = rest.split_at(w);
+                let sum = |p: &[u8]| p.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+                let b1 = sum(p0);
+                let b2 = b1.wrapping_add(sum(p1));
+                let b3 = b2.wrapping_add(sum(p2));
+                let mut acc = [0u8, b1, b2, b3];
+                let planes = p0.iter().zip(p1).zip(p2.iter().zip(p3));
+                for (o, ((&s0, &s1), (&s2, &s3))) in row.as_chunks_mut::<4>().0.iter_mut().zip(planes) {
+                    acc[0] = acc[0].wrapping_add(s0);
+                    acc[1] = acc[1].wrapping_add(s1);
+                    acc[2] = acc[2].wrapping_add(s2);
+                    acc[3] = acc[3].wrapping_add(s3);
+                    *o = acc;
                 }
             }
             d => return Err(PsdError::Unsupported(format!("prediction for depth {d}"))),

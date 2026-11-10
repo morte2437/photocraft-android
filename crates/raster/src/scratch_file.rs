@@ -21,7 +21,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 const ALIGN: u64 = 4096;
@@ -48,6 +48,7 @@ pub(crate) struct Allocator {
 
 impl Allocator {
     /// Bytes currently allocated (end of file minus free space).
+    #[cfg(test)]
     pub fn used(&self) -> u64 {
         self.end - self.by_offset.values().sum::<u64>()
     }
@@ -108,6 +109,9 @@ pub(crate) struct ScratchFile {
     #[cfg(not(windows))]
     linked: bool,
     allocator: Mutex<Allocator>,
+    /// What [`ScratchFile::used`] reads. No lock: `free` truncates the file under the allocator lock,
+    /// and a dead folder would block that, so a status read must not wait for it.
+    used: AtomicU64,
 }
 
 impl std::fmt::Debug for ScratchFile {
@@ -129,6 +133,7 @@ impl ScratchFile {
             #[cfg(not(windows))]
             linked,
             allocator: Mutex::new(Allocator::default()),
+            used: AtomicU64::new(0),
         })
     }
 
@@ -145,6 +150,7 @@ impl ScratchFile {
     pub fn write(&self, data: &[u8]) -> std::io::Result<Extent> {
         let len = u32::try_from(data.len()).map_err(|_| std::io::Error::other("block larger than 4 GiB"))?;
         let mut extent = self.lock().alloc(len);
+        self.used.fetch_add(extent.alloc, Ordering::Relaxed);
         if let Err(e) = write_all_at(&self.main, data, extent.offset) {
             self.free(extent);
             return Err(e);
@@ -164,6 +170,7 @@ impl ScratchFile {
     }
 
     pub fn free(&self, extent: Extent) {
+        self.used.fetch_sub(extent.alloc, Ordering::Relaxed);
         let mut allocator = self.lock();
         allocator.free(extent);
         if allocator.end == 0 {
@@ -175,7 +182,7 @@ impl ScratchFile {
     }
 
     pub fn used(&self) -> u64 {
-        self.lock().used()
+        self.used.load(Ordering::Relaxed)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Allocator> {
@@ -481,6 +488,23 @@ mod tests {
         a.free(big);
         assert_eq!(a.alloc(10).offset, 0);
         assert_eq!(a.alloc(10).offset, 4096, "remainder of the split hole is used next");
+    }
+
+    #[test]
+    fn used_follows_writes_and_frees() {
+        let dir = std::env::temp_dir().join(format!("pc-scratch-used-{}", std::process::id()));
+        let scratch = ScratchFile::create(&dir).unwrap();
+        assert_eq!(scratch.used(), 0);
+        let a = scratch.write(b"one").unwrap();
+        assert_eq!(scratch.used(), a.alloc);
+        let b = scratch.write(&[1u8; 9000]).unwrap();
+        assert_eq!(scratch.used(), a.alloc + b.alloc);
+        scratch.free(a);
+        assert_eq!(scratch.used(), b.alloc);
+        scratch.free(b);
+        assert_eq!(scratch.used(), 0);
+        drop(scratch);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

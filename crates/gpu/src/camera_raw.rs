@@ -75,7 +75,7 @@ impl CameraRawDevelop {
     pub fn new(device: &wgpu::Device) -> Result<Self, Unsupported> {
         match crate::first_error(device, || Self::build(device)) {
             (dev, None) => Ok(dev),
-            (_, Some(e)) => Err(Unsupported(format!("couldn't build the Camera Raw pipeline: {e}"))),
+            (_, Some(e)) => Err(Unsupported(format!("couldn't build the RAW Develop pipeline: {e}"))),
         }
     }
 
@@ -246,7 +246,7 @@ impl CameraRawDevelop {
             Some(e) => {
                 // A half-done upload must not be taken for the cached source next time.
                 self.source = None;
-                Err(Unsupported(format!("GPU Camera Raw develop failed: {e}")))
+                Err(Unsupported(format!("GPU RAW Develop failed: {e}")))
             }
             None => result,
         }
@@ -270,7 +270,7 @@ impl CameraRawDevelop {
         let bytes = u64::from(row) * u64::from(h);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pc_camera_raw") });
         self.encode(device, queue, &mut encoder, source, key, size, stages)?;
-        let Some(target) = self.target.as_ref().map(|t| &t.texture) else { return Err(Unsupported("no Camera Raw target".into())) };
+        let Some(target) = self.target.as_ref().map(|t| &t.texture) else { return Err(Unsupported("no RAW Develop target".into())) };
         let buffer = match self.readback.take() {
             Some(b) if b.size() == bytes => b,
             _ => device.create_buffer(&wgpu::BufferDescriptor {
@@ -316,10 +316,10 @@ impl CameraRawDevelop {
 fn check_size(device: &wgpu::Device, source: &[[f32; 4]], [w, h]: [u32; 2]) -> Result<(), Unsupported> {
     let max = device.limits().max_texture_dimension_2d;
     if w == 0 || h == 0 || w > max || h > max {
-        return Err(Unsupported(format!("a {w}×{h} Camera Raw preview doesn't fit the GPU's {max} px textures")));
+        return Err(Unsupported(format!("a {w}×{h} RAW Develop preview doesn't fit the GPU's {max} px textures")));
     }
     if source.len() as u64 != u64::from(w) * u64::from(h) {
-        return Err(Unsupported(format!("{} Camera Raw preview pixels for {w}×{h}", source.len())));
+        return Err(Unsupported(format!("{} RAW Develop preview pixels for {w}×{h}", source.len())));
     }
     Ok(())
 }

@@ -424,6 +424,8 @@ impl Headless {
                 if let Some(st) = this.session.active_mut() {
                     st.saved_to(target.to_string_lossy().into_owned());
                 }
+                // History Options › Automatically Create New Snapshot When Saving (#2966).
+                photocraft_engine::history_options_cmds::snapshot_on_save(&mut this.session);
                 Ok(())
             })?;
         }
@@ -659,7 +661,7 @@ mod waited_error_tests {
     fn waited_job_keeps_typed_failure() {
         let mut headless = Headless::trusted_local();
         let id = JobId(123);
-        let error = photocraft_engine::EngineError::PsdHardBudget { name: "large.psd".into(), required: 9000, limit: 4000 };
+        let error = photocraft_engine::EngineError::PsdHardBudget { name: "large.psd".into(), required: 9000, limit: 4000, free_memory: None };
         headless.waited.insert(
             id,
             Some(JobEvent {

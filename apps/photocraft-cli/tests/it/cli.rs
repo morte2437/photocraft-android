@@ -867,6 +867,24 @@ fn dds_converts_both_ways_with_the_compression_asked_for() {
     }
 }
 
+/// #8064: `--no-maximize-compatibility` writes a layered PSD/PSB with Photoshop's placeholder
+/// instead of the merged image, flagged in resource 1057; without it, the real image.
+#[test]
+fn no_maximize_compatibility_writes_the_psd_placeholder() {
+    let d = tmp("maximize-compat");
+    let a = d.join("a.png");
+    write_png(&a, 32, 16, 3);
+    for (args, ext, real) in
+        [(&[][..], "psd", true), (&["--no-maximize-compatibility"][..], "psd", false), (&["--no-maximize-compatibility"][..], "psb", false)]
+    {
+        let out = d.join(format!("a.{ext}"));
+        ok(bin().arg("run").arg(&a).args(["--cmd", "layer.new.layer"]).arg("--out").arg(&out).args(args));
+        let psd = photocraft_psd::PsdFile::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(psd.has_real_merged_data(), Some(real), "{args:?} {ext}");
+    }
+    std::fs::remove_dir_all(d).unwrap();
+}
+
 /// `--tga-bits` picks a TGA's bits per pixel (byte 16 of its header); anything but 24 or 32 is a
 /// usage error and nothing is written.
 #[test]
@@ -959,6 +977,88 @@ fn jpeg_format_chooses_the_scans() {
         assert_eq!(o.status.code(), Some(2), "--jpeg-format {bad}");
         assert!(err.contains("--jpeg-format") && err.contains("expected baseline, optimized or progressive"), "--jpeg-format {bad}: {err}");
         assert!(!out.exists(), "--jpeg-format {bad} wrote a file");
+    }
+}
+
+/// #9466: `--metadata none` leaves the document's XMP packet and free-form text out of a flat
+/// export from `convert`, `run --out` and `batch`, as Export As's Metadata: None does, and changes
+/// nothing else (pixels, ICC profile, resolution). The default, and `all`, keep them as before (the
+/// text where the format holds it, as PNG does), and a PSD or `.pcraft` keeps the XMP either way.
+/// A value it doesn't name is a usage error and nothing is written.
+#[test]
+fn metadata_none_leaves_out_the_document_xmp() {
+    const XMP: &str = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+<rdf:Description rdf:about=\"\" xmlns:photoshop=\"http://ns.adobe.com/photoshop/1.0/\">\
+<photoshop:DocumentAncestors><rdf:Bag><rdf:li>xmp.did:11111111-2222-3333-4444-555555555555</rdf:li></rdf:Bag></photoshop:DocumentAncestors>\
+</rdf:Description></rdf:RDF></x:xmpmeta>";
+    let d = tmp("metadata");
+    let input = d.join("in");
+    std::fs::create_dir_all(&input).unwrap();
+    let a = input.join("a.png");
+    let data: Vec<u8> = (0..8 * 6 * 4).map(|i| (i as u8).wrapping_mul(7).wrapping_add(3)).collect();
+    let mut img = photocraft_codecs::Image::from_u8(8, 6, photocraft_codecs::ChannelLayout::Rgba, data).unwrap();
+    img.meta.xmp = Some(XMP.into());
+    img.meta.dpi = Some((300.0, 300.0));
+    img.meta.text = vec![("Comment".into(), "free-form-note".into())];
+    // Display P3 rather than sRGB, so no export can pass for keeping it by writing its default.
+    let p3 = photocraft_cms::Builtin::DisplayP3.profile().to_bytes().to_vec();
+    img.icc = Some(p3.clone());
+    std::fs::write(&a, photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()).unwrap()).unwrap();
+    let ancestors = |p: &Path| String::from_utf8_lossy(&std::fs::read(p).unwrap()).contains("DocumentAncestors");
+    let decoded = |p: &Path| photocraft_codecs::decode(&std::fs::read(p).unwrap()).unwrap();
+    let note = |p: &Path| decoded(p).meta.text.iter().any(|(_, v)| v == "free-form-note");
+    assert!(ancestors(&a) && note(&a), "the input carries the packet and the text");
+    let invert = r#"[{"command":"image.adjustments.invert"}]"#;
+    for ext in ["png", "webp", "jpg", "tif"] {
+        let mut converted_files = Vec::new();
+        for flag in [None, Some("all"), Some("none")] {
+            let extra: Vec<&str> = flag.map(|f| vec!["--metadata", f]).unwrap_or_default();
+            let name = format!("{ext}-{}", flag.unwrap_or("default"));
+            let converted = d.join(format!("convert-{name}.{ext}"));
+            ok(bin().arg("convert").arg(&a).arg(&converted).args(&extra));
+            let ran = d.join(format!("run-{name}.{ext}"));
+            ok(bin().arg("run").arg(&a).arg("--out").arg(&ran).args(&extra));
+            let o = batch_with(&d, &input, &format!("batch-{name}"), invert, &[&["--format", ext][..], &extra[..]].concat());
+            assert!(o.status.success(), "batch {name}: {}", String::from_utf8_lossy(&o.stderr));
+            let batched = d.join(format!("batch-{name}")).join(format!("a.{ext}"));
+            for out in [&converted, &ran, &batched] {
+                assert_eq!(ancestors(out), flag != Some("none"), "{name}: {}", out.display());
+                // PNG holds free-form text; JPEG, WebP and TIFF (but for its named tags) don't.
+                assert_eq!(note(out), ext == "png" && flag != Some("none"), "{name} text: {}", out.display());
+            }
+            converted_files.push(converted);
+        }
+        // Only the XMP and text go: the pixels, profile and resolution are the default export's.
+        let (default, none) = (decoded(&converted_files[0]), decoded(&converted_files[2]));
+        assert_eq!(none.data(), default.data(), "{ext}: pixels");
+        assert_eq!(default.icc.as_deref(), Some(&p3[..]), "{ext}: the default export keeps the input's Display P3 profile");
+        assert_eq!(none.icc, default.icc, "{ext}: ICC profile");
+        assert_eq!(none.meta.dpi, default.meta.dpi, "{ext}: resolution");
+        assert!(none.meta.dpi.is_some_and(|(x, y)| (x - 300.0).abs() < 0.5 && (y - 300.0).abs() < 0.5), "{ext}: {:?}", none.meta.dpi);
+    }
+    // A layered save keeps the document's XMP whatever the option.
+    for ext in ["psd", "pcraft"] {
+        let out = d.join(format!("layered.{ext}"));
+        ok(bin().arg("convert").arg(&a).arg(&out).args(["--metadata", "none"]));
+        let back = d.join(format!("layered-{ext}.png"));
+        ok(bin().arg("convert").arg(&out).arg(&back));
+        assert!(ancestors(&back), "{ext} kept the packet");
+    }
+    for bad in ["None", "exif", "0", ""] {
+        let out = d.join("bad.png");
+        let (mut convert, mut run) = (bin(), bin());
+        convert.arg("convert").arg(&a).arg(&out).args(["--metadata", bad]);
+        run.arg("run").arg(&a).arg("--out").arg(&out).args(["--metadata", bad]);
+        for cmd in [&mut convert, &mut run] {
+            let o = cmd.output().unwrap();
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert_eq!(o.status.code(), Some(2), "--metadata {bad}: {err}");
+            assert!(err.contains("--metadata") && err.contains("expected none or all"), "--metadata {bad}: {err}");
+            assert!(!out.exists(), "--metadata {bad} wrote a file");
+        }
+        let o = batch_with(&d, &input, "bad-batch", invert, &["--metadata", bad]);
+        assert_eq!(o.status.code(), Some(2), "batch --metadata {bad}");
+        assert!(!d.join("bad-batch").exists(), "batch --metadata {bad} wrote a folder");
     }
 }
 

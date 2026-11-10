@@ -11,10 +11,12 @@ pub mod headroom;
 mod interrupt;
 pub use interrupt::{Cancelled, Interrupt};
 pub mod scratch;
+mod shift;
+pub use shift::TranslateSteps;
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Bound, Deref, DerefMut};
 use std::sync::{Arc, RwLockReadGuard, RwLockWriteGuard};
 
 use photocraft_color::{ColorMode, PixelFormat, SampleType, read_sample, read_samples, write_sample};
@@ -272,6 +274,20 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
 fn last_difference(a: &[u8], b: &[u8]) -> Option<usize> {
     let (k, (x, y)) = a.chunks(DIFF_BLOCK).zip(b.chunks(DIFF_BLOCK)).enumerate().rfind(|(_, (x, y))| x != y)?;
     x.iter().zip(y).rposition(|(p, q)| p != q).map(|i| k * DIFF_BLOCK + i)
+}
+
+/// Where [`Surface::prune_batch`] resumes: after the last tile it visited.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PruneCursor {
+    after: Option<TileCoord>,
+    done: bool,
+}
+
+impl PruneCursor {
+    /// True once every tile has been visited.
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -776,6 +792,43 @@ impl Surface {
         self.tiles.retain(|_, t| t.bytes().chunks_exact(bpp).any(|px| px != dp));
     }
 
+    /// A [`PruneCursor`] for [`Surface::prune_batch`], which drops the same tiles as [`Surface::prune`]
+    /// a batch at a time (for a caller that must not block: the web build has no threads).
+    pub fn prune_cursor(&self) -> PruneCursor {
+        PruneCursor::default()
+    }
+
+    /// Drops the tiles that are entirely the default pixel, visiting at most `max` tiles in
+    /// coordinate order and resuming after them on the next call; returns true when every tile
+    /// has been visited (and so [`Surface::prune`] has nothing left to drop). A `max` of zero
+    /// visits one tile. The scan reads the live tile map from the cursor on: a tile inserted at or
+    /// before the last visited coordinate is not visited, one inserted after it is (and dropped
+    /// when it holds only the default pixel, which reads the same as an absent tile).
+    pub fn prune_batch(&mut self, cursor: &mut PruneCursor, max: usize) -> bool {
+        if cursor.done {
+            return true;
+        }
+        let dp = self.default_pixel.as_ref();
+        let bpp = dp.len();
+        let max = max.max(1);
+        let keys: Vec<TileCoord> = match cursor.after {
+            None => self.tiles.keys().take(max).copied().collect(),
+            Some(after) => self.tiles.range((Bound::Excluded(after), Bound::Unbounded)).take(max).map(|(c, _)| *c).collect(),
+        };
+        for c in &keys {
+            if self.tiles.get(c).is_some_and(|t| !t.bytes().chunks_exact(bpp).any(|px| px != dp)) {
+                self.tiles.remove(c);
+            }
+        }
+        let Some(last) = keys.last().copied() else {
+            cursor.done = true;
+            return true;
+        };
+        cursor.after = Some(last);
+        cursor.done = keys.len() < max || self.tiles.range((Bound::Excluded(last), Bound::Unbounded)).next().is_none();
+        cursor.done
+    }
+
     #[inline]
     fn locate(&self, x: i32, y: i32) -> (TileCoord, usize) {
         let c = TileCoord::containing(x, y);
@@ -1262,144 +1315,12 @@ impl Surface {
             out.tiles = sources().map(|(c, t)| (TileCoord::new(c.tx.saturating_add(tx), c.ty.saturating_add(ty)), t.clone())).collect();
             return out;
         }
-        let bpp = self.format.bytes_per_pixel();
-        let moved = content.translate(dx, dy);
-        let targets: std::collections::BTreeSet<TileCoord> = sources().flat_map(|(c, _)| c.rect().translate(dx, dy).intersect(&moved).tiles()).collect();
-        let mut uniform = UniformTiles::default();
+        let mut builder = shift::ShiftBuilder::new(self, dx, dy, content);
         for (_, t) in sources() {
-            uniform.value_of(t, bpp);
+            builder.scan(t);
         }
-        // The fill row: one tile row of the default pixel, so the regions a shift vacates
-        // fill with bulk copies (empty when the default is zero — the tile starts zeroed).
-
-        // One row of the default pixel, so the regions a shift vacates fill with bulk copies.
-        let fill_row: Vec<u8> = if self.default_pixel.iter().any(|&b| b != 0) {
-            let mut row = Vec::with_capacity(TILE_SIZE as usize * bpp);
-            for _ in 0..TILE_SIZE {
-                row.extend_from_slice(&self.default_pixel);
-            }
-            row
-        } else {
-            Vec::new()
-        };
-
-        // One tile row of the default pixel, to compare a finished tile with a row at a time.
-        let default_row = self.default_pixel.repeat(TILE_SIZE.unsigned_abs() as usize);
-        // Target tiles rebuilt from the same source tiles at the same offset are the same tile:
-        // a bundle can point thousands of tile references at one payload, and a move would
-        // otherwise copy it into a separate buffer for each.
-        let built: std::sync::Mutex<std::collections::HashMap<Vec<usize>, Option<Arc<Tile>>>> = Default::default();
-        let build_target = |dc: TileCoord| -> Option<(TileCoord, Arc<Tile>)> {
-            let dr = dc.rect();
-            let sr = dr.translate(dx.saturating_neg(), dy.saturating_neg());
-            // Every pixel of the target comes from a source tile (none from the default pixel).
-            // `sr` must be the exact preimage: an offset of `i32::MIN` saturates its negation.
-            let covered = sr.width() == TILE_SIZE.unsigned_abs()
-                && sr.height() == TILE_SIZE.unsigned_abs()
-                && sr.translate(dx, dy) == dr
-                && content.contains_rect(&sr)
-                && sr.tiles().all(|sc| self.tiles.contains_key(&sc));
-            if covered && let Some(shared) = uniform.window(self, sr) {
-                // A tile of only the default pixel is left out, as `prune` would.
-                let keep = shared.bytes().get(..bpp) != Some(&*self.default_pixel);
-                return keep.then_some((dc, shared));
-            }
-            // The identities of the source tiles under a covered window (the offset is the same
-            // for every target of this call).
-            let memo_key: Option<Vec<usize>> = covered.then(|| sr.tiles().map(|sc| self.tiles.get(&sc).map_or(0, |t| Arc::as_ptr(t) as usize)).collect());
-            if let Some(k) = &memo_key
-                && let Some(hit) = built.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(k)
-            {
-                return hit.clone().map(|t| (dc, t));
-            }
-
-            let mut data = scratch::take_exact((TILE_SIZE * TILE_SIZE) as usize * bpp, 0u8);
-            let (tx0, ty0) = (i64::from(dc.tx) * i64::from(TILE_SIZE), i64::from(dc.ty) * i64::from(TILE_SIZE));
-            let row_len = TILE_SIZE as usize * bpp;
-            // Per stored row: copy the source span that falls inside the content in as few
-            // memcpys as the tile grid allows, and fill the vacated edges from the default
-            // row — no whole-tile pre-fill, which rewrote nearly every byte twice.
-            for local_y in 0..i64::from(TILE_SIZE) {
-                let y = ty0 + local_y;
-                let Some(row) = data.get_mut(local_y as usize * row_len..(local_y as usize + 1) * row_len) else { continue };
-                let in_content_y = y - i64::from(dy) >= i64::from(content.y0) && y - i64::from(dy) < i64::from(content.y1);
-                // The row's target columns whose SOURCE lies inside the content are copied
-                // (the copy loop crosses source tiles as needed); the rest stays default —
-                // exactly the pixels the shift vacated.
-                let cx0 = (i64::from(content.x0) + i64::from(dx)).max(tx0);
-                let cx1 = (i64::from(content.x1) + i64::from(dx)).min(tx0 + i64::from(TILE_SIZE));
-                if !in_content_y || cx1 <= cx0 {
-                    if !fill_row.is_empty() {
-                        row.copy_from_slice(&fill_row);
-                    }
-                    continue;
-                }
-                let left = (cx0.max(tx0) - tx0) as usize * bpp;
-                let copied_end = (cx1.min(tx0 + i64::from(TILE_SIZE)) - tx0) as usize * bpp;
-                if !fill_row.is_empty() {
-                    if left > 0 {
-                        row[..left].copy_from_slice(&fill_row[..left]);
-                    }
-                    if copied_end < row_len {
-                        row[copied_end..].copy_from_slice(&fill_row[copied_end..]);
-                    }
-                }
-                let mut x = cx0.max(tx0);
-                let x_end = cx1.min(tx0 + i64::from(TILE_SIZE));
-                // Rows run over the same one or two source tiles: cache the last lookup.
-                let mut cached: Option<(i64, i64, TileBytes<'_>)> = None;
-                while x < x_end {
-                    // The source document position this target column reads, and the source
-                    // tile it lives in (the shift crosses source tiles as x runs).
-                    let (sx, sy) = (x - i64::from(dx), y - i64::from(dy));
-                    let (tx, ty) = (sx.div_euclid(i64::from(TILE_SIZE)), sy.div_euclid(i64::from(TILE_SIZE)));
-                    // A missing source tile inside the content holds the default pixel, not
-                    // zeros: fill the span from the default row instead of skipping it
-                    // (echelon's white-mask-with-sparse-tiles case).
-                    if !matches!(&cached, Some((ctx, cty, _)) if *ctx == tx && *cty == ty) {
-                        match self.tiles.get(&TileCoord::new(tx as i32, ty as i32)) {
-                            Some(t) => cached = Some((tx, ty, t.bytes())),
-                            None => {
-                                let span_end = ((tx + 1) * i64::from(TILE_SIZE) + i64::from(dx)).min(x_end).max(x + 1);
-                                if !fill_row.is_empty() {
-                                    let at = (x - tx0) as usize * bpp;
-                                    let len = (span_end - x) as usize * bpp;
-                                    if let Some(d) = row.get_mut(at..at + len) {
-                                        d.copy_from_slice(&fill_row[at..at + len]);
-                                    }
-                                }
-                                x = span_end;
-                                continue;
-                            }
-                        }
-                    }
-                    let Some((_, _, st)) = &cached else { break };
-                    let span_end = (((tx + 1) * i64::from(TILE_SIZE) + i64::from(dx)).min(x_end)).max(x + 1);
-                    let span = (span_end - x) as usize * bpp;
-                    let src = ((sy - ty * i64::from(TILE_SIZE)) * row_len as i64 + (sx - tx * i64::from(TILE_SIZE)) * bpp as i64) as usize;
-                    let dst = (x - tx0) as usize * bpp;
-                    if let (Some(d), Some(sr)) = (row.get_mut(dst..dst + span), st.get(src..src + span)) {
-                        d.copy_from_slice(sr);
-                    }
-                    x = span_end;
-                }
-            }
-            // A target that got only default pixels isn't stored, as `prune` would drop it. Checked
-            // after the copy, a row at a time: a tile with content stops at its first such row.
-            let finished = if data.chunks(default_row.len()).any(|row| row != default_row) {
-                Some(Arc::new(Tile::from_vec(data)))
-            } else {
-                scratch::give(data);
-                None
-            };
-            // Workers that missed the memo at the same time each built a copy: all of them take
-            // the one stored first, so the targets share it however many threads raced.
-            let finished = match memo_key {
-                Some(k) => built.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(k).or_insert(finished).clone(),
-                None => finished,
-            };
-            finished.map(|t| (dc, t))
-        };
+        let targets = builder.targets(self);
+        let build_target = |dc: TileCoord| builder.build(self, dc);
         #[cfg(not(target_arch = "wasm32"))]
         {
             use rayon::prelude::*;

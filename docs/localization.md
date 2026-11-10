@@ -27,6 +27,8 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | Nederlands | `nl` | one / other |
 | Magyar | `hu` | one form |
 | Tiếng Việt | `vi` | one form |
+| ไทย | `th` | one form |
+| தமிழ் | `ta` | one / other |
 | Srpski | `sr` | one / few / many (teens use many) |
 | Bosanski | `bs` | one / few / other (teens use other) |
 | हिन्दी | `hi` | one / other |
@@ -34,6 +36,17 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | Suomi | `fi` | one / other (partitive after every count but 1) |
 | Dansk | `da` | one / other |
 | Norsk bokmål | `nb` | one / other |
+| ქართული | `ka` | one form (count-neutral: `შრე: {n}`) |
+| עברית | `he` | one / other |
+| اردو | `ur` | one / other |
+| Română | `ro` | one / few (0, 2–19, 101–119 …) / other (20–100, 120 …) |
+| Azərbaycanca | `az` | one (1) / other (all other integer counts) |
+
+Azerbaijani (`az`, Latin script) is registered with a complete menu catalog. Regional tags
+such as `az-AZ` and `az-Latn-AZ` select it. The catalog includes the existing catalogs'
+dynamic labels, contextual translations and two integer plural forms. Machine-assisted
+drafts have edited core terminology; native-speaker review is pending. See
+[`localization-az.md`](localization-az.md) for terminology, provenance and validation limits.
 
 Languages registered with `complete_menus` cover the current menu labels, `tl!` literals, blend
 mode names, and generated preference labels. A string a catalog lacks shows in English:
@@ -43,6 +56,10 @@ selectable, resolves regional tags such as `vi-VN`, and covers all current stabl
 keys. `complete_menus` remains false while generated/dynamic long-tail labels are still under
 review. This does not include every engine error or status message: those remain English, as do
 automation command IDs and user-provided document, layer and preset names.
+
+UI search and access-key comparisons use locale-aware dotted/dotless I rules for Azerbaijani
+and Turkish. English command aliases remain searchable using English casing. See the
+[Azerbaijani case-conversion audit](localization-az.md#ui-case-conversion-audit-2026-11-06).
 
 ## Switch without restarting
 

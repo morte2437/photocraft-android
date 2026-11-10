@@ -13,12 +13,46 @@ use crate::actions_cmds::{flush_recording, not_playing, pending_steps, resolve};
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
+mod insert_path;
+mod record_again;
+pub use insert_path::selected_path as selected_recording_path;
+pub use record_again::{RecordAgainTarget, target as record_again_target};
+
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
 }
 
 fn always(_: &Session) -> std::result::Result<(), String> {
     Ok(())
+}
+
+/// Flush under the old mode so changing the toggle never retroactively records or loses a stroke.
+fn allow_tool_recording(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "actions.allowToolRecording";
+    not_playing(s, cmd)?;
+    let enabled = match p.get("enabled") {
+        None | Some(Value::Null) => !s.actions.record_tools,
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(_) => return Err(bad(cmd, "`enabled` must be true or false")),
+    };
+    if enabled != s.actions.record_tools {
+        if s.actions.recording.is_some() && s.tool_stroke_job_running() {
+            return Err(bad(cmd, "wait for the current tool stroke before changing recording"));
+        }
+        flush_recording(s)?;
+        s.actions.record_tools = enabled;
+    }
+    Ok(json!({"enabled": enabled}))
+}
+
+/// Insert a menu event with absent settings, reusing the ordinary validated step insertion.
+fn insert_menu_item(s: &mut Session, p: &Value) -> Result<Value> {
+    if p.as_object().is_some_and(|o| o.keys().any(|k| !matches!(k.as_str(), "action" | "at" | "id" | "eventKind"))) {
+        return Err(bad("actions.insertMenuItem", "menu items accept no recorded settings"));
+    }
+    let params = json!({"id":p.get("id"),"eventKind":p.get("eventKind").cloned().unwrap_or(json!("name"))});
+    crate::atn_cmds::menu_item_command(&params)?;
+    s.execute("actions.insert", json!({"action":p.get("action"),"at":p.get("at"),"id":crate::atn_cmds::MENU_ITEM,"params":params}))
 }
 
 fn index(p: &Value, key: &str, cmd: &str) -> Result<Option<usize>> {
@@ -66,16 +100,111 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     if s.actions.recording.is_some_and(|(_, i)| i == idx) {
         flush_recording(s)?;
     }
-    let action = &mut s.actions.list[idx];
-    action.steps.insert(at, (id.clone(), params));
-    action.remap_steps(|i| Some(if i >= at { i + 1 } else { i }));
-    // An inserted Stop has its dialog toggle on, so it shows its message in the app.
-    if id == crate::atn_cmds::STOP_MESSAGE {
-        action.dialogs.insert(at);
+    let is_stop = id == crate::atn_cmds::STOP_MESSAGE;
+    let result = insert_step(s, idx, at, (id, params));
+    // A newly inserted Stop shows its message in the app. Duplicates keep their own flags.
+    if is_stop {
+        s.actions.list[idx].dialogs.insert(at);
     }
+    Ok(result)
+}
+
+/// Insert an already validated step without normalizing a copied step's payload.
+fn insert_step(s: &mut Session, idx: usize, at: usize, step: (String, Value)) -> Value {
+    let action = &mut s.actions.list[idx];
+    let id = step.0.clone();
+    action.steps.insert(at, step);
+    action.remap_steps(|i| Some(if i >= at { i + 1 } else { i }));
     let result = json!({"action": action.name, "step": at, "id": id, "steps": action.steps.len()});
     s.actions.touch();
+    result
+}
+
+/// Duplicate a step or action below its source, preserving settings and per-step flags.
+fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "actions.duplicate";
+    not_playing(s, cmd)?;
+    if let Some(set) = p.get("set") {
+        if p.get("action").is_some() || p.get("step").is_some() {
+            return Err(bad(cmd, "select a set or an action step, not both"));
+        }
+        return duplicate_set(s, set.as_str().ok_or_else(|| bad(cmd, "set must be a name"))?);
+    }
+    let idx = resolve(&s.actions.list, p, cmd)?;
+    if let Some(step) = index(p, "step", cmd)? {
+        let len = s.actions.list[idx].steps.len().saturating_add(pending_steps(s, idx).count());
+        if step >= len {
+            return Err(bad(cmd, "step is out of range"));
+        }
+        if s.actions.recording.is_some_and(|(_, i)| i == idx) {
+            flush_recording(s)?;
+        }
+        let action = &s.actions.list[idx];
+        let copied = action.steps.get(step).cloned().ok_or_else(|| bad(cmd, "step is out of range"))?;
+        let (disabled, dialog) = (action.disabled.contains(&step), action.dialogs.contains(&step));
+        let at = step + 1;
+        let mut result = insert_step(s, idx, at, copied);
+        let action = &mut s.actions.list[idx];
+        if disabled {
+            action.disabled.insert(at);
+        }
+        if dialog {
+            action.dialogs.insert(at);
+        }
+        result["index"] = json!(idx);
+        return Ok(result);
+    }
+    if s.actions.recording.is_some() {
+        return Err(bad(cmd, "stop recording before duplicating an action"));
+    }
+    let mut copied = s.actions.list[idx].clone();
+    let mut names = crate::atn_cmds::UniqueNames::new(s.actions.list.iter().map(|a| a.name.clone()));
+    copied.name = names.claim(&format!("{} copy", copied.name));
+    let at = idx + 1;
+    let result = json!({"action": copied.name, "index": at, "steps": copied.steps.len()});
+    s.actions.list.insert(at, copied);
+    crate::actions_cmds::shift_action_calls(&mut s.actions.list, at, 1);
+    s.actions.touch();
     Ok(result)
+}
+
+/// Copy the named group represented by main, including a session-only empty New Set.
+fn duplicate_set(s: &mut Session, source: &str) -> Result<Value> {
+    let cmd = "actions.duplicate";
+    if s.actions.recording.is_some() {
+        return Err(bad(cmd, "stop recording before duplicating a set"));
+    }
+    let sets = set_names(s);
+    if !sets.iter().any(|name| name == source) {
+        return Err(bad(cmd, "the selected set no longer exists"));
+    }
+    let name = crate::atn_cmds::UniqueNames::new(sets).claim(&format!("{source} copy"));
+    if let Some(first) = s.actions.list.iter().position(|action| action.set.as_deref() == Some(source)) {
+        let mut names = crate::atn_cmds::UniqueNames::new(s.actions.list.iter().map(|action| action.name.clone()));
+        let copies: Vec<_> = s
+            .actions
+            .list
+            .iter()
+            .filter(|action| action.set.as_deref() == Some(source))
+            .cloned()
+            .map(|mut action| {
+                action.name = names.claim(&format!("{} copy", action.name));
+                action.set = Some(name.clone());
+                action
+            })
+            .collect();
+        // Classic groups rows by name even when a set's actions are interleaved.
+        let at = first + s.actions.list[first..].iter().take_while(|action| action.set.as_deref() == Some(source)).count();
+        let count = copies.len();
+        s.actions.list.splice(at..at, copies);
+        crate::actions_cmds::shift_action_calls(&mut s.actions.list, at, count);
+        s.actions.touch();
+        return Ok(json!({"set": name, "index": at, "actions": count}));
+    }
+    let at = s.actions.sets.iter().position(|set| set == source).ok_or_else(|| bad(cmd, "the selected set no longer exists"))? + 1;
+    s.actions.sets.insert(at, name.clone());
+    s.actions.touch();
+    Ok(json!({"set": name, "actions": 0}))
 }
 
 /// The panel's dialog toggle column. With `step`, switch one step's dialog on or off; without
@@ -277,6 +406,56 @@ fn conditional(s: &mut Session, p: &Value) -> Result<Value> {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "actions.insertMenuItem",
+            label: "Insert Menu Item…",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"action":name|index,"id":menu command,"at":index?,"eventKind":"name"|"code"="name"} → {action,step,id,steps}. Records an unambiguous supported menu event without settings. Image Size and mapped filter menu events are supported. Desktop playback opens the existing editor when settings are needed; no-settings items run immediately."##,
+            enabled: always,
+            run: insert_menu_item,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.insertPath",
+            label: "Insert Path",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"action":name|index,"name":"work"|"layer"|saved path name,"at":index?} → {action,step,id,steps}. Snapshot exactly the selected path as a path.set work-path step, preserving cubic handles and path options. No fallback from a missing Work Path to a layer path. The measured Work Path ATN descriptor supports absolute coordinates, cubic handles, even-odd subpaths and Add/Subtract/XOR. Paths outside that measured form still play natively and are reported as unsupported by ATN export."##,
+            enabled: always,
+            run: insert_path::run,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.allowToolRecording",
+            label: "Allow Tool Recording",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"enabled":bool?=toggle} → {enabled:bool}. Opt in to recording painting-tool strokes (off initially). Existing pending steps are committed under the previous mode. Painting, history and the journal are unchanged. actions.list reports toolRecording."##,
+            enabled: always,
+            run: allow_tool_recording,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.recordAgain",
+            label: "Record Again",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"action":name|index,"step":index,"params":{new settings},"revision":u64?} → {action,step,id,result}. Replays the selected command and stores its new settings only after success, preserving its enabled/dialog flags. The panel opens the command's editor at the recorded settings. Stop recording or playback first; revision optionally rejects stale library state."##,
+            enabled: always,
+            run: record_again::run,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.duplicate",
+            label: "Duplicate Action",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"action":name|index,"step":index?} or {"set":name} → {action?,index?,step?,steps?,set?,actions?}. Copy an action, step or named set below the source. Copies retain settings and flags, and leave shortcuts with the originals."##,
+            enabled: always,
+            run: duplicate,
+            journal: false,
+        },
         CommandSpec {
             id: "actions.insert",
             label: "Insert Step",

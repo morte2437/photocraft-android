@@ -202,14 +202,14 @@ fn sidebar_transparent_preset_reaches_classic_canvas_over_existing_art() {
 }
 
 #[test]
-fn gradient_blend_mode_reaches_live_and_classic_drags() {
+fn gradient_blend_mode_reaches_classic_drags_not_the_live_fill_layer() {
     use photocraft_color::BlendMode;
     for mode in [BlendMode::Difference, BlendMode::Multiply, BlendMode::Screen, BlendMode::Exclusion] {
         let mut live = app_with_gradient("linear");
         live.ui.tool_options.gradient_blend_mode = mode;
         drag(&mut live, [20.0, 60.0], [180.0, 60.0]);
         let layer = live.session.active().unwrap().doc.layers.last().unwrap();
-        assert_eq!(layer.blend, mode, "live {mode:?}");
+        assert_eq!(layer.blend, BlendMode::Normal, "the live fill layer is Normal whatever the Classic mode holds ({mode:?})");
 
         let mut classic = app_with_gradient("linear");
         classic.ui.tool_options.gradient_classic = true;
@@ -229,39 +229,6 @@ fn gradient_blend_mode_reaches_live_and_classic_drags() {
             assert!((actual - want).abs() < 0.02, "classic {mode:?}: {px:?}");
         }
     }
-}
-
-#[test]
-fn changing_live_gradient_mode_updates_selected_fill_layer() {
-    use photocraft_color::BlendMode;
-    let mut app = app_with_gradient("linear");
-    drag(&mut app, [20.0, 60.0], [180.0, 60.0]);
-    let before = app.ui.tool_options.clone();
-    app.ui.tool_options.gradient_blend_mode = BlendMode::Difference;
-    options_changed(&mut app, &before);
-    let layer = app.session.active().unwrap().doc.layers.last().unwrap();
-    assert_eq!(layer.blend, BlendMode::Difference);
-}
-
-#[test]
-fn changing_live_gradient_opacity_updates_selected_fill_layer() {
-    let mut app = app_with_gradient("linear");
-    drag(&mut app, [20.0, 60.0], [180.0, 60.0]);
-    let past = app.session.active().unwrap().history.past_len();
-    // A scrub is live on every frame and one undo step.
-    for pct in [70.0, 55.0, 40.0] {
-        app.ui.tool_options.fill_opacity = pct;
-        opacity_changed(&mut app, Some(7));
-    }
-    opacity_changed(&mut app, None);
-    let st = app.session.active().unwrap();
-    assert!((st.doc.layers.last().unwrap().opacity - 0.4).abs() < 1e-6);
-    assert_eq!(st.history.past_len(), past + 1, "one undo step, none for an unchanged value");
-    // Classic mode paints pixels: the options bar leaves the layer alone.
-    app.ui.tool_options.gradient_classic = true;
-    app.ui.tool_options.fill_opacity = 80.0;
-    opacity_changed(&mut app, None);
-    assert!((app.session.active().unwrap().doc.layers.last().unwrap().opacity - 0.4).abs() < 1e-6);
 }
 
 #[test]

@@ -1,5 +1,117 @@
 use super::*;
 
+/// The straightforward index-based versions, kept as the oracle for the
+/// register-carried rewrites in [`predict`] and [`unpredict`].
+mod reference {
+    use super::super::*;
+
+    pub fn predict(buf: &mut [u8], layout: &PlaneLayout) {
+        let rb = layout.row_bytes();
+        let w = layout.width;
+        let mut scratch = Vec::new();
+        for row in buf.chunks_exact_mut(rb) {
+            match layout.depth {
+                8 => {
+                    for i in (1..row.len()).rev() {
+                        row[i] = row[i].wrapping_sub(row[i - 1]);
+                    }
+                }
+                16 => {
+                    for i in (1..w).rev() {
+                        let a = u16::from_be_bytes([row[2 * i], row[2 * i + 1]]);
+                        let b = u16::from_be_bytes([row[2 * i - 2], row[2 * i - 1]]);
+                        row[2 * i..2 * i + 2].copy_from_slice(&a.wrapping_sub(b).to_be_bytes());
+                    }
+                }
+                _ => {
+                    scratch.clear();
+                    scratch.resize(rb, 0);
+                    for i in 0..w {
+                        for k in 0..4 {
+                            scratch[k * w + i] = row[4 * i + k];
+                        }
+                    }
+                    for i in (1..rb).rev() {
+                        scratch[i] = scratch[i].wrapping_sub(scratch[i - 1]);
+                    }
+                    row.copy_from_slice(&scratch);
+                }
+            }
+        }
+    }
+
+    pub fn unpredict(buf: &mut [u8], layout: &PlaneLayout) {
+        let rb = layout.row_bytes();
+        let w = layout.width;
+        let mut scratch = Vec::new();
+        for row in buf.chunks_exact_mut(rb) {
+            match layout.depth {
+                8 => {
+                    for i in 1..row.len() {
+                        row[i] = row[i].wrapping_add(row[i - 1]);
+                    }
+                }
+                16 => {
+                    for i in 1..w {
+                        let a = u16::from_be_bytes([row[2 * i], row[2 * i + 1]]);
+                        let b = u16::from_be_bytes([row[2 * i - 2], row[2 * i - 1]]);
+                        row[2 * i..2 * i + 2].copy_from_slice(&a.wrapping_add(b).to_be_bytes());
+                    }
+                }
+                _ => {
+                    for i in 1..rb {
+                        row[i] = row[i].wrapping_add(row[i - 1]);
+                    }
+                    scratch.clear();
+                    scratch.extend_from_slice(row);
+                    for i in 0..w {
+                        for k in 0..4 {
+                            row[4 * i + k] = scratch[k * w + i];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn prediction_matches_reference_on_random_planes() {
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for depth in [8u16, 16, 32] {
+        for width in (1..=70).chain([255, 256, 257, 1000, 1023]) {
+            for height in [1usize, 2, 3] {
+                for fill in 0..4 {
+                    let layout = PlaneLayout { planes: 1, width, height, depth, version: Version::Psd };
+                    let len = layout.row_bytes() * height;
+                    let src: Vec<u8> = (0..len)
+                        .map(|_| match fill {
+                            0 => next() as u8,
+                            1 => 0xFF,
+                            2 => [0x00, 0xFF, 0x80, 0x7F][(next() & 3) as usize],
+                            _ => (next() as u8) | 0xF0,
+                        })
+                        .collect();
+                    let (mut want, mut got) = (src.clone(), src.clone());
+                    reference::predict(&mut want, &layout);
+                    predict(&mut got, &layout).unwrap();
+                    assert_eq!(got, want, "predict depth {depth} width {width} height {height} fill {fill}");
+                    let (mut want, mut got) = (src.clone(), src);
+                    reference::unpredict(&mut want, &layout);
+                    unpredict(&mut got, &layout).unwrap();
+                    assert_eq!(got, want, "unpredict depth {depth} width {width} height {height} fill {fill}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn checked_zip_validates_trailer_size_and_padding_budget() {
     let layout = PlaneLayout { planes: 1, width: 3, height: 1, depth: 8, version: Version::Psd };

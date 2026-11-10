@@ -537,6 +537,15 @@ impl LiveDab {
         Ok(self)
     }
 
+    /// Mix the dabs back without the layer's transparency lock, for a tool that erases a locked
+    /// layer anyway (the Background Eraser). Call it before pushing any points: build the dab with
+    /// the stroke's points taken out, then [`Self::push`] them (as `live_background_eraser` does),
+    /// because points pushed before it were already mixed back with the lock.
+    pub(crate) fn unlocked(mut self) -> Self {
+        self.lock = false;
+        self
+    }
+
     /// Everything the stroke has touched so far.
     pub fn bounds(&self) -> Rect {
         self.bounds

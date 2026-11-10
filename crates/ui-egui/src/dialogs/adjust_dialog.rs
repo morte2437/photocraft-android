@@ -17,6 +17,8 @@ use crate::tone::{self, HistSource};
 const PREFIX: &str = "image.adjustments.";
 const CURVE_PICKER: &str = "__curvePicker";
 const CURVE_PICKER_BASE: &str = "__curvePickerBase";
+/// Set once a Photo Filter dialog has drawn: its editor memory was refreshed for this opening.
+const PHOTO_FILTER_FRESH: &str = "__photoFilterFresh";
 
 fn picker(value: Option<&Value>) -> Option<photocraft_engine::adjust_params::CurvesEyedropper> {
     use photocraft_engine::adjust_params::CurvesEyedropper;
@@ -246,7 +248,7 @@ pub fn owns(fields: &Map<String, Value>) -> bool {
 }
 
 /// Root of the dialog editor's view state in egui memory.
-fn dialog_mem(kind: &str) -> egui::Id {
+pub(crate) fn dialog_mem(kind: &str) -> egui::Id {
     egui::Id::unique(("adjust-dialog", kind))
 }
 
@@ -282,8 +284,33 @@ pub fn reset(app: &PhotocraftApp, ctx: &egui::Context, fields: &mut Map<String, 
     }
 }
 
-/// Opens the dialog for `command` with the kind's neutral settings.
+/// Settings an adjustment dialog keeps from its last OK although it opens at its neutral ones:
+/// the reference application's Photo Filter reopens at Warming Filter (85) and 25 % every time,
+/// but with Preserve Luminosity as last confirmed (measured 2026-11-08, #9879). ⌥ still reopens
+/// at all the last settings ([`open_last`]).
+const KEEPS_LAST: &[(&str, &str)] = &[("photoFilter", "preserveLuminosity")];
+
+/// Opens the dialog for `command` at the kind's neutral settings, except the [`KEEPS_LAST`] ones,
+/// which keep their last confirmed value.
 pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
+    let id = open_neutral(app, command)?;
+    let kind = command.strip_prefix(PREFIX).unwrap_or_default();
+    let kept: Vec<(String, Value)> = match app.session.prefs().dialogs.get(command) {
+        Some(last) => KEEPS_LAST
+            .iter()
+            .filter(|(k, _)| *k == kind)
+            .filter_map(|(_, key)| last.get(*key).filter(|v| v.is_boolean()).map(|v| ((*key).to_owned(), v.clone())))
+            .collect(),
+        None => Vec::new(),
+    };
+    if let Some(d) = app.ui.dialog_mut(id) {
+        d.fields.extend(kept);
+    }
+    Some(id)
+}
+
+/// Opens the dialog for `command` with the kind's neutral settings.
+pub fn open_neutral(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     let kind = command.strip_prefix(PREFIX).filter(|k| adjust_editors::has_editor(k))?;
     let spec = photocraft_engine::commands::find(command)?;
     let mode = curve_mode(app, kind);
@@ -307,6 +334,31 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     Some(app.ui.open_dialog(crate::state::DialogKind::Command, fields))
 }
 
+/// Sets an adjustment dialog's parameters to the complete set `recorded` renders in a `mode`
+/// document, so the controls show it and OK keeps it. Laid over the dialog's defaults instead, a
+/// default can be read over a recorded key that means the same setting (a Lab `lightness` over
+/// `points`). Settings the engine can't read are left as they are, for OK to report on.
+pub(crate) fn seed_from_recorded(fields: &mut Map<String, Value>, recorded: &Value, mode: photocraft_doc::ColorMode) {
+    let Some(kind) = fields.get("__adjust").and_then(Value::as_str) else { return };
+    let Ok(adjustment) = photocraft_engine::adjust_params::from_params(kind, recorded, None, mode) else { return };
+    if let Value::Object(mut values) = photocraft_engine::adjust_params::to_params(&adjustment) {
+        // Selective Color's chosen row is editor state, absent from the normalized adjustment.
+        // Keep it so an older single-colour record reopens on the colour the user edited.
+        if kind == "selectiveColor"
+            && let Some(colors) = recorded.get("colors")
+        {
+            values.insert("colors".into(), colors.clone());
+        }
+        // The curves already hold Curves' Smooth passes: OK must overwrite a stored count, or
+        // each render would apply them again.
+        if recorded.get("smooth").is_some() {
+            values.insert("smooth".into(), json!(0));
+        }
+        fields.retain(|k, _| k.starts_with("__") || k == "target");
+        fields.extend(values);
+    }
+}
+
 /// Whether the dialog's captured target is a set of several Lab components, whose Levels and
 /// Curves settings are kept as a separate combined record.
 fn combined_lab_target(fields: &Map<String, Value>) -> bool {
@@ -317,7 +369,7 @@ fn combined_lab_target(fields: &Map<String, Value>) -> bool {
 /// adjustment's shortcut, ⌥⌘L / ⌥⌘M, #8900), or at the neutral ones when there are none or they
 /// don't fit the current colour mode.
 pub fn open_last(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
-    let id = open(app, command)?;
+    let id = open_neutral(app, command)?;
     let kind = command.strip_prefix(PREFIX).unwrap_or_default();
     let mode = curve_mode(app, kind);
     let Some(last) = app.session.prefs().dialogs.get(command).cloned() else { return Some(id) };
@@ -345,6 +397,22 @@ pub fn open_last(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         dialog.fields.extend(values);
     }
     Some(id)
+}
+
+/// `params` of the adjustment `command` with the keys the dialog would otherwise fill in wrongly:
+/// a recorded Photo Filter that names only its `filter` gets that preset's `color`, not the
+/// dialog's neutral one. Every recorded value is kept as it was (a round trip through the engine
+/// would rewrite them: float colours as hex, a pencil curve smoothed again). `None` when nothing
+/// needs adding, or for params the engine rejects.
+pub(crate) fn complete_params(app: &PhotocraftApp, command: &str, params: &Value) -> Option<Value> {
+    let kind = command.strip_prefix(PREFIX).filter(|k| *k == "photoFilter")?;
+    // A `null` colour reads as none, as the engine reads it.
+    let recorded = params.as_object().filter(|p| p.contains_key("filter") && p.get("color").is_none_or(Value::is_null))?;
+    let adjustment = photocraft_engine::adjust_params::from_params(kind, params, None, curve_mode(app, kind)).ok()?;
+    let color = photocraft_engine::adjust_params::to_params(&adjustment).get("color").cloned()?;
+    let mut done = recorded.clone();
+    done.insert("color".into(), color);
+    Some(Value::Object(done))
 }
 
 /// Remember an adjustment dialog's settings after a successful OK, for [`open_last`]. Editing a
@@ -405,6 +473,12 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, fields: &mut Map<String,
     let mask = fields.get("target").and_then(Value::as_str) == Some("mask");
     let filter_mask = fields.get("target").and_then(Value::as_str) == Some("filterMask");
     let mode = curve_mode_for_fields(app, &kind, fields);
+    // Each opening starts from the settings it opened at: Photo Filter's Filter / Color choice
+    // follows its colour, whatever a cancelled opening left in the editor memory.
+    if kind == "photoFilter" && !fields.contains_key(PHOTO_FILTER_FRESH) {
+        adjust_editors::forget_photo_filter_mode(ui.ctx(), dialog_mem(&kind));
+        fields.insert(PHOTO_FILTER_FRESH.into(), json!(false));
+    }
     if matches!(kind.as_str(), "levels" | "curves") {
         picker_controls(ui, fields, mode);
         ui.add_space(4.0);
@@ -479,6 +553,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, fields: &mut Map<String,
             fields.insert(CURVE_PICKER_BASE.into(), base);
         }
     }
+    crate::levels_clipping::sync(ui.ctx(), dialog_mem(&kind), fields);
     let mut preview = fields.get("__preview").and_then(Value::as_bool).unwrap_or(true);
     ui.add_space(6.0);
     if crate::widgets::checkbox(ui, &mut preview, tl!("Preview")).changed() {

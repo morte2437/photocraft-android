@@ -112,7 +112,15 @@ fn d_rate() -> f64 {
 }
 
 /// One brush stroke: the tool, its brush options and the points it passed through
-/// (`[x, y]` or `[x, y, pressure 0..1]`, document pixels).
+/// (`[x, y]`, `[x, y, pressure 0..1]` or `[x, y, pressure 0..1, ms]`, document pixels).
+///
+/// A fourth number makes the point *live*: the milliseconds since the previous point, as the
+/// interactive dialog records them. A segment ending on a live point follows the pointer exactly
+/// (Forward Warp and Push Left also show the motion since their last dab, as a provisional dab
+/// taken back before the next point, instead of waiting for the next dab spacing) and the
+/// stationary tools work by elapsed time as well as distance, so the brush keeps working at the
+/// same speed when it moves slowly or the frame rate changes. Points without it (older strokes,
+/// scripts) replay exactly as they always have.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiquifyStroke {
@@ -144,19 +152,27 @@ impl LiquifyStroke {
         LiquifyStroke { tool, size, density: d_density(), pressure: d_pressure(), rate: d_rate(), points: Vec::new(), amount: None }
     }
 
-    /// Validates the stroke (finite numbers, 2 or 3 per point).
+    /// Validates the stroke (finite numbers, 2 to 4 per point).
     pub fn validate(&self) -> Result<(), String> {
         if !(self.size.is_finite() && self.size >= 1.0 && self.size <= 15000.0) {
             return Err(format!("brush size {} out of range 1..15000", self.size));
         }
         for p in &self.points {
-            if !(2..=3).contains(&p.len()) || p.iter().any(|v| !v.is_finite()) {
-                return Err("stroke points are [x, y] or [x, y, pressure]".into());
+            if !(2..=4).contains(&p.len()) || p.iter().any(|v| !v.is_finite()) {
+                return Err("stroke points are [x, y], [x, y, pressure] or [x, y, pressure, ms]".into());
             }
         }
         Ok(())
     }
 }
+
+/// Milliseconds of holding a stationary tool still that one full-strength dab stands for (the
+/// 30 dabs a second the dialog has always used).
+const HELD_DAB_MS: f64 = 1000.0 / 30.0;
+
+/// Most elapsed time one live point counts for: after a stall (a slow frame, the app in the
+/// background) the brush catches up by this much at most instead of lurching.
+pub const MAX_LIVE_MS: f64 = 250.0;
 
 /// The displacement field plus the freeze mask, over `bounds` (document pixels).
 #[derive(Clone, Debug)]
@@ -172,6 +188,21 @@ pub struct LiquifyField {
     pub freeze: Vec<f32>,
     /// Where the brush stroke in progress stands, so dab spacing runs on across its segments.
     cursor: Option<StrokeCursor>,
+    /// The provisional dab a live Forward Warp / Push Left segment ended with, to take back
+    /// before the stroke goes on (see [`Self::stroke_segment_live`]).
+    tail: Option<LiveTail>,
+}
+
+/// What a live segment's closing dab overwrote: the displacements `saved` of the nodes in columns
+/// `i0..=i1`, one row after another from row `j0`, as they were, and the document rectangle the
+/// dab touched.
+#[derive(Clone, Debug)]
+struct LiveTail {
+    i0: usize,
+    j0: usize,
+    i1: usize,
+    saved: Vec<[f32; 2]>,
+    dirty: Rect,
 }
 
 /// Two fields are equal when their displacement and freeze mask are: the stroke cursor is
@@ -230,7 +261,7 @@ impl LiquifyField {
             cell *= 2.0;
             (w, h) = nodes(cell);
         }
-        LiquifyField { bounds, cell, w, h, d: vec![[0.0; 2]; w * h], freeze: vec![0.0; w * h], cursor: None }
+        LiquifyField { bounds, cell, w, h, d: vec![[0.0; 2]; w * h], freeze: vec![0.0; w * h], cursor: None, tail: None }
     }
 
     /// Document position of node (i, j) (node 0 sits on the first pixel centre).
@@ -243,6 +274,27 @@ impl LiquifyField {
     #[inline]
     fn to_grid(&self, x: f64, y: f64) -> (f64, f64) {
         ((x - f64::from(self.bounds.x0) - 0.5) / self.cell, (y - f64::from(self.bounds.y0) - 0.5) / self.cell)
+    }
+
+    /// The field nodes a dab of radius `r` at `c` can touch, as `(i0, j0, i1, j1)` inclusive;
+    /// `None` when it touches none (off the grid, or a NaN centre).
+    fn node_span(&self, c: [f64; 2], r: f64) -> Option<(usize, usize, usize, usize)> {
+        let (gx0, gy0) = self.to_grid(c[0] - r, c[1] - r);
+        let (gx1, gy1) = self.to_grid(c[0] + r, c[1] + r);
+        // Decide the overlap in f64, before any conversion to an index: a far-off centre saturated
+        // `as usize` to `usize::MAX`, which read back as `-1` passed the overlap check. Written so
+        // that NaN, which fails every comparison, touches nothing (`max`/`min` would hide it).
+        let (wmax, hmax) = (self.w as f64 - 1.0, self.h as f64 - 1.0);
+        if !(gx1.ceil() >= 0.0 && gy1.ceil() >= 0.0 && gx0.floor() <= wmax && gy0.floor() <= hmax) {
+            return None;
+        }
+        let (x0, y0) = (gx0.floor().max(0.0), gy0.floor().max(0.0));
+        let (x1, y1) = (gx1.ceil().min(wmax), gy1.ceil().min(hmax));
+        if !(x0 <= x1 && y0 <= y1) {
+            return None;
+        }
+        // Now 0 <= x0 <= x1 <= w - 1 (and likewise in y): whole numbers that convert exactly.
+        Some((x0 as usize, y0 as usize, x1 as usize, y1 as usize))
     }
 
     pub fn is_identity(&self) -> bool {
@@ -274,6 +326,7 @@ impl LiquifyField {
     /// Applies one stroke. Returns the document rectangle whose output changed.
     pub fn apply_stroke(&mut self, s: &LiquifyStroke) -> Rect {
         self.cursor = None;
+        self.tail = None;
         match s.tool {
             LiquifyTool::LassoMask => return self.apply_lasso(s),
             LiquifyTool::ReconstructAll => {
@@ -293,11 +346,18 @@ impl LiquifyField {
         if s.tool.is_global() {
             return self.bounds;
         }
-        let pts: Vec<[f64; 3]> = s.points.iter().filter(|p| p.len() >= 2).map(|p| [p[0], p[1], p.get(2).copied().unwrap_or(1.0)]).collect();
-        let Some(&first) = pts.first() else { return Rect::EMPTY };
+        // Each point with its live time (the fourth number), if it has one.
+        let pts: Vec<([f64; 3], Option<f64>)> =
+            s.points.iter().filter(|p| p.len() >= 2).map(|p| ([p[0], p[1], p.get(2).copied().unwrap_or(1.0)], p.get(3).copied())).collect();
+        let Some(&(first, _)) = pts.first() else { return Rect::EMPTY };
         let mut dirty = self.stroke_begin(s, first);
         for w in pts.windows(2) {
-            dirty = dirty.union(&self.stroke_segment(s, w[0], w[1]));
+            let ((a, _), (b, ms)) = (w[0], w[1]);
+            let d = match ms {
+                Some(ms) => self.stroke_segment_live(s, a, b, ms),
+                None => self.stroke_segment(s, a, b),
+            };
+            dirty = dirty.union(&d);
         }
         dirty
     }
@@ -360,6 +420,7 @@ impl LiquifyField {
     /// callers use this plus [`Self::stroke_segment`] per new point, which is exactly what
     /// [`Self::apply_stroke`] does with the whole point list.
     pub fn stroke_begin(&mut self, s: &LiquifyStroke, p: [f64; 3]) -> Rect {
+        self.tail = None;
         self.cursor = Some(StrokeCursor { end: [p[0], p[1]], last_dab: [p[0], p[1]], carry: 0.0 });
         if s.tool.is_stationary() && !s.tool.is_global() { self.dab(s, [p[0], p[1]], [0.0, 0.0], p[2].clamp(0.0, 1.0), 1.0) } else { Rect::EMPTY }
     }
@@ -370,7 +431,118 @@ impl LiquifyField {
     /// stationary tool held still dabs once at `b`. When `a` is not where the previous segment
     /// ended, the stroke starts afresh at `a`.
     pub fn stroke_segment(&mut self, s: &LiquifyStroke, a: [f64; 3], b: [f64; 3]) -> Rect {
-        self.walk_segment(s, a, b, true)
+        let undone = self.undo_tail();
+        undone.union(&self.walk_segment(s, a, b, true))
+    }
+
+    /// Continues a stroke from `a` to a live point `b` reached `ms` milliseconds after `a` (see
+    /// [`LiquifyStroke`]), which is what the interactive dialog records for every pointer event.
+    ///
+    /// Forward Warp and Push Left walk the segment as [`Self::stroke_segment`] does, so the dabs
+    /// fall every dab spacing of distance travelled however finely the pointer was sampled. Then
+    /// what is left of the motion since the last dab is applied as one shorter, *provisional* dab,
+    /// so the image follows the pointer on every event. That dab is taken back (see
+    /// [`Self::undo_tail`]) before the next segment, so only the regular dabs stay and a slow and
+    /// a fast pointer give the same warp, apart from the final partial dab.
+    ///
+    /// The stationary tools (Twirl, Pucker, Bloat, Reconstruct, Smooth, Freeze, Thaw) apply the
+    /// larger of what the elapsed time is worth ([`HELD_DAB_MS`] per full dab, at most
+    /// [`MAX_LIVE_MS`] per point) and what the distance travelled is worth (as a moving stroke
+    /// always has), spread evenly along the segment in dabs of at most full strength. Held still,
+    /// slow or fast, at any frame rate, the brush works continuously at one speed.
+    pub fn stroke_segment_live(&mut self, s: &LiquifyStroke, a: [f64; 3], b: [f64; 3], ms: f64) -> Rect {
+        self.walk_segment_live(s, a, b, ms, true)
+    }
+
+    /// Takes back the provisional closing dab of the last live segment, if any. Returns the
+    /// document rectangle that changed.
+    fn undo_tail(&mut self) -> Rect {
+        let Some(t) = self.tail.take() else { return Rect::EMPTY };
+        let n = t.i1 - t.i0 + 1;
+        for (row, saved) in t.saved.chunks_exact(n).enumerate() {
+            let at = (t.j0 + row) * self.w + t.i0;
+            self.d[at..at + n].copy_from_slice(saved);
+        }
+        t.dirty
+    }
+
+    /// [`Self::stroke_segment_live`]; `skip` as in [`Self::walk_segment`].
+    fn walk_segment_live(&mut self, s: &LiquifyStroke, a: [f64; 3], b: [f64; 3], ms: f64, skip: bool) -> Rect {
+        let mut dirty = self.undo_tail();
+        if !s.tool.is_stationary() {
+            dirty = dirty.union(&self.walk_segment(s, a, b, skip));
+            // What the dab spacing left over: show it now, and take it back on the next event.
+            if let Some(cur) = self.cursor
+                && cur.end == [b[0], b[1]]
+            {
+                let delta = [b[0] - cur.last_dab[0], b[1] - cur.last_dab[1]];
+                let pressure = b[2].clamp(0.0, 1.0);
+                // A dab with no strength changes nothing, so there is nothing to take back.
+                if (delta[0] != 0.0 || delta[1] != 0.0) && pressure > 0.0 && s.pressure > 0.0 {
+                    let r = (s.size / 2.0).max(0.5);
+                    let span = self.node_span(cur.last_dab, r);
+                    let saved = span.map(|(i0, j0, i1, j1)| {
+                        let mut v = Vec::with_capacity((i1 - i0 + 1) * (j1 - j0 + 1));
+                        for j in j0..=j1 {
+                            v.extend_from_slice(&self.d[j * self.w + i0..=j * self.w + i1]);
+                        }
+                        v
+                    });
+                    let tail = self.dab(s, cur.last_dab, delta, pressure, 1.0);
+                    if let (Some((i0, j0, i1, _)), Some(saved)) = (span, saved) {
+                        self.tail = Some(LiveTail { i0, j0, i1, saved, dirty: tail });
+                    }
+                    dirty = dirty.union(&tail);
+                }
+            }
+            return dirty;
+        }
+        // A live stroke keeps no spacing state for these tools; the cursor only marks continuity.
+        self.cursor = Some(StrokeCursor { end: [b[0], b[1]], last_dab: [b[0], b[1]], carry: 0.0 });
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy);
+        if !len.is_finite() || !b[0].is_finite() || !b[1].is_finite() {
+            self.cursor = None;
+            return dirty;
+        }
+        let (pa, pb) = (a[2].clamp(0.0, 1.0), b[2].clamp(0.0, 1.0));
+        let r = (s.size / 2.0).max(0.5);
+        let spacing = dab_spacing(r);
+        let ms = if ms.is_finite() { ms.clamp(0.0, MAX_LIVE_MS) } else { 0.0 };
+        // The same strength per distance a moving stationary tool has always had: `moving_weight`
+        // per dab spacing.
+        let by_time = ms / HELD_DAB_MS;
+        let by_distance = len / spacing * moving_weight(r);
+        let total = by_time.max(by_distance);
+        if total <= 0.0 {
+            return dirty;
+        }
+        // Enough dabs that none is stronger than a full one or further apart than the spacing.
+        let n = total.ceil().max((len / spacing).ceil()).max(1.0);
+        let weight = total / n;
+        let at = |k: f64| {
+            let t = (k + 1.0) / n;
+            ([a[0] + dx * t, a[1] + dy * t], pa + (pb - pa) * t)
+        };
+        let (mut k0, mut k1) = (0.0f64, n - 1.0);
+        if skip && len > 0.0 {
+            // Only dabs near the part of the segment that can reach a node (#937).
+            match self.reachable_span(a, [dx, dy], len, r) {
+                Some((d0, d1)) => {
+                    k0 = k0.max((d0 / len * n).floor() - 2.0);
+                    k1 = k1.min((d1 / len * n).ceil() + 1.0);
+                }
+                None => return dirty,
+            }
+        }
+        if k0 > k1 {
+            return dirty;
+        }
+        for k in (k0 as u64)..=(k1 as u64) {
+            let (c, p) = at(k as f64);
+            dirty = dirty.union(&self.dab(s, c, [0.0, 0.0], p, weight));
+        }
+        dirty
     }
 
     /// [`Self::stroke_segment`]; `skip` leaves out the dabs that cannot reach a field node (they
@@ -479,16 +651,7 @@ impl LiquifyField {
         if strength <= 0.0 {
             return Rect::EMPTY;
         }
-        let (gx0, gy0) = self.to_grid(c[0] - r, c[1] - r);
-        let (gx1, gy1) = self.to_grid(c[0] + r, c[1] + r);
-        let i0 = gx0.floor().max(0.0) as usize;
-        let j0 = gy0.floor().max(0.0) as usize;
-        let i1 = (gx1.ceil().max(-1.0) as isize).min(self.w as isize - 1);
-        let j1 = (gy1.ceil().max(-1.0) as isize).min(self.h as isize - 1);
-        if i1 < i0 as isize || j1 < j0 as isize {
-            return Rect::EMPTY;
-        }
-        let (i1, j1) = (i1 as usize, j1 as usize);
+        let Some((i0, j0, i1, j1)) = self.node_span(c, r) else { return Rect::EMPTY };
         // Snapshot of the affected nodes plus a margin (sampling reads around them).
         let m = ((delta[0].abs().max(delta[1].abs()) + r * 0.2) / self.cell).ceil() as usize + 2;
         let (si0, sj0) = (i0.saturating_sub(m), j0.saturating_sub(m));

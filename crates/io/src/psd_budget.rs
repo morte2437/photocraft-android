@@ -249,7 +249,7 @@ pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
 pub fn check(file: &PsdFile, limit: u64) -> Result<PsdMemoryEstimate, IoError> {
     let est = estimate(file)?;
     if est.total_bytes > limit {
-        return Err(IoError::PsdImportBudget { required: est.total_bytes, limit });
+        return Err(IoError::PsdImportBudget { required: est.total_bytes, limit, free_memory: None });
     }
     Ok(est)
 }

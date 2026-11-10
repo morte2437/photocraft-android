@@ -1,4 +1,5 @@
 use super::clone::{blend_param, clamp_samples, clone_mapping, clone_result, clone_sample};
+use super::periodic;
 use super::sampling::{SampleLayers, composite_region, sample_all_layers, sample_layers};
 use super::{
     BlendMode, CompleteParams, Document, EngineError, LayerId, PixelFormat, Rect, Region, Result, Session, Stroke, Surface, Value, apply_coverage, bad,
@@ -53,15 +54,30 @@ pub(super) fn healing_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let map = clone_mapping(s, p, &stroke, CMD)?;
     let off = map.offset();
     let dmg = run_stroke(s, "Healing Brush", id, p, |pre, surf, sel, lock| {
+        // Pattern Preview: source and destination repeat across the canvas edges, so a stroke over
+        // a seam heals as one patch and goes on wherever it repeats.
+        let wrap = flag(p, "wrap", false);
         let (bounds, cov) = coverage(CMD, &stroke)?;
         let (g, cov) = pad_coverage(bounds, &cov, 2);
         let fmt = surf.format();
-        let src = clone_sample(pre, id, surf, which, g, &map, false, CMD)?;
+        let src = clone_sample(pre, id, surf, which, g, &map, wrap, CMD)?;
         // The destination the texture is fitted to: the layer itself, or what the user sees when
         // sampling several layers (so healing onto an empty layer matches the composite).
-        let dst = if which == SampleLayers::Current { Region::read(surf, g) } else { composite_region(pre, id, which, g, fmt) };
+        let dst = if wrap {
+            periodic::sample(pre, id, surf, which, g, CMD)?
+        } else if which == SampleLayers::Current {
+            Region::read(surf, g)
+        } else {
+            composite_region(pre, id, which, g, fmt)
+        };
         let mask: Vec<bool> = cov.iter().map(|c| *c > 0.0).collect();
         let healed = heal_region(&fmt, &src, &dst, &mask);
+        if wrap {
+            return periodic::stroke(pre, surf, &stroke, sel, lock, mode, CMD, |_, r| {
+                let part = healed.crop(r);
+                if part.rect == r { Ok(part) } else { Err(bad(CMD, "the healed patch does not cover the stroke")) }
+            });
+        }
         Ok(apply_coverage(surf, g, &cov, stroke.brush.opacity, sel, lock, &healed, mode))
     })?;
     Ok(clone_result(dmg, off, aligned, p, &stroke))

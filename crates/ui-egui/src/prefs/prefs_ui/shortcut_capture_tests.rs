@@ -48,6 +48,18 @@ fn field(h: &Harness<'_, PhotocraftApp>, id: u64, name: &str) -> Value {
     h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.get(name).cloned().unwrap_or(Value::Null)
 }
 
+/// The actual shortcut grid matches Azerbaijani uppercase text and English command aliases.
+#[test]
+fn azerbaijani_shortcuts_search_handles_dotted_i_and_english() {
+    let (mut h, id) = dialog(1.0, "image.imageSize", "ŞƏKİL ÖLÇÜSÜ");
+    h.state_mut().run("prefs.set", json!({"path":"interface.language", "value":"az"})).unwrap();
+    h.run_steps(4);
+    h.get_by_label("   Şəkil ölçüsü…");
+    h.state_mut().ui.dialog_mut(id).unwrap().fields.insert("filter".into(), json!("IMAGE SIZE"));
+    h.run_steps(3);
+    h.get_by_label("   Şəkil ölçüsü…");
+}
+
 #[test]
 fn toolbar_shortcut_can_be_captured_and_restored_on_restart() {
     let (mut h, id) = dialog(1.0, "tools.select.pencil", "Pencil Tool");
@@ -106,7 +118,7 @@ fn toolbar_shortcut_overrides_remove_old_keys_and_skip_removed_group_members() {
     press(&mut app, Key::B, Modifiers::NONE);
     assert_eq!(app.ui.tool, Tool::Brush, "a removed tool cannot return through group memory");
     press(&mut app, Key::B, Modifiers::SHIFT);
-    assert_eq!(app.ui.tool, Tool::MixerBrush, "Shift cycling skips a removed tool");
+    assert_eq!(app.ui.tool, Tool::ColorReplacement, "Shift cycling skips a removed tool");
 
     app.run("edit.keyboardShortcuts", json!({"reset": true})).unwrap();
     app.ui.tool = Tool::Brush;
@@ -114,7 +126,7 @@ fn toolbar_shortcut_overrides_remove_old_keys_and_skip_removed_group_members() {
     assert_eq!(app.ui.tool, Tool::Pencil, "reset restores the default group");
     app.session.edit_prefs(|p| p.tools.use_shift_key_for_tool_switch = false);
     press(&mut app, Key::B, Modifiers::NONE);
-    assert_eq!(app.ui.tool, Tool::MixerBrush, "plain-key cycling still follows the preference");
+    assert_eq!(app.ui.tool, Tool::ColorReplacement, "plain-key cycling still follows the preference");
 }
 
 #[test]

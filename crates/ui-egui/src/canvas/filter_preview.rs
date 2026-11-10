@@ -58,8 +58,10 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
         }
         params = crate::select_mask_view::request_params(&d.fields, params);
     }
+    crate::actions::authorize_panel_preview(app, d.id, &d.fields, &cmd, &params).ok()?;
     let st = app.session.documents().get(idx)?;
-    let k = filter_preview_factor(app, &st.doc, &cmd, &params);
+    // Fade previews at full size: it blends one area, like OK does, and has no proxy (#8230).
+    let k = if cmd == FADE { 1 } else { filter_preview_factor(app, &st.doc, &cmd, &params) };
     let request = crate::filter_dialog::FilterPreviewKey {
         doc: st.doc.id,
         revision: st.revision,
@@ -69,6 +71,7 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
         command: cmd,
         params,
         k,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let key = request.doc.0 ^ (1u64 << 61);
     // Every filter's preview computes off the UI thread in the desktop app: Gaussian Blur at
@@ -111,19 +114,24 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
             let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
             let color = app.session.color.settings.clone();
             let task = request.clone();
+            let fade = fade_job(app, &task);
             if let Err(error) = app.filter_preview_worker.start(request.clone(), ctx.clone(), move |cancel| {
                 let t0 = crate::gpu_canvas::now_ms();
-                let result = crate::filter_dialog::preview_document_for_target(
-                    &doc,
-                    task.active,
-                    &task.command,
-                    &task.params,
-                    task.k,
-                    Some(cancel),
-                    task.target,
-                    &documents,
-                    &color,
-                )
+                let result = match fade {
+                    Some(fade) => fade.and_then(|f| f.render().ok()),
+                    None => crate::filter_dialog::preview_document_for_target(
+                        &doc,
+                        task.active,
+                        &task.command,
+                        &task.params,
+                        task.k,
+                        Some(cancel),
+                        task.target,
+                        &documents,
+                        &color,
+                        Some(task.tool_colors),
+                    ),
+                }
                 .map(|doc| {
                     let buffer = photocraft_compose::flatten(&doc);
                     (std::sync::Arc::new(doc), buffer)
@@ -154,17 +162,21 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
         let doc = app.session.documents().get(idx)?.doc.clone();
         let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
         let t0 = crate::gpu_canvas::now_ms();
-        let computed = crate::filter_dialog::preview_document_for_target(
-            &doc,
-            request.active,
-            &request.command,
-            &request.params,
-            request.k,
-            None,
-            request.target,
-            &documents,
-            &app.session.color.settings,
-        )
+        let computed = match fade_job(app, &request) {
+            Some(fade) => fade.and_then(|f| f.render().ok()),
+            None => crate::filter_dialog::preview_document_for_target(
+                &doc,
+                request.active,
+                &request.command,
+                &request.params,
+                request.k,
+                None,
+                request.target,
+                &documents,
+                &app.session.color.settings,
+                Some(request.tool_colors),
+            ),
+        }
         .map(|doc| {
             let buffer = photocraft_compose::flatten(&doc);
             (std::sync::Arc::new(doc), buffer)
@@ -174,6 +186,15 @@ pub(crate) fn ensure_filter_preview(app: &mut PhotocraftApp, idx: usize, ctx: &e
     let preview = app.filter_preview.as_ref()?;
     let result = preview.result.as_ref()?;
     Some((preview.key.k, key, [result.size.width, result.size.height]))
+}
+
+const FADE: &str = "edit.fade";
+
+/// Edit › Fade blends back towards the pixels before the last step, which only the session's
+/// history holds, so its preview is captured from the session here (cheap: the copy shares its
+/// tiles) and blended where filter previews compute (#8230). `None` for every other command.
+fn fade_job(app: &PhotocraftApp, request: &crate::filter_dialog::FilterPreviewKey) -> Option<Option<photocraft_engine::edit_menu_cmds::FadePreview>> {
+    (request.command == FADE).then(|| photocraft_engine::edit_menu_cmds::fade_preview(&app.session, &request.params).ok())
 }
 
 /// Channel overlays must use the filter's current proxy too, including on the CPU canvas.

@@ -215,6 +215,55 @@ fn background_eraser_options() {
     assert_eq!(alpha(&s, 6, 20), 1.0);
 }
 
+/// #12352: in a CMYK document, Protect Foreground Color and Sampling Background Swatch compare
+/// against the inks the colour was picked as, not what its sRGB stand-in converts back to.
+#[test]
+fn background_eraser_compares_against_picked_cmyk_inks() {
+    const STAND_IN: &str = "#00aeef";
+    const CYAN: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+    let cyan_square = |key: &str| {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 64, "height": 48, "mode": "cmyk", "depth": 8})).unwrap();
+        s.execute("tools.setColors", json!({key: STAND_IN, format!("{key}Cmyk"): CYAN})).unwrap();
+        s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20, "antiAlias": false})).unwrap();
+        s.execute("edit.fill", json!({"color": STAND_IN})).unwrap();
+        s.execute("select.deselect", json!({})).unwrap();
+        assert_eq!(surface(&s).pixel(20, 20)[..4], CYAN, "the square holds the picked inks");
+        s
+    };
+    let stroke = |extra: Value| {
+        let mut p = json!({"points": [[4, 20], [40, 20]], "size": 16, "hardness": 1, "limits": "discontiguous", "tolerance": 1});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    let mut s = cyan_square("foreground");
+    s.execute("paint.backgroundEraser", stroke(json!({"sampling": "continuous", "protectForegroundColor": true}))).unwrap();
+    assert_eq!(alpha(&s, 20, 20), 1.0, "the foreground's inks are protected");
+    assert_eq!(alpha(&s, 6, 20), 0.0, "white erased");
+    let mut s = cyan_square("background");
+    s.execute("paint.backgroundEraser", stroke(json!({"sampling": "backgroundSwatch"}))).unwrap();
+    assert_eq!(alpha(&s, 20, 20), 0.0, "the background's inks are erased fully");
+    assert_eq!(alpha(&s, 6, 20), 1.0, "white kept");
+    // Other modes ignore the picked inks: the stand-in is compared as it always was.
+    for mode in ["rgb", "gray", "lab"] {
+        let run = |cmyk: bool| {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 64, "height": 48, "mode": mode, "depth": 8})).unwrap();
+            s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20, "antiAlias": false})).unwrap();
+            s.execute("edit.fill", json!({"color": STAND_IN})).unwrap();
+            s.execute("select.deselect", json!({})).unwrap();
+            let picks = if cmyk { json!({"foregroundCmyk": CYAN, "backgroundCmyk": CYAN}) } else { json!({}) };
+            let mut colors = json!({"foreground": STAND_IN, "background": STAND_IN});
+            colors.as_object_mut().unwrap().extend(picks.as_object().unwrap().clone());
+            s.execute("tools.setColors", colors).unwrap();
+            s.execute("paint.backgroundEraser", stroke(json!({"sampling": "continuous", "protectForegroundColor": true}))).unwrap();
+            s.execute("paint.backgroundEraser", stroke(json!({"points": [[4, 30], [40, 30]], "sampling": "backgroundSwatch"}))).unwrap();
+            surface(&s).clone()
+        };
+        assert!(run(true) == run(false), "{mode}: a CMYK pick changes nothing");
+    }
+}
+
 #[test]
 fn background_eraser_fails_gracefully() {
     let mut s = session("rgb", 8);
@@ -230,11 +279,11 @@ fn background_eraser_fails_gracefully() {
     ] {
         assert!(s.execute("paint.backgroundEraser", p.clone()).is_err(), "{p}");
     }
-    // A normal layer with locked transparency is refused.
+    // A layer with locked pixels is refused.
     s.execute("layer.new.layer", json!({})).unwrap();
     let id = s.active().unwrap().active_layer.unwrap();
     s.edit("lock", |doc, _| {
-        doc.layer_mut(id).unwrap().locks.transparency = true;
+        doc.layer_mut(id).unwrap().locks.pixels = true;
         Ok(())
     })
     .unwrap();
@@ -319,7 +368,7 @@ fn live_background_eraser_matches_the_commit() {
 fn live_background_eraser_refuses_what_the_command_refuses() {
     let mut s = session("rgb", 8);
     s.execute("layer.new.layer", json!({})).unwrap();
-    s.execute("layer.setProps", json!({"locks": {"transparency": true}})).unwrap();
+    s.execute("layer.setProps", json!({"locks": {"pixels": true}})).unwrap();
     let p = json!({"points": [[20, 20]]});
     assert!(live_background_eraser(&s, &p).is_err());
     assert!(s.execute("paint.backgroundEraser", p).is_err());

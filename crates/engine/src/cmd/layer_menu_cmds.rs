@@ -434,8 +434,8 @@ pub(crate) fn reveal(path: &str, dry_run: bool) -> Result<Value> {
     if dry_run {
         return Ok(json!({"program": program, "args": args}));
     }
-    ensure_folder(program, &args)?;
-    spawn(program, &args)?;
+    ensure_folder(&program, &args)?;
+    spawn(&program, &args)?;
     Ok(json!({"path": path}))
 }
 
@@ -453,8 +453,28 @@ fn ensure_folder(program: &str, args: &[String]) -> Result<()> {
 }
 
 /// The file-manager invocation that selects `path` on this platform.
-pub fn reveal_command(path: &str) -> Result<(&'static str, Vec<String>)> {
-    reveal_command_on(std::env::consts::OS, path)
+pub fn reveal_command(path: &str) -> Result<(String, Vec<String>)> {
+    let (program, args) = reveal_command_on(std::env::consts::OS, path)?;
+    Ok((system_program(program), args))
+}
+
+/// Windows tools run by full path: by bare name, Windows first looks in the app's own folder, so
+/// an `explorer.exe` lying next to a portable PhotoCraft would start instead (#9666).
+#[cfg(windows)]
+fn system_program(program: &str) -> String {
+    windows_root(std::env::var_os("SystemRoot")).join(format!("{program}.exe")).to_string_lossy().into_owned()
+}
+
+/// The Windows folder for the `SystemRoot` value `system_root`: `C:\Windows` when it is unset or
+/// not an absolute path (a relative one would resolve against the working directory).
+#[cfg(windows)]
+pub(crate) fn windows_root(system_root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    system_root.map(std::path::PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+}
+
+#[cfg(not(windows))]
+fn system_program(program: &str) -> String {
+    program.to_string()
 }
 
 /// [`reveal_command`] on the platform `os` (a `std::env::consts::OS` value).

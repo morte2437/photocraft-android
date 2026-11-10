@@ -124,6 +124,8 @@ pub const TEMPORARY_TOOLS: &[(&str, &str, &str)] = &[
 /// legacy function keys F2 Cut, F3 Copy, F4 Paste and Shift+F7 Inverse; Shift+Backspace
 /// (Shift+Delete on a Mac) for Fill; ⌘+ beside ⌘= for Zoom In; and off the Mac, Ctrl+F4 beside
 /// Ctrl+W for Close (Windows' close-document key; macOS keeps Ctrl+F4 for window focus).
+/// Also Alt+Ctrl+0 beside Ctrl+1 for 100% and F9 beside Alt+F9 for Window > Actions (#11396;
+/// measured on Windows, so the Mac gets the usual Cmd mapping of the first).
 pub const ALTERNATE_SHORTCUTS: &[(&str, &str)] = &[
     ("edit.cut", "F2"),
     ("edit.copy", "F3"),
@@ -131,6 +133,8 @@ pub const ALTERNATE_SHORTCUTS: &[(&str, &str)] = &[
     ("edit.fill", "Shift+Backspace"),
     ("select.inverse", "Shift+F7"),
     ("view.zoomIn", "Cmd++"),
+    ("view.actualPixels", "Cmd+Alt+0"),
+    ("window.panel.actions", "F9"),
     #[cfg(not(target_os = "macos"))]
     ("file.close", "Cmd+F4"),
 ];

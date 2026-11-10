@@ -18,7 +18,7 @@
 # (Datoteka, Uređivanje, Slika ...), commands are imperatives (Otvori…, Sačuvaj kao…), tools read
 # "Alatka …" (Alatka četkica, Alatka za pomeranje), presets are "šabloni", patterns "šare" and
 # swatches "uzorci boja". Serbian quotation marks „…“ around names. Product and technology names
-# (PhotoCraft, ArtCraft, Camera Raw, OpenType, Lab ...) stay as they are; RGB/CMYK stay as they
+# (PhotoCraft, ArtCraft, RAW Develop, OpenType, Lab ...) stay as they are; RGB/CMYK stay as they
 # are; the trailing "…" of dialog commands is kept. A count that is not an @plural entry is kept
 # out of noun agreement ("Broj: {n}", "slojeva: {n}") so every number reads correctly.
 
@@ -34,7 +34,7 @@
 
 # Labels added on main after this catalog (depth labels, Wayland drop, profiles, rendering mode)
 
-# Camera Raw scopes and the Patch tool
+# RAW Develop scopes and the Patch tool
 
 # Warp grid presets (#388)
 
@@ -75,11 +75,11 @@
 
 # Gradient Editor window, opened from the options bar's gradient swatch.
 
-# Camera Raw: contextual controls and window title
+# RAW Develop: contextual controls and window title
 
 # Counted status messages and labels (Serbian: one | few | many)
 
-# Dynamic labels (filter and adjustment parameters, Camera Raw, panels, dialogs)
+# Dynamic labels (filter and adjustment parameters, RAW Develop, panels, dialogs)
 
 # Path, channel, layer style, status and System Info labels the Czech catalog added
 
@@ -91,14 +91,14 @@
 # Character, Paragraph and Glyphs panels
 
 
-# Camera Raw labels
+# RAW Develop labels
 
 # Keyboard Shortcuts and Menus editor
 
 # Color Settings dialog
 
 
-# Camera Raw chrome, tone, curve, color mixer, grading, detail and effects
+# RAW Develop chrome, tone, curve, color mixer, grading, detail and effects
 
 # New Document, Home and Image Size
 
@@ -106,7 +106,7 @@
 
 # Contextual labels
 
-# Added on merge with main (spelling, Camera Raw settings files, printing, Object Finder, brush
+# Added on merge with main (spelling, RAW Develop settings files, printing, Object Finder, brush
 # controls, actions, gradient presets, Pen Auto Add/Delete)
 
 # Native Windows printing qualification
@@ -196,6 +196,7 @@
 	Right	Desno
 	Open Recent	Otvori nedavno
 	Clear Recent Files	Obriši spisak nedavnih datoteka
+	Clear Recent File List	Obriši spisak nedavnih datoteka
 	Remove from Recent	Ukloni iz nedavnih
 	Remove {name} from Recent	Ukloni {name} iz nedavnih
 	Close	Zatvori
@@ -204,6 +205,10 @@
 	Restore	Vrati
 	Close All	Zatvori sve
 	Close Others	Zatvori ostale
+	New Document…	Novi dokument…
+	Open Document…	Otvori…
+	Consolidate All to Here	Objedini sve ovde
+	Move to New Window	Premesti u novi prozor
 	Save	Sačuvaj
 	Save As…	Sačuvaj kao…
 	Save a Copy…	Sačuvaj kopiju…
@@ -255,6 +260,7 @@
 	Create Smart Object after Loading Layers	Napravi pametni objekat posle učitavanja slojeva
 	Reveal in Finder	Prikaži u Finderu
 	Show in Explorer	Prikaži u Exploreru
+	Reveal in Explorer	Prikaži u Exploreru
 	Show in Folder	Prikaži u fascikli
 	File Info…	Informacije o datoteci…
 	Print…	Štampaj…
@@ -339,9 +345,10 @@
 	Units & Rulers…	Jedinice i lenjiri…
 	Guides, Grid & Slices…	Vodilje, mreža i isečci…
 	Plug-ins…	Dodaci…
+	Plugins…	Dodaci…
 	Type…	Tekst…
 	Enhanced Controls…	Napredne kontrole…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	Podrazumevana RAW podešavanja…
 	Raw Defaults…	Podrazumevana Raw podešavanja…
 	Integrations…	Integracije…
 	AI Integrations…	AI integracije…
@@ -387,6 +394,8 @@
 	Match Color…	Uskladi boje…
 	Replace Color…	Zameni boju…
 	Equalize	Izjednači
+	Equalize Selected Area Only	Izjednači samo selekciju
+	Equalize Entire Image Based On Selected Area	Izjednači celu sliku prema selekciji
 	Auto Tone	Automatski ton
 	Auto Contrast	Automatski kontrast
 	Auto Color	Automatske boje
@@ -422,8 +431,8 @@
 	Artboard…	Radna tabla…
 	Artboard from Group…	Radna tabla od grupe…
 	Artboard from Layers…	Radna tabla od slojeva…
-	Layer via Copy	Sloj kopiranjem
-	Layer via Cut	Sloj isecanjem
+	Layer Via Copy	Sloj kopiranjem
+	Layer Via Cut	Sloj isecanjem
 	Layer From Background…	Sloj od pozadine…
 	Layer from Background…	Sloj od pozadine…
 	Background From Layer	Pozadina od sloja
@@ -487,6 +496,8 @@
 	Smart Object	Pametni objekat
 	Convert to Smart Object	Pretvori u pametni objekat
 	Convert to Embedded	Pretvori u ugrađeni
+	Embed Linked	Ugradi povezani
+	Embed All Linked	Ugradi sve povezane
 	Convert to Layers	Pretvori u slojeve
 	Convert to Linked…	Pretvori u povezani…
 	Edit Contents	Uredi sadržaj
@@ -631,7 +642,6 @@
 	Deselect	Poništi selekciju
 	Reselect	Ponovo izaberi
 	Inverse	Inverzno
-	Inverse Selection	Obrni selekciju
 	Similar	Slično
 	Color Range…	Opseg boja…
 	Focus Area…	Oblast fokusa…
@@ -656,7 +666,7 @@
 	Last Filter	Poslednji filter
 	Filter Gallery…	Galerija filtera…
 	Adaptive Wide Angle…	Prilagodljivi široki ugao…
-	Camera Raw Filter…	Camera Raw filter…
+	RAW Develop Filter…	RAW obrada filter…
 	Liquify…	Tečno izobličavanje…
 	Vanishing Point…	Tačka nestajanja…
 	Blur	Zamućenje
@@ -738,6 +748,7 @@
 	Minimum…	Minimum…
 	Offset…	Pomak…
 	Plug-ins	Dodaci
+	Plugins	Dodaci
 	Proof Setup	Podešavanje probnog prikaza
 	Proof Colors	Probne boje
 	Gamut Warning	Upozorenje o gamutu
@@ -746,12 +757,12 @@
 	Working Magenta Plate	Radna magenta ploča
 	Working Yellow Plate	Radna žuta ploča
 	Working Black Plate	Radna crna ploča
-	Working CMY Plate	Radna CMY ploča
-	Legacy Macintosh RGB	Stari Macintosh RGB
-	Internet Standard RGB	Internet standard RGB
+	Working CMY Plates	Radne CMY ploče
+	Legacy Macintosh RGB (Gamma 1.8)	Stari Macintosh RGB (Gamma 1.8)
+	Internet Standard RGB (sRGB)	Internet standard RGB (sRGB)
 	Monitor RGB	RGB monitora
-	Color Blindness — Protanopia-type	Daltonizam — tip protanopije
-	Color Blindness — Deuteranopia-type	Daltonizam — tip deuteranopije
+	Color Blindness - Protanopia-type	Daltonizam - tip protanopije
+	Color Blindness - Deuteranopia-type	Daltonizam - tip deuteranopije
 	Zoom In	Uvećaj prikaz
 	Zoom Out	Umanji prikaz
 	Fit on Screen	Uklopi u ekran
@@ -840,7 +851,6 @@
 	Consolidate All to Tabs	Objedini sve u kartice
 	Float in Window	Odvoji u prozor
 	Float All in Windows	Odvoji sve u prozore
-	New Window for Document	Novi prozor za dokument
 	Workspace	Radni prostor
 	Essentials	Osnovno
 	Graphic and Web	Grafika i veb
@@ -902,6 +912,12 @@
 	Timeline	Vremenska linija
 	Tool Presets	Šabloni alatki
 	Tools	Alatke
+	Contextual Task Bar	Kontekstualna traka zadataka
+	Hide bar	Sakrij traku
+	Reset bar position	Vrati položaj trake
+	Pin bar position	Zakači položaj trake
+	Move bar	Pomeri traku
+	More options	Više opcija
 	About PhotoCraft	O programu PhotoCraft
 	PhotoCraft Website	Veb-sajt PhotoCraft-a
 	PhotoCraft on GitHub	PhotoCraft na GitHub-u
@@ -1026,7 +1042,7 @@
 	Brush Reconstruct Options	Opcije četkice za rekonstrukciju
 	Brush Tool Options	Opcije alatke četkica
 	Cache Level:	Nivo keša:
-	Camera Raw isn't open	Camera Raw nije otvoren
+	RAW Develop isn't open	RAW obrada nije otvoren
 	Cancel	Otkaži
 	Cancel (Esc)	Otkaži (Esc)
 	Cancel any current edits (Esc)	Otkaži sve tekuće izmene (Esc)
@@ -1058,7 +1074,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	Kliknite da dodate tačku · prevucite van, {key}-klik ili Delete da uklonite
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Kliknite da primenite, {key}-klik da uklonite nadjačavanja, dvoklik za opcije stila
 	Click to edit the gradient	Kliknite da uredite gradijent
-	Click to restore the current colour	Kliknite da vratite tekuću boju
+	Click to restore the current color	Kliknite da vratite tekuću boju
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Kliknite da uvećate  ·  {key}-klik da umanjite  ·  prevucite udesno/ulevo da uvećate/umanjite
 	Click with the Note tool to add a note.	Kliknite alatkom za beleške da dodate belešku.
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Klik: ugao · Prevlačenje: glatko · Klik na prvu tačku: zatvori · {key} završi · Esc otkaži
@@ -1138,7 +1154,7 @@
 	Darks	Tamni tonovi
 	Data Sets	Skupovi podataka
 	Default	Podrazumevano
-	Default colours (D)	Podrazumevane boje (D)
+	Default Foreground and Background Colors (D)	Podrazumevane boje prednjeg plana i pozadine (D)
 	Default printer	Podrazumevani štampač
 	Default restored.	Podrazumevano stanje je vraćeno.
 	Define	Definiši
@@ -1412,7 +1428,7 @@
 	Opacity Jitter	Kolebanje neprozirnosti
 	Opacity:	Neprozirnost:
 	Open a document to define variables.	Otvorite dokument da biste definisali promenljive.
-	Open a document to select a colour range.	Otvorite dokument da biste izabrali opseg boja.
+	Open a document to select a color range.	Otvorite dokument da biste izabrali opseg boja.
 	Open a document to use the timeline.	Otvorite dokument da biste koristili vremensku liniju.
 	Optical	Optički
 	Optimized	Optimizovano
@@ -1488,7 +1504,6 @@
 	Purity	Čistoća
 	Quality	Kvalitet
 	Quick Actions	Brze radnje
-	Quick Export As PNG	Brzi izvoz u PNG
 	Radial Gradient	Radijalni gradijent
 	Radius	Poluprečnik
 	Radius:	Poluprečnik:
@@ -1629,7 +1644,7 @@
 	Subtract from Sample	Oduzmi od uzorka
 	Subtract from selection  ({key})	Oduzmi od selekcije  ({key})
 	Suggestions:	Predlozi:
-	Swap colours (X)	Zameni boje (X)
+	Switch Foreground and Background Colors (X)	Zameni boje prednjeg plana i pozadine (X)
 	Swaps height and width	Zamenjuje visinu i širinu
 	Switch between free transform and warp modes	Prebaci između režima slobodne transformacije i krivljenja
 	Switch theme	Promeni temu
@@ -1731,7 +1746,7 @@
 	Choke	Sužavanje
 	Classic	Klasično
 	Click to add text	Kliknite da dodate tekst
-	Click to fill similar colours	Kliknite da popunite slične boje
+	Click to fill similar colors	Kliknite da popunite slične boje
 	Clone Stamp Tool	Alatka pečat za kloniranje
 	Color Burn	Zatamnjivanje boje
 	Color Dodge	Posvetljivanje boje
@@ -1832,6 +1847,7 @@
 	Move Tool	Alatka za pomeranje
 	Could not use the move tool because the layer is locked.	Alatka za pomeranje ne može da se koristi jer je sloj zaključan.
 	Could not complete the Free Transform command because the layer is locked.	Komanda Slobodna transformacija ne može da se izvrši jer je sloj zaključan.
+	Could not transform because the layer is locked.	Transformacija nije moguća jer je sloj zaključan.
 	Multiply	Množenje
 	My Brushes	Moje četkice
 	Neutrals	Neutralne
@@ -1893,7 +1909,7 @@
 	Rectangular Marquee Tool	Alatka za pravougaonu selekciju
 	Reds	Crvene
 	Reflected	Reflektovano
-	Sample: foreground colour	Uzorak: boja prednjeg plana
+	Sample: foreground color	Uzorak: boja prednjeg plana
 	Sampled Colors	Uzorkovane boje
 	Satin	Saten
 	Save Pixel Aspect Ratio	Sačuvaj odnos stranica piksela
@@ -1932,7 +1948,6 @@
 	Transfer	Prenos
 	Triangle Tool	Alatka trougao
 	Unsaved changes	Nesačuvane izmene
-	Uses the foreground and background colours.	Koristi boje prednjeg plana i pozadine.
 	Web	Veb
 	Web Large	Veb, veliko
 	Web Minimum	Veb, minimum
@@ -1967,6 +1982,7 @@
 	Allow scripts to connect	Dozvoli skriptama da se povežu
 	Always	Uvek
 	Always create smart objects when placing	Uvek pravi pametne objekte pri postavljanju
+	Skip transform when placing	Preskoči transformaciju pri postavljanju
 	Animated zoom	Animirano zumiranje
 	Apply auto tone	Primeni automatski ton
 	Ask	Pitaj
@@ -1984,11 +2000,16 @@
 	Brush preview color	Boja pregleda četkice
 	Cache levels	Nivoi keša
 	Cache tile size	Veličina pločice keša
-	Camera Raw Defaults	Podrazumevana Camera Raw podešavanja
+	RAW Defaults	Podrazumevana RAW podešavanja
 	Canvas border	Ivica platna
 	Show canvas dots	Prikaži tačke na platnu
 	Clip thumbnails to layer bounds	Iseci sličice prema granicama sloja
 	Clip Thumbnails to Layer Bounds	Iseci sličice prema granicama sloja
+	No Thumbnails	Bez sličica
+	Small Thumbnails	Male sličice
+	Medium Thumbnails	Srednje sličice
+	Large Thumbnails	Velike sličice
+	Clip Thumbnails to Document Bounds	Iseci sličice prema granicama dokumenta
 	Canvas color	Boja platna
 	Canvas custom color	Prilagođena boja platna
 	Color picker	Birač boja
@@ -2066,7 +2087,6 @@
 	Never	Nikad
 	Normal tip	Normalan vrh
 	Open as smart object	Otvori kao pametni objekat
-	Open in camera raw	Otvori u Camera Raw-u
 	Open documents as tabs	Otvaraj dokumente kao kartice
 	Overscroll	Pomeranje preko ivice
 	Performance	Performanse
@@ -2106,7 +2126,6 @@
 	Show only crosshair while painting	Prikaži samo krstić tokom slikanja
 	Show slice numbers	Prikaži brojeve isečaka
 	Show tooltips	Prikaži opise alatki
-	Enable animations	Omogući animacije
 	Show highlight on rollover	Istakni pri prelasku pokazivačem
 	Show transformation values	Prikaži vrednosti transformacije
 	Slice color	Boja isečka
@@ -2195,7 +2214,7 @@
 	Graphics	Grafika
 	Reset GPU Backend	Resetuj GPU pozadinski sistem
 	Applies at next launch.	Primenjuje se pri sledećem pokretanju.
-	Click to sample the foreground colour  ·  {key}-click for background	Kliknite da uzorkujete boju prednjeg plana  ·  {key}-klik za pozadinu
+	Click to sample the foreground color  ·  {key}-click for background	Kliknite da uzorkujete boju prednjeg plana  ·  {key}-klik za pozadinu
 	{key}-click to set the source	{key}-klik da postavite izvor
 	{key} to subtract	{key} za oduzimanje
 	Clone source {n} ({key}-click with Clone Stamp to set)	Izvor kloniranja {n} ({key}-klik pečatom za kloniranje da postavite)
@@ -2253,7 +2272,7 @@
 	Gradient Options	Opcije gradijenta
 	Align with layer	Poravnaj sa slojem
 	Reset Alignment	Resetuj poravnanje
-	Centre the gradient (offset 0, 0)	Centriraj gradijent (pomak 0, 0)
+	Center the gradient (offset 0, 0)	Centriraj gradijent (pomak 0, 0)
 	Gradient Editor	Uređivač gradijenta
 	Gradient picker	Birač gradijenta
 	Save As Preset	Sačuvaj kao šablon
@@ -2286,7 +2305,7 @@
 	Alt-click to define a source point to clone from	Alt-klik da odredite izvornu tačku za kloniranje
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Nema putanje od koje bi se napravila selekcija: nacrtajte je alatkom pero ili je izaberite u panelu Putanje.
 	Cancel opening	Otkaži otvaranje
-	Cancelled opening {name}	Otkazano otvaranje: {name}
+	Canceled opening {name}	Otkazano otvaranje: {name}
 	Damaged Photoshop document	Oštećen Photoshop dokument
 	The document “{name}” may be damaged.	Dokument „{name}“ je možda oštećen.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Neki slojevi, pikseli ili maske nisu mogli da se pročitaju. Želite li da nastavite sa otvaranjem?
@@ -2295,7 +2314,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokument „{name}“ ima ugrađeni profil boja koji se ne slaže sa trenutnim {mode} radnim prostorom.
 	Working: {working}	Radni prostor: {working}
 	Developing {name}	Razvijanje: {name}
-	Cancelled {label}	Otkazano: {label}
+	Canceled {label}	Otkazano: {label}
 	Esc to cancel	Esc za otkazivanje
 	Opened {name}	Otvoreno: {name}
 	Opening {name}	Otvaranje: {name}
@@ -2303,7 +2322,7 @@
 	Saving {name}	Čuvanje: {name}
 	Saving {percent}	Čuvanje {percent}
 	A save to {name} is still running; try again when it finishes	Čuvanje u {name} je još u toku; pokušajte ponovo kada se završi
-	{label} is writing the file and can no longer be cancelled	{label}: datoteka se upisuje i više ne može da se otkaže
+	{label} is writing the file and can no longer be canceled	{label}: datoteka se upisuje i više ne može da se otkaže
 	Opening {name}…	Otvaranje: {name}…
 	Opening…	Otvaranje…
 	Reading…	Čitanje…
@@ -2477,8 +2496,6 @@
 	Roman Hanging Punctuation	Viseća interpunkcija za latinicu
 	Avoid Widows/Orphans	Izbegavaj udovice/siročiće
 	Compose	Slaganje
-	Adobe Single-line Composer	Adobe slagač pojedinačnih redova
-	Adobe Every-line Composer	Adobe slagač svih redova
 	Justification	Obostrano poravnanje
 	Word Spacing	Razmak između reči
 	Letter Spacing	Razmak između slova
@@ -2496,6 +2513,7 @@
 	Path to Illustrator…	Putanja u Illustrator…
 	Make Work Path	Napravi radnu putanju
 	Make Selection	Napravi selekciju
+	Make Shape	Napravi oblik
 	Fill Path	Popuni putanju
 	Stroke Path	Ocrtaj putanju
 	Clipping Path	Putanja isecanja
@@ -2677,7 +2695,7 @@
 	Pixel	Piksel
 	Adjustment	Korekcija
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Prevucite (laso) ili kliknite tačke (mnogougao) · {add} dodaje · {sub} oduzima
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Prevucite okvir za opsecanje · prevlačenje unutra pomera · ivice menjaju veličinu ({ratio} odnos, {centre} centar) · razmaknica pomera tokom crtanja · strelice pomeraju malo · X menja orijentaciju · {commit} potvrđuje · Esc otkazuje
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Prevucite okvir za opsecanje · prevlačenje unutra pomera · ivice menjaju veličinu ({ratio} odnos, {centre} centar) · razmaknica pomera tokom crtanja · strelice pomeraju malo · X menja orijentaciju · {commit} potvrđuje · Esc otkazuje
 	{mode} Color · {bits} bit	{mode} boje · {bits} bita
 	Drag to move the layer	Prevucite da pomerite sloj
 	Scrubby Zoom	Zumiranje prevlačenjem
@@ -2733,7 +2751,6 @@
 	Intersect with	Presek sa
 	Capture Comp	Zabeleži kompoziciju
 	No Layer Comps	Nema kompozicija slojeva
-	Adobe PDF Presets…	Adobe PDF šabloni…
 	3D…	3D…
 	Technology Previews…	Probne tehnologije…
 	Background from Layer	Pozadina od sloja
@@ -2824,8 +2841,8 @@
 	Tone Histogram	Tonski histogram
 	Show Selected Region	Prikaži izabranu oblast
 cameraRaw	Light	Svetlo
-	Camera Raw Filter ({layer})	Camera Raw filter ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+	RAW Develop Filter ({layer})	RAW obrada filter ({layer})
+	RAW Develop ({name})	RAW obrada ({name})
 cameraRaw	Lights	Svetli tonovi
 cameraRaw	Darks	Tamni tonovi
 cameraRaw	Blacks	Crne
@@ -2871,7 +2888,7 @@ cameraRaw	Blending	Stapanje
 	Discard Layers and Save a Copy	Odbaci slojeve i sačuvaj kopiju
 	Don't show again	Ne prikazuj ponovo
 	Save failed: {error}	Čuvanje nije uspelo: {error}
-	Save cancelled	Čuvanje je otkazano
+	Save canceled	Čuvanje je otkazano
 	Couldn't place {name}: {error}	Postavljanje {name} nije uspelo: {error}
 	Magnetic Lasso Tool	Alatka magnetni laso
 	Frequency	Frekvencija
@@ -2996,7 +3013,7 @@ fontWeight	Italic	Kurziv
 	Impressionist	Impresionistički
 	Rotate View Tool	Alatka za rotiranje prikaza
 	Reset View	Resetuj prikaz
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Prevlačite oko centra da rotirate prikaz  ·  Shift ograničava na korake od 15°
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Prevlačite oko centra da rotirate prikaz  ·  Shift ograničava na korake od 15°
 	Dual Axis	Dvostruka osa
 	Diagonal	Dijagonala
 	Transform Symmetry	Transformiši simetriju
@@ -3011,8 +3028,8 @@ fontWeight	Italic	Kurziv
 	All Layers No Adjustments	Svi slojevi bez korekcija
 	Current & Below No Adjustments	Tekući i ispod bez korekcija
 	Show Sampling Ring	Prikaži prsten uzorkovanja
-	Out of gamut for printing: click for the nearest printable colour	Van gamuta za štampu: kliknite za najbližu boju koja može da se odštampa
-	Not a web colour: click for the nearest web colour	Nije veb boja: kliknite za najbližu veb boju
+	Out of gamut for printing: click for the nearest printable color	Van gamuta za štampu: kliknite za najbližu boju koja može da se odštampa
+	Not a web color: click for the nearest web color	Nije veb boja: kliknite za najbližu veb boju
 	Color to Alpha…	Boja u alfu…
 	Transparency Threshold	Prag providnosti
 	Opacity Threshold	Prag neprozirnosti
@@ -3848,8 +3865,8 @@ layerLabel	No Color	Bez boje
 	Border	Obod
 	Box Blur	Pravougaono zamućenje
 	Calculations	Proračuni
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Camera Raw filter
+	RAW Develop	RAW obrada
+	RAW Develop Filter	RAW obrada filter
 	Channel1	Kanal 1
 	Channel2	Kanal 2
 	Channel3	Kanal 3
@@ -4122,7 +4139,7 @@ layerLabel	No Color	Bez boje
 	Scroll menu down	Pomeri meni nadole
 	This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?	Ovaj tekstualni sloj mora da se rasterizuje pre nastavka. Njegov tekst više neće moći da se uređuje. Rasterizovati tekst?
 	This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?	Ovaj sloj oblika mora da se rasterizuje pre nastavka. Više neće moći da se uređuje kao oblik. Rasterizovati oblik?
-	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	Ovaj pametni objekat mora da se rasterizuje pre nastavka. Njegov sadržaj više neće moći da se uređuje. Rasterizovati pametni objekat?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	Ovaj pametni objekat mora da se rasterizuje pre nastavka. Njegov sadržaj više neće moći da se uređuje. Rasterizovati pametni objekat?
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Ovaj sloj popune mora da se rasterizuje pre nastavka. Njegov sadržaj popune više neće moći da se uređuje. Rasterizovati sloj?
 	This layer must be rasterized before proceeding.	Ovaj sloj mora da se rasterizuje pre nastavka.
 	Color Picker (Background Color)	Birač boja (boja pozadine)
@@ -4199,7 +4216,6 @@ layerLabel	Magenta	Magenta
 	Save Path	Sačuvaj putanju
 cameraRaw	Highlights	Svetla
 cameraRaw	Shadows	Senke
-	All shortcuts reset to Photoshop defaults.	Sve prečice su vraćene na podrazumevane vrednosti Photoshop-a.
 	Temporary	Privremeno
 	none	nijedna
 	red	crvena
@@ -4249,7 +4265,6 @@ cameraRaw	Feather	Omekšavanje
 cameraRaw	Midpoint	Središte
 cameraRaw	Roundness	Zaobljenost
 cameraRaw	Size	Veličina
-	Default Photoshop Size	Podrazumevana Photoshop veličina
 document	Orientation	Orijentacija
 	Arc Lower	Donji luk
 	Arc Upper	Gornji luk
@@ -4274,8 +4289,8 @@ shape	Appearance	Izgled
 	Load Settings…	Učitaj podešavanja…
 	Save these settings as a Camera Raw .xmp file	Sačuvaj ova podešavanja kao Camera Raw .xmp datoteku
 	Load settings from a Camera Raw .xmp file	Učitaj podešavanja iz Camera Raw .xmp datoteke
-	Loaded Camera Raw settings from {file}	Camera Raw podešavanja su učitana iz {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw podešavanja su učitana iz {file} (nije podržano: {n})
+	Loaded RAW Develop settings from {file}	RAW obrada podešavanja su učitana iz {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	RAW obrada podešavanja su učitana iz {file} (nije podržano: {n})
 	Manage submitted jobs in the system print queue	Upravljajte poslatim poslovima u sistemskom redu za štampu
 	Pick Color From Image	Uzmi boju sa slike
 	Drag to pan · Scroll to zoom · Double-click to fit	Prevucite za pomeranje · Skrolujte za zumiranje · Dvaput kliknite za uklapanje
@@ -4314,7 +4329,7 @@ shape	Appearance	Izgled
 	Auto Add/Delete	Automatsko dodavanje/brisanje
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nemojte uključiti i ogledalsku sliku u podešavanjima štampanja: dva preslikavanja se poništavaju.
 	Print Settings…	Podešavanja štampanja…
-	Remember to turn off the printer's own colour management in Print Settings…	Ne zaboravite da isključite upravljanje bojama samog štampača u podešavanjima štampanja…
+	Remember to turn off the printer's own color management in Print Settings…	Ne zaboravite da isključite upravljanje bojama samog štampača u podešavanjima štampanja…
 	Sent to {printer}	Poslato na {printer}
 	set in Print Settings…	podešava se u podešavanjima štampanja…
 	Paper Width	Širina papira
@@ -4487,12 +4502,12 @@ shape	Appearance	Izgled
 	Decrease Brush Hardness	Smanji tvrdoću četkice
 	Increase Brush Hardness	Povećaj tvrdoću četkice
 	Demosaic	Demozaikovanje
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Kako se popunjava mozaik filtera boja kamere. Primenjuje se pri otvaranju datoteke; pregled prikazuje metod kojim je datoteka otvorena.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Kako se popunjava mozaik filtera boja kamere. Primenjuje se pri otvaranju datoteke; pregled prikazuje metod kojim je datoteka otvorena.
 	AHD (adaptive homogeneity)	AHD (adaptivna homogenost)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: najčistije ivice i najmanje obojenih rubova, najsporiji.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolacija sa korekcijom gradijenta: oštra i brza, sa malo obojenih rubova na finim detaljima.
-	The fastest and the softest, with colour fringing on fine detail.	Najbrži i najmekši, sa obojenim rubovima na finim detaljima.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: najčistije ivice i najmanje obojenih rubova, najsporiji.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Interpolacija sa korekcijom gradijenta: oštra i brza, sa malo obojenih rubova na finim detaljima.
+	The fastest and the softest, with color fringing on fine detail.	Najbrži i najmekši, sa obojenim rubovima na finim detaljima.
 	“{name}” already exists. Replace it?	„{name}“ već postoji. Zameniti?
 	The name in the save dialog was “{name}”.	Ime u dijalogu za čuvanje je bilo „{name}“.
 	Previous Brush	Prethodna četkica
@@ -4563,8 +4578,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	Skala nijansi sive
 	Current Colors	Trenutne boje
 	Make Ramp Web Safe	Učini skalu bezbednom za veb
+	Scroll All Windows	Pomeraj sve prozore
 	The path was kept as the Work Path	Putanja je sačuvana kao radna putanja
 	The path was discarded	Putanja je odbačena
+# Art History Brush (#213).
 	Art History Brush Tool	Alatka umetnička četkica istorije
 	Tight Short	Usko kratko
 	Tight Medium	Usko srednje
@@ -4643,3 +4660,35 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace Image…	Замени слику…
 	The frame is locked	Оквир је закључан
 	The frame is unavailable	Оквир није доступан
+
+# Channels panel menu (#11451)
+	Channel Options…	Opcije kanala…
+	Specify Channels:	Odredi kanale:
+	Not enough grayscale documents for this mode.	Nema dovoljno dokumenata u nijansama sive za ovaj režim.
+	Pick a different document for each channel.	Izaberite drugi dokument za svaki kanal.
+	A picked document is no longer open.	Jedan izabrani dokument više nije otvoren.
+	A picked document is no longer a grayscale document of the same size.	Jedan izabrani dokument više nije dokument u nijansama sive iste veličine.
+	Netscape Gray	Netscape siva
+# Move tool options bar (#11381)
+	Align top edges	Poravnaj gornje ivice
+	Align vertical centers	Poravnaj vertikalne centre
+	Align bottom edges	Poravnaj donje ivice
+	Distribute vertically	Raspodeli vertikalno
+	Distribute horizontally	Raspodeli horizontalno
+	Show layer bounds on hover	Prikaži granice sloja pri prelasku miša
+	Expand layer group on click	Proširi grupu slojeva klikom
+	Show hover bounds from Layers	Prikaži granice pri prelasku iz panela Slojevi
+	Saved RAW Develop settings to {file}	Подешавања RAW obrada сачувана у {file}
+	Save the settings to each raw's sidecar without opening it	Sačuvaj podešavanja u prateću datoteku svakog raw snimka bez otvaranja
+	No settings saved: these raws can't keep a sidecar here	Ništa nije sačuvano: ovi raw snimci ovde ne mogu imati prateću datoteku
+	Some settings could not be saved; the raws stay open	Neka podešavanja nije moguće sačuvati; raw snimci ostaju otvoreni
+	Nothing to save: these raws are at their default settings	Nema šta da se sačuva: ovi raw snimci imaju podrazumevana podešavanja
+# Artboard tool options bar (#11385)
+	Distribute Widths	Raspodeli širine
+	Distribute Heights	Raspodeli visine
+	Auto-nest Layers	Automatski ugnezdi slojeve
+	Auto-size Canvas	Automatski promeni veličinu platna
+	Keep Relative Position During Layer Reordering	Zadrži relativni položaj pri promeni redosleda slojeva
+	Shrinkwrap Canvas on Save	Smanji platno na sadržaj pri čuvanju
+	Move Toolbar to the Right	Premesti traku sa alatkama desno
+	Move Toolbar to the Left	Premesti traku sa alatkama levo

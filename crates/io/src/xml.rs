@@ -15,7 +15,7 @@ pub fn parse<'i>(text: &'i str, opts: ParsingOptions<'i>) -> Result<Document<'i>
     if opts.allow_dtd && internal_subset(text.as_bytes()) {
         return Err("internal DTD subsets aren't supported".into());
     }
-    if crate::svg::nesting_depth(text.as_bytes(), MAX_DEPTH) > MAX_DEPTH {
+    if crate::svg::nesting_depth(text.as_bytes(), MAX_DEPTH).map_err(|e| e.to_string())? > MAX_DEPTH {
         return Err(format!("elements are nested more than {MAX_DEPTH} levels deep"));
     }
     Document::parse_with_options(text, opts).map_err(|e| e.to_string())

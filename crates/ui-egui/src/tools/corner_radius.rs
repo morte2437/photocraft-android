@@ -150,7 +150,7 @@ pub struct Drag {
 fn shows(app: &PhotocraftApp) -> bool {
     app.ui.transform.is_none()
         && match app.ui.tool {
-            Tool::PathSelection | Tool::Rectangle | Tool::Triangle | Tool::Polygon => true,
+            Tool::PathSelection | Tool::Rectangle | Tool::Triangle | Tool::Polygon | Tool::Star => true,
             Tool::Move => app.ui.tool_options.move_show_transform,
             _ => false,
         }

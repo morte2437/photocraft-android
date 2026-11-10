@@ -99,6 +99,12 @@ fn adjustments_filters_and_drawing_preserve_other_encoded_components() {
                 let mut s = setup(mode, depth);
                 subset(&mut s);
                 let before = surface(&s);
+                // Color Replacement refuses 32-bit RGB, as the reference application does (#11923).
+                if *cmd == "paint.colorReplacement" && mode == "rgb" && depth == 32 {
+                    assert!(s.execute(cmd, p.clone()).is_err(), "{mode} {depth} {cmd} is refused");
+                    assert_eq!(surface(&s), before, "{mode} {depth} {cmd}: nothing changed");
+                    continue;
+                }
                 s.execute(cmd, p.clone()).unwrap_or_else(|e| panic!("{mode} {depth} {cmd}: {e}"));
                 let after = surface(&s);
                 unchanged(&before, &after);
@@ -669,7 +675,8 @@ fn last_filter_rejects_non_object_journal_params_without_panicking() {
 #[test]
 fn first_single_channel_retouch_preview_preserves_every_other_sample() {
     for cmd in ["paint.dodge", "paint.burn", "paint.sponge", "paint.blur", "paint.sharpen", "paint.smudge", "paint.colorReplacement"] {
-        let mut s = setup("rgb", 32);
+        // Color Replacement refuses 32-bit RGB (#11923): it is checked at 16 bits.
+        let mut s = setup("rgb", if cmd == "paint.colorReplacement" { 16 } else { 32 });
         s.execute("channel.target", json!({"channel":{"color":0}})).unwrap();
         let before = surface(&s);
         let p = json!({"points":[[6,7,1],[23,15,0.7]],"size":9,"color":"#ffffff","tolerance":100});
@@ -765,7 +772,11 @@ fn lab_single_channel_tone_parameters_round_trip_without_applying_lightness_twic
 }
 
 fn flat_rgb() -> Session {
-    let mut s = setup("rgb", 32);
+    flat_rgb_at(32)
+}
+
+fn flat_rgb_at(depth: u32) -> Session {
+    let mut s = setup("rgb", depth);
     s.edit("flat", |doc, id| {
         doc.layer_mut(id.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, 32, 24), &[0.25, 0.5, 0.25, 1.0]);
         Ok(())
@@ -894,7 +905,8 @@ fn rgb_component_exposure_uses_the_document_transfer_at_all_depths() {
 #[test]
 fn color_replacement_live_preview_forwards_explicit_component_and_pixel_targets() {
     for target in [json!({"colors":[1]}), json!("pixels")] {
-        let mut s = flat_rgb();
+        // 16-bit: Color Replacement refuses 32-bit RGB (#11923).
+        let mut s = flat_rgb_at(16);
         subset(&mut s);
         let params = json!({"points":[[8,8],[22,12]],"size":9,"tolerance":100,"mode":"luminosity","color":"#ffffff","seed":42,"target":target});
         let live = photocraft_engine::brush_cmds::live_color_replacement(&s, &params).unwrap();

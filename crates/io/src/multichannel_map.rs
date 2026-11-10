@@ -196,6 +196,7 @@ pub(crate) fn layerless_file(
     if let Some(data) = crate::annotations_map::fresh_scale_resource(doc) {
         resources.push(ImageResource::new(crate::annotations_map::MEASUREMENT_SCALE, data));
     }
+    resources.extend(crate::annotations_map::fresh_count_resource(doc, warnings));
     resources.push(version_info_resource(true));
     // Document-level tagged blocks (patterns, notes, ...) are valid without a layer section; a
     // kept layer block would describe layers the document doesn't have. Their signatures follow

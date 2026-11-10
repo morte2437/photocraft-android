@@ -274,13 +274,9 @@ fn render_first_run_content(app: &mut PhotocraftApp, ui: &mut egui::Ui, content_
     });
 }
 
-/// Wayland has no native file drops (winit 0.30, #386), so the hint offers File › Open and paste.
-pub(crate) fn start_screen_drop_hint(app: &PhotocraftApp) -> std::borrow::Cow<'static, str> {
-    if app.services.is_wayland {
-        crate::i18n::fmt(tl!("Use File › Open, or paste a copied image with {paste}."), &[("paste", &crate::notices::paste_hint(app))]).into()
-    } else {
-        tl!("Drop an image or PSD anywhere to open it.").into()
-    }
+/// Hint displayed on the start screen for opening files.
+pub(crate) fn start_screen_drop_hint(_app: &PhotocraftApp) -> std::borrow::Cow<'static, str> {
+    tl!("Drop an image or PSD anywhere to open it.").into()
 }
 
 /// Recent files listed on the Home screen.

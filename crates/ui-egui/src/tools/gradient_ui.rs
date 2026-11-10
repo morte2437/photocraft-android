@@ -132,10 +132,11 @@ fn edited_fill(app: &PhotocraftApp, layer: &Layer, canvas: Rect32, cmd: &str, p:
     })
 }
 
-/// Options-bar params of a new live gradient.
+/// Options-bar params of a new live gradient. Its fill layer is Normal at 100 %: the options bar's
+/// blend Mode and Opacity belong to the Classic gradient (#12007).
 fn create_params(app: &PhotocraftApp, from: [f32; 2], to: [f32; 2]) -> Value {
     let o = &app.ui.tool_options;
-    json!({"from": from, "to": to, "style": o.gradient_style, "reverse": o.gradient_reverse, "dither": o.gradient_dither, "opacity": o.fill_opacity, "mode": o.gradient_blend_mode.label()})
+    json!({"from": from, "to": to, "style": o.gradient_style, "reverse": o.gradient_reverse, "dither": o.gradient_dither})
 }
 
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -662,17 +663,15 @@ pub fn editor_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Live mode: style, reverse, dither and blend mode changes in the options bar also edit the selected
-/// gradient fill layer (one history step each), as in Photoshop.
+/// Live mode: style, reverse and dither changes in the options bar also edit the selected gradient
+/// fill layer (one history step each), as in Photoshop. Its blend mode and opacity are the Layers
+/// panel's: the live bar has no Mode or Opacity (#12007).
 pub fn options_changed(app: &mut PhotocraftApp, before: &crate::state::ToolOptions) {
     let o = app.ui.tool_options.clone();
     if app.ui.tool != Tool::Gradient || o.gradient_classic {
         return;
     }
     let Some((l, ..)) = active_gradient(app) else { return };
-    if o.gradient_blend_mode != before.gradient_blend_mode {
-        let _ = app.run("layer.setProps", json!({"layer": l.id.0, "blend": o.gradient_blend_mode.label()}));
-    }
     if o.gradient_style == before.gradient_style && o.gradient_reverse == before.gradient_reverse && o.gradient_dither == before.gradient_dither {
         return;
     }
@@ -687,25 +686,6 @@ pub fn options_changed(app: &mut PhotocraftApp, before: &crate::state::ToolOptio
         p["dither"] = json!(o.gradient_dither);
     }
     let _ = app.run(cmds::SET, p);
-}
-
-/// Live mode: the options bar's Opacity sets a selected gradient fill layer's opacity, as a
-/// drag's `opacity` does, live while it is scrubbed; `drag` numbers the scrub so it is one undo
-/// step, as in the Layers panel (#5012).
-pub fn opacity_changed(app: &mut PhotocraftApp, drag: Option<u64>) {
-    let o = &app.ui.tool_options;
-    if app.ui.tool != Tool::Gradient || o.gradient_classic {
-        return;
-    }
-    let opacity = o.fill_opacity / 100.0;
-    let Some((l, ..)) = active_gradient(app) else { return };
-    if (l.opacity - opacity).abs() > 1e-6 {
-        let mut p = json!({"layer": l.id.0, "opacity": opacity});
-        if let Some(n) = drag {
-            p["coalesce"] = json!(format!("gradient-tool-opacity:{n}"));
-        }
-        let _ = app.run("layer.setProps", p);
-    }
 }
 
 // ---------------------------------------------------------------- Properties panel
@@ -890,7 +870,10 @@ fn selection_after_edit(f: &Fill, p: &Value, previous: Option<Marker>) -> Option
 }
 
 fn stop_strip(ui: &mut egui::Ui, key: egui::Id, f: &Fill, midpoints: bool, pending: Option<&Value>, colors: ([f32; 4], [f32; 4])) -> Option<StopAction> {
-    let Fill::Gradient { stops, .. } = f else { return None };
+    // The stops as committed: a drag edit (and the two-stop minimum) addresses these, not the
+    // pending preview, which may already leave the dragged stop out.
+    let Fill::Gradient { stops, opacity_stops, .. } = f else { return None };
+    let opacity_count = if opacity_stops.is_empty() { 2 } else { opacity_stops.len() };
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width().max(120.0);
     let (outer, resp) = ui.allocate_exact_size(vec2(w, 58.0), Sense::click_and_drag());
@@ -995,19 +978,22 @@ fn stop_strip(ui: &mut egui::Ui, key: egui::Id, f: &Fill, midpoints: bool, pendi
     let dragging: Option<Marker> = ui.data(|d| d.get_temp(key));
     let mut preview = None;
     if let (Some(m), Some(pos)) = (dragging, resp.interact_pointer_pos()) {
-        let off = if pos.y > bar.bottom() + 28.0 || pos.y < bar.top() - 26.0 { 1.0 } else { 0.0 };
+        // Pulled off the bar, up or down, the stop is deleted (the preview shows it gone;
+        // dragging back cancels), while at least two of its kind remain.
+        let off = off_strip(pos, bar);
         let loc = loc_of(pos.x);
         let edit = match m {
-            Marker::Color(i) if off > 0.0 && stops.len() > 2 => json!({"action": "delete", "index": i}),
+            Marker::Color(i) if off && stops.len() > 2 => json!({"action": "delete", "index": i}),
             Marker::Color(i) => json!({"action": "move", "index": i, "location": loc}),
-            Marker::Opacity(i) if off > 0.0 && ops.len() > 2 => json!({"action": "delete", "kind": "opacity", "index": i}),
+            Marker::Opacity(i) if off && opacity_count > 2 => json!({"action": "delete", "kind": "opacity", "index": i}),
             Marker::Opacity(i) => json!({"action": "move", "kind": "opacity", "index": i, "location": loc}),
             Marker::Mid(i) => {
                 let (a, b) = (sorted.get(i).map_or(0.0, |s| s.0), sorted.get(i + 1).map_or(1.0, |s| s.0));
                 json!({"action": "midpoint", "index": i, "location": ((loc - a) / (b - a).max(1e-4)).clamp(0.05, 0.95)})
             }
         };
-        if resp.dragged() {
+        // The release frame counts too: its own last move decides whether the stop comes off.
+        if resp.dragged() || resp.drag_stopped() {
             preview = Some(edit);
         }
     }
@@ -1038,3 +1024,9 @@ fn stop_strip(ui: &mut egui::Ui, key: egui::Id, f: &Fill, midpoints: bool, pendi
 
 #[cfg(test)]
 mod tests;
+
+/// A stop dragged to `pos` is off the gradient strip `bar` and comes off (removed on release):
+/// below the stops or above the strip, by the same distance in every gradient editor.
+pub(crate) fn off_strip(pos: egui::Pos2, bar: egui::Rect) -> bool {
+    pos.y > bar.bottom() + 28.0 || pos.y < bar.top() - 26.0
+}

@@ -82,8 +82,7 @@ pub(crate) fn pointer(app: &mut PhotocraftApp, ev: ToolEvent) -> bool {
 /// The marquee as marching ants.
 pub(crate) fn draw(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     let Some(b) = app.layer_box else { return };
-    let r = egui::Rect::from_two_pos(xf.to_screen(b.start[0] as f32, b.start[1] as f32), xf.to_screen(b.end[0] as f32, b.end[1] as f32));
-    crate::tool_feedback::draw_ants(painter, &[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], true);
+    crate::tool_feedback::draw_ants(painter, &crate::canvas::doc_box_corners(xf, b.start, b.end), true);
 }
 
 #[cfg(test)]

@@ -569,6 +569,7 @@ fn profile_cancel_cancels_whole_queue_including_memory_prompts() {
             order: None,
             question: Some(json!({"missing": false, "working": "sRGB", "embedded": "Adobe RGB"})),
             policy_applied: false,
+            smart_object: false,
         },
     );
 
@@ -600,6 +601,7 @@ fn mixed_prompts_follow_arrival_order_fifo() {
             order: None,
             question: None,
             policy_applied: false,
+            smart_object: false,
         },
     );
 
@@ -756,6 +758,27 @@ fn memory_prompt_states_unknown_capacity_and_the_eight_gib_warning() {
     let dialog = app.ui.dialogs[0].id;
     assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dialog}))["ok"], true);
     assert!(app.ui.dialogs.is_empty());
+}
+
+/// The prompt warns when opening the file would leave less than 1 GiB of the measured free
+/// memory, and stays quiet when there is room to spare.
+#[test]
+fn memory_prompt_warns_when_little_memory_would_be_left() {
+    let gb = 1u64 << 30;
+    let mut app = app();
+    let available = 3 * gb + gb / 2;
+    let id = store_preflight(&mut app, "tight.psd", 3 * gb, Some(available));
+    let tab = crate::jobs_ui::OpenTab { job: photocraft_engine::jobs::JobId(3), name: "tight.psd".into(), path: None, slot: None, order: None };
+    crate::jobs_ui::finish_open_tab(
+        &mut app,
+        &tab,
+        &json!({"pendingPreflight": id, "estimated": 3 * gb, "availableRam": available, "capacityUnknown": false, "uncertainCapacityWarning": false}),
+    )
+    .unwrap();
+    let message = app.ui.dialogs[0].fields["message"].as_str().unwrap();
+    assert!(message.contains("Little memory would be left") && message.contains("may run out of memory"), "{message}");
+    let dialog = app.ui.dialogs[0].id;
+    assert_eq!(call(&mut app, "ui.dialog.cancel", json!({"dialog": dialog}))["ok"], true);
 }
 
 /// #10897: reopening an ordinary file whose high-memory prompt is already waiting shows that
@@ -952,4 +975,35 @@ fn inline_drop_slot_survives_the_memory_prompt() {
             assert_eq!(names, ["dropped.psd", "first.psd", "second.psd"], "the approved drop keeps its tab slot");
         });
     });
+}
+
+/// A damaged PSD opened as a smart object, once confirmed, is admitted as one: the history says
+/// "Open As Smart Object" and two same-stem files get distinct names (#12212 review).
+#[test]
+fn confirmed_damaged_smart_object_opens_are_admitted_as_smart_objects_with_distinct_names() {
+    let mut app = app();
+    let bytes = recovery_psd::make_psd(true);
+    let dir = std::env::temp_dir().join(format!("photocraft-damaged-so-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut paths = Vec::new();
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        let path = dir.join(sub).join("dmg.psd");
+        std::fs::write(&path, &bytes).unwrap();
+        paths.push(path.to_string_lossy().into_owned());
+    }
+    for path in &paths {
+        crate::jobs_ui::start_open_as_smart_object(&mut app, path, None).unwrap();
+    }
+    assert!(app.session.documents().is_empty());
+    for _ in 0..2 {
+        let id = damage_dialog(&mut app);
+        assert_eq!(call(&mut app, "ui.dialog.confirm", json!({"dialog": id}))["ok"], true);
+    }
+    let names: Vec<_> = app.session.documents().iter().map(|d| d.doc.name.clone()).collect();
+    assert_eq!(names, ["dmg-1", "dmg-2"]);
+    for st in app.session.documents() {
+        assert_eq!(st.history.entries(), ["Open As Smart Object"]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

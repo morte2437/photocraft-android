@@ -176,13 +176,13 @@ fn moves_and_layer_props_report_only_their_area() {
     assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
     s.execute("layer.setProps", json!({"layer": a.0, "opacity": 0.5, "blend": "Multiply"})).unwrap();
     assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
-    // Clipping changes reach the layers around: everything.
+    // Clipping a pixel layer with nothing clipped to it changes only where it draws (#9329).
     s.execute("layer.setProps", json!({"layer": a.0, "clipped": true})).unwrap();
-    assert_eq!(damage(&s), None);
-    // An adjustment layer changes everything beneath it.
+    assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
+    // An adjustment layer changes everything beneath it: here the Background, the canvas.
     let adj = s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap();
     s.execute("layer.setProps", json!({"layer": adj, "visible": false})).unwrap();
-    assert_eq!(damage(&s), None);
+    assert_eq!(damage(&s), Some(doc(&s).bounds()));
     // The Background (opaque everywhere): everything.
     let bg = doc(&s).layers[0].id;
     s.execute("layer.setProps", json!({"layer": bg.0, "opacity": 0.5})).unwrap();
@@ -269,11 +269,11 @@ fn new_layers_that_change_clipping_recomposite_everything() {
     based.layers.insert(under, l);
     assert_eq!(step_damage(&before, &based), None);
     assert_eq!(step_damage(&based, &before), None);
-    // An adjustment reaches every pixel below it.
+    // An adjustment reaches every pixel below it: here the Background, the canvas.
     let mut adjusted = before.clone();
     adjusted.insert_above(None, Layer::new("inv", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
-    assert_eq!(step_damage(&before, &adjusted), None);
-    assert_eq!(step_damage(&adjusted, &before), None);
+    assert_eq!(step_damage(&before, &adjusted), Some(before.bounds()));
+    assert_eq!(step_damage(&adjusted, &before), Some(before.bounds()));
     // Empty layers draw nothing, in any blend mode.
     let mut styled = before.clone();
     let mut l = Layer::raster("styled", styled.pixel_format());
@@ -343,11 +343,11 @@ fn toggling_a_clipped_adjustment_damages_only_its_base() {
         s.execute("layer.setProps", json!({"layer": adj.0, "visible": false})).unwrap();
         assert_eq!(damage(&s), Some(base_rect));
         assert_eq!(patched(&s, &shown), hidden);
-        // Unclipped, the adjustment still reaches the whole canvas.
+        // Unclipped over the Background, the adjustment still reaches the whole canvas.
         s.execute("layer.setProps", json!({"layer": adj.0, "visible": true})).unwrap();
         s.execute("layer.releaseClippingMask", json!({"layer": adj.0})).unwrap();
         s.execute("layer.hideLayers", json!({"layer": adj.0})).unwrap();
-        assert_eq!(damage(&s), None);
+        assert_eq!(damage(&s), Some(doc(&s).bounds()));
     }
 }
 
@@ -393,6 +393,49 @@ fn clipped_adjustment_in_pass_through_clip_base_damages_its_group() {
     before.layers.truncate(3);
     after.layers.truncate(3);
     assert_eq!(step_damage(&before, &after), Some(Rect::new(2, 1, 4, 3)));
+}
+
+/// #9329: hiding the last visible unclipped adjustment in a pass-through group that is a clip
+/// base switches the group from isolated to pass-through rendering, which agrees with the old
+/// pixels outside the layers beneath only up to float rounding, so it damages the group too.
+#[test]
+fn unclipped_adjustment_in_pass_through_clip_base_damages_its_group() {
+    use photocraft_doc::{Adjustment, BlendMode};
+    let solid = |name: &str, r: Rect, blend: BlendMode| {
+        let mut l = Layer::raster(name, PixelFormat::RGBA8);
+        l.surface_mut().unwrap().fill_rect(r, &[0.5, 0.3, 0.7, 0.6]);
+        l.blend = blend;
+        l
+    };
+    let mut before = Document::with_background(
+        "t",
+        photocraft_geom::Size::new(10, 8),
+        photocraft_doc::ColorMode::Rgb,
+        photocraft_doc::SampleType::U8,
+        photocraft_color::Color::WHITE,
+    );
+    before.layers.clear();
+    before.layers.push(solid("bg", Rect::new(0, 0, 2, 2), BlendMode::Normal));
+    let a = Layer::new("A", LayerContent::Adjustment(Adjustment::Invert));
+    let mut g = Layer::group("G", vec![solid("P", Rect::new(2, 1, 4, 3), BlendMode::Normal), a, solid("Q", Rect::new(6, 4, 8, 6), BlendMode::Multiply)]);
+    g.blend = BlendMode::PassThrough;
+    before.layers.push(g);
+    let mut x = solid("X", Rect::new(2, 1, 7, 5), BlendMode::Normal);
+    x.clipped = true;
+    before.layers.push(x);
+    let mut after = before.clone();
+    let LayerContent::Group(g) = &mut after.layers[1].content else { panic!("group") };
+    g.children[1].visible = false;
+    // The layers beneath A (0..4 × 0..3) and the group (2..8 × 1..6).
+    let r = Rect::new(0, 0, 8, 6);
+    assert_eq!(step_damage(&before, &after), Some(r));
+    assert_eq!(step_damage(&after, &before), Some(r));
+    assert!(unchanged_outside(&before, &after, r));
+    // Without the layer clipped to the group it stays pass-through: just the layers beneath.
+    before.layers.truncate(2);
+    after.layers.truncate(2);
+    assert_eq!(step_damage(&before, &after), Some(Rect::new(0, 0, 4, 3)));
+    assert!(unchanged_outside(&before, &after, Rect::new(0, 0, 4, 3)));
 }
 
 /// #2883 (P8/P9): a duplicate shares the source's tiles (no pixel copy) and recomposites only
@@ -586,9 +629,23 @@ fn find_layers_by_name() {
     s.execute("layer.renameLayer", json!({"layer": a.0, "name": "Sky photo"})).unwrap();
     s.execute("layer.renameLayer", json!({"layer": b.0, "name": "Photo of sea"})).unwrap();
     assert_eq!(doc(&s).layer(a).unwrap().name, "Sky photo");
-    let r = s.execute("select.findLayers", json!({"name": "PHOTO"})).unwrap();
-    assert_eq!(r["selected"], json!([a.0, b.0]));
-    assert!(s.execute("select.findLayers", json!({"name": "nothing"})).is_err());
+    // #10884: Find Layers filters the Layers panel by Name and leaves the selection alone.
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    let r = s.execute("select.findLayers", json!({"name": " PHOTO "})).unwrap();
+    assert_eq!(r["selected"], json!([a.0, b.0]), "the matching layers, trimmed and ignoring case");
+    assert_eq!(r["layerFilter"], json!({"by": "name", "name": " PHOTO "}), "the app sets the Name text as given");
+    assert_eq!(s.active().unwrap().selected_layers(), [a], "the selection is unchanged");
+    let r = s.execute("select.findLayers", json!({"name": "nothing"})).unwrap();
+    assert_eq!(r["selected"], json!([]), "no match lists nothing and is no error");
+    let all: Vec<u64> = doc(&s).walk().into_iter().map(|(_, _, l)| l.id.0).collect();
+    for blank in ["", "  "] {
+        let r = s.execute("select.findLayers", json!({"name": blank})).unwrap();
+        assert_eq!(r["selected"], json!(all), "a blank name filters nothing, as in the panel: {blank:?}");
+    }
+    let r = s.execute("select.findLayers", json!({})).unwrap();
+    assert_eq!((&r["selected"], &r["layerFilter"]), (&json!([]), &json!({"by": "name"})), "without a name it only switches to Name");
+    assert_eq!(s.active().unwrap().selected_layers(), [a]);
+    assert!(s.execute("select.findLayers", json!({"name": 3})).is_err());
     assert!(s.execute("layer.renameLayer", json!({})).is_err());
 }
 
@@ -1210,13 +1267,314 @@ fn undo_of_clipping_or_channel_exclusion_composites_everything() {
     let _ = rect_layer(&mut s, Rect::new(10, 10, 20, 20));
     let b = rect_layer(&mut s, Rect::new(12, 12, 30, 30));
     select_all(&mut s, &[b]);
-    // Clipping reaches the layers clipped above, outside this layer's bounds.
-    s.execute("layer.setProps", json!({"clipped": true})).unwrap();
+    // #9329: on a pixel layer both are bounded: clipping by the layer (and the clipped layers
+    // above it), channel exclusion by the layer (per pixel where it draws).
+    for p in [json!({"clipped": true}), json!({"channels": [true, false, true]})] {
+        let before = doc(&s).clone();
+        s.execute("layer.setProps", p.clone()).unwrap();
+        let after = doc(&s).clone();
+        s.undo();
+        let r = damage(&s).unwrap_or_else(|| panic!("{p} is bounded"));
+        assert!(r.width() < 100 && unchanged_outside(&after, &before, r), "{p}: {r:?}");
+    }
+    // On a group they change how it composites its children: everything.
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    let g = s.active().unwrap().active_layer.unwrap();
+    assert!(doc(&s).layer(g).unwrap().children().is_some());
+    s.execute("layer.setProps", json!({"layer": g.0, "clipped": true})).unwrap();
     s.undo();
-    assert_eq!(damage(&s), None, "a clipping change recomposites everything");
-    s.execute("layer.setProps", json!({"channels": [true, false, true]})).unwrap();
+    assert_eq!(damage(&s), None, "a group's clipping change recomposites everything");
+    s.execute("layer.setProps", json!({"layer": g.0, "channels": [true, false, true]})).unwrap();
     s.undo();
-    assert_eq!(damage(&s), None, "an excluded-channel change recomposites everything");
+    assert_eq!(damage(&s), None, "a group's excluded-channel change recomposites everything");
+}
+
+/// A new adjustment layer of `kind` (made while `s`'s selection is active, so it masks it).
+fn adjustment(s: &mut Session, kind: &str) -> LayerId {
+    LayerId(s.execute(&format!("layer.newAdjustmentLayer.{kind}"), json!({})).unwrap()["layer"].as_u64().unwrap())
+}
+
+/// Run `id` with `p`, then undo and redo it: each step's damage is bounded, smaller than the
+/// canvas, and covers every pixel it changed (`unchanged_outside`). Returns the step's damage.
+fn bounded_step(s: &mut Session, id: &str, p: serde_json::Value) -> Rect {
+    let before = doc(s).clone();
+    s.execute(id, p).unwrap();
+    let after = doc(s).clone();
+    let canvas = after.bounds();
+    let check = |s: &Session, from: &Document, to: &Document, what: &str| {
+        let r = damage(s).unwrap_or_else(|| panic!("{id} {what}: bounded"));
+        assert!(r.width() * r.height() < canvas.width() * canvas.height(), "{id} {what}: {r:?}");
+        assert!(unchanged_outside(from, to, r), "{id} {what}: {r:?} misses changed pixels");
+        r
+    };
+    let r = check(s, &before, &after, "");
+    s.undo();
+    check(s, &after, &before, "undo");
+    s.redo();
+    check(s, &before, &after, "redo");
+    r
+}
+
+/// #9329, #6533: in a 32-bit document hiding a masked adjustment damages only its mask, over
+/// an opaque Background too. An integer document rounds the whole backdrop after every
+/// visible adjustment layer (#9033), so there it still damages the canvas.
+#[test]
+fn hiding_a_masked_adjustment_damages_only_its_mask() {
+    for depth in [32, 8] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 800, "height": 600, "depth": depth})).unwrap();
+        let c = rect_layer(&mut s, Rect::new(50, 50, 700, 500));
+        s.execute("layer.setProps", json!({"layer": c.0, "opacity": 0.37})).unwrap();
+        let reveal = Rect::new(520, 330, 560, 370);
+        s.execute("select.rect", json!({"x": reveal.x0, "y": reveal.y0, "width": 40, "height": 40})).unwrap();
+        let adj = adjustment(&mut s, "invert");
+        assert!(doc(&s).layer(adj).unwrap().mask.is_some());
+        if depth == 32 {
+            let r = bounded_step(&mut s, "layer.setProps", json!({"layer": adj.0, "visible": false}));
+            assert!(r.contains_rect(&reveal), "{r:?}");
+        } else {
+            s.execute("layer.setProps", json!({"layer": adj.0, "visible": false})).unwrap();
+            assert_eq!(damage(&s), Some(doc(&s).bounds()));
+        }
+    }
+}
+
+/// #9329, #6528: Show Only This Layer, in a document whose only layer that could reach
+/// everywhere was an adjustment, is bounded by where the layers draw.
+#[test]
+fn show_only_with_an_adjustment_is_bounded() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80, "depth": 8, "background": "transparent"})).unwrap();
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(40, 20, 60, 50));
+    s.execute("layer.setProps", json!({"layer": b.0, "opacity": 0.37})).unwrap();
+    let _ = adjustment(&mut s, "invert");
+    let r = bounded_step(&mut s, "layer.showOnly", json!({"layer": a.0}));
+    assert_eq!(r, Rect::new(10, 10, 60, 50));
+}
+
+/// #9329: Bring Forward damages only where the moved layer draws, not the whole canvas.
+#[test]
+fn bring_forward_damages_only_the_moved_layer() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let _b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    let _c = rect_layer(&mut s, Rect::new(60, 60, 70, 70));
+    select_all(&mut s, &[a]);
+    let r = bounded_step(&mut s, "layer.arrange.bringForward", json!({}));
+    assert_eq!(r, Rect::new(10, 10, 30, 30));
+}
+
+/// #9329: Send Backward, its undo and its redo each damage only the moved layer; an
+/// adjustment moving past a layer reaches as far as the layers beneath it at either end.
+#[test]
+fn send_backward_undo_and_redo_are_bounded() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80, "depth": 8, "background": "transparent"})).unwrap();
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    select_all(&mut s, &[b]);
+    // Either layer of the swapped pair is the one that moved.
+    let r = bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
+    assert!(r == Rect::new(20, 20, 50, 50) || r == Rect::new(10, 10, 30, 30), "{r:?}");
+    let _c = rect_layer(&mut s, Rect::new(60, 60, 70, 70));
+    let adj = adjustment(&mut s, "invert");
+    select_all(&mut s, &[adj]);
+    bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
+}
+
+/// #9329: a moved group holding a video layer has no bounded damage, as the video layer itself
+/// has none.
+#[test]
+fn bring_forward_on_a_group_holding_a_video_layer_is_unbounded() {
+    let mut s = session(8);
+    let v = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    s.edit("video", |doc, _| {
+        let l = doc.layer_mut(v).unwrap();
+        let frame = l.surface().unwrap().clone();
+        l.video = Some(photocraft_doc::VideoData::new(vec![frame.clone(), frame], 24.0));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.select", json!({"layer": v.0})).unwrap();
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).skip(1).collect::<Vec<_>>(), vec![g, b]);
+    select_all(&mut s, &[g]);
+    s.execute("layer.arrange.bringForward", json!({})).unwrap();
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).skip(1).collect::<Vec<_>>(), vec![b, g]);
+    assert_eq!(damage(&s), None);
+}
+
+/// #9329: reordering inside a group with a drop shadow damages the shadow too. The moved layer
+/// knocks out the one beneath it, so the group's shape, and with it the shadow, changes.
+#[test]
+fn a_reorder_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(30, 30, 50, 50));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    s.edit("knockout", |doc, _| {
+        let l = doc.layer_mut(k).unwrap();
+        l.advanced.knockout = photocraft_doc::Knockout::Shallow;
+        l.fill_opacity = 0.0;
+        Ok(())
+    })
+    .unwrap();
+    select_all(&mut s, &[k, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(doc(&s).layer(g).unwrap().children().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), vec![k, b]);
+    select_all(&mut s, &[k]);
+    let r = bounded_step(&mut s, "layer.arrange.bringForward", json!({}));
+    assert!(r.contains_rect(&Rect::new(30, 30, 50, 50)), "{r:?}");
+}
+
+/// #9329: deleting a layer inside a group with a drop shadow, and adding it back on undo,
+/// damages the shadow too, which reaches past the layer.
+#[test]
+fn adding_or_deleting_a_layer_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    select_all(&mut s, &[k, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    let r = bounded_step(&mut s, "layer.delete", json!({"layer": k.0}));
+    assert!(r.contains_rect(&Rect::new(20, 20, 30, 30)), "{r:?}");
+}
+
+/// A group holding `layers`, with a drop shadow that reaches about 8 px down and right of them.
+fn shadowed_group(s: &mut Session, layers: &[LayerId]) -> LayerId {
+    select_all(s, layers);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    g
+}
+
+/// [`bounded_step`] for a step that must change canvas pixels, so it can't pass vacuously.
+fn bounded_visible_step(s: &mut Session, id: &str, p: serde_json::Value) -> Rect {
+    let before = photocraft_compose::render(doc(s), doc(s).bounds());
+    let r = bounded_step(s, id, p);
+    assert_ne!(photocraft_compose::render(doc(s), doc(s).bounds()).px, before.px, "{id}: no canvas pixel changed");
+    r
+}
+
+/// #9329: deleting a layer just off the canvas inside a group whose drop shadow reaches onto
+/// it, and adding it back on undo, damages the shadow on the canvas.
+#[test]
+fn deleting_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(-10, 20, -1, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    shadowed_group(&mut s, &[k, b]);
+    bounded_visible_step(&mut s, "layer.delete", json!({"layer": k.0}));
+}
+
+/// #9329: reordering a layer just off the canvas inside a group whose drop shadow reaches onto
+/// it damages the shadow on the canvas. The moved layer knocks out the one beneath it, so the
+/// group's shape, and with it the shadow, changes.
+#[test]
+fn reordering_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(-9, 25, -1, 35));
+    let b = rect_layer(&mut s, Rect::new(-14, 20, -1, 40));
+    s.edit("knockout", |doc, _| {
+        let l = doc.layer_mut(k).unwrap();
+        l.advanced.knockout = photocraft_doc::Knockout::Shallow;
+        l.fill_opacity = 0.0;
+        Ok(())
+    })
+    .unwrap();
+    shadowed_group(&mut s, &[k, b]);
+    select_all(&mut s, &[k]);
+    bounded_visible_step(&mut s, "layer.arrange.bringForward", json!({}));
+}
+
+/// #9329: unclipping a layer inside a group with a drop shadow exposes its pixels outside its
+/// old base, which moves the group's shadow past the layer; clipping it back, on undo and redo,
+/// too.
+#[test]
+fn clipping_and_unclipping_inside_a_shadowed_group_damages_the_shadow() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(25, 25, 45, 45));
+    s.execute("layer.setProps", json!({"layer": b.0, "clipped": true})).unwrap();
+    shadowed_group(&mut s, &[a, b]);
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": false}));
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": true}));
+}
+
+/// #9329: a property change on a layer inside a group with a drop shadow changes the shadow,
+/// which reaches past the layer.
+#[test]
+fn a_property_change_inside_a_shadowed_group_damages_the_shadow() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    shadowed_group(&mut s, &[a, b]);
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": a.0, "opacity": 0.3}));
+}
+
+/// #9329: hiding or deleting a layer at the edge of a group with a Gradient Overlay shrinks the
+/// group's frame, which lays the gradient out again over the rest of the group (#4053).
+#[test]
+fn hiding_or_deleting_a_layer_in_a_group_with_a_gradient_overlay_damages_the_group() {
+    use photocraft_doc::{Effect, FxCommon, Gradient};
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(60, 40, 80, 60));
+    select_all(&mut s, &[a, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(Effect::GradientOverlay {
+            common: FxCommon::new(photocraft_doc::BlendMode::Normal, 1.0),
+            gradient: Gradient::default(),
+            dither: false,
+            interpolation: None,
+        });
+        Ok(())
+    })
+    .unwrap();
+    let r = bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "visible": false}));
+    assert!(r.contains_rect(&Rect::new(10, 10, 30, 30)), "{r:?}");
+    s.undo();
+    let r = bounded_visible_step(&mut s, "layer.delete", json!({"layer": b.0}));
+    assert!(r.contains_rect(&Rect::new(10, 10, 30, 30)), "{r:?}");
+}
+
+/// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
+/// (they change base), on undo and redo too.
+#[test]
+fn clipping_a_layer_damages_it_and_the_clipped_run_above() {
+    let mut s = session(8);
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 40, 40));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 60, 50));
+    let c = rect_layer(&mut s, Rect::new(30, 15, 70, 45));
+    s.execute("layer.setProps", json!({"layer": c.0, "clipped": true})).unwrap();
+    let r = bounded_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": true}));
+    assert_eq!(r, Rect::new(20, 15, 70, 50));
+}
+
+/// #9329: excluding a channel from a pixel layer's blend damages only where it draws.
+#[test]
+fn excluding_a_channel_damages_only_the_layer() {
+    let mut s = session(8);
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 40, 40));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 60, 50));
+    let r = bounded_step(&mut s, "layer.setProps", json!({"layer": b.0, "channels": [true, false, true]}));
+    assert_eq!(r, Rect::new(20, 20, 60, 50));
 }
 
 #[test]

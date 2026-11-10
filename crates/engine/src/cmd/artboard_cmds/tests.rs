@@ -724,6 +724,87 @@ fn moving_an_artboard_left_of_or_above_the_origin_grows_the_canvas_there() {
 }
 
 #[test]
+fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_document() {
+    // #9302: the re-based document moved everything but the Color Sampler points and the
+    // painting symmetry, which then sat on other pixels. They follow, as with Canvas Size.
+    let samplers = |s: &Session| s.active().unwrap().color_samplers.clone();
+    let center = |s: &Session| s.active().unwrap().symmetry.as_ref().and_then(|y| y.preset()).map(|p| p.center);
+    for (cmd, p) in [("layer.translate", json!({"dx": -60, "dy": -30})), ("layer.artboard.set", json!({"x": -50, "y": -20}))] {
+        let mut s = session(8);
+        let gid = board_with_square(&mut s);
+        s.execute("view.colorSamplers.add", json!({"x": 15, "y": 15})).unwrap();
+        s.execute("paint.setSymmetry", json!({"mode": "vertical", "center": [70.0, 20.0]})).unwrap();
+        s.execute("layer.select", json!({"layer": gid.0})).unwrap();
+        s.execute(cmd, p).unwrap();
+        // The board lands at (0, 0) after the document shifted right 50 and down 20; the sampler
+        // is pinned to the canvas, not the board, so it shifts with the document only.
+        assert_eq!(board_rect(&s, gid.0), Rect::new(0, 0, 40, 40), "{cmd}");
+        assert_eq!(samplers(&s), vec![[65.0, 35.0]], "{cmd}");
+        assert_eq!(center(&s), Some([120.0, 40.0]), "{cmd}: the symmetry stays on its pixels");
+    }
+    // A new board left of the canvas shifts the photo right by its overhang.
+    let mut s = session(8);
+    add_square(&mut s, Rect::new(10, 10, 30, 30), [1.0, 0.0, 0.0, 1.0]);
+    s.execute("view.colorSamplers.add", json!({"x": 15, "y": 15})).unwrap();
+    s.execute("layer.new.artboard", json!({"rect": [-200, 0, 100, 80]})).unwrap();
+    assert_eq!(samplers(&s), vec![[215.0, 15.0]]);
+    assert!(red_at(&s, 215, 15));
+    // A board made from layers (or a group) left of the canvas shifts by their overhang.
+    for cmd in ["layer.new.artboardFromLayers", "layer.new.artboardFromGroup"] {
+        let mut s = session(8);
+        add_square(&mut s, Rect::new(10, 10, 30, 30), [1.0, 0.0, 0.0, 1.0]);
+        s.execute("view.colorSamplers.add", json!({"x": 15, "y": 15})).unwrap();
+        add_square(&mut s, Rect::new(-30, 40, -10, 60), [0.0, 0.0, 1.0, 1.0]);
+        if cmd.ends_with("Group") {
+            s.execute("layer.groupLayers", json!({})).unwrap();
+        }
+        s.execute(cmd, json!({})).unwrap();
+        assert_eq!(samplers(&s), vec![[45.0, 15.0]], "{cmd}");
+        assert!(red_at(&s, 45, 15), "{cmd}");
+    }
+    // The "+" button left of a board at the origin shifts by the board and the gap.
+    let mut s = session(8);
+    let gid = board_with_square(&mut s);
+    s.execute("layer.artboard.set", json!({"x": 0, "y": 0})).unwrap();
+    s.execute("view.colorSamplers.add", json!({"x": 5, "y": 5})).unwrap();
+    s.execute("layer.artboard.addBeside", json!({"layer": gid.0, "side": "left"})).unwrap();
+    let by = 40 + GAP;
+    assert_eq!(board_rect(&s, gid.0), Rect::new(by, 0, by + 40, 40));
+    assert_eq!(samplers(&s), vec![[f64::from(by) + 5.0, 5.0]]);
+    assert!(red_at(&s, by + 5, 5));
+    // A board right of the canvas shifts nothing.
+    s.execute("layer.artboard.addBeside", json!({"layer": gid.0, "side": "right"})).unwrap();
+    assert_eq!(samplers(&s), vec![[f64::from(by) + 5.0, 5.0]]);
+}
+
+#[test]
+fn duplicating_a_board_beside_one_past_the_origin_moves_the_color_samplers_with_the_document() {
+    // #9302 review: Layer › Duplicate puts the copy right of its board, but `fit_canvas` still
+    // re-bases a document whose boards were already past the origin (as a PSD can hold them).
+    // Single (`layer`) and several selected layers (`duplicate_selected`) both follow the shift.
+    for multi in [false, true] {
+        let mut s = session(8);
+        let gid = board_with_square(&mut s);
+        s.edit("past the origin", |doc, _| {
+            doc.layer_mut(gid).and_then(|l| l.artboard_mut()).unwrap().rect = Rect::new(-40, 10, 0, 50);
+            Ok(())
+        })
+        .unwrap();
+        let sq = add_square(&mut s, Rect::new(60, 10, 80, 30), [1.0, 0.0, 0.0, 1.0]);
+        s.execute("view.colorSamplers.add", json!({"x": 65, "y": 15})).unwrap();
+        if multi {
+            crate::layer_multi_cmds::set_selection(&mut s, vec![gid, sq], Some(gid), Some(gid)).unwrap();
+            s.execute("layer.duplicate", json!({})).unwrap();
+        } else {
+            s.execute("layer.duplicate", json!({"layer": gid.0})).unwrap();
+        }
+        assert_eq!(board_rect(&s, gid.0), Rect::new(0, 10, 40, 50), "multi {multi}: the document shifted right 40");
+        assert_eq!(s.active().unwrap().color_samplers, vec![[105.0, 15.0]], "multi {multi}");
+        assert!(red_at(&s, 105, 15), "multi {multi}: the sampler is still on the square");
+    }
+}
+
+#[test]
 fn add_beside_places_a_board_on_each_side_and_alt_duplicates_contents() {
     // #3033: the Artboard tool's "+" buttons. Board 40×40 at (10, 10) holding a red square.
     let mut s = session(8);
@@ -1079,4 +1160,29 @@ fn a_layer_centred_just_left_of_a_board_at_negative_coordinates_stays_off_it() {
     // One pixel further right (-3..4, middle 0.5) is on the board.
     s.execute("layer.translate", json!({"layer": id.0, "dx": 1, "dy": 0, "nest": true})).unwrap();
     assert_eq!(doc(&s).artboard_of(id), Some(b));
+}
+
+#[test]
+fn a_layers_array_sets_every_listed_boards_background_in_one_step() {
+    let mut s = session(8);
+    let a = LayerId(s.execute("layer.new.artboard", json!({"rect": [0, 0, 50, 50]})).unwrap()["layer"].as_u64().unwrap());
+    let b = LayerId(s.execute("layer.new.artboard", json!({"rect": [200, 0, 50, 50]})).unwrap()["layer"].as_u64().unwrap());
+    let steps = s.active().unwrap().history.entries().len();
+    s.execute("layer.artboard.set", json!({"layers": [a.0, b.0], "background": "black"})).unwrap();
+    let entries = s.active().unwrap().history.entries();
+    assert_eq!(entries.len(), steps + 1);
+    assert_eq!(entries.last().map(String::as_str), Some("Edit Artboards"));
+    for id in [a, b] {
+        assert_eq!(doc(&s).layer(id).and_then(Layer::artboard).unwrap().background, ArtboardBackground::Black);
+    }
+    s.execute("layer.artboard.set", json!({"layers": [a.0], "background": "custom", "color": "#ff0000"})).unwrap();
+    assert_eq!(s.active().unwrap().history.entries().last().map(String::as_str), Some("Edit Artboard"));
+    // Undo is one step; errors change nothing.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(doc(&s).layer(a).and_then(Layer::artboard).unwrap().background, ArtboardBackground::Black);
+    let n = s.active().unwrap().history.entries().len();
+    assert!(s.execute("layer.artboard.set", json!({"layers": [a.0, 9999], "background": "white"})).is_err());
+    assert!(s.execute("layer.artboard.set", json!({"layers": [], "background": "white"})).is_err());
+    assert!(s.execute("layer.artboard.set", json!({"layers": [a.0]})).is_err());
+    assert_eq!(s.active().unwrap().history.entries().len(), n);
 }

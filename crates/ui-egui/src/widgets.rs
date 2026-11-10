@@ -27,6 +27,7 @@ mod scrub;
 mod slider;
 pub mod swap_arrow;
 pub(super) mod tab_strip;
+pub mod task_bar;
 mod text_field;
 pub mod text_field_menu;
 pub mod tone;
@@ -43,18 +44,22 @@ pub use color::{
 };
 #[cfg(test)]
 use color::{checker_tile_id, checker_uv};
-pub use dropdown::{dropdown, dropdown_hovered, dropdown_literal, dropdown_wheel_hovered, dropdown_with_tooltips, menu_scroll, swatch_popup};
+pub use dropdown::{
+    combo_list, dropdown, dropdown_hovered, dropdown_literal, dropdown_wheel_grouped, dropdown_wheel_hovered, dropdown_with_tooltips, menu_scroll, swatch_popup,
+};
 pub(crate) use fields::compact_wrapping_value_field;
 #[cfg(test)]
 use fields::{FieldOpts, NUMERIC_INPUT_LIMIT, value_field_in};
 pub use fields::{
-    POPUP_ARROW_W, PopupFieldResponse, VALUE_FIELD_H, compact_value_field, elided_label, elided_label_sensed, popup_value_field, value_field, value_field_named,
+    POPUP_ARROW_W, PopupFieldResponse, VALUE_FIELD_H, compact_value_field, elided_label, elided_label_sensed, popup_value_field, typed_text_parses,
+    value_field, value_field_named, value_field_whole_alerting,
 };
 pub(crate) use panel::body_margin;
 pub use panel::{
     FOOTER_BAR, chevron_icon, drop_line, footer_height, hairline, panel_footer, panel_menu_button, pill_tab, section_label, style_spectrum_popup_menu, surface,
     vline,
 };
+pub(crate) use scrub::scrub_label_within;
 pub use scrub::{scrub_label, scrub_option_icon, scrub_option_label};
 #[cfg(test)]
 use slider::DOUBLE_CLICK_S;

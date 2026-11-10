@@ -1,5 +1,8 @@
 //! The crate's integration tests, linked into one test binary.
 
+mod actions_duplicate;
+mod actions_panel_menu;
+mod actions_record_again;
 mod actions_single_history;
 mod affinity;
 mod artboard_export_names;
@@ -13,15 +16,19 @@ mod atn_dialog_filters;
 mod atn_direct_adjustments;
 mod atn_layer_style;
 mod atn_newer_events;
+mod atn_perspective_warp;
 mod atn_reference_forms;
 mod atn_review_regressions;
 mod atn_ripple_amount;
 mod atn_selective_color;
 mod atn_shape_blur;
 mod atn_shear;
+mod atn_stack_modes;
 mod atn_stroke_width;
 mod atn_type_path;
 mod atn_v12;
+mod atn_video_frames;
+mod average_smart;
 mod background_and_mask_depth;
 mod background_layer_consistency;
 mod brush_smoothing;
@@ -35,6 +42,7 @@ mod convert_keeps_references;
 mod copy_shape_placement;
 mod corpus_atn;
 mod crop_content_aware;
+mod crop_content_aware_layers;
 mod crop_delete_off_background;
 mod current_affinity_artboards;
 mod duplicate_layer_comps;

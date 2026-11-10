@@ -28,7 +28,7 @@ const NIKON_BLACK_LEVEL: u16 = 0x003D;
 const SONY_BLACK_LEVEL: u16 = 0x7310;
 const SONY_WB_RGGB_LEVELS: u16 = 0x7313;
 
-fn raw_ifd(t: &Tiff, ifds: &[Ifd]) -> Option<Ifd> {
+pub(crate) fn raw_ifd(t: &Tiff, ifds: &[Ifd]) -> Option<Ifd> {
     ifds.iter()
         .filter(|i| t.tag_uint(i, tag::PHOTOMETRIC) == Some(PHOTOMETRIC_CFA))
         .max_by_key(|i| u64::from(t.tag_uint(i, tag::IMAGE_WIDTH).unwrap_or(0)) * u64::from(t.tag_uint(i, tag::IMAGE_LENGTH).unwrap_or(0)))

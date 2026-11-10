@@ -296,6 +296,54 @@ fn curves_mode_row(ui: &mut egui::Ui, v: &mut Value, key: &str, cx: &EditorCx) -
     e
 }
 
+/// The channel position an Alt/Option+digit selects: 2 is the first channel (the composite),
+/// 3 the next, and so on (#7325). Reads the physical key, which Option changes on macOS.
+fn channel_for_key(event: &egui::Event) -> Option<usize> {
+    let egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } = event else {
+        return None;
+    };
+    if !modifiers.alt || modifiers.command || modifiers.ctrl || modifiers.shift {
+        return None;
+    }
+    let digit = |k: egui::Key| match k {
+        egui::Key::Num2 => Some(0),
+        egui::Key::Num3 => Some(1),
+        egui::Key::Num4 => Some(2),
+        egui::Key::Num5 => Some(3),
+        egui::Key::Num6 => Some(4),
+        _ => None,
+    };
+    digit(physical_key.unwrap_or(*key))
+}
+
+/// Consumes this frame's Alt/Option+2..6 presses, and the character Option types right after
+/// each one on macOS, and selects that entry of the channel popup.
+fn select_channel_by_key(ui: &egui::Ui, id: egui::Id, count: usize) {
+    let picked = ui.input_mut(|i| {
+        let mut last = None;
+        let mut typed = false;
+        i.events.retain(|e| match (channel_for_key(e), e) {
+            (Some(n), _) => {
+                last = Some(n);
+                typed = true;
+                false
+            }
+            (None, egui::Event::Text(_)) if typed => {
+                typed = false;
+                false
+            }
+            _ => {
+                typed = false;
+                true
+            }
+        });
+        last
+    });
+    if let Some(n) = picked.filter(|&n| n < count) {
+        ui.data_mut(|d| d.insert_temp(id, n));
+    }
+}
+
 pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let t = Tokens::get(ui.ctx());
     let space = space_of(v);
@@ -303,6 +351,9 @@ pub(super) fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let state_id = cx.mem.with("curves");
     let mut st: CurveUi = ui.data(|d| d.get_temp(state_id)).unwrap_or_default();
     let isolated = cx.isolated_curve.as_ref();
+    if cx.dialog {
+        select_channel_by_key(ui, cx.mem.with("curves-ch"), channels.len());
+    }
     let ch = editor_channel_picker(ui, cx.mem.with("curves-ch"), &channels);
     if ch != st.channel {
         st = CurveUi { channel: ch, ..Default::default() };
@@ -727,5 +778,130 @@ mod polyline_tests {
         }
         let hit = start.elapsed();
         println!("{iterations} polylines: old 4096 samples {old:?}; direct 256 samples {miss:?}; cached screen line {hit:?}");
+    }
+}
+
+#[cfg(test)]
+mod channel_key_tests {
+    use super::*;
+    use egui::{Event, Key, Modifiers};
+
+    fn press(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }
+    }
+
+    fn cx(dialog: bool, gray: bool) -> EditorCx {
+        EditorCx {
+            mem: egui::Id::unique("channel-key-test"),
+            hist: None,
+            gray,
+            swatches: [[0.0; 3], [1.0; 3]],
+            gradients: Vec::new(),
+            dialog,
+            dynamic_color_sliders: false,
+            isolated_curve: None,
+        }
+    }
+
+    /// Runs one frame of the Curves editor with `events`; returns the selected channel and how
+    /// many key events were left unconsumed.
+    fn frame(ctx: &egui::Context, v: &mut Value, cx: &EditorCx, events: Vec<Event>) -> (usize, usize) {
+        let mut left = 0;
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            curves(ui, v, cx);
+            left = ui.input(|i| i.events.iter().filter(|e| matches!(e, Event::Key { .. })).count());
+        });
+        output.textures_delta.clear();
+        (ctx.data(|d| d.get_temp(cx.mem.with("curves-ch"))).unwrap_or(0), left)
+    }
+
+    #[test]
+    fn alt_digits_select_rgb_channels_by_position() {
+        let cx = cx(true, false);
+        for (key, want) in [(Key::Num3, 1), (Key::Num4, 2), (Key::Num5, 3), (Key::Num2, 0), (Key::Num6, 0)] {
+            let ctx = egui::Context::default();
+            let mut v = json!({});
+            let (ch, left) = frame(&ctx, &mut v, &cx, vec![press(key, Modifiers::ALT)]);
+            assert_eq!(ch, want, "{key:?}");
+            assert_eq!(left, 0, "{key:?} is consumed");
+        }
+    }
+
+    #[test]
+    fn alt_digits_cover_cmyk_and_ignore_keys_past_the_list() {
+        let cx = cx(true, false);
+        let cmyk = || json!({"cyan": {}, "black": {}});
+        for (key, want) in [(Key::Num2, 0), (Key::Num3, 1), (Key::Num6, 4)] {
+            let ctx = egui::Context::default();
+            let (ch, _) = frame(&ctx, &mut cmyk(), &cx, vec![press(key, Modifiers::ALT)]);
+            assert_eq!(ch, want, "{key:?}");
+        }
+        // Gray lists one channel: Alt+3 does nothing.
+        let gray = self::cx(true, true);
+        let ctx = egui::Context::default();
+        let (ch, _) = frame(&ctx, &mut json!({}), &gray, vec![press(Key::Num3, Modifiers::ALT)]);
+        assert_eq!(ch, 0);
+    }
+
+    /// Lab lists Lightness, a and b (no composite); Gray lists one channel. Keys past the list
+    /// select nothing but are still consumed.
+    #[test]
+    fn alt_digits_cover_lab_and_gray() {
+        let rgb = cx(true, false);
+        let lab = || json!({"a": {}});
+        for (key, want) in [(Key::Num2, 0), (Key::Num3, 1), (Key::Num4, 2), (Key::Num5, 0), (Key::Num6, 0)] {
+            let ctx = egui::Context::default();
+            let (ch, left) = frame(&ctx, &mut lab(), &rgb, vec![press(key, Modifiers::ALT)]);
+            assert_eq!((ch, left), (want, 0), "Lab {key:?}");
+        }
+        let gray = cx(true, true);
+        for (key, want) in [(Key::Num2, 0), (Key::Num3, 0), (Key::Num6, 0)] {
+            let ctx = egui::Context::default();
+            let (ch, left) = frame(&ctx, &mut json!({}), &gray, vec![press(key, Modifiers::ALT)]);
+            assert_eq!((ch, left), (want, 0), "Gray {key:?}");
+        }
+        // Past the list after a valid pick: the earlier channel stays.
+        let ctx = egui::Context::default();
+        let mut v = lab();
+        frame(&ctx, &mut v, &rgb, vec![press(Key::Num4, Modifiers::ALT)]);
+        assert_eq!(frame(&ctx, &mut v, &rgb, vec![press(Key::Num5, Modifiers::ALT)]), (2, 0));
+    }
+
+    #[test]
+    fn other_modifiers_and_the_properties_panel_leave_the_keys_alone() {
+        let ctx = egui::Context::default();
+        let dialog = cx(true, false);
+        for m in [Modifiers::NONE, Modifiers::COMMAND, Modifiers::ALT | Modifiers::SHIFT, Modifiers::ALT | Modifiers::COMMAND] {
+            let (ch, left) = frame(&ctx, &mut json!({}), &dialog, vec![press(Key::Num3, m)]);
+            assert_eq!((ch, left), (0, 1), "{m:?}");
+        }
+        let panel = cx(false, false);
+        let (ch, left) = frame(&ctx, &mut json!({}), &panel, vec![press(Key::Num3, Modifiers::ALT)]);
+        assert_eq!((ch, left), (0, 1));
+    }
+
+    #[test]
+    fn the_physical_key_decides_when_it_is_known() {
+        let ctx = egui::Context::default();
+        let cx = cx(true, false);
+        let remapped = Event::Key { key: Key::Num3, physical_key: Some(Key::Q), pressed: true, repeat: false, modifiers: Modifiers::ALT };
+        assert_eq!(frame(&ctx, &mut json!({}), &cx, vec![remapped]), (0, 1));
+        let logical_only = Event::Key { key: Key::Num3, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT };
+        assert_eq!(frame(&ctx, &mut json!({}), &cx, vec![logical_only]), (1, 0));
+    }
+
+    #[test]
+    fn the_character_option_types_is_consumed_with_the_key() {
+        let ctx = egui::Context::default();
+        let cx = cx(true, false);
+        let mut left = Vec::new();
+        let events = vec![press(Key::Num4, Modifiers::ALT), Event::Text("¢".into()), Event::Text("7".into())];
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            curves(ui, &mut json!({}), &cx);
+            left = ui.input(|i| i.events.clone());
+        });
+        output.textures_delta.clear();
+        assert_eq!(left, vec![Event::Text("7".into())]);
+        assert_eq!(ctx.data(|d| d.get_temp::<usize>(cx.mem.with("curves-ch"))), Some(2));
     }
 }

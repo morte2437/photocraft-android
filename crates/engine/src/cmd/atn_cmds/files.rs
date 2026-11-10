@@ -51,21 +51,22 @@ pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
         names.push(name);
         added.push(a);
     }
-    // Play, Conditional and Batch steps call actions by name: follow the renames in the actions just
-    // loaded, each target looked up once by the name the file gave it.
+    // Play, Conditional, Batch and Create Droplet steps call actions by name: follow the renames in
+    // the actions just loaded, each target looked up once by the name the file gave it.
     for a in &mut added {
         for (id, params) in &mut a.steps {
-            // A qualified Batch reference belongs to the file's original set, not to a
-            // foreign set which happens to have the destination override's name.
-            if id == "file.automate.batch" && params.get("set").and_then(Value::as_str) == Some(original_set.as_str()) {
+            // A qualified Batch or Create Droplet reference belongs to the file's original set, not
+            // to a foreign set which happens to have the destination override's name.
+            let by_set = matches!(id.as_str(), "file.automate.batch" | "file.automate.createDroplet");
+            if by_set && params.get("set").and_then(Value::as_str) == Some(original_set.as_str()) {
                 params["set"] = json!(imp.set);
-            } else if id == "file.automate.batch" && params.get("set").is_some_and(|set| !set.is_null()) {
+            } else if by_set && params.get("set").is_some_and(|set| !set.is_null()) {
                 continue;
             }
             let keys: &[&str] = match id.as_str() {
                 "actions.play" => &["action"],
                 "actions.conditional" => &["then", "else"],
-                "file.automate.batch" => &["action"],
+                "file.automate.batch" | "file.automate.createDroplet" => &["action"],
                 _ => &[],
             };
             for key in keys {

@@ -8,8 +8,10 @@
 //!
 //! Output is the sample sequence in raster order: `height` rows of `width ×
 //! components` interleaved samples. Only one interleaved scan holding every
-//! component with sampling factors 1×1 is supported, which is how DNG, CR2
-//! and the TIFF-based raws use it.
+//! component is supported, which is how DNG, CR2 and the TIFF-based raws use
+//! it; [`decode`] takes sampling factors 1×1 only. Canon's sRAW / mRAW frames
+//! (three components, the first sampled 2×1 or 2×2) go through
+//! [`decode_subsampled`], which follows Canon's prediction rather than T.81's.
 
 use crate::error::{RawError, Result};
 
@@ -20,11 +22,21 @@ pub(crate) struct Frame {
     pub width: usize,
     pub height: usize,
     pub components: usize,
+    /// Horizontal and vertical sampling factors of the first component (1 and 1 unless the
+    /// frame is subsampled; the other components are then sampled 1×1).
+    pub h: usize,
+    pub v: usize,
 }
 
 impl Frame {
+    /// Samples in the frame: per MCU, `h × v` of the first component and one of each other.
     pub fn samples(&self) -> Option<usize> {
-        self.width.checked_mul(self.height)?.checked_mul(self.components)
+        let mcus = (self.width / self.h.max(1)).checked_mul(self.height / self.v.max(1))?;
+        mcus.checked_mul(self.h.checked_mul(self.v)?.checked_add(self.components)?.checked_sub(1)?)
+    }
+
+    pub fn is_subsampled(&self) -> bool {
+        self.h != 1 || self.v != 1
     }
 }
 
@@ -343,14 +355,19 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
                     return Err(RawError::malformed(format!("unsupported SOF3 ({precision}-bit, {width}x{height}, {nf} components)")));
                 }
                 comp_ids.clear();
+                let mut factors = Vec::with_capacity(nf);
                 for c in 0..nf {
                     let s = &seg[6 + 3 * c..9 + 3 * c];
-                    if s[1] != 0x11 {
-                        return Err(RawError::unsupported("lossless JPEG with subsampled components"));
-                    }
+                    factors.push(s[1]);
                     comp_ids.push(s[0]);
                 }
-                frame = Some(Frame { precision, width, height, components: nf });
+                // Canon sRAW / mRAW: Y sampled 2×1 or 2×2, Cb and Cr 1×1, whole MCUs only.
+                let (h, v) = match factors.as_slice() {
+                    f if f.iter().all(|&s| s == 0x11) => (1, 1),
+                    [y @ (0x21 | 0x22), 0x11, 0x11] if width % 2 == 0 && height % usize::from(y & 0x0F) == 0 => (2, usize::from(y & 0x0F)),
+                    _ => return Err(RawError::unsupported(format!("lossless JPEG with subsampled components {factors:02x?} ({width}x{height})"))),
+                };
+                frame = Some(Frame { precision, width, height, components: nf, h, v });
             }
             0xC0..=0xC2 => return Err(RawError::unsupported("lossy (DCT) JPEG compressed raw data")),
             0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return Err(RawError::unsupported("hierarchical or arithmetic-coded JPEG")),
@@ -422,6 +439,9 @@ fn parse(data: &[u8]) -> Result<Parsed<'_>> {
 pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>)> {
     let p = parse(data)?;
     let f = p.frame;
+    if f.is_subsampled() {
+        return Err(RawError::unsupported(format!("lossless JPEG with subsampled components ({}x{} luma)", f.h, f.v)));
+    }
     let total = f
         .samples()
         .filter(|&n| n <= max_samples)
@@ -531,10 +551,100 @@ pub(crate) fn decode(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>
     Ok((f, out))
 }
 
+/// Decodes a subsampled frame (Canon sRAW / mRAW: Y sampled 2×1 or 2×2, Cb and Cr 1×1, see
+/// [`Frame::h`]) into its sample sequence in decode order: per MCU the `h × v` Y samples
+/// row-major, then Cb, then Cr; `width / h` MCUs make a row and `height / v` rows the frame.
+///
+/// Only predictor 1 is supported, with Canon's rule instead of T.81's per-component sample
+/// grid: each Y sample is predicted from the Y sample decoded just before it (the previous one
+/// in the MCU, or the last of the previous MCU), Cb and Cr from those of the previous MCU, and
+/// the first MCU of a row from the first MCU of the row above (from `2^(P−Pt−1)` on the first
+/// row of a restart interval).
+pub(crate) fn decode_subsampled(data: &[u8], max_samples: usize) -> Result<(Frame, Vec<u16>)> {
+    let p = parse(data)?;
+    let f = p.frame;
+    let total = f
+        .samples()
+        .filter(|&n| n <= max_samples)
+        .ok_or_else(|| RawError::LimitExceeded(format!("lossless JPEG frame {}x{}x{}", f.width, f.height, f.components)))?;
+    if !f.is_subsampled() || f.components != 3 {
+        return Err(RawError::malformed("lossless JPEG frame is not subsampled YCbCr"));
+    }
+    if p.predictor != 1 {
+        return Err(RawError::unsupported(format!("subsampled lossless JPEG with predictor {}", p.predictor)));
+    }
+    if p.entropy.len().saturating_mul(8) < total / 2 {
+        return Err(RawError::malformed("lossless JPEG data is truncated"));
+    }
+    // Each component's table (components may share one).
+    let [ty, tcb, tcr] = match p.comp_table.as_slice() {
+        &[a, b, c] => [&p.tables[a], &p.tables[b], &p.tables[c]],
+        _ => return Err(RawError::malformed("lossless JPEG scan tables")),
+    };
+    let luma = f.h * f.v;
+    let per_mcu = luma + 2;
+    let mcus = f.width / f.h;
+    let row_len = mcus * per_mcu;
+    if row_len == 0 {
+        return Err(RawError::malformed("empty lossless JPEG frame"));
+    }
+    // The restart interval counts MCUs.
+    if p.restart != 0 && p.restart % mcus != 0 {
+        return Err(RawError::unsupported("lossless JPEG restart interval that is not whole rows"));
+    }
+    let rows_per_interval = if p.restart == 0 { usize::MAX } else { p.restart / mcus };
+    let mut out = vec![0u16; total];
+    let mut bits = Bits::new(p.entropy);
+    let initial = 1i32 << (f.precision - p.point_transform - 1);
+    // First Y, Cb and Cr of the row above: the first MCU's predictors.
+    let mut top = [initial; 3];
+    let mut interval_row = 0usize;
+    for row in out.chunks_exact_mut(row_len) {
+        if interval_row == rows_per_interval {
+            bits.restart()?;
+            interval_row = 0;
+        }
+        if interval_row == 0 {
+            top = [initial; 3];
+        }
+        let (mut y, mut cb, mut cr) = (top[0], top[1], top[2]);
+        for (m, mcu) in row.chunks_exact_mut(per_mcu).enumerate() {
+            let (ys, c) = mcu.split_at_mut(luma);
+            for (k, s) in ys.iter_mut().enumerate() {
+                // The first Y of the row comes from the row above, every other from the previous Y.
+                let pred = if m == 0 && k == 0 { top[0] } else { y };
+                *s = (pred + bits.diff(ty)?) as u16;
+                y = i32::from(*s);
+                if m == 0 && k == 0 {
+                    top[0] = y;
+                }
+            }
+            if let [scb, scr] = c {
+                *scb = (cb + bits.diff(tcb)?) as u16;
+                *scr = (cr + bits.diff(tcr)?) as u16;
+                (cb, cr) = (i32::from(*scb), i32::from(*scr));
+            }
+            if m == 0 {
+                (top[1], top[2]) = (cb, cr);
+            }
+        }
+        interval_row += 1;
+        if bits.fake > 64 {
+            return Err(RawError::malformed("lossless JPEG data is truncated"));
+        }
+    }
+    if p.point_transform > 0 {
+        for v in &mut out {
+            *v <<= p.point_transform;
+        }
+    }
+    Ok((f, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testgen::{lj92_encode, lj92_encode_tables};
+    use crate::testgen::{lj92_encode, lj92_encode_sraw, lj92_encode_sraw_tables, lj92_encode_tables};
 
     /// Deterministic pseudo-random samples with some structure (smooth + noise).
     fn samples(n: usize, precision: u8, seed: u64) -> Vec<u16> {
@@ -559,7 +669,7 @@ mod tests {
                     let v = samples(w * h * comps, precision, u64::from(predictor) * 31 + comps as u64);
                     let j = lj92_encode(&v, w, h, comps, precision, predictor, None);
                     let (f, out) = decode(&j, usize::MAX).unwrap();
-                    assert_eq!(f, Frame { precision, width: w, height: h, components: comps });
+                    assert_eq!(f, Frame { precision, width: w, height: h, components: comps, h: 1, v: 1 });
                     assert_eq!(out, v, "P={precision} pred={predictor} comps={comps}");
                 }
             }
@@ -591,7 +701,7 @@ mod tests {
                     let v = samples(w * h * comps, 14, u64::from(predictor) * 7 + comps as u64);
                     let j = lj92_encode_tables(&v, w, h, table_of, 14, predictor, restart_rows);
                     let (f, out) = decode(&j, usize::MAX).unwrap();
-                    assert_eq!(f, Frame { precision: 14, width: w, height: h, components: comps });
+                    assert_eq!(f, Frame { precision: 14, width: w, height: h, components: comps, h: 1, v: 1 });
                     assert_eq!(out, v, "tables={table_of:?} pred={predictor} restart={restart_rows:?}");
                 }
             }
@@ -662,5 +772,68 @@ mod tests {
         }
         flooded.extend_from_slice(&j[2..]); // the rest of the valid stream
         assert!(matches!(decode(&flooded, usize::MAX), Err(RawError::Malformed(_))));
+    }
+
+    #[test]
+    fn subsampled_roundtrip() {
+        for (h, v) in [(2usize, 2usize), (2, 1)] {
+            let (w, ht) = (14, 6);
+            let n = (w / h) * (ht / v) * (h * v + 2);
+            for precision in [12u8, 15, 16] {
+                for restart in [None, Some(1), Some(ht / v)] {
+                    let seq = samples(n, precision, h as u64 * 7 + v as u64);
+                    let j = lj92_encode_sraw(&seq, w, ht, h, v, precision, restart);
+                    let f = frame(&j).unwrap();
+                    assert_eq!((f.h, f.v, f.samples()), (h, v, Some(n)));
+                    let (_, out) = decode_subsampled(&j, usize::MAX).unwrap();
+                    assert_eq!(out, seq, "{h}x{v} P={precision} restart {restart:?}");
+                    // The plain decoder refuses subsampled frames instead of mislaying them.
+                    assert!(matches!(decode(&j, usize::MAX), Err(RawError::Unsupported(_))));
+                }
+            }
+        }
+        // Extreme values exercise the 16-bit and 32768 difference categories.
+        let seq: Vec<u16> = (0..7 * 3 * 6).map(|i| if (i / 5) % 2 == 0 { 0 } else { 65535 }).collect();
+        let j = lj92_encode_sraw(&seq, 14, 6, 2, 2, 16, Some(1));
+        assert_eq!(decode_subsampled(&j, usize::MAX).unwrap().1, seq);
+        // Y and the chroma on separate tables, or each its own: the scan maps every component
+        // to its table even when components share one.
+        for table_of in [[0, 1, 1], [0, 1, 2], [1, 0, 0]] {
+            let seq = samples(7 * 3 * 6, 15, 5);
+            let j = lj92_encode_sraw_tables(&seq, 14, 6, (2, 2), table_of, 15, Some(1));
+            assert_eq!(decode_subsampled(&j, usize::MAX).unwrap().1, seq, "tables {table_of:?}");
+        }
+    }
+
+    #[test]
+    fn subsampled_hostile_streams_error_without_panicking() {
+        let seq = samples(7 * 3 * 6, 15, 3);
+        let j = lj92_encode_sraw(&seq, 14, 6, 2, 2, 15, Some(1));
+        for n in 0..j.len() {
+            let _ = decode_subsampled(&j[..n], usize::MAX);
+        }
+        let mut s = 0x0123_4567u64;
+        for _ in 0..2000 {
+            let mut b = j.clone();
+            for _ in 0..4 {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let at = (s >> 33) as usize % b.len();
+                b[at] = (s >> 20) as u8;
+            }
+            let _ = decode_subsampled(&b, 1 << 20);
+        }
+        assert!(matches!(decode_subsampled(&j, 10), Err(RawError::LimitExceeded(_))));
+        // A frame that is not subsampled, or another predictor, is not Canon sRAW.
+        let plain = lj92_encode(&samples(14 * 6 * 3, 15, 1), 14, 6, 3, 15, 1, None);
+        assert!(decode_subsampled(&plain, usize::MAX).is_err());
+        let mut p6 = j.clone();
+        let sos = p6.windows(2).position(|w| w == [0xFF, 0xDA]).unwrap();
+        p6[sos + 11] = 6; // Ss (predictor) after Ns and three component selectors
+        assert!(matches!(decode_subsampled(&p6, usize::MAX), Err(RawError::Unsupported(_))));
+        // Sampling layouts other than Canon's are refused at the frame header.
+        let mut odd = j.clone();
+        let sof = odd.windows(2).position(|w| w == [0xFF, 0xC3]).unwrap();
+        odd[sof + 14] = 0x21; // Cb subsampled too
+        assert!(matches!(frame(&odd), Err(RawError::Unsupported(_))));
     }
 }

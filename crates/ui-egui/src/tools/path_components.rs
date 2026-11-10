@@ -166,14 +166,25 @@ pub(crate) fn press(app: &mut PhotocraftApp, at: [f64; 2], shift: bool) {
 /// components, one History step. `None` with none or all of them selected: the whole path moves
 /// instead, which keeps a live rectangle or ellipse live.
 pub(crate) fn move_selected(app: &mut PhotocraftApp, d: [f64; 2]) -> Option<Result<(), String>> {
-    let (r, path, heads) = selected(app)?;
-    if target(app).map(|(t, _)| t) != Some(r) || heads.len() >= path.components().len() {
-        return None;
-    }
+    let (r, _) = moving_selected(app)?;
     let mut params = r.params(app);
     params["anchors"] = json!(app.ui.direct_selection.anchors);
     params["move"] = json!(d);
     Some(run_selected_command(app, "path.moveAnchors", params))
+}
+
+/// The path [`move_selected`] moves components of, with some but not all of them selected.
+fn moving_selected(app: &PhotocraftApp) -> Option<(PathRef, Path)> {
+    let (r, path, heads) = selected(app)?;
+    (target(app).map(|(t, _)| t) == Some(r) && heads.len() < path.components().len()).then_some((r, path))
+}
+
+/// The path [`move_selected`] leaves after a drag by `d`, for the drag's live preview: the
+/// selected components moved with their handles, as `path.moveAnchors` moves them.
+pub(crate) fn moved_selected(app: &PhotocraftApp, d: [f64; 2]) -> Option<(PathRef, Path)> {
+    let (r, mut path) = moving_selected(app)?;
+    photocraft_vector::edit::move_anchors(&mut path, &app.ui.direct_selection.anchors, d).ok()?;
+    Some((r, path))
 }
 
 /// Do `+` and `-` pick a Path Operation with `tool`? The tools whose options bar has the menu.

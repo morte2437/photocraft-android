@@ -50,7 +50,7 @@ fn upright_preview(raw: &[u8], jpeg: &[u8], limits: &photocraft_raw::Limits) -> 
 
 /// Camera Raw's Temperature, Tint, Exposure, Shadows, Highlights, Clarity, Texture and Dehaze,
 /// applied while developing the sensor data (the open-time Camera Raw dialog) instead of to the
-/// developed RGB pixels, and the demosaic method.
+/// developed RGB pixels, the demosaic method, and the crop.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RawTuning {
     /// −100…100, as `photocraft_algo::camera_raw::CameraRaw::temperature`.
@@ -71,6 +71,9 @@ pub struct RawTuning {
     pub texture: f32,
     /// −100…100, as `CameraRaw::dehaze`.
     pub dehaze: f32,
+    /// The crop of the raw's sidecar ([`crate::camera_raw_xmp::Crop`], in the stored
+    /// orientation): the developed frame is cropped to it once it is upright.
+    pub crop: Option<crate::camera_raw_xmp::Crop>,
 }
 
 /// Develops a raw file with `tuning` applied at the raw stage: Exposure as develop exposure,
@@ -106,7 +109,15 @@ pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<
         }
         None => false,
     };
-    let dev = photocraft_raw::develop_sensor(&sensor, &opts).map_err(IoError::Raw)?;
+    let mut dev = photocraft_raw::develop_sensor(&sensor, &opts).map_err(IoError::Raw)?;
+    let cropped = match tuning.crop {
+        Some(crop) => {
+            let o = if opts.orient { dev.info.orientation } else { 1 };
+            crop_developed(&mut dev, crop.oriented(o))?;
+            format!(", cropped to {}×{}", dev.width, dev.height)
+        }
+        None => String::new(),
+    };
     let wb = if wb_applied {
         format!("as-shot white balance, temperature {:+.0}, tint {:+.0}", tuning.temperature, tuning.tint)
     } else {
@@ -117,8 +128,24 @@ pub fn import_raw_tuned(name: &str, bytes: &[u8], tuning: &RawTuning) -> Result<
         .filter(|(_, v)| *v != 0.0)
         .map(|(k, v)| format!(", {k} {v:+.0}"))
         .collect::<String>();
-    let summary = format!("developed in Camera Raw (exposure {:+.2} EV{tone}, {wb}, {} demosaic)", tuning.exposure, tuning.demosaic.id());
+    let summary = format!("developed in RAW Develop (exposure {:+.2} EV{tone}, {wb}, {} demosaic{cropped})", tuning.exposure, tuning.demosaic.id());
     Ok((developed_document(name, bytes, format, dev, &summary)?, wb_applied))
+}
+
+/// Crops the upright developed frame to `crop` (fractions of it), as Camera Raw crops a raw.
+fn crop_developed(dev: &mut photocraft_raw::Developed, crop: crate::camera_raw_xmp::Crop) -> Result<(), IoError> {
+    let (w, h) = (dev.width as usize, dev.height as usize);
+    let bad = || IoError::Raw(RawError::Malformed(format!("the developed {w}x{h} frame holds fewer samples than its size")));
+    let Some((x0, y0, x1, y1)) = crop.pixels(w, h) else { return Ok(()) };
+    let mut rgb = Vec::with_capacity((x1 - x0) * (y1 - y0) * 3);
+    for y in y0..y1 {
+        let row = y.checked_mul(w).ok_or_else(bad)?;
+        rgb.extend_from_slice(dev.rgb.get((row + x0) * 3..(row + x1) * 3).ok_or_else(bad)?);
+    }
+    dev.rgb = rgb;
+    dev.width = u32::try_from(x1 - x0).map_err(|_| bad())?;
+    dev.height = u32::try_from(y1 - y0).map_err(|_| bad())?;
+    Ok(())
 }
 
 /// The tone curve `bytes` develop with by default: the fitted look's for a file without colour

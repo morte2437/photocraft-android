@@ -1,6 +1,6 @@
 //! Bounded reads from the repeating document tile used by Pattern Preview.
 
-use super::{BlendMode, BrushSettings, Document, LayerId, Rect, Region, Result, SampleLayers, StrokePoint, Surface, alpha_index, apply_coverage, bad};
+use super::{BlendMode, BrushSettings, Document, LayerId, Rect, Region, Result, SampleLayers, Stroke, StrokePoint, Surface, alpha_index, apply_coverage, bad};
 
 /// At most four disjoint rectangles in the document tile. Projecting the dirty area separately
 /// from the stroke bounds avoids scanning the whole document when a small dab crosses a seam.
@@ -23,6 +23,33 @@ pub(super) fn project(rect: Rect, tile: Rect) -> Vec<Rect> {
     ys.into_iter().flat_map(|(y0, y1)| xs.iter().map(move |&(x0, x1)| Rect::new(x0, y0, x1, y1))).collect()
 }
 
+/// A composite tool's stroke wrapped around the document: `paint` gives the pixels for a
+/// rectangle in the stroke's own coordinates, from the target as it was before the stroke, and
+/// they go on through the stroke's coverage wherever it repeats on the document.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stroke(
+    pre: &Document,
+    target: &mut Surface,
+    stroke: &Stroke,
+    selection: Option<&Surface>,
+    lock: bool,
+    mode: BlendMode,
+    cmd: &str,
+    mut paint: impl FnMut(&Surface, Rect) -> Result<Region>,
+) -> Result<Rect> {
+    let mut renderer = photocraft_paint::StrokeRenderer::new(&stroke.brush, None, 1.0);
+    renderer.push(&stroke.points);
+    renderer.finish();
+    let before = target.clone();
+    let bounds = renderer.bounds();
+    Composite { target, before: &before, tile: pre.bounds(), opacity: stroke.brush.opacity, selection, lock, mode, cmd }.draw(
+        bounds,
+        &stroke.brush,
+        &stroke.points,
+        |r| paint(&before, r),
+    )
+}
+
 /// Composite periodic copies of one stroke, restoring each dirty patch from pre-stroke pixels.
 /// Each dab wraps once, then builds flow towards its opacity ceiling. Stroke opacity and
 /// selection are applied once after all dabs, including repeated visits through other tiles.
@@ -34,6 +61,8 @@ pub(super) struct Composite<'a> {
     pub selection: Option<&'a Surface>,
     pub lock: bool,
     pub mode: BlendMode,
+    /// The command an over-budget stroke's error names.
+    pub cmd: &'a str,
 }
 
 impl Composite<'_> {
@@ -138,7 +167,7 @@ impl Composite<'_> {
                 );
                 *work = work.saturating_add(r.width() as u64 * r.height() as u64);
                 if *work > 64 * 1024 * 1024 {
-                    return Err(bad("paint.cloneStamp", "wrapped stroke exceeds its coverage budget"));
+                    return Err(bad(self.cmd, "wrapped stroke exceeds its coverage budget"));
                 }
                 ctx.rasterize_into(dab, dual, r, &mut values, wet.then_some(&mut depths));
                 let mut sampled = None;

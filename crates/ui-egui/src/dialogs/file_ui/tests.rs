@@ -1157,3 +1157,75 @@ fn a_turn_takes_the_printable_area_with_the_paper() {
         assert!(f.get("printable").is_none(), "{area}");
     }
 }
+
+#[test]
+fn the_web_preview_selects_slices_and_saves_only_the_selected_ones() {
+    // A 120 × 80 document with a user slice on its left half; the right half is auto slice 02.
+    let (mut app, _) = app();
+    app.run("slice.new", json!({"rect": [0, 0, 60, 80], "name": "left"})).unwrap();
+    let id = open_web(&mut app);
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    fields.insert("__view".into(), json!("optimized"));
+    fields.insert("format".into(), json!("png24"));
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).build_ui_state(
+        |ui, app| {
+            crate::color_picker_ui::widget_tick(app, ui.ctx());
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("semibold".into()))) {
+                crate::dialogs::show(app, ui.ctx());
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, Default::default());
+    h.run_steps(5);
+    let r = &h.state().ui.dialogs[0].fields["__previewRects"][0];
+    let pane = egui::Rect::from_min_max(
+        egui::pos2(r[0].as_f64().unwrap() as f32, r[1].as_f64().unwrap() as f32),
+        egui::pos2(r[2].as_f64().unwrap() as f32, r[3].as_f64().unwrap() as f32),
+    );
+    // The preview fits the document in the pane, centred.
+    let scale = (pane.width() / 120.0).min(pane.height() / 80.0);
+    let at = |x: f32, y: f32| pane.center() + egui::vec2(x - 60.0, y - 40.0) * scale;
+    let click = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>, pos: egui::Pos2, modifiers: egui::Modifiers| {
+        // The window reports held modifiers as their own event as well as on the button events.
+        h.event(egui::Event::ModifiersChanged(modifiers));
+        h.event(egui::Event::PointerMoved(pos));
+        h.step();
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers });
+        h.step();
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(2);
+    };
+    let selected = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().ui.dialogs[0].fields.get("__selectedSlices").cloned();
+    click(&mut h, at(30.0, 40.0), egui::Modifiers::NONE);
+    assert_eq!(selected(&h), Some(json!([1])), "a click selects the slice under the pointer");
+    click(&mut h, at(90.0, 40.0), egui::Modifiers::SHIFT);
+    assert_eq!(selected(&h), Some(json!([1, 2])), "Shift-click adds a slice");
+    click(&mut h, at(30.0, 40.0), egui::Modifiers::SHIFT);
+    assert_eq!(selected(&h), Some(json!([2])), "Shift-click on a selected slice removes it");
+    // The view's own drag still pans rather than selecting.
+    assert_eq!(h.state().ui.dialogs[0].fields["__zoom"], json!(null));
+
+    let mut fields = h.state().ui.dialogs[0].fields.clone();
+    fields.insert("slices".into(), json!("selected"));
+    let p = web_params(&fields, true).unwrap();
+    assert_eq!(p["numbers"], json!([2]));
+    fields.insert("__selectedSlices".into(), json!([]));
+    assert!(web_params(&fields, true).is_err(), "Selected Slices with nothing selected is an error, not every slice");
+    assert!(web_params(&fields, false).unwrap().get("numbers").is_none(), "a document without slices ignores the choice");
+
+    let mut app = h.into_state();
+    let downloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = downloads.clone();
+    app.services.write = Some(Box::new(move |path, _| {
+        captured.borrow_mut().push(path.to_string());
+        Ok(())
+    }));
+    let mut p = p;
+    p["dir"] = json!(".");
+    p["html"] = json!(false);
+    download_for_web(&mut app, p).unwrap();
+    let files = downloads.borrow();
+    assert_eq!(files.len(), 1, "only the selected slice is saved: {files:?}");
+    assert!(!files[0].contains("left"), "{files:?}");
+}

@@ -38,7 +38,7 @@ const FILTER_ID: i32 = 1023;
 const NAME: &str = "Perspective Warp...";
 pub(super) const TEMPLATE_KEY: &str = "__perspectiveWarpPsd";
 /// Far more planes than anyone lays out by hand; bounds the corner linking (quadratic).
-const MAX_QUADS: usize = 256;
+pub const MAX_QUADS: usize = 256;
 const MAX_VERTICES: usize = 4 * MAX_QUADS;
 const MAX_TEMPLATE_BYTES: usize = 1 << 20;
 
@@ -74,29 +74,29 @@ fn quads(f: &Descriptor) -> Option<Vec<[usize; 4]>> {
         .map(|q| {
             let Value::Descriptor(q) = q else { return None };
             let Some(Value::List(ix)) = q.get("indices") else { return None };
-            let ix: Vec<usize> = ix
-                .iter()
-                .map(|i| match i {
-                    Value::Integer(i) => usize::try_from(*i).ok(),
-                    _ => None,
-                })
-                .collect::<Option<_>>()?;
-            ix.try_into().ok()
+            let [Value::Integer(a), Value::Integer(b), Value::Integer(c), Value::Integer(d)] = ix.as_slice() else { return None };
+            Some([usize::try_from(*a).ok()?, usize::try_from(*b).ok()?, usize::try_from(*c).ok()?, usize::try_from(*d).ok()?])
         })
         .collect()
 }
 
-/// The planes a `perspectiveWarpTransform` descriptor describes; `None` when it is inconsistent.
-fn planes_of(f: &Descriptor) -> Option<Vec<Plane>> {
+/// Reads the document-space planes and original corner indices from Perspective Warp geometry.
+/// Callers validate the enclosing descriptor and target according to the file format.
+pub fn indexed_geometry(f: &Descriptor) -> Option<(Vec<Plane>, Vec<[usize; 4]>)> {
     let (src, dst) = (points(f, "vertices")?, points(f, "warpedVertices")?);
     if src.len() != dst.len() {
         return None;
     }
     let corners =
         |list: &[[f64; 2]], q: &[usize; 4]| -> Option<[[f64; 2]; 4]> { Some([*list.get(q[0])?, *list.get(q[1])?, *list.get(q[2])?, *list.get(q[3])?]) };
-    let planes: Vec<Plane> = quads(f)?.iter().map(|q| Some(Plane { src: corners(&src, q)?, dst: corners(&dst, q)? })).collect::<Option<_>>()?;
+    let indices = quads(f)?;
+    let planes: Vec<Plane> = indices.iter().map(|q| Some(Plane { src: corners(&src, q)?, dst: corners(&dst, q)? })).collect::<Option<_>>()?;
     PerspectiveMap::new(&planes)?;
-    Some(planes)
+    Some((planes, indices))
+}
+
+fn planes_of(f: &Descriptor) -> Option<Vec<Plane>> {
+    indexed_geometry(f).map(|(planes, _)| planes)
 }
 
 /// `layer.smartObjects.perspectiveWarp` params for a Perspective Warp item.
@@ -137,7 +137,8 @@ fn template(params: &J) -> Result<Option<Descriptor>, String> {
 /// The planes to write: as rendered, so a `straighten` is baked in.
 fn export_planes(params: &J) -> Result<Vec<Plane>, String> {
     let object = params.as_object().ok_or("Perspective Warp parameters must be an object")?;
-    if let Some(k) = object.keys().find(|k| !super::is_meta(k) && !["planes", "straighten", "interpolation"].contains(&k.as_str())) {
+    let supported = |k: &str| super::is_meta(k) || ["planes", "straighten", "interpolation"].contains(&k) || (k == "target" && params["target"] == "pixels");
+    if let Some(k) = object.keys().find(|k| !supported(k)) {
         return Err(format!("Perspective Warp setting `{k}` has no PSD equivalent"));
     }
     let mut planes: Vec<Plane> =
@@ -161,7 +162,7 @@ fn pnt(p: [f64; 2]) -> Value {
 
 /// `vertices`, `warpedVertices` and `quads` for `planes`; a corner shared by several planes (same
 /// layout and warped position) is written once.
-fn geometry(planes: &[Plane]) -> (Value, Value, Value) {
+pub fn geometry(planes: &[Plane]) -> (Value, Value, Value) {
     let mut corners: Vec<([f64; 2], [f64; 2])> = Vec::new();
     let mut quads = Vec::with_capacity(planes.len());
     for p in planes {

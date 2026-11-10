@@ -348,7 +348,7 @@ fn web_colors_and_current_swatch_still_update_the_picker() {
     assert_eq!(h.get_by_role(Role::TextInput).value().as_deref(), Some("003366"), "hex field follows the snap while it has focus");
     h.get_by_label("Only Web Colors").click();
     h.run_steps(2);
-    h.get_by_label("Click to restore the current colour").click();
+    h.get_by_label("Click to restore the current color").click();
     h.run_steps(2);
     assert_eq!(color(&h), "#123456");
 }

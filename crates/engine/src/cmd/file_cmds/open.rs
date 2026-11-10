@@ -1,9 +1,5 @@
 use super::paths::{file_name, read_file, stem, template_name};
-use super::{
-    Affine, Arc, Document, EngineError, Layer, LayerContent, LayerId, PixelFormat, Resample, Result, Session, SmartObject, SmartSource, Value, f64_param, json,
-    str_param, translate_surface,
-};
-use crate::jobs::JobCtx;
+use super::{Arc, Document, EngineError, Layer, LayerContent, LayerId, PixelFormat, PlaceSteps, Result, Session, Value, json, str_param};
 
 /// Input and successfully opened document identities of one Override Open scratch session.
 pub(crate) struct BatchOpen {
@@ -78,9 +74,15 @@ fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult
 /// The one import path every caller shares: allocation checkpoint, native `.pcraft` and format
 /// dispatch through `photocraft_io::import_with_options`, typed memory refusals, and the
 /// preview-only refusal wherever the import came from.
-fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult> {
+pub(super) fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult> {
+    import_result_for_open(name, bytes, opts).map(|(r, _)| r)
+}
+
+/// [`import_result_with`], also telling whether a PSD/PSB had damaged data it recovered from, as
+/// File › Open's job learns it (`photocraft_io::import_for_open`), so an interactive caller can ask.
+pub(super) fn import_result_for_open(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<(photocraft_io::ImportResult, bool)> {
     crate::allocation::checkpoint("importing document")?;
-    let r = photocraft_io::import_with_options(name, bytes, opts).map_err(|e| crate::error::io_open_error(name, e))?;
+    let (r, damaged) = photocraft_io::import_for_open(name, bytes, opts).map_err(|e| crate::error::io_open_error(name, e))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
     if r.preview_only {
@@ -88,7 +90,7 @@ fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOpti
             "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
         )));
     }
-    Ok(r)
+    Ok((r, damaged))
 }
 
 // ---------- close / revert / save a copy / open as ----------
@@ -287,7 +289,8 @@ pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
     // does not keep the tile share), and the import re-checks the exact split before decoding.
     let budget = photocraft_io::memory::resolve_budget_with_scratch(photocraft_io::memory::MemorySnapshot::current(), None, u64::MAX);
     if preflight.required > budget.hard_limit {
-        return Err(EngineError::PsdHardBudget { name: preflight.name, required: preflight.required, limit: budget.hard_limit });
+        let free_memory = budget.refusal_free_memory(preflight.required);
+        return Err(EngineError::PsdHardBudget { name: preflight.name, required: preflight.required, limit: budget.hard_limit, free_memory });
     }
     let started = s.start_open_approved_with_background(
         &preflight.name,
@@ -325,46 +328,49 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
 /// Run a place: in the background when the command was started with [`Session::start`].
 fn place_input(s: &mut Session, input: PlaceInput) -> Result<Value> {
     let label = input.job_label();
-    crate::jobs::run(s, &label, true, move |ctx| prepare_place(input, ctx), apply_place)
+    crate::jobs::run_stepped(s, &label, true, PlaceSteps::new(input, s.cooperative_jobs()), apply_place)
 }
 
 /// The file a place reads.
-enum PlaceFile {
+pub(super) enum PlaceFile {
     /// Its contents, already read (a dropped or picked file with no path, a script's bytes).
-    Bytes(Vec<u8>),
-    /// Its path, read by [`prepare_place`]: on the job's worker when the place runs in the
+    Bytes(Arc<Vec<u8>>),
+    /// Its path, read by [`PlaceSteps`]: on the job's worker when the place runs in the
     /// background, so a large file doesn't hold up the window while it is read.
     Path(String),
 }
 
-/// Everything a place reads from the session, taken up front so [`prepare_place`] can run on a
+/// Everything a place reads from the session, taken up front so [`PlaceSteps`] can run on a
 /// worker that never sees the [`Session`].
 pub(crate) struct PlaceInput {
-    name: String,
-    file: PlaceFile,
-    linked: Option<String>,
-    params: Value,
-    canvas: (f64, f64),
-    fmt: PixelFormat,
-    opts: photocraft_io::ImportOptions,
+    pub(super) name: String,
+    pub(super) file: PlaceFile,
+    pub(super) linked: Option<String>,
+    pub(super) params: Value,
+    pub(super) canvas: (f64, f64),
+    pub(super) fmt: PixelFormat,
+    pub(super) opts: photocraft_io::ImportOptions,
     /// Preferences ▸ General ▸ Resize Image During Place, unless the params say otherwise.
-    fit: bool,
+    pub(super) fit: bool,
     /// Preferences ▸ General ▸ Always Create Smart Objects When Placing, unless the params say
     /// otherwise. A linked place is always a smart object.
-    smart: bool,
+    pub(super) smart: bool,
     /// The document as the job sees it, for rendering a vector source at its placement scale. A
     /// path isn't read yet, so whether it is a vector source is decided once it is.
-    doc: Option<Arc<Document>>,
+    pub(super) doc: Option<Arc<Document>>,
     /// The frame the image goes into: the active layer's, `"frame"` in the params, or none
     /// (`"frame": false`). Its image renders through a smart object.
-    frame: Option<(LayerId, photocraft_doc::Frame)>,
+    pub(super) frame: Option<(LayerId, photocraft_doc::Frame)>,
 }
 
 impl PlaceInput {
+    /// The input of a place of `bytes` already read (named `name`; `linked`: Place Linked to that path).
     pub(crate) fn new(s: &Session, name: &str, bytes: Vec<u8>, linked: Option<String>, p: &Value) -> Result<Self> {
-        Self::with_file(s, name, PlaceFile::Bytes(bytes), linked, p)
+        Self::with_file(s, name, PlaceFile::Bytes(Arc::new(bytes)), linked, p)
     }
 
+    /// The input of a place of `file`, with the destination (canvas or frame), preferences and
+    /// import settings taken from the session up front.
     fn with_file(s: &Session, name: &str, file: PlaceFile, linked: Option<String>, p: &Value) -> Result<Self> {
         let d = s.active().ok_or(EngineError::NoDocument)?;
         let prefs = s.prefs();
@@ -430,115 +436,15 @@ impl PlaceInput {
 
 /// A place decoded, flattened and fitted, ready to be inserted by [`apply_place`].
 pub(crate) struct Prepared {
-    content: LayerContent,
-    layer_name: String,
+    pub(super) content: LayerContent,
+    pub(super) layer_name: String,
     /// The history step's name.
-    label: &'static str,
-    scale: f64,
-    bounds: [f64; 4],
-    smart: bool,
+    pub(super) label: &'static str,
+    pub(super) scale: f64,
+    pub(super) bounds: [f64; 4],
+    pub(super) smart: bool,
     /// The frame the layer fills, if any (it becomes the frame's content instead of a new layer).
-    frame: Option<LayerId>,
-}
-
-/// The heavy part of a place: read (a path), decode, flatten, resize and translate (and render a
-/// vector source at its placement scale). Touches no [`Session`], so it can run on a worker; `ctx`
-/// reports progress and stops it between stages when cancelled.
-pub(crate) fn prepare_place(input: PlaceInput, ctx: &JobCtx) -> Result<Prepared> {
-    let PlaceInput { name, file, linked, params: p, canvas: (cw, ch), fmt, opts, fit, smart, doc, frame } = input;
-    let bytes = match file {
-        PlaceFile::Bytes(bytes) => bytes,
-        PlaceFile::Path(path) => {
-            ctx.progress(0.0, "Reading");
-            let bytes = read_file(&path)?;
-            ctx.check()?;
-            bytes
-        }
-    };
-    // Refuse before decoding if the operation cannot fit.
-    crate::memory_gate::ensure(&format!("place \u{201c}{}\u{201d}", file_name(&name)), crate::memory_gate::place_need(&bytes, fmt.bytes_per_pixel()))?;
-    let doc = doc.filter(|_| frame.is_some() || photocraft_io::is_svg_input(&name, &bytes));
-    let imported = ctx.stage(0.0, 0.6, "Decoding", |ctl| photocraft_io::import_with_options_and_interrupt(&name, &bytes, &opts, ctl)).map_err(|e| match e {
-        photocraft_io::IoError::Cancelled => EngineError::Cancelled,
-        e => crate::error::io_open_error(&name, e),
-    })?;
-    if imported.preview_only {
-        return Err(EngineError::Other(format!(
-            "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
-        )));
-    }
-    ctx.check()?;
-    let src = imported.document;
-    let (w, h) = (src.size.width as f64, src.size.height as f64);
-    let scale = match f64_param(&p, "scale") {
-        Some(k) => (k / 100.0).max(1e-4),
-        None if frame.is_some() && fit => (cw / w).max(ch / h),
-        None if fit && (w > cw || h > ch) => (cw / w).min(ch / h),
-        None => 1.0,
-    };
-    let center = match p.get("center").and_then(Value::as_array) {
-        Some(c) if c.len() == 2 => (c[0].as_f64().unwrap_or(cw / 2.0), c[1].as_f64().unwrap_or(ch / 2.0)),
-        _ => (cw / 2.0, ch / 2.0),
-    };
-    let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
-    // A frame's image renders through its smart object below, which refuses a placement past the
-    // memory budget; resampling it to the frame's size first would allocate that surface twice.
-    let px = if frame.is_none() {
-        ctx.progress(0.6, "Flattening");
-        super::check_flattenable(&src, "file.place")?;
-        let bounds = src.bounds();
-        let mut px = ctx
-            .stage(0.6, 0.7, "Flattening", |ctl| photocraft_compose::composite_to_surface_with_interrupt(&src, bounds, fmt, None, ctl))
-            .map_err(|_| EngineError::Cancelled)?;
-        ctx.check()?;
-        if (scale - 1.0).abs() > 1e-9 {
-            ctx.progress(0.7, "Resizing");
-            px = ctx
-                .stage(0.7, 0.9, "Resizing", |ctl| photocraft_algo::resample::resize_surface_with_interrupt(&px, scale, scale, Resample::Bicubic, ctl))
-                .map_err(|_| EngineError::Cancelled)?;
-            ctx.check()?;
-        }
-        Some(translate_surface(&px, dx as i32, dy as i32))
-    } else {
-        None
-    };
-    drop(src);
-    let placement = frame
-        .as_ref()
-        .map_or(Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, |(_, f)| f.transform.mul(&Affine { m: [scale / cw, 0.0, 0.0, scale / ch, dx / cw, dy / ch] }));
-    let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| placement.apply(photocraft_geom::Point::new(x, y)));
-    let bounds = [
-        corners.iter().map(|q| q.x).fold(f64::INFINITY, f64::min),
-        corners.iter().map(|q| q.y).fold(f64::INFINITY, f64::min),
-        corners.iter().map(|q| q.x).fold(f64::NEG_INFINITY, f64::max),
-        corners.iter().map(|q| q.y).fold(f64::NEG_INFINITY, f64::max),
-    ];
-    // A frame's image is always a smart object.
-    let smart = smart || frame.is_some();
-    let label = if linked.is_some() { "Place Linked" } else { PLACE_EMBEDDED };
-    let content = if smart {
-        let source = match linked {
-            Some(path) => SmartSource::Linked { path },
-            None => SmartSource::Embedded { file_name: file_name(&name), bytes: Arc::new(bytes) },
-        };
-        let mut so = SmartObject::new(source, placement, px);
-        // A vector source (SVG) and a frame's image render at their placement scale instead of as
-        // a resampled raster.
-        if let Some(doc) = doc {
-            ctx.progress(0.9, "Rendering");
-            ctx.check()?;
-            if let Some(sharp) = crate::smart_cmds::render(&doc, &so)? {
-                so.cache = Some(sharp);
-            }
-        }
-        if so.cache.is_none() {
-            return Err(EngineError::Other(format!("{name}: the placed image could not be rendered")));
-        }
-        LayerContent::Smart(so)
-    } else {
-        LayerContent::Raster(px.ok_or_else(|| EngineError::Other(format!("{name}: a frame's image must be a smart object")))?)
-    };
-    Ok(Prepared { content, layer_name: stem(&name), label, scale, bounds, smart, frame: frame.map(|(id, _)| id) })
+    pub(super) frame: Option<LayerId>,
 }
 
 /// Insert the prepared layer as one undo step and report the place. Runs on the session's thread.

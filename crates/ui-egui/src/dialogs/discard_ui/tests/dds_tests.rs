@@ -68,7 +68,7 @@ fn save_as_to_a_dds_texture_asks_for_its_compression() {
     h.run_steps(3);
     assert!(h.state().dds_options.is_none());
     assert_eq!(writes.borrow().len(), 1, "cancelled: nothing more written");
-    assert_eq!(h.state().ui.status, "Save cancelled");
+    assert_eq!(h.state().ui.status, "Save canceled");
 }
 
 /// Scripts choose with `ddsCompression` or `ddsMipmaps` and are never asked; bad values write
@@ -213,5 +213,5 @@ fn enter_on_a_focused_cancel_writes_nothing() {
     h.run_steps(3);
     assert!(h.state().dds_options.is_none());
     assert!(writes.borrow().is_empty(), "nothing written");
-    assert_eq!(h.state().ui.status, "Save cancelled");
+    assert_eq!(h.state().ui.status, "Save canceled");
 }

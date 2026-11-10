@@ -284,6 +284,29 @@ fn zero_available_ram_refuses_admission() {
     });
 }
 
+/// A small file opens with 900 MiB free (it used to be refused outright below 1 GiB); with no
+/// free memory at all it is refused and the refusal says why.
+#[test]
+fn small_file_opens_with_little_free_memory_and_a_refusal_names_it() {
+    if cfg!(target_arch = "wasm32") {
+        return; // the web policy ignores a host snapshot; it has its own tests
+    }
+    let file = testgen::small(Version::Psd, Compression::Zip);
+    let bytes = file.to_bytes().unwrap();
+
+    let low = crate::memory::MemorySnapshot { available_ram: Some(900 << 20), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(low, || {
+        let res = crate::import_with_options("small.psd", &bytes, &crate::ImportOptions::default());
+        assert!(res.is_ok(), "{:?}", res.map(|_| ()));
+    });
+
+    let none = crate::memory::MemorySnapshot { available_ram: Some(0), swap_free: None, commit_headroom: None };
+    crate::memory::with_mock_memory(none, || {
+        let res = crate::import_with_options("small.psd", &bytes, &crate::ImportOptions::default());
+        assert!(matches!(res, Err(IoError::PsdImportBudget { limit: 0, free_memory: Some(0), .. })));
+    });
+}
+
 #[test]
 fn preflight_rejection_and_approval_files_release_gate() {
     if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
@@ -337,7 +360,7 @@ fn retry_estimate_cap_rejects_altered_or_enlarged_file() {
 
     // 3. Exceeds hard limit: refused completely regardless of approval
     let res = crate::memory::evaluate_psd_admission(10 * gb, 0, 0, true, Some(10 * gb), snap);
-    assert!(matches!(res, Err(IoError::PsdImportBudget { required, limit }) if required == 10 * gb && limit == 9 * gb));
+    assert!(matches!(res, Err(IoError::PsdImportBudget { required, limit, .. }) if required == 10 * gb && limit == 9 * gb));
 }
 
 #[test]
@@ -413,7 +436,7 @@ fn nested_imports_consume_from_shared_allowance_and_do_not_reset_parent() {
 
     // Second nested consume exceeds remaining 1 GB
     let err = crate::psd_gate::consume_attempt_allowance(2 * gb).unwrap_err();
-    assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == 2 * gb && limit == gb));
+    assert!(matches!(err, IoError::PsdImportBudget { required, limit, .. } if required == 2 * gb && limit == gb));
 
     // Allowance is still 1 GB (failed attempt does not reset or corrupt parent)
     assert!(crate::psd_gate::consume_attempt_allowance(gb).is_ok());
@@ -472,7 +495,7 @@ fn real_import_propagates_high_memory_approval_and_its_estimate_bound() {
             let lowered = crate::ImportOptions { psd_high_memory_approved: true, psd_max_pixel_bytes: required - 1, ..Default::default() };
             assert!(matches!(
                 crate::import_with_options("approval.psd", &bytes, &lowered),
-                Err(IoError::PsdImportBudget { required: r, limit: l }) if r == required && l == required - 1
+                Err(IoError::PsdImportBudget { required: r, limit: l, .. }) if r == required && l == required - 1
             ));
         });
     });
@@ -527,7 +550,7 @@ fn memory_drop_while_waiting_for_the_gate_refuses_before_decoding() {
 
     let result = rx.recv_timeout(Duration::from_secs(10)).expect("the post-gate recheck must refuse instead of decoding");
     match result {
-        Err(IoError::PsdImportBudget { required, limit: 0 }) => assert!(required > 0),
+        Err(IoError::PsdImportBudget { required, limit: 0, .. }) => assert!(required > 0),
         other => panic!("expected the post-gate recheck to refuse with a zero budget, got {other:?}"),
     }
     handle.join().expect("worker thread");

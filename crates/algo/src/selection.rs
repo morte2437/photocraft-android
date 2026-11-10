@@ -219,9 +219,42 @@ pub fn magic_wand(px: &[[f32; 4]], area: Rect, seed: (i32, i32), tolerance: f32,
         }
     }
     if anti_alias {
-        antialias(&mut m, w, h);
+        let tol = (tolerance + 1e-3).floor().max(0.0);
+        let src = m.clone();
+        for (i, v) in m.iter_mut().enumerate() {
+            if src[i] == 0.0 && touches_region(i % w, i / w, w, h, |x, y| src[y * w + x] > 0.0) {
+                let p = px[i];
+                let over = (0..3).map(|c| (p[c] - target[c]).abs() * 255.0).fold(0.0f32, f32::max) - tol;
+                *v = f32::from(fringe_coverage(over, p[3].min(target[3]) * 255.0)) / 255.0;
+            }
+        }
     }
     m
+}
+
+/// How many levels past the tolerance the anti-aliased fringe fades over, from fully selected to
+/// nothing. Measured in the reference application (#11776): 3 levels past gives 251, 5 gives
+/// 249 and 123 gives 110; a straight fade to zero at 216 levels gives all three.
+const FRINGE_LEVELS: f32 = 216.0;
+
+/// Coverage (0–255) of an anti-aliased fringe pixel: a neighbour of the region whose most
+/// different colour channel is `over` levels past the tolerance, and `alpha` (0–255) the lower
+/// of its and the clicked pixel's opacity. Photoshop keeps the region itself fully selected and
+/// softens only the pixels just outside it, fading with the distance past the tolerance; a
+/// neighbour without colour (transparent, next to a shape on its own layer) gets none.
+fn fringe_coverage(over: f32, alpha: f32) -> u8 {
+    let k = (1.0 - over.max(0.0) / FRINGE_LEVELS).clamp(0.0, 1.0) * (alpha / 255.0).clamp(0.0, 1.0);
+    (k * 255.0).round() as u8
+}
+
+/// True when one of the 8 neighbours of `(x, y)` (inside a `w` x `h` area) is in the region.
+fn touches_region(x: usize, y: usize, w: usize, h: usize, selected: impl Fn(usize, usize) -> bool) -> bool {
+    (-1i32..=1).any(|dy| {
+        (-1i32..=1).any(|dx| {
+            let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+            (dx, dy) != (0, 0) && nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h && selected(nx as usize, ny as usize)
+        })
+    })
 }
 
 /// Straight RGBA8 copy of `area` of a surface, read in parallel bands on native.
@@ -266,10 +299,62 @@ impl Region {
     }
 }
 
+/// How a wand-style fill measures how far an 8-bit colour is from the clicked one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorDistance {
+    /// The largest difference in any one of R, G and B.
+    LargestChannel,
+    /// The spread of `{0, dR, dG, dB}`: changes in the same direction count once, opposite
+    /// changes add up. Only opaque colours were measured, so a partly transparent seed or pixel
+    /// uses [`Self::LargestChannel`].
+    Spread,
+}
+
+impl ColorDistance {
+    fn rgb(self, p: [u8; 4], seed: [u8; 4]) -> i32 {
+        let d = [0, 1, 2].map(|c| p[c] as i32 - seed[c] as i32);
+        match self {
+            Self::Spread if p[3] == 255 && seed[3] == 255 => d.iter().fold(0, |m, v| m.max(*v)) - d.iter().fold(0, |m, v| m.min(*v)),
+            Self::LargestChannel | Self::Spread => d.iter().fold(0, |m, v| m.max(v.abs())),
+        }
+    }
+}
+
 /// Magic wand on 8-bit pixels: a scanline flood fill (or a global match) that only allocates a
 /// byte mark per pixel, then anti-aliases just the edges inside the touched bounding box.
 /// Matches [`magic_wand`] for 8-bit sources. `None` if the seed is outside `area`.
 pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32, contiguous: bool, anti_alias: bool) -> Option<Region> {
+    wand_region_within(img, area, seed, tolerance, contiguous, anti_alias, None)
+}
+
+/// [`wand_region`] whose contiguous fill only passes through pixels at least half selected in
+/// `within` (the current selection's coverage over `area`, row-major): Subtract and Intersect
+/// grow the region from the seed through the selection only (#11779). A seed outside it finds
+/// nothing. A global match (`contiguous` off) ignores `within`.
+pub fn wand_region_within(
+    img: &[[u8; 4]],
+    area: Rect,
+    seed: (i32, i32),
+    tolerance: f32,
+    contiguous: bool,
+    anti_alias: bool,
+    within: Option<&[f32]>,
+) -> Option<Region> {
+    wand_region_by(img, area, seed, tolerance, contiguous, anti_alias, within, ColorDistance::LargestChannel)
+}
+
+/// [`wand_region_within`] measuring how far a colour is from the clicked one with `distance`.
+#[allow(clippy::too_many_arguments)]
+pub fn wand_region_by(
+    img: &[[u8; 4]],
+    area: Rect,
+    seed: (i32, i32),
+    tolerance: f32,
+    contiguous: bool,
+    anti_alias: bool,
+    within: Option<&[f32]>,
+    distance: ColorDistance,
+) -> Option<Region> {
     if !area.contains(seed.0, seed.1) {
         return None;
     }
@@ -277,11 +362,16 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
     if w.checked_mul(h).is_none_or(|n| n > img.len()) {
         return None;
     }
+    let within = within.filter(|_| contiguous).filter(|m| m.len() >= w * h);
+    let inside = |i: usize| within.is_none_or(|m| m.get(i).is_some_and(|v| *v >= 0.5));
+    if !inside((seed.1 - area.y0) as usize * w + (seed.0 - area.x0) as usize) {
+        return None;
+    }
     let target = img[(seed.1 - area.y0) as usize * w + (seed.0 - area.x0) as usize];
     let tol = (tolerance + 1e-3).floor().max(0.0) as i32;
     // Copying a selection can leave RGB under zero alpha. Those invisible colours must not
     // split a transparent region into pieces, as if the copied source were still visible.
-    let similar = |p: [u8; 4]| (target[3] == 0 && p[3] == 0) || (0..4).all(|c| (p[c] as i32 - target[c] as i32).abs() <= tol);
+    let similar = |p: [u8; 4]| (target[3] == 0 && p[3] == 0) || (distance.rgb(p, target) <= tol && (p[3] as i32 - target[3] as i32).abs() <= tol);
     let mut marks = vec![0u8; w * h];
     let (mut bx0, mut by0, mut bx1, mut by1) = (usize::MAX, usize::MAX, 0usize, 0usize);
     if contiguous {
@@ -293,10 +383,10 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
                 continue;
             }
             let (mut l, mut r) = (x, x);
-            while l > 0 && marks[row + l - 1] == 0 && similar(img[row + l - 1]) {
+            while l > 0 && marks[row + l - 1] == 0 && similar(img[row + l - 1]) && inside(row + l - 1) {
                 l -= 1;
             }
-            while r + 1 < w && marks[row + r + 1] == 0 && similar(img[row + r + 1]) {
+            while r + 1 < w && marks[row + r + 1] == 0 && similar(img[row + r + 1]) && inside(row + r + 1) {
                 r += 1;
             }
             marks[row + l..=row + r].fill(255);
@@ -308,7 +398,7 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
                 let nrow = ny * w;
                 let mut in_run = false;
                 for nx in l..=r {
-                    let ok = marks[nrow + nx] == 0 && similar(img[nrow + nx]);
+                    let ok = marks[nrow + nx] == 0 && similar(img[nrow + nx]) && inside(nrow + nx);
                     if ok && !in_run {
                         stack.push((nx, ny));
                     }
@@ -356,25 +446,11 @@ pub fn wand_region(img: &[[u8; 4]], area: Rect, seed: (i32, i32), tolerance: f32
             let x = x0 + xx;
             let v = at(x, y);
             *o = v;
-            if !anti_alias {
-                continue;
-            }
-            // Same rule as `antialias`: edge pixels blend with their 3×3 neighbourhood; neighbours
-            // outside the area count as the pixel itself.
-            let mut sum = 0u32;
-            let mut edge = false;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                    let n = if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 { v } else { at(nx as usize, ny as usize) };
-                    edge |= n != v;
-                    sum += n as u32;
-                }
-            }
-            if edge {
-                let avg = sum as f32 / (9.0 * 255.0);
-                let f = if v > 127 { 0.5 + 0.5 * avg } else { 0.5 * avg };
-                *o = (f * 255.0).round() as u8;
+            // Same rule as `magic_wand`: the region stays fully selected; a pixel just outside
+            // it gets a fringe by how far its colour is past the tolerance.
+            if anti_alias && v == 0 && touches_region(x, y, w, h, |nx, ny| at(nx, ny) != 0) {
+                let p = img[y * w + x];
+                *o = fringe_coverage((distance.rgb(p, target) - tol) as f32, f32::from(p[3].min(target[3])));
             }
         }
     };
@@ -431,32 +507,6 @@ pub fn combine_region(old: Option<&Surface>, new: Option<&Region>, mode: Selecti
             s.write_region(b, &out);
             s.prune();
             nonempty(s)
-        }
-    }
-}
-
-/// Softens hard mask edges: edge pixels become the 3×3 average.
-fn antialias(m: &mut [f32], w: usize, h: usize) {
-    let src = m.to_vec();
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            let mut sum = 0.0;
-            let mut cnt = 0.0;
-            let mut edge = false;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    let (xx, yy) = (x as i32 + dx, y as i32 + dy);
-                    let v = if xx < 0 || yy < 0 || xx >= w as i32 || yy >= h as i32 { src[i] } else { src[yy as usize * w + xx as usize] };
-                    edge |= v != src[i];
-                    sum += v;
-                    cnt += 1.0;
-                }
-            }
-            if edge {
-                // Keep selected pixels mostly selected, add a soft fringe.
-                m[i] = if src[i] > 0.5 { 0.5 + 0.5 * sum / cnt } else { 0.5 * sum / cnt };
-            }
         }
     }
 }
@@ -778,10 +828,15 @@ pub fn tone_range(px: &[[f32; 4]], lo: f32, hi: f32, falloff: f32) -> Vec<f32> {
 }
 
 mod distance;
+#[cfg(test)]
+mod ellipse_aa_edge_tests;
+
 mod inverse;
 mod lasso;
 mod marquee;
 mod morphology;
+#[cfg(test)]
+mod wand_antialias_tests;
 
 pub use distance::edt;
 pub use inverse::inverse_surface;
@@ -974,7 +1029,7 @@ impl ColorBvh {
 
     fn reserve_nodes(capacity: usize) -> Result<Vec<ColorNode>, &'static str> {
         let mut nodes = Vec::new();
-        nodes.try_reserve_exact(capacity).map_err(|_| "not enough memory to index selection colours")?;
+        nodes.try_reserve_exact(capacity).map_err(|_| "not enough memory to index selection colors")?;
         Ok(nodes)
     }
 
@@ -1070,10 +1125,10 @@ impl ColorMatcher {
             let key = [norm(c[0]), norm(c[1]), norm(c[2]), norm(c[3])];
             if !seen.contains(&key) {
                 if seen.len() >= limit {
-                    return Err("the selection contains too many distinct colours to match; select a smaller area");
+                    return Err("the selection contains too many distinct colors to match; select a smaller area");
                 }
-                seen.try_reserve(1).map_err(|_| "not enough memory to index selection colours")?;
-                opaque_or_semi.try_reserve(1).map_err(|_| "not enough memory to index selection colours")?;
+                seen.try_reserve(1).map_err(|_| "not enough memory to index selection colors")?;
+                opaque_or_semi.try_reserve(1).map_err(|_| "not enough memory to index selection colors")?;
                 seen.insert(key);
                 opaque_or_semi.push(c);
             }

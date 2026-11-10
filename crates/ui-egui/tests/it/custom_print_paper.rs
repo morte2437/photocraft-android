@@ -56,6 +56,16 @@ fn click(h: &mut Harness<'_, PhotocraftApp>, label: &str) {
     h.run_steps(3);
 }
 
+/// Chooses an option from the open paper menu. The Japanese presets made the list longer than
+/// the dropdown shows, so it scrolls (and reopens where it was left): bring the row into view
+/// before clicking it.
+fn choose_paper(h: &mut Harness<'_, PhotocraftApp>, label: &str) {
+    h.get_by_label(label).scroll_to_me();
+    h.run_steps(3);
+    h.get_by_label(label).click();
+    h.run_steps(3);
+}
+
 fn shown(h: &Harness<'_, PhotocraftApp>, text: &str) -> bool {
     // A form caption and its control both expose the same accessible name.
     h.query_all_by_label(text).next().is_some() || h.query_all_by_value(text).next().is_some()
@@ -171,10 +181,12 @@ fn custom_paper_ui_edits_reach_preview_and_pdf_and_restore_when_reopened() {
     dialog.fields.insert("output".into(), json!(output.to_string_lossy()));
     dialog.fields.insert("dryRun".into(), json!(true));
     let mut h = harness(app);
-    click(&mut h, "letter");
-    assert!(shown(&h, "a4"), "the real preset menu must be open");
+    // The paper control has no label of its own: it shows the chosen preset's display name
+    // ("Letter", "A4", …), while the dialog stores the engine key ("letter", "a4", …).
+    click(&mut h, "Letter");
+    assert!(shown(&h, "A4"), "the real preset menu must be open");
     assert!(shown(&h, "Custom"), "the paper menu must offer editable custom dimensions");
-    click(&mut h, "Custom");
+    choose_paper(&mut h, "Custom");
     assert_eq!(fields(&h, id)["paper"], json!([612.0, 792.0]), "Custom starts at the current preset dimensions");
     click(&mut h, "Centimeters");
     click(&mut h, "Inches");
@@ -183,11 +195,11 @@ fn custom_paper_ui_edits_reach_preview_and_pdf_and_restore_when_reopened() {
     let edited = fields(&h, id);
     assert_eq!(edited["paper"], json!([522.0, 666.0]), "the engine takes points, not the displayed units");
     click(&mut h, "Custom");
-    click(&mut h, "a4");
+    choose_paper(&mut h, "A4");
     assert_eq!(fields(&h, id)["paper"], "a4");
     assert!(!shown(&h, "Paper Width"));
-    click(&mut h, "a4");
-    click(&mut h, "Custom");
+    click(&mut h, "A4");
+    choose_paper(&mut h, "Custom");
     assert_eq!(fields(&h, id)["paper"], edited["paper"], "returning from a preset restores the custom dimensions");
     click(&mut h, "Inches");
     click(&mut h, "Millimeters");
@@ -216,6 +228,22 @@ fn custom_paper_ui_edits_reach_preview_and_pdf_and_restore_when_reopened() {
     std::fs::remove_file(output).unwrap();
 }
 
+/// #8307: the paper menu lists the Japanese papers by their customary names. Choosing はがき
+/// from it stores the preset and lays the page out at its exact metric size.
+#[test]
+fn japanese_postcard_preset_is_chosen_from_the_paper_menu() {
+    let (app, id) = app();
+    let mut h = harness(app);
+    click(&mut h, "Letter");
+    assert!(shown(&h, "はがき (100 × 148 mm)"), "the paper menu must list the Japanese postcard");
+    choose_paper(&mut h, "はがき (100 × 148 mm)");
+    assert_eq!(fields(&h, id)["paper"], "postcard", "the preset is stored by its engine name");
+    assert!(shown(&h, "はがき (100 × 148 mm)"), "the paper control must show the chosen preset");
+    assert!(!shown(&h, "Paper Width"), "a preset is not editable custom paper");
+    let layout = photocraft_engine::print_cmds::layout(&h.state().session.active().unwrap().doc, &Value::Object(fields(&h, id)), "file.print").unwrap();
+    assert_eq!(layout.paper, (283.46, 419.53), "100 × 148 mm in points");
+}
+
 #[test]
 fn remembered_custom_paper_is_shown_without_becoming_a_preset() {
     let (mut app, id) = app();
@@ -227,6 +255,18 @@ fn remembered_custom_paper_is_shown_without_becoming_a_preset() {
     assert_eq!(fields(&h, id)["paper"], json!([432.0, 576.0]));
 }
 
+/// #8307: `file.print` remembers the paper name as typed, aliases included. Reopening the dialog
+/// must select the canonical preset an alias names instead of leaving the Paper control unmatched.
+#[test]
+fn remembered_paper_alias_selects_the_canonical_preset() {
+    let (mut app, id) = app();
+    app.ui.dialog_mut(id).unwrap().fields.insert("paper".into(), json!("はがき"));
+    let h = harness(app);
+    assert!(shown(&h, "はがき (100 × 148 mm)"), "a remembered alias must show the paper it names");
+    let layout = photocraft_engine::print_cmds::layout(&h.state().session.active().unwrap().doc, &Value::Object(fields(&h, id)), "file.print").unwrap();
+    assert_eq!(layout.paper, (283.46, 419.53), "the remembered alias must still print as はがき");
+}
+
 #[test]
 fn invalid_custom_paper_is_rejected_without_printing_or_changing_the_document() {
     let (mut app, id) = app();
@@ -234,8 +274,8 @@ fn invalid_custom_paper_is_rejected_without_printing_or_changing_the_document() 
     app.ui.dialog_mut(id).unwrap().fields.insert("output".into(), json!(output.to_string_lossy()));
     let before = app.session.active().unwrap().doc.clone();
     let mut h = harness(app);
-    click(&mut h, "letter");
-    click(&mut h, "Custom");
+    click(&mut h, "Letter");
+    choose_paper(&mut h, "Custom");
     enter_length(&mut h, "Paper Width", "0");
     let edited = fields(&h, id);
     assert!(photocraft_engine::print_cmds::layout(&h.state().session.active().unwrap().doc, &Value::Object(edited), "file.print").is_err());

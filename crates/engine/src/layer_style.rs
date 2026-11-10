@@ -2,6 +2,7 @@
 
 use photocraft_color::{BlendMode, Color};
 use photocraft_doc::adjust::CurvePoint;
+use photocraft_doc::effects::PATTERN_SCALE_RANGE;
 use photocraft_doc::{
     Bevel, BevelStyle, BevelTechnique, Contour, Effect, FxCommon, FxPaint, Glow, GlowSource, GlowTechnique, Gradient, GradientStyle, Satin, Shadow, StrokeFx,
     StrokePosition,
@@ -676,6 +677,15 @@ fn overlay_gradient(g: &mut Gradient, p: &Value) {
     if let Some(x) = b_of(p, "reverse") {
         g.reverse = x;
     }
+    // The gradient's centre as a fraction of the layer's bounds, `[x, y]` (0: centred); a drag on
+    // the image with the Layer Style dialog on the page moves it (#10763).
+    if let Some(a) = p.get("offset").and_then(Value::as_array)
+        && let (Some(x), Some(y)) = (a.first().and_then(Value::as_f64), a.get(1).and_then(Value::as_f64))
+        && x.is_finite()
+        && y.is_finite()
+    {
+        g.offset = (x.clamp(-4.0, 4.0) as f32, y.clamp(-4.0, 4.0) as f32);
+    }
 }
 
 /// Applies the params present in `p` onto an existing effect, in the command's
@@ -795,7 +805,7 @@ fn overlay_pattern(fx: &mut Effect, p: &Value) {
         *id = String::new();
     }
     if let Some(x) = f_of(p, "scale") {
-        *scale = (x / 100.0).clamp(0.01, 10.0);
+        *scale = (x / 100.0).clamp(PATTERN_SCALE_RANGE.0, PATTERN_SCALE_RANGE.1);
     }
     if let Some(x) = f_of(p, "angle") {
         *angle = x;
@@ -903,7 +913,7 @@ fn overlay_bevel(bv: &mut Bevel, p: &Value) {
         bv.texture = Some(photocraft_doc::BevelTexture {
             name: t.to_string(),
             id: t.to_string(),
-            scale: (f(p, "textureScale", 100.0) / 100.0).clamp(0.01, 10.0),
+            scale: (f(p, "textureScale", 100.0) / 100.0).clamp(PATTERN_SCALE_RANGE.0, PATTERN_SCALE_RANGE.1),
             depth: (f(p, "textureDepth", 100.0) / 100.0).clamp(-10.0, 10.0),
             invert: b(p, "textureInvert", false),
             link: b(p, "textureLink", true),

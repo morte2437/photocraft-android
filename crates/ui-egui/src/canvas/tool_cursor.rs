@@ -111,6 +111,16 @@ pub(crate) fn close_path(painter: &Painter, at: Pos2) -> CursorIcon {
     outline(painter, at, vec![close_ring()], true)
 }
 
+/// The Pen's pointer over an endpoint a click would carry the path on from (#9356): the centre
+/// cross with a short slash below right, as Photoshop's pen shows one there.
+pub(crate) fn continue_path(painter: &Painter, at: Pos2) -> CursorIcon {
+    outline(painter, at, vec![continue_slash()], true)
+}
+
+fn continue_slash() -> Vec<Vec2> {
+    [(6.5, 12.5), (11.5, 5.5), (12.5, 6.5), (7.5, 13.5)].into_iter().map(|(x, y)| vec2(x, y)).collect()
+}
+
 fn close_ring() -> Vec<Vec2> {
     (0..16).map(|i| (i as f32 / 16.0 * std::f32::consts::TAU, vec2(9.0, 9.0))).map(|(a, c)| c + vec2(a.cos(), a.sin()) * 3.5).collect()
 }

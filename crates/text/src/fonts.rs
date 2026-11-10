@@ -295,6 +295,12 @@ impl FontDb {
         self.register_blob(Blob::new(Arc::new(bytes)), None)
     }
 
+    /// [`Self::register_font_data`] with the family name overridden, so an embedded subset can be
+    /// registered under a name that cannot shadow an installed full family. Returns the names added.
+    pub fn register_font_data_as(&mut self, bytes: Vec<u8>, family: &str) -> Vec<String> {
+        self.register_blob(Blob::new(Arc::new(bytes)), Some(family))
+    }
+
     /// Registers embedded font data without copying it.
     fn register_static_font(&mut self, bytes: &'static [u8]) -> Vec<String> {
         self.register_blob(Blob::new(Arc::new(bytes)), None)

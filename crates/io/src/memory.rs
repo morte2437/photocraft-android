@@ -31,8 +31,22 @@ pub const MAX_SOFT_BUDGET: u64 = 8 << 30;
 /// platform's actual allocation limits, but the process may run out of memory.
 pub const UNKNOWN_MEMORY_WARNING_THRESHOLD: u64 = 8 << 30;
 
-/// Reserve subtracted from commit headroom when known.
+/// Largest reserve subtracted from commit headroom when known. The reserve is a quarter of the
+/// headroom, at least [`LOW_MEMORY_RESERVE`] and at most this, so a machine with little commit
+/// headroom still has room for a small file.
 pub const COMMIT_RESERVE: u64 = 512 << 20;
+
+/// The smallest amount an approved import leaves free: for the app, its display and the system.
+///
+/// Free RAM or commit headroom at or below it leaves no room at all, so every file is refused.
+pub const LOW_MEMORY_RESERVE: u64 = 256 << 20;
+
+/// What automatic opening leaves free once that is less than the quarter-of-free-RAM rule.
+const AUTOMATIC_RAM_RESERVE: u64 = 1 << 30;
+
+/// When opening a file would leave less than this free, the approval prompt warns that
+/// PhotoCraft may run out of memory.
+pub const LOW_MEMORY_WARNING_MARGIN: u64 = 1 << 30;
 
 /// Bytes Rust's layout rules allow for one contiguous allocation on this target
 /// (`isize::MAX`), not a bound on an import's aggregate peak.
@@ -171,6 +185,11 @@ pub struct MemoryBudget {
     /// Set when available memory is unknown: estimates above this threshold still need explicit
     /// approval but also carry the uncertain-capacity warning. `None` when capacity is known.
     pub warning_threshold: Option<u64>,
+    /// The free memory measured when measured memory is what set the hard limit: the smaller of
+    /// the known available RAM and commit headroom. `None` when neither is known, when the
+    /// platform cap or the caller's limit is what bound the hard limit, and on the web. A refusal
+    /// reports it so the user can be told to free memory (see [`low_memory_advice`]).
+    pub measured_free: Option<u64>,
 }
 
 /// Admission decision for a given required memory estimate.
@@ -213,6 +232,34 @@ impl MemoryBudget {
     pub fn requires_uncertainty_warning(&self, required: u64) -> bool {
         self.warning_threshold.is_some_and(|threshold| required > threshold)
     }
+
+    /// The free memory to report when `required` is refused, or `None` when closing other apps
+    /// cannot help: the estimate overflowed `u64` (`u64::MAX`), or the limit that refused it was
+    /// not set by measured memory.
+    pub fn refusal_free_memory(&self, required: u64) -> Option<u64> {
+        if required == u64::MAX { None } else { self.measured_free }
+    }
+}
+
+/// The sentence appended to a hard-memory refusal when measured free memory set the limit; empty
+/// for `None`. `Some(0)` also covers the fail-closed reading of an unreadable memory limit.
+pub fn low_memory_advice(free_memory: &Option<u64>) -> String {
+    match free_memory {
+        None => String::new(),
+        Some(0) => ". PhotoCraft measured no free memory, or could not read this system's memory limit. Close other apps and try again".to_string(),
+        Some(n) => format!(". About {} of memory is free. Close other apps and try again", size_text(*n)),
+    }
+}
+
+/// A size for people: "3.0 GiB", "900 MiB", "512 B".
+fn size_text(bytes: u64) -> String {
+    if bytes >= 1 << 30 {
+        format!("{:.1} GiB", bytes as f64 / (1u64 << 30) as f64)
+    } else if bytes >= 1 << 20 {
+        format!("{} MiB", bytes / (1 << 20))
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Whether an approval-required estimate carries the unknown-capacity warning, given the
@@ -252,16 +299,22 @@ pub fn native_platform_cap() -> u64 {
 /// The limits are for an import's aggregate peak estimate, not for one allocation: a peak may sum
 /// many buffers, each of which is separately bounded where the decoder allocates it.
 ///
-/// Policy:
-/// - Known RAM: H = min(floor(3*A/4), A - 1 GiB, C - reserve if known, [`native_platform_cap`]);
-///   S = min(A/2, 8 GiB, H).
-/// - Unknown native RAM: S = min(2 GiB, H) where H is [`native_platform_cap`], reduced by known
-///   commit headroom; approval above S is possible up to H. 8 GiB is a warning threshold, not H.
-/// - Web (wasm32): S = 1 GiB; H = min([`WASM_MAX_PEAK_BUDGET`], caller limit).
+/// Policy (A = available RAM, C = commit headroom, each when known):
+/// - Known RAM: H = min(floor(3*A/4), A - [`LOW_MEMORY_RESERVE`], C - reserve if known,
+///   [`native_platform_cap`]), where the commit reserve is a quarter of C, at least
+///   [`LOW_MEMORY_RESERVE`] and at most [`COMMIT_RESERVE`]. S = min(A/2, 8 GiB, max(A - 1 GiB,
+///   A/4), max(C - [`COMMIT_RESERVE`], C/4) if known, H). Above 4/3 GiB free this is the usual
+///   "leave 1 GiB free"; below it up to a quarter of free RAM opens automatically and the rest
+///   goes to approval. At or below [`LOW_MEMORY_RESERVE`] of either there is no room.
+/// - Unknown native RAM: S = min(2 GiB, commit soft room if known, H) where H is
+///   [`native_platform_cap`], reduced by known commit headroom as above; approval above S is
+///   possible up to H. 8 GiB is a warning threshold, not H.
 /// - <= S: automatic; S < E <= H: explicit approval; > H: refuse, no unlimited override.
 /// - The saturated `u64::MAX` overflow sentinel is always refused, even when H is `u64::MAX`
 ///   (see [`MemoryBudget::decide`]).
-/// - Known zero available RAM stays zero (it never becomes unknown/free).
+/// - Known zero available RAM stays zero (it never becomes unknown/free). The fail-closed reading
+///   of an unreadable memory limit is `Some(0)`, so it stays refused; only a credited tile share
+///   (see [`resolve_budget_with_scratch`]) can pass, as before.
 /// - swap is never part of the adaptive budget.
 /// - Explicit caller limits may lower admission, never bypass the hard boundary.
 pub fn resolve_budget(snapshot: MemorySnapshot, caller_limit: Option<u64>) -> MemoryBudget {
@@ -294,47 +347,72 @@ fn resolve_budget_credited(platform: Platform, snapshot: MemorySnapshot, caller_
         if let Some(caller) = caller_limit.filter(|&c| c > 0) {
             hard = hard.min(caller);
         }
-        return MemoryBudget { soft_limit: WASM_BUDGET.min(hard), hard_limit: hard, available_ram: None, warning_threshold: None };
+        return MemoryBudget { soft_limit: WASM_BUDGET.min(hard), hard_limit: hard, available_ram: None, warning_threshold: None, measured_free: None };
     }
 
     let platform_cap = native_platform_cap();
-    let (mut hard, mut soft, warning_threshold) = match snapshot.available_ram {
-        Some(a) => {
-            let h_pct = ((a as u128 * 3) / 4) as u64;
-            let h_reserve = a.saturating_sub(1 << 30);
-            let mut h = h_pct.min(h_reserve);
+    let ram = snapshot.available_ram;
+    let commit = snapshot.commit_headroom;
 
-            if let Some(c) = snapshot.commit_headroom {
-                let c_room = c.saturating_sub(COMMIT_RESERVE);
-                h = h.min(c_room);
-            }
-
-            h = h.min(platform_cap);
-
-            let s_pct = a / 2;
-            let s = s_pct.min(MAX_SOFT_BUDGET).min(h);
-            (h, s, None)
-        }
-        None => {
-            let mut h = platform_cap;
-            if let Some(c) = snapshot.commit_headroom {
-                let c_room = c.saturating_sub(COMMIT_RESERVE);
-                h = h.min(c_room);
-            }
-            let s = NATIVE_FALLBACK_BUDGET.min(h);
-            (h, s, Some(UNKNOWN_MEMORY_WARNING_THRESHOLD))
-        }
+    // The room measured memory leaves; with neither measurement known only the platform cap bounds.
+    let measured_room = match (ram.map(ram_hard_room), commit.map(commit_hard_room)) {
+        (Some(r), Some(c)) => Some(r.min(c)),
+        (r, c) => r.or(c),
+    };
+    let mut hard = measured_room.map_or(platform_cap, |room| room.min(platform_cap));
+    let commit_soft = commit.map(commit_soft_room);
+    let (mut soft, warning_threshold) = match ram {
+        Some(a) => (ram_soft_room(a).min(commit_soft.unwrap_or(u64::MAX)).min(hard), None),
+        None => (NATIVE_FALLBACK_BUDGET.min(commit_soft.unwrap_or(u64::MAX)).min(hard), Some(UNKNOWN_MEMORY_WARNING_THRESHOLD)),
     };
     // Tile pixels the scratch disk takes need no RAM (see [`resolve_budget_with_scratch`]).
     hard = hard.saturating_add(credit);
     soft = soft.saturating_add(credit);
+    let machine_limit = hard;
 
     if let Some(caller) = caller_limit.filter(|&c| c > 0) {
         hard = hard.min(caller);
         soft = soft.min(hard);
     }
 
-    MemoryBudget { soft_limit: soft, hard_limit: hard, available_ram: snapshot.available_ram, warning_threshold }
+    // Report the measured free memory only when it alone set the hard limit: where the platform
+    // cap equals the measured room, more free memory could not raise the limit.
+    let measured_free = match (ram, commit) {
+        (None, None) => None,
+        (Some(a), None) => Some(a),
+        (None, Some(c)) => Some(c),
+        (Some(a), Some(c)) => Some(a.min(c)),
+    }
+    .filter(|_| measured_room.is_some_and(|room| room < platform_cap) && hard >= machine_limit);
+
+    MemoryBudget { soft_limit: soft, hard_limit: hard, available_ram: ram, warning_threshold, measured_free }
+}
+
+/// Hard room (what an approved import may use) when `a` bytes of RAM are free: three quarters of
+/// it, leaving at least [`LOW_MEMORY_RESERVE`].
+fn ram_hard_room(a: u64) -> u64 {
+    let quarter_rule = ((a as u128 * 3) / 4) as u64;
+    quarter_rule.min(a.saturating_sub(LOW_MEMORY_RESERVE))
+}
+
+/// Automatic room when `a` bytes of RAM are free: half of it, up to [`MAX_SOFT_BUDGET`], leaving
+/// 1 GiB free or, when that is less, a quarter of it.
+fn ram_soft_room(a: u64) -> u64 {
+    (a / 2).min(MAX_SOFT_BUDGET).min(a.saturating_sub(AUTOMATIC_RAM_RESERVE).max(a / 4))
+}
+
+/// Hard room when `c` bytes of commit headroom remain: all but a reserve of a quarter, at least
+/// [`LOW_MEMORY_RESERVE`] and at most [`COMMIT_RESERVE`].
+fn commit_hard_room(c: u64) -> u64 {
+    // `clamp` panics only if its bounds are out of order, and they are constants.
+    const { assert!(LOW_MEMORY_RESERVE <= COMMIT_RESERVE) };
+    let reserve = (c / 4).clamp(LOW_MEMORY_RESERVE, COMMIT_RESERVE);
+    c.saturating_sub(reserve)
+}
+
+/// Automatic room when `c` bytes of commit headroom remain.
+fn commit_soft_room(c: u64) -> u64 {
+    c.saturating_sub(COMMIT_RESERVE).max(c / 4)
 }
 
 /// Result of evaluating an import admission request.
@@ -411,7 +489,9 @@ fn evaluate_psd_admission_for(
             }
             cap
         }
-        BudgetDecision::Refused => return Err(IoError::PsdImportBudget { required, limit: budget.hard_limit }),
+        BudgetDecision::Refused => {
+            return Err(IoError::PsdImportBudget { required, limit: budget.hard_limit, free_memory: budget.refusal_free_memory(required) });
+        }
     };
 
     if required > authorized_total {
@@ -448,7 +528,7 @@ pub(crate) fn nested_import_local_bound(required: u64, caller_limit: u64, approv
         (caller, approved) => caller.or(approved),
     };
     match limit {
-        Some(limit) if required > limit => Err(IoError::PsdImportBudget { required, limit }),
+        Some(limit) if required > limit => Err(IoError::PsdImportBudget { required, limit, free_memory: None }),
         _ => Ok(()),
     }
 }
@@ -767,7 +847,7 @@ mod tests {
 
         for (approved, estimate) in [(false, None), (true, None), (true, Some(u64::MAX))] {
             match evaluate_psd_admission_for(Platform::Native, u64::MAX, 0, 0, approved, estimate, MemorySnapshot::UNKNOWN) {
-                Err(IoError::PsdImportBudget { required, limit }) => {
+                Err(IoError::PsdImportBudget { required, limit, .. }) => {
                     assert_eq!((required, limit), (u64::MAX, u64::MAX), "the typed refusal keeps the estimate and limit unchanged")
                 }
                 other => panic!("approved={approved}, estimate={estimate:?}: expected a hard refusal, got {other:?}"),
@@ -777,7 +857,7 @@ mod tests {
         // A caller limit equal to the sentinel, or an approved estimate of it, is no exception.
         assert!(matches!(
             evaluate_psd_admission_for(Platform::Native, u64::MAX, 0, u64::MAX, true, Some(u64::MAX), MemorySnapshot::UNKNOWN),
-            Err(IoError::PsdImportBudget { required: u64::MAX, limit: u64::MAX })
+            Err(IoError::PsdImportBudget { required: u64::MAX, limit: u64::MAX, .. })
         ));
     }
 
@@ -816,8 +896,9 @@ mod tests {
 
         let snap_tight = MemorySnapshot { available_ram: None, swap_free: None, commit_headroom: Some(gb) };
         let b_tight = resolve_budget(snap_tight, None);
-        assert_eq!(b_tight.hard_limit, gb - COMMIT_RESERVE);
-        assert_eq!(b_tight.soft_limit, gb - COMMIT_RESERVE);
+        // 1 GiB of headroom keeps a quarter free (256 MiB), not the full 512 MiB.
+        assert_eq!(b_tight.hard_limit, 768 << 20);
+        assert_eq!(b_tight.soft_limit, 512 << 20);
 
         let snap_room = MemorySnapshot { available_ram: None, swap_free: None, commit_headroom: Some(4 * gb) };
         let b_room = resolve_budget(snap_room, None);
@@ -995,7 +1076,7 @@ mod tests {
             assert!(evaluate_psd_admission(26 * gb, 18 * gb, 0, true, Some(26 * gb - 1), snap).is_err());
             // 10 GiB non-spillable is over H: refused even when approved.
             let err = evaluate_psd_admission(28 * gb, 18 * gb, 0, true, Some(28 * gb), snap).unwrap_err();
-            assert!(matches!(err, IoError::PsdImportBudget { required, limit } if required == 28 * gb && limit == 27 * gb));
+            assert!(matches!(err, IoError::PsdImportBudget { required, limit, .. } if required == 28 * gb && limit == 27 * gb));
             // A spillable share claimed beyond the total is clamped to the total.
             assert!(evaluate_psd_admission(5 * gb, u64::MAX, 0, false, None, snap).is_ok());
             // The caller's explicit limit still bounds the whole import.
@@ -1080,5 +1161,206 @@ mod tests {
         let with_swap = MemorySnapshot { available_ram: Some(4 * gb), swap_free: Some(64 * gb), commit_headroom: None };
         let without_swap = MemorySnapshot { available_ram: Some(4 * gb), swap_free: None, commit_headroom: None };
         assert_eq!(resolve_budget_for(Platform::Native, with_swap, None), resolve_budget_for(Platform::Native, without_swap, None));
+    }
+
+    const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
+
+    fn native_budget(ram: Option<u64>, commit: Option<u64>) -> MemoryBudget {
+        resolve_budget_for(Platform::Native, MemorySnapshot { available_ram: ram, swap_free: None, commit_headroom: commit }, None)
+    }
+
+    fn hard_refusal(result: Result<AdmissionOutcome, IoError>) -> (u64, u64, Option<u64>) {
+        match result {
+            Err(IoError::PsdImportBudget { required, limit, free_memory }) => (required, limit, free_memory),
+            other => panic!("expected a hard refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn low_ram_boundaries_keep_room_for_small_files() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        // (free RAM, soft limit, hard limit)
+        let table = [
+            (0, 0, 0),
+            (128 * MIB, 0, 0),
+            (256 * MIB, 0, 0),
+            (256 * MIB + 1, 64 * MIB, 1),
+            (512 * MIB, 128 * MIB, 256 * MIB),
+            (GIB, 256 * MIB, 768 * MIB),
+            (GIB + 1, 256 * MIB, 768 * MIB),
+            (1366 * MIB, 342 * MIB, 2049 * MIB / 2),
+            (3 * GIB / 2, 512 * MIB, 1152 * MIB),
+            (2 * GIB, GIB, 3 * GIB / 2),
+            (3 * GIB, 3 * GIB / 2, 9 * GIB / 4),
+            (4 * GIB, 2 * GIB, 3 * GIB),
+            (8 * GIB, 4 * GIB, 6 * GIB),
+        ];
+        for (ram, soft, hard) in table {
+            let b = native_budget(Some(ram), None);
+            // The soft limit is also bounded by the hard limit: 256 MiB + 1 leaves 1 byte.
+            let soft = soft.min(hard);
+            assert_eq!((b.soft_limit, b.hard_limit), (soft, hard), "free RAM {ram}");
+            assert_eq!(b.warning_threshold, None);
+        }
+    }
+
+    #[test]
+    fn low_commit_boundaries_keep_room_for_small_files() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        // (commit headroom, soft limit, hard limit) with plenty of RAM, then with RAM unknown.
+        let table = [
+            (0, 0, 0),
+            (128 * MIB, 0, 0),
+            (256 * MIB, 0, 0),
+            (512 * MIB, 128 * MIB, 256 * MIB),
+            (512 * MIB + 1, 128 * MIB, 256 * MIB + 1),
+            (GIB, 512 * MIB, 768 * MIB),
+            (3 * GIB / 2, GIB, 1152 * MIB),
+            (2 * GIB, 3 * GIB / 2, 3 * GIB / 2),
+            (5 * GIB, 9 * GIB / 2, 9 * GIB / 2),
+        ];
+        for (commit, soft, hard) in table {
+            let b = native_budget(Some(64 * GIB), Some(commit));
+            assert_eq!((b.soft_limit, b.hard_limit), (soft, hard), "commit {commit}, RAM known");
+            let unknown = native_budget(None, Some(commit));
+            assert_eq!(unknown.hard_limit, hard, "commit {commit}, RAM unknown");
+            assert_eq!(unknown.soft_limit, soft.min(2 * GIB), "commit {commit}, RAM unknown");
+            assert_eq!(unknown.warning_threshold, Some(UNKNOWN_MEMORY_WARNING_THRESHOLD));
+        }
+    }
+
+    #[test]
+    fn budgets_grow_with_free_memory_and_leave_the_reserve() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        for by_commit in [false, true] {
+            let (mut last_soft, mut last_hard) = (0, 0);
+            let mut measured = 0;
+            while measured <= 9 * GIB {
+                let b = if by_commit { native_budget(Some(64 * GIB), Some(measured)) } else { native_budget(Some(measured), None) };
+                assert!(b.soft_limit <= b.hard_limit, "commit={by_commit} {measured}");
+                assert!(b.hard_limit <= measured, "commit={by_commit} {measured}");
+                assert!(b.soft_limit >= last_soft && b.hard_limit >= last_hard, "commit={by_commit} {measured}: not non-decreasing");
+                if b.hard_limit > 0 {
+                    assert!(measured - b.hard_limit >= LOW_MEMORY_RESERVE, "commit={by_commit} {measured}: reserve not kept");
+                }
+                (last_soft, last_hard) = (b.soft_limit, b.hard_limit);
+                measured += 16 * MIB;
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_file_opens_on_a_machine_with_little_free_memory() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let b = native_budget(Some(900 * MIB), None);
+        assert_eq!(b.decide(100 * MIB), BudgetDecision::Automatic);
+        assert_eq!(b.decide(300 * MIB), BudgetDecision::RequiresApproval);
+        assert_eq!(b.decide(700 * MIB), BudgetDecision::Refused);
+
+        // The reported case: about 190 MB beyond 1 GiB free.
+        let snap = MemorySnapshot { available_ram: Some(190_693_376 + GIB), swap_free: None, commit_headroom: None };
+        let (required, limit, free) = hard_refusal(evaluate_psd_admission_for(Platform::Native, 1_136_504_592, 0, 0, false, None, snap));
+        assert_eq!((required, limit), (1_136_504_592, (190_693_376 + GIB) * 3 / 4));
+        assert_eq!(free, Some(190_693_376 + GIB));
+        assert!(matches!(evaluate_psd_admission_for(Platform::Native, 500_000_000, 0, 0, false, None, snap), Err(IoError::PsdApprovalRequired { .. })));
+    }
+
+    #[test]
+    fn refusals_report_free_memory_only_when_measured_memory_set_the_limit() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let snap = |ram, commit| MemorySnapshot { available_ram: ram, swap_free: None, commit_headroom: commit };
+        let refuse = |required, caller, snapshot| hard_refusal(evaluate_psd_admission_for(Platform::Native, required, 0, caller, false, None, snapshot));
+
+        // RAM binds.
+        assert_eq!(refuse(2 * GIB, 0, snap(Some(GIB), None)), (2 * GIB, 768 * MIB, Some(GIB)));
+        // Commit headroom below RAM binds.
+        assert_eq!(refuse(2 * GIB, 0, snap(Some(64 * GIB), Some(GIB))), (2 * GIB, 768 * MIB, Some(GIB)));
+        // Commit headroom alone (RAM unknown).
+        assert_eq!(refuse(2 * GIB, 0, snap(None, Some(GIB))), (2 * GIB, 768 * MIB, Some(GIB)));
+        // Zero measured RAM (also the fail-closed unreadable limit) refuses everything.
+        assert_eq!(refuse(1, 0, snap(Some(0), None)), (1, 0, Some(0)));
+        // A binding caller limit is not the machine's.
+        assert_eq!(refuse(2 * GIB, GIB, snap(Some(8 * GIB), None)), (2 * GIB, GIB, None));
+        assert_eq!(refuse(2 * GIB, GIB, MemorySnapshot::UNKNOWN), (2 * GIB, GIB, None));
+        // The overflow sentinel is not helped by closing apps.
+        assert_eq!(refuse(u64::MAX, 0, snap(Some(8 * GIB), None)), (u64::MAX, 6 * GIB, None));
+        assert_eq!(refuse(u64::MAX, 0, MemorySnapshot::UNKNOWN), (u64::MAX, u64::MAX, None));
+
+        // On the budget itself.
+        assert_eq!(native_budget(Some(8 * GIB), None).measured_free, Some(8 * GIB));
+        assert_eq!(native_budget(Some(8 * GIB), None).refusal_free_memory(u64::MAX), None);
+        assert_eq!(native_budget(None, None).measured_free, None);
+        assert_eq!(resolve_budget_for(Platform::Web, snap(Some(GIB), None), None).measured_free, None);
+        // A caller limit equal to the machine's limit does not hide the measurement.
+        assert_eq!(resolve_budget_for(Platform::Native, snap(Some(8 * GIB), None), Some(6 * GIB)).measured_free, Some(8 * GIB));
+        assert_eq!(resolve_budget_for(Platform::Native, snap(Some(8 * GIB), None), Some(6 * GIB - 1)).measured_free, None);
+    }
+
+    /// Only 32-bit native has a finite cap: when it equals the measured room, freeing memory
+    /// cannot raise the limit, so no free-memory figure is reported.
+    #[test]
+    fn a_platform_cap_equal_to_the_measured_room_reports_no_free_memory() {
+        let cap = native_platform_cap();
+        if cap == u64::MAX {
+            return;
+        }
+        assert_eq!(native_budget(None, Some(cap + COMMIT_RESERVE)).measured_free, None);
+        assert_eq!(native_budget(None, Some(cap - 1 + COMMIT_RESERVE)).measured_free, Some(cap - 1 + COMMIT_RESERVE));
+    }
+
+    #[test]
+    fn scratch_credit_adds_to_the_low_memory_limits() {
+        if cfg!(any(target_arch = "wasm32", target_pointer_width = "32")) {
+            return;
+        }
+        let snap = |ram, commit| MemorySnapshot { available_ram: ram, swap_free: None, commit_headroom: commit };
+        with_mock_scratch(Some(40 * GIB), || {
+            let one_gib = snap(Some(GIB), None);
+            let out = evaluate_psd_admission_for(Platform::Native, 2 * GIB + 100 * MIB, 2 * GIB, 0, false, None, one_gib).unwrap();
+            assert_eq!(out.authorized_total, 256 * MIB + 2 * GIB);
+
+            let err = evaluate_psd_admission_for(Platform::Native, 2 * GIB + 500 * MIB, 2 * GIB, 0, false, None, one_gib).unwrap_err();
+            assert!(matches!(err, IoError::PsdApprovalRequired { soft_limit, hard_limit, .. }
+                if soft_limit == 2 * GIB + 256 * MIB && hard_limit == 2 * GIB + 768 * MIB));
+
+            let refused = hard_refusal(evaluate_psd_admission_for(Platform::Native, 2 * GIB + 800 * MIB, 2 * GIB, 0, true, None, one_gib));
+            assert_eq!(refused, (2 * GIB + 800 * MIB, 2 * GIB + 768 * MIB, Some(GIB)));
+
+            // Fail closed: nothing measured, so only the credited tile share passes.
+            let zero = snap(Some(0), None);
+            assert!(evaluate_psd_admission_for(Platform::Native, 2 * GIB, 2 * GIB, 0, false, None, zero).is_ok());
+            let refused = hard_refusal(evaluate_psd_admission_for(Platform::Native, 2 * GIB + 1, 2 * GIB, 0, true, None, zero));
+            assert_eq!(refused, (2 * GIB + 1, 2 * GIB, Some(0)));
+
+            // Low commit headroom with plenty of RAM: H = 256 MiB + credit.
+            let low_commit = snap(Some(64 * GIB), Some(512 * MIB));
+            let refused = hard_refusal(evaluate_psd_admission_for(Platform::Native, 2 * GIB + 300 * MIB, 2 * GIB, 0, true, None, low_commit));
+            assert_eq!(refused, (2 * GIB + 300 * MIB, 2 * GIB + 256 * MIB, Some(512 * MIB)));
+            let b = resolve_budget_credited(Platform::Native, low_commit, None, 2 * GIB);
+            assert_eq!((b.soft_limit, b.hard_limit), (2 * GIB + 128 * MIB, 2 * GIB + 256 * MIB));
+        });
+    }
+
+    #[test]
+    fn low_memory_advice_names_the_free_memory() {
+        assert_eq!(low_memory_advice(&None), "");
+        assert_eq!(
+            low_memory_advice(&Some(0)),
+            ". PhotoCraft measured no free memory, or could not read this system's memory limit. Close other apps and try again"
+        );
+        assert_eq!(low_memory_advice(&Some(900 << 20)), ". About 900 MiB of memory is free. Close other apps and try again");
+        assert_eq!(low_memory_advice(&Some(3 << 30)), ". About 3.0 GiB of memory is free. Close other apps and try again");
+        assert_eq!(low_memory_advice(&Some(512)), ". About 512 B of memory is free. Close other apps and try again");
     }
 }

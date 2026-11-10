@@ -276,6 +276,7 @@ fn every_filter_previews_off_the_ui_thread_and_a_newer_value_cancels_the_old() {
         command: "filter.blur.gaussianBlur".into(),
         params: json!({"radius": 999.0}),
         k: 1,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let (told, cancelled) = std::sync::mpsc::channel();
     app.filter_preview_worker
@@ -329,6 +330,7 @@ fn gated_blur_preview(app: &mut PhotocraftApp, ctx: &egui::Context) -> (std::syn
         command: command.into(),
         params,
         k: 1,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let doc = app.session.documents()[0].doc.clone();
     let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
@@ -347,6 +349,7 @@ fn gated_blur_preview(app: &mut PhotocraftApp, ctx: &egui::Context) -> (std::syn
                 key.target,
                 &documents,
                 &Default::default(),
+                Some(key.tool_colors),
             )
             .map(|d| {
                 let buffer = photocraft_compose::flatten(&d);
@@ -394,6 +397,169 @@ fn a_held_preview_frame_stays_on_the_canvas_when_the_proxy_factor_changes() {
     drive_until(&mut app, &ctx, "the full-resolution frame", |a| a.filter_preview.as_ref().is_some_and(|p| p.key.k == 1 && p.result.is_some()));
     let (k, _, size) = ensure_filter_preview(&mut app, 0, &ctx).expect("the new frame");
     assert_eq!((k, size), (1, [2400, 2200]));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn indexed_matte_preview_matches_commit_and_refreshes_tool_colors_inline_and_on_worker() {
+    for background in [false, true] {
+        for depth in [8, 16, 32] {
+            for matte in ["foreground", "background"] {
+                let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+                app.background_jobs = background;
+                app.run("file.new", json!({"width": 64, "height": 48, "depth": depth, "background": "transparent"})).unwrap();
+                app.run("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+                app.run("edit.colorSettings", json!({"workingRgb": "display-p3"})).unwrap();
+                app.session
+                    .edit("Translucent edge", |doc, active| {
+                        let format = doc.pixel_format();
+                        doc.layer_mut(active.unwrap())
+                            .unwrap()
+                            .surface_mut()
+                            .unwrap()
+                            .fill_rect(photocraft_geom::Rect::new(0, 0, 32, 48), &photocraft_raster::from_rgba(&format, [1.0, 0.0, 0.0, 0.5]));
+                        Ok(())
+                    })
+                    .unwrap();
+                let source = app.session.active().unwrap().doc.clone();
+                let params = json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte});
+                crate::filter_dialog::open(&mut app, "image.mode.indexedColor").unwrap();
+                app.ui.dialogs.last_mut().unwrap().fields.extend(params.as_object().unwrap().clone());
+                let ctx = egui::Context::default();
+                let mut previous = None;
+                for (foreground, background_color) in [("#3366cc", "#cc6633"), ("#26bf59", "#bf26a6")] {
+                    app.session.execute("tools.setColors", json!({"foreground": foreground, "background": background_color})).unwrap();
+                    let colors = (app.session.tools.foreground, app.session.tools.background);
+                    let shown = ensure_filter_preview(&mut app, 0, &ctx);
+                    if background {
+                        assert!(shown.is_none(), "old tool colors must not remain visible");
+                    }
+                    drive_until(&mut app, &ctx, "the current matte colors", |app| {
+                        app.filter_preview.as_ref().is_some_and(|p| p.key.tool_colors == colors && p.result.is_some())
+                    });
+                    let preview = app.filter_preview.as_ref().unwrap().result.as_ref().unwrap();
+                    let mut applied = photocraft_engine::Session::new();
+                    applied.color.settings = app.session.color.settings.clone();
+                    applied.tools.foreground = colors.0;
+                    applied.tools.background = colors.1;
+                    applied.add_document((*source).clone(), None);
+                    applied.execute("image.mode.indexedColor", params.clone()).unwrap();
+                    let committed = &applied.active().unwrap().doc;
+                    assert_eq!(preview.icc_profile, source.icc_profile);
+                    assert_eq!(preview.color_table, committed.color_table);
+                    let actual = preview.layers[0].surface().unwrap().read_region(preview.bounds());
+                    let expected = committed.layers[0].surface().unwrap().read_region(committed.bounds());
+                    assert_eq!(actual, expected, "{matte}, {depth}-bit, worker={background}");
+                    if let Some(previous) = previous {
+                        assert_ne!(actual, previous, "changing the selected tool color refreshes the pixels");
+                    }
+                    previous = Some(actual);
+                    assert_eq!(app.session.active().unwrap().doc.mode, photocraft_doc::ColorMode::Rgb, "preview does not commit");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cross_scale_indexed_matte_preview_rejects_old_tool_colors_from_cached_and_worker_results() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.background_jobs = true;
+    app.run("file.new", json!({"width": 2400, "height": 2200, "depth": 8, "background": "transparent"})).unwrap();
+    app.run("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+    app.run("edit.colorSettings", json!({"workingRgb": "display-p3"})).unwrap();
+    app.session
+        .edit("Translucent edge", |doc, active| {
+            let format = doc.pixel_format();
+            doc.layer_mut(active.unwrap())
+                .unwrap()
+                .surface_mut()
+                .unwrap()
+                .fill_rect(photocraft_geom::Rect::new(0, 0, 32, 48), &photocraft_raster::from_rgba(&format, [1.0, 0.0, 0.0, 0.5]));
+            Ok(())
+        })
+        .unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 0.25;
+    let params = json!({"palette": "exact", "forced": "none", "dither": "none", "matte": "foreground"});
+    crate::filter_dialog::open(&mut app, "image.mode.indexedColor").unwrap();
+    app.ui.dialogs.last_mut().unwrap().fields.extend(params.as_object().unwrap().clone());
+    app.session.execute("tools.setColors", json!({"foreground": "#3366cc", "background": "#cc6633"})).unwrap();
+    let ctx = egui::Context::default();
+    drive_until(&mut app, &ctx, "the first indexed preview", |a| a.filter_preview.as_ref().is_some_and(|p| p.result.is_some()));
+    let old = app.filter_preview.as_ref().expect("the first preview").key.clone();
+    assert_eq!(old.k, 2, "the zoomed-out large document uses the reduced preview");
+
+    app.session.execute("tools.setColors", json!({"foreground": "#26bf59", "background": "#bf26a6"})).unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 1.0;
+    let new_colors = (app.session.tools.foreground, app.session.tools.background);
+    let new = crate::filter_dialog::FilterPreviewKey { k: 1, tool_colors: new_colors, ..old.clone() };
+    assert_ne!(old.tool_colors, new.tool_colors);
+    assert_ne!(old.k, new.k, "the cache and request use different preview factors");
+
+    // Keep the current worker pending so the only possible frame is the cached old-color one.
+    let (release_new, wait_new) = std::sync::mpsc::channel();
+    app.filter_preview_worker
+        .start(new.clone(), ctx.clone(), move |_| {
+            wait_new.recv_timeout(std::time::Duration::from_secs(60)).expect("the test releases the job");
+            crate::dialogs::filter_preview_worker::Computed { result: None, ms: 0.0 }
+        })
+        .expect("the worker starts");
+    assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the cached old-color frame is not painted while the new worker runs");
+    release_new.send(()).expect("released");
+    drive_until(&mut app, &ctx, "the new worker to finish", |a| !a.filter_preview_worker.busy());
+    assert_eq!(app.filter_preview.as_ref().expect("the current request").key, new);
+    assert!(app.filter_preview.as_ref().unwrap().result.is_none());
+
+    // Start an old-color worker while its request is current, then move the dialog to a new
+    // cross-scale request before the old result lands. Its real preview must not replace the
+    // current request through the loose worker-result gate.
+    app.session.execute("tools.setColors", json!({"foreground": "#3366cc", "background": "#cc6633"})).unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 0.25;
+    let old_worker = old.clone();
+    let doc = app.session.documents()[0].doc.clone();
+    let documents: Vec<_> = app.session.documents().iter().map(|d| d.doc.clone()).collect();
+    let color = app.session.color.settings.clone();
+    let (release_old, wait_old) = std::sync::mpsc::channel();
+    app.filter_preview_worker
+        .start(old_worker.clone(), ctx.clone(), move |_| {
+            wait_old.recv_timeout(std::time::Duration::from_secs(60)).expect("the test releases the job");
+            let result = crate::filter_dialog::preview_document_for_target(
+                &doc,
+                old_worker.active,
+                &old_worker.command,
+                &old_worker.params,
+                old_worker.k,
+                None,
+                old_worker.target,
+                &documents,
+                &color,
+                Some(old_worker.tool_colors),
+            )
+            .map(|doc| {
+                let buffer = photocraft_compose::flatten(&doc);
+                (std::sync::Arc::new(doc), buffer)
+            });
+            crate::dialogs::filter_preview_worker::Computed { result, ms: 0.0 }
+        })
+        .expect("the worker starts");
+    assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the old cached request is not current");
+
+    app.session.execute("tools.setColors", json!({"foreground": "#26bf59", "background": "#bf26a6"})).unwrap();
+    app.ui.views.get_mut(0).expect("the new document's view").zoom = 1.0;
+    app.ui.dialogs[0].fields.insert("matte".into(), json!("background"));
+    let mut new_late = new.clone();
+    new_late.params.as_object_mut().unwrap().insert("matte".into(), json!("background"));
+    assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "the current request has no result while the old worker runs");
+    release_old.send(()).expect("released");
+    drive_until(&mut app, &ctx, "the stale old-color worker to finish", |a| {
+        if let Some(shown) = &a.filter_preview {
+            assert_eq!(shown.key.tool_colors, new.tool_colors, "the stale old-color worker result was not painted");
+            assert_ne!(shown.key.k, old.k, "the stale old-scale worker result was not painted");
+        }
+        a.filter_preview.as_ref().is_some_and(|p| p.key == new_late && p.result.is_some()) && !a.filter_preview_worker.busy()
+    });
+    assert_eq!(app.filter_preview.as_ref().expect("the current request").key, new_late);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -502,6 +668,7 @@ fn a_mid_drag_empty_result_leaves_the_preview_alone() {
         command: "filter.blur.gaussianBlur".into(),
         params: json!({"radius": moved}),
         k: 1,
+        tool_colors: (app.session.tools.foreground, app.session.tools.background),
     };
     let (release_empty, wait) = std::sync::mpsc::channel::<()>();
     app.filter_preview_worker
@@ -935,20 +1102,38 @@ fn navigator_damage_updates_match_a_full_thumbnail() {
 #[test]
 fn tab_context_uses_clicked_document_and_existing_close_commands() {
     let items = tab_context_items(2, 3, true);
-    assert_eq!(items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(), ["file.close", "file.closeOthers", "file.closeAll", "file.revealInFinder"]);
-    assert_eq!(items[0].2, json!({"document": 2}));
+    assert_eq!(
+        items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(),
+        [
+            "window.arrange.consolidateAllToTabs",
+            "file.close",
+            "file.closeAll",
+            "file.closeOthers",
+            "window.arrange.floatInWindow",
+            "file.new",
+            "file.open",
+            "file.revealInFinder"
+        ]
+    );
     assert_eq!(items[1].2, json!({"document": 2}));
-    assert_eq!(items[2].2, json!({}));
     assert_eq!(items[3].2, json!({"document": 2}));
-    assert!(items[3].3, "a saved document can be revealed in the file manager");
-    assert!(!tab_context_items(2, 3, false)[3].3, "an unsaved document cannot");
-    assert!(!tab_context_items(0, 1, false)[1].3);
-    assert!(items.iter().all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some()));
+    assert_eq!(items[2].2, json!({}));
+    assert_eq!(items[7].2, json!({"document": 2}));
+    assert!(items[7].3, "a saved document can be revealed in the file manager");
+    assert!(!tab_context_items(2, 3, false)[7].3, "an unsaved document cannot");
+    assert!(!tab_context_items(0, 1, false)[3].3);
+    // The window.* rows and file.new / file.open are UI commands; the doc_tab_menu tests check them.
+    assert!(
+        items
+            .iter()
+            .filter(|r| r.1.starts_with("file.close") || r.1 == "file.revealInFinder")
+            .all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some())
+    );
 }
 
 #[test]
 fn tab_context_reveal_names_the_platform_file_manager() {
-    let (label, id, _, _) = &tab_context_items(0, 1, true)[3];
+    let (label, id, _, _) = &tab_context_items(0, 1, true)[7];
     assert_eq!((*label, *id), (crate::menus::reveal_label(), "file.revealInFinder"));
 }
 
@@ -1099,7 +1284,7 @@ fn tab_close_others_prompts_for_unsaved_nonactive_document() {
     app.run("file.new", json!({"width": 8, "height": 8, "name": "Edited"})).unwrap();
     app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
     assert_eq!(app.session.active_index(), Some(1));
-    let (_, id, params, _) = tab_context_items(0, 2, false)[1].clone();
+    let (_, id, params, _) = tab_context_items(0, 2, false)[3].clone();
     crate::menus::invoke(&mut app, &egui::Context::default(), id, params).unwrap();
     assert!(app.discard.is_some(), "close others must ask before discarding the edited tab");
     assert_eq!(app.session.documents().len(), 2);
@@ -1391,14 +1576,11 @@ fn clone_overlay_is_clipped_to_a_shaped_tip() {
 }
 
 #[test]
-fn wayland_start_screen_hint_does_not_claim_file_drop_works() {
+fn wayland_start_screen_hint_offers_file_drop() {
     let x11 = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     let wayland = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { is_wayland: true, ..Default::default() });
     assert!(start_screen_drop_hint(&x11).starts_with("Drop"));
-    // Pasting a copied image file works on Wayland (#338): the hint says how.
-    let hint = start_screen_drop_hint(&wayland);
-    assert!(!hint.contains("Drop"), "{hint}");
-    assert!(hint.ends_with(&format!("paste a copied image with {}.", crate::notices::paste_hint(&wayland))), "{hint}");
+    assert!(start_screen_drop_hint(&wayland).starts_with("Drop"));
 }
 
 /// A tiling window manager can hand PhotoCraft a canvas narrower than the Home card (460
@@ -2122,12 +2304,66 @@ fn brush_drag_shows_the_real_stroke_and_commits_it() {
     assert_eq!(alpha(&app.session.documents()[0].doc, 40, 30), 0.0, "not committed yet");
     // The canvas redraws only what the stroke touched.
     let dk = canvas_display(&app, &app.session.documents()[0].doc, None).1;
-    let d = damage_since(&app, 0, (rev, dk), (rev, key), dk, None).unwrap();
+    let d = damage_since(&app, 0, (rev, dk), (rev, key), dk, (rev, None)).unwrap();
     assert!(d.contains(40, 30) && !d.contains(40, 2) && d.height() < 60, "{d:?}");
     tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 30.0 }, m);
     let doc = app.session.documents()[0].doc.clone();
     assert!(app.live_stroke.is_none() && display_doc(&mut app, 0).1 == 0);
     assert_eq!((alpha(&doc, 40, 30), alpha(&doc, 40, 38)), (alpha(&shown, 40, 30), alpha(&shown, 40, 38)), "commit matches the preview");
+}
+
+/// #9329 PR C: Paste Into is three revisions; the canvas redraws what the whole command
+/// changed (the pasted area), not the whole document as when only one revision counted.
+#[test]
+fn paste_into_refreshes_only_the_pasted_area() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.background_jobs = false;
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 800, "height": 600})).unwrap();
+    app.run("select.rect", json!({"x": 40, "y": 40, "width": 100, "height": 100})).unwrap();
+    app.run("edit.copy", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 500, "y": 400, "width": 90, "height": 60})).unwrap();
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let rev = app.session.active().unwrap().revision;
+    app.perf.last_refresh_px = 0;
+    app.run("edit.pasteSpecial.pasteInto", json!({})).unwrap();
+    assert!(app.session.active().unwrap().revision >= rev + 2, "several revisions");
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let px = app.perf.last_refresh_px;
+    assert!(px > 0 && px < 800 * 600 / 4, "refreshed {px} px of {}", 800 * 600);
+}
+
+/// The Move tool's Auto-Select pick is its own revision that changes no pixels: the drag
+/// that follows still redraws only where the layer was and is.
+#[test]
+fn auto_select_move_is_still_bounded() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.background_jobs = false;
+    let ctx = egui::Context::default();
+    app.run("file.new", json!({"width": 800, "height": 600})).unwrap();
+    for (x, color) in [(100, "#ff0000"), (500, "#0000ff")] {
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("select.rect", json!({"x": x, "y": 100, "width": 40, "height": 40})).unwrap();
+        app.run("edit.fill", json!({"color": color})).unwrap();
+    }
+    app.run("select.deselect", json!({})).unwrap();
+    app.ui.tool = Tool::Move;
+    app.ui.tool_options.move_auto_select = true;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    let active = app.session.active().unwrap().active_layer;
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let rev = app.session.active().unwrap().revision;
+    let m = egui::Modifiers::NONE;
+    tool_event(&mut app, ToolEvent::Down { x: 120.0, y: 120.0, pressure: 1.0 }, m);
+    assert_ne!(app.session.active().unwrap().active_layer, active, "Auto-Select picked the red layer");
+    assert_eq!(app.session.active().unwrap().revision, rev + 1, "the pick is one revision");
+    tool_event(&mut app, ToolEvent::Move { x: 150.0, y: 130.0, pressure: 1.0 }, m);
+    app.perf.last_refresh_px = 0;
+    ensure_texture(&mut app, &ctx, 0, None).expect("a texture");
+    let px = app.perf.last_refresh_px;
+    assert!(px > 0 && px < 800 * 600 / 4, "refreshed {px} px of {}", 800 * 600);
+    tool_event(&mut app, ToolEvent::Up { x: 150.0, y: 130.0 }, m);
 }
 
 #[test]
@@ -2174,6 +2410,8 @@ fn drag_frames(smoothing: f32, xs: &[f64]) -> (std::sync::Arc<Document>, std::sy
     app.run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.5}})).unwrap();
     // What the options bar's Smoothing field writes.
     app.session.tools.brush.smoothing.amount = smoothing;
+    // Catch-up on Stroke End starts off (#11887); these tests draw the catch-up tail.
+    app.session.tools.brush.smoothing.catch_up_on_end = true;
     app.ui.tool = Tool::Brush;
     ensure_texture(&mut app, &ctx, 0, None);
     let m = egui::Modifiers::NONE;
@@ -2245,7 +2483,7 @@ fn smoothed_stroke_shows_its_catch_up_tail_while_drawing() {
     // And the commit is what `paint.stroke` gives with that smoothing.
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 200, "height": 80, "background": "transparent"})).unwrap();
-    s.execute("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.5, "smoothing": {"amount": 0.5}}})).unwrap();
+    s.execute("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.5, "smoothing": {"amount": 0.5, "catchUpOnEnd": true}}})).unwrap();
     let mut pts = vec![json!([10.0, 40.0, 1.0])];
     pts.extend(xs.iter().map(|&x| json!([x, 40.0 + (x / 7.0).sin() * 8.0, 1.0])));
     // (Round tips without dynamics draw the same for any seed.)
@@ -3053,4 +3291,84 @@ fn torn_off_document_is_not_drawn_again_in_the_main_window() {
         let tabs = h.state().0.tab_strip.as_ref().map(|s| s.tabs.iter().map(|(doc, _)| *doc).collect::<Vec<_>>());
         assert_eq!(tabs, Some(vec![1]), "{kind:?}: only the docked document stays on the main tab strip");
     }
+}
+
+/// #8230: Edit › Fade opens with a Preview checkbox, and the canvas shows the layer faded with the
+/// dialog's opacity, at full size, on the background worker and the inline path alike. Cancel
+/// leaves the document, its history and Fade itself as they were; OK applies what was shown.
+#[test]
+fn fade_dialog_previews_the_faded_layer_and_cancel_keeps_the_document() {
+    for background in [false, true] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 40, "height": 30, "background": "white"})).unwrap();
+        app.run("edit.fill", json!({"color": "#000000"})).unwrap();
+        app.background_jobs = background;
+        let ctx = egui::Context::default();
+        let st = app.session.active().unwrap();
+        let (layer, steps, revision) = (st.active_layer.unwrap(), st.history.past_len(), st.revision);
+        let id = crate::filter_dialog::open(&mut app, "edit.fade").expect("Fade has a dialog");
+        let d = app.ui.dialog_mut(id).expect("the dialog");
+        assert_eq!(d.fields.get("__preview"), Some(&json!(true)), "a Preview checkbox, on");
+        d.fields.insert("opacity".into(), json!(25));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (k, size) = loop {
+            if let Some((k, _, size)) = ensure_filter_preview(&mut app, 0, &ctx)
+                && app.filter_preview.as_ref().is_some_and(|p| p.key.params.get("opacity") == Some(&json!(25)))
+            {
+                break (k, size);
+            }
+            assert!(std::time::Instant::now() < deadline, "background jobs {background}: no preview");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert_eq!((k, size), (1, [40, 30]), "background jobs {background}: full size");
+        let shown = app.filter_preview.as_ref().and_then(|p| p.result.as_ref()).expect("a result").layer(layer).unwrap().surface().unwrap().pixel(3, 3);
+        assert!((shown[0] - 0.75).abs() < 0.01, "background jobs {background}: {shown:?}");
+
+        // Cancel: nothing changed, nothing previewed, and Fade is still there to use.
+        app.ui.close_dialog(id);
+        assert!(ensure_filter_preview(&mut app, 0, &ctx).is_none(), "background jobs {background}: no preview after Cancel");
+        let st = app.session.active().unwrap();
+        assert_eq!(st.doc.layer(layer).unwrap().surface().unwrap().pixel(3, 3)[0], 0.0, "background jobs {background}: the layer is untouched");
+        assert_eq!((st.history.past_len(), st.revision), (steps, revision), "background jobs {background}: no history step");
+        assert!(app.session.is_enabled("edit.fade"), "background jobs {background}: Fade is still available");
+
+        // OK applies the faded layer as one step.
+        let id = crate::filter_dialog::open(&mut app, "edit.fade").unwrap();
+        app.ui.dialog_mut(id).unwrap().fields.insert("opacity".into(), json!(25));
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let st = app.session.active().unwrap();
+        let faded = st.doc.layer(layer).unwrap().surface().unwrap().pixel(3, 3)[0];
+        assert!((faded - shown[0]).abs() < 1e-6, "background jobs {background}: OK applies the preview ({faded})");
+        assert_eq!(st.history.past_len(), steps + 1);
+    }
+}
+
+#[test]
+fn free_transform_redraws_only_the_moving_layer_when_the_box_opens_and_closes() {
+    // Opening the box swapped the canvas to a preview document with no damage for it, so a
+    // gigapixel canvas recomposited in full (over a second) on every ⌘T, and again on Cancel.
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 400, "height": 200, "background": "transparent"})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(20, 20, 60, 50), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    let rev = app.session.documents()[0].revision;
+    crate::transform_tool::begin(&mut app, &egui::Context::default()).expect("the box opens");
+    let (_, key) = display_doc(&mut app, 0);
+    assert_eq!(key, crate::transform_tool::preview_key(app.transform_preview.as_ref().unwrap().session));
+    let dk = canvas_display(&app, &app.session.documents()[0].doc, None).1;
+    let opened = damage_since(&app, 0, (rev, dk), (rev, key), dk, (rev, None)).expect("opening the box has a damage area");
+    assert!(opened.contains(20, 20) && opened.contains(59, 49), "{opened:?}");
+    assert!(opened.width() < 400 && opened.height() < 200, "not the whole canvas: {opened:?}");
+    let canceled = damage_since(&app, 0, (rev, key ^ dk), (rev, 0), dk, (rev, None)).expect("canceling has one too");
+    assert_eq!(canceled, opened);
+    // A commit (one revision later) adds what it changed; anything else redraws everything.
+    let moved = photocraft_geom::Rect::new(100, 20, 140, 50);
+    let committed = damage_since(&app, 0, (rev, key ^ dk), (rev + 1, 0), dk, (rev, Some(moved))).expect("committing too");
+    assert!(committed.contains(20, 20) && committed.contains(139, 49), "{committed:?}");
+    assert!(damage_since(&app, 0, (rev, key ^ dk), (rev + 2, 0), dk, (rev + 1, Some(moved))).is_none(), "a later revision isn't ours");
 }

@@ -203,7 +203,7 @@ mod reveal_label_tests {
         let expected = if cfg!(target_os = "macos") {
             "Reveal in Finder"
         } else if cfg!(windows) {
-            "Show in Explorer"
+            "Reveal in Explorer"
         } else {
             "Show in Folder"
         };

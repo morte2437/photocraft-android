@@ -386,6 +386,8 @@ fn alternate_keys_run_their_command() {
         ("Cmd+Shift+I", "select.inverse"),
         ("Cmd++", "view.zoomIn"),
         ("Shift+Backspace", "edit.fill"),
+        ("Cmd+Alt+0", "view.actualPixels"),
+        ("F9", "window.panel.actions"),
     ] {
         press(&mut h, key);
         let log = take_log(&h.ctx);

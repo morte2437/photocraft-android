@@ -489,7 +489,7 @@ pub fn ensure(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, display:
     let st = app.session.documents().get(idx)?;
     let view = st.channel_view.clone();
     let active = st.active_layer;
-    let (revision, last_damage) = (st.revision, st.last_damage);
+    let (revision, last_damage) = (st.revision, (st.damage_from(), st.last_damage));
     let content = revision.wrapping_sub(st.view_revision);
     let id = st.doc.id.0;
     if view.is_plain(&st.doc) {

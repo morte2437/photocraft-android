@@ -95,6 +95,7 @@
 	Right	Sağ
 	Open Recent	Son Kullanılanları Aç
 	Clear Recent Files	Son Dosyaları Temizle
+	Clear Recent File List	Son Dosyaları Temizle
 	Remove from Recent	Son Kullanılanlardan Kaldır
 	Remove {name} from Recent	{name} öğesini Son Kullanılanlardan kaldır
 	Close	Kapat
@@ -103,6 +104,10 @@
 	Restore	Geri yükle
 	Close All	Tümünü Kapat
 	Close Others	Diğerlerini Kapat
+	New Document…	Yeni Belge…
+	Open Document…	Aç…
+	Consolidate All to Here	Tümünü Buraya Birleştir
+	Move to New Window	Yeni Pencereye Taşı
 	Save	Kaydet
 	Save As…	Farklı Kaydet…
 	Save a Copy…	Bir Kopyasını Kaydet…
@@ -154,6 +159,7 @@
 	Create Smart Object after Loading Layers	Katmanları Yükledikten Sonra Akıllı Nesne Oluştur
 	Reveal in Finder	Finder'da Göster
 	Show in Explorer	Explorer'da Göster
+	Reveal in Explorer	Explorer'da Göster
 	Show in Folder	Klasörde Göster
 	File Info…	Dosya Bilgileri…
 	Print…	Yazdır…
@@ -242,9 +248,10 @@
 	Units & Rulers…	Birimler ve Cetveller…
 	Guides, Grid & Slices…	Kılavuzlar, Izgaralar ve Dilimler…
 	Plug-ins…	Eklentiler…
+	Plugins…	Eklentiler…
 	Type…	Metin…
 	Enhanced Controls…	Gelişmiş Kontroller…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	RAW Varsayılanları…
 	Raw Defaults…	Ham Varsayılanlar…
 	Integrations…	Entegrasyonlar…
 	AI Integrations…	Yapay Zeka Entegrasyonları…
@@ -295,6 +302,8 @@
 	Match Color…	Rengi Eşleştir…
 	Replace Color…	Rengi Değiştir…
 	Equalize	Eşitle
+	Equalize Selected Area Only	Yalnızca Seçili Alanı Eşitle
+	Equalize Entire Image Based On Selected Area	Tüm Görüntüyü Seçili Alana Göre Eşitle
 	Auto Tone	Otomatik Ton
 	Auto Contrast	Otomatik Kontrast
 	Auto Color	Otomatik Renk
@@ -330,8 +339,8 @@
 	Artboard…	Çalışma Yüzeyi…
 	Artboard from Group…	Gruptan Çalışma Yüzeyi…
 	Artboard from Layers…	Katmanlardan Çalışma Yüzeyi…
-	Layer via Copy	Kopyalama Yoluyla Katman
-	Layer via Cut	Kesim Yoluyla Katman
+	Layer Via Copy	Kopyalama Yoluyla Katman
+	Layer Via Cut	Kesim Yoluyla Katman
 	Layer From Background…	Arka Plandan Katman…
 	Layer from Background…	Arka Plandan Katman…
 	Background From Layer	Katmandan Arka Plan
@@ -397,6 +406,8 @@
 	Smart Object	Akıllı Nesne
 	Convert to Smart Object	Akıllı Nesneye Dönüştür
 	Convert to Embedded	Gömülüye Dönüştür
+	Embed Linked	Bağlantılıyı Göm
+	Embed All Linked	Tüm Bağlantılıları Göm
 	Convert to Layers	Katmanlara Dönüştür
 	Convert to Linked…	Bağlantılıya Dönüştür…
 	Edit Contents	İçeriği Düzenle
@@ -469,7 +480,9 @@
 	Unite Shapes	Şekil Alanlarını Birleştir
 	Subtract Front Shape	Ön Şekli Çıkar
 	Intersect Shape Areas	Şekil Alanlarını Kesiştir
+	Unite Shapes at Overlap	Şekil Alanlarını Kesiştir
 	Exclude Overlapping Shapes	Çakışan Şekilleri Hariç Tut
+	Subtract Shapes at Overlap	Çakışan Şekilleri Hariç Tut
 	Merge Shape Components	Şekil Bileşenlerini Birleştir
 	Path operations	Yol işlemleri
 	Align	Hizala
@@ -546,7 +559,6 @@
 	Deselect	Seçimi Kaldır
 	Reselect	Yeniden Seç
 	Inverse	Ters Çevir
-	Inverse Selection	Ters Seçim
 	Similar	Benzer
 	Color Range…	Renk Aralığı…
 	Focus Area…	Odaklanma Alanı…
@@ -570,7 +582,7 @@
 	Last Filter	Son Filtre
 	Filter Gallery…	Filtre Galerisi…
 	Adaptive Wide Angle…	Uyarlanabilir Geniş Açı…
-	Camera Raw Filter…	Camera Raw Filtresi…
+	RAW Develop Filter…	RAW Geliştirme Filtresi…
 	Liquify…	Sıvılaştır…
 	Vanishing Point…	Ufuk Noktası…
 	Blur	Bulanıklaştırma
@@ -652,6 +664,7 @@
 	Minimum…	Minimum…
 	Offset…	Kaydırma…
 	Plug-ins	Eklentiler
+	Plugins	Eklentiler
 	Proof Setup	Prova Kurulumu
 	Proof Colors	Prova Renkleri
 	Gamut Warning	Gamut Uyarısı
@@ -660,12 +673,12 @@
 	Working Magenta Plate	Çalışma Macenta Plakası
 	Working Yellow Plate	Çalışma Sarı Plakası
 	Working Black Plate	Çalışma Siyah Plakası
-	Working CMY Plate	Çalışma CMY Plakası
-	Legacy Macintosh RGB	Eski Macintosh RGB
-	Internet Standard RGB	İnternet Standardı RGB
+	Working CMY Plates	Çalışma CMY Plakaları
+	Legacy Macintosh RGB (Gamma 1.8)	Eski Macintosh RGB (Gamma 1.8)
+	Internet Standard RGB (sRGB)	İnternet Standardı RGB (sRGB)
 	Monitor RGB	Monitör RGB
-	Color Blindness — Protanopia-type	Renk Körlüğü — Protanopi tipi
-	Color Blindness — Deuteranopia-type	Renk Körlüğü — Döteranopi tipi
+	Color Blindness - Protanopia-type	Renk Körlüğü - Protanopi tipi
+	Color Blindness - Deuteranopia-type	Renk Körlüğü - Döteranopi tipi
 	Zoom In	Yakınlaştır
 	Zoom Out	Uzaklaştır
 	Fit on Screen	Ekrana Sığdır
@@ -744,7 +757,6 @@
 	Consolidate All to Tabs	Tümünü Sekmelerde Birleştir
 	Float in Window	Pencerede Yüzdür
 	Float All in Windows	Tümünü Pencerelerde Yüzdür
-	New Window for Document	Belge için Yeni Pencere
 	Workspace	Çalışma alanı
 	Essentials	Temel Öğeler
 	Graphic and Web	Grafik ve Web
@@ -810,6 +822,12 @@
 	Timeline	Zaman Çizelgesi
 	Tool Presets	Araç Ön Ayarları
 	Tools	Araçlar
+	Contextual Task Bar	Bağlamsal Görev Çubuğu
+	Hide bar	Çubuğu gizle
+	Reset bar position	Çubuk konumunu sıfırla
+	Pin bar position	Çubuk konumunu sabitle
+	Move bar	Çubuğu taşı
+	More options	Diğer seçenekler
 	About PhotoCraft	PhotoCraft Hakkında
 	PhotoCraft Website	PhotoCraft Web Sitesi
 	PhotoCraft on GitHub	GitHub'da PhotoCraft
@@ -930,7 +948,7 @@
 	Brush Reconstruct Options	Fırçayla Yeniden Yapılandırma Seçenekleri
 	Brush Tool Options	Fırça Aracı Seçenekleri
 	Cache Level:	Önbellek Düzeyi:
-	Camera Raw isn't open	Camera Raw açık değil
+	RAW Develop isn't open	RAW Geliştirme açık değil
 	Cancel	İptal
 	Reset	Sıfırla
 	Cancel (Esc)	İptal (Esc)
@@ -964,7 +982,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	Nokta eklemek için tıklayın · kaldırmak için dışarı sürükleyin, {key}-tıklayın veya Delete'e basın
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Uygulamak için tıklayın, geçersiz kılmaları temizlemek için {key}-tıklayın, Stil Seçenekleri için çift tıklayın
 	Click to edit the gradient	Degradeyi düzenlemek için tıklayın
-	Click to restore the current colour	Geçerli rengi geri yüklemek için tıklayın
+	Click to restore the current color	Geçerli rengi geri yüklemek için tıklayın
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Yakınlaştırmak için tıklayın · uzaklaştırmak için {key}-tıklayın · yakınlaştırmak/uzaklaştırmak için sağa/sola sürükleyin
 	Click with the Note tool to add a note.	Not eklemek için Not aracıyla tıklayın.
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Tıklayın: köşe · Sürükleyin: pürüzsüz · İlk noktaya tıklayın: kapat · {key} bitiş · Esc iptal
@@ -1046,7 +1064,7 @@
 	Darks	Koyu Tonlar
 	Data Sets	Veri Kümeleri
 	Default	Varsayılan
-	Default colours (D)	Varsayılan renkler (D)
+	Default Foreground and Background Colors (D)	Varsayılan Ön Plan ve Arka Plan Renkleri (D)
 	Default printer	Varsayılan yazıcı
 	Default restored.	Varsayılan geri yüklendi.
 	Define	Tanımla
@@ -1327,7 +1345,7 @@
 	Opacity Jitter	Opaklık Titreşimi
 	Opacity:	Opaklık:
 	Open a document to define variables.	Değişkenleri tanımlamak için bir belge açın.
-	Open a document to select a colour range.	Bir renk aralığı seçmek için bir belge açın.
+	Open a document to select a color range.	Bir renk aralığı seçmek için bir belge açın.
 	Open a document to use the timeline.	Zaman çizelgesini kullanmak için bir belge açın.
 	Optical	Optik
 	Optimized	Optimize edilmiş
@@ -1403,7 +1421,6 @@
 	Purity	Saflık
 	Quality	Kalite
 	Quick Actions	Hızlı Eylemler
-	Quick Export As PNG	PNG Olarak Hızlı Dışa Aktarma
 	Radial Gradient	Radyal Degrade
 	Radius	Yarıçap
 	Radius:	Yarıçap:
@@ -1542,7 +1559,7 @@
 	Subtract from Sample	Örnekten Çıkar
 	Subtract from selection  ({key})	Seçimden çıkar ({key})
 	Suggestions:	Öneriler:
-	Swap colours (X)	Renkleri değiştir (X)
+	Switch Foreground and Background Colors (X)	Ön Plan ve Arka Plan Renklerini Değiştir (X)
 	Swaps height and width	Yüksekliği ve genişliği değiştirir
 	Switch between free transform and warp modes	Serbest dönüştürme ve bükme modları arasında geçiş yapın
 	Switch theme	Temayı değiştir
@@ -1644,7 +1661,7 @@
 	Choke	Daraltma
 	Classic	Klasik
 	Click to add text	Metin eklemek için tıklayın
-	Click to fill similar colours	Benzer renkleri doldurmak için tıklayın
+	Click to fill similar colors	Benzer renkleri doldurmak için tıklayın
 	Clone Stamp Tool	Klonlama Damgası Aracı
 	Color Burn	Renk Yakma
 	Color Dodge	Renk Soldurma
@@ -1745,6 +1762,7 @@
 	Move Tool	Taşıma Aracı
 	Could not use the move tool because the layer is locked.	Katman kilitli olduğundan taşıma aracı kullanılamadı.
 	Could not complete the Free Transform command because the layer is locked.	Katman kilitli olduğundan Serbest Dönüştürme komutu tamamlanamadı.
+	Could not transform because the layer is locked.	Katman kilitli olduğundan dönüştürme yapılamadı.
 	Multiply	Çoğalt
 	My Brushes	Fırçalarım
 	Neutrals	Nötrler
@@ -1803,7 +1821,7 @@
 	Rectangular Marquee Tool	Dikdörtgen Seçim Çerçevesi Aracı
 	Reds	Kırmızılar
 	Reflected	Yansıyan
-	Sample: foreground colour	Örnek: ön plan rengi
+	Sample: foreground color	Örnek: ön plan rengi
 	Sampled Colors	Örneklenen Renkler
 	Satin	Saten
 	Save Pixel Aspect Ratio	Piksel En Boy Oranını Kaydet
@@ -1842,7 +1860,6 @@
 	Transfer	Aktarım
 	Triangle Tool	Üçgen Aracı
 	Unsaved changes	Kaydedilmemiş değişiklikler
-	Uses the foreground and background colours.	Ön plan ve arka plan renklerini kullanır.
 	Web	Web
 	Web Large	Web Büyük
 	Web Minimum	Web Minimumu
@@ -1879,6 +1896,7 @@
 	Allow scripts to connect	Komut dosyalarının bağlanmasına izin ver
 	Always	Her zaman
 	Always create smart objects when placing	Yerleştirirken daima akıllı nesneler yaratın
+	Skip transform when placing	Yerleştirirken dönüştürmeyi atla
 	Animated zoom	Animasyonlu yakınlaştırma
 	Apply auto tone	Otomatik tonu uygula
 	Ask	Sor
@@ -1896,11 +1914,16 @@
 	Brush preview color	Fırça önizleme rengi
 	Cache levels	Önbellek düzeyleri
 	Cache tile size	Önbellek kutucuğu boyutu
-	Camera Raw Defaults	Camera Raw Varsayılanları
+	RAW Defaults	RAW Varsayılanları
 	Canvas border	Tuval kenarlığı
 	Show canvas dots	Tuval noktalarını göster
 	Clip thumbnails to layer bounds	Küçük resimleri katman sınırlarına kırp
 	Clip Thumbnails to Layer Bounds	Küçük resimleri katman sınırlarına kırp
+	No Thumbnails	Küçük Resim Yok
+	Small Thumbnails	Küçük Boyutlu Küçük Resimler
+	Medium Thumbnails	Orta Boyutlu Küçük Resimler
+	Large Thumbnails	Büyük Boyutlu Küçük Resimler
+	Clip Thumbnails to Document Bounds	Küçük resimleri belge sınırlarına kırp
 	Canvas color	Tuval rengi
 	Canvas custom color	Tuval özel rengi
 	Color picker	Renk seçici
@@ -1978,7 +2001,6 @@
 	Never	Asla
 	Normal tip	Normal uç
 	Open as smart object	Akıllı nesne olarak aç
-	Open in camera raw	Camera raw'da aç
 	Open documents as tabs	Belgeleri sekmeler halinde aç
 	Overscroll	Aşırı kaydırma
 	Performance	Performans
@@ -2106,7 +2128,7 @@
 	Graphics	Grafik
 	Reset GPU Backend	GPU Arka Ucunu Sıfırla
 	Applies at next launch.	Bir sonraki açılışta geçerlidir.
-	Click to sample the foreground colour  ·  {key}-click for background	Ön plan rengini örneklemek için tıklayın · arka plan için {key}-tıklayın
+	Click to sample the foreground color  ·  {key}-click for background	Ön plan rengini örneklemek için tıklayın · arka plan için {key}-tıklayın
 	{key}-click to set the source	Kaynağı ayarlamak için {key} tuşuna basarak tıklayın
 	{key} to subtract	{key} çıkarmak için
 	Clone source {n} ({key}-click with Clone Stamp to set)	Klon kaynağı {n} (ayarlamak için Klonlama Damgası ile {key}-tıklayın)
@@ -2165,7 +2187,7 @@
 	Gradient Options	Degrade Seçenekleri
 	Align with layer	Katmanla hizala
 	Reset Alignment	Hizalamayı Sıfırla
-	Centre the gradient (offset 0, 0)	Degradeyi ortalayın (kaydırma 0, 0)
+	Center the gradient (offset 0, 0)	Degradeyi ortalayın (kaydırma 0, 0)
 	Gradient Editor	Degrade Düzenleyici
 	Gradient picker	Degrade seçici
 	Gradient stops	Degrade durakları
@@ -2199,7 +2221,7 @@
 	Alt-click to define a source point to clone from	Kopyalanacak kaynak noktayı tanımlamak için Alt tuşuna basarak tıklayın
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Seçim yapılabilecek yol yok: Kalem aracıyla bir yol çizin veya Yollar panelinden birini seçin.
 	Cancel opening	Açılışı iptal et
-	Cancelled opening {name}	{name} açılışı iptal edildi
+	Canceled opening {name}	{name} açılışı iptal edildi
 	Damaged Photoshop document	Hasarlı Photoshop belgesi
 	The document “{name}” may be damaged.	“{name}” belgesi hasarlı olabilir.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Bazı katmanlar, pikseller veya maskeler okunamadı. Açmaya devam etmek istiyor musunuz?
@@ -2208,14 +2230,14 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	“{name}” belgesinin gömülü renk profili geçerli {mode} çalışma renk uzayıyla eşleşmiyor.
 	Working: {working}	Çalışma renk uzayı: {working}
 	Developing {name}	{name} geliştiriliyor
-	Cancelled {label}	{label} iptal edildi
+	Canceled {label}	{label} iptal edildi
 	Esc to cancel	İptal etmek için Esc
 	Opened {name}	{name} açıldı
 	Opening {name}	{name} açılıyor
 	Saved {name}	{name} kaydedildi
 	Saving {name}	{name} kaydediliyor
 	A save to {name} is still running; try again when it finishes	{name} konumuna kaydetme işlemi hâlâ devam ediyor; bittiğinde tekrar dene
-	{label} is writing the file and can no longer be cancelled	{label} dosyayı yazıyor ve artık iptal edilemez
+	{label} is writing the file and can no longer be canceled	{label} dosyayı yazıyor ve artık iptal edilemez
 	Opening {name}…	{name} açılıyor…
 	Opening…	Açılıyor…
 	Reading…	Okunuyor…
@@ -2262,6 +2284,7 @@
 	Punctuation	Noktalama işaretleri
 	Make Work Path	Çalışma Yolu Oluştur
 	Make Selection	Seçim Yap
+	Make Shape	Şekil Yap
 	Fill Path	Yolu Doldur
 	Stroke Path	Kontur Yolu
 	Delete Path	Yolu Sil
@@ -2280,7 +2303,7 @@
 	Pixel	Piksel
 	Adjustment	Ayarlama
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Noktaları sürükleyin (kement) veya tıklayın (çokgen) · {add} ekle · {sub} çıkar
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Kırpma kutusunu sürükleyin · taşımak için içeriye sürükleyin · kenarlar yeniden boyutlandırır ({ratio} oran, {centre} merkez) · çizerken Space taşır · ok tuşları hafifçe kaydırır · X yönü değiştirir · {commit} onaylar · Esc iptal eder
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Kırpma kutusunu sürükleyin · taşımak için içeriye sürükleyin · kenarlar yeniden boyutlandırır ({ratio} oran, {centre} merkez) · çizerken Space taşır · ok tuşları hafifçe kaydırır · X yönü değiştirir · {commit} onaylar · Esc iptal eder
 	{mode} Color · {bits} bit	{mode} Renk · {bits} bit
 	Scrubby Zoom	Sürüklemeli Yakınlaştırma
 	Auto Erase	Otomatik Silme
@@ -2328,8 +2351,8 @@
 	3 x 3	3 x 3
 	4 x 4	4 x 4
 	5 x 5	5 x 5
-	Camera Raw Filter ({layer})	Camera Raw Filtresi ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+	RAW Develop Filter ({layer})	RAW Geliştirme Filtresi ({layer})
+	RAW Develop ({name})	RAW Geliştirme ({name})
 	Edit Type	Metni Düzenle
 	Grid:	Izgara:
 	Highlight Clipping Warning (O)	Parlak Ton Kırpma Uyarısı (O)
@@ -2372,7 +2395,7 @@
 	Discard Layers and Save a Copy	Katmanları At ve Kopyasını Kaydet
 	Don't show again	Bir daha gösterme
 	Save failed: {error}	Kaydetme başarısız oldu: {error}
-	Save cancelled	Kaydetme iptal edildi
+	Save canceled	Kaydetme iptal edildi
 	Style {name} saved	{name} stili kaydedildi
 	Make Default	Varsayılan Yap
 	Reset to Default	Varsayılana Sıfırla
@@ -2505,7 +2528,7 @@ fontWeight	Italic	İtalik
 	Rotate View	Görünümü Döndür
 	Rotate View Tool	Görünümü Döndürme Aracı
 	Reset View	Görünümü Sıfırla
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Görünümü döndürmek için merkez etrafında sürükleyin · Shift 15° ile sınırlar
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Görünümü döndürmek için merkez etrafında sürükleyin · Shift 15° ile sınırlar
 @id	select.all	Tümünü Seç
 @id	edit.stroke	Kontur…
 @id	edit.transform.scale	Ölçekle
@@ -2540,7 +2563,6 @@ cameraRaw	Color	Renk
 	Remove All	Tümünü Kaldır
 	Unlock	Kilidi Aç
 	Enable	Etkinleştir
-	Enable animations	Animasyonları etkinleştir
 	Disable	Devre dışı bırak
 	On	Açık
 	Selected	Seçilen
@@ -3331,7 +3353,6 @@ cameraRaw	Color	Renk
 	Add Pins	Pim Ekle
 	Add a mask  (from the selection; ⌥ inverts)	Bir maske ekleyin (seçimden; ⌥ tersine çevirir)
 	Adds grain to the soft edges of the brush tip.	Fırça ucunun yumuşak kenarlarına gren ekler.
-	Adobe PDF Presets…	Adobe PDF Ön Ayarları…
 	Advanced Blending	Gelişmiş Karıştırma
 	After (X)	Sonra (X)
 	Airbrush: keeps painting while the pointer rests.	Airbrush: İşaretçi dururken boyamaya devam eder.
@@ -3358,8 +3379,8 @@ cameraRaw	Color	Renk
 	Border	Kenarlık
 	Box Blur	Kutu Bulanıklığı
 	Calculations	Hesaplamalar
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Camera Raw Filtresi
+	RAW Develop	RAW Geliştirme
+	RAW Develop Filter	RAW Geliştirme Filtresi
 	Canvas rotation	Tuval döndürme
 	Channel1	Kanal 1
 	Channel2	Kanal 2
@@ -3642,8 +3663,6 @@ cameraRaw	Whites	Beyazlar
 	Mac Crisp	Mac Net
 	Mac Strong	Mac Güçlü
 	Mac Smooth	Mac Yumuşak
-	Adobe Single-line Composer	Adobe Tek Satırlı Dizgi Motoru
-	Adobe Every-line Composer	Adobe Tüm Satırlı Dizgi Motoru
 	X	X
 	Y	Y
 	30 fps	30 fps
@@ -3690,8 +3709,8 @@ cameraRaw	Whites	Beyazlar
 @id	filter.sharpen.sharpen	Keskinleştir
 	Good	iyi
 	Best	En iyi
-	Out of gamut for printing: click for the nearest printable colour	Yazdırma için gamın dışında: yazdırılabilir en yakın renk için tıklayın
-	Not a web colour: click for the nearest web colour	Web rengi değil: en yakın web rengi için tıklayın
+	Out of gamut for printing: click for the nearest printable color	Yazdırma için gamın dışında: yazdırılabilir en yakın renk için tıklayın
+	Not a web color: click for the nearest web color	Web rengi değil: en yakın web rengi için tıklayın
 	Adjustment Properties	Ayarlama Özellikleri
 	Brush Stroke	Fırça Vuruşu
 	Default Foreground and Background Colors	Varsayılan Ön Plan ve Arka Plan Renkleri
@@ -3979,12 +3998,12 @@ cameraData	Lens	Lens
 	Load Settings…	Ayarları Yükle…
 	Save these settings as a Camera Raw .xmp file	Bu ayarları Camera Raw .xmp dosyası olarak kaydet
 	Load settings from a Camera Raw .xmp file	Ayarları bir Camera Raw .xmp dosyasından yükle
-	Loaded Camera Raw settings from {file}	Camera Raw ayarları {file} dosyasından yüklendi
-	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw ayarları {file} dosyasından yüklendi ({n} desteklenmiyor)
+	Loaded RAW Develop settings from {file}	RAW Geliştirme ayarları {file} dosyasından yüklendi
+	Loaded RAW Develop settings from {file} ({n} not supported)	RAW Geliştirme ayarları {file} dosyasından yüklendi ({n} desteklenmiyor)
 	Auto Add/Delete	Otomatik Ekle/Sil
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Yazdırma Ayarlarında ayrıca Ayna Görüntüsünü açmayın: iki yansıtma birbirini iptal eder.
 	Print Settings…	Yazdırma Ayarları…
-	Remember to turn off the printer's own colour management in Print Settings…	Yazdırma Ayarlarında yazıcının kendi renk yönetimini kapatmayı unutmayın…
+	Remember to turn off the printer's own color management in Print Settings…	Yazdırma Ayarlarında yazıcının kendi renk yönetimini kapatmayı unutmayın…
 	Sent to {printer}	{printer} yazıcısına gönderildi
 	set in Print Settings…	Yazdırma Ayarlarında belirlenir…
 	ICO is limited to 256 × 256 pixels	ICO 256 × 256 piksel ile sınırlıdır
@@ -4141,12 +4160,12 @@ cameraData	Lens	Lens
 	Decrease Brush Hardness	Fırça sertliğini azalt
 	Increase Brush Hardness	Fırça sertliğini artır
 	Demosaic	Demozaikleme
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Kameranın renk filtresi mozaiğinin nasıl doldurulduğu. Dosya açılırken uygulanır; önizleme dosyanın açıldığı yöntemi gösterir.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Kameranın renk filtresi mozaiğinin nasıl doldurulduğu. Dosya açılırken uygulanır; önizleme dosyanın açıldığı yöntemi gösterir.
 	AHD (adaptive homogeneity)	AHD (uyarlamalı homojenlik)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: en temiz kenarlar ve en az renk saçağı, en yavaş.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradyan düzeltmeli ara değerleme: keskin ve hızlı, ince ayrıntılarda biraz renk saçağı.
-	The fastest and the softest, with colour fringing on fine detail.	En hızlı ve en yumuşak, ince ayrıntılarda renk saçağı.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: en temiz kenarlar ve en az renk saçağı, en yavaş.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Gradyan düzeltmeli ara değerleme: keskin ve hızlı, ince ayrıntılarda biraz renk saçağı.
+	The fastest and the softest, with color fringing on fine detail.	En hızlı ve en yumuşak, ince ayrıntılarda renk saçağı.
 	“{name}” already exists. Replace it?	'{name}' zaten var. Değiştirilsin mi?
 	The name in the save dialog was “{name}”.	Kaydetme penceresindeki ad '{name}' idi.
 	Previous Brush	Önceki fırça
@@ -4214,8 +4233,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	Gri Tonlama Şeridi
 	Current Colors	Geçerli Renkler
 	Make Ramp Web Safe	Şeridi Web Renkleriyle Sınırla
+	Scroll All Windows	Tüm Pencereleri Kaydır
 	The path was kept as the Work Path	Yol, Çalışma Yolu olarak korundu
 	The path was discarded	Yol atıldı
+# Art History Brush (#213).
 	Art History Brush Tool	Sanat Tarihi Fırçası Aracı
 	Tight Short	Sıkı Kısa
 	Tight Medium	Sıkı Orta
@@ -4299,3 +4320,42 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace Image…	Görüntüyü Değiştir…
 	The frame is locked	Çerçeve kilitli
 	The frame is unavailable	Çerçeve kullanılamıyor
+
+# Channels panel menu (#11451)
+	New Channel…	Yeni Kanal…
+	Duplicate Channel	Kanalı Çoğalt
+	Delete Channel	Kanalı Sil
+	New Spot Channel…	Yeni Spot Kanal…
+	Merge Spot Channel	Spot Kanalı Birleştir
+	Channel Options…	Kanal Seçenekleri…
+	Split Channels	Kanalları Ayır
+	Merge Channels…	Kanalları Birleştir…
+	Specify Channels:	Kanalları Belirt:
+	Not enough grayscale documents for this mode.	Bu mod için yeterli gri tonlamalı belge yok.
+	Pick a different document for each channel.	Her kanal için farklı bir belge seçin.
+	A picked document is no longer open.	Seçilen belgelerden biri artık açık değil.
+	A picked document is no longer a grayscale document of the same size.	Seçilen belgelerden biri artık aynı boyutta gri tonlamalı bir belge değil.
+	Netscape Gray	Netscape Grisi
+# Move tool options bar (#11381)
+	Align top edges	Üst kenarları hizala
+	Align vertical centers	Dikey merkezleri hizala
+	Align bottom edges	Alt kenarları hizala
+	Distribute vertically	Dikey olarak dağıt
+	Distribute horizontally	Yatay olarak dağıt
+	Show layer bounds on hover	Üzerine gelince katman sınırlarını göster
+	Expand layer group on click	Tıklayınca katman grubunu genişlet
+	Show hover bounds from Layers	Katmanlar'dan üzerine gelme sınırlarını göster
+	Saved RAW Develop settings to {file}	RAW Geliştirme ayarları {file} dosyasına kaydedildi
+	Save the settings to each raw's sidecar without opening it	Ayarları her raw dosyasının yan dosyasına kaydet, açmadan
+	No settings saved: these raws can't keep a sidecar here	Hiçbir şey kaydedilmedi: bu raw dosyaları burada yan dosyaya sahip olamaz
+	Some settings could not be saved; the raws stay open	Bazı ayarlar kaydedilemedi; raw dosyaları açık kalıyor
+	Nothing to save: these raws are at their default settings	Kaydedilecek bir şey yok: bu raw dosyaları varsayılan ayarlarda
+# Artboard tool options bar (#11385)
+	Distribute Widths	Genişlikleri Dağıt
+	Distribute Heights	Yükseklikleri Dağıt
+	Auto-nest Layers	Katmanları Otomatik İç İçe Yerleştir
+	Auto-size Canvas	Tuvali Otomatik Boyutlandır
+	Keep Relative Position During Layer Reordering	Katmanları Yeniden Sıralarken Göreli Konumu Koru
+	Shrinkwrap Canvas on Save	Kaydederken Tuvali İçeriğe Göre Küçült
+	Move Toolbar to the Right	Araç çubuğunu sağa taşı
+	Move Toolbar to the Left	Araç çubuğunu sola taşı

@@ -7,6 +7,17 @@ const CS: fn() -> Lang = || Lang::from_code("cs").expect("cs registered");
 const ID: fn() -> Lang = || Lang::from_code("id").expect("id registered");
 const VI: fn() -> Lang = || Lang::from_code("vi").expect("vi registered");
 const HI: fn() -> Lang = || Lang::from_code("hi").expect("hi registered");
+const KA: fn() -> Lang = || Lang::from_code("ka").expect("ka registered");
+
+#[test]
+fn hindi_has_the_reveal_and_camera_raw_rows() {
+    assert_eq!(tr(HI(), "Reveal in Explorer"), "Explorer में दिखाएँ");
+    assert_eq!(tr(HI(), "Reveal in Finder"), "Finder में दिखाएँ");
+    assert_eq!(tr(HI(), "RAW Defaults…"), "RAW डिफ़ॉल्ट…");
+    let (rows, errors) = parse_entries(include_str!("hi.tsv"));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(rows.iter().any(|(ctx, src, _)| ctx.is_empty() && src == "RAW Defaults…"), "RAW Defaults… is a catalog row, not a fallback");
+}
 
 #[test]
 fn hindi_tags_resolve() {
@@ -16,6 +27,20 @@ fn hindi_tags_resolve() {
     assert_eq!(HI().name(), "हिन्दी");
     assert_eq!(Lang::from_pref("hi"), HI());
     assert_eq!(Lang::from_pref("HI"), HI());
+}
+
+#[test]
+fn georgian_tags_resolve() {
+    for tag in ["ka", "ka-GE", "ka_GE", "ka_GE.UTF-8"] {
+        assert_eq!(lang_from_tag(tag), Some(KA()), "{tag}");
+    }
+    assert_eq!(KA().name(), "ქართული");
+    assert_eq!(Lang::from_pref("ka"), KA());
+    assert_eq!(Lang::from_pref("KA"), KA());
+    assert_eq!(tr(KA(), "Layer"), "შრე");
+    assert_eq!(tr(KA(), "File"), "ფაილი");
+    assert_eq!(trn(KA(), 1, "{n} layer", "{n} layers"), "შრე: 1");
+    assert_eq!(trn(KA(), 3, "{n} layer", "{n} layers"), "შრე: 3");
 }
 
 #[test]
@@ -34,6 +59,34 @@ fn vietnamese_tags_resolve() {
     assert_eq!(VI().name(), "Tiếng Việt");
     assert_eq!(Lang::from_pref("vi"), VI());
     assert_eq!(Lang::from_pref("VI"), VI());
+}
+
+#[test]
+fn thai_tags_resolve() {
+    let th = Lang::from_code("th").expect("th registered");
+    for tag in ["th", "TH", "th-TH", "th_TH", "th_TH.UTF-8"] {
+        assert_eq!(lang_from_tag(tag), Some(th), "{tag}");
+        assert_eq!(Lang::from_pref(tag), th, "{tag}");
+    }
+    assert_eq!(th.name(), "ไทย");
+    assert_eq!((th.0.plural)(5), 0, "Thai has one plural form");
+    assert_eq!(tr(th, "File"), "ไฟล์");
+    assert_eq!(tr(th, "Layer"), "เลเยอร์");
+}
+
+/// Tamil: regional tags resolve, counts take one|other, and placeholders stay untranslated.
+#[test]
+fn tamil_tags_plurals_and_placeholders() {
+    let ta = Lang::from_code("ta").expect("ta registered");
+    for tag in ["ta", "ta-IN", "ta_LK", "ta_IN.UTF-8"] {
+        assert_eq!(Lang::from_pref(tag), ta, "{tag}");
+    }
+    let forms: Vec<usize> = [0, 1, 2, 21].into_iter().map(ta.0.plural).collect();
+    assert_eq!(forms, [1, 0, 1, 1]);
+    assert_eq!(trn(ta, 1, "{n} layer", "{n} layers"), "1 அடுக்கு");
+    assert_eq!(trn(ta, 3, "{n} layer", "{n} layers"), "3 அடுக்குகள்");
+    assert!(tr(ta, "Scratch: {size}").contains("{size}"));
+    assert_ne!(tr(ta, "Zoom In (hold, drag to scrub)"), "Zoom In (hold, drag to scrub)");
 }
 
 #[test]
@@ -229,6 +282,16 @@ fn lookups_fall_back_to_english() {
     assert_eq!(trn(JA(), 3, "{n} no such message", "{n} no such messages"), "3 no such messages");
 }
 
+/// Romanian: 1 is one; 0 and counts ending in 01–19 are few ("2 straturi", "119 straturi");
+/// the rest take "de" ("20 de straturi", "121 de straturi").
+#[test]
+fn romanian_plural_rule() {
+    let ro = Lang::from_code("ro").expect("ro registered");
+    let counts = [0, 1, 2, 19, 20, 21, 100, 101, 119, 120, 121, 1001];
+    let forms: Vec<usize> = counts.into_iter().map(ro.0.plural).collect();
+    assert_eq!(forms, [1, 0, 1, 1, 2, 2, 2, 1, 1, 2, 2, 1]);
+}
+
 #[test]
 fn russian_plural_rule() {
     let ru = Lang::from_code("ru").expect("ru registered");
@@ -290,6 +353,44 @@ fn serbian_plural_rule_handles_teens_and_compound_counts() {
     let counts = [0, 1, 2, 4, 5, 11, 12, 14, 21, 22, 25, 101, 111, 112, 122];
     let forms: Vec<usize> = counts.into_iter().map(sr.0.plural).collect();
     assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 0, 1, 2, 0, 2, 2, 1]);
+}
+
+/// The catalog resolves regional tags, exposes its native name and falls back to English.
+#[test]
+fn azerbaijani_resolves_locales_and_preferences() {
+    let lang = Lang::from_code("az").expect("az registered");
+    assert_eq!(lang.name(), "Azərbaycanca");
+    assert_eq!(lang.dir(), Dir::Ltr);
+    assert!(lang.complete_menus());
+    for tag in ["az", "AZ", "az-AZ", "az_AZ.UTF-8", "az-Latn", "AZ-LATN-AZ"] {
+        assert_eq!(lang_from_tag(tag), Some(lang), "{tag}");
+        assert_eq!(Lang::from_pref(tag), lang, "{tag}");
+    }
+    assert_eq!(tr(lang, "unknown translation"), "unknown translation");
+}
+
+/// Integer plural boundaries select one only at 1, including large counts without overflow.
+#[test]
+fn azerbaijani_plural_counts_include_hundreds_and_large_values() {
+    let az = Lang::from_code("az").expect("az registered");
+    let counts = [0, 1, 2, 11, 19, 20, 21, 99, 100, 101, 102, 119, 120, 1000, 1001, u64::MAX];
+    assert_eq!(counts.map(az.0.plural), [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    for n in counts {
+        assert_eq!(trn(az, n, "{n} layer", "{n} layers"), format!("{n} qat"));
+    }
+}
+
+/// Exact lookups retain contextual meanings, dotted/dotless letters and product placeholders.
+#[test]
+fn azerbaijani_keeps_context_placeholders_and_command_names() {
+    let lang = Lang::from_code("az").expect("az registered");
+    for (source, translated) in [("File", "Fayl"), ("Layer", "Qat"), ("Kind", "Növ"), ("Type Layer", "Mətn qatı"), ("Light Theme", "Açıq mövzu")] {
+        assert_eq!(tr(lang, source), translated);
+    }
+    assert_eq!(tr_ctx(lang, "cameraRaw", "Light"), "İşıq");
+    assert_eq!(tr_ctx(lang, "fontWeight", "Light"), "İncə");
+    assert_ne!(tr_id(lang, "edit.clear", "Clear"), "Clear");
+    assert!(fmt(tr(lang, "About {app}"), &[("app", "PhotoCraft")]).contains("PhotoCraft"));
 }
 
 /// Bosnian locales, with or without region, script or encoding, select the Latin catalog.
@@ -464,6 +565,17 @@ fn bundled_catalogs_are_consistent() {
             if ctx == "@id" {
                 assert!(crate::menus::is_live(src) || crate::menu_catalog::CATALOG.iter().any(|m| m.3 == src), "{}: unknown command id {src:?}", l.code);
             }
+        }
+    }
+}
+
+#[test]
+fn raw_develop_labels_are_translated_in_every_shipped_catalog() {
+    for language in LANGUAGES.iter().skip(1) {
+        let (entries, errors) = parse_entries(&language.text());
+        assert!(errors.is_empty(), "{}: {errors:?}", language.code);
+        for source in ["RAW Develop", "RAW Develop Filter", "RAW Develop Filter…", "RAW Defaults", "RAW Defaults…"] {
+            assert!(entries.iter().any(|(_, key, value)| key == source && !value.is_empty()), "{}: {source}", language.code);
         }
     }
 }

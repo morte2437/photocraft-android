@@ -225,6 +225,7 @@ fn pencil_1px_line_is_the_same_whichever_way_and_however_smoothed() {
     let pixels = |a: (f64, f64), e: (f64, f64), amount: f32| {
         let mut b = BrushSettings { aliased: true, hardness: 1.0, size: 1.0, ..brush() };
         b.smoothing.amount = amount;
+        b.smoothing.catch_up_on_end = true;
         let s = paint(&b, &[StrokePoint::new(a.0, a.1, 1.0), StrokePoint::new(e.0, e.1, 1.0)], 24, 24);
         (0..24).flat_map(|y| (0..24).map(move |x| (x, y))).filter(|&(x, y)| s.rgba(x, y)[3] > 0.0).collect::<Vec<_>>()
     };
@@ -325,6 +326,7 @@ fn hard_round_presets_have_smooth_large_stroke_outlines() {
                 let mut b = preset.brush.clone();
                 b.size = 150.0;
                 b.smoothing.amount = smoothing;
+                b.smoothing.catch_up_on_end = true;
                 let mut s = Surface::new(fmt);
                 render_stroke(&mut s, &b, &line(100.0, 800.0, 120.0), None, false, 1.0);
                 let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
@@ -869,7 +871,7 @@ fn smoothing_modes() {
     let zig: Vec<StrokePoint> = (0..40).map(|i| StrokePoint::new(i as f64 * 5.0, if i % 2 == 0 { 0.0 } else { 6.0 }, 1.0)).collect();
     let dev = |pts: &[StrokePoint]| pts.iter().map(|p| (p.y - 3.0).abs()).sum::<f64>() / pts.len() as f64;
     // Exponential smoothing reduces the zig-zag.
-    let cfg = Smoothing { amount: 0.8, ..Default::default() };
+    let cfg = Smoothing { amount: 0.8, catch_up_on_end: true, ..Default::default() };
     let sm = smooth_points(&cfg, 1.0, &zig);
     assert!(dev(&sm[5..sm.len() - 1]) < dev(&zig) * 0.5);
     // Catch-up on end finishes at the last input point; without it, the stroke ends short.
@@ -908,7 +910,7 @@ fn smoothing_modes() {
 fn disabled_smoothing_keeps_its_settings_and_paints_unsmoothed_at_every_depth() {
     let pts = vec![StrokePoint::new(10.0, 20.0, 1.0), StrokePoint::new(30.0, 8.0, 0.5), StrokePoint::new(50.0, 20.0, 0.8)];
     for pulled_string in [false, true] {
-        let smoothing = Smoothing { enabled: false, amount: 0.8, pulled_string, ..Default::default() };
+        let smoothing = Smoothing { enabled: false, amount: 0.8, pulled_string, catch_up_on_end: true, ..Default::default() };
         let got = smooth_points(&smoothing, 1.0, &pts);
         assert_eq!(got.len(), pts.len());
         for (a, b) in got.iter().zip(&pts) {
@@ -940,7 +942,7 @@ fn disabled_smoothing_keeps_its_settings_and_paints_unsmoothed_at_every_depth() 
 #[test]
 fn smoothing_string_runs_from_the_lagging_brush_to_the_pointer() {
     // #3479: the canvas draws the line between the brush and the pointer.
-    let cfg = Smoothing { amount: 0.8, ..Default::default() };
+    let cfg = Smoothing { amount: 0.8, catch_up_on_end: true, ..Default::default() };
     let mut s = Smoother::new(&cfg, 1.0);
     let mut out = Vec::new();
     assert_eq!(s.string(), None, "no stroke yet");
@@ -1005,7 +1007,7 @@ fn a_smoothed_brush_keeps_the_pressure_of_where_it_is_when_the_pen_lifts() {
     // a hairline from the trailing brush to the pointer.
     let pts: Vec<StrokePoint> =
         (0..=20).map(|i| StrokePoint { time: f64::from(i) * 4.0, ..StrokePoint::new(f64::from(i) * 10.0, 0.0, if i < 20 { 1.0 } else { 0.05 }) }).collect();
-    let out = smooth_points(&Smoothing { amount: 0.8, ..Default::default() }, 1.0, &pts);
+    let out = smooth_points(&Smoothing { amount: 0.8, catch_up_on_end: true, ..Default::default() }, 1.0, &pts);
     let (last, rest) = out.split_last().unwrap();
     assert_eq!((last.x, last.pressure), (200.0, 0.05), "the catch-up still ends at the pen's last sample");
     let lifted = rest.last().unwrap();
@@ -1034,7 +1036,7 @@ fn a_pulled_string_brush_takes_the_pose_along_the_string() {
 fn a_smoothed_brush_catches_up_with_a_pen_lifted_in_place() {
     // #7747: only the pressure changes while the pointer stands still. The brush lags in pose,
     // so catch-up must keep running and the stroke end at the pen's last pressure.
-    let cfg = Smoothing { amount: 0.8, ..Default::default() };
+    let cfg = Smoothing { amount: 0.8, catch_up_on_end: true, ..Default::default() };
     let mut s = Smoother::new(&cfg, 1.0);
     let mut out = Vec::new();
     s.push(StrokePoint::new(50.0, 50.0, 1.0), &mut out);
@@ -1053,7 +1055,7 @@ fn a_smoothed_brush_catches_up_with_a_pen_lifted_in_place() {
 #[test]
 fn catch_up_on_stroke_end_finishes_the_pose_of_a_still_pen() {
     // #7747: tilt, rotation and wheel changed in place; the end catch-up lands on all of them.
-    let cfg = Smoothing { amount: 0.8, ..Default::default() };
+    let cfg = Smoothing { amount: 0.8, catch_up_on_end: true, ..Default::default() };
     let a = StrokePoint { rotation: 350.0, ..StrokePoint::new(50.0, 50.0, 1.0) };
     let b = StrokePoint { time: 16.0, tilt_x: 40.0, tilt_y: -20.0, rotation: 10.0, wheel: 0.5, ..StrokePoint::new(50.0, 50.0, 1.0) };
     let mut s = Smoother::new(&cfg, 1.0);
@@ -1314,7 +1316,7 @@ fn tail_preview_shows_the_stroke_as_finishing_it_would() {
     // Live previews draw the smoothing catch-up tail before the stroke ends: compositing the
     // tail preview over the incremental composite gives exactly the finished stroke.
     let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::U16, true);
-    let b = BrushSettings { size: 9.0, smoothing: Smoothing { amount: 0.7, ..Default::default() }, ..brush() };
+    let b = BrushSettings { size: 9.0, smoothing: Smoothing { amount: 0.7, catch_up_on_end: true, ..Default::default() }, ..brush() };
     let pts: Vec<StrokePoint> = (0..12).map(|i| StrokePoint::new(5.0 + i as f64 * 9.0, 20.0 + (i % 3) as f64 * 7.0, 1.0)).collect();
     let pre = Surface::new(fmt);
     let mut live = pre.clone();
@@ -1339,7 +1341,7 @@ fn live_union_of_passes_matches_merging_the_finished_passes_after_every_chunk() 
     // every pass and merging them with `composite_union_many` gives (the commit takes these pixels).
     let base = BrushSettings { size: 14.0, hardness: 0.6, opacity: 0.6, ..brush() };
     let mut brushes = vec![base.clone()];
-    brushes.push(BrushSettings { smoothing: Smoothing { amount: 0.7, ..Default::default() }, ..base.clone() });
+    brushes.push(BrushSettings { smoothing: Smoothing { amount: 0.7, catch_up_on_end: true, ..Default::default() }, ..base.clone() });
     let mut b = base.clone();
     b.dual_brush.enabled = true;
     b.dual_brush.size = 6.0;

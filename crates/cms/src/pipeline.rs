@@ -183,6 +183,17 @@ impl Pipeline {
         out[..self.outputs].copy_from_slice(&v[..self.outputs]);
     }
 
+    /// Evaluates the stages after the first one on values already passed through it.
+    #[inline]
+    pub(crate) fn eval_after_first(&self, v: &mut [f32; MAX], out: &mut [f32]) {
+        let mut n = self.inputs;
+        for s in self.stages.iter().skip(1) {
+            n = s.run(v, n);
+        }
+        let _ = n;
+        out[..self.outputs].copy_from_slice(&v[..self.outputs]);
+    }
+
     /// Removes no-op stages and cancels adjacent inverse pairs (Lab↔XYZ, encode/decode).
     pub fn optimize(&mut self) {
         let mut out: Vec<Stage> = Vec::with_capacity(self.stages.len());

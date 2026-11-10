@@ -122,7 +122,7 @@ pub(crate) fn ensure_texture_in_view(
     let output = display;
     let (revision, last_damage, id) = {
         let st = app.session.documents().get(idx)?;
-        (st.revision, st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) }), st.doc.id)
+        (st.revision, (st.damage_from(), st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) })), st.doc.id)
     };
     let (mut doc, mut preview_key) = display_doc(app, idx);
     // A filter dialog's live preview: the GPU canvas draws it from its own texture, but this CPU
@@ -317,9 +317,17 @@ fn render_detail(
 }
 
 /// What changed since a canvas cache showed (`revision`, `preview key`) `seen`, when only a
-/// rectangle did: the last edit's damage, or the live stroke's dabs since then. Cached keys have
-/// the colour display's key folded in (`^ display_key`); `now`'s is still raw.
-pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u64), display_key: u64, last_damage: Option<DRect>) -> Option<DRect> {
+/// rectangle did: the document's damage since revision `damage_from` (one revision, or a whole
+/// command's span: [`photocraft_engine::DocState::damage_from`]), or the live stroke's dabs since
+/// then. Cached keys have the colour display's key folded in (`^ display_key`); `now`'s is still raw.
+pub(crate) fn damage_since(
+    app: &PhotocraftApp,
+    idx: usize,
+    seen: (u64, u64),
+    now: (u64, u64),
+    display_key: u64,
+    (damage_from, last_damage): (u64, Option<DRect>),
+) -> Option<DRect> {
     // A brush stroke committed with the pixels its live preview already showed: only the steps
     // this cache hadn't shown yet (usually nothing), not the stroke's whole bounding box.
     if seen.0 + 1 == now.0
@@ -336,8 +344,17 @@ pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), no
         };
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
-    if seen.1 == now.1 ^ display_key && seen.0 + 1 == now.0 {
+    // `seen` is within the span the document's damage covers.
+    let in_span = seen.0 >= damage_from && seen.0 < now.0;
+    if seen.1 == now.1 ^ display_key && in_span {
         return last_damage;
+    }
+    // Opening, canceling or committing a Free Transform box: the moving layer and the layers
+    // drawn over the box, not the whole document (a gigapixel canvas took over a second).
+    if let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::transform_tool::damage(app, st.doc.id, (seen.0, seen.1 ^ display_key), now, last_damage)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
@@ -360,9 +377,9 @@ pub(crate) fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), no
     {
         return Some(r);
     }
-    // Between a Move drag's offsets: where the moving layers were and are (Auto-Select's pick
-    // at the press changes no pixels).
-    if (seen.0 == now.0 || (seen.0 + 1 == now.0 && last_damage.is_some_and(|r| r.is_empty())))
+    // Between a Move drag's offsets: where the moving layers were and are. Revisions that changed
+    // no pixels since `seen` (Auto-Select's pick at the press) count as the same document.
+    if (seen.0 == now.0 || (in_span && last_damage.is_some_and(|r| r.is_empty())))
         && let Some(st) = app.session.documents().get(idx)
         && let Some(r) = crate::move_ui::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
     {
@@ -457,11 +474,10 @@ pub(crate) fn effect_reach(layers: &[photocraft_doc::Layer]) -> i32 {
 /// Returns false if there is no GPU canvas.
 pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, visible: DRect) -> bool {
     let Some(gpu) = app.gpu.clone() else { return false };
-    let Some((revision, last_damage, id)) = app
-        .session
-        .documents()
-        .get(idx)
-        .map(|st| (st.revision, st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) }), st.doc.id))
+    let Some((revision, last_damage, id)) =
+        app.session.documents().get(idx).map(|st| {
+            (st.revision, (st.damage_from(), st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) })), st.doc.id)
+        })
     else {
         return false;
     };
@@ -637,7 +653,7 @@ fn budget_allowance(app: &PhotocraftApp) -> (u64, u64) {
 
 /// The document pixels a view shows, with a margin for filtering. Uses all four canvas corners
 /// so a rotated camera still covers the visible tiles.
-pub(super) fn visible_doc_rect(xf: &ViewXform) -> DRect {
+pub(crate) fn visible_doc_rect(xf: &ViewXform) -> DRect {
     let r = xf.rect;
     let docs = [xf.to_doc(r.min), xf.to_doc(pos2(r.max.x, r.min.y)), xf.to_doc(r.max), xf.to_doc(pos2(r.min.x, r.max.y))];
     let mut x0 = docs[0][0];

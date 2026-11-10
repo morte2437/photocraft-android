@@ -196,12 +196,38 @@ fn length_field_range(ui: &mut egui::Ui, label: &str, pt: &mut f64, units: &str,
     changed
 }
 
+/// The print dialog's label for a paper: the familiar name and, for the Japanese papers, the
+/// customary name with its metric size.
+fn print_paper_label(name: &'static str) -> &'static str {
+    match name {
+        "letter" => "Letter",
+        "legal" => "Legal",
+        "tabloid" => "Tabloid",
+        "a3" => "A3",
+        "a4" => "A4",
+        "a5" => "A5",
+        "a6" => "A6",
+        "4x6" => "4 × 6 in",
+        "5x7" => "5 × 7 in",
+        "postcard" => "はがき (100 × 148 mm)",
+        "double-postcard" => "往復はがき (148 × 200 mm)",
+        "b5" => "JIS B5 (182 × 257 mm)",
+        "b4" => "JIS B4 (257 × 364 mm)",
+        "l" => "L判 (89 × 127 mm)",
+        "2l" => "2L判 (127 × 178 mm)",
+        "kg" => "KG判 (102 × 152 mm)",
+        "6cut" => "六切 (203 × 254 mm)",
+        "4cut" => "四切 (254 × 305 mm)",
+        other => other,
+    }
+}
+
 /// Unrotated paper dimensions in points, for either the current preset or a custom array.
 fn print_paper_size(value: Option<&Value>) -> (f64, f64) {
     let default = (612.0, 792.0);
     match value {
         Some(Value::Array(a)) => (a.first().and_then(Value::as_f64).unwrap_or(default.0), a.get(1).and_then(Value::as_f64).unwrap_or(default.1)),
-        Some(Value::String(name)) => photocraft_engine::print_cmds::PAPERS.iter().find(|p| p.0.eq_ignore_ascii_case(name)).map_or(default, |p| (p.1, p.2)),
+        Some(Value::String(name)) => photocraft_engine::print_cmds::paper_size(name).unwrap_or(default),
         _ => default,
     }
 }
@@ -211,9 +237,19 @@ fn print_paper_size(value: Option<&Value>) -> (f64, f64) {
 /// unrotated print points; the engine applies orientation and validates the final size.
 fn print_paper_controls(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let previous = f.get("paper").cloned();
-    let mut selected = if previous.as_ref().is_some_and(Value::is_array) { "custom".to_string() } else { s(f, "paper", "letter") };
+    let mut selected = if previous.as_ref().is_some_and(Value::is_array) {
+        "custom".to_string()
+    } else {
+        let name = s(f, "paper", "letter");
+        // `file.print` remembers the name as typed, aliases included; the menu is keyed by the
+        // canonical `PAPERS` names, so show the key an alias names, and keep unknown names.
+        match photocraft_engine::print_cmds::paper_size(&name) {
+            Some(size) => photocraft_engine::print_cmds::PAPERS.iter().find(|p| (p.1, p.2) == size).map_or(name, |p| p.0.to_string()),
+            None => name,
+        }
+    };
     ui.horizontal(|ui| {
-        let mut papers: Vec<_> = photocraft_engine::print_cmds::PAPERS.iter().map(|p| (p.0.to_string(), p.0)).collect();
+        let mut papers: Vec<_> = photocraft_engine::print_cmds::PAPERS.iter().map(|p| (p.0.to_string(), print_paper_label(p.0))).collect();
         papers.push(("custom".to_string(), tl!("Custom")));
         if crate::widgets::dropdown(ui, "print-paper", tl!("Paper"), &mut selected, &papers, 110.0) {
             if selected == "custom" {
@@ -553,7 +589,7 @@ pub(super) fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map
                 });
                 if printers.is_some() {
                     ui.label(
-                        egui::RichText::new(tl!("Remember to turn off the printer's own colour management in Print Settings…")).color(t.warning).size(11.0),
+                        egui::RichText::new(tl!("Remember to turn off the printer's own color management in Print Settings…")).color(t.warning).size(11.0),
                     );
                 }
             }

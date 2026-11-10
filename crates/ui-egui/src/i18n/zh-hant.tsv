@@ -34,7 +34,7 @@
 
 # Gradient Editor window, opened from the options bar's gradient swatch.
 # Rendering mode and recovery
-# Camera Raw: contextual controls and window title
+# RAW Develop: contextual controls and window title
 
 
 
@@ -176,6 +176,7 @@
 	Right	右
 	Open Recent	最近開啟的檔案
 	Clear Recent Files	清除最近檔案
+	Clear Recent File List	清除最近檔案
 	Remove from Recent	從最近檔案中移除
 	Remove {name} from Recent	從最近檔案中移除 {name}
 	Close	關閉
@@ -184,6 +185,10 @@
 	Restore	向下還原
 	Close All	全部關閉
 	Close Others	關閉其他
+	New Document…	新增文件…
+	Open Document…	開啟…
+	Consolidate All to Here	將所有視窗合併至此處
+	Move to New Window	移至新視窗
 	Save	儲存
 	Save As…	另存新檔…
 	Save a Copy…	儲存拷貝…
@@ -236,6 +241,7 @@
 	Create Smart Object after Loading Layers	載入圖層後建立智慧型物件
 	Reveal in Finder	在 Finder 中顯示
 	Show in Explorer	在檔案總管中顯示
+	Reveal in Explorer	在檔案總管中顯示
 	Show in Folder	在資料夾中顯示
 	File Info…	檔案資訊…
 	Print…	列印…
@@ -324,9 +330,10 @@
 	Units & Rulers…	單位和尺標…
 	Guides, Grid & Slices…	參考線、格點和切片…
 	Plug-ins…	增效模組…
+	Plugins…	增效模組…
 	Type…	文字…
 	Enhanced Controls…	增強控制項…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	RAW 預設值…
 	Raw Defaults…	Raw 預設值…
 	Integrations…	整合…
 	AI Integrations…	AI 整合…
@@ -377,6 +384,8 @@
 	Match Color…	符合顏色…
 	Replace Color…	取代顏色…
 	Equalize	均勻分佈
+	Equalize Selected Area Only	僅均勻分佈選取範圍
+	Equalize Entire Image Based On Selected Area	依據選取範圍均勻分佈整個影像
 	Auto Tone	自動色調
 	Auto Contrast	自動對比
 	Auto Color	自動色彩
@@ -413,8 +422,8 @@
 	Artboard…	工作區域…
 	Artboard from Group…	從群組建立工作區域…
 	Artboard from Layers…	從圖層建立工作區域…
-	Layer via Copy	拷貝的圖層
-	Layer via Cut	剪下的圖層
+	Layer Via Copy	拷貝的圖層
+	Layer Via Cut	剪下的圖層
 	Layer From Background…	從背景建立圖層…
 	Layer from Background…	從背景建立圖層…
 	Background from Layer	從圖層建立背景
@@ -481,6 +490,8 @@
 	Smart Object	智慧型物件
 	Convert to Smart Object	轉換為智慧型物件
 	Convert to Embedded	轉換為嵌入
+	Embed Linked	嵌入連結
+	Embed All Linked	嵌入所有連結
 	Convert to Layers	轉換為圖層
 	Convert to Linked…	轉換為連結…
 	Edit Contents	編輯內容
@@ -554,7 +565,9 @@
 	Unite Shapes	聯集形狀
 	Subtract Front Shape	減去前方形狀
 	Intersect Shape Areas	交集形狀區域
+	Unite Shapes at Overlap	交集形狀區域
 	Exclude Overlapping Shapes	排除重疊形狀
+	Subtract Shapes at Overlap	排除重疊形狀
 	Merge Shape Components	合併形狀元件
 	Path operations	路徑操作
 	Align	對齊
@@ -631,7 +644,6 @@
 	Deselect	取消選取
 	Reselect	重新選取
 	Inverse	反轉
-	Inverse Selection	反轉選取範圍
 	Similar	相近色
 	Color Range…	顏色範圍…
 	Focus Area…	焦點區域…
@@ -656,7 +668,7 @@
 	Last Filter	上次濾鏡
 	Filter Gallery…	濾鏡收藏館…
 	Adaptive Wide Angle…	最適化廣角…
-	Camera Raw Filter…	Camera Raw 濾鏡…
+	RAW Develop Filter…	RAW 顯影 濾鏡…
 	Liquify…	液化…
 	Vanishing Point…	消失點…
 	Blur	模糊
@@ -739,6 +751,7 @@
 	Minimum…	最小…
 	Offset…	畫面錯位…
 	Plug-ins	增效模組
+	Plugins	增效模組
 	Proof Setup	校樣設定
 	Proof Colors	校樣色彩
 	Gamut Warning	色域警告
@@ -747,12 +760,12 @@
 	Working Magenta Plate	使用中的洋紅版
 	Working Yellow Plate	使用中的黃色版
 	Working Black Plate	使用中的黑色版
-	Working CMY Plate	使用中的 CMY 版
-	Legacy Macintosh RGB	舊版 Macintosh RGB
-	Internet Standard RGB	網際網路標準 RGB
+	Working CMY Plates	使用中的 CMY 版
+	Legacy Macintosh RGB (Gamma 1.8)	舊版 Macintosh RGB (Gamma 1.8)
+	Internet Standard RGB (sRGB)	網際網路標準 RGB (sRGB)
 	Monitor RGB	顯示器 RGB
-	Color Blindness — Protanopia-type	色盲 — 紅色盲型
-	Color Blindness — Deuteranopia-type	色盲 — 綠色盲型
+	Color Blindness - Protanopia-type	色盲 - 紅色盲型
+	Color Blindness - Deuteranopia-type	色盲 - 綠色盲型
 	Zoom In	放大顯示
 	Zoom Out	縮小顯示
 	Fit on Screen	顯示全頁
@@ -841,7 +854,7 @@
 	Consolidate All to Tabs	全部合併至標籤頁
 	Float in Window	在視窗中浮動
 	Float All in Windows	全部在視窗中浮動
-	New Window for Document	為文件新增視窗
+	New Window	新增視窗
 	Workspace	工作區
 	Essentials	基本功能
 	Graphic and Web	繪圖和網頁
@@ -904,6 +917,12 @@
 	Timeline	時間軸
 	Tool Presets	工具預設集
 	Tools	工具
+	Contextual Task Bar	內容相關工作列
+	Hide bar	隱藏工作列
+	Reset bar position	重設工作列位置
+	Pin bar position	固定工作列位置
+	Move bar	移動工作列
+	More options	更多選項
 	About PhotoCraft	關於 PhotoCraft
 	PhotoCraft Website	PhotoCraft 網站
 	PhotoCraft on GitHub	GitHub 上的 PhotoCraft
@@ -1005,8 +1024,8 @@
 	Load Settings…	載入設定…
 	Save these settings as a Camera Raw .xmp file	將這些設定儲存為 Camera Raw .xmp 檔案
 	Load settings from a Camera Raw .xmp file	從 Camera Raw .xmp 檔案載入設定
-	Loaded Camera Raw settings from {file}	已從 {file} 載入 Camera Raw 設定
-	Loaded Camera Raw settings from {file} ({n} not supported)	已從 {file} 載入 Camera Raw 設定（{n} 項不支援）
+	Loaded RAW Develop settings from {file}	已從 {file} 載入 RAW 顯影 設定
+	Loaded RAW Develop settings from {file} ({n} not supported)	已從 {file} 載入 RAW 顯影 設定（{n} 項不支援）
 	Begin recording	開始記錄
 	Bend:	彎曲：
 	Bicubic	雙三次
@@ -1034,7 +1053,7 @@
 	Brush Reconstruct Options	筆刷重建選項
 	Brush Tool Options	筆刷工具選項
 	Cache Level:	快取層級：
-	Camera Raw isn't open	Camera Raw 未開啟
+	RAW Develop isn't open	RAW 顯影 未開啟
 	Cancel	取消
 	Cancel (Esc)	取消 (Esc)
 	Manage submitted jobs in the system print queue	在系統列印佇列中管理已提交的工作
@@ -1067,7 +1086,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	按一下新增點 · 拖出、{key}+按一下或按 Delete 以移除
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	按一下套用，{key}+按一下清除覆寫，連按兩下開啟樣式選項
 	Click to edit the gradient	按一下以編輯漸層
-	Click to restore the current colour	按一下以還原目前顏色
+	Click to restore the current color	按一下以還原目前顏色
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	按一下放大  ·  {key}+按一下縮小  ·  向右/向左拖曳以放大/縮小
 	Click with the Note tool to add a note.	使用註解工具按一下以新增註解。
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	按一下：轉角 · 拖曳：平滑 · 按一下第一點：閉合 · {key} 完成 · Esc 取消
@@ -1154,7 +1173,7 @@
 	Darks	暗部
 	Data Sets	資料組
 	Default	預設
-	Default colours (D)	預設顏色 (D)
+	Default Foreground and Background Colors (D)	預設顏色 (D)
 	Default printer	預設印表機
 	Default restored.	已還原預設值。
 	Define	定義
@@ -1437,7 +1456,7 @@
 	Opacity Jitter	不透明度快速變換
 	Opacity:	不透明度：
 	Open a document to define variables.	請開啟文件以定義變數。
-	Open a document to select a colour range.	請開啟文件以選取顏色範圍。
+	Open a document to select a color range.	請開啟文件以選取顏色範圍。
 	Open a document to use the timeline.	請開啟文件以使用時間軸。
 	Optical	視覺
 	Optimized	最佳化
@@ -1513,7 +1532,6 @@
 	Purity	純度
 	Quality	品質
 	Quick Actions	快速動作
-	Quick Export As PNG	快速匯出為 PNG
 	Radial Gradient	放射狀漸層
 	Radius	半徑
 	Radius:	半徑：
@@ -1657,7 +1675,7 @@
 	Subtract from Sample	從樣本中減去
 	Subtract from selection  ({key})	從選取範圍減去  ({key})
 	Suggestions:	建議：
-	Swap colours (X)	切換顏色 (X)
+	Switch Foreground and Background Colors (X)	切換顏色 (X)
 	Swaps height and width	交換高度和寬度
 	Switch between free transform and warp modes	在任意變形和彎曲模式間切換
 	Switch theme	切換主題
@@ -1762,7 +1780,7 @@
 	Choke	收縮
 	Classic	經典
 	Click to add text	按一下以新增文字
-	Click to fill similar colours	按一下以填滿相近顏色
+	Click to fill similar colors	按一下以填滿相近顏色
 	Clone Stamp Tool	仿製印章工具
 	Color Burn	加深顏色
 	Color Dodge	加亮顏色
@@ -1864,6 +1882,7 @@
 	Move Tool	移動工具
 	Could not use the move tool because the layer is locked.	無法使用移動工具，因為圖層已鎖定。
 	Could not complete the Free Transform command because the layer is locked.	無法完成「任意變形」指令，因為圖層已鎖定。
+	Could not transform because the layer is locked.	無法變形，因為圖層已鎖定。
 	Multiply	色彩增值
 	My Brushes	我的筆刷
 	Neutrals	中間色
@@ -1922,7 +1941,7 @@
 	Rectangular Marquee Tool	矩形選取畫面工具
 	Reds	紅色
 	Reflected	反射
-	Sample: foreground colour	取樣：前景色
+	Sample: foreground color	取樣：前景色
 	Sampled Colors	取樣的顏色
 	Satin	緞面
 	Save Pixel Aspect Ratio	儲存像素外觀比例
@@ -1961,7 +1980,7 @@
 	Transfer	轉換
 	Triangle Tool	三角形工具
 	Unsaved changes	未儲存的變更
-	Uses the foreground and background colours.	使用前景色和背景色。
+	Uses the foreground and background colors.	使用前景色和背景色。
 	Web	網頁
 	Web Large	網頁 (大)
 	Web Minimum	網頁 (最小)
@@ -1998,6 +2017,7 @@
 	Allow scripts to connect	允許指令碼連線
 	Always	一律
 	Always create smart objects when placing	置入時一律建立智慧型物件
+	Skip transform when placing	置入時略過變形
 	Animated zoom	動畫縮放
 	Apply auto tone	套用自動色調
 	Ask	詢問
@@ -2015,11 +2035,16 @@
 	Brush preview color	筆刷預視顏色
 	Cache levels	快取層級
 	Cache tile size	快取拼貼大小
-	Camera Raw Defaults	Camera Raw 預設值
+	RAW Defaults	RAW 預設值
 	Canvas border	畫布邊框
 	Show canvas dots	顯示畫布圓點
 	Clip thumbnails to layer bounds	將縮圖裁切至圖層邊界
 	Clip Thumbnails to Layer Bounds	將縮圖裁切至圖層邊界
+	No Thumbnails	無縮圖
+	Small Thumbnails	小縮圖
+	Medium Thumbnails	中縮圖
+	Large Thumbnails	大縮圖
+	Clip Thumbnails to Document Bounds	將縮圖裁切至文件邊界
 	Canvas color	畫布顏色
 	Canvas custom color	畫布自訂顏色
 	Color picker	檢色器
@@ -2097,7 +2122,6 @@
 	Never	永不
 	Normal tip	一般筆尖
 	Open as smart object	以智慧型物件開啟
-	Open in camera raw	在 Camera Raw 中開啟
 	Open documents as tabs	以索引標籤開啟文件
 	Overscroll	超出捲動
 	Performance	效能
@@ -2137,7 +2161,6 @@
 	Show only crosshair while painting	繪圖時僅顯示十字線
 	Show slice numbers	顯示切片編號
 	Show tooltips	顯示工具提示
-	Enable animations	啟用動畫
 	Show highlight on rollover	滑鼠懸停時顯示醒目提示
 	Show bounding box when dragging layer	拖曳圖層時顯示邊界框
 	System title bar	系統標題列
@@ -2229,7 +2252,7 @@
 	Graphics	圖形
 	Reset GPU Backend	重設 GPU 後端
 	Applies at next launch.	下次啟動時套用。
-	Click to sample the foreground colour  ·  {key}-click for background	按一下以取樣前景色 · {key}+按一下取樣背景色
+	Click to sample the foreground color  ·  {key}-click for background	按一下以取樣前景色 · {key}+按一下取樣背景色
 	{key}-click to set the source	{key}+按一下以設定來源
 	{key} to subtract	按 {key} 以減去
 	Clone source {n} ({key}-click with Clone Stamp to set)	仿製來源 {n} (使用仿製印章時 {key}+按一下以設定)
@@ -2291,7 +2314,7 @@
 	Gradient Options	漸層選項
 	Align with layer	與圖層對齊
 	Reset Alignment	重設對齊
-	Centre the gradient (offset 0, 0)	置中漸層 (位移 0, 0)
+	Center the gradient (offset 0, 0)	置中漸層 (位移 0, 0)
 	Gradient Editor	漸層編輯器
 	Gradient picker	漸層挑選器
 	Save As Preset	儲存為預設
@@ -2324,7 +2347,7 @@
 	Alt-click to define a source point to clone from	按 Alt 鍵並按一下以定義仿製來源點
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	沒有可用來建立選取範圍的路徑：請使用鋼筆工具繪製，或在路徑面板中選取一個路徑。
 	Cancel opening	取消開啟
-	Cancelled opening {name}	已取消開啟 {name}
+	Canceled opening {name}	已取消開啟 {name}
 	Damaged Photoshop document	已損毀的 Photoshop 文件
 	The document “{name}” may be damaged.	文件「{name}」可能已損毀。
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	無法讀取部分圖層、像素或遮色片。是否繼續開啟？
@@ -2334,7 +2357,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	文件「{name}」嵌入的色彩描述檔與目前的 {mode} 工作空間不符。
 	Working: {working}	工作空間：{working}
 	Developing {name}	正在處理 {name}
-	Cancelled {label}	已取消 {label}
+	Canceled {label}	已取消 {label}
 	Esc to cancel	按 Esc 取消
 	Opened {name}	已開啟 {name}
 	Opening {name}	正在開啟 {name}
@@ -2342,7 +2365,7 @@
 	Saving {name}	正在儲存 {name}
 	Saving {percent}	正在儲存 {percent}
 	A save to {name} is still running; try again when it finishes	仍在儲存到 {name}；請在完成後再試一次
-	{label} is writing the file and can no longer be cancelled	{label} 正在寫入檔案，已無法取消
+	{label} is writing the file and can no longer be canceled	{label} 正在寫入檔案，已無法取消
 	Opening {name}…	正在開啟 {name}…
 	Opening…	正在開啟…
 	Reading…	正在讀取…
@@ -2377,8 +2400,8 @@
 	Tone Histogram	色調直方圖
 	Show Selected Region	顯示選取區域
 cameraRaw	Light	光線
-	Camera Raw Filter ({layer})	Camera Raw 濾鏡（{layer}）
-	Camera Raw ({name})	Camera Raw（{name}）
+	RAW Develop Filter ({layer})	RAW 顯影 濾鏡（{layer}）
+	RAW Develop ({name})	RAW 顯影（{name}）
 cameraRaw	Lights	亮調
 cameraRaw	Darks	暗調
 cameraRaw	Blacks	黑色色階
@@ -2422,7 +2445,7 @@ cameraRaw	Blending	混合
 	Discard Layers and Save a Copy	放棄圖層並儲存拷貝
 	Don't show again	不再顯示
 	Save failed: {error}	儲存失敗：{error}
-	Save cancelled	已取消儲存
+	Save canceled	已取消儲存
 	Magnetic Lasso Tool	磁性套索工具
 	Frequency	頻率
 	Use tablet pressure to change pen width	使用繪圖板壓力以變更鋼筆寬度
@@ -2556,7 +2579,7 @@ fontWeight	Italic	斜體
 	Rotate View	旋轉檢視
 	Rotate View Tool	旋轉檢視工具
 	Reset View	重設檢視
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	繞中心拖曳以旋轉檢視  ·  Shift 限制為 15°
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	繞中心拖曳以旋轉檢視  ·  Shift 限制為 15°
 	Dual Axis	雙軸
 	Diagonal	對角線
 	Transform Symmetry	變形對稱軸
@@ -2571,8 +2594,8 @@ fontWeight	Italic	斜體
 	All Layers No Adjustments	所有圖層（不含調整）
 	Current & Below No Adjustments	目前及以下（不含調整）
 	Show Sampling Ring	顯示取樣環
-	Out of gamut for printing: click for the nearest printable colour	超出列印色域：按一下以使用最接近的可列印顏色
-	Not a web colour: click for the nearest web colour	不是網頁顏色：按一下以使用最接近的網頁顏色
+	Out of gamut for printing: click for the nearest printable color	超出列印色域：按一下以使用最接近的可列印顏色
+	Not a web color: click for the nearest web color	不是網頁顏色：按一下以使用最接近的網頁顏色
 	Color to Alpha…	顏色轉為 Alpha…
 	Transparency Threshold	透明度臨界值
 	Opacity Threshold	不透明度臨界值
@@ -2666,7 +2689,7 @@ fontWeight	Italic	斜體
 	How often fastening points are placed by themselves	自動放置固定點的頻率
 	Scrubby Zoom	細微縮放
 	{mode} Color · {bits} bit	{mode} 色彩 · {bits} 位元
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	拖移繪製裁切框 · 在框內拖移以移動 · 拖移邊緣調整大小（{ratio} 比例，{centre} 中心）· 繪製時按 Space 移動 · 方向鍵微移 · X 切換方向 · {commit} 確認 · Esc 取消
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	拖移繪製裁切框 · 在框內拖移以移動 · 拖移邊緣調整大小（{ratio} 比例，{centre} 中心）· 繪製時按 Space 移動 · 方向鍵微移 · X 切換方向 · {commit} 確認 · Esc 取消
 	Appearance Settings…	外觀設定…
 	Add to favorites	加入最愛
 	Remove from favorites	從最愛移除
@@ -2907,10 +2930,13 @@ curves	Smooth	平滑
 	Auto Add/Delete	自動增加/刪除
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	請勿同時勾選列印設定中的鏡像：兩次翻轉會互相抵消。
 	Print Settings…	列印設定…
-	Remember to turn off the printer's own colour management in Print Settings…	請記得在列印設定中關閉印表機本身的色彩管理…
+	Remember to turn off the printer's own color management in Print Settings…	請記得在列印設定中關閉印表機本身的色彩管理…
 	Sent to {printer}	已傳送至 {printer}
 	set in Print Settings…	在列印設定中設定…
 	ICO is limited to 256 × 256 pixels	ICO 最大為 256 × 256 像素
+	Automatically Create First Snapshot	自動建立第一個快照
+	Automatically Create New Snapshot When Saving	儲存時自動建立新快照
+	Show New Snapshot Dialog by Default	預設顯示新增快照對話框
 	Memory usage percent	記憶體使用比例 (%)
 	Show Favorite Fonts	顯示我的最愛字體
 	No favorite fonts yet: click the star beside a font to add it.	尚無我的最愛字體：按一下字體旁的星號即可加入。
@@ -2981,6 +3007,7 @@ curves	Smooth	平滑
 	Edit Selected Guides	編輯所選參考線
 	Clear Selected Guides	清除所選參考線
 	Make Selection	建立選取範圍
+	Make Shape	建立形狀
 	Bicubic Automatic	雙三次 (自動)
 	Bicubic Smoother	雙三次 (較平滑)
 	Bicubic Sharper	雙三次 (較銳利)
@@ -3046,12 +3073,12 @@ curves	Smooth	平滑
 	Decrease Brush Hardness	降低筆刷硬度
 	Increase Brush Hardness	提高筆刷硬度
 	Demosaic	去馬賽克
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	如何填補相機彩色濾鏡陣列的馬賽克。在開啟檔案時套用；預覽顯示開啟時所用的方法。
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	如何填補相機彩色濾鏡陣列的馬賽克。在開啟檔案時套用；預覽顯示開啟時所用的方法。
 	AHD (adaptive homogeneity)	AHD（自適應同質性）
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks：邊緣最乾淨、色邊最少，速度最慢。
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	梯度校正插值：銳利且快速，細節處有些許色邊。
-	The fastest and the softest, with colour fringing on fine detail.	最快也最柔和，細節處有色邊。
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks：邊緣最乾淨、色邊最少，速度最慢。
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	梯度校正插值：銳利且快速，細節處有些許色邊。
+	The fastest and the softest, with color fringing on fine detail.	最快也最柔和，細節處有色邊。
 	“{name}” already exists. Replace it?	「{name}」已存在。要取代它嗎？
 	The name in the save dialog was “{name}”.	儲存對話框中的名稱是「{name}」。
 	Previous Brush	上一個筆刷
@@ -3113,8 +3140,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	灰階色帶
 	Current Colors	目前色彩
 	Make Ramp Web Safe	讓色帶成為網頁安全色
+	Scroll All Windows	捲動所有視窗
 	The path was kept as the Work Path	路徑已保留為工作路徑
 	The path was discarded	路徑已捨棄
+# Art History Brush (#213).
 	Art History Brush	藝術歷史畫筆
 	Art History Brush Tool	藝術歷史畫筆工具
 	Tight Short	緊密短
@@ -3212,3 +3241,46 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Frame	框架
 	X	X
 	Y	Y
+
+# Channels panel menu (#11451)
+	New Channel…	新增色版…
+	Duplicate Channel	複製色版
+	Delete Channel	刪除色版
+	New Spot Channel…	新增特別色色版…
+	Merge Spot Channel	合併特別色色版
+	Channel Options…	色版選項…
+	Split Channels	分離色版
+	Merge Channels…	合併色版…
+	Specify Channels:	指定色版:
+	Not enough grayscale documents for this mode.	灰階文件不足，無法使用此模式。
+	Pick a different document for each channel.	請為每個色版選擇不同的文件。
+	A picked document is no longer open.	所選的一個文件已不再開啟。
+	A picked document is no longer a grayscale document of the same size.	所選的一個文件已不再是相同大小的灰階文件。
+	Netscape Gray	Netscape 灰色
+# Move tool options bar (#11381)
+	Align top edges	對齊頂端
+	Align vertical centers	垂直置中對齊
+	Align bottom edges	對齊底端
+	Distribute vertically	垂直分佈
+	Distribute horizontally	水平分佈
+	Show layer bounds on hover	滑過時顯示圖層邊界
+	Expand layer group on click	按一下時展開圖層群組
+	Show hover bounds from Layers	顯示來自圖層面板的滑過邊界
+	Saved RAW Develop settings to {file}	已將 RAW 顯影 設定儲存到 {file}
+	Save the settings to each raw's sidecar without opening it	將設定儲存到每個 Raw 的附屬檔案，不開啟它
+	No settings saved: these raws can't keep a sidecar here	未儲存任何內容：這些 Raw 在此處無法擁有附屬檔案
+	Some settings could not be saved; the raws stay open	部分設定無法儲存；Raw 保持開啟
+	Nothing to save: these raws are at their default settings	無需儲存：這些 Raw 均為預設設定
+# Artboard tool options bar (#11385)
+	Distribute Widths	均分寬度
+	Distribute Heights	均分高度
+	Auto-nest Layers	自動巢狀圖層
+	Auto-size Canvas	自動調整版面尺寸
+	Keep Relative Position During Layer Reordering	重新排列圖層時保持相對位置
+	Shrinkwrap Canvas on Save	儲存時將版面縮至內容大小
+	Move Toolbar to the Right	將工具列移到右側
+	Move Toolbar to the Left	將工具列移到左側
+
+# RAW Develop feature labels
+	RAW Develop	RAW 顯影
+	RAW Develop Filter	RAW 顯影濾鏡

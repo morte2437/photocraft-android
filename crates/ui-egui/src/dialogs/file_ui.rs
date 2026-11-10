@@ -24,6 +24,8 @@ use print::{drag_print_position, driver_paper_is_wide, print_params, print_previ
 use print::{print_body, print_confirm};
 pub use web::open_web;
 #[cfg(test)]
+use web::web_params;
+#[cfg(test)]
 use web::{WEB_COMMAND, WebCache, WebProxy, advance_preview, download_for_web, variants, web_frame_document};
 use web::{web_body, web_confirm};
 

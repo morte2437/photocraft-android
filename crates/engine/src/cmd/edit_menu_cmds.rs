@@ -313,7 +313,7 @@ pub use content_aware::{CafPlan, FillEdit, MAX_CAF_EDITS, MAX_CAF_POINTS, SelOp,
 use content_aware::{can_caf, content_aware_fill, delete_and_fill};
 pub use content_aware_scale::ContentAwareScalePreview;
 use content_aware_scale::content_aware_scale;
-pub use fade::fade_surface;
+pub use fade::{FadePreview, fade_preview, fade_surface};
 use fade::{can_fade, fade};
 pub use find_replace::find_matches;
 use find_replace::{find_replace, has_type_layer};

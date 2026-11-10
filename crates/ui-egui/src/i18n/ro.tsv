@@ -1,0 +1,4617 @@
+# Romanian (ro) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+#
+#   context  empty                a plain UI string; `source` is the English text in the code
+#            @plural              `source` is "one|other" (English forms); the translation lists
+#                                 the language's forms separated by "|" (see `plural` in i18n/mod.rs)
+#   escapes  \n  \t  \\  inside a column. `{name}` placeholders must appear in both columns.
+#   lines starting with # and blank lines are ignored.
+#
+# Clean-room: every entry was written from the plain meaning of the English label using ordinary
+# Romanian computing and photo-editing vocabulary (strat, pensulă, selecție, pânză/canvas ...). No
+# proprietary localisation resource, string table or product UI was consulted or copied; add
+# entries the same way.
+# Product and technology names (PhotoCraft, ArtCraft, OpenType, CMYK, Lab ...) stay in Latin
+# letters; the trailing "…" of dialog commands is kept.
+# Machine-translated with Claude (Anthropic) for @tronicum; not yet reviewed by a native speaker.
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+# Channel Options and New Spot Channel (#3761)
+# Guide layout dialog
+# Custom print paper (#3820)
+# Select and Mask dialog labels
+# Field Blur pins (#3373)
+# Dialogs and panels
+# Layers-panel trash confirmation
+# Tool names, brush and style option tables
+# Templates with placeholders
+# Preferences (labels are generated from the setting names)
+# Added with the rebase onto the dock / brush picker work
+# Strings added to the UI after this catalog was first written (rebase onto main, 2026-10).
+# Gradient Editor window, opened from the options bar's gradient swatch.
+# Tool, filter, warp-style, path, layer-comp and metadata names that fell outside the `tl!` test.
+# Command-id override: under Edit > Purge a bare "Undo" reads as an action, not the history.
+# Rendering mode and recovery
+# RAW Develop: contextual controls and window title
+# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+# Swatches panel
+# Layer Style > Blending Options (Advanced Blending)
+# Shared screen eyedropper and text Color Picker (#1128).
+# Fill dialog, layer style contours and Image Size
+# Layer colour labels.
+# Pattern Stamp tool
+# Painting symmetry presets.
+# Eyedropper Sample Size and Sample (#1649).
+# Color Picker warnings
+# Shared Layer Style color picker
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+# Shared panel docking
+# Add Noise, Reduce Noise and Smart Sharpen dialog controls (Filter > Noise, Filter > Sharpen).
+# Edit › Content-Aware Fill workspace
+# Smart Filter editors
+# Select and Mask view modes (#1754)
+# Select and Mask Refine Edge Brush (#2972)
+# Color Sampler (added with the i18n coverage repair)
+# History panel menu (#2966)
+# History panel › History Options… (#2966)
+# Print dialog (#2697)
+# Counted status messages and labels (#3454)
+# View › Guides › New Guide… › Color
+# Dynamic labels (filter and adjustment parameters, RAW Develop, panels, dialogs) translated from
+# the English source, following the pattern of the other complete catalogs.
+# Path, channel, layer style, status and System Info labels
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+# Entries added so this catalog covers the keys any complete catalog (Spanish, Arabic, Hebrew)
+# covers, keeping the UI usable from top to bottom in Romanian.
+	Mask Options…	Opțiuni mască…
+	Layer Mask Display Options…	Opțiuni de afișare a măștii de strat…
+	Channel Color	Culoare canal
+	Color Indicates:	Culoarea indică:
+	Solidity:	Soliditate:
+	Masked Areas	Zone mascate
+	Selected Areas	Zone selectate
+	Ink Characteristics	Caracteristici cerneală
+	Paper Width	Lățime hârtie
+	Paper Height	Înălțime hârtie
+	Columns	Coloane
+	Rows	Rânduri
+	Number	Număr
+	Margin	Margine
+	Top:	Sus:
+	Left:	Stânga:
+	Bottom:	Jos:
+	Right:	Dreapta:
+	Target:	Destinație:
+	Selected Artboards	Planșe de lucru selectate
+	Center Columns	Centrare coloane
+	Clear Existing Guides	Ștergere ghidaje existente
+	Invalid guide layout	Aranjament de ghidaje nevalid
+	Leave empty for automatic size	Lăsați necompletat pentru dimensiune automată
+	5 Columns, 3 Rows	5 coloane, 3 rânduri
+	8 Columns	8 coloane
+	12 Columns	12 coloane
+	File	Fișier
+	Edit	Editare
+	Image	Imagine
+	Layer	Strat
+	Type	Text
+	Select	Selectare
+	Selected	Selectate
+	Scope	Domeniu
+	Top Left	Sus stânga
+	Top Right	Sus dreapta
+	Bottom Left	Jos stânga
+	Bottom Right	Jos dreapta
+	Filter	Filtru
+	View	Vizualizare
+	Window	Fereastră
+	Help	Ajutor
+	(coming soon)	(în curând)
+	New…	Nou…
+	New from Clipboard	Nou din clipboard
+	Open…	Deschidere…
+	Open As…	Deschidere ca…
+	Open EXR Parts…	Deschidere părți EXR…
+	Add beauty precomp from the AOVs	Adăugare precompunere „beauty” din AOV-uri
+	Both	Ambele
+	Left	Stânga
+	Right	Dreapta
+	Open Recent	Deschidere recente
+	Clear Recent Files	Golire fișiere recente
+	Remove from Recent	Eliminare din recente
+	Remove {name} from Recent	Eliminare {name} din recente
+	Close	Închidere
+	Minimize	Minimizare
+	Maximize	Maximizare
+	Restore	Restaurare
+	Close All	Închidere tot
+	Close Others	Închidere celelalte
+	Save	Salvare
+	Save As…	Salvare ca…
+	Save a Copy…	Salvare copie…
+	{name} can't keep everything in this document	{name} nu poate păstra tot conținutul acestui document
+	Choose a format that keeps it, such as Photoshop (PSD), or save a copy.	Alegeți un format care îl păstrează, precum Photoshop (PSD), sau salvați o copie.
+	Revert	Revenire
+	Export	Export
+	Quick Export as PNG	Export rapid ca PNG
+	Export As…	Export ca…
+	Export Preferences…	Preferințe export…
+	Save for Web (Legacy)…	Salvare pentru web (vechi)…
+	Artboards to Files…	Planșe de lucru în fișiere…
+	Artboards to PDF…	Planșe de lucru în PDF…
+	Layers to Files…	Straturi în fișiere…
+	Layer Comps to Files…	Compoziții de straturi în fișiere…
+	Color Lookup Tables…	Tabele de căutare a culorilor…
+	Data Sets as Files…	Seturi de date ca fișiere…
+	Paths to Illustrator…	Trasee către Illustrator…
+	Render Video…	Randare video…
+	Generate	Generare
+	Image Assets	Resurse imagine
+	Place Embedded…	Plasare încorporată…
+	Place Linked…	Plasare conectată…
+	Package…	Împachetare…
+	Automate	Automatizare
+	Batch…	Lot…
+	Create Droplet…	Creare droplet…
+	Crop and Straighten Photos	Decupare și îndreptare fotografii
+	Contact Sheet II…	Planșă de contact II…
+	Conditional Mode Change…	Schimbare condiționată a modului…
+	Fit Image…	Încadrare imagine…
+	Lens Correction…	Corecție obiectiv…
+	Merge to HDR Pro…	Îmbinare în HDR Pro…
+	Photomerge…	Photomerge…
+	Scripts	Scripturi
+	Image Processor…	Procesor de imagini…
+	Delete All Empty Layers	Ștergere toate straturile goale
+	Flatten All Layer Effects	Aplatizare toate efectele de strat
+	Flatten All Masks	Aplatizare toate măștile
+	Script Events Manager…	Administrator evenimente script…
+	Import	Import
+	Browse…	Răsfoire…
+	Source Files	Fișiere sursă
+	Use:	Utilizare:
+	Files	Fișiere
+	Folder	Folder
+	Add Open Files	Adăugare fișiere deschise
+	Sort By Name	Sortare după nume
+	Attempt to Automatically Align Source Images	Se încearcă alinierea automată a imaginilor sursă
+	Create Smart Object after Loading Layers	Creare obiect inteligent după încărcarea straturilor
+	Reveal in Finder	Dezvăluire în Finder
+	Show in Explorer	Afișare în Explorer
+	Show in Folder	Afișare în folder
+	File Info…	Informații fișier…
+	Print…	Imprimare…
+	Print One Copy	Imprimare o copie
+	Exit	Ieșire
+	Undo	Anulare
+	Redo	Refacere
+	Toggle Last State	Comutare ultima stare
+	Fade…	Atenuare…
+	Cut	Decupare
+	Copy	Copiere
+	Copy Merged	Copiere combinată
+	Paste	Inserare
+	Paste Special	Inserare specială
+	Paste in Place	Inserare pe loc
+	Paste Into	Inserare în interior
+	Paste Outside	Inserare în exterior
+	Paste Lorem Ipsum	Inserare Lorem Ipsum
+	Clear	Golire
+	Search…	Căutare…
+	Check Spelling…	Verificare ortografică…
+	Find and Replace Text…	Găsire și înlocuire text…
+	Add to Dictionary	Adăugare în dicționar
+	No Spelling Suggestions	Nicio sugestie ortografică
+	Fill…	Umplere…
+	Stroke…	Contur…
+	Content-Aware Fill…	Umplere sensibilă la conținut…
+	Delete and Fill Selection	Ștergere și umplere selecție
+	Content-Aware Scale	Scalare sensibilă la conținut
+	Puppet Warp	Deformare tip marionetă
+	Perspective Warp	Deformare de perspectivă
+	Free Transform	Transformare liberă
+	Free Transform a Copy	Transformare liberă a unei copii
+	Transform	Transformare
+	Again	Din nou
+	Transform Again on a Copy	Transformare din nou pe o copie
+	Scale	Scalare
+	Rotate	Rotire
+	Set horizontal skew	Definire înclinare orizontală
+	Set vertical skew	Definire înclinare verticală
+	Skew	Înclinare
+	Distort	Distorsionare
+	Perspective	Perspectivă
+	Warp	Deformare
+	Flip Horizontal	Răsturnare orizontală
+	Flip Vertical	Răsturnare verticală
+	Rotate 180°	Rotire 180°
+	Rotate 90° Clockwise	Rotire 90° în sensul acelor de ceasornic
+	Rotate 90° Counter Clockwise	Rotire 90° în sens invers acelor de ceasornic
+	180°	180°
+	90° Clockwise	90° în sensul acelor de ceasornic
+	90° Counter Clockwise	90° în sens invers acelor de ceasornic
+	Arbitrary…	Arbitrar…
+	Auto-Align Layers…	Alinierea automată a straturilor…
+	Auto-Blend Layers…	Combinarea automată a straturilor…
+	Define Brush Preset…	Definire presetare pensulă…
+	Define Pattern…	Definire model…
+	Define Custom Shape…	Definire formă personalizată…
+	Purge	Golire memorie
+	Clipboard	Clipboard
+	Histories	Istorice
+	Video Cache	Cache video
+	All	Tot
+	Presets	Presetări
+	Preset Manager…	Administrator presetări…
+	Migrate Presets	Migrare presetări
+	Export/Import Presets…	Export/import presetări…
+	Color Settings…	Setări de culoare…
+	Assign Profile…	Asignare profil…
+	Convert to Profile…	Conversie la profil…
+	Keyboard Shortcuts…	Comenzi rapide de la tastatură…
+	Menus…	Meniuri…
+	Toolbar…	Bară de instrumente…
+	Preferences	Preferințe
+	General…	General…
+	Interface…	Interfață…
+	Workspace…	Spațiu de lucru…
+	Tools…	Instrumente…
+	History Log…	Jurnal de istoric…
+	File Handling…	Gestionare fișiere…
+	Export…	Export…
+	Performance…	Performanță…
+	Scratch Disks…	Discuri temporare…
+	Cursors…	Cursoare…
+	Transparency & Gamut…	Transparență și gamă…
+	Units & Rulers…	Unități și rigle…
+	Guides, Grid & Slices…	Ghidaje, grilă și felii…
+	Plug-ins…	Plugin-uri…
+	Type…	Text…
+	Enhanced Controls…	Controale îmbunătățite…
+	RAW Defaults…	Valori implicite RAW…
+	Raw Defaults…	Valori implicite Raw…
+	Integrations…	Integrări…
+	AI Integrations…	Integrări AI…
+	Install Plug-in…	Instalare plugin…
+	Language Options	Opțiuni de limbă
+	Settings…	Setări…
+	Mode	Mod
+	Bitmap	Bitmap
+	Grayscale	Tonuri de gri
+	Duotone	Duoton
+	Indexed Color	Culoare indexată
+	RGB Color	Culoare RGB
+	CMYK Color	Culoare CMYK
+	Lab Color	Culoare Lab
+	Multichannel	Multicanal
+	8 Bits/Channel	8 biți/canal
+	8 bit	8 biți
+	Integer	Întreg
+	16 Bits/Channel	16 biți/canal
+	16 bit	16 biți
+	32 Bits/Channel	32 biți/canal
+	32 bit (float)	32 biți (virgulă mobilă)
+	Floating point	Virgulă mobilă
+	Color Table…	Tabel de culori…
+	Bitmap…	Bitmap…
+	Duotone…	Duoton…
+	Indexed Color…	Culoare indexată…
+	Adjustments	Ajustări
+	Brightness/Contrast…	Luminozitate/contrast…
+	Levels…	Niveluri…
+	Curves…	Curbe…
+	Exposure…	Expunere…
+	Vibrance…	Vibranță…
+	Hue/Saturation…	Nuanță/saturație…
+	Color Balance…	Balans de culoare…
+	Black & White…	Negru și alb…
+	Photo Filter…	Filtru foto…
+	Channel Mixer…	Mixer de canale…
+	Color Lookup…	Căutare culoare…
+	Invert	Inversare
+	Posterize…	Posterizare…
+	Threshold…	Prag…
+	Gradient Map…	Hartă de degrade…
+	Selective Color…	Culoare selectivă…
+	Shadows/Highlights…	Umbre/luminile…
+	HDR Toning…	Tonalizare HDR…
+	Desaturate	Desaturare
+	Match Color…	Potrivire culoare…
+	Replace Color…	Înlocuire culoare…
+	Equalize	Egalizare
+	Auto Tone	Ton automat
+	Auto Contrast	Contrast automat
+	Auto Color	Culoare automată
+	Image Size…	Dimensiune imagine…
+	Canvas Size…	Dimensiune pânză…
+	Image Rotation	Rotire imagine
+	Flip Canvas Horizontal	Răsturnare pânză orizontal
+	Flip Canvas Vertical	Răsturnare pânză vertical
+	Crop	Decupare
+	Trim…	Ajustare margini…
+	Reveal All	Dezvăluire totală
+	Duplicate…	Duplicare…
+	Apply Image…	Aplicare imagine…
+	Calculations…	Calcule…
+	Variables	Variabile
+	Define…	Definire…
+	Data Sets…	Seturi de date…
+	Apply Data Set…	Aplicare set de date…
+	Variable Data Sets…	Seturi de date variabile…
+	Trap…	Trapping…
+	Analysis	Analiză
+	Set Measurement Scale…	Definire scară de măsurare…
+	Select Data Points…	Selectare puncte de date…
+	Record Measurements	Înregistrare măsurători
+	Ruler Tool	Instrument Riglă
+	Count Tool	Instrument Numărare
+	Place Scale Marker…	Plasare marcator de scară…
+	Custom…	Personalizat…
+	New	Nou
+	Layer…	Strat…
+	Group…	Grup…
+	Group from Layers…	Grup din straturi…
+	New Group from Layers…	Grup nou din straturi…
+	Artboard…	Planșă de lucru…
+	Artboard from Group…	Planșă de lucru din grup…
+	Artboard from Layers…	Planșă de lucru din straturi…
+	Layer Via Copy	Strat prin copiere
+	Layer Via Cut	Strat prin decupare
+	Layer From Background…	Strat din fundal…
+	Layer from Background…	Strat din fundal…
+	Background from Layer	Fundal din strat
+	Background From Layer	Fundal din strat
+	New Shape Layer	Strat de formă nou
+	New Type Layer	Strat de text nou
+	New Fill Layer	Strat de umplere nou
+	New Adjustment Layer	Strat de ajustare nou
+	New Layer Based Slice	Felie nouă bazată pe strat
+	New Smart Object via Copy	Obiect inteligent nou prin copiere
+	New Blank Video Layer	Strat video gol nou
+	New Video Layer from File…	Strat video nou din fișier…
+	Duplicate Layer…	Duplicare strat…
+	Delete Layer	Ștergere strat
+	Delete	Ștergere
+	Rename Layer	Redenumire strat
+	Create Layer	Creare strat
+	Layer Style	Stil de strat
+	Blending Options…	Opțiuni de fuziune…
+	Bevel & Emboss…	Relief și teșire…
+	Use Global Light	Utilizare lumină globală
+	Overprint	Suprimprimare
+	Inner Shadow…	Umbră interioară…
+	Inner Glow…	Strălucire interioară…
+	Satin…	Satin…
+	Color Overlay…	Suprapunere culoare…
+	Gradient Overlay…	Suprapunere degrade…
+	Pattern Overlay…	Suprapunere model…
+	Outer Glow…	Strălucire exterioară…
+	Drop Shadow…	Umbră paralelă…
+	Copy Layer Style	Copiere stil de strat
+	Paste Layer Style	Inserare stil de strat
+	Clear Layer Style	Ștergere stil de strat
+	Global Light…	Lumină globală…
+	Hide All Effects	Ascundere toate efectele
+	Scale Effects…	Scalare efecte…
+	Smart Filter	Filtru inteligent
+	Convert for Smart Filters	Conversie pentru filtre inteligente
+	Clear Smart Filters	Ștergere filtre inteligente
+	Disable Smart Filters	Dezactivare filtre inteligente
+	Delete Filter Mask	Ștergere mască de filtru
+	Disable Filter Mask	Dezactivare mască de filtru
+	Solid Color…	Culoare solidă…
+	Gradient…	Degrade…
+	Pattern…	Model…
+	Layer Mask	Mască de strat
+	Vector Mask	Mască vectorială
+	Reveal Selection	Dezvăluire selecție
+	Hide Selection	Ascundere selecție
+	Hide All	Ascundere tot
+	From Transparency	Din transparență
+	Delete Vector Mask	Ștergere mască vectorială
+	Enable Layer Mask	Activare mască de strat
+	Disable Layer Mask	Dezactivare mască de strat
+	Enable Vector Mask	Activare mască vectorială
+	Link Layer Mask	Conectare mască de strat
+	Unlink Layer Mask	Deconectare mască de strat
+	Link Vector Mask	Conectare mască vectorială
+	Add Vector Mask	Adăugare mască vectorială
+	Vector Mask from Current Path	Mască vectorială din traseul curent
+	Create Clipping Mask	Creare mască de tăiere
+	Release Clipping Mask	Eliberare mască de tăiere
+	Smart Objects	Obiecte inteligente
+	Smart Object	Obiect inteligent
+	Convert to Smart Object	Conversie în obiect inteligent
+	Convert to Embedded	Conversie în încorporat
+	Convert to Layers	Conversie în straturi
+	Convert to Linked…	Conversie în conectat…
+	Edit Contents	Editare conținut
+	Replace Contents…	Înlocuire conținut…
+	Relink to File…	Reconectare la fișier…
+	Export Contents…	Export conținut…
+	Update Modified Content	Actualizare conținut modificat
+	Update All Modified Content	Actualizare tot conținutul modificat
+	Stack Mode	Mod stivuire
+	Choose Stack Mode:	Alegere mod stivuire:
+	Entropy	Entropie
+	Kurtosis	Boltire (curtoză)
+	Maximum	Maximum
+	Mean	Medie
+	Median	Mediană
+	Minimum	Minimum
+	Range	Interval
+	Skewness	Asimetrie
+	Standard Deviation	Deviație standard
+	Summation	Sumă
+	Variance	Varianță
+	Video Layers	Straturi video
+	Interpret Footage…	Interpretare material video…
+	Replace Footage…	Înlocuire material video…
+	Reload Frame	Reîncărcare cadru
+	Show Altered Video	Afișare video modificat
+	Restore Frame	Restaurare cadru
+	Restore All Frames	Restaurare toate cadrele
+	Insert Blank Frame	Inserare cadru gol
+	Delete Frame	Ștergere cadru
+	Duplicate Frame	Duplicare cadru
+	Frame from Layers	Cadru din straturi
+	Video Frames to Layers…	Cadre video în straturi…
+	Rasterize	Rasterizare
+	Rasterize Type	Rasterizare text
+	Rasterize Type Layer	Rasterizare strat de text
+	Rasterize Shape	Rasterizare formă
+	New Guide Layout…	Aranjament nou de ghidaje…
+	New Guides From Shape	Ghidaje noi din formă
+	Lock Layers…	Blocare straturi…
+	Link Layers	Conectare straturi
+	Select Linked Layers	Selectare straturi conectate
+	Merge Layers	Combinare straturi
+	Merge Down	Combinare cu stratul de dedesubt
+	Merge Group	Combinare grup
+	Merge Visible	Combinare vizibile
+	Stamp Visible	Ștampilare vizibile
+	Select Layer Above	Selectare strat de sus
+	Select Layer Below	Selectare strat de jos
+	Select Top Layer	Selectare strat superior
+	Select Bottom Layer	Selectare strat inferior
+	Add Layer Above to Selection	Adăugare strat de sus la selecție
+	Add Layer Below to Selection	Adăugare strat de jos la selecție
+	Stamp Down	Ștampilare în jos
+	Flatten Image	Aplatizare imagine
+	Matting	Halouri
+	Color Decontaminate…	Decontaminare culoare…
+	Remove Black Matte	Eliminare halou negru
+	Remove White Matte	Eliminare halou alb
+	Defringe…	Eliminare halouri…
+	Group Layers	Grupare straturi
+	Ungroup Layers	Degrupare straturi
+	Hide Layers	Ascundere straturi
+	Arrange	Aranjare
+	Bring to Front	Aducere în față
+	Bring Forward	Aducere mai în față
+	Send Backward	Trimitere mai în spate
+	Send to Back	Trimitere în spate
+	Reverse	Inversare
+	Combine Shapes	Combinare forme
+	Unite Shapes	Unire forme
+	Subtract Front Shape	Scădere formă din față
+	Intersect Shape Areas	Intersectare zone de forme
+	Exclude Overlapping Shapes	Exclude forme suprapuse
+	Merge Shape Components	Combinare componente de formă
+	Path operations	Operații cu trasee
+	Align	Alinere
+	Top Edges	Margini superioare
+	Vertical Centers	Centre verticale
+	Bottom Edges	Margini inferioare
+	Left Edges	Margini din stânga
+	Horizontal Centers	Centre orizontale
+	Right Edges	Margini din dreapta
+	Distribute	Distribuire
+	Vertically	Vertical
+	Horizontally	Orizontal
+	Layer Edges	Margini strat
+	Isolate Layers	Izolare straturi
+	Layer Content Options…	Opțiuni conținut strat…
+	Fill Content	Conținut umplere
+	Deselect Layers	Deselectare straturi
+	Find Layers	Căutare straturi
+	Layer Comps	Compoziții de straturi
+	Layers	Straturi
+	All Layers	Toate straturile
+	Hidden Layers	Straturi ascunse
+	Mask All Objects	Mascare toate obiectele
+	Subject	Subiect
+	Sky	Cer
+	Panels	Panouri
+	Character Panel	Panou Caracter
+	Paragraph Panel	Panou Paragraf
+	Character Styles Panel	Panou Stiluri de caracter
+	Paragraph Styles Panel	Panou Stiluri de paragraf
+	Glyphs Panel	Panou Glife
+	Anti-Alias	Anticrenelare
+	Sharp	Clar
+	Crisp	Net
+	Strong	Puternic
+	Smooth	Lin
+	Windows LCD	LCD Windows
+	Windows	Windows
+	Orientation	Orientare
+	Horizontal	Orizontal
+	Vertical	Vertical
+	OpenType	OpenType
+	Standard Ligatures	Ligaturi standard
+	Contextual Alternates	Alternative contextuale
+	Discretionary Ligatures	Ligaturi discreționare
+	Swash	Caractere ornamentale
+	Oldstyle	Stil vechi
+	Stylistic Alternates	Alternative stilistice
+	Titling Alternates	Alternative pentru titluri
+	Ornaments	Ornamente
+	Ordinals	Ordinale
+	Fractions	Fracții
+	Create Work Path	Creare traseu de lucru
+	Convert to Shape	Conversie în formă
+	Warp Text…	Deformare text…
+	Convert to Point Text	Conversie în text punctual
+	Convert to Paragraph Text	Conversie în text în paragraf
+	Default Features	Funcții implicite
+	East Asian Features	Funcții pentru Asia de Est
+	Middle Eastern Features	Funcții pentru Orientul Mijlociu
+	Middle Eastern & South Asian Composer	Compozitor pentru Orientul Mijlociu și Asia de Sud
+	Update All Text Layers	Actualizare toate straturile de text
+	Replace All Missing Fonts	Înlocuire toate fonturile lipsă
+	Resolve Missing Fonts…	Rezolvare fonturi lipsă…
+	Font Preview Size	Dimensiune previzualizare font
+	None	Niciuna
+	Small	Mic
+	Medium	Mediu
+	Large	Mare
+	Extra Large	Foarte mare
+	Huge	Enorm
+	Load Default Type Styles	Încărcare stiluri de text implicite
+	Save Default Type Styles	Salvare stiluri de text implicite
+	Deselect	Deselectare
+	Reselect	Reselectare
+	Inverse	Inversare
+	Inverse Selection	Inversare selecție
+	Similar	Similar
+	Color Range…	Gamă de culori…
+	Focus Area…	Zonă de focalizare…
+	Select and Mask…	Selecție și mască…
+	Smart Radius	Rază inteligentă
+	Shift Edge	Deplasare margine
+	Decontaminate	Decontaminare
+	Output	Rezultat
+	Refine Edge	Perfecționare margine
+	Modify	Modificare
+	Border…	Margine…
+	Smooth…	Netezire…
+	Expand…	Expandare…
+	Contract…	Contractare…
+	Feather…	Calare…
+	Grow	Extindere
+	Transform Selection	Transformare selecție
+	Edit in Quick Mask Mode	Editare în mod mască rapidă
+	Load Selection…	Încărcare selecție…
+	Save Selection…	Salvare selecție…
+	Match All	Potrivire totală
+	Last Filter	Ultimul filtru
+	Filter Gallery…	Galerie de filtre…
+	Adaptive Wide Angle…	Unghi larg adaptabil…
+	RAW Develop Filter…	Filtru Developare RAW…
+	Liquify…	Lichefiere…
+	Vanishing Point…	Punct de fugă…
+	Blur	Neclaritate
+	Blur Gallery	Galerie neclaritate
+	Field Blur…	Neclaritate câmp…
+	No pin selected	Niciun pin selectat
+	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	Faceți clic pe imagine pentru a adăuga un pin; trageți un pin pentru a-l deplasa sau inelul său pentru a modifica neclaritatea. Delete elimină pinul selectat.
+	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	Trageți manetele de pe contur pentru a-l redimensiona și roti, pătratul pentru a-i rotunji colțurile și punctele interioare pentru a stabili de unde începe neclaritatea.
+	Drag the pin to move the band, or its ring to change its blur. Drag the solid lines to widen the sharp band, the dashed lines to set the transition, and the dots to turn it.	Trageți pinul pentru a deplasa banda sau inelul său pentru a modifica neclaritatea. Trageți liniile continue pentru a lărgi banda clară, liniile întrerupte pentru a defini tranziția și punctele pentru a o roti.
+	Drag the handles on the outline to resize and turn it; the ring sets the blur angle.	Trageți manetele de pe contur pentru a-l redimensiona și roti; inelul stabilește unghiul de neclaritate.
+	Blur Angle	Unghi neclaritate
+	Iris Blur…	Neclaritate iris…
+	Tilt-Shift…	Înclinare-deplasare…
+	Path Blur…	Neclaritate traseu…
+	Spin Blur…	Neclaritate rotație…
+	Blur More	Neclaritate mai accentuată
+	Box Blur…	Neclaritate cutie…
+	Gaussian Blur…	Neclaritate gaussiană…
+	Lens Blur…	Neclaritate lentilă…
+	Motion Blur…	Neclaritate mișcare…
+	Radial Blur…	Neclaritate radială…
+	Shape Blur…	Neclaritate formă…
+	Smart Blur…	Neclaritate inteligentă…
+	Surface Blur…	Neclaritate suprafață…
+	Average	Medie
+	Displace…	Deplasare…
+	Pinch…	Ciupire…
+	Polar Coordinates…	Coordonate polare…
+	Ripple…	Ondulație…
+	Shear…	Forfecare…
+	Spherize…	Sferizare…
+	Twirl…	Vârtej…
+	Wave…	Val…
+	ZigZag…	Zigzag…
+	Noise	Zgomot
+	Add Noise…	Adăugare zgomot…
+	Despeckle	Eliminare pete
+	Dust & Scratches…	Praf și zgârieturi…
+	Median…	Mediană…
+	Reduce Noise…	Reducere zgomot…
+	Pixelate	Pixelizare
+	Color Halftone…	Semiton color…
+	Crystallize…	Cristalizare…
+	Facet	Fațetare
+	Fragment	Fragmentare
+	Mezzotint…	Mezzotintă…
+	Mosaic…	Mozaic…
+	Pointillize…	Pointilism…
+	Render	Randare
+	Clouds	Nori
+	Difference Clouds	Nori de diferență
+	Fibers…	Fibre…
+	Flame…	Flacără…
+	Lens Flare…	Reflexie lentilă…
+	Lighting Effects…	Efecte de iluminare…
+	Relight…	Reiluminare…
+	Picture Frame…	Ramă foto…
+	Tree…	Copac…
+	Sharpen	Claritate
+	Sharpen Edges	Clarificare margini
+	Sharpen More	Clarificare mai accentuată
+	Smart Sharpen…	Clarificare inteligentă…
+	Unsharp Mask…	Mască de claritate…
+	High Pass…	Trecere de sus…
+	Stylize	Stilizare
+	Diffuse…	Difuzare…
+	Emboss…	Relief…
+	Extrude…	Extrudare…
+	Find Edges	Găsire margini
+	Oil Paint…	Pictură în ulei…
+	Solarize	Solarizare
+	Tiles…	Plăci…
+	Trace Contour…	Trasare contur…
+	Wind…	Vânt…
+	Video	Video
+	De-Interlace…	Dezîntrețesere…
+	NTSC Colors	Culori NTSC
+	Other	Altul
+	Maximum…	Maximum…
+	Minimum…	Minimum…
+	Offset…	Decalaj…
+	Plug-ins	Plugin-uri
+	Proof Setup	Configurare probă
+	Proof Colors	Culori de probă
+	Gamut Warning	Avertisment gamă
+	Working CMYK	CMYK de lucru
+	Working Cyan Plate	Placă cyan de lucru
+	Working Magenta Plate	Placă magenta de lucru
+	Working Yellow Plate	Placă galben de lucru
+	Working Black Plate	Placă negru de lucru
+	Working CMY Plate	Placă CMY de lucru
+	Legacy Macintosh RGB	RGB vechi Macintosh
+	Internet Standard RGB	RGB standard Internet
+	Monitor RGB	RGB monitor
+	Color Blindness — Protanopia-type	Daltonism — tip protanopie
+	Color Blindness — Deuteranopia-type	Daltonism — tip deuteranopie
+	Zoom In	Mărire
+	Zoom Out	Micșorare
+	Fit on Screen	Încadrare în ecran
+	Fit Layer(s) on Screen	Încadrare strat(uri) în ecran
+	Fit Artboard on Screen	Încadrare planșă de lucru în ecran
+	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
+	200%	200%
+	75%	75%
+	80%	80%
+	85%	85%
+	90%	90%
+	95%	95%
+	125%	125%
+	150%	150%
+	175%	175%
+	250%	250%
+	300%	300%
+	Print Size	Dimensiune imprimare
+	Pixel Aspect Ratio	Raport de aspect pixel
+	Pixel Aspect Ratio Correction	Corecție raport de aspect pixel
+	Custom Pixel Aspect Ratio…	Raport de aspect pixel personalizat…
+	Square	Pătrat
+	D1/DV NTSC (0.91)	D1/DV NTSC (0,91)
+	D1/DV NTSC Widescreen (1.21)	D1/DV NTSC panoramic (1,21)
+	D1/DV PAL (1.09)	D1/DV PAL (1,09)
+	D1/DV PAL Widescreen (1.46)	D1/DV PAL panoramic (1,46)
+	Anamorphic 2:1 (2)	Anamorfic 2:1 (2)
+	HDV 1080/DVCPRO HD 720 (1.33)	HDV 1080/DVCPRO HD 720 (1,33)
+	DVCPRO HD 1080/HDV 1080 (1.5)	DVCPRO HD 1080/HDV 1080 (1,5)
+	32-bit Preview Options…	Opțiuni previzualizare 32 biți…
+	Screen Mode	Mod ecran
+	Standard Screen Mode	Mod ecran standard
+	Full Screen Mode With Menu Bar	Mod ecran complet cu bară de meniuri
+	Full Screen Mode	Mod ecran complet
+	Cycle Screen Mode	Comutare mod ecran
+	Show	Afișare
+	Extras	Elemente suplimentare
+	Selection Edges	Margini selecție
+	Target Path	Traseu destinație
+	Current Path	Traseu curent
+	Grid	Grilă
+	Guides	Ghidaje
+	Canvas Guides	Ghidaje pânză
+	Artboard Guides	Ghidaje planșă de lucru
+	Count	Numărare
+	Smart Guides	Ghidaje inteligente
+	Slices	Felii
+	Notes	Note
+	Pixel Grid	Grilă de pixeli
+	Pixel Art	Artă în pixeli
+	Pixel Art Preview	Previzualizare artă în pixeli
+	Pattern Preview	Previzualizare model
+	Brush Preview	Previzualizare pensulă
+	Mesh	Plasă
+	Edit Pins	Editare pini
+	Document Bounds	Limite document
+	Show Extras Options…	Opțiuni elemente suplimentare…
+	Rulers	Rigle
+	Snap	Fixare
+	Snap To	Fixare la
+	Lock Guides	Blocare ghidaje
+	Clear Guides	Ștergere ghidaje
+	Clear Selected Artboard Guides	Ștergere ghidaje planșă de lucru selectată
+	Clear Canvas Guides	Ștergere ghidaje pânză
+	New Guide…	Ghidaj nou…
+	Lock Slices	Blocare felii
+	Clear Slices	Ștergere felii
+	Match Zoom	Potrivire zoom
+	Match Location	Potrivire poziție
+	Match Rotation	Potrivire rotație
+	Cascade	Cascadă
+	Tile	Mozaic
+	Tile All Horizontally	Mozaic orizontal pentru toate
+	Tile All Vertically	Mozaic vertical pentru toate
+	2-up Horizontal	2 ferestre (orizontal)
+	2-up Vertical	2 ferestre (vertical)
+	3-up Horizontal	3 ferestre (orizontal)
+	3-up Stacked	3 ferestre (stivuite)
+	3-up Vertical	3 ferestre (vertical)
+	4-up	4 ferestre
+	6-up	6 ferestre
+	Consolidate All to Tabs	Consolidare tot în file
+	Float in Window	Flotare în fereastră
+	Float All in Windows	Flotare toate în ferestre
+	New Window for Document	Fereastră nouă pentru document
+	Workspace	Spațiu de lucru
+	Essentials	Esențiale
+	Graphic and Web	Grafică și web
+	Painting	Pictură
+	Photography	Fotografie
+	New Workspace…	Spațiu de lucru nou…
+	Delete Workspace…	Ștergere spațiu de lucru…
+	Reset Workspace	Resetare spațiu de lucru
+	Reset Tool	Resetare instrument
+	Reset All Tools	Resetare toate instrumentele
+	Reset all tools to their default settings?	Se resetează toate instrumentele la valorile implicite?
+	Lock Workspace	Blocare spațiu de lucru
+	Theme	Temă
+	Pro Theme	Temă Pro
+	Pro Medium Gray Theme	Temă Pro (gri mediu)
+	Pro Light Gray Theme	Temă Pro (gri clar)
+	Pro Light Theme	Temă Pro (clară)
+	Studio Theme	Temă Studio
+	Studio Light Theme	Temă Studio (clară)
+	Adwaita Light Theme	Temă Adwaita (clară)
+	Adwaita Dark Theme	Temă Adwaita (întunecată)
+	Classic Theme	Temă Clasică
+	Solarized dark	Solarized întunecat
+	Solarized Dark Theme	Temă Solarized întunecată
+	Breeze dark	Breeze întunecat
+	Breeze Dark Theme	Temă Breeze întunecată
+	Breeze light	Breeze clar
+	Breeze Light Theme	Temă Breeze clară
+	Soft dark	Suave întunecat
+	Soft light	Suave clar
+	Soft Dark Theme	Temă suave întunecată
+	Soft Light Theme	Temă suave clară
+	Next Theme	Temă următoare
+	Actions	Acțiuni
+	Brush Settings	Setări pensulă
+	Brushes	Pensule
+	Channels	Canale
+	Character	Caracter
+	Character Styles	Stiluri de caracter
+	Clone Source	Sursă de clonare
+	Color	Culoare
+	Glyphs	Glife
+	Gradients	Degradeuri
+	Histogram	Histogramă
+	History	Istoric
+	Info	Informații
+	Measurement Log	Jurnal de măsurători
+	Modifier Keys	Taste modificatoare
+	Navigator	Navigator
+	Options	Opțiuni
+	Paragraph	Paragraf
+	Paragraph Styles	Stiluri de paragraf
+	Paths	Trasee
+	Patterns	Modele
+	Properties	Proprietăți
+	Shapes	Forme
+	Styles	Stiluri
+	Swatches	Mostre
+	Timeline	Cronologie
+	Tool Presets	Presetări instrument
+	Tools	Instrumente
+	About PhotoCraft	Despre PhotoCraft
+	PhotoCraft Website	Site-ul PhotoCraft
+	PhotoCraft on GitHub	PhotoCraft pe GitHub
+	ArtCraft Website	Site-ul ArtCraft
+	Join the ArtCraft Discord…	Alăturați-vă Discord-ului ArtCraft…
+	Report an Issue…	Raportare problemă…
+	WIA Support…	Suport WIA…
+	Apply	Aplicare
+	HSB/HSL	HSB/HSL
+	Invert…	Inversare…
+	Load Files into Stack…	Încărcare fișiere în stivă…
+	Motion	Mișcare
+	Notes…	Note…
+	Other…	Altul…
+	Remove Warp Split	Eliminare divizare deformare
+	Shape	Formă
+	Split Warp Crosswise	Divizare deformare în cruce
+	Split Warp Horizontally	Divizare deformare orizontal
+	Split Warp Vertically	Divizare deformare vertical
+	Statistics…	Statistici…
+	Refine Strokes	Perfecționare trasee
+	Edits	Editări
+@plural	{n} item|{n} items	{n} element|{n} elemente|{n} de elemente
+	Auto	Automat
+	(print to the printer)	(se imprimă pe imprimantă)
+	+ Add variable	+ Adăugare variabilă
+	30 frames @ 30 fps	30 de cadre @ 30 fps
+	3D LUT File	Fișier LUT 3D
+	Absolute	Absolut
+	Absolute Colorimetric	Colorimetric absolut
+	Action	Acțiune
+	Adaptive	Adaptiv
+	Adaptive Wide Angle isn't open	Unghiul larg adaptabil nu este deschis
+	Add	Adăugare
+	Add Layer Mask	Adăugare mască de strat
+	Add Stop	Adăugare marcaj
+	Add a layer style	Adăugare stil de strat
+	Move effect up	Deplasare efect sus
+	Move effect down	Deplasare efect jos
+	Delete effect	Ștergere efect
+	Add a mask  (from the selection; {key} inverts)	Adăugare mască  (din selecție; {key} o inversează)
+	Add an adjustment	Adăugare ajustare
+	Add disk	Adăugare disc
+	Add space after paragraph	Adăugare spațiu după paragraf
+	Add space before paragraph	Adăugare spațiu înainte de paragraf
+	Add to Sample	Adăugare la probă
+	Add to selection  ({key})	Adăugare la selecție  ({key})
+	Adjust for Zoom	Ajustare în funcție de zoom
+	Adjustment visible	Ajustare vizibilă
+	Adobe RGB (1998) compatible	Compatibil cu Adobe RGB (1998)
+	Align and Distribute	Alinere și distribuire
+	Align and distribute	Alinere și distribuire
+	Align horizontal centers	Aliniere centre orizontale
+	Align left edges	Aliniere margini din stânga
+	Align right edges	Aliniere margini din dreapta
+	Aligned	Aliniat
+	All Caps	Toate majuscule
+	All Slices	Toate feliile
+	All User Slices	Toate feliile utilizatorului
+	All shortcuts reset to PhotoCraft defaults.	Toate comenzile rapide au fost resetate la valorile implicite ale PhotoCraft.
+	Alt	Alt
+	Always use pressure for opacity	Utilizare permanentă a presiunii pentru opacitate
+	Always use pressure for size	Utilizare permanentă a presiunii pentru dimensiune
+	Amount	Cantitate
+	Anchor:	Ancorare:
+	Angle	Unghi
+	Angle Gradient	Degrade unghiular
+	Angle Jitter	Variație unghi
+	Answer the unsaved-changes prompt first	Răspundeți mai întâi la solicitarea privind modificările nesalvate
+	Anti-alias	Anticrenelare
+	Appearance	Aspect
+	Appearance (Layer Style)	Aspect (stil de strat)
+	Apply Layer Mask	Aplicare mască de strat
+	Add Mask to Selection	Adăugare mască la selecție
+	Subtract Mask from Selection	Scădere mască din selecție
+	Intersect Mask with Selection	Intersectare mască cu selecția
+	Apply Per Tip	Aplicare pe fiecare vârf
+	Apply next selected layer comp	Aplicare următoarea compoziție de strat selectată
+	Apply previous selected layer comp	Aplicare compoziția de strat selectată anterioară
+	Artboard	Planșă de lucru
+	Artboard Background Color	Culoare de fundal a planșei de lucru
+	Assign working space	Asignare spațiu de lucru
+	Author:	Autor:
+	Auto Hide	Ascundere automată
+	Auto-Select:	Selecție automată:
+	Automatically level near-horizontal line segments	Nivelare automată a segmentelor aproape orizontale
+	Automatically straighten and level	Îndreptare și nivelare automată
+	Automatically straighten near-vertical line segments	Îndreptare automată a segmentelor aproape verticale
+	Background	Fundal
+	Background Color	Culoare de fundal
+	Background Contents	Conținut fundal
+	Custom background color	Culoare de fundal personalizată
+	Balance	Balans
+	Baseline	Linia de bază
+	Baseline shift	Deplasare linie de bază
+	Basic	De bază
+	Before (Y)	Înainte (Y)
+	Save Settings…	Salvare setări…
+	Load Settings…	Încărcare setări…
+	Save these settings as a Camera Raw .xmp file	Salvare acestor setări ca fișier .xmp Camera Raw
+	Load settings from a Camera Raw .xmp file	Încărcare setări dintr-un fișier .xmp Camera Raw
+	Loaded RAW Develop settings from {file}	Setări Developare RAW încărcate din {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	Setări Developare RAW încărcate din {file} ({n} nesuportate)
+	Begin recording	Pornire înregistrare
+	Bend:	Curbură:
+	Bicubic	Bicubică
+	Bicubic (smooth gradients)	Bicubică (degradeuri netede)
+	Automatic	Automat
+	Bicubic Smoother (enlargement)	Bicubică mai netedă (mărire)
+	Bicubic Sharper (reduction)	Bicubică mai clară (reducere)
+	Bilinear	Biliniară
+	Black	Negru
+	Black & White	Negru și alb
+	Black Point Compensation	Compensare punct negru
+	Black, White	Negru, alb
+	Blacks	Negre
+	Blending	Fuziune
+	Blending Options	Opțiuni de fuziune
+	Blue	Albastru
+	Blue, Red, Yellow	Albastru, roșu, galben
+	Both Axes	Ambele axe
+	Bottom	Jos
+	Brightness	Luminozitate
+	Brightness Jitter	Variație luminozitate
+	Brightness/Contrast	Luminozitate/contrast
+	Bring the selected pin forward	Aducere pin selectat în față
+	Brush Preset picker	Selector presetări pensulă
+	Brush Reconstruct Options	Opțiuni reconstrucție pensulă
+	Brush Tool Options	Opțiuni instrument Pensulă
+	Cache Level:	Nivel cache:
+	RAW Develop isn't open	Developare RAW nu este deschis
+	Cancel	Anulare
+	Cancel (Esc)	Anulare (Esc)
+	Manage submitted jobs in the system print queue	Gestionarea lucrărilor trimise în coada de imprimare a sistemului
+	Cancel any current edits (Esc)	Anulare editări curente (Esc)
+	Cancel current crop operation  (Esc)	Anulare operație de decupare curentă  (Esc)
+	Cancel transform (Esc)	Anulare transformare (Esc)
+	Cancel warp (Esc)	Anulare deformare (Esc)
+	Canvas	Pânză
+	Canvas extension color:	Culoare extindere pânză:
+	Capture	Captură
+	Capture the visibility, position and style of every layer with + below, then switch between versions.	Capturați vizibilitatea, poziția și stilul fiecărui strat cu + de mai jos, apoi comutați între versiuni.
+	Catch-up on Stroke End	Recuperare la finalul tusei
+	Center	Centru
+	Center Crop Marks	Marcaje de tăiere centrate
+	Center text	Centrare text
+	Change	Modificare
+	Change All	Modificare toate
+	Change Screen Mode  (F)	Comutare mod ecran  (F)
+	Change To:	Modificare în:
+	Channel Mixer	Mixer de canale
+	Channel:	Canal:
+	Check All Layers	Verificare toate straturile
+	Check Spelling	Verificare ortografică
+	Clarity	Claritate
+	Clear All	Ștergere tot
+	Clear Override	Eliminare excepție
+	Clear Samples	Ștergere probe
+	Click sets foreground · right-click sets background	Clic stabilește culoarea frontală · clic dreapta stabilește culoarea de fundal
+	Click the first point or press {key} to close · Esc cancels	Faceți clic pe primul punct sau apăsați {key} pentru a încheia · Esc anulează
+	Click to add a point · drag off or {key}-click or Delete to remove	Clic pentru a adăuga un punct · trageți departe sau {key}-clic sau Delete pentru a elimina
+	Click to apply, {key}-click to clear overrides, double-click for Style Options	Clic pentru a aplica, {key}-clic pentru a elimina excepțiile, dublu clic pentru Opțiuni de stil
+	Click to edit the gradient	Faceți clic pentru a edita degradeul
+	Click to restore the current colour	Faceți clic pentru a restaura culoarea curentă
+	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Clic pentru mărire  ·  {key}-clic pentru micșorare  ·  trageți dreapta/stânga pentru mărire/micșorare
+	Click with the Note tool to add a note.	Faceți clic cu instrumentul Notă pentru a adăuga o notă.
+	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Clic: colț · Tragere: netezire · Clic pe primul punct: încheiere · {key}: finalizare · Esc: anulare
+	Click: corner · Drag: smooth · {alt}-drag: break handle · Click or drag first point: close · {key} finish · Esc cancel	Clic: colț · Tragere: netezire · {alt}+tragere: separare manetă · Clic sau tragere pe primul punct: încheiere · {key}: finalizare · Esc: anulare
+	Clip to layer below	Tăiere la stratul de dedesubt
+	Clipped	Tăiat
+	Close Style Options	Închidere opțiuni de stil
+	Cmd	Cmd
+	Coated CMYK	CMYK pentru hârtie cretată
+	Color & Swatches	Culoare și mostre
+	Color Balance	Balans de culoare
+	Color Detail	Detaliu culoare
+	Color Grading	Gradare culoare
+	Color Lookup	Căutare culoare
+	Color Management	Gestionare culoare
+	Color Mixer	Mixer de culoare
+	Color Mode	Mod culoare
+	Color Priority	Prioritate culoare
+	Color Range preview	Previzualizare gamă de culori
+	Color:	Culoare:
+	Colorize	Colorare
+	Colors	Culori
+	Commit Perspective Warp ({key})	Confirmare deformare perspectivă ({key})
+	Commit Puppet Warp ({key})	Confirmare deformare marionetă ({key})
+	Commit any current edits ({key})	Confirmare editări curente ({key})
+	Commit current crop operation  ({key})	Confirmare operație de decupare curentă  ({key})
+	Commit transform ({key})	Confirmare transformare ({key})
+	Commit warp ({key})	Confirmare deformare ({key})
+	Constant	Constant
+	Constrain proportions	Restricționare proporții
+	Contact Sheet II	Planșă de contact II
+	Content-Aware	Sensibil la conținut
+	Contiguous	Contiguu
+	Contrast	Contrast
+	Control:	Control:
+	Convert to sRGB	Conversie la sRGB
+	Copies	Exemplare
+	Copper	Cupru
+	Copyright	Drepturi de autor
+	Copyright and Contact Info	Drepturi de autor și informații de contact
+	Corner Crop Marks	Marcaje de tăiere în colțuri
+	Corner radius	Rază colț
+	Correction	Corecție
+	Count Jitter	Variație numărare
+	Create	Creare
+	Create Droplet	Creare droplet
+	Create Texture	Creare textură
+	Create Video Timeline	Creare cronologie video
+	Create a new count group	Creare grup de numărare nou
+	Create a new document or open an existing file.	Creați un document nou sau deschideți un fișier existent.
+	Create a new group	Creare grup nou
+	Create a new layer	Creare strat nou
+	Create new action	Creare acțiune nouă
+	Create new channel	Creare canal nou
+	Create new document from current state	Creare document nou din starea curentă
+	Create new fill or adjustment layer	Creare strat de umplere sau de ajustare nou
+	Create new gradient	Creare degrade nou
+	Create new group	Creare grup nou
+	Create new layer comp	Creare compoziție de strat nouă
+	Create new pattern from the selection	Creare model nou din selecție
+	Create new shape from the current path	Creare formă nouă din traseul curent
+	Create new snapshot	Creare captură nouă
+	From:	Din:
+	Full Document	Document complet
+	Merged Layers	Straturi combinate
+	Create new tool preset	Creare presetare instrument nouă
+	Crop Factor	Factor de decupare
+	Ctrl	Ctrl
+	Current & Below	Curent și inferioare
+	Current Layer	Stratul curent
+	Current Size	Dimensiune curentă
+	Current Tool Only	Numai instrumentul curent
+	Curve	Curbă
+	Curves	Curbe
+	Custom	Personalizat
+	Custom Shapes	Forme personalizate
+	Cyan	Cian
+	Cyan  ·  Red	Cian  ·  roșu
+	Darken	Întunecare
+	Darks	Întunecate
+	Data Sets	Seturi de date
+	Default	Implicit
+	Default colours (D)	Culori implicite (D)
+	Default printer	Imprimantă implicită
+	Default restored.	Valorile implicite au fost restaurate.
+	Define	Definire
+	Define at least one variable first.	Definiți cel puțin o variabilă întâi.
+	Dehaze	Eliminare ceață
+	Delete Cropped Pixels	Ștergere pixeli decupați
+	Delete Group	Ștergere grup
+	Delete Layer Mask	Ștergere mască de strat
+	Delete Layers	Ștergere straturi
+	Add Shortcut	Adăugare comandă rapidă
+	Delete Shortcut	Ștergere comandă rapidă
+	Delete Timeline	Ștergere cronologie
+	Delete Tool Preset	Ștergere presetare instrument
+	Delete count group	Ștergere grup de numărare
+	Delete current channel	Ștergere canal curent
+	Delete current state	Ștergere stare curentă
+	Delete effect layer	Ștergere strat de efect
+	Delete layer ‘{name}’?	Ștergeți stratul „{name}”?
+	Delete {count} layers? {names}	Ștergeți {count} straturi? {names}
+	Delete layer?	Ștergeți stratul?
+	The document is closed	Documentul este închis
+	The document or selected layers changed. Please request deletion again.	Documentul sau straturile selectate s-au modificat. Solicitați din nou ștergerea.
+	Missing delete command	Comandă de ștergere lipsă
+	Invalid delete command	Comandă de ștergere nevalidă
+	Layer deleted, but confirmation preference could not be saved: {error}	Stratul a fost șters, dar preferința de confirmare nu a putut fi salvată: {error}
+	Delete layer	Ștergere strat
+	Delete layer comp	Ștergere compoziție de strat
+	Delete note	Ștergere notă
+	Delete selected measurements	Ștergere măsurători selectate
+	Delete style	Ștergere stil
+	Delete tool preset	Ștergere presetare instrument
+	Density	Densitate
+	Density:	Densitate:
+	Depth	Profunzime
+	Depth Jitter	Variație profunzime
+	Description	Descriere
+	Deselect All	Deselectare tot
+	Detail	Detaliu
+	Diamond Gradient	Degrade romb
+	Difference	Diferență
+	Diffusion	Difuzie
+	Discard the embedded profile (don't color manage)	Renunțare la profilul încorporat (fără gestionarea culorii)
+	Discontiguous	Necontiguu
+	Discord	Discord
+	Dismiss	Închidere
+	Display P3	Display P3
+	Display Text	Text afișat
+	Dither	Tramare
+	Divide…	Împărțire…
+	Document	Document
+	Don't Save	Nu salvați
+	No	Nu
+	Yes	Da
+	Done	Terminat
+	Dots	Puncte
+	Drag a rectangle around the object	Trageți un rectangul în jurul obiectului
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Trageți pe imagine pentru a adăuga o constrângere; Shift pentru orizontal/vertical; clic dreapta pe o constrângere pentru a o modifica sau șterge.
+	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	Clic: selectare punct de ancorare · Tragere: deplasare punct, manetă sau segment · {shift}-clic: adăugare · {alt}-clic: subtraseu complet
+	Draw with the Pen tool (P) or make a work path from a selection.	Desenați cu instrumentul Pană (P) sau creați un traseu de lucru dintr-o selecție.
+	Drop an image or PSD anywhere to open it.	Plasați o imagine sau un PSD oriunde pentru a-l deschide.
+	Native file drag-and-drop is unavailable	Tragerea și plasarea nativă a fișierelor nu este disponibilă pe Wayland
+	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or copy the image in your file manager and paste it with {paste}.	Tragerea și plasarea nativă a fișierelor nu este încă suportată pe Wayland. Utilizați Fișier › Deschidere, sau copiați imaginea din gestionarul de fișiere și inserați-o cu {paste}.
+	To drop files, start PhotoCraft under XWayland: `{command}`	Pentru a plasa fișiere, porniți PhotoCraft sub XWayland: `{command}`
+	Or set Preferences › Performance › Linux display server to X11: PhotoCraft then always starts under XWayland.	Sau setați Preferințe › Performanță › Server de afișare Linux la X11: PhotoCraft va porni mereu sub XWayland.
+	Edit › Paste	Editare › Inserare
+	Duplicate Layers…	Duplicare straturi…
+	Duplicate style	Duplicare stil
+	Edit Toolbar…	Editare bară de instrumente…
+	Use File › Open, or paste a copied image with {paste}.	Utilizați Fișier › Deschidere, sau inserați o imagine copiată cu {paste}.
+	Edit in Quick Mask Mode  (Q)	Editare în mod mască rapidă  (Q)
+	Edit in Standard Mode  (Q)	Editare în mod standard  (Q)
+	Effects	Efecte
+	Embed Color Profile	Încorporare profil de culoare
+	Embedded Profile Mismatch	Profilul încorporat nu corespunde
+	Enable airbrush-style build-up effects	Activare efecte de acumulare tip aerograf
+	Enhance Edge	Îmbunătățire margine
+	Entire Font	Fontul complet
+	Exact	Exact
+	Expansion:	Expansiune:
+	Export Presets	Export presetări
+	Export selected measurements (CSV)	Export măsurători selectate (CSV)
+	Exposure	Expunere
+	Exposure and Gamma	Expunere și gamma
+	Exposure:	Expunere:
+	Eyedropper	Pipetă
+	Factor:	Factor:
+	Faux Bold	Bold fals
+	Faux Italic	Cursiv fals
+	Feather	Calare
+	Fewer Points	Mai puține puncte
+	File Settings	Setări fișier
+	Fill	Umplere
+	Fill:	Umplere:
+	Filter for adjustment layers	Filtrare după straturi de ajustare
+	Filter for pixel layers	Filtrare după straturi de pixeli
+	Filter for shape layers	Filtrare după straturi de formă
+	Filter for smart objects	Filtrare după obiecte inteligente
+	Filter for type layers	Filtrare după straturi de text
+	Filter:	Filtru:
+	Finger Painting	Pictură cu degetele
+	Fisheye	Ochi de pește
+	Fit	Încadrare
+	Fit Screen	Încadrare în ecran
+	Fill Screen	Umplere ecran
+	Fit in View	Încadrare în vizualizare
+	Fixed	Fix
+	Fixed Ratio	Raport fix
+	Fixed Size	Dimensiune fixă
+	Flip	Răsturnare
+	Flip X	Răsturnare X
+	Flip X Jitter	Variație răsturnare X
+	Flip Y	Răsturnare Y
+	Flip Y Jitter	Variație răsturnare Y
+	Flow	Flux
+	Flow Jitter	Variație flux
+	Focal Length	Distanță focală
+	Font	Font
+	Font Size:	Dimensiune font:
+	Font size	Dimensiune font
+	Foreground	Frontală
+	Foreground to Background	De la frontală la fundal
+	Foreground/Background Jitter	Variație frontal/fundal
+	Format	Format
+	Frame from Layers…	Cadru din straturi…
+	Free	Liber
+	Full Spherical	Sferic complet
+	Fuzziness:	Toleranță:
+	GPU	GPU
+	Gamma Correction	Corecție gamma
+	Gamma:	Gamma:
+	Global	Global
+	Glow Color	Culoare strălucire
+	Gradient Map	Hartă de degrade
+	Grain	Granulație
+	Gray	Gri
+	Gray Gamma 2.2	Gri gamma 2,2
+	Green	Verde
+	Group	Grup
+	Hardness	Duritate
+	Heart	Inimă
+	Height	Înălțime
+	Height:	Înălțime:
+	Hide Auto Slices	Ascundere felii automate
+	Hide Properties	Ascundere proprietăți
+	Highlight Compression	Compresie luminile
+	Highlight Priority	Prioritate luminile
+	Highlights	Luminile
+	Home	Acasă
+	Horizontal scale	Scalare orizontală
+	Hue	Nuanță
+	Hue Jitter	Variație nuanță
+	Hue/Saturation	Nuanță/saturație
+	Hyphenate	Silabisire
+	Ignore	Ignorare
+	Ignore All	Ignorare tot
+	Image Size	Dimensiune imagine
+	Import Brushes…	Import pensule…
+	Gradient Preset Options	Opțiuni presetare degrade
+	Import .GRD	Import .GRD
+	Choose a gradient file (.grd).	Selectați un fișier de degradeuri (.grd).
+	Import brushes (.abr)	Import pensule (.abr)
+	Import Presets	Import presetări
+	Imported	Importat
+	Indent First	Indentare primă linie
+	Indent Left	Indentare stânga
+	Indent Right	Indentare dreapta
+	Indent first line	Indentare primă linie
+	Indent left margin	Indentare margine stânga
+	Indent right margin	Indentare margine dreapta
+	Input:	Intrare:
+	Inside	Interior
+	Interlaced	Întrețesut
+	Interpolation:	Interpolare:
+	Intersect with selection  ({key})	Intersectare cu selecția  ({key})
+	Invert All	Inversare tot
+	Invert has no settings.	Inversare nu are setări.
+	Italic	Cursiv
+	Join us on Discord	Alăturați-vă Discord-ului nostru
+	Justify all	Aliniere completă pentru toate
+	Justify last centered	Aliniere completă, ultima centrată
+	Justify last left	Aliniere completă, ultima la stânga
+	Justify last right	Aliniere completă, ultima la dreapta
+	Kerning	Interliterare
+	Keyboard Shortcuts	Comenzi rapide de la tastatură
+	Keyboard Shortcuts and Menus	Comenzi rapide de la tastatură și meniuri
+	Kind	Tip
+	Label Size	Dimensiune etichetă
+	Labels	Etichete
+	Lanczos (sharp)	Lanczos (clar)
+	Landscape	Peisaj
+	Last Document State	Ultima stare a documentului
+	Layout	Aranjament
+	Leading	Interlinie
+	Leading (set to the font size × auto-leading when Auto)	Interlinie (egală cu dimensiunea fontului × interlinie automată când e pe Automat)
+	Leave as is (don't color manage)	Lăsare ca este (fără gestionarea culorii)
+	Left align text	Aliniere text la stânga
+	Length:	Lungime:
+	Level	Nivel
+	Levels	Niveluri
+	Lighten	Luminare
+	Lightness	Luminozitate
+	Lights	Lumini
+	Limits:	Limite:
+	Linear Gradient	Degrade liniar
+	Link layers	Conectare straturi
+	Link width and height	Legare lățime și înălțime
+	Liquify is not open	Lichefierea nu este deschisă
+	Load	Încărcare
+	Load 3D LUT…	Încărcare LUT 3D…
+	Load channel as selection	Încărcare canal ca selecție
+	Load…	Încărcare…
+	Localized Color Clusters	Grupuri de culori localizate
+	Lock	Blocare
+	Lock all	Blocare tot
+	Lock image pixels	Blocare pixeli imagine
+	Lock layer	Blocare strat
+	Lock position	Blocare poziție
+	Lock transparent pixels	Blocare pixeli transparenți
+	Lock:	Blocare:
+	Logical Length:	Lungime logică:
+	Logical Units:	Unități logice:
+	Luminance	Luminanță
+	Luminance Detail	Detaliu luminanță
+	Magenta	Magenta
+	Magenta  ·  Green	Magenta  ·  verde
+	Maintain aspect ratio	Păstrare raport de aspect
+	Marker Size	Dimensiune marcator
+	Mask All	Mascare tot
+	Mask Options	Opțiuni mască
+	Masking	Mascare
+	Master	Toți
+	Matte	Mat
+	Median:	Mediană:
+	Menus	Meniuri
+	Mesh Size	Dimensiune plasă
+	Metadata	Metadate
+	Metrics	Metrici
+	Midpoint	Punct median
+	Midtones	Tonuri medii
+	Midtones from:	Tonuri medii de la:
+	Midtones to:	Tonuri medii până la:
+	Minimum Depth	Profunzime minimă
+	Minimum Diameter	Diametru minim
+	Minimum Roundness	Rotunjime minimă
+	Mode:	Mod:
+	Monochrome	Monocrom
+	More Points	Mai multe puncte
+	Move effect layer down	Deplasare strat de efect jos
+	Move effect layer up	Deplasare strat de efect sus
+	Move to	Deplasare la
+	Name	Nume
+	Name:	Nume:
+	Nearest Neighbor	Vecinul cel mai apropiat
+	Nearest Neighbor (hard edges)	Vecinul cel mai apropiat (margini dure)
+	New Size	Dimensiune nouă
+	New document…	Document nou…
+	New effect layer	Strat de efect nou
+	New selection	Selecție nouă
+	Next frame	Cadrul următor
+	Next note	Nota următoare
+	No Color	Fără culoare
+	No Color Management	Fără gestionare a culorii
+	No Dither	Fără tramare
+	No author	Fără autor
+	No character style	Fără stil de caracter
+	No document	Fără document
+	No matching commands	Nicio comandă corespunzătoare
+	No presets for the current tool.	Nu există presetări pentru instrumentul curent.
+	No presets of this type.	Nu există presetări de acest tip.
+	No properties	Fără proprietăți
+	No tool presets.	Nu există presetări de instrument.
+	Noise Reduction	Reducere zgomot
+	Normal	Normal
+	Not in Dictionary:	Nu este în dicționar:
+	OK	OK
+	Offset	Decalaj
+	Only Web Colors	Numai culori web
+	Opacity	Opacitate
+	Opacity Jitter	Variație opacitate
+	Opacity:	Opacitate:
+	Open a document to define variables.	Deschideți un document pentru a defini variabile.
+	Open a document to select a colour range.	Deschideți un document pentru a selecta o gamă de culori.
+	Open a document to use the timeline.	Deschideți un document pentru a utiliza cronologia.
+	Optical	Optic
+	Optimized	Optimizat
+	Option-click to define a source point to clone from	Clic cu Opțiune pentru a defini un punct sursă din care să clonați
+	Original	Original
+	Output Channel:	Canal de ieșire:
+	Output Levels:	Niveluri de ieșire:
+	Output:	Rezultat:
+	Outside	Exterior
+	Overlay Color	Culoare suprapunere
+	Overlay Opacity	Opacitate suprapunere
+	Overlay: Rule of Thirds	Suprapunere: regula terților
+	Override Pressure	Anulare presiune
+	Override Rotation	Anulare rotație
+	Override Tilt	Anulare înclinare
+	Override Tilt X	Anulare înclinare X
+	Override Tilt Y	Anulare înclinare Y
+	PRESET DETAILS	DETALII PRESETARE
+	PSD	PSD
+	Paint Overlay	Suprapunere pictură
+	Panel locations are saved in the workspace. Keyboard shortcuts, menus and toolbar are optional.	Pozițiile panourilor sunt salvate în spațiul de lucru. Comenzile rapide de la tastatură, meniurile și bara de instrumente sunt opționale.
+	Paper	Hârtie
+	Path	Traseu
+	Pattern	Model
+	Pattern Size	Dimensiune model
+	Pause	Pauză
+	Percent	Procent
+	Perceptual	Perceptual
+	Perspective Warp is not active	Deformarea de perspectivă nu este activă
+	Perspective Warp: draw planes along the image's perspective, then switch to Warp	Deformare de perspectivă: desenați planuri de-a lungul perspectivei imaginii, apoi comutați la Deformare
+	Photo Filter	Filtru foto
+	PhotoCraft	PhotoCraft
+	PhotoCraft Manages Colors	PhotoCraft gestionează culorile
+	PhotoCraft — an open-source, native image editor written in Rust.	PhotoCraft — un editor de imagini nativ, open-source, scris în Rust.
+	Pin Depth:	Profunzime pin:
+	Pixel Length:	Lungime în pixeli:
+	Pixels/Centimeter	Pixeli/centimetru
+	Pixels/Inch	Pixeli/inch
+	Pixels:	Pixeli:
+	Play	Redare
+	Play selection	Redare selecție
+	Portrait	Portret
+	Position	Poziție
+	Position and Size	Poziție și dimensiune
+	Posterize	Posterizare
+	Preserve Details	Conservare detalii
+	Preserve Luminosity	Conservare luminozitate
+	Preset	Presetare
+	Preset Type	Tip presetare
+	Preset:	Presetare:
+	Presets:	Presetări:
+	Press keys…	Apăsați tastele…
+	Pressure	Presiune
+	Pressure for Opacity	Presiune pentru opacitate
+	Pressure for Size	Presiune pentru dimensiune
+	Prevent auto-nesting in and out of Artboards and Frames	Prevenire cuibărire automată în și din planșe de lucru și cadre
+	Preview	Previzualizare
+	Previous frame	Cadrul anterior
+	Previous note	Nota anterioară
+	Print	Imprimare
+	Printer	Imprimantă
+	Printer Manages Colors	Imprimanta gestionează culorile
+	Printer Setup	Configurare imprimantă
+	Printing Marks	Marcaje de imprimare
+	Progressive	Progresiv
+	Promote	Promovare
+	Protect Detail	Protejare detalii
+	Protect Foreground Color	Protejare culoare frontală
+	Protect Tones	Protejare tonuri
+	Proximity Match	Potrivire de proximitate
+	Pulled String Mode	Mod coardă trasă
+	Puppet Warp is not active	Deformarea marionetă nu este activă
+	Purity	Puritate
+	Quality	Calitate
+	Quick Actions	Acțiuni rapide
+	Quick Export As PNG	Export rapid ca PNG
+	Radial Gradient	Degrade radial
+	Radius	Rază
+	Radius:	Rază:
+	Range:	Interval:
+	Rate	Viteză
+	Recently Used	Utilizate recent
+	Reconstruct	Reconstruire
+	Record ● a sequence of edits, then play ▶ it on any document.	Înregistrați ● o secvență de editări, apoi redați-o ▶ pe orice document.
+	Red	Roșu
+	Redefine style by current selection	Redefinire stil prin selecția curentă
+	Refine	Rafinare
+	Reflected Gradient	Degrade reflectat
+	Registration Marks	Marcaje de registru
+	Regular	Normal
+	Relative	Relativ
+	Relative Colorimetric	Colorimetric relativ
+	Remove	Eliminare
+	Remove All Pins	Eliminare toate pinii
+	Remove Background	Eliminare fundal
+	Remove Planes	Eliminare planuri
+	Remove Tool	Instrument Eliminare
+	Remove stop	Eliminare marcaj de oprire
+	Remove variable	Eliminare variabilă
+	Rename	Redenumire
+	Rename Group…	Redenumire grup…
+	Rename Layer…	Redenumire strat…
+	Rename Tool Preset…	Redenumire presetare instrument…
+	Rename…	Redenumire…
+	Resample	Reeșantionare
+	Reset All to Defaults	Resetare tot la valorile implicite
+	Import Shortcuts…	Import comenzi rapide…
+	Load a keyboard shortcut set saved as .kys	Încărcare un set de comenzi rapide de la tastatură salvat ca .kys
+	Imported {n} shortcuts from {file}. Click OK to keep them.	S-au importat {n} comenzi rapide din {file}. Faceți clic pe OK pentru a le păstra.
+	{n} commands are not in PhotoCraft.	{n} comenzi nu există în PhotoCraft.
+	Keyboard shortcuts imported	Comenzi rapide de la tastatură importate
+	Your keyboard shortcut set {set} is in use here: {n} shortcuts differ from the defaults. Edit › Keyboard Shortcuts shows them; Reset All to Defaults undoes this.	Setul dvs. de comenzi rapide de la tastatură {set} este în uz aici: {n} comenzi rapide diferă de valorile implicite. Editare › Comenzi rapide de la tastatură le afișează; Resetare tot la valorile implicite anulează acest lucru.
+	Import keyboard shortcuts?	Importați comenzile rapide de la tastatură?
+	PhotoCraft found your keyboard shortcut set {set} from another image editor on this computer: {n} of its shortcuts differ from PhotoCraft's. Import it?	PhotoCraft a găsit pe acest computer setul dvs. de comenzi rapide de la tastatură {set} dintr-un alt editor de imagini: {n} dintre comenzile sale rapide diferă de cele ale PhotoCraft. Doriți să îl importați?
+	Edit › Keyboard Shortcuts › Reset All to Defaults undoes an import.	Editare › Comenzi rapide de la tastatură › Resetare tot la valorile implicite anulează un import.
+	Don't Import	Nu importați
+	The keyboard shortcut set was not imported: {error}	Setul de comenzi rapide de la tastatură nu a fost importat: {error}
+	Reset Section	Resetare secțiune
+	Reset Transform	Resetare transformare
+	Reset to defaults	Resetare la valorile implicite
+	Resolution	Rezoluție
+	Resolution:	Rezoluție:
+	Restore All	Restaurare tot
+	Restore Defaults	Restaurare valori implicite
+	Restrictive (Web)	Restrictiv (web)
+	Right align text	Aliniere text la dreapta
+	Rigid	Rigid
+	Rotate:	Rotație:
+	Rotation	Rotație
+	Roughness	Rugozitate
+	Roundness	Rotunjime
+	Roundness Jitter	Variație rotunjime
+	Rulers & Grids	Rigle și grile
+	Sample All Layers	Eșantionare toate straturile
+	Sample:	Probă:
+	Sampling: Background Swatch	Eșantionare: mostra de fundal
+	Sampling: Continuous	Eșantionare: continuă
+	Sampling: Once	Eșantionare: o singură dată
+	Saturate	Creștere saturație
+	Saturation	Saturație
+	Saturation Jitter	Variație saturație
+	Save HTML and Images	Salvare HTML și imagini
+	Save as PDF	Salvare ca PDF
+	Save selection as channel	Salvare selecție ca canal
+	Save…	Salvare…
+	Scale to Fit Media	Scalare pentru a încadra mediul
+	Scatter	Dispersie
+	Scratch disks	Discuri temporare
+	Search	Căutare
+	Search commands	Căutare comenzi
+	Search commands, tools and panels…	Căutare comenzi, instrumente și panouri…
+	Search fonts	Căutare fonturi
+	Select All	Selectare tot
+	Select Subject	Selectare subiect
+	Select a type layer or click into text to insert glyphs	Selectați un strat de text sau faceți clic în text pentru a insera glife
+	Select text to apply a character style	Selectați text pentru a aplica un stil de caracter
+	Select:	Selecție:
+	Selections	Selecții
+	Selective	Selectiv
+	Selective Color	Culoare selectivă
+	Send the selected pin backward	Trimitere pin selectat în spate
+	Set additional smoothing options	Setare opțiuni de netezire suplimentare
+	Set background color	Setare culoare de fundal
+	Set foreground color	Setare culoare frontală
+	Set painting symmetry options	Setare opțiuni de simetrie pentru pictură
+	Symmetry Off	Simetrie dezactivată
+	Set shape fill type	Setare tip de umplere a formei
+	Set shape stroke type	Setare tip de contur al formei
+	Set the text color	Setare culoare text
+	Create warped text	Creare text deformat
+	Shadows	Umbre
+	Shape:	Formă:
+	Sharpening	Clarificare
+	Shift	Shift
+	Shortcut removed.	Comandă rapidă eliminată.
+	Show All Menu Items	Afișare toate elementele de meniu
+	Show Backdrop	Afișare fundal
+	Show Guides	Afișare ghidaje
+	Show Mask	Afișare mască
+	Show Mesh	Afișare plasă
+	Show Overlay	Afișare suprapunere
+	Show Transform Controls	Afișare controale de transformare
+	Show or hide the Notes panel	Afișare sau ascundere panou Note
+	Show:	Afișare:
+	Sides	Laturi
+	Sides:	Laturi:
+	Size	Dimensiune
+	Size Jitter	Variație dimensiune
+	Size:	Dimensiune:
+	Slice Options…	Opțiuni felie…
+	Slices From Guides	Felii din ghidaje
+	Slices are locked (View › Lock Slices)	Feliile sunt blocate (Vizualizare › Blocare felii)
+	Small Caps	Capitale mici
+	Smoothing	Netezire
+	Space After	Spațiu după
+	Space Before	Spațiu înainte
+	Spacing	Spațiere
+	Spell check complete.	Verificarea ortografică s-a încheiat.
+	Split:	Divizare:
+	Star ratio	Raport stea
+	Stop playing/recording	Întrerupere redare/înregistrare
+	Straighten	Îndreptare
+	Straighten Layer	Îndreptare strat
+	Strength:	Intensitate:
+	Strikethrough	Tăiat (strikethrough)
+	Stroke	Trasou
+	Stroke Catch-up	Recuperare tusă
+	Stroke:	Trasou:
+	Location	Locație
+	Location:	Locație:
+	Style	Stil
+	Style Options	Opțiuni de stil
+	Style Options…	Opțiuni de stil…
+	Style: Normal	Stil: Normal
+	Subtract from Sample	Scădere din probă
+	Subtract from selection  ({key})	Scădere din selecție  ({key})
+	Suggestions:	Sugestii:
+	Swap colours (X)	Interschimbare culori (X)
+	Swaps height and width	Interschimbă înălțimea și lățimea
+	Switch between free transform and warp modes	Comutare între modurile transformare liberă și deformare
+	Switch theme	Comutare temă
+	Temperature	Temperatură
+	Tetrahedral	Tetraedric
+	Text Position:	Poziție text:
+	Texture	Textură
+	Texture Each Tip	Textură pe fiecare vârf
+	Threshold	Prag
+	Threshold Level	Nivel prag
+	Thumbnail size (smallest: list)	Dimensiune miniatură (cel mai mic: listă)
+	Tilt X	Înclinare X
+	Tilt Y	Înclinare Y
+	Tint	Tentă
+	Toggle count group visibility	Comutare vizibilitate grup de numărare
+	Toggle text orientation	Comutare orientare text
+	Tolerance	Toleranță
+	Tolerance:	Toleranță:
+	Tone:	Ton:
+	Toolbar	Bară de instrumente
+	Top	Sus
+	Total:	Total:
+	Tracking	Spațiere
+	Tracking (1/1000 em)	Spațiere (1/1000 em)
+	Transparency	Transparență
+	Transparent	Transparent
+	Trilinear	Triliniar
+	Type Styles	Stiluri de text
+	Type:	Tip:
+	Underline	Subliniere
+	Untitled	Fără titlu
+	Untitled-1	Fără titlu-1
+	Update layer comp (visibility, position and appearance)	Actualizare compoziție de strat (vizibilitate, poziție și aspect)
+	Use Default	Utilizare valoare implicită
+	Use Legacy	Utilizare versiune veche
+	Use Measurement Scale	Utilizare scară de măsurare
+	Variables bind a layer's visibility, text or pixels to a named data slot.	Variabilele leagă vizibilitatea, textul sau pixelii unui strat de un slot de date cu nume.
+	Vertical scale	Scalare verticală
+	Vibrance	Vibranță
+	View Options	Opțiuni de vizualizare
+	Vignetting	Vinietare
+	Violet, Orange	Violet, portocaliu
+	Visibility	Vizibilitate
+	Visible	Vizibil
+	Warp:	Deformare:
+	Web Snap	Fixare web
+	Weight	Grosime
+	Weight:	Grosime:
+	White	Alb
+	White Balance: As Shot	Balans de alb: ca la fotografiere
+	Whites	Albe
+	Width	Lățime
+	Slant	Înclinare
+	Width:	Lățime:
+	Work Path	Traseu de lucru
+	Yellow	Galben
+	Yellow  ·  Blue	Galben  ·  albastru
+	Zoom	Zoom
+	Zoom in	Mărire
+	Zoom out	Micșorare
+	command or shortcut	comandă sau comandă rapidă
+	current	curent
+	image file path	cale fișier imagine
+	modified	modificat
+	name	nume
+	new	nou
+	{name} options	Opțiuni {name}
+	↑↓ navigate   {key} run   esc close	↑↓ navigare   {key} executare   esc închidere
+	Version {version}	Versiune {version}
+	New Document	Document nou
+	New Document With Mask	Document nou cu mască
+	New Layer With Mask	Strat nou cu mască
+	New Layer	Strat nou
+	Save Preset…	Salvare presetare…
+	Preset Name	Nume presetare
+	No saved presets yet.	Nu există încă presetări salvate.
+	Error	Eroare
+	Command	Comandă
+	Adjustment layers have nothing to transform	Straturile de ajustare nu au nimic de transformat
+	Altitude	Altitudine
+	Android 1080p	Android 1080p
+	Apple Watch 45mm	Apple Watch 45mm
+	Aqua	Aqua
+	Art & Illustration	Artă și ilustrație
+	ArtCraft	ArtCraft
+	Background Eraser Tool	Instrument Radieră de fundal
+	Bevel & Emboss	Relief și teșire
+	Blend Mode	Mod de amestecare
+	Blues	Albaștri
+	Blur Tool	Instrument Neclaritate
+	Bold	Bold (gras)
+	Brush	Pensulă
+	Block	Bloc
+	Brush Pose	Postura pensulei
+	Brush Tip Shape	Forma vârfului pensulei
+	Brush Tool	Instrument Pensulă
+	Build-up	Acumulare
+	Burn Tool	Instrument Întunecare
+	Centimeters	Centimetri
+	Choke	Strângere
+	Classic	Clasic
+	Click to add text	Faceți clic pentru a adăuga text
+	Click to fill similar colours	Faceți clic pentru a umple culori similare
+	Clone Stamp Tool	Instrument Ștampilă de clonare
+	Color Burn	Întunecare culoare
+	Color Dodge	Luminare culoare
+	Color Dynamics	Dinamică culoare
+	Color Overlay	Suprapunere culoare
+	Comic Book	Bandă desenată
+	Conform	Conformare
+	Content-Aware Fill needs a selection on a pixel layer	Umplerea sensibilă la conținut necesită o selecție pe un strat de pixeli
+	Couldn't place {name}: {error}	Nu s-a putut plasa {name}: {error}
+	Could not transform: the layer is empty	Nu s-a putut transforma: stratul este gol
+	Could not use Perspective Warp: the layer is empty	Nu s-a putut folosi Deformarea de perspectivă: stratul este gol
+	Could not use Puppet Warp: no opaque pixels	Nu s-a putut folosi Deformarea marionetă: nu există pixeli opaci
+	Could not use Puppet Warp: the layer is empty	Nu s-a putut folosi Deformarea marionetă: stratul este gol
+	Crop Tool	Instrument Decupare
+	Crosswise	În cruce
+	Current Tool	Instrument curent
+	Custom Shape Tool	Instrument Formă personalizată
+	Cyans	Cianuri
+	Default PhotoCraft Size	Dimensiune implicită PhotoCraft
+	Delete Workspace	Ștergere spațiu de lucru
+	Diamond	Diamant
+	Dimensions:	Dimensiuni:
+	Direction	Direcție
+	Distance	Distanță
+	Document Dimensions	Dimensiuni document
+	Document Profile	Profil document
+	Document Sizes	Dimensiuni document
+	Dodge Tool	Instrument Luminare
+	Down	Jos
+	Drag to draw a gradient	Trageți pentru a desena un degrade
+	Drag to move the active layer	Trageți pentru a deplasa stratul activ
+	Drag to pan  ·  hold Space with any tool	Trageți pentru a deplasa vizualizarea  ·  țineți apăsat Spațiu cu orice instrument
+	Drop Shadow	Umbră paralelă
+	Dual Brush	Pensulă duală
+	Edge	Margine
+	Efficiency	Eficiență
+	Efficiency: 100%	Eficiență: 100%
+	Ellipse Tool	Instrument Elipsă
+	Elliptical Marquee Tool	Instrument Selecție elipsă
+	Single Row Marquee Tool	Instrument Selecție rând unic
+	Single Column Marquee Tool	Instrument Selecție coloană unică
+	Emboss	Relief
+	Eraser	Radieră
+	Eraser Tool	Instrument Radieră
+	ExtraBold	Extra Bold (extra gras)
+	ExtraLight	Extra fină
+	Eyedropper Tool	Instrument Pipetă
+	Fade	Atenuare
+	Fill Opacity	Opacitate umplere
+	Film & Video	Film și video
+	From	De la
+	General	General
+	GitHub	GitHub
+	Gradient Overlay	Suprapunere degrade
+	Gradient Tool	Instrument Degrade
+	Greens	Verzi
+	Hand Tool	Instrument Mână
+	Hard	Dur
+	Hard Mix	Mixaj dur
+	Healing Brush Tool	Instrument Pensulă corectoare
+	Highlights from:	Luminile de la:
+	History Brush Tool	Instrument Pensulă istoric
+	Horizontal Type Tool	Instrument Text orizontal
+	Horizontal Type Mask Tool	Instrument Mască text orizontal
+	Vertical Type Mask Tool	Instrument Mască text vertical
+	Image Size:	Dimensiune imagine:
+	Inches	Inchi
+	Indexed	Indexat
+	Initial Direction	Direcție inițială
+	Inner Bevel	Teșire interioară
+	Inner Glow	Strălucire interioară
+	Inner Shadow	Umbră interioară
+	Lab	Lab
+	Landscape, 10 x 8	Peisaj, 10 x 8
+	Landscape, 6 x 4	Peisaj, 6 x 4
+	Landscape, 7 x 5	Peisaj, 7 x 5
+	Lasso	Lasou
+	Lasso Tool	Instrument Lasou
+	Layer Count	Număr straturi
+	Layer Knocks Out Drop Shadow	Stratul elimină umbra paralelă
+	Legal	Legal
+	Letter	Scrisoare
+	Light	Fină
+	Line Tool	Instrument Linie
+	Linear	Liniar
+	Linear Burn	Întunecare liniară
+	Linear Height	Înălțime liniară
+	Link with Layer	Conectare cu stratul
+	Lorem Ipsum	Lorem Ipsum
+	Magentas	Magenta-uri
+	Magic Eraser Tool	Instrument Radieră magică
+	Magic Wand Tool	Instrument Baghetă magică
+	Marquee	Selecție
+	Mean:	Media:
+	Measurement Scale	Scară de măsurare
+	Measurement Scale Marker	Marcator scară de măsurare
+	Millimeters	Milimetri
+	Mobile	Mobil
+	Move Tool	Instrument Deplasare
+	Could not use the move tool because the layer is locked.	Nu s-a putut folosi instrumentul Deplasare pentru că stratul este blocat.
+	Could not complete the Free Transform command because the layer is locked.	Nu s-a putut finaliza comanda Transformare liberă pentru că stratul este blocat.
+	Multiply	Multiplicare
+	My Brushes	Pensulele mele
+	Neutrals	Neutri
+	New Workspace	Spațiu de lucru nou
+	Note Tool	Instrument Notă
+	Object Selection Tool	Instrument Selecție obiect
+	Off	Dezactivat
+	Open	Deschidere
+	Orange	Portocaliu
+	Original Ratio	Raport original
+	Out Of Gamut	În afara gamei
+	Outer Bevel	Teșire exterioară
+	Outer Glow	Strălucire exterioară
+	Overlay	Suprapunere
+	Paint Bucket Tool	Instrument Găleată de vopsea
+	Paints from the document's opening state	Pictează pe baza stării de la deschiderea documentului
+	Path Selection Tool	Instrument Selecție traseu
+	Direct Selection Tool	Instrument Selecție directă
+	Add Anchor Point Tool	Instrument Adăugare punct de ancoră
+	Delete Anchor Point Tool	Instrument Ștergere punct de ancoră
+	Click a segment to add an anchor point · {alt}-click an anchor to delete it	Faceți clic pe un segment pentru a adăuga un punct de ancoră · {alt}-clic pe un punct de ancoră pentru a-l șterge
+	Click an anchor point to delete it · {alt}-click a segment to add one	Faceți clic pe un punct de ancoră pentru a-l șterge · {alt}-clic pe un segment pentru a adăuga unul
+	Pattern Overlay	Suprapunere model
+	Pen Pressure	Presiune peniță
+	Pen Tilt	Înclinare peniță
+	Pen Tool	Instrument Pană
+	Convert Point Tool	Instrument Conversie punct
+	Photo	Fotografie
+	PhotoCraft website	Site-ul web PhotoCraft
+	Picas	Pica
+	Pillow Emboss	Relief tip pernă
+	Pixel Replacement	Înlocuire pixeli
+	Pixels	Pixeli
+	Points	Puncte
+	Polygon Tool	Instrument Poligon
+	Polygonal Lasso Tool	Instrument Lasou poligonal
+	Portrait, 4 x 6	Portret, 4 x 6
+	Portrait, 5 x 7	Portret, 5 x 7
+	PostScript (72 points/inch)	PostScript (72 puncte/inch)
+	Postcard	Carte poștală
+	Poster	Poster
+	Pro (Dark)	Pro (întunecat)
+	Pro (Light)	Pro (clar)
+	Pro (Light Gray)	Pro (gri clar)
+	Pro (Medium Gray)	Pro (gri mediu)
+	Protect Texture	Protejare textură
+	Purple	Mov
+	Quick Mask	Mască rapidă
+	Quick Selection Tool	Instrument Selecție rapidă
+	Radial	Radial
+	Rasterize Layer	Rasterizare strat
+	Rasterize Layers	Rasterizare straturi
+	Ratio	Raport
+	Recent	Recent
+	Rectangle Tool	Instrument Rectangul
+	Rectangular Marquee Tool	Instrument Selecție rectangulară
+	Reds	Roșii
+	Reflected	Reflectat
+	Sample: foreground colour	Probă: culoare frontală
+	Sampled Colors	Culori eșantionate
+	Satin	Satin
+	Save Pixel Aspect Ratio	Salvare raport de aspect pixel
+	Scattering	Dispersare
+	Scratch Sizes	Dimensiuni memorie virtuală
+	Select Data Points	Selectare puncte de date
+	Selection	Selecție
+	SemiBold	Semi Bold (semigras)
+	Shadows up to:	Umbre până la:
+	Shape Dynamics	Dinamică formă
+	Sharpen Tool	Instrument Clarificare
+	Show Extras Options	Opțiuni elemente suplimentare
+	Slice Select Tool	Instrument Selecție felie
+	Slice Tool	Instrument Felie
+	Smart Filters	Filtre inteligente
+	Smudge Tool	Instrument Deget
+	Soft	Moale
+	Soften	Înmuiere
+	Source	Sursă
+	Source: set	Sursă: stabilit
+	Sponge Tool	Instrument Burete
+	Spot Healing Brush Tool	Instrument Pensulă corectoare punctuală
+	Spread	Extindere
+	Square, 12 x 12	Pătrat, 12 x 12
+	Square, 5 x 5	Pătrat, 5 x 5
+	Std Dev:	Deviație std.:
+	Studio (Dark)	Studio (întunecat)
+	Studio (Light)	Studio (clar)
+	Stylus Wheel	Rotiță stylus
+	Subtract	Scădere
+	Tabloid	Tabloid
+	Text Replacement	Înlocuire text
+	Thin	Fin
+	Traditional (72.27 points/inch)	Tradițional (72,27 puncte/inch)
+	Transfer	Transfer
+	Triangle Tool	Instrument Triunghi
+	Unsaved changes	Modificări nesalvate
+	Uses the foreground and background colours.	Utilizează culorile frontală și de fundal.
+	Web	Web
+	Web Large	Web (mare)
+	Web Minimum	Web (minim)
+	Web Most Common	Web (cel mai comun)
+	WebP (lossless)	WebP (fără pierderi)
+	Wet Edges	Margini umede
+	Yellows	Galbene
+	Zoom Tool	Instrument Zoom
+	{name} Properties	Proprietăți {name}
+	Revert “{name}” to the last saved version? Your changes will be lost.	Reveniți „{name}” la ultima versiune salvată? Modificările vor fi pierdute.
+	Do you want to save the changes you made to “{name}” before quitting?	Doriți să salvați modificările făcute la „{name}” înainte de a închide programul?
+	Do you want to save the changes you made to “{name}” before closing?	Doriți să salvați modificările făcute la „{name}” înainte de a închide?
+	Doc: {flat}/{layered}	Doc.: {flat}/{layered}
+	Scratch: {size}	Memorie virtuală: {size}
+	Untagged {mode}	Netichetat {mode}
+	Invalid {mode} profile	Profil {mode} nevalid
+	Unnamed {mode} profile	Profil {mode} fără nume
+	{w} px x {h} px ({ppi} ppi)	{w} px × {h} px ({ppi} ppi)
+	{w} {unit} x {h} {unit} ({ppi} ppi)	{w} {unit} × {h} {unit} ({ppi} ppi)
+	Resolution: {dpi} pixels/inch	Rezoluție: {dpi} pixeli/inch
+	Doc: {w} × {h} px	Doc.: {w} × {h} px
+	Frame {current} / {total}	Cadru {current} / {total}
+	Count: {n}	Numărare: {n}
+	BLANK DOCUMENT PRESETS ({n})	PRESETĂRI DOCUMENT GOL ({n})
+	Constraints ({n})	Constrângeri ({n})
+	Align {what}	Aliniere {what}
+@plural	{n} Layer|{n} Layers	{n} strat|{n} straturi|{n} de straturi
+@plural	{n} layer|{n} layers	{n} strat|{n} straturi|{n} de straturi
+@plural	Group · {n} layer|Group · {n} layers	Grup · {n} strat|Grup · {n} straturi|Grup · {n} de straturi
+	Additional plugins folder	Folder adițional de plugin-uri
+	Adobe	Adobe
+	Adobe rgb	Adobe RGB
+	Allow agent control	Permitere control de la agenți
+	Allow scripts to connect	Permitere conectare scripturi
+	Always	Întotdeauna
+	Always create smart objects when placing	Creare întotdeauna de obiecte inteligente la plasare
+	Animated zoom	Zoom animat
+	Apply auto tone	Aplicare ton automat
+	Ask	Întrebare
+	Ask before saving layered tiff	Întrebare înainte de a salva TIFF cu straturi
+	Auto collapse icon panels	Restrângere automată panouri de iconițe
+	Auto show hidden panels	Afișare automată panouri ascunse
+	Auto show home screen	Afișare automată ecran de pornire
+	Autosave	Salvare automată
+	Autosave minutes	Minute între salvări automate
+	Beep when done	Semnal sonor la finalizare
+	Bicubic automatic	Bicubică automată
+	Bicubic sharper	Bicubică mai clară
+	Bicubic smoother	Bicubică mai netedă
+	Bit depth	Profunzime biți
+	Brush preview color	Culoare previzualizare pensulă
+	Cache levels	Niveluri cache
+	Cache tile size	Dimensiune mozaic cache
+	RAW Defaults	Valori implicite RAW
+	Canvas border	Margine pânză
+	Show canvas dots	Afișare puncte pânză
+	Clip thumbnails to layer bounds	Decupare miniaturi la limitele stratului
+	Clip Thumbnails to Layer Bounds	Decupare miniaturi la limitele stratului
+	Canvas color	Culoare pânză
+	Canvas custom color	Culoare personalizată pânză
+	Color picker	Selector de culoare
+	Color space	Spațiu de culoare
+	Column width	Lățime coloană
+	Concise	Concis
+	Control port	Port de control
+	Convert to srgb	Conversie la sRGB
+	Cursors	Cursoare
+	Custom dark	Personalizat (întunecat)
+	Custom light	Personalizat (clar)
+	Dark	Întunecat
+	Dark gray	Gri întunecat
+	Dashed lines	Linii întrerupte
+	Destination	Destinație
+	Detailed	Detaliat
+	Disks	Discuri
+	Display p3	Display P3
+	Double click layer mask launches select and mask	Dublu clic pe masca de strat lansează Selecție și mască
+	Drop shadow	Umbră paralelă
+	Dynamic color sliders	Glisoare de culoare dinamice
+	East asian	Asia de Est
+	Effect cache mb	Cache efecte (MB)
+	Enable flick panning	Activare derulare prin gest
+	Enable floating document window docking	Acoplare ferestre de document flotante
+	Enable narrow options bar	Bară de opțiuni îngustă
+	Enabled	Activat
+	Enhanced Controls	Controale îmbunătățite
+	Export clipboard	Export clipboard
+	Extra large	Extra mare
+	File Handling	Gestionare fișiere
+	File path	Cale fișier
+	Fill new type layers with placeholder	Umplere straturi de text noi cu text substituent
+	Font preview	Previzualizare font
+	Full size tip	Vârf la dimensiune reală
+	Gamut warning color	Culoare avertisment gamă
+	Gamut warning opacity	Opacitate avertisment gamă
+	Enable Generator	Activare Generator
+	Gif	GIF
+	Glossy	Lucios
+	Grid color	Culoare grilă
+	Grid colors	Culori grilă
+	Grid size	Dimensiune grilă
+	Grid style	Stil grilă
+	Grid unit	Unitate grilă
+	Gridline every	Linie de grilă la fiecare
+	Guide color	Culoare ghidaje
+	Guide style	Stil ghidaje
+	Guides, Grid & Slices	Ghidaje, grilă și felii
+	Gutter	Interstițiu
+	History Log	Jurnal de istoric
+	History states	Stări de istoric
+	Ignore exif profile tag	Ignorare etichetă profil EXIF
+	Image interpolation	Interpolare imagine
+	Image previews	Previzualizări imagine
+	Integrations	Integrări
+	Interface	Interfață
+	Jpeg quality	Calitate JPEG
+	Jpg	JPG
+	Language	Limbă
+	Large tabs	File mari
+	Legacy compositing	Compoziție veche
+	Light gray	Gri clar
+	Line	Linie
+	Lines	Linii
+	Lossless	Fără pierderi
+	Lowercase extension	Extensie cu minuscule
+	Maximize psd compatibility	Maximizare compatibilitate PSD
+	Medium gray	Gri mediu
+	Memory usage mb	Utilizare memorie (MB)
+	Low resolution previews	Previzualizări cu rezoluție scăzută
+	Missing glyph protection	Protecție glife lipsă
+	Modern	Modern
+	Nearest neighbor	Vecinul cel mai apropiat
+	Never	Niciodată
+	Normal tip	Vârf normal
+	Open as smart object	Deschidere ca obiect inteligent
+	Open documents as tabs	Deschidere documente ca file
+	Overscroll	Suprascrolare
+	Performance	Performanță
+	Png	PNG
+	Point size	Dimensiune puncte
+	Precise	Precis
+	Preserve details	Conservare detalii
+	Print resolution	Rezoluție imprimare
+	Pro	Pro
+	Pro light	Pro (clar)
+	Pro light gray	Pro (gri clar)
+	Pro medium	Pro (mediu)
+	Pro photo	ProPhoto
+	Quick export format	Format export rapid
+	Quick export location	Locație export rapid
+	Recent file count	Număr fișiere recente
+	LUT folder	Folder LUT
+	Recent files	Fișiere recente
+	Recent fonts	Fonturi recente
+	Recover on launch	Recuperare la pornire
+	Remember workspace changes	Reținere modificări spațiu de lucru
+	Resize image during place	Redimensionare imagine la plasare
+	Rotate view with trackpad	Rotire vizualizare cu trackpad
+	Same folder	Același folder
+	Save in background	Salvare în fundal
+	Scratch Disks	Discuri temporare
+	Screen	Ecran
+	Screen resolution	Rezoluție ecran
+	Scrubby slider acceleration	Accelerare glisor
+	Sessions only	Numai sesiuni
+	Sharpen for	Clarificare pentru
+	Show channels in color	Afișare canale în culoare
+	Show crosshair in brush tip	Afișare reticulă în vârful pensulei
+	Show extension panels	Afișare panouri de extensie
+	Show font names in english	Afișare nume fonturi în engleză
+	Show menu colors	Afișare culori meniu
+	Show only crosshair while painting	Afișare numai reticulă la pictare
+	Show slice numbers	Afișare numere felie
+	Show tooltips	Afișare indicii
+	Enable animations	Activare animații
+	Show highlight on rollover	Afișare evidențiere la survolare
+	Show bounding box when dragging layer	Afișare chenar de delimitare la tragerea stratului
+	System title bar	Bară de titlu a sistemului
+	Show transformation values	Afișare valori transformare
+	Slice color	Culoare felie
+	Smart guide color	Culoare ghidaje inteligente
+	Smart quotes	Ghilimele tipografice
+	Snap vector tools and transforms to pixel grid	Fixare instrumente vectoriale și transformări la grila de pixeli
+	Srgb	sRGB
+	Standard	Standard
+	Studio	Studio
+	Studio light	Studio (clar)
+	Adwaita	Adwaita
+	Adwaita dark	Adwaita (întunecat)
+	Subdivisions	Subdiviziuni
+	System	Sistem
+	Text engine	Motor de text
+	Text file	Fișier text
+	Tiny	Minuscul
+	Touch gestures	Gesturi tactile
+	Transparency & Gamut	Transparență și gamă
+	Type units	Unități text
+	UI font size	Dimensiune font interfață
+	UI scale	Scalare interfață
+	Units & Rulers	Unități și rigle
+	Use additional plugins folder	Utilizare folder adițional de plugin-uri
+	Use esc to commit	Utilizare Esc pentru confirmare
+	Use gpu	Utilizare GPU
+	Use legacy free transform	Utilizare transformare liberă veche
+	Use shift key for tool switch	Utilizare tastă Shift pentru comutare instrument
+	Vary round brush hardness on hud	Variere duritate pensulă rotundă în HUD
+	Webp	WebP
+	World ready	Universal
+	Zoom clicked point to center	Centrare punct apăsat la zoom
+	Zoom resizes windows	Zoom redimensionează ferestrele
+	Zoom with scroll wheel	Zoom cu rotița de derulare
+	Zoom with trackpad pinch	Zoom cu ciupire pe trackpad
+	Pass Through	Transmitere directă
+	Dissolve	Dizolvare
+	Darker Color	Culoare mai întunecată
+	Linear Dodge (Add)	Sobreexpunere liniară (adunare)
+	Lighter Color	Culoare mai clară
+	Soft Light	Lumină slabă
+	Hard Light	Lumină puternică
+	Vivid Light	Lumină vie
+	Linear Light	Lumină liniară
+	Pin Light	Lumină punctuală
+	Exclusion	Exclundere
+	Divide	Împărțire
+	Luminosity	Luminozitate
+@plural	{n} sample|{n} samples	{n} probă|{n} probe|{n} de probe
+	{added}, {removed} subtracted	{added}, {removed} scăzute
+	Adjustment Preview	Previzualizare ajustare
+	Airbrush: keeps depositing paint while the pointer rests.	Aerograf: continuă să depună vopsea cât timp cursorul rămâne nemișcat.
+	Angle:	Unghi:
+	Blend If	Fuziune dacă
+	Close Tab Group	Închidere grup de file
+	Collapse	Restrângere
+	Collapse All Groups	Restrângere toate grupurile
+	Collapse Panel Group	Restrângere grup de panouri
+	Collapse group  ({key}-click: all groups)	Restrângere grup  ({key}-clic: toate grupurile)
+	Create new brush from the current settings	Creare pensulă nouă din setările curente
+	Create new brush from these settings	Creare pensulă nouă din aceste setări
+	Update the current brush with these settings	Actualizare pensulă curentă cu aceste setări
+	Delete brush	Ștergere pensulă
+	Drag the arrow to set the angle, the dots to set the roundness	Trageți săgeata pentru a fixa unghiul și punctele pentru a fixa rotunjimea
+	Expand	Expandare
+	Expand Panel Group	Expandare grup de panouri
+	Expand group  ({key}-click: all groups)	Expandare grup  ({key}-clic: toate grupurile)
+	Fade steps	Pași de estompare
+	Hide the layer's effects  ({key}-click: all layers)	Ascundere efectele stratului  ({key}-clic: toate straturile)
+	Import Brushes… (.abr or image)	Import pensule… (.abr sau imagine)
+	Import Brush from Image…	Import pensulă din imagine…
+	Move Group Down	Deplasare grup jos
+	Move Group Up	Deplasare grup sus
+	Reset the brush to the defaults	Resetare pensulă la valorile implicite
+	Restore original size	Restaurare dimensiune originală
+	Roundness:	Rotunjime:
+	Search Brushes	Căutare pensule
+	Show the layer's effects  ({key}-click: all layers)	Afișare efectele stratului  ({key}-clic: toate straturile)
+	Brush picker	Selector de pensule
+	Erase	Ștergere
+	Right click with painting tools	Clic dreapta cu instrumente de pictură
+	System Info…	Informații sistem…
+	System Info	Informații sistem
+	More panels	Mai multe panouri
+	More documents	Mai multe documente
+	These settings aren't available in PhotoCraft yet.	Aceste setări nu sunt încă disponibile în PhotoCraft.
+	Graphics	Grafică
+	Reset GPU Backend	Resetare backend GPU
+	Applies at next launch.	Se aplică la următoarea pornire.
+	Click to sample the foreground colour  ·  {key}-click for background	Clic pentru a eșantiona culoarea frontală  ·  {key}-clic pentru fundal
+	{key}-click to set the source	{key}-clic pentru a stabili sursa
+	{key} to subtract	{key} pentru a scădea
+	Clone source {n} ({key}-click with Clone Stamp to set)	Sursă de clonare {n} ({key}-clic cu Ștampila de clonare pentru a stabili)
+	Source: not set ({key}-click with Clone Stamp)	Sursă: nestabilit ({key}-clic cu Ștampila de clonare)
+	Pixel Layer	Strat de pixeli
+	Type Layer	Strat de text
+	Shape Layer	Strat de formă
+	Group Layer	Strat de grup
+	Fill Layer	Strat de umplere
+	Smart Object Layer	Strat de obiect inteligent
+	Create Warped Text	Creare text deformat
+	Rasterize Smart Object	Rasterizare obiect inteligent
+	Rasterize Fill Content	Rasterizare conținut de umplere
+	Rasterize Layer Style	Rasterizare stil de strat
+	Unlock: picking a preset replaces these settings	Deblocare: alegerea unei presetări înlocuiește aceste setări
+	Lock: keep these settings when picking another preset	Blocare: păstrare aceste setări la alegerea altei presetări
+	Diameter:	Diametru:
+	Hardness:	Duritate:
+	No brush presets	Nicio presetare de pensulă
+	Toggle the Brush Settings panel  (F5)	Comutare panou Setări pensulă  (F5)
+	Create new brush preset from the current settings	Creare presetare de pensulă nouă din setările curente
+	Brush Settings…  (F5): every option of this brush	Setări pensulă…  (F5): toate opțiunile acestei pensule
+	Rename Brush…	Redenumire pensulă…
+	Delete Brush	Ștergere pensulă
+	New Brush Preset…	Presetare de pensulă nouă…
+	Capture Brush Size in Preset	Capturare dimensiune pensulă în presetare
+	Include Tool Settings	Includere setări instrument
+	Include Color	Includere culoare
+	Enter a name for the brush preset	Introduceți un nume pentru presetarea de pensulă
+	A brush preset with this name already exists	Există deja o presetare de pensulă cu acest nume
+	Brush Preset Options	Opțiuni presetare pensulă
+	Group name	Nume grup
+	Brush name	Nume pensulă
+	Brush Name	Nume pensulă
+	Brush Stroke	Tușă pensulă
+	Brush Tip	Vârf pensulă
+	Off: the speed of the pointer sets the spacing	Dezactivat: viteza cursorului stabilește spațierea
+	Tilt Scale	Scală înclinare
+	Brush Projection	Proiecție pensulă
+	Apply the pen's tilt and rotation to the tip shape	Aplicare înclinarea și rotația peniței la forma vârfului
+	Mixer Brush	Pensulă de mixare
+	Mixer Brush Tool	Instrument Pensulă de mixare
+	Color Replacement Tool	Instrument Înlocuire culoare
+	Wet	Umed
+	Current Brush Load	Încărcare curentă a pensulei
+	Load Brush	Încărcare pensulă
+	Clean Brush	Curățare pensulă
+	Load the brush after each stroke	Încărcare pensula după fiecare tușă
+	Clean the brush after each stroke	Curățare pensula după fiecare tușă
+	Mix	Mixare
+	Wetness Jitter	Variație umiditate
+	Mix Jitter	Variație mixare
+	Show the layer mask as an overlay	Afișare mască de strat ca suprapunere
+	Toggle visibility	Comutare vizibilitate
+	Unlink the mask from the layer	Deconectare mască de strat
+	Link the mask to the layer	Conectare mască la strat
+	Gradient	Degrade
+	Gradient Options	Opțiuni degrade
+	Align with layer	Aliniere cu stratul
+	Reset Alignment	Resetare aliniere
+	Centre the gradient (offset 0, 0)	Centrare degrade (decalaj 0, 0)
+	Gradient Editor	Editor de degrade
+	Gradient picker	Selector de degrade
+	Save As Preset	Salvare ca presetare
+	The gradient the Gradient tool paints with	Degradeul cu care pictează instrumentul Degrade
+	Adds the current gradient to the Gradients panel	Adaugă degradeul curent la panoul Degradeuri
+	Gradient stops	Marcaje de degrade
+	Select a type layer to edit its character and paragraph settings.	Selectați un strat de text pentru a-i edita setările de caracter și paragraf.
+	Text color	Culoare text
+	Type Options	Opțiuni text
+	Anti-aliasing method	Metodă de anticrenelare
+	Horizontal type	Text orizontal
+	Vertical type	Text vertical
+	Fill path with foreground color	Umplere traseu cu culoarea frontală
+	Stroke path with brush	Trasare contur al traseului cu pensula
+	Load path as a selection	Încărcare traseu ca selecție
+	Make work path from selection	Creare traseu de lucru din selecție
+	Add vector mask	Adăugare mască vectorială
+	Create new path	Creare traseu nou
+	Delete path	Ștergere traseu
+	Delete vector mask	Ștergere mască vectorială
+	CPU (no GPU acceleration)	CPU (fără accelerare GPU)
+	DirectX 12	DirectX 12
+	GPU backend	Backend GPU
+	Linux display server	Server de afișare Linux
+	X11	X11
+	Metal	Metal
+	OpenGL	OpenGL
+	Use tablet pressure	Utilizare presiune tabletă
+	Vulkan	Vulkan
+	Alt-click to define a source point to clone from	Alt+clic pentru a defini un punct sursă din care să clonați
+	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Niciun traseu din care să se creeze o selecție: desenați unul cu instrumentul Pană sau selectați unul în panoul Trasee.
+	Cancel opening	Anulare deschidere
+	Cancelled opening {name}	S-a anulat deschiderea {name}
+	Damaged Photoshop document	Document Photoshop deteriorat
+	The document “{name}” may be damaged.	Documentul „{name}” poate fi deteriorat.
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Unele straturi, pixeli sau măști nu au putut fi citite. Doriți să continuați deschiderea lui?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	Dacă continuați, salvarea peste original poate elimina permanent datele ilizibile. Salvați o copie pentru a păstra originalul.
+	The document “{name}” does not have an embedded {mode} profile.	Documentul „{name}” nu are un profil {mode} încorporat.
+	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Documentul „{name}” are un profil de culoare încorporat care nu corespunde cu spațiul de lucru {mode} curent.
+	Working: {working}	Spațiu de lucru: {working}
+	Developing {name}	Se procesează {name}
+	Cancelled {label}	S-a anulat {label}
+	Esc to cancel	Esc pentru a anula
+	Opened {name}	S-a deschis {name}
+	Opening {name}	Se deschide {name}
+	Saved {name}	S-a salvat {name}
+	Saving {name}	Se salvează {name}
+	Saving {percent}	Se salvează {percent}
+	A save to {name} is still running; try again when it finishes	O salvare a {name} este încă în curs; încercați din nou când se termină
+	{label} is writing the file and can no longer be cancelled	{label} scrie fișierul și nu mai poate fi anulat
+	Opening {name}…	Se deschide {name}…
+	Opening…	Se deschide…
+	Reading…	Se citește…
+	Working…	Se procesează…
+	3 x 3	3 × 3
+	4 x 4	4 × 4
+	5 x 5	5 × 5
+	Grid:	Grilă:
+	Color Range	Gamă de culori
+	Adaptive Wide Angle	Unghi larg adaptabil
+	Chalk & Charcoal	Cretă și cărbune
+	Charcoal	Cărbune
+	Chrome	Crom
+	Conté Crayon	Creion Conté
+	Graphic Pen	Peniță grafică
+	Halftone Pattern	Model de semitonuri
+	Note Paper	Hârtie de notițe
+	Photocopy	Fotocopie
+	Plaster	Ipsos
+	Reticulation	Reticulare
+	Stamp	Ștampilă
+	Torn Edges	Margini rupte
+	Water Paper	Hârtie umedă
+	Move	Deplasare
+	Pencil	Creion
+	Clone Stamp	Ștampilă de clonare
+	Dodge	Luminare
+	Burn	Întunecare
+	Quick Selection	Selecție rapidă
+	History Brush	Pensulă istoric
+	Color Replacement	Înlocuire culoare
+	New Group	Grup nou
+	Layer Comp	Compoziție de strat
+	Alpha	Alfa
+	Make	Producător
+	Model	Model
+	F	Diafragmă f
+	Artist	Artist
+	Spot Color	Culoare plană
+	Roman	Normal
+	Bold Italic	Bold cursiv
+	Justification	Justificare
+	Symbols	Simboluri
+	Punctuation	Punctuație
+	Make Work Path	Creare traseu de lucru
+	Make Selection	Creare selecție
+	Fill Path	Umplere traseu
+	Stroke Path	Trasare contur al traseului
+	Delete Path	Ștergere traseu
+	W	L
+	H	Î
+	Ruler	Riglă
+	New Layer Comp	Compoziție de strat nouă
+	Duplicate Layer Comp	Duplicare compoziție de strat
+	Rename Layer Comp	Redenumire compoziție de strat
+	Apply Layer Comp	Aplicare compoziție de strat
+	Update Layer Comp	Actualizare compoziție de strat
+	Method	Metodă
+	Author	Autor
+	Software	Software
+	Pencil Tool	Instrument Creion
+	Pixel	Pixel
+	Adjustment	Ajustare
+	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Trageți (lasou) sau faceți clic pe puncte (poligonal) · {add} adăugare · {sub} scădere
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Trageți un cadru de decupare · trageți în interior pentru a deplasa · marginile redimensionează ({ratio} raport, {centre} centru) · Spațiu deplasează în timpul desenării · săgețile ajustează fin · X schimbă orientarea · {commit} confirmă · Esc anulează
+	{mode} Color · {bits} bit	Culoare {mode} · {bits} biți
+	Scrubby Zoom	Zoom prin tragere
+	Auto Erase	Ștergere automată
+	Color Adaptation	Adaptare culoare
+	Preserve Transparency	Conservare transparență
+	shortcut	comandă rapidă
+	Saved	Salvat
+	Arc	Arc
+	Arch	Arc inferior
+	Bulge	Umflătură
+	Shell Lower	Scoică inferioară
+	Shell Upper	Scoică superioară
+	Flag	Steag
+	Fish	Pește
+	Wave	Val
+	Rise	Ascensiune
+	Inflate	Inflare
+	Twist	Torsiune
+	Squeeze	Strângere
+	Mask	Mască
+	Channel	Canal
+	Rectangle	Rectangul
+	New Channel	Canal nou
+	Save Selection	Salvare selecție
+	Load Selection	Încărcare selecție
+@id	edit.purge.undo	Istoric de anulări
+	Rendering Mode	Mod de randare
+	Automatic (recommended)	Automat (recomandat)
+	CPU / Compatibility	CPU / Compatibilitate
+	Automatic uses GPU acceleration when available and falls back to CPU rendering on errors.	Automat utilizează accelerarea GPU atunci când este disponibilă și trece la randare pe CPU în caz de erori.
+	Switched to CPU rendering	S-a comutat la randare pe CPU
+	GPU acceleration could not continue. Your documents are unchanged.	Accelerarea GPU nu a putut continua. Documentele dvs. sunt neschimbate.
+	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft compune imaginile pe CPU. Fereastra poate utiliza totuși adaptorul grafic.
+	Retry GPU requires a restart. Save your work first.	Reîncercarea GPU necesită o repornire. Salvați mai întâi munca dvs.
+	Retry GPU tries the graphics processor again now.	Reîncercarea GPU încearcă din nou procesorul grafic acum.
+	GPU acceleration resumed.	Accelerarea GPU a fost reluată.
+	Keep Using CPU	Continuare utilizare CPU
+	Retry GPU	Reîncercare GPU
+	Advanced	Avansat
+	GPU Backend	Backend GPU
+	Details	Detalii
+	Rendering mode	Mod de randare
+	Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)	Lasou de îngheț: trageți pentru a îngheța o zonă, Alt+tragere pentru a o dezgheța (L)
+	Shadow Clipping Warning (U)	Avertisment tăiere umbre (U)
+	Highlight Clipping Warning (O)	Avertisment tăiere lumini (O)
+	Show Lab Color Readouts	Afișare valori culoare Lab
+	Show Vectorscope	Afișare vectoroscop
+	Show Red at 3 o'clock	Afișare roșu la ora 3
+	Show Skin Tone Indicator	Afișare indicator ton piele
+	Tone Histogram	Histogramă tonală
+	Show Selected Region	Afișare regiune selectată
+cameraRaw	Light	Lumină
+	RAW Develop Filter ({layer})	Filtru Developare RAW ({layer})
+	RAW Develop ({name})	Developare RAW ({name})
+cameraRaw	Lights	Luminile
+cameraRaw	Darks	Umbrele
+cameraRaw	Red	Roșii
+cameraRaw	Orange	Portocalii
+cameraRaw	Yellow	Galbeni
+cameraRaw	Green	Verzi
+cameraRaw	Aqua	Aguamarine
+cameraRaw	Blue	Albaștri
+cameraRaw	Purple	Violeți
+cameraRaw	Magenta	Magenta
+cameraRaw	Blending	Fuziune
+cameraRaw	Tint	Tentă
+cameraRaw	Temperature	Temperatură
+cameraRaw	Amount	Cantitate
+	Patch Tool	Instrument Plasture
+	Patch:	Plasture:
+	Lasso around an area, then drag the selection	Încercuiți o zonă cu lasoul, apoi trageți selecția
+	Transform On Drop	Transformare la plasare
+	Scale or rotate the moved area, then press {key}	Scalați sau rotiți zona deplasată, apoi apăsați {key}
+	Now drag the selection onto another area	Acum trageți selecția peste o altă zonă
+	Edit Type	Editare text
+	New Style…	Stil nou…
+	Style {name} saved	Stilul {name} a fost salvat
+	Create new style (from the selected type)	Creare stil nou (din textul selectat)
+	Create new style from the selected layer	Creare stil nou din stratul selectat
+	Make Default	Stabilire ca implicit
+	Reset to Default	Resetare la valoarea implicită
+	Full-resolution preview unavailable	Previzualizare la rezoluție completă indisponibilă
+	No patterns	Niciun model
+	Enable {name}	Activare {name}
+	Hold Alt while drawing for straight segments	Țineți Alt în timp ce desenați pentru segmente drepte
+	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Trageți sau faceți clic pe punctele poligonului · țineți Alt în timpul lasoului pentru segmente drepte · {add} adăugare · {sub} înainte de desenare scade
+	Extend	Extindere
+	Structure:	Structură:
+	Content-Aware Move Tool	Instrument Deplasare cu detecție de conținut
+	TIFF Options	Opțiuni TIFF
+	Targa Options	Opțiuni Targa
+	JPEG Options	Opțiuni JPEG
+	Image Options	Opțiuni imagine
+	Format Options	Opțiuni format
+	Baseline ("Standard")	Linie de bază („Standard”)
+	Baseline Optimized	Linie de bază optimizată
+	24 bits/pixel	24 biți/pixel
+	32 bits/pixel	32 biți/pixel
+	Including layers will increase file size.	Includerea straturilor va crește dimensiunea fișierului.
+	Discard Layers and Save a Copy	Eliminare straturi și salvare copie
+	Don't show again	Nu afișa din nou
+	Save failed: {error}	Salvare nereușită: {error}
+	Save cancelled	Salvare anulată
+	Magnetic Lasso Tool	Instrument Lasou magnetic
+	Frequency	Frecvență
+	Use tablet pressure to change pen width	Utilizare presiune tabletă pentru a modifica lățimea peniței
+	About	Despre
+	Contributors	Contribuitori
+	Models	Modele
+	Sort	Sortare
+	Username	Nume de utilizator
+	Display name	Nume afișat
+	Real name	Nume real
+	Reverse the order	Inversare ordine
+	Grab bag	Listă liberă
+	Table	Tabel
+	Name (A–Z)	Nume (A–Z)
+	Merged PRs	PR-uri fuzionate
+	Commits	Commit-uri
+	Lines added	Linii adăugate
+	Lines deleted	Linii șterse
+	Line delta	Diferență linii
+	Binary assets added	Fișiere binare adăugate
+	Binary assets removed	Fișiere binare eliminate
+	First commit	Primul commit
+	First	Primul
+	Last commit	Ultimul commit
+	Last	Ultimul
+	Contributors: {contributors} · Commits: {commits}	Contribuitori: {contributors} · Commit-uri: {commits}
+	No contributor data was built into this copy.	Această copie nu include date despre contribuitori.
+	No model credits were built into this copy.	Această copie nu include credite de modele.
+	Company	Companie
+	Version	Versiune
+	% of all commits	% din toate commit-urile
+	Lines +/−	Linii +/−
+	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commit-uri, +{added} / −{deleted} linii (Δ {delta}), +{binAdded} / −{binDeleted} fișiere binare, {first} – {last}
+	Create new swatch	Creare mostră nouă
+	New Swatch…	Mostră nouă…
+	New Swatch Group…	Grup de mostre nou…
+	Import Swatches…	Import mostre…
+	Replace Swatches…	Înlocuire mostre…
+	Export Swatches…	Export mostre…
+	Export Swatches for Exchange…	Export mostre pentru schimb…
+	Reset Swatches	Resetare mostre
+	Add to Swatches	Adăugare la mostre
+	Blend If:	Fuzionare dacă:
+	Current Layer:	Strat curent:
+	Channels:	Canale:
+	Knockout	Extracție
+	Apply At Canvas Bounds	Aplicare la limitele pânzei
+	Color Picker (Text Color)	Selector de culoare (culoare text)
+	Color Picker ({name})	Selector de culoare ({name})
+	Color Picker (Fill Color)	Selector de culoare (culoare umplere)
+	Fill color	Culoare umplere
+	Color Picker (Stroke Color)	Selector de culoare (culoare trasou)
+	Stroke color	Culoare trasou
+	Pick screen color	Alegere culoare de pe ecran
+	Sample a pixel anywhere on the screen	Eșantionați un pixel oriunde pe ecran
+	Click to pick · Esc to cancel	Clic pentru a alege · Esc pentru a anula
+	Pick a screen pixel or press Esc to cancel	Alegeți un pixel de pe ecran sau apăsați Esc pentru a anula
+	Scroll to zoom	Derulați pentru a mări
+	Drag to pan · Scroll to zoom · Double-click to fit	Trageți pentru a deplasa · Derulați pentru a mări · Dublu clic pentru a încadra
+	Show/Hide All Panels	Afișare/ascundere toate panourile
+	Show/Hide Panels	Afișare/ascundere panouri
+	Could not open	Nu s-a putut deschide
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: calea nu este Unicode valid; redenumiți fișierul și deschideți-l din nou.
+	Contents:	Conținut:
+	Custom Pattern:	Model personalizat:
+	Foreground Color	Culoare frontală
+	Color…	Culoare…
+	50% Gray	Gri 50%
+	{size} (was {old})	{size} (anterior {old})
+	Cone	Con
+	Cone (Inverted)	Con (inversat)
+	Domed	Bombat
+	Domed (Inverted)	Bombat (inversat)
+	Diagonal (Descending)	Diagonală (descrescătoare)
+	Contour Editor	Editor contur
+	Anti-aliased	Anticrenelat
+	Corner	Colț
+	Gloss Contour	Contur luciu
+	Contour	Contur
+	Cone - Inverted	Con - inversat
+	Cove - Deep	Golf - adânc
+	Cove - Shallow	Golf - puțin adânc
+	Half Round	Semirotund
+	Ring	Inel
+	Ring - Double	Inel - dublu
+	Rolling Slope - Descending	Pantă ondulată - descrescătoare
+	Rounded Steps	Trepte rotunjite
+	Sawtooth 1	Dinte de fierăstrău 1
+	Red Eye Tool	Instrument Ochi roșii
+	Red Eye	Ochi roșii
+	Pupil Size	Dimensiune pupilă
+	Darken Amount	Cantitate întunecare
+	Click a red pupil to neutralize it	Faceți clic pe o pupilă roșie pentru a o neutraliza
+	open source	open source
+	…and {n} more	…și încă {n}
+	Eyedroppers:	Pipete:
+	Set Black Point	Stabilire punct negru
+	Set Neutral Gray Point	Stabilire punct gri neutru
+	Set White Point	Stabilire punct alb
+	Unavailable in this color mode	Indisponibil în acest mod de culoare
+	Selection Preview:	Previzualizare selecție:
+	Black Matte	Mat negru
+	White Matte	Mat alb
+	Seafoam	Verde spumă de mare
+	Indigo	Indigo
+	Fuchsia	Fucsia
+	Violet	Violet
+	Reset	Resetare
+	Large document: redrawing on the CPU	Document mare: redesenare pe CPU
+	Redrawing	Redesenare
+	This redraw took {seconds} s on the CPU.	Această redesenare a durat {seconds} s pe CPU.
+	Edits that change the whole document, such as a layer's blend mode, opacity or visibility, redraw all of it.	Editările care schimbă tot documentul, precum modul de amestecare, opacitatea sau vizibilitatea unui strat, îl redesenează integral.
+	The GPU compositor wasn't used: {reason}	Compozitorul GPU nu a fost folosit: {reason}
+fontWeight	Thin	Ultrafină
+fontWeight	ExtraLight	Extrafină
+fontWeight	Light	Fină
+fontWeight	Regular	Normal
+fontWeight	Medium	Medie
+fontWeight	SemiBold	Semi Bold
+fontWeight	Bold	Bold
+fontWeight	ExtraBold	Extra Bold
+fontWeight	Black	Ultra Bold
+fontWeight	Italic	Cursivă
+	Pattern Stamp Tool	Instrument Ștampilă de model
+	Pattern Stamp	Ștampilă de model
+	Impressionist	Impresionist
+	Rotate View	Rotire vizualizare
+	Rotate View Tool	Instrument Rotire vizualizare
+	Reset View	Resetare vizualizare
+	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Trageți în jurul centrului pentru a roti vizualizarea  ·  Shift fixează la 15°
+	Dual Axis	Dublă axă
+	Diagonal	Diagonal
+	Transform Symmetry	Transformare simetrie
+	Point Sample	Eșantion punctual
+	3 by 3 Average	Medie 3 × 3
+	5 by 5 Average	Medie 5 × 5
+	11 by 11 Average	Medie 11 × 11
+	31 by 31 Average	Medie 31 × 31
+	51 by 51 Average	Medie 51 × 51
+	101 by 101 Average	Medie 101 × 101
+	Sample Size:	Dimensiune eșantion:
+	All Layers No Adjustments	Toate straturile fără ajustări
+	Current & Below No Adjustments	Curent și inferioare fără ajustări
+	Show Sampling Ring	Afișare inel de eșantionare
+	Out of gamut for printing: click for the nearest printable colour	În afara gamei de imprimare: faceți clic pentru cea mai apropiată culoare imprimabilă
+	Not a web colour: click for the nearest web colour	Nu este o culoare web: faceți clic pentru cea mai apropiată culoare web
+	Color to Alpha…	Culoare la alfa…
+	Transparency Threshold	Prag transparență
+	Opacity Threshold	Prag opacitate
+	PhotoCraft — Screen Color Picker	PhotoCraft — Selector de culoare de pe ecran
+	Rasterize svg groups deeper than	Rasterizare grupuri SVG mai profunde decât
+	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 dezactivează acest prag; grupurile SVG imbricate la mai mult de 100 de niveluri sunt întotdeauna rasterizate.
+	Rule of Thirds	Regula terților
+	Triangle	Triunghi
+	Golden Ratio	Raport auriu
+	Golden Spiral	Spirală aurie
+	Auto Show Overlay	Afișare automată suprapunere
+	Always Show Overlay	Afișare întotdeauna suprapunere
+	Never Show Overlay	Nu afișa niciodată suprapunerea
+	Cycle Overlay	Comutare suprapunere
+	Cycle Orientation	Comutare orientare
+	Set the overlay options for the Crop tool	Definire opțiuni de suprapunere pentru instrumentul Decupare
+	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	Alt+clic a fost primit de desktop, care deplasează ferestrele cu Alt+tragere. Setați tasta de deplasare a ferestrelor la Super, sau blocați Alt în Fereastră › Taste modificatoare.
+	Color Picker (Layer Style Color)	Selector de culoare (culoare stil de strat)
+	Auto Hide Notifications	Ascundere automată notificări
+	Notification Duration (seconds)	Durată notificare (secunde)
+	Bundle Arrow-Key Nudges	Grupare ajustări fine cu săgețile
+	Nudge Bundle Pause (ms)	Pauză grupare ajustări fine (ms)
+	Appearance Mode	Mod aspect
+	Dark Theme	Temă întunecată
+	Light Theme	Temă clară
+	Pro Medium	Pro (mediu)
+	Studio Light	Studio (clar)
+	Next Appearance Mode	Modul următor de aspect
+	Sync with system	Sincronizare cu sistemul
+	Active	Activ
+	Color Picker (Solid Color)	Selector de culoare (culoare solidă)
+	Straighten the image by drawing a line on it	Îndreptare imagine desenând o linie pe ea
+	Set additional Crop options	Definire opțiuni adiționale de decupare
+	Show Cropped Area	Afișare zonă decupată
+	Enable Crop Shield	Activare ecran de decupare
+	Match Canvas	Potrivire cu pânza
+	Auto Adjust Opacity	Ajustare automată opacitate
+	Crop Shield color	Culoare ecran de decupare
+	Color Picker (Crop Shield Color)	Selector de culoare (culoare ecran de decupare)
+	From Center	Din centru
+	Link radii	Conectare raze
+	Star Ratio:	Raport stea:
+	Create Rectangle	Creare rectangul
+	Create Ellipse	Creare elipsă
+	Create Triangle	Creare triunghi
+	Create Polygon	Creare poligon
+	Pressure curve	Curbă de presiune
+	Click to add a point, right-click to remove	Faceți clic pentru a adăuga un punct; clic dreapta pentru a-l elimina
+	Some brush presets could not be loaded	Unele presetări de pensulă nu au putut fi încărcate
+	Retry saving presets	Reîncercare salvare presetări
+	Brush preset changes are not saved: {error}	Modificările presetărilor de pensulă nu sunt salvate: {error}
+	Keep this tab open to retain your brushes.	Păstrați această filă deschisă pentru a vă conserva pensulele.
+	Browser storage is unavailable; brushes are session-only. Keep this tab open to retain them.	Stocarea browserului nu este disponibilă; pensulele durează numai pentru această sesiune. Păstrați această filă deschisă pentru a le conserva.
+	Saving brush presets… Keep this tab open until saving finishes.	Se salvează presetările de pensulă… Păstrați această filă deschisă până la finalizare.
+	Reflect	Reflectare
+	Glow	Strălucire
+	Negation	Negație
+	XOR	XOR
+	Color Burn (Paint.NET)	Întunecare culoare (Paint.NET)
+	Color Dodge (Paint.NET)	Luminare culoare (Paint.NET)
+	Stroke Options	Opțiuni trasou
+	Solid	Continuu
+	Dashed	Întrerupt
+	Dotted	Punctat
+	Alignment	Aliniere
+	Caps	Capete
+	Butt / Flat	Plat
+	Corners	Colțuri
+	Miter	Unghi ascuțit
+	Round	Rotund
+	Bevel	Teșit
+	Miter limit	Limită unghi ascuțit
+	Dashed line	Linie întreruptă
+	Dash	Linie
+	Gap	Spațiu
+	Dash / gap lengths × stroke width	Lungimi linie / spațiu × lățime trasou
+	Add pair	Adăugare pereche
+	Remove pair	Eliminare pereche
+	Dash offset	Decalaj liniuțe
+	Open paths use centered strokes	Traseele deschise folosesc trasee centrate
+	Use finite lengths and a positive pattern total	Utilizați lungimi finite și un total de model pozitiv
+	No subject found — try Object Selection or the Lasso	Niciun subiect găsit — încercați Selecție obiect sau Lasoul
+	Quick Selection found nothing there	Selecția rapidă nu a găsit nimic acolo
+	Object Selection found nothing there — try a tighter rectangle	Selecția obiectului nu a găsit nimic acolo — încercați un rectangul mai restrâns
+	No subject found — try a rectangle around the object	Niciun subiect găsit — încercați un rectangul în jurul obiectului
+	Click the first point or press {key} to close · {del} removes a point · Esc cancels	Faceți clic pe primul punct sau apăsați {key} pentru a încheia · {del} elimină un punct · Esc anulează
+	Click, then move along an edge · click to fasten a point · {alt}-click for a straight segment · double-click to close	Faceți clic, apoi mișcați de-a lungul unei margini · faceți clic pentru a fixa un punct · {alt}-clic pentru un segment drept · dublu clic pentru a încheia
+	Follows only edges this close to the pointer ([ and ] change it)	Urmărește numai marginile atât de apropiate de cursor ([ și ] îl modifică)
+	Higher values follow only edges that contrast sharply with their surroundings	Valorile mai mari urmăresc numai marginile cu contrast puternic față de mediul lor
+	How often fastening points are placed by themselves	Cât de des se plasează automat punctele de fixare
+	Appearance Settings…	Setări de aspect…
+	Add to favorites	Adăugare la favorite
+	Remove from favorites	Eliminare din favorite
+	Camera Data	Date cameră
+cameraData	Make	Producător
+cameraData	Model	Model
+cameraData	Date Taken	Data capturii
+cameraData	Exposure	Timp de expunere
+cameraData	F-Stop	Diafragmă f
+cameraData	ISO Speed	Sensibilitate ISO
+cameraData	Focal Length	Distanță focală
+cameraData	Focal Length (35 mm)	Distanță focală (35 mm)
+cameraData	Lens	Obiectiv
+	Activate Panel	Activare panou
+	Change Panel Group	Modificare grup de panouri
+	Change Panel Layout	Modificare aranjament panouri
+	Close Panel	Închidere panou
+	Dock Panel	Acoplare panou
+	Float Panel	Panou flotant
+	Move Panel	Deplasare panou
+	Group with	Grupare cu
+	Panel menu	Meniu panou
+	Resize panel window	Redimensionare fereastră panou
+	Resize panels	Redimensionare panouri
+	Distribution	Distribuție
+	Uniform	Uniform
+	Gaussian	Gaussian
+	Monochromatic	Monocromatic
+	Seed	Sămânță
+	Strength	Intensitate
+	Reduce Color Noise	Reducere zgomot de culoare
+	Remove Jpeg Artifact	Eliminare artefacte JPEG
+	Sharpen Details	Clarificare detalii
+	Reduce Noise	Reducere zgomot
+	Use Classic Mode	Utilizare mod clasic
+	Auto Center Preview	Centrare automată previzualizare
+	Next Document	Documentul următor
+	Previous Document	Documentul anterior
+	W x H x Resolution	L x Î x Rezoluție
+	Front Image	Imagine frontală
+	Frame Tool	Instrument Cadru
+	Create a new rectangular frame	Creare cadru rectangular nou
+	Create a new elliptical frame	Creare cadru elipsoidal nou
+	Include in playback	Includere în redare
+	Perspective Crop Tool	Instrument Decupare cu perspectivă
+	Show Grid	Afișare grilă
+	Drag a box or click four corners · drag the corners onto the edges of a skewed shape · {commit} commits · Esc cancels	Trageți un cadru sau faceți clic pe patru colțuri · trageți colțurile pe marginile unei forme înclinate · {commit} confirmă · Esc anulează
+	Artboard Tool	Instrument Planșă de lucru
+	Make Portrait	Transformare în portret
+	Make Landscape	Transformare în peisaj
+	Add New Artboard	Adăugare planșă de lucru nouă
+	Freeform Pen Tool	Instrument Pană formă liberă
+	Curvature Pen Tool	Instrument Pană curbură
+	Curve Fit:	Potrivire curbă:
+	Drag: draw freehand · {alt}-click: straight segment · Release on the start point: close	Tragere: desenare la liberă mână · {alt}-clic: segment drept · Eliberare pe punctul de start: încheiere
+	Click: smooth point · Double-click: corner · Drag a point: move · Click first point: close · {key} finish	Clic: punct neted · Dublu clic: colț · Tragere punct: deplasare · Clic pe primul punct: încheiere · {key}: finalizare
+	New Crop Preset…	Presetare de decupare nouă…
+	Delete Crop Preset…	Ștergere presetare de decupare…
+	Select the crop presets to delete:	Selectați presetările de decupare de șters:
+	Select the crop presets to delete	Selectați presetările de decupare de șters
+	Enter a name for the crop preset	Introduceți un nume pentru presetarea de decupare
+	There is no crop size or ratio to save	Nu există dimensiune sau raport de decupare de salvat
+	Scale:	Scală:
+	Snap to Origin	Fixare la origine
+	Search settings…	Căutare setări…
+	No matching settings	Nicio setare corespunzătoare
+	Sampling Brush Tool	Instrument Pensulă de eșantionare
+	Sampling Area Overlay	Suprapunere zonă de eșantionare
+	Show Sampling Area	Afișare zonă de eșantionare
+	Indicates	Indică
+	Sampling Area	Zonă de eșantionare
+	Excluded Area	Zonă exclusă
+	Sampling Area Options	Opțiuni zonă de eșantionare
+	Rectangular	Rectangular
+	Fill Settings	Setări umplere
+	Rotation Adaptation	Adaptare rotație
+	Very High	Foarte mare
+	Full	Completă
+	Mirror	Oglindă
+	Output Settings	Setări de ieșire
+	Output To	Ieșire către
+	Animation Options	Opțiuni animație
+	Entire Document	Document întreg
+	Filter Options	Opțiuni filtru
+	Layer Bounds	Limite strat
+	Layers Panel Options	Opțiuni panou Straturi
+	Lock Layers	Blocare straturi
+	New Artboard…	Planșă de lucru nouă…
+	New Group…	Grup nou…
+	New Layer…	Strat nou…
+	Panel Options…	Opțiuni panou…
+	Prevent Auto-Nesting	Prevenire cuibărire automată
+	Show Layers	Afișare straturi
+	Thumbnail Contents	Conținut miniaturi
+	Thumbnail Size	Dimensiune miniaturi
+	Use Default Masks on Fill Layers	Utilizare măști implicite pe straturile de umplere
+	Expand New Effects	Expandare efecte noi
+	Add “copy” to Copied Layers and Groups	Adăugare „copie” la straturile și grupurile duplicate
+	Preview on canvas when reordering layers	Previzualizare pe pânză la reordonarea straturilor
+	Show layer mask badges	Afișare insigne de mască de strat
+	Blending Options ({filter})	Opțiuni de fuziune ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	Ascundere efectele și filtrele inteligente ale stratului  ({key}-clic: toate straturile)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	Afișare efectele și filtrele inteligente ale stratului  ({key}-clic: toate straturile)
+	Wait for the current job to finish.	Așteptați finalizarea sarcinii curente.
+	The document or Smart Filter changed. Reopen its dialog.	Documentul sau filtrul inteligent s-a modificat. Deschideți din nou dialogul acestuia.
+	Opacity must be between 0% and 100%.	Opacitatea trebuie să fie între 0% și 100%.
+	Dissolve is approximated: it blends without Photoshop's dither.	Dizolvarea este aproximată: fuzionează fără tramarea din Photoshop.
+	Loading fonts…	Se încarcă fonturile…
+	Response curve	Curbă de răspuns
+	Tool	Instrument
+	Simulate Pressure	Simulare presiune
+	Stroke Path…	Trasare contur al traseului…
+	Background Eraser	Radieră de fundal
+	Healing Brush	Pensulă corectoare
+	Spot Healing Brush	Pensulă corectoare punctuală
+	Smudge	Deget
+	Sponge	Burete
+	Amount:	Cantitate:
+	Protect:	Protejare:
+	Protect skin tones	Protejare tonuri de piele
+	Edit points to modify the curve	Editare puncte pentru a modifica curba
+	Draw to modify the curve	Desenare pentru a modifica curba
+curves	Smooth	Netezire
+	Smooth the curve values	Netezire valorile curbei
+	Drag to draw the curve · {key}-click draws a straight line	Trageți pentru a desena curba · {key}-clic trasează o linie dreaptă
+	Edit Plane	Editare plan
+	Create Plane	Creare plan
+	Grid Size:	Dimensiune grilă:
+	Vanishing Point: click four corners to create a plane	Punct de fugă: faceți clic pe patru colțuri pentru a crea un plan
+	Vanishing Point is not active	Punctul de fugă nu este activ
+	Apply Vanishing Point ({key})	Aplicare punct de fugă ({key})
+	Fix the red plane first: its corners must form a convex quad	Corectați mai întâi planul roșu: colțurile lui trebuie să formeze un patrulater convex
+	Alt-click a plane to set the clone source	Alt+clic pe un plan pentru a stabili sursa de clonare
+	Too many clone strokes: apply Vanishing Point first	Prea multe tușe de clonare: aplicați mai întâi Punctul de fugă
+	Onion Skin	Hârtie de ceapă
+	Marching Ants	Furnici în mișcare
+	On Black	Pe negru
+	On White	Pe alb
+	On Layers	Pe straturi
+	Show Edge	Afișare margine
+	Show Original	Afișare original
+	F cycles the views; hold X to see the image	F comută vizualizările; țineți X pentru a vedea imaginea
+	Refine Edge Brush (R)	Pensulă de perfecționare margine (R)
+	Expand Detection Area	Expandare zonă de detecție
+	Restore Original Edge	Restaurare margine originală
+	Paint over hair or fur on the image; Alt paints the other mode	Pictați peste părul sau blana din imagine; Alt pictează în modul opus
+	Clear Brush Strokes	Ștergere tușe de pensulă
+	Show rulers	Afișare rigle
+	Presentation	Prezentare
+	Click to place · Alt-click or drag off-canvas to remove	Clic pentru a plasa · Alt+clic sau tragere în afara pânzei pentru a elimina
+	No document open	Niciun document deschis
+	{n} of {max} sample points	{n} din {max} puncte de eșantionare
+	New Snapshot…	Captură nouă…
+	History Options…	Opțiuni istoric…
+	Allow Non-Linear History	Permitere istoric neliniar
+	Make Layer Visibility Changes Undoable	Permitere anulare pentru modificările de vizibilitate a straturilor
+	Emulsion Down	Emulsie în jos
+	Functions	Funcții
+	Print Resolution:	Rezoluție imprimare:
+	Use Previous Layer to Create Clipping Mask	Utilizare strat anterior pentru a crea masca de tăiere
+	Fill with {mode}-neutral color (white)	Umplere cu culoarea neutră {mode} (alb)
+	Fill with {mode}-neutral color (black)	Umplere cu culoarea neutră {mode} (negru)
+	Fill with {mode}-neutral color (50% gray)	Umplere cu culoarea neutră {mode} (gri 50%)
+	(No neutral color exists for {mode} mode.)	(Nu există o culoare neutră pentru modul {mode}.)
+	Apply mask to layer before removing?	Aplicați masca pe strat înainte de a o elimina?
+	The layer or its mask changed. Drag the mask onto the Trash again.	Stratul sau masca sa s-au modificat. Trageți din nou masca în Coș de gunoi.
+	Delete the vector mask?	Ștergeți masca vectorială?
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	S-a exportat {n} mostră în {file}|S-au exportat {n} mostre în {file}|S-au exportat {n} de mostre în {file}
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	S-a importat {n} pensulă din {group}|S-au importat {n} pensule din {group}|S-au importat {n} de pensule din {group}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	S-a importat {n} mostră din {file}|S-au importat {n} mostre din {file}|S-au importat {n} de mostre din {file}
+@plural	Played {n} step|Played {n} steps	S-a redat {n} pas|S-au redat {n} pași|S-au redat {n} de pași
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	S-a actualizat {n} obiect inteligent conectat modificat pe disc|S-au actualizat {n} obiecte inteligente conectate modificate pe disc|S-au actualizat {n} de obiecte inteligente conectate modificate pe disc
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	Salvat pentru web: {n} fișier|Salvat pentru web: {n} fișiere|Salvat pentru web: {n} de fișiere
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	{n} strat înregistrat de această compoziție a fost șters. Actualizați compoziția sau ștergeți avertismentul.|{n} straturi înregistrate de această compoziție au fost șterse. Actualizați compoziția sau ștergeți avertismentul.|{n} de straturi înregistrate de această compoziție au fost șterse. Actualizați compoziția sau ștergeți avertismentul.
+@plural	{n} plane|{n} planes	{n} plan|{n} planuri|{n} de planuri
+@plural	{n} preset|{n} presets	{n} presetare|{n} presetări|{n} de presetări
+@plural	{n} sample point removed|{n} sample points removed	S-a eliminat {n} punct de eșantionare|S-au eliminat {n} puncte de eșantionare|S-au eliminat {n} de puncte de eșantionare
+@plural	{n} slice|{n} slices	{n} felie|{n} felii|{n} de felii
+@plural	{n} step|{n} steps	{n} pas|{n} pași|{n} de pași
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} avertisment suplimentar de presetare de pensulă)|{warning} (+{n} avertismente suplimentare de presetare de pensulă)|{warning} (+{n} de avertismente suplimentare de presetare de pensulă)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what} cu {n} avertisment|{what} cu {n} avertismente|{what} cu {n} de avertismente
+	Light Blue	Albastru deschis
+	Light Red	Roșu deschis
+	Medium Blue	Albastru mediu
+	Light Gray	Gri deschis
+	Object Finder	Căutător de obiecte
+	No object found there — drag a rectangle around it	Niciun obiect găsit acolo — trageți un rectangul în jurul lui
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	Stratul activ nu are pixeli aici — activați Eșantionare toate straturile sau selectați un strat cu pixeli
+	Remove after each stroke	Eliminare după fiecare tușă
+	Apply the removal ({key})	Aplicare eliminare ({key})
+	Strokes to remove: {n} (Enter applies, Esc cancels)	Tușe de eliminat: {n} (Enter aplică, Esc anulează)
+	Load Contours…	Încărcare contururi…
+	Replace Contours…	Înlocuire contururi…
+	Save Contours…	Salvare contururi…
+	Delete Contour	Ștergere contur
+	Loaded contours from {file}	S-au încărcat contururile din {file}
+	Saved contours to {file}	S-au salvat contururile în {file}
+@id	select.all	Selectare tot
+	Delete Smart Filters	Ștergere filtre inteligente
+	Enable Smart Filters	Activare filtre inteligente
+	Delete Layer…	Ștergere strat…
+	Select Similar Colors	Selectare culori similare
+	Canvas rotation	Rotație pânză
+	Extensions	Extensii
+	Libraries	Biblioteci
+	3D	3D
+	Toolbars	Bare de instrumente
+	Wand	Baghetă
+	Healing	Corector
+	Pen	Pană
+	Hand	Mână
+	Sampler	Eșantionator
+	Magnetic Lasso	Lasou magnetic
+	Art History Brush	Pensulă istoric artistic
+	Spot Healing	Corector punctual
+	Patch	Plasture
+	Content-Aware Move	Deplasare cu detecție de conținut
+	Perspective Crop	Decupare cu perspectivă
+	Dodge/Burn	Luminare/Întunecare
+	Dynamics	Dinamică
+	Tilt	Înclinare
+	Defaults restored.	Valorile implicite au fost restaurate.
+	Stop	Stop
+	Create new set	Creare set nou
+	Technology Previews	Previzualizări de tehnologie
+	Create new layer	Creare strat nou
+	Group · {n} layer	Grup · {n} strat
+	General Blend	Fuziune generală
+	Advanced Blending	Fuziune avansată
+	RGB	RGB
+	Spot Channel	Canal de culoare plană
+	Working Gray Plate	Placă gri de lucru
+	HSL/Grayscale	HSL/Tonuri de gri
+	Tone Curve	Curbă de tonuri
+	Split Toning	Divizare de tonuri
+	Lens Corrections	Corecții obiectiv
+	Camera Calibration	Calibrare cameră
+	Snapshots	Instantanee
+	Recovery	Recuperare
+	Fill Light	Lumină de umplere
+	Convert to Grayscale	Conversie în tonuri de gri
+	Sharpness	Claritate
+	Color Noise Reduction	Reducere zgomot de culoare
+	Luminance Smoothness	Netezime luminanță
+	Lens	Obiectiv
+	ISO	ISO
+	Focal Length35mm	Distanță focală echivalentă (35 mm)
+	Aspect Ratio	Raport de aspect
+	Time	Oră
+	Enter description…	Introduceți o descriere…
+	ColorSync	ColorSync
+	ProPhoto	ProPhoto
+	ACES	ACES
+	Industry Standard	Standard industrial
+	Uncoated CMYK	CMYK pentru hârtie nemăsluită
+	Newspaper	Hârtie de ziar
+	Working Spaces	Spații de lucru
+	Color Management Policies	Politici de gestionare a culorii
+	Detect Faces	Detectare fețe
+	Localize Color Clusters	Localizare grupuri de culoare
+	Duplicated selection name	Nume de selecție duplicat
+	Operation	Operație
+	New channel only	Numai canal nou
+	Color indicates	Culoarea indică
+	Create Snapshot	Creare captură
+	Delete Snapshot	Ștergere captură
+	New Snapshot	Captură nouă
+	Snapshot 1	Captură 1
+	Step Forward	Avansare un pas
+	Step Backward	Retragere un pas
+	Nonlinear History	Istoric neliniar
+	Set New Snapshot as Default	Stabilire captură nouă ca implicită
+	Automatically Create First Snapshot	Creare automată a primei capturi
+	Automatically Create New Snapshot When Saving	Creare automată a unei capturi noi la salvare
+	Show New Snapshot Dialog by Default	Afișare implicită a dialogului Captură nouă
+	Clear History	Ștergere istoric
+	View menu	Meniu Vizualizare
+	Keep view in sync	Menținere vizualizare sincronizată
+	{zoom}%	{zoom}%
+	Mouse Controls	Controale mouse
+	Initial Direction of Stroke	Direcție inițială a tușei
+	Direction of Stroke	Direcție tușă
+	Humidity	Umiditate
+	Auto Clean Brush	Curățare automată pensulă
+	Spacing:	Spațiere:
+	New Layer from Brush	Strat nou din pensulă
+	New Brush	Pensulă nouă
+	New Tool Preset	Presetare de instrument nouă
+	Auto-Leading	Interlinie automată
+	Scale Horizontally	Scalare orizontală
+	Scale Vertically	Scalare verticală
+	Mac LCD	LCD Mac
+	Mac Sharp	Clar Mac
+	Mac Crisp	Definit Mac
+	Mac Strong	Puternic Mac
+	Mac Smooth	Suavizat Mac
+	Superscript	Exponent superior
+	Subscript	Exponent inferior
+	Ligature	Ligatură
+	Alternative	Alternativă
+	Ultra Light	Ultra fină
+	Extra Light	Extra fină
+	Semi Bold	Semi Bold
+	Extra Bold	Extra Bold
+	Ultra Bold	Ultra Bold
+	Condensed	Condensată
+	First Line Indent	Indentare primă linie
+	Hanging Punctuation	Punctuație suspendată
+	Roman Hanging Punctuation	Punctuație latină suspendată
+	Avoid Widows/Orphans	Evitare linii văduve/orfane
+	Compose	Compunere
+	Word Spacing	Spațiu între cuvinte
+	Letter Spacing	Spațiu între caractere
+	Glyph Scaling	Scalare glife
+	Auto-leading %	Interlinie automată %
+	Single Word Justification	Justificare pentru un singur cuvânt
+	Justify	Justificare
+	Glyph	Glif
+	Alternates for Current Selection	Alternative pentru selecția curentă
+	Digits	Cifre
+	Path:	Traseu:
+	Path to Illustrator…	Traseu către Illustrator…
+	Clipping Path	Traseu de tăiere
+	New Path	Traseu nou
+	Duplicate Path	Duplicare traseu
+	Rename Path…	Redenumire traseu…
+	Auto-Hide	Ascundere automată
+	X	X
+	Y	Y
+	Frame Sync	Sincronizare cadre
+	Quick Sync	Sincronizare rapidă
+	Audio	Audio
+	Frame Duration	Durată cadru
+	Loop	Buclă
+	Split at Playhead	Divizare la capul de redare
+	Flatten Frames Into Clips	Aplatizare cadre în clipuri
+	Flatten Frames Into Layers	Aplatizare cadre în straturi
+	Convert Frames > Video Layers	Conversie cadre > Straturi video
+	New Video Layer	Strat video nou
+	New Video Group	Grup video nou
+	Limit Playback	Limitare redare
+	Enable Timeline Quick Config	Activare configurare rapidă a cronologiei
+	Set Start Timecode…	Stabilire cod de timp inițial…
+	Timecode	Cod de timp
+	30 fps	30 fps
+	25 fps	25 fps
+	24 fps	24 fps
+	15 fps	15 fps
+	10 fps	10 fps
+	Current Time	Timp curent
+	Out	Ieșire
+	In	Intrare
+	Duration	Durată
+	Repeat	Repetare
+	Play Once	Redare o dată
+	Info Options…	Opțiuni informații…
+	First Color Readout	Prima lectură de culoare
+	Second Color Readout	A doua lectură de culoare
+	Actual Color	Culoare reală
+	Grayscale Slider	Regulator tonuri de gri
+	Web Color	Culoare web
+	HSB Color	Culoare HSB
+	Total Ink	Cerneală totală
+	Opacity Mask	Mască de opacitate
+	Document Size	Dimensiune document
+	Timing	Temporizare
+	Status Information	Informații de stare
+	Saved Multichannel	Multicanal salvat
+	Mouse Coordinates	Coordonate mouse
+	Ruler Units	Unități riglă
+	Hide	Ascundere
+	Restore last viewed comp	Restaurare ultima compoziție vizualizată
+	Select All Layers	Selectare toate straturile
+	Keep proportions	Păstrare proporții
+	Interpolation	Interpolare
+	Caption	Legendă
+	Caption Credits	Credite legendă
+	Keywords	Cuvinte cheie
+	Copyright Info URL	URL informații drepturi de autor
+	Copyright Status	Stare drepturi de autor
+	Copyright Notice	Mențiune drepturi de autor
+	Document Title	Titlu document
+	Copyrighted	Cu drepturi de autor
+	Public Domain	Domeniu public
+	Unknown	Necunoscut
+	Credit	Credit
+	Transmission Reference	Referință transmisie
+	Urgency	Urgență
+	High	Ridicată
+	Low	Scăzută
+	Category	Categorie
+	Supplemental Categories	Categorii suplimentare
+	Object Name / Title	Nume obiect / titlu
+	Date Created	Data creării
+	City	Oraș
+	Province / State	Provincie / stat
+	Country	Țară
+	Byline	Autor
+	Byline Title	Funcția autorului
+	Phone	Telefon
+	Email	E-mail
+	URLs	URL-uri
+	Last Modified	Ultima modificare
+	EXIF	EXIF
+	GPS	GPS
+	Camera Model	Model cameră
+	Camera Make	Producător cameră
+	EXIF Version	Versiune EXIF
+	Exposure Program	Program de expunere
+	Aperture	Diafragmă
+	Shutter Speed	Viteză obturator
+	Metering Mode	Mod de măsurare
+	Light Source	Sursă de lumină
+	Flash	Blitz
+	Lens Info	Informații obiectiv
+	ISO Speed	Sensibilitate ISO
+	Subject Distance	Distanță subiect
+	DateTime Original	Dată și oră originale
+	Create Date	Dată creare
+	Modify Date	Dată modificare
+	Raw Data	Date brute
+	Import…	Import…
+	PDF Presentation…	Prezentare PDF…
+	Create Multiple Picture Packages	Creare mai multe seturi de imagini
+	Picture Package…	Set de imagini…
+	Web Photo Gallery…	Galerie foto web…
+	Choose…	Alegere…
+	Select Folder…	Selectare folder…
+	Override Action "Save" Commands	Omitere comenzi „Salvare” ale acțiunii
+	File Naming	Denumire fișiere
+	Compatibility	Compatibilitate
+	Mac OS	Mac OS
+	Unix	Unix
+	Include ICC Profile	Includere profil ICC
+	Error File	Fișier de erori
+	Stop For Errors	Întrerupere la erori
+	Log Errors To File	Înregistrare erori într-un fișier
+	Errors	Erori
+	Settings	Setări
+	Settings:	Setări:
+	Working Space	Spațiu de lucru
+	RGB:	RGB:
+	CMYK:	CMYK:
+	Gray:	Gri:
+	Spot:	Plană:
+	Advanced Controls	Controale avansate
+	Desaturate Monitor Colors By	Desaturare culori monitor cu
+	Blend RGB Colors Using Gamma 1.0	Fuziune culori RGB folosind gamma 1,0
+	Profile Mismatches: Ask When Opening	Diferențe de profil: întrebare la deschidere
+	Ask When Pasting	Întrebare la inserare
+	Missing Profiles: Ask When Opening	Profiluri lipsă: întrebare la deschidere
+	Embed profiles	Încorporare profiluri
+	Ask Before Saving Saved Embedded	Întrebare înainte de a salva profilul încorporat
+	Coerce to sRGB	Forțare sRGB
+	sRGB IEC61966-2.1	sRGB IEC61966-2.1
+	Adobe RGB (1998)	Adobe RGB (1998)
+	ProPhoto RGB	ProPhoto RGB
+	ColorMatch RGB	ColorMatch RGB
+	Wide Gamut RGB	RGB cu gamă largă
+	Apple RGB	Apple RGB
+	NTSC (1953)	NTSC (1953)
+	PAL/SECAM	PAL/SECAM
+	SMPTE C	SMPTE C
+	HDTV (Rec. 709)	HDTV (Rec. 709)
+	CIE RGB	CIE RGB
+	Minimalistic	Minimalist
+	Expand All Groups	Expandare toate grupurile
+	Photo (2 × 3 in)	Foto (2 × 3 in.)
+	Photo (4 × 6 in)	Foto (4 × 6 in.)
+	Photo (5 × 7 in)	Foto (5 × 7 in.)
+	Photo (8 × 10 in)	Foto (8 × 10 in.)
+	Recent Items	Elemente recente
+	Delete Preset…	Ștergere presetare…
+	Preset Name:	Nume presetare:
+	Width and Height	Lățime și înălțime
+	Color Profile	Profil de culoare
+	Units	Unități
+	Create new count group	Creare grup de numărare nou
+	Adjustment Layer	Strat de ajustare
+	Drag to move the layer	Trageți pentru a deplasa stratul
+	Go to Layer	Salt la strat
+	After (X)	După (X)
+	Reference point location	Locație punct de referință
+	Toggle reference point	Afișare sau ascundere punct de referință
+	Add Pins	Adăugare pini
+	Delete Pins	Ștergere pini
+	Rotate Auto	Rotire automată
+	Rotate Fixed	Rotire fixă
+	Select Plane	Selectare plan
+	Measure	Măsurare
+	Heal	Corectare
+	Heal Off	Corecție dezactivată
+	Heal On	Corecție activată
+	Heal Auto	Corecție automată
+	Blend	Fuziune
+	Brush Size	Dimensiune pensulă
+	Heal Color	Culoare corecție
+	Result	Rezultat
+	Duplicate	Duplicare
+	Fast	Rapid
+	Accurate	Precisă
+	Add to	Adăugare la
+	Subtract from	Scădere din
+	Intersect with	Intersectare cu
+	Capture Comp	Capturare compoziție
+	No Layer Comps	Nicio compoziție de strat
+	3D…	3D…
+	Technology Previews…	Previzualizări de tehnologie…
+	Add a mask  (from the selection; ⌥ inverts)	Adăugare mască (din selecție; ⌥ inversează)
+	Add to selection  (⇧)	Adăugare la selecție (⇧)
+	Airbrush: keeps painting while the pointer rests.	Aerograf: continuă să picteze cât timp cursorul rămâne nemișcat.
+	Click the first point or press ↵ to close · Esc cancels	Faceți clic pe primul punct sau apăsați ↵ pentru a încheia · Esc anulează
+	Click to add a point · drag off or ⌘/Ctrl-click or Delete to remove	Faceți clic pentru a adăuga un punct · trageți departe sau ⌘/Ctrl-clic sau Delete pentru a elimina
+	Click to apply, ⌥-click to clear overrides, double-click for Style Options	Faceți clic pentru a aplica, ⌥-clic pentru a elimina excepțiile, dublu clic pentru Opțiuni de stil
+	Click to zoom in  ·  ⌥-click to zoom out	Clic pentru mărire  ·  ⌥-clic pentru micșorare
+	Click: corner · Drag: smooth · Click first point: close · ↩ finish · Esc cancel	Clic: colț · Tragere: netezire · Clic pe primul punct: încheiere · ↩ finalizare · Esc anulare
+	Commit Perspective Warp (↩)	Confirmare Deformare de perspectivă (↩)
+	Commit Puppet Warp (↩)	Confirmare Deformare marionetă (↩)
+	Commit any current edits (⌘↩)	Confirmare editări curente (⌘↩)
+	Commit current crop operation  (↵)	Confirmare operație de decupare curentă (↵)
+	Commit transform (↩)	Confirmare transformare (↩)
+	Commit warp (↩)	Confirmare deformare (↩)
+	Create a new layer  (⇧⌘N)	Creare strat nou (⇧⌘N)
+	Custom pattern	Model personalizat
+	General Brushes	Pensule generale
+	Grid  (⌘')	Grilă (⌘')
+	Intersect with selection  (⇧⌥)	Formare intersecție cu selecția (⇧⌥)
+	New document…     ⌘N	Document nou…     ⌘N
+	Open…     ⌘O	Deschidere…     ⌘O
+	Rulers  (⌘R)	Rigle (⌘R)
+	Search commands (⌘K)	Căutare comenzi (⌘K)
+	Show Guides  (⌘;)	Afișare ghidaje (⌘;)
+	Subtract from selection  (⌥)	Scădere din selecție (⌥)
+	Uses the foreground and background colors.	Utilizează culorile frontală și de fundal.
+	↑↓ navigate   ↵ run   esc close	↑↓ navigare   ↵ executare   esc închidere
+	Adds grain to the soft edges of the brush tip.	Adaugă granulație marginilor moi ale vârfului pensulei.
+	Keeps the current texture when switching presets.	Păstrează textura curentă la comutarea presetărilor.
+	Watercolour look: lighter interior, darker rims.	Aspect de acuarelă: interior mai clar, margini mai întunecate.
+	Collapse group  (⌥-click: all groups)	Restrângere grup (⌥-clic: toate grupurile)
+	Expand group  (⌥-click: all groups)	Expandare grup (⌥-clic: toate grupurile)
+	Hide the layer's effects  (⌥-click: all layers)	Ascundere efectele stratului (⌥-clic: toate straturile)
+	Show the layer's effects  (⌥-click: all layers)	Afișare efectele stratului (⌥-clic: toate straturile)
+cameraRaw	Blacks	Negre
+cameraRaw	Masking	Mascare
+@id	edit.stroke	Contur…
+@id	edit.transform.scale	Scalare
+cameraRaw	Luminance	Luminanță
+cameraRaw	Color	Culoare
+cameraRaw	Vibrance	Vibranță
+cameraRaw	Color Grading	Gradare culoare
+cameraRaw	Global	Global
+cameraRaw	Hue	Nuanță
+cameraRaw	Luminance Detail	Detaliu luminanță
+cameraRaw	Color Detail	Detaliu culoare
+cameraRaw	Roughness	Rugozitate
+cameraRaw	Whites	Albe
+layerLabel	No Color	Fără culoare
+	Preferences…	Preferințe…
+	Actual Pixels	Pixeli reali
+	Clipping Mask	Mască de tăiere
+	Tool Options	Opțiuni instrument
+	Color Swatches	Mostre de culoare
+	Linear Dodge	Sobreexpunere liniară
+	Preview Image	Previzualizare imagine
+	Save As	Salvare ca
+	Remove All	Eliminare tot
+	Unlock	Deblocare
+	Enable	Activare
+	Disable	Dezactivare
+	On	Activat
+	Clear Selection	Golire selecție
+	Invert Selection	Inversare selecție
+	Select Inverse	Inversare selecție
+	Contract	Contractare
+	Sample Size	Dimensiune eșantion
+	Gamma	Gamma
+	Input	Intrare
+	Input Levels	Niveluri de intrare
+	Output Levels	Niveluri de ieșire
+	Layer Styles	Stiluri de strat
+	Blending Mode	Mod de amestecare
+	Stroke Width	Lățime trasou
+	Shadow	Umbră
+	Adjustment Layers	Straturi de ajustare
+	Text Layer	Strat de text
+	Documents	Documente
+	File Name	Nume fișier
+	File Format	Format fișier
+	Compression	Compresie
+	Artboards	Planșe de lucru
+	Snap to Grid	Fixare la grilă
+	Full Screen	Ecran complet
+	Fullscreen	Ecran complet
+	Workspaces	Spații de lucru
+	Show All	Afișare tot
+	Hidden	Ascuns
+	Duplicate Layer	Duplicare strat
+	Ungroup	Degrupare
+	Guide Layout…	Aranjament de ghidaje…
+	Page Setup…	Configurare pagină…
+	Reset Preferences	Resetare preferințe
+	Documentation	Documentație
+	Check for Updates	Căutare actualizări
+	Loading…	Se încarcă…
+	Processing…	Se procesează…
+	Saving…	Se salvează…
+	Exporting…	Se exportă…
+	Please wait…	Așteptați…
+	No selection	Fără selecție
+	No layers	Niciun strat
+	No recent files	Niciun fișier recent
+	Unsupported file format	Format de fișier neacceptat
+	Failed to open file	Deschiderea fișierului a eșuat
+	Failed to save file	Salvarea fișierului a eșuat
+	Operation canceled	Operație anulată
+	Changes have not been saved.	Modificările nu au fost salvate.
+	Are you sure?	Sunteți sigur?
+	Discard Changes	Renunțare la modificări
+	Open File	Deschidere fișier
+	Save File	Salvare fișier
+	Save Changes	Salvare modificări
+	Rendering…	Se randează…
+	Importing…	Se importă…
+	Ready	Pregătit
+	Failed	Nereușit
+	Warning	Avertisment
+	Information	Informații
+	Retry	Reîncercare
+	Continue	Continuare
+	Skip	Omitere
+	Resume	Reluare
+	Reset All	Resetare tot
+	Defaults	Valori implicite
+	Apply to All	Aplicare la tot
+	Confirm	Confirmare
+	Finish	Finalizare
+	Back	Înapoi
+	Next	Următor
+	Previous	Anterior
+	More	Mai mult
+	Less	Mai puțin
+	Manual	Manual
+	Disabled	Dezactivat
+	Locked	Blocat
+	Unlocked	Deblocat
+	Delete…	Ștergere…
+	Create…	Creare…
+	Edit…	Editare…
+	Change…	Modificare…
+	Transformation	Transformare
+	Scaling	Scalare
+	Canvas Size	Dimensiune pânză
+	Percentage	Procentaj
+	Degrees	Grade
+	Middle	Centru
+	Diameter	Diametru
+	Intensity	Intensitate
+	Sensitivity	Sensibilitate
+	Softness	Moliciune
+	Feather Radius	Rază calare
+	Library	Bibliotecă
+	Layer Properties	Proprietăți strat
+	Groups	Grupuri
+	Masks	Măști
+	Add Mask	Adăugare mască
+	Delete Mask	Ștergere mască
+	Invert Mask	Inversare mască
+	Enable Mask	Activare mască
+	Disable Mask	Dezactivare mască
+	Apply Mask	Aplicare mască
+	Import Settings	Import setări
+	Export Settings	Export setări
+	Shortcuts	Comenzi rapide
+	Keyboard	Tastatură
+	Mouse	Mouse
+	Tablet	Tabletă
+	Display	Afișaj
+	Panel	Panou
+	Hide Grid	Ascundere grilă
+	Fit to Window	Încadrare în fereastră
+	Live Preview	Previzualizare în direct
+	Before	Înainte
+	After	După
+	Compare	Comparare
+	File Size	Dimensiune fișier
+	Filename	Nume fișier
+	Open Folder	Deschidere folder
+	Choose Folder	Alegere folder
+	Browse	Răsfoire
+	Find	Găsire
+	Replace	Înlocuire
+	Date	Dată
+	Learn More	Aflați mai multe
+	Report a Bug	Raportare eroare
+	Updates	Actualizări
+	Update	Actualizare
+	Restart Required	Este necesară repornirea
+	Restart	Repornire
+	Quit	Ieșire
+	Quit PhotoCraft	Ieșire din PhotoCraft
+	Close Window	Închidere fereastră
+	New Window	Fereastră nouă
+	Open Image	Deschidere imagine
+	Save Image	Salvare imagine
+	Export Image	Export imagine
+	Import Image	Import imagine
+	Export As	Export ca
+	Export to	Export către
+	Export Options	Opțiuni export
+	Import Options	Opțiuni import
+	No Selection	Fără selecție
+	No Image	Fără imagine
+	No Layers	Fără straturi
+	No Results	Niciun rezultat
+	No Results Found	Nu s-au găsit rezultate
+	Nothing to Undo	Nimic de anulat
+	Nothing to Redo	Nimic de refăcut
+	Changes Saved	Modificări salvate
+	Save before closing?	Salvați înainte de a închide?
+	Are you sure you want to quit?	Sunteți sigur că doriți să ieșiți?
+	The file could not be opened.	Fișierul nu a putut fi deschis.
+	The file could not be saved.	Fișierul nu a putut fi salvat.
+	Unsupported format	Format neacceptat
+	Out of memory	Memorie insuficientă
+	Permission denied	Permisiune refuzată
+	File not found	Fișierul nu a fost găsit
+	Operation failed	Operație nereușită
+	Operation completed	Operație finalizată
+	Operation cancelled	Operație anulată
+	Sharpen Amount	Cantitate clarificare
+	Sharpen Radius	Rază clarificare
+	Sharpen Detail	Detaliu clarificare
+	Sharpen Masking	Mascare clarificare
+	Noise Luminance	Luminanță zgomot
+	Noise Luminance Detail	Detaliu luminanță zgomot
+	Noise Color	Culoare zgomot
+	Noise Color Detail	Detaliu culoare zgomot
+	Grain Amount	Cantitate granulație
+	Grain Size	Dimensiune granulație
+	Grain Roughness	Rugozitate granulație
+	Vignette Roundness	Rotunjime vinietă
+	Vignette Feather	Calare vinietă
+	Vignette Highlights	Luminile vinietei
+	Vignette Style	Stil vinietă
+	Planes	Planuri
+	Plane	Plan
+	Shadow Amount	Cantitate umbră
+	Shadow Tone	Ton umbră
+	Shadow Radius	Rază umbră
+	Highlight Amount	Cantitate lumini
+	Highlight Tone	Ton lumini
+	Highlight Radius	Rază lumini
+	Midtone	Ton mediu
+	Black Clip	Tăiere negru
+	White Clip	Tăiere alb
+	Fuzziness	Toleranță
+	Source Layer	Strat sursă
+	Neutralize	Neutralizare
+	Use Selection In Source	Utilizare selecție în sursă
+	Use Selection In Target	Utilizare selecție în destinație
+	Flame Type	Tip flacără
+	Randomize Length	Aleatorizare lungime
+	Interval	Interval
+	Adjust Interval For Loops	Ajustare interval pentru bucle
+	Use Custom Color	Utilizare culoare personalizată
+	Flame Lines	Linii de flacără
+	Flame Bottom Alignment	Aliniere inferioară a flăcării
+	Flame Style	Stil flacără
+	Flame Shape	Formă flacără
+	Randomize Shapes	Aleatorizare forme
+	Frame	Cadru
+	Arrangement	Aranjare
+	Thickness	Grosime
+	Vine Color	Culoare viță
+	Flower Color	Culoare floare
+	Leaf Color	Culoare foi
+	Base Tree Type	Tip arbore de bază
+	Light Direction	Direcție lumină
+	Leaves Amount	Cantitate foi
+	Leaves Size	Dimensiune foi
+	Branches Height	Înălțime ramuri
+	Branches Thickness	Grosime ramuri
+	Default Leaves	Foi implicite
+	Leaves Color	Culoare foi
+	Custom Branch Color	Culoare personalizată ramuri
+	Branches Color	Culoare ramuri
+	Flat Shading	Umbrire plată
+	Date and Time	Dată și oră
+	Scale Units	Unități scară
+	Scale Factor	Factor de scară
+	Area	Zonă
+	Perimeter	Perimetru
+	Circularity	Circularitate
+	Gray Value (Minimum)	Valoare gri (minimum)
+	Gray Value (Maximum)	Valoare gri (maximum)
+	Gray Value (Mean)	Valoare gri (medie)
+	Gray Value (Median)	Valoare gri (mediană)
+	Integrated Density	Densitate integrată
+	Length	Lungime
+	In Black	Negru intrare
+	In White	Alb intrare
+	Out Black	Negru ieșire
+	Out White	Alb ieșire
+	Tint Color	Culoare tentă
+	Stops	Marcaje
+	Center X	Centru X
+	Center Y	Centru Y
+	Cell Size	Dimensiune celulă
+	Generators	Generatoare
+	Wavelength Min	Lungime de undă min.
+	Wavelength Max	Lungime de undă max.
+	Amplitude Min	Amplitudine minimă
+	Amplitude Max	Amplitudine maximă
+	Undefined Areas	Zone nedefinite
+	Preserve	Conservare
+	Max Radius	Rază maximă
+	Depth Mode	Mod profunzime
+	Solid Front Faces	Fețe frontale solide
+	Mask Incomplete Blocks	Mascare blocuri incomplete
+	Stylization	Stilizare
+	Cleanliness	Curățenie
+	Bristle Detail	Detaliu peri
+	Lighting	Iluminare
+	Shine	Lucire
+	Max Offset	Decalaj maxim
+	Map Document	Hartă document
+	Map Path	Cale hartă
+	Map Layer	Strat hartă
+	Ridges	Creste
+	Light Type	Tip lumină
+	Light X	Lumină X
+	Light Y	Lumină Y
+	Light Z	Lumină Z
+	Target X	Destinație X
+	Target Y	Destinație Y
+	Hotspot	Punct focal
+	Elevation	Elevație
+	Ambient	Ambiant
+	Warmth	Căldură
+	Gloss	Luciu
+	Metallic	Metalic
+	Ambience	Ambianță
+	White Is High	Albul este ridicat
+	Blade Curvature	Curbură lamă
+	Depth Map	Hartă de profunzime
+	Focal Distance	Distanță focală
+	Focus	Focalizare
+	Transition	Tranziție
+	Radius X	Rază X
+	Radius Y	Rază Y
+	Pins	Pini
+	Speed	Viteză
+	Taper	Îngustare
+	Start X	Start X
+	Start Y	Start Y
+	End X	Final X
+	End Y	Final Y
+	Kernel	Nucleu
+	Input Mode	Mod de intrare
+	Row Order	Ordine rânduri
+	Eliminate	Eliminare
+	Create By	Creare prin
+	List	Listă
+	Pencil Width	Lățime creion
+	Stroke Pressure	Presiune tușă
+	Paper Brightness	Luminozitate hârtie
+	Number Of Levels	Număr de niveluri
+	Edge Simplicity	Simplitate margine
+	Edge Fidelity	Fidelitate margine
+	Brush Detail	Detaliu pensulă
+	Highlight Area	Zonă lumini
+	Glow Size	Dimensiune strălucire
+	Glow Brightness	Luminozitate strălucire
+	Brush Type	Tip pensulă
+	Stroke Size	Dimensiune tușă
+	Stroke Detail	Detaliu tușă
+	Highlight Strength	Intensitate lumini
+	Smoothness	Netezime
+	Edge Thickness	Grosime margine
+	Edge Intensity	Intensitate margine
+	Posterization	Posterizare
+	Stroke Length	Lungime tușă
+	Relief	Relief
+	Definition	Definiție
+	Texture Coverage	Acoperire textură
+	Shadow Intensity	Intensitate umbre
+	Edge Width	Lățime margine
+	Edge Brightness	Luminozitate margine
+	Direction Balance	Balans direcție
+	Black Intensity	Intensitate negre
+	White Intensity	Intensitate albe
+	Dark Intensity	Intensitate întunecate
+	Custom Pixel Aspect Ratio	Raport de aspect pixel personalizat
+	32-bit Preview Options	Opțiuni previzualizare 32 biți
+	New Guide	Ghidaj nou
+	Join the ArtCraft Discord	Alăturați-vă Discord-ului ArtCraft
+	Report an Issue	Raportare problemă
+	Load Files into Stack	Încărcare fișiere în stivă
+	Statistics	Statistici
+	Duplicate Layers	Duplicare straturi
+	Edit Toolbar	Editare bară de instrumente
+	Import Brushes	Import pensule
+	Load 3D LUT	Încărcare LUT 3D
+	Press keys	Apăsare taste
+	Rename Group	Redenumire grup
+	Rename Tool Preset	Redenumire presetare instrument
+	Search commands, tools and panels	Căutare comenzi, instrumente și panouri
+	Slice Options	Opțiuni felie
+	Rename Brush	Redenumire pensulă
+	Opening	Se deschide
+	Reading	Se citește
+	Working	Se procesează
+	Accented Edges	Margini accentuate
+	Angled Strokes	Tușe înclinate
+	Anisotropic	Anizotropic
+	Around Center	În jurul centrului
+	Artistic	Artistic
+	Bamboo	Bambus
+	Bas Relief	Basorelief
+	Berries	Fructe de pădure
+	Blast	Explozie
+	Bleach Bypass	Albire fotografică
+	Blocks	Blocuri
+	Brick	Cărămidă
+	Brush Strokes	Tușe de pensulă
+	Burlap	Pânză de sac
+	Candle Light	Lumină de lumânare
+	Circle	Cerc
+	Clumped	Grupat
+	Coarse Dots	Puncte groase
+	Colored Pencil	Creion colorat
+	Contrasty	Contrastant
+	Cool	Rece
+	Craquelure	Craclură
+	Cross	Cruce
+	Cross Process	Procesare încrucișată
+	Crosshatch	Hașură încrucișată
+	Cutout	Decupaje
+	Daisies	Margarete
+	Dark Rough	Rugos întunecat
+	Dark Strokes	Tușe întunecate
+	Darken Only	Numai întunecare
+	Day For Night	Noapte americană
+	Deep Blue	Albastru profund
+	Deep Emerald	Smarald profund
+	Deep Red	Roșu profund
+	Deep Yellow	Galben profund
+	Dot	Punct
+	Double Line	Linie dublă
+	Draft	Schiță
+	Dry Brush	Pensulă uscată
+	Duplication	Duplicare
+	Edge Extension	Extensie margine
+	Edge Only	Numai margine
+	Enlarged	Mărit
+	Even Fields	Câmpuri pare
+	Faded Film	Film decolorat
+	Film Grain	Granulație film
+	Fine	Fin
+	Fine Dots	Puncte fine
+	Flat	Plat
+	Fresco	Fresco
+	From Left	Din stânga
+	From Right	Din dreapta
+	Frosted	Glazurat
+	Generic	Generic
+	Glass	Sticlă
+	Glowing Edges	Margini strălucitoare
+	Grainy Dots	Puncte granulate
+	Hearts	Inimi
+	Heptagon	Heptagon
+	Hexagon	Hexagon
+	Horizontal Only	Numai orizontal
+	Infinite	Infinit
+	Ink Outlines	Contururi cu tuș
+	Ivy	Iederă
+	Left Diagonal	Diagonală stânga
+	Level Based	Bazat pe niveluri
+	Light Rough	Rugos clar
+	Lighten Only	Numai luminare
+	Long Lines	Linii lungi
+	Long Strokes	Tușe lungi
+	Lower	Inferior
+	Medium Dots	Puncte medii
+	Medium Lines	Linii medii
+	Medium Strokes	Tușe medii
+	Mono Contrast	Contrast monocrom
+	Mosaic Tiles	Plăci de mozaic
+	Multiple Flames Along Path	Mai multe flăcări de-a lungul traseului
+	Multiple Flames One Direction	Mai multe flăcări într-o direcție
+	Multiple Flames Path Directions	Mai multe flăcări în direcțiile traseului
+	Multiple Flames Various Length	Mai multe flăcări de lungimi diferite
+	Octagon	Octagon
+	Odd Fields	Câmpuri impare
+	One Flame Along Path	O flacără de-a lungul traseului
+	Out From Center	Dinspre centru în exterior
+	Oval	Oval
+	Overlay Edge	Margine suprapusă
+	Palette Knife	Spatulă
+	Parallel	Paralel
+	Patchwork	Petice
+	Pentagon	Pentagon
+	Point	Punct
+	Pointed	Ascuțit
+	Pond Ripples	Unde de iaz
+	Pyramids	Piramide
+	Random	Aleatoriu
+	Right Diagonal	Diagonală dreapta
+	Rope	Coardă
+	Roses	Trandafiri
+	Sandstone	Gresie
+	Scallops	Scoici
+	Sepia	Sepia
+	Short Lines	Linii scurte
+	Short Strokes	Tușe scurte
+	Simple	Simplu
+	Light Intensity	Intensitate lumină
+	Spray Radius	Rază pulverizare
+	Stroke Direction	Direcție tușă
+	Graininess	Granulozitate
+	Glow Amount	Cantitate strălucire
+	Clear Amount	Cantitate transparență
+	Distortion	Distorsiune
+	Ripple Size	Dimensiune undă
+	Ripple Magnitude	Magnitudine undă
+	Charcoal Area	Zonă carboncium
+	Chalk Area	Zonă cretă
+	Charcoal Thickness	Grosime carboncium
+	Light Dark Balance	Balans clar/întunecat
+	Foreground Level	Nivel frontal
+	Background Level	Nivel fundal
+	Pattern Type	Tip model
+	Image Balance	Balans imagine
+	Darkness	Întuneciune
+	Fiber Length	Lungime fibră
+	Crack Spacing	Spațiere crăpături
+	Crack Depth	Profunzime crăpături
+	Crack Brightness	Luminozitate crăpături
+	Grain Type	Tip granulație
+	Tile Size	Dimensiune plăcuță
+	Grout Width	Lățime rost
+	Lighten Grout	Luminare rost
+	Square Size	Dimensiune pătrat
+	Border Thickness	Grosime margine
+	Correct Distortion	Corectare distorsiune
+	Correct Vignette	Corectare vinietă
+	Correct C A	Corectare AC
+	Auto Scale	Scalare automată
+	Red Cyan	Roșu/cian
+	Blue Yellow	Albastru/galben
+	Vignette Amount	Cantitate vinietă
+	Vignette Midpoint	Punct median vinietă
+	Constraints	Constrângeri
+	Curve Highlights	Curbă lumini
+	Curve Lights	Curbă luminile
+	Curve Darks	Curbă umbrele
+	Curve Shadows	Curbă umbre
+	Curve Splits	Diviziuni curbă
+	Point Curve	Curbă de puncte
+	Point Curve Red	Curbă de puncte roșie
+	Point Curve Green	Curbă de puncte verde
+	Point Curve Blue	Curbă de puncte albastră
+	Hsl Hue	Nuanță HSL
+	Hsl Sat	Saturație HSL
+	Hsl Lum	Luminanță HSL
+	Grade Shadows	Gradare umbre
+	Grade Midtones	Gradare tonuri medii
+	Grade Highlights	Gradare lumini
+	Grade Global	Gradare globală
+	Grade Blending	Fuziune gradare
+	Grade Balance	Balans gradare
+	Sine	Sinusoidal
+	Sketch	Schiță
+	Snowflakes	Fulgi de nea
+	Sparkle	Sclipiri
+	Spatter	Stropi
+	Speckle	Pigmentare
+	Spin	Rotire
+	Sprinkles	Presărare
+	Squareness	Caracter pătrat
+	Stagger	Decalat
+	Stained Glass	Vitraliu
+	Star	Stea
+	Stars	Stele
+	Stippled	Punctat
+	Stretch	Întindere
+	Teal Orange	Verde-azuriu și portocaliu
+	Tiny Lens	Lentilă mică
+	To Center	Spre centru
+	Unaltered	Nealterat
+	Underpainting	Pictură de bază
+	Underwater	Subacvatic
+	Upper	Superior
+	Vertical Only	Numai vertical
+	Vine With Flowers	Enredadera cu flori
+	Vine With Leaves	Viță cu foi
+	Violent	Violent
+	Warm	Cald
+	Watercolor	Acuarelă
+	Waves	Unde
+	Wide Blurry	Larg neclar
+	Wide Sharp	Larg clar
+	Wrap	Învăluire
+	Zigzag	Zigzag
+	Wetness	Umiditate
+	AI Integrations	Integrări AI
+	Add Noise	Adăugare zgomot
+	Apply Data Set	Aplicare set de date
+	Apply Image	Aplicare imagine
+	Arbitrary	Arbitrar
+	Artboard from Group	Planșă de lucru din grup
+	Artboard from Layers	Planșă de lucru din straturi
+	Artboards to Files	Planșe de lucru în fișiere
+	Artboards to PDF	Planșe de lucru în PDF
+	Assign Profile	Asignare profil
+	At	La
+	Auto-Align Layers	Alinierea automată a straturilor
+	Auto-Blend Layers	Combinarea automată a straturilor
+	Batch	Lot
+	Border	Margine
+	Box Blur	Neclaritate cutie
+	Calculations	Calcule
+	RAW Develop	Developare RAW
+	RAW Develop Filter	Filtru Developare RAW
+	Channel1	Canal 1
+	Channel2	Canal 2
+	Channel3	Canal 3
+	Channel4	Canal 4
+	Clone	Clonare
+	Color Decontaminate	Decontaminare culoare
+	Color Halftone	Semiton color
+	Color Lookup Tables	Tabele de căutare a culorilor
+	Color Settings	Setări de culoare
+	Color Table	Tabel de culori
+	Conditional Mode Change	Schimbare condiționată a modului
+	Content-Aware Fill	Umplere sensibilă la conținut
+	Convert to Linked	Conversie în conectat
+	Convert to Profile	Conversie la profil
+	Crystallize	Cristalizare
+	Data	Date
+	Data Sets as Files	Seturi de date ca fișiere
+	De-Interlace	Dezîntrețesere
+	Define Brush Preset	Definire presetare pensulă
+	Define Custom Shape	Definire formă personalizată
+	Define Pattern	Definire model
+	Defringe	Eliminare halouri
+	Diffuse	Difuzare
+	Diffuse Glow	Strălucire difuză
+	Displace	Deplasare
+	Do you want to save you made to “{name}” before quitting?	Doriți să salvați modificările făcute la „{name}” înainte de a închide programul?
+	Dust & Scratches	Praf și zgârieturi
+	Export Contents	Export conținut
+	Export Preferences	Preferințe export
+	Export/Import Presets	Export/import presetări
+	Extrude	Extrudare
+	Fibers	Fibre
+	Field Blur	Neclaritate câmp
+	File Info	Informații fișier
+	Filter Gallery	Galerie de filtre
+	Find and Replace Text	Găsire și înlocuire text
+	Fit Image	Încadrare imagine
+	Flame	Flacără
+	Focus Area	Zonă de focalizare
+	Gaussian Blur	Neclaritate gaussiană
+	Global Light	Lumină globală
+	Group from Layers	Grup din straturi
+	HDR Toning	Tonalizare HDR
+	High Pass	Trecere de sus
+	Highlight	Lumini
+	Image Processor	Procesor de imagini
+	Install Plug-in	Instalare plugin
+	Interpret Footage	Interpretare material video
+	Iris Blur	Neclaritate iris
+	Jag	Zimțat
+	Label	Etichetă
+	Layer Comps to Files	Compoziții de straturi în fișiere
+	Layer Content Options	Opțiuni conținut strat
+	Layer From Background	Strat din fundal
+	Layer from Background	Strat din fundal
+	Layers to Files	Straturi în fișiere
+	Legacy	Veche
+	Lens Blur	Neclaritate lentilă
+	Lens Correction	Corecție obiectiv
+	Lens Flare	Reflexie lentilă
+	Lighting Effects	Efecte de iluminare
+	Liquify	Lichefiere
+	Lum	Lum
+	Match Color	Potrivire culoare
+	Merge to HDR Pro	Îmbinare în HDR Pro
+	Mezzotint	Mezzotintă
+	Mosaic	Mozaic
+	Motion Blur	Neclaritate mișcare
+	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or run PhotoCraft under XWayland with `WAYLAND_DISPLAY= photocraft`.	Tragerea și plasarea nativă a fișierelor nu este încă suportată pe Wayland. Utilizați Fișier › Deschidere, sau porniți PhotoCraft prin XWayland cu `WAYLAND_DISPLAY= photocraft`.
+	Neon Glow	Strălucire neon
+	New Guide Layout	Aranjament nou de ghidaje
+	New Video Layer from File	Strat video nou din fișier
+	Ocean Ripple	Ondulație oceanică
+	Oil Paint	Pictură în ulei
+	Open As	Deschidere ca
+	Package	Împachetare
+	Paint Daubs	Pete de pictură
+	Path Blur	Neclaritate traseu
+	Paths to Illustrator	Trasee către Illustrator
+	Photomerge	Photomerge
+	Picture Frame	Ramă foto
+	Pinch	Ciupire
+	Place Embedded	Plasare încorporată
+	Place Linked	Plasare conectată
+	Place Scale Marker	Plasare marcator de scară
+	Plastic Wrap	Înveliș de plastic
+	Pointillize	Pointilism
+	Polar Coordinates	Coordonate polare
+	Polar To Rectangular	Polar la rectangular
+	Poster Edges	Margini posterizate
+	Preset Manager	Administrator presetări
+	Profile	Profil
+	Radial Blur	Neclaritate radială
+	Raw Defaults	Valori implicite Raw
+	Rectangular To Polar	Rectangular la polar
+	Relink to File	Reconectare la fișier
+	Render Video	Randare video
+	Replace Color	Înlocuire culoare
+	Replace Contents	Înlocuire conținut
+	Replace Footage	Înlocuire material video
+	Resolve Missing Fonts	Rezolvare fonturi lipsă
+	Ripple	Ondulație
+	Rough Pastels	Pasteluri aspre
+	Sat	Sat
+	Save a Copy	Salvare copie
+	Save for Web (Legacy)	Salvare pentru web (vechi)
+	Scale Effects	Scalare efecte
+	Script Events Manager	Administrator evenimente script
+	Search menus	Căutare în meniuri
+	Select and Mask	Selecție și mască
+	Set Measurement Scale	Definire scară de măsurare
+	Shadows/Highlights	Umbre/luminile
+	Shape Blur	Neclaritate formă
+	Shear	Forfecare
+	Smart Blur	Neclaritate inteligentă
+	Smart Sharpen	Clarificare inteligentă
+	Smudge Stick	Difumino
+	Solid Color	Culoare solidă
+	Spherize	Sferizare
+	Spin Blur	Neclaritate rotație
+	Spot	Foc
+	Sprayed Strokes	Tușe pulverizate
+	Strokes	Tușe
+	Sumi-e	Sumi-e
+	Surface Blur	Neclaritate suprafață
+	Texturizer	Texturizare
+	Tiles	Plăci
+	Tilt-Shift	Înclinare-deplasare
+	Trace Contour	Trasare contur
+	Trap	Trapping
+	Tree	Copac
+	Trim	Ajustare margini
+	Turbulent	Turbulent
+	Twirl	Vârtej
+	Unsharp Mask	Mască de claritate
+	Use File › Open to open an image.	Utilizați Fișier › Deschidere pentru a deschide o imagine.
+	Vanishing Point	Punct de fugă
+	Variable Data Sets	Seturi de date variabile
+	Video Frames to Layers	Cadre video în straturi
+	WIA Support	Suport WIA
+	Warp Text	Deformare text
+	Wind	Vânt
+	Vertical Type Tool	Instrument Text vertical
+	About {app}	Despre {app}
+	Hide {app}	Ascundere {app}
+	Quit {app}	Ieșire din {app}
+	Services	Servicii
+	Hide Others	Ascundere celelalte
+	Lut	LUT
+	Cooling L B B	Răcire LBB
+	Cooling80	Răcire 80
+	Cooling82	Răcire 82
+	Hsb	HSB
+	Hsl	HSL
+	Movie Prime	Film Prime
+	Prime105	Obiectiv fix de 105 mm
+	Prime35	Obiectiv fix de 35 mm
+	Warming L B A	Încălzire LBA
+	Warming81	Încălzire 81
+	Warming85	Încălzire 85
+@id	filter.sharpen.sharpen	Clarificare
+	Good	Bună
+	Best	Cea mai bună
+	Adjustment Properties	Proprietăți ajustare
+	Default Foreground and Background Colors	Culori frontală și de fundal implicite
+	Move Layer	Deplasare strat
+	Rectangular Selection	Selecție rectangulară
+	Reorder Layer	Reordonare strat
+	Select Layer	Selectare strat
+	Set Colors	Stabilire culori
+	Switch Foreground and Background Colors	Interschimbare culori frontală și de fundal
+	Target	Destinație
+	Make Work Path…	Creare traseu de lucru…
+	Create Vector Mask	Creare mască vectorială
+	Make Selection…	Creare selecție…
+	Fill Path…	Umplere traseu…
+	Clipping Path…	Traseu de tăiere…
+	Free Transform Path	Transformare liberă traseu
+	Unite Shapes at Overlap	Unire forme la suprapunere
+	Subtract Shapes at Overlap	Scădere forme la suprapunere
+	Copy Fill	Copiere umplere
+	Copy Complete Stroke	Copiere trasou complet
+	Paste Fill	Inserare umplere
+	Paste Complete Stroke	Inserare trasou complet
+	Make Symmetry Path	Creare traseu de simetrie
+	Disable Symmetry Path	Dezactivare traseu de simetrie
+	Select Custom Color…	Selectare culoare personalizată…
+	Color Picker (Custom Canvas Color)	Selector de culoare (culoare pânză personalizată)
+	Duplicate Channel	Duplicare canal
+	Delete Channel	Ștergere canal
+	Rename Channel…	Redenumire canal…
+	Merge Spot Channel	Combinare canal de culoare plană
+	Convert to Alpha Channel	Conversie în canal alfa
+	Exit Quick Mask	Ieșire din Mască rapidă
+	New Channel…	Canal nou…
+	New Spot Channel…	Canal de culoare plană nou…
+	Split Channels	Divizare canale
+	Merge Channels…	Combinare canale…
+	Color Indicates Masked Areas	Culoarea indică zone mascate
+	Color Indicates Selected Areas	Culoarea indică zone selectate
+	✓ Color Indicates Masked Areas	✓ Culoarea indică zone mascate
+	✓ Color Indicates Selected Areas	✓ Culoarea indică zone selectate
+	Up	Sus
+	To	Până la
+	Shallow	Superficial
+	Deep	Profund
+	Blend Interior Effects as Group	Fuziune efecte interioare ca grup
+	Blend Clipped Layers as Group	Fuziune straturi tăiate ca grup
+	Transparency Shapes Layer	Strat de forme de transparență
+	Layer Mask Hides Effects	Masca de strat ascunde efectele
+	Vector Mask Hides Effects	Masca vectorială ascunde efectele
+	General Blending	Fuziune generală
+	Underlying Layer:	Strat subiacent:
+	Nothing to paste: the clipboard holds no image	Nimic de inserat: clipboard-ul nu conține nicio imagine
+	Preferences saved	Preferințe salvate
+	Invalid panel layout; restored the default dock	Aranjament de panouri nevalid; s-a restaurat acoplarea implicită
+	Preferences were reset: {error}	Preferințele au fost resetate: {error}
+	Recovered {name}	S-a recuperat {name}
+	Couldn't save preferences: {error}. Retrying…	Nu s-au putut salva preferințele: {error}. Se reîncearcă…
+	Autosave failed: {error}	Salvarea automată a eșuat: {error}
+	Exported presets to {path}	S-au exportat presetările în {path}
+	Ran script {name}	S-a executat scriptul {name}
+	Sent to the printer ({spooler})	S-a trimis la imprimantă ({spooler})
+	Printed to {path}	S-a imprimat în {path}
+	Exported {path} ({size})	S-a exportat {path} ({size})
+	Exported {path}	S-a exportat {path}
+	Added swatch {name}	S-a adăugat mostra {name}
+	Step {step} ({id}) failed: {error}	Pasul {step} ({id}) a eșuat: {error}
+	Could not rename the action: {error}	Nu s-a putut redenumi acțiunea: {error}
+	Action playback failed: {error}	Redarea acțiunii a eșuat: {error}
+	Clone source set at {x}, {y}	Sursă de clonare stabilită la {x}, {y}
+	Color management: {error}	Gestionare culoare: {error}
+	Opened {url}	S-a deschis {url}
+	No custom shape "{name}": pick one in the options bar or Window › Shapes	Nu există formă personalizată „{name}”: alegeți una din bara de opțiuni sau Fereastră › Forme
+	Saved a copy as {path}	S-a salvat o copie ca {path}
+	Exported contents to {path}	S-a exportat conținutul în {path}
+	{label} is not available: {reason}	{label} nu este disponibil: {reason}
+	Saved {path}; image assets: {n} in {dir}	S-a salvat {path}; resurse imagine: {n} în {dir}
+	{message} (notes: {n}; {warning})	{message} (note: {n}; {warning})
+	Preferences can't be saved	Preferințele nu pot fi salvate
+	PhotoCraft keeps retrying; until a save succeeds, preference changes are lost when it closes.	PhotoCraft va continua să încerce; până când o salvare are succes, modificările preferințelor se vor pierde la închidere.
+	GPU retry scheduled	Reîncercare GPU programată
+	Save your work and restart PhotoCraft to retry GPU acceleration. CPU rendering remains active for this session.	Salvați-vă munca și reporniți PhotoCraft pentru a reîncerca accelerarea GPU. Randarea pe CPU rămâne activă pentru această sesiune.
+	GPU device was lost; using the CPU renderer.	Dispozitivul GPU s-a pierdut; se va folosi randorul CPU.
+	GPU error; using the CPU renderer.	Eroare GPU; se va folosi randorul CPU.
+	Couldn't open {name}: {error}	Nu s-a putut deschide {name}: {error}
+	Toggle the Brush Settings panel	Afișare sau ascundere panou Setări pensulă
+	New Brush Preset	Presetare de pensulă nouă
+	Grid view	Vizualizare grilă
+	List view	Vizualizare listă
+	{verb} {mask} {layer}	{verb} {mask} {layer}
+	Unlink	Deconectare
+	Link	Conectare
+	Commit transform	Confirmare transformare
+	Cancel transform	Anulare transformare
+	Scroll menu up	Derulare meniu sus
+	Scroll menu down	Derulare meniu jos
+	This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?	Acest strat de text trebuie rasterizat înainte de a continua. Textul său nu va mai fi editabil. Rasterizați textul?
+	This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?	Acest strat de formă trebuie rasterizat înainte de a continua. Nu va mai fi editabil ca formă. Rasterizați forma?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	Acest obiect inteligent trebuie rasterizat înainte de a continua. Conținutul său nu va mai fi editabil. Rasterizați obiectul inteligent?
+	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Acest strat de umplere trebuie rasterizat înainte de a continua. Conținutul său de umplere nu va mai fi editabil. Rasterizați stratul?
+	This layer must be rasterized before proceeding.	Acest strat trebuie rasterizat înainte de a continua.
+	Color Picker (Background Color)	Selector de culoare (culoare de fundal)
+	Color Picker (Foreground Color)	Selector de culoare (culoare frontală)
+	Adwaita (Light)	Adwaita (clar)
+	Adwaita (Dark)	Adwaita (întunecat)
+	Open Recent is unavailable on the web	Deschidere recente nu este disponibilă pe web
+	Graphics adapter: {adapter}	Adaptor grafic: {adapter}
+	Backend: {backend} ({type})	Backend: {backend} ({type})
+	Driver: {driver}	Driver: {driver}
+	GPU backend preference: {backend}	Preferință backend GPU: {backend}
+	Selected at launch: {backend}	Selectat la pornire: {backend}
+	Image compositor: {processor}	Compozitor imagini: {processor}
+	Fallback: {reason}	Alternativă: {reason}
+	This session: {reason}	Această sesiune: {reason}
+	Window renderer: {renderer}	Randor fereastră: {renderer}
+	Software adapter	Adaptor software
+	Graphics adapter	Adaptor grafic
+	unknown type	tip necunoscut
+	Platform: {os} {arch}	Platformă: {os} {arch}
+	previous reading kept; the last re-read failed: {reason}	s-a păstrat citirea anterioară; ultima recitire a eșuat: {reason}
+	Monitor profile: {profile}	Profil monitor: {profile}
+	Display profiles: {reason}	Profiluri afișaj: {reason}
+	Monitor profile in use on {display}: {profile}	Profil monitor în uz pe {display}: {profile}
+	Monitor profile in use: {profile}	Profil monitor în uz: {profile}
+	The canvas is shown as sRGB. Choose a monitor profile in Edit › Color Settings.	Pânza este afișată ca sRGB. Alegeți un profil de monitor în Editare › Setări de culoare.
+	The canvas on {display} is shown as sRGB. Choose a monitor profile in Edit › Color Settings.	Pânza de pe {display} este afișată ca sRGB. Alegeți un profil de monitor în Editare › Setări de culoare.
+	Display profile not used	Profil de afișaj neutilizat
+	Monitor profile on {display} (main window): {profile}	Profil monitor pe {display} (fereastra principală): {profile}
+	Monitor profile on {display}: {profile}	Profil monitor pe {display}: {profile}
+	fallback	alternativă
+	The document does not have an embedded colour profile. Working space: {working}.	Documentul nu are un profil de culoare încorporat. Spațiu de lucru: {working}.
+	The document has an embedded colour profile that does not match the working space.\nEmbedded: {embedded}\nWorking: {working}	Documentul are un profil de culoare încorporat care nu corespunde cu spațiul de lucru.\nÎncorporat: {embedded}\nLucru: {working}
+	Importing {what} from {file}…	Se importă {what} din {file}…
+@plural	Imported {n} brush from {file}|Imported {n} brushes from {file}	S-a importat {n} pensulă din {file}|S-au importat {n} pensule din {file}|S-au importat {n} de pensule din {file}
+@plural	Imported {n} gradient from {file}|Imported {n} gradients from {file}	S-a importat {n} degrade din {file}|S-au importat {n} degradeuri din {file}|S-au importat {n} de degradeuri din {file}
+@plural	Imported {n} pattern from {file}|Imported {n} patterns from {file}	S-a importat {n} model din {file}|S-au importat {n} modele din {file}|S-au importat {n} de modele din {file}
+	Data Set: {name}  ({index}/{total})	Set de date: {name}  ({index}/{total})
+	(none)	(niciunul)
+navigator	Zoom	Zoom
+	Apply {option}: {state}	Aplicare {option}: {state}
+	This adjustment ({key}) is kept as imported and can't be edited yet.	Acest ajustaj ({key}) este conservat ca a fost importat și nu poate fi editat încă.
+	Join the ArtCraft Discord ({url})	Alăturare la Discord-ul ArtCraft ({url})
+	{index} of {total}	{index} din {total}
+	{shortcut} assigned.	{shortcut} asignat.
+	{shortcut} is already in use by {commands} and will be removed from it when you click OK.	{shortcut} este deja folosit de {commands} și va fi eliminat de acolo când faceți clic pe OK.
+	The current gradient (pick one in Window › Gradients)	Degradeul curent (alegeți unul în Fereastră › Degradeuri)
+	auto	automat
+	Baseline Shift	Deplasare linie de bază
+	Breeze Dark	Breeze întunecat
+	Breeze Light	Breeze clar
+	brushes	pensule
+	Color Picker	Selector de culoare
+	Current	Curent
+	Dark Gray	Gri întunecat
+	Fill Color	Culoare umplere
+	gradients	degradeuri
+	Graphic and web	Grafică și web
+	layer mask	mască de strat
+	Lock All	Blocare tot
+	Lock Image Pixels	Blocare pixeli imagine
+	Lock Position	Blocare poziție
+	Lock Transparent Pixels	Blocare pixeli transparenți
+	manual	manual
+	Medium Gray	Gri mediu
+	New document	Document nou
+	New Selection	Selecție nouă
+	No Document	Fără document
+	Note tool	Instrument Notă
+	off	dezactivat
+	on	activat
+	Recent Files	Fișiere recente
+	Rgb	RGB
+	Shortcut	Comandă rapidă
+	Show Rulers	Afișare rigle
+	Solarized Dark	Solarized întunecat
+	sRGB	sRGB
+	Stroke Color	Culoare trasou
+	unknown	necunoscut
+	Unsaved Changes	Modificări nesalvate
+	vector mask	mască vectorială
+	ZigZag	Zigzag
+	Show home recent files	Afișare fișiere recente la pornire
+	Clear Brush Controls	Ștergere controale pensulă
+	Reset All Locked Settings	Restaurare toate setările blocate
+	Copy Texture to Other Tools	Copiere textură în alte instrumente
+	Load Actions…	Încărcare acțiuni…
+	Save Actions…	Salvare acțiuni…
+	New Action…	Acțiune nouă…
+	Start Recording	Pornire înregistrare
+	Stop Recording	Oprire înregistrare
+	{name} (Photoshop)	{name} (Photoshop)
+	{message} ({note})	{message} ({note})
+@plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	S-a încărcat {n} acțiune din {file}|S-au încărcat {n} acțiuni din {file}|S-au încărcat {n} de acțiuni din {file}
+@plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} pas nu are încă echivalent în PhotoCraft|{n} pași nu au încă echivalent în PhotoCraft|{n} de pași nu au încă echivalent în PhotoCraft
+@plural	Saved {n} action to {file}|Saved {n} actions to {file}	S-a salvat {n} acțiune în {file}|S-au salvat {n} acțiuni în {file}|S-au salvat {n} de acțiuni în {file}
+@plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} pas fără echivalent în Photoshop a fost omis|{n} pași fără echivalent în Photoshop au fost omiși|{n} de pași fără echivalent în Photoshop au fost omiși
+	Starting serial	Număr de serie inițial
+	Insert Stop…	Inserare oprire…
+	Save Set…	Salvare set…
+	Message:	Mesaj:
+	Allow Continue	Permitere continuare
+	Show dialog during playback	Afișare dialog în timpul redării
+	Select an action first	Selectați mai întâi o acțiune
+	Action playback stopped	Redarea acțiunii s-a oprit
+	Step {step} is waiting for its dialog	Pasul {step} își așteaptă dialogul
+@plural	{n} action|{n} actions	{n} acțiune|{n} acțiuni|{n} de acțiuni
+	Background (Default)	Fundal (implicit)
+	Include All Subfolders	Includere toate subfolderele
+	Auto Add/Delete	Adăugare/ștergere automată
+	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nu activați și Imagine în oglindă în Setări de imprimare…: cele două răsturnări se anulează.
+	Print Settings…	Setări de imprimare…
+	Remember to turn off the printer's own colour management in Print Settings…	Nu uitați să dezactivați gestionarea culorii proprie a imprimantei în Setări de imprimare…
+	Sent to {printer}	Trimis la {printer}
+	set in Print Settings…	se stabilește în Setări de imprimare…
+	ICO is limited to 256 × 256 pixels	ICO este limitat la 256 × 256 pixeli
+	Show Favorite Fonts	Afișare fonturi favorite
+	No favorite fonts yet: click the star beside a font to add it.	Nicio fontă favorită încă: faceți clic pe steaua de lângă o fontă pentru a o adăuga.
+	Favorite fonts	Fonturi favorite
+	Add to Favorites	Adăugare la favorite
+	Remove from Favorites	Eliminare din favorite
+	Show All Fonts	Afișare toate fonturile
+	All Classes	Toate clasele
+	Blackletter	Gotică
+	Decorative	Decorativă
+	Font preview:	Previzualizare fontă:
+	Handwritten	Manuscrisă
+	Hide Font Classes	Ascundere clase de fonturi
+	Hide Styles	Ascundere stiluri
+	Monospace	Monospațiată
+	No fonts match these filters.	Niciun font nu corespunde acestor filtre.
+	No similar fonts: the current font doesn't say what it looks like.	Niciun font similar: fontul curent nu descrie cum arată.
+	OpenType font	Font OpenType
+	Sans Serif	Sans serif
+	Script	Caligrafică
+	Serif	Serif
+	Show Font Classes	Afișare clase de fonturi
+	Show Similar Fonts	Afișare fonturi similare
+	Show Styles	Afișare stiluri
+	Show Variable Fonts	Afișare fonturi variabile
+	Slab Serif	Serif egipteană
+	TrueType font	Font TrueType
+	Variable font	Font variabil
+	Calibration	Calibrare
+	Red Primary	Primar roșu
+	Green Primary	Primar verde
+	Blue Primary	Primar albastru
+	Write xmp sidecars	Scriere fișiere XMP auxiliare
+	Set the tone sliders from the image	Stabilire glisoarele de ton din imagine
+	Settings from {name}	Setări din {name}
+	Settings from {name}; {count} not supported: {names}	Setări din {name}; {count} nesuportate: {names}
+	Could not write {name}: {error}	Nu s-a putut scrie {name}: {error}
+	Kept {name}: written by another application	S-a păstrat {name}: a fost scris de altă aplicație
+	Shadow Tint	Tentă umbre
+	Check for Updates…	Căutare actualizări…
+	PhotoCraft Updates	Actualizări PhotoCraft
+	Checking for updates…	Se caută actualizări…
+	Open the release page to choose an installer for your system.	Deschideți pagina versiunii pentru a alege un instalator pentru sistemul dvs.
+	Open Download Page	Deschidere pagină de descărcare
+	PhotoCraft is up to date.	PhotoCraft este actualizat.
+	Could not check for updates.	Nu s-au putut căuta actualizări.
+	Updates have not been checked yet.	Actualizările nu au fost încă căutate.
+	Check Again	Căutare din nou
+	Automatically Check for Updates	Căutare automată a actualizărilor
+	Installed version: {version}	Versiune instalată: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} este disponibil.
+	Paints from the History panel's source state	Pictează pe baza stării sursă din panoul Istoric
+	Sets the source for the history brush	Stabilește sursa pentru pensula istoric
+	Highlight Mode	Mod luminile
+	Highlight Color	Culoare luminile
+	Highlight Opacity	Opacitate luminile
+	Shadow Mode	Mod umbre
+	Shadow Color	Culoare umbre
+	Shadow Opacity	Opacitate umbre
+	Use the embedded profile ({profile})	Utilizare profil încorporat ({profile})
+	Convert to the working space ({profile})	Conversie la spațiul de lucru ({profile})
+	Remember this choice for future images	Reținere această opțiune pentru imaginile viitoare
+	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	Reactivați solicitarea cu Ask On Mismatch în Editare › Setări de culoare.
+	Button Mode	Mod buton
+	Button Mode On	Mod buton activat
+	Darken Interface	Întunecare interfață
+	Lighten Interface	Luminare interfață
+	Technique	Tehnică
+	Chisel Hard	Cioplire dură
+	Chisel Soft	Cioplire moale
+	Open color-less EXR as ACEScg	Deschidere EXR fără spațiu de culoare ca ACEScg
+	Do not append "copy" to filename when saving a copy	Nu adăugați „copy” la numele fișierului la salvarea unei copii
+	Edit Selected Guides	Editare ghidaje selectate
+	Clear Selected Guides	Ștergere ghidaje selectate
+	Bicubic Automatic	Bicubică automată
+	Bicubic Smoother	Bicubică mai netedă
+	Bicubic Sharper	Bicubică mai clară
+	Pasting from other apps is unavailable	Inserarea din alte aplicații nu este disponibilă
+	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft nu poate accesa clipboard-ul sistemului în această sesiune. Pe Wayland, un sandbox Flatpak ascunde protocolul prin care se citesc imaginile din alte aplicații.
+	To paste from other apps, start PhotoCraft under XWayland: `{command}`	Pentru a insera din alte aplicații, porniți PhotoCraft sub XWayland: `{command}`
+	Nothing to paste: PhotoCraft can't read the system clipboard here	Nimic de inserat: PhotoCraft nu poate citi aici clipboard-ul sistemului
+	Delete this set	Ștergere acest set
+	New Set…	Set nou…
+	PhotoCraft Defaults	Valori implicite PhotoCraft
+	Save a list of these shortcuts as a web page	Salvare o listă a acestor comenzi rapide ca pagină web
+	Save the changes to this set	Salvare modificările în acest set
+	Save these shortcuts as a .kys file	Salvare aceste comenzi rapide ca fișier .kys
+	Save these shortcuts as a new set	Salvare aceste comenzi rapide ca set nou
+	Set deleted.	Set șters.
+	Set saved.	Set salvat.
+	Set:	Set:
+	Summarize…	Rezumare…
+	There are too many sets: delete one first.	Există prea multe seturi: ștergeți unul mai întâi.
+	set name	nume set
+	{set} (modified)	{set} (modificat)
+	Show file name in title	Afișare nume fișier în titlu
+	50% Threshold	Prag 50%
+	Pattern Dither	Tramă model
+	Diffusion Dither	Tramă difuzie
+	Halftone Screen	Trama de semitonuri
+	Custom Pattern	Model personalizat
+	Frequency:	Frecvență:
+	Lines/Inch	Linii/inch
+	Lines/Centimeter	Linii/centimetru
+	Ellipse	Elipsă
+	Accept and Go to Conflict	Acceptare și salt la conflict
+	Changes undone.	Modificări anulate.
+	Choose a new shortcut for this command, or leave it without one.	Alegeți o comandă rapidă nouă pentru această comandă, sau lăsați-o fără una.
+	Put this command's shortcuts back as they were	Restaurare comenzile rapide ale acestei comenzi cum erau
+	Take the shortcut from the other command and select it	Preluare comanda rapidă de la cealaltă comandă și selectarea ei
+	Undo Changes	Anulare modificări
+	{shortcut} is reserved by the system and can't be assigned.	{shortcut} este rezervat de sistem și nu poate fi asignat.
+	Low-Latency Drawing (vsync off, applies at next launch)	Desenare cu latență redusă (fără sincronizare verticală, se aplică la următoarea pornire)
+	Free Transform is still being applied; try again when it has finished.	Transformarea liberă încă se aplică; încercați din nou când se termină.
+	The transform couldn't be applied.	Transformarea nu a putut fi aplicată.
+	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	Straturile sale necesită {needed} de memorie GPU; bugetul le lasă {budget}.
+	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	Setați Memorie GPU în Preferințe › Performanță la ce poate aloca placa dvs. grafică, cel mult 3/8 din memoria ei. Automat urmează Utilizarea memoriei, în limita unui sfert din memoria acestui computer și 3/8 din cea a plăcii, și nu contorizează documentul pe o placă a cărei memorie este cunoscută. Bara de stare arată Memorie GPU plină cât timp nu încap.
+	GPU Memory Full	Memorie GPU plină
+	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	Straturile necesită {needed} de memorie GPU și pot ocupa {budget}, așa că editările care redesenează tot documentul se fac pe CPU. Faceți clic pentru a stabili Memoria GPU.
+	GPU memory budget: {budget}	Buget memorie GPU: {budget}
+	Graphics memory: {size}	Memorie grafică: {size}
+	This document's layers: {needed} of {budget} for layers	Straturile acestui document: {needed} din {budget} pentru straturi
+	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	Straturile acestui document necesită {needed} dar pot ocupa {budget}: redesenările întregului document folosesc CPU
+	GPU Memory (MB, 0 = Automatic)	Memorie GPU (MB, 0 = Automat)
+	{path}: the path is not valid Unicode; save under another name.	{path}: calea nu este Unicode valid; salvați sub alt nume.
+	{name} was changed by another app after it was opened or saved here.	{name} a fost modificat de o altă aplicație după ce a fost deschis sau salvat aici.
+	Replace it with this document, or cancel and use File › Save As to keep both.	Înlocuiți-l cu acest document, sau anulați și utilizați Fișier › Salvare ca pentru a păstra ambele.
+	Decrease Brush Size	Reducere dimensiune pensulă
+	Increase Brush Size	Creștere dimensiune pensulă
+	Decrease Brush Hardness	Reducere duritate pensulă
+	Increase Brush Hardness	Creștere duritate pensulă
+	Demosaic	Demozaicare
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Cum este completat mozaicul filtrului de culoare al camerei. Se aplică la deschiderea fișierului; previzualizarea arată metoda cu care a fost deschis.
+	AHD (adaptive homogeneity)	AHD (omogenitate adaptivă)
+	Malvar–He–Cutler	Malvar–He–Cutler
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: marginile cele mai curate și cea mai mică franjare de culoare; cea mai lentă.
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolare cu corecție de gradient: clară și rapidă, cu o anumită franjare de culoare pe detalii fine.
+	The fastest and the softest, with colour fringing on fine detail.	Cea mai rapidă și cea mai moale, cu franjare de culoare pe detalii fine.
+	“{name}” already exists. Replace it?	„{name}” există deja. Îl înlocuiți?
+	The name in the save dialog was “{name}”.	Numele din dialogul de salvare a fost „{name}”.
+	Previous Brush	Pensula anterioară
+	Next Brush	Pensula următoare
+	First Brush	Prima pensulă
+	Last Brush	Ultima pensulă
+	Preview size	Dimensiune previzualizare
+	Memory Usage	Utilizare memorie
+	Per-document RAM limit (MB)	Limită RAM per document (MB)
+	Installed RAM: {ram} MB; this limit: {percent}%	RAM instalată: {ram} MB; această limită: {percent}%
+	Limits each open document's pixels plus History. Oldest undo states are discarded when the limit is exceeded.	Limitează pixelii fiecărui document deschis plus Istoricul. Cele mai vechi stări de anulare sunt eliminate la depășirea limitei.
+	Applies immediately when saved. Memory is not reserved in advance.	Se aplică imediat la salvare. Memoria nu este rezervată în avans.
+	With GPU Memory set to Automatic, this also limits the GPU layer budget. That budget is capped at one quarter of installed RAM and, when known, three eighths of the graphics card's memory, with a 512 MB minimum. Raising this limit beyond those caps does not increase the GPU budget.	Cu Memoria GPU pe Automat, aceasta limitează și bugetul de strat GPU. Acel buget este plafonat la un sfert din RAM-ul instalat și, când se cunoaște, trei optimi din memoria plăcii grafice, cu un minim de 512 MB. Mărirea acestei limite dincolo de aceste plafoane nu crește bugetul GPU.
+	Use	Utilizare
+	In Front	În față
+	Behind	În spate
+	DDS Options	Opțiuni DDS
+	Generate Mipmaps	Generare mipmap-uri
+	There is no color table to save.	Nu există o tabelă de culori de salvat.
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	S-a salvat {n} culoare în {file}|S-au salvat {n} culori în {file}|S-au salvat {n} de culori în {file}
+	GPU adapter	Adaptor GPU
+	Import Styles…	Import stiluri…
+	Export Selected Styles…	Export stiluri selectate…
+	Export Styles…	Export stiluri…
+	{file} is not a style library (.asl)	{file} nu este o bibliotecă de stiluri (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	S-a importat {n} stil din {file}|S-au importat {n} stiluri din {file}|S-au importat {n} de stiluri din {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	S-a exportat {n} stil în {file}|S-au exportat {n} stiluri în {file}|S-au exportat {n} de stiluri în {file}
+	Confirm or cancel the open action step dialog first	Confirmați sau anulați mai întâi dialogul deschis al pasului de acțiune
+	Pro Medium Gray	Pro (gri mediu)
+	Solarized	Solarized
+	Breeze	Breeze
+	Pro Light Gray	Pro (gri clar)
+	Pro Light	Pro (clar)
+	Resize Windows to Fit	Redimensionare ferestre pentru încadrare
+	EXR	EXR
+	Automatic paragraph direction	Direcție paragraf automată
+	Left-to-right paragraph direction	Direcție paragraf de la stânga la dreapta
+	Right-to-left paragraph direction	Direcție paragraf de la dreapta la stânga
+	Not rendered: this adjustment ({key}) is kept as imported.	Nu este randat: acest ajustaj ({key}) este conservat cum a fost importat.
+	Print preview image	Previzualizare imagine de imprimare
+	Hue Cube	Cub de nuanță
+	Brightness Cube	Cub de luminozitate
+	Color Wheel	Roată de culoare
+	RGB Sliders	Regulatoare RGB
+	HSB Sliders	Regulatoare HSB
+	CMYK Sliders	Regulatoare CMYK
+	Lab Sliders	Regulatoare Lab
+	Web Color Sliders	Regulatoare de culori web
+	Copy Color as HTML	Copiere culoare ca HTML
+	Copy Color's Hex Code	Copiere cod hexadecimal al culorii
+	RGB Spectrum	Spectru RGB
+	CMYK Spectrum	Spectru CMYK
+	Grayscale Ramp	Rampă de tonuri de gri
+	Current Colors	Culori curente
+	Make Ramp Web Safe	Transformare rampă în sigură pentru web
+	The path was kept as the Work Path	Traseul a fost conservat ca Traseu de lucru
+	The path was discarded	Traseul a fost abandonat
+	Art History Brush Tool	Instrument Pensulă istoric artistic
+	Tight Short	Scurt strâns
+	Tight Medium	Mediu strâns
+	Tight Long	Lung strâns
+	Loose Medium	Mediu lejer
+	Loose Long	Lung lejer
+	Dab	Tamponare
+	Tight Curl	Buclă strânsă
+	Loose Curl	Buclă lejeră
+	Stylized dabs from a history state	Tușe stilizate dintr-o stare din istoric
+	Font size presets	Presetări dimensiune font
+	Leading presets	Presetări interlinie
+	Tracking presets	Presetări spațiere
+	Color Aware	Sensibil la culoare
+	Decontaminate Colors	Decontaminare culori
+	Edge Detection	Detecție margini
+	Global Refinements	Perfecționări globale
+	High Quality Preview	Previzualizare de înaltă calitate
+	Object Aware	Sensibil la obiect
+	Real-Time Refinement	Perfecționare în timp real
+	Refine Edge Brush Tool	Instrument Pensulă de perfecționare margine
+	Refine Hair	Perfecționare păr
+	Refine Mode	Mod perfecționare
+	Remember Settings	Reținere setări
+	View Mode	Mod de vizualizare
+	Object Aware needs a segmentation model, which isn't available yet	Sensibil la obiect necesită un model de segmentare, care nu este încă disponibil
+	Refine Hair needs hair detection, which isn't available yet	Perfecționare păr necesită detecție de păr, care nu este încă disponibilă
+	Select and Mask was closed: its document is no longer the active one	S-a închis Selecție și mască: documentul său nu mai este cel activ
+	Select and Mask was closed: another layer was selected	S-a închis Selecție și mască: a fost selectat alt strat
+	Select Layer Under Cursor	Selectare strat sub cursor
+	Drag to move the selected path	Trageți pentru a deplasa traseul selectat
+	A:	A:
+	Adobe-rgb-compat	Compatibil Adobe RGB
+	Any	Oricare
+	Arc Lower	Arc inferior
+	Arc Upper	Arc superior
+	Author Title	Titlu autor
+	Based On	Bazat pe
+	Bend	Curbură
+	Bpc	Bpc
+	CPU Rendering	Randare pe CPU
+	Calculating…	Se calculează…
+	Case Sensitive	Sensibil la majuscule
+	Ccw	Anti-orar
+	Change Find	Comutare căutare
+	Checkerboard	Tablă de șah
+	Click to refresh histogram with uncached data	Faceți clic pentru a reîmprospăta histograma cu date neutilizate din cache
+	Cmyk	CMYK
+	Coated-cmyk	CMYK pentru hârtie cretată
+	Color Sampler Tool	Instrument Eșantionator de culoare
+	Copyright Url	URL drepturi de autor
+	Count:	Numărare:
+	Cw	Orar
+	Decrease Type Size	Reducere dimensiune text
+	Decrease Type Size by 10	Reducere dimensiune text cu 10
+	Display-p3	Display P3
+	Dont Enlarge	Fără mărire
+	Drag to move the active shape's path or the Work Path	Trageți pentru a deplasa traseul formei active sau Traseul de lucru
+	Drawn on the CPU: {reason}. Click for System Info.	Desenat pe CPU: {reason}. Faceți clic pentru informații despre sistem.
+	Erase with Brush or Pencil (hold)	Ștergere cu Pensula sau Creionul (țineți apăsat)
+	Export As: {name}	Export ca: {name}
+	Fill with Background Color	Umplere cu culoarea de fundal
+	Fill with Background Color, Preserve Transparency	Umplere cu culoarea de fundal, conservare transparență
+	Fill with Foreground Color	Umplere cu culoarea frontală
+	Fill with Foreground Color, Preserve Transparency	Umplere cu culoarea frontală, conservare transparență
+	Forward	Înainte
+	Gray-gamma-2.2	Gri gamma 2,2
+	Hand Tool (hold)	Instrument Mână (țineți apăsat)
+	Horizontal Distortion	Distorsiune orizontală
+	Increase Type Size	Creștere dimensiune text
+	Increase Type Size by 10	Creștere dimensiune text cu 10
+	Intent	Intenție
+	Level:	Nivel:
+	Linear-srgb	sRGB liniar
+	Make Selection from Path	Creare selecție din traseu
+	Mask Channel	Canal mască
+	Move Down	Deplasare jos
+	Move Up	Deplasare sus
+	Nearest	Cel mai apropiat
+	Pattern Fill…	Umplere cu model…
+	Percentile:	Percentilă:
+	Proof Setup…	Configurare probă…
+	Prophoto-compat	Compatibil ProPhoto
+	R G B	R G B
+	Release Notes	Note de lansare
+	Show Channels in Color	Afișare canale în culoare
+	Show Statistics	Afișare statistici
+	Simulate Paper	Simulare hârtie
+	Source Channel	Canal sursă
+	Source Invert	Inversare sursă
+	Source1 Channel	Canal sursă 1
+	Source1 Invert	Inversare sursă 1
+	Source2 Channel	Canal sursă 2
+	Source2 Invert	Inversare sursă 2
+	Source:	Sursă:
+	Space	Spațiu
+	Target Channel 3	Canal destinație 3
+	Target Channel 4	Canal destinație 4
+	Target Channel 5	Canal destinație 5
+	Target Channel 6	Canal destinație 6
+	Target Channel 7	Canal destinație 7
+	Target Channel 8	Canal destinație 8
+	Target Channel 9	Canal destinație 9
+	Target Composite Channel	Canal compus destinație
+	Temporary	Temporar
+	This Layer:	Acest strat:
+	Title	Titlu
+	Toggle Layer Mask Overlay	Comutare suprapunere mască de strat
+	Uncached Refresh	Reîmprospătare fără cache
+	Update and Restart	Actualizare și repornire
+	Vertical Distortion	Distorsiune verticală
+	W:	L:
+	Warming Filter (85)	Filtru de încălzire (85)
+	Whole Word	Cuvânt întreg
+	Working-cmyk	CMYK de lucru
+	Zoom In (hold, drag to scrub)	Mărire (țineți apăsat, trageți pentru a derula)
+	Zoom Out (hold)	Micșorare (țineți apăsat)
+
+# Color picker, gradient map and font list strings added on main
+	No matching fonts	Niciun font corespunzător
+	Recently Used Colors	Culori utilizate recent
+	Shapes can't use patterns yet	Formele nu pot folosi încă modele
+	Stop Color	Culoarea marcajului
+
+# Strings added on main after the catalog was completed (2026-11-06)
+	A command was cancelled or stopped during batch processing. Continue with the next file or stop?	O comandă a fost anulată sau oprită în timpul procesării în lot. Continuați cu următorul fișier sau opriți?
+	A file is still being placed; try again when it has finished.	Un fișier este încă în curs de plasare; încercați din nou după ce s-a terminat.
+	A frame supports affine transforms; select its image for perspective transforms	Un cadru acceptă transformări afine; selectați imaginea acestuia pentru transformări de perspectivă
+	A frame supports affine transforms; select its image to warp it	Un cadru acceptă transformări afine; selectați imaginea acestuia pentru a o deforma
+	Accelerated	Accelerat
+	Answer the open import question first, then import this file again.	Răspundeți mai întâi la întrebarea de import deschisă, apoi importați din nou acest fișier.
+	Arrowhead options	Opțiuni vârfuri de săgeată
+	Arrowheads	Vârfuri de săgeată
+	Attribute	Atribut
+	Background (default)	Fundal (implicit)
+	Batch preview	Previzualizare lot
+	Cancelled placing {name}	Plasarea {name} a fost anulată
+	Channel Options…	Opțiuni canal…
+	Concavity	Concavitate
+	Convert to Frame…	Conversie în cadru…
+	Create a new custom frame	Creare cadru personalizat nou
+	Create a new polygonal frame	Creare cadru poligonal nou
+	Create a new triangular frame	Creare cadru triunghiular nou
+	Create a single history state	Creare o singură stare de istoric
+	Data Sets as Files is unavailable on the web	Seturi de date ca fișiere nu este disponibil pe web
+	Dropped files weren't placed: their document was closed.	Fișierele plasate prin tragere nu au fost plasate: documentul lor a fost închis.
+	Dropped files weren't placed: too many are waiting for their document.	Fișierele plasate prin tragere nu au fost plasate: prea multe așteaptă după documentul lor.
+	Effect	Efect
+	Empty	Gol
+	End	Sfârșit
+	Filter for embedded smart objects	Filtrare după obiecte inteligente încorporate
+	Filter for linked smart objects that are missing	Filtrare după obiecte inteligente conectate care lipsesc
+	Filter for smart objects linked locally	Filtrare după obiecte inteligente conectate local
+	Fit Content to Frame	Încadrare conținut în cadru
+	Fit Frame to Content	Încadrare cadru la conținut
+	Frame coordinates must be finite and within 600000 pixels	Coordonatele cadrului trebuie să fie finite și în limita a 600000 de pixeli
+	High Memory Photoshop Document	Document Photoshop cu memorie mare
+	Image Compression	Compresie imagine
+	Import Image…	Import imagine…
+	Import as New Group	Import ca grup nou
+	Import as New Group keeps “{group}” and adds the file as a new group beside it.	Import ca grup nou păstrează „{group}” și adaugă fișierul ca grup nou alături de acesta.
+	Invalid frame transform	Transformare de cadru nevalidă
+	Invalid nested file drop	Plasare imbricată de fișiere nevalidă
+	LZW	LZW
+	Layer Effects	Efecte de strat
+	Learn	Învățare
+	Lining	Aliniate
+	Linked	Conectat
+	New Frame	Cadru nou
+	New file	Fișier nou
+	No Adv. Blending	Fără fuziune avansată
+	No Layer Effects	Fără efecte de strat
+	No Layer Mask	Fără mască de strat
+	No Vector Mask	Fără mască vectorială
+	No import is waiting. Import the file again.	Niciun import nu este în așteptare. Importați din nou fișierul.
+	Not Clipped	Netăiat
+	Not Empty	Nu este gol
+	Not Linked	Neconectat
+	Not Locked	Neblocat
+	Not Visible	Invizibil
+	Numerals	Cifre
+	On your computer	Pe computerul dvs.
+	Open anyway	Deschidere oricum
+	Opening this document uses more memory and may slow down your computer or other running applications.	Deschiderea acestui document folosește mai multă memorie și poate încetini computerul sau alte aplicații în execuție.
+	Opening “{name}” requires an estimated {est} GiB of memory ({avail} GiB available).	Deschiderea „{name}” necesită aproximativ {est} GiB de memorie ({avail} GiB disponibili).
+	Opening “{name}” requires an estimated {est} GiB of memory. The available memory could not be measured.	Deschiderea „{name}” necesită aproximativ {est} GiB de memorie. Memoria disponibilă nu a putut fi măsurată.
+	Pause For	Pauză de
+	Pause For:	Pauză de:
+	Playback Options…	Opțiuni de redare…
+	Proportional	Proporționale
+	Proportional Lining	Proporționale aliniate
+	Proportional Oldstyle	Proporționale stil vechi
+	Replace Image…	Înlocuire imagine…
+	Replace deletes everything in “{group}” first, including presets you edited or moved there. This can't be undone.	Înlocuirea șterge mai întâi tot conținutul din „{group}”, inclusiv presetările pe care le-ați editat sau mutat acolo. Această acțiune nu poate fi anulată.
+	Save Image Pyramid	Salvare piramidă de imagini
+	Save Transparency	Salvare transparență
+	Set 	Set 
+	Set 1	Set 1
+	Set 10	Set 10
+	Set 11	Set 11
+	Set 12	Set 12
+	Set 13	Set 13
+	Set 14	Set 14
+	Set 15	Set 15
+	Set 16	Set 16
+	Set 17	Set 17
+	Set 18	Set 18
+	Set 19	Set 19
+	Set 2	Set 2
+	Set 20	Set 20
+	Set 3	Set 3
+	Set 4	Set 4
+	Set 5	Set 5
+	Set 6	Set 6
+	Set 7	Set 7
+	Set 8	Set 8
+	Set 9	Set 9
+	Set as default	Setare ca implicit
+	Source: {name}	Sursă: {name}
+	Specify Channels:	Specificare canale:
+	Start	Început
+	Step by Step	Pas cu pas
+	Stylistic Sets	Seturi stilistice
+	Tabular	Tabelare
+	Tabular Lining	Tabelare aliniate
+	Tabular Oldstyle	Tabelare stil vechi
+	The GPU compositor is still being prepared	Compozitorul GPU este încă în curs de pregătire
+	The History Brush source was deleted: set a new source in the History panel	Sursa Pensulei istoric a fost ștearsă: setați o sursă nouă în panoul Istoric
+	The frame is locked	Cadrul este blocat
+	The frame is unavailable	Cadrul nu este disponibil
+	Transparent (default)	Transparent (implicit)
+	Use these settings for new arrows	Utilizare aceste setări pentru săgețile noi
+	Website	Site web
+	ZIP	ZIP
+	seconds	secunde
+	{message} into “{group}”	{message} în „{group}”
+	{ok} written to {dir}	{ok} scrise în {dir}
+	{set} from {file} replaced the one from {earlier}	Setul {set} din {file} l-a înlocuit pe cel din {earlier}
+@plural	The brush group “{group}” already has {n} brush of yours.|The brush group “{group}” already has {n} brushes of yours.	Grupul de pensule „{group}” are deja {n} pensulă de-a dvs.|Grupul de pensule „{group}” are deja {n} pensule de-ale dvs.|Grupul de pensule „{group}” are deja {n} de pensule de-ale dvs.
+@plural	The gradient group “{group}” already exists ({n} gradient).|The gradient group “{group}” already exists ({n} gradients).	Grupul de degradeuri „{group}” există deja ({n} degrade).|Grupul de degradeuri „{group}” există deja ({n} degradeuri).|Grupul de degradeuri „{group}” există deja ({n} de degradeuri).
+@plural	{n} action file loaded|{n} action files loaded	{n} fișier de acțiuni încărcat|{n} fișiere de acțiuni încărcate|{n} de fișiere de acțiuni încărcate
+@plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} fișier nu a putut fi încărcat: {errors}|{n} fișiere nu au putut fi încărcate: {errors}|{n} de fișiere nu au putut fi încărcate: {errors}
+@plural	{what}: {n} Image Assets output failed|{what}: {n} Image Assets outputs failed	{what}: {n} ieșire Resurse imagine a eșuat|{what}: {n} ieșiri Resurse imagine au eșuat|{what}: {n} de ieșiri Resurse imagine au eșuat
+	Move Toolbar to the Right	Mută bara de instrumente la dreapta
+	Move Toolbar to the Left	Mută bara de instrumente la stânga
+
+# RAW Develop feature labels
+	Saved RAW Develop settings to {file}	Setările de developare RAW au fost salvate în {file}

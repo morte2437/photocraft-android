@@ -794,7 +794,7 @@ fn clipped_adjustment_changes_only_its_base() {
     adj.clipped = true;
     d.layers.push(adj);
     assert_eq!(change_bounds(&d.layers[3], canvas), None);
-    assert_eq!(change_bounds_in(&d.layers, 3, None, canvas), Some(base_rect));
+    assert_eq!(change_bounds_in(&d.layers, 3, &[], SampleType::U8, canvas), Some(base_rect));
     // Every pixel the toggle changes lies inside those bounds.
     let shown = render(&d, canvas);
     d.layers[3].visible = false;
@@ -810,24 +810,24 @@ fn clipped_adjustment_changes_only_its_base() {
     }
     assert_eq!(changed, base_rect);
     // Other layers keep their own bounds.
-    assert_eq!(change_bounds_in(&d.layers, 2, None, canvas), Some(Rect::new(3, 2, 4, 3)));
-    assert_eq!(change_bounds_in(&d.layers, 9, None, canvas), None);
+    assert_eq!(change_bounds_in(&d.layers, 2, &[], SampleType::U8, canvas), Some(Rect::new(3, 2, 4, 3)));
+    assert_eq!(change_bounds_in(&d.layers, 9, &[], SampleType::U8, canvas), None);
 
     // Unclipped, or with no base beneath it, it reaches everything.
     let mut free = d.layers.clone();
     free[3].clipped = false;
-    assert_eq!(change_bounds_in(&free, 3, None, canvas), None);
+    assert_eq!(change_bounds_in(&free, 3, &[], SampleType::U8, canvas), Some(canvas));
     let orphan = vec![d.layers[3].clone()];
-    assert_eq!(change_bounds_in(&orphan, 0, None, canvas), None);
+    assert_eq!(change_bounds_in(&orphan, 0, &[], SampleType::U8, canvas), None);
     // Clipped layers on an adjustment composite atop the adjusted backdrop.
     let on_adj = vec![d.layers[0].clone(), Layer::new("lv", LayerContent::Adjustment(Adjustment::Invert)), d.layers[3].clone()];
-    assert_eq!(change_bounds_in(&on_adj, 2, None, canvas), None);
+    assert_eq!(change_bounds_in(&on_adj, 2, &[], SampleType::U8, canvas), None);
     // A pass-through group holding an adjustment is isolated only while it has visible clipped
     // layers, so they change whether its adjustment reaches the layers beneath.
     let mut g = Layer::group("g", vec![solid_layer("in", base_rect, [0.2, 0.4, 0.6, 1.0]), Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert))]);
     g.blend = BlendMode::PassThrough;
     let on_group = vec![d.layers[0].clone(), g, d.layers[3].clone()];
-    assert_eq!(change_bounds_in(&on_group, 2, None, canvas), None);
+    assert_eq!(change_bounds_in(&on_group, 2, &[], SampleType::U8, canvas), None);
 }
 
 /// #6535: a clipped adjustment with no base beneath it, inside a pass-through group, composites
@@ -848,12 +848,12 @@ fn orphan_clipped_adjustment_in_pass_through_base_reaches_everything() {
     let shown = px(&d, 0, 0);
     d.layers[2].visible = false;
     assert!(!close4(shown, px(&d, 0, 0)), "the toggle changes pixels outside the group");
-    assert_eq!(change_bounds_in(&d.layers, 2, None, canvas), None);
+    assert_eq!(change_bounds_in(&d.layers, 2, &[], SampleType::U8, canvas), None);
     assert_eq!(change_bounds(&d.layers[1], canvas), None);
     // With a base beneath it the clipped adjustment stays inside the group.
     let LayerContent::Group(g) = &mut d.layers[1].content else { panic!("group") };
     g.children.swap(0, 1);
-    assert_eq!(change_bounds_in(&d.layers, 2, None, canvas), Some(Rect::new(2, 1, 4, 3)));
+    assert_eq!(change_bounds_in(&d.layers, 2, &[], SampleType::U8, canvas), Some(Rect::new(2, 1, 4, 3)));
 }
 
 /// A pass-through group that is a clip base renders isolated while it holds a visible
@@ -880,11 +880,225 @@ fn clipped_adjustment_in_pass_through_clip_base_reaches_its_group() {
     assert!(!close4(shown, px(&d, 7, 5)), "hiding A changes Q, outside A's base");
     let group = Rect::new(2, 1, 8, 6);
     let LayerContent::Group(g) = &d.layers[2].content else { panic!("group") };
-    assert_eq!(change_bounds_in(&g.children, 1, Some((&d.layers, 2)), canvas), Some(group));
+    assert_eq!(change_bounds_in(&g.children, 1, &[(&d.layers, 2)], SampleType::U8, canvas), Some(group));
     // Not a clip base: the group stays pass-through either way, and A changes only its base.
     d.layers.truncate(3);
     let LayerContent::Group(g) = &d.layers[2].content else { panic!("group") };
-    assert_eq!(change_bounds_in(&g.children, 1, Some((&d.layers, 2)), canvas), Some(Rect::new(2, 1, 4, 3)));
+    assert_eq!(change_bounds_in(&g.children, 1, &[(&d.layers, 2)], SampleType::U8, canvas), Some(Rect::new(2, 1, 4, 3)));
+}
+
+/// The composite of `after` equals `before`'s outside `damage`, exactly (as the engine's
+/// `unchanged_outside` oracle checks a step's damage).
+fn unchanged_outside(before: &Document, after: &Document, damage: Rect) -> bool {
+    let (x, y) = (render(before, before.bounds()), render(after, after.bounds()));
+    let w = before.bounds().width() as i32;
+    x.px.iter().zip(&y.px).enumerate().all(|(i, (p, q))| p == q || damage.contains(i as i32 % w, i as i32 / w))
+}
+
+/// `d` with `layers[k]` (or, with `child`, that child of the group there) hidden.
+fn hidden_at(d: &Document, k: usize, child: Option<usize>) -> Document {
+    let mut h = d.clone();
+    match child {
+        None => h.layers[k].visible = false,
+        Some(c) => h.layers[k].children_mut().unwrap()[c].visible = false,
+    }
+    h
+}
+
+/// An Invert adjustment whose layer mask reveals only `r`.
+fn masked_invert(r: Rect) -> Layer {
+    let mut adj = Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert));
+    let mut m = LayerMask::hide_all();
+    m.surface.fill_rect(r, &[1.0]);
+    adj.mask = Some(m);
+    adj
+}
+
+/// A layer at 37 % opacity, so the backdrop it leaves falls between an integer document's
+/// levels (which an adjustment above rounds away).
+fn faint_layer(r: Rect) -> Layer {
+    let mut l = solid_layer("faint", r, [0.2, 0.4, 0.6, 1.0]);
+    l.opacity = 0.37;
+    l
+}
+
+/// #9329: in a 32-bit document a masked adjustment changes only under its mask (grown by its
+/// feather), even over an opaque Background.
+#[test]
+fn a_masked_adjustment_changes_only_under_its_mask() {
+    let canvas = Rect::new(0, 0, 800, 600);
+    let reveal = Rect::new(520, 330, 560, 370);
+    for feather in [0.0, 6.0] {
+        let mut d = Document::with_background("t", Size::new(800, 600), ColorMode::Rgb, SampleType::F32, Color::WHITE);
+        d.layers.push(faint_layer(Rect::new(100, 100, 700, 500)));
+        let mut adj = masked_invert(reveal);
+        adj.mask.as_mut().unwrap().feather = feather;
+        d.layers.push(adj);
+        let b = change_bounds_in(&d.layers, 2, &[], SampleType::F32, canvas).expect("bounded by the mask");
+        assert!(b.contains_rect(&reveal) && b.width() < canvas.width() && b.height() < canvas.height(), "{b:?}");
+        let h = hidden_at(&d, 2, None);
+        assert_ne!(render(&d, canvas), render(&h, canvas));
+        assert!(unchanged_outside(&d, &h, b), "feather {feather}");
+        // At full density only: a lower density lets the adjustment through everywhere.
+        let mut thin = d.clone();
+        thin.layers[2].mask.as_mut().unwrap().density = 0.5;
+        assert_eq!(change_bounds_in(&thin.layers, 2, &[], SampleType::F32, canvas), Some(canvas));
+    }
+}
+
+/// #9329: with no Background, an unmasked adjustment reaches only the layers beneath it, in an
+/// integer document too (rounding the backdrop leaves transparent pixels transparent).
+#[test]
+fn an_adjustment_over_small_layers_reaches_only_them() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    let (p, q) = (Rect::new(2, 3, 10, 9), Rect::new(20, 12, 30, 25));
+    d.layers.push(solid_layer("p", p, [0.2, 0.4, 0.6, 1.0]));
+    d.layers.push(faint_layer(q));
+    d.layers.push(Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert)));
+    let k = d.layers.len() - 1;
+    let b = change_bounds_in(&d.layers, k, &[], SampleType::U8, canvas);
+    assert_eq!(b, Some(p.union(&q)));
+    let h = hidden_at(&d, k, None);
+    assert_ne!(render(&d, canvas), render(&h, canvas));
+    assert!(unchanged_outside(&d, &h, b.unwrap()));
+}
+
+/// #9329: over an opaque Background an adjustment reaches the canvas. In an integer document
+/// even a masked one does: the backdrop is rounded to the document's levels after every visible
+/// adjustment layer (#9033), outside its mask too.
+#[test]
+fn an_adjustment_over_a_background_reaches_the_canvas() {
+    let canvas = Rect::new(0, 0, 800, 600);
+    let reveal = Rect::new(520, 330, 560, 370);
+    let mut d = doc_white(800, 600);
+    d.layers.push(faint_layer(Rect::new(100, 100, 700, 500)));
+    d.layers.push(masked_invert(reveal));
+    assert_eq!(change_bounds_in(&d.layers, 2, &[], SampleType::U8, canvas), Some(canvas));
+    let h = hidden_at(&d, 2, None);
+    assert!(!unchanged_outside(&d, &h, reveal), "hiding it re-rounds pixels outside its mask");
+    let unmasked = {
+        let mut u = d.clone();
+        u.layers[2].mask = None;
+        u
+    };
+    assert_eq!(change_bounds_in(&unmasked.layers, 2, &[], SampleType::U8, canvas), Some(canvas));
+    assert_eq!(change_bounds_in(&unmasked.layers, 2, &[], SampleType::F32, canvas), Some(canvas));
+}
+
+/// #9329: inside a pass-through group an adjustment reaches the group's layers beneath it and
+/// the layers beneath the group; so does the group itself.
+#[test]
+fn an_adjustment_in_a_pass_through_group_reaches_below_the_group() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let (p, q) = (Rect::new(2, 3, 10, 9), Rect::new(20, 12, 30, 25));
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    d.layers.push(faint_layer(p));
+    let mut g = Layer::group("g", vec![solid_layer("q", q, [0.2, 0.4, 0.6, 1.0]), Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert))]);
+    g.blend = BlendMode::PassThrough;
+    d.layers.push(g);
+    let LayerContent::Group(gc) = &d.layers[1].content else { panic!("group") };
+    let b = change_bounds_in(&gc.children, 1, &[(&d.layers, 1)], SampleType::U8, canvas);
+    assert_eq!(b, Some(p.union(&q)));
+    let h = hidden_at(&d, 1, Some(1));
+    assert_ne!(render(&d, canvas), render(&h, canvas));
+    assert!(unchanged_outside(&d, &h, b.unwrap()));
+    // The group: its own pixels and its adjustment's reach.
+    assert_eq!(change_bounds(&d.layers[1], canvas), None);
+    let gb = change_bounds_in(&d.layers, 1, &[], SampleType::U8, canvas);
+    assert_eq!(gb, Some(p.union(&q)));
+    assert!(unchanged_outside(&d, &hidden_at(&d, 1, None), gb.unwrap()));
+}
+
+/// #9329: inside an isolated (Normal) group an adjustment reaches only the group's layers
+/// beneath it.
+#[test]
+fn an_adjustment_in_an_isolated_group_stops_at_the_group() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let (p, q) = (Rect::new(2, 3, 10, 9), Rect::new(20, 12, 30, 25));
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    d.layers.push(faint_layer(p));
+    let mut g = Layer::group("g", vec![faint_layer(q), Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert))]);
+    g.blend = BlendMode::Normal;
+    d.layers.push(g);
+    let LayerContent::Group(gc) = &d.layers[1].content else { panic!("group") };
+    let b = change_bounds_in(&gc.children, 1, &[(&d.layers, 1)], SampleType::U8, canvas);
+    assert_eq!(b, Some(q));
+    let h = hidden_at(&d, 1, Some(1));
+    assert_ne!(render(&d, canvas), render(&h, canvas));
+    assert!(unchanged_outside(&d, &h, q));
+}
+
+/// #9329: inside a pass-through artboard an adjustment also reaches the artboard's background,
+/// which lies beneath its layers.
+#[test]
+fn an_adjustment_in_a_pass_through_artboard_reaches_its_background() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let board = Rect::new(4, 3, 24, 20);
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    let mut ab = Layer::group("board", vec![Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert))]);
+    let LayerContent::Group(g) = &mut ab.content else { panic!("group") };
+    g.artboard = Some(photocraft_doc::Artboard::new(board));
+    d.layers.push(ab);
+    let LayerContent::Group(gc) = &d.layers[0].content else { panic!("group") };
+    let b = change_bounds_in(&gc.children, 0, &[(&d.layers, 0)], SampleType::U8, canvas);
+    assert_eq!(b, Some(board));
+    let h = hidden_at(&d, 0, Some(0));
+    assert_ne!(render(&d, canvas), render(&h, canvas));
+    assert!(unchanged_outside(&d, &h, board));
+}
+
+/// A layer just off the left edge of a 40 × 30 canvas, in a group whose drop shadow reaches
+/// onto it.
+fn shadowed_group_off_the_canvas() -> Layer {
+    let mut g = Layer::group("g", vec![solid_layer("off", Rect::new(-6, 8, -1, 16), [0.2, 0.4, 0.6, 1.0])]);
+    g.effects.items.push(Effect::default_drop_shadow());
+    g
+}
+
+/// #9329: an adjustment above a group whose pixels lie just off the canvas reaches the group's
+/// drop shadow on the canvas.
+#[test]
+fn an_adjustment_over_a_shadowed_group_off_the_canvas_reaches_the_shadow() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    d.layers.push(shadowed_group_off_the_canvas());
+    d.layers.push(Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert)));
+    let b = change_bounds_in(&d.layers, 1, &[], SampleType::U8, canvas).expect("bounded");
+    let h = hidden_at(&d, 1, None);
+    assert_ne!(render(&d, canvas), render(&h, canvas), "the shadow reaches the canvas");
+    assert!(unchanged_outside(&d, &h, b), "{b:?}");
+}
+
+/// #9329: a layer just off the canvas in a group with a drop shadow changes the shadow on the
+/// canvas: [`layer_change_bounds`] grows by the reach of the groups around it.
+#[test]
+fn a_layer_off_the_canvas_in_a_shadowed_group_bounds_the_shadow() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    d.layers.push(shadowed_group_off_the_canvas());
+    let id = d.layers[0].children().unwrap()[0].id;
+    let b = layer_change_bounds(&d, id).expect("bounded");
+    let h = hidden_at(&d, 0, Some(0));
+    assert_ne!(render(&d, canvas), render(&h, canvas), "the shadow reaches the canvas");
+    assert!(unchanged_outside(&d, &h, b), "{b:?}");
+}
+
+/// #9329: a group with Transparency Shapes Layer off takes the whole layer as its effects'
+/// shape, so it draws over the whole canvas, also while it holds an adjustment.
+#[test]
+fn a_shapeless_group_holding_an_adjustment_reaches_the_canvas() {
+    let canvas = Rect::new(0, 0, 40, 30);
+    let q = Rect::new(20, 12, 30, 25);
+    let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, SampleType::U8);
+    let mut g = Layer::group("g", vec![solid_layer("q", q, [0.2, 0.4, 0.6, 1.0]), Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert))]);
+    g.effects.items.push(Effect::ColorOverlay { common: FxCommon::new(photocraft_color::BlendMode::Normal, 1.0), color: Color::BLACK });
+    g.advanced.transparency_shapes = false;
+    d.layers.push(g);
+    let h = hidden_at(&d, 0, None);
+    assert!(!unchanged_outside(&d, &h, q.inflate(effects::margin(&d.layers[0]))), "the overlay draws past its layers");
+    assert_eq!(composite_bounds(&d.layers[0], canvas), Some(canvas));
+    assert_eq!(change_bounds_in(&d.layers, 0, &[], SampleType::U8, canvas), Some(canvas));
 }
 
 #[test]
@@ -2140,6 +2354,21 @@ fn shapeless_effects_render_the_same_in_bands_and_parts() {
             }
         }
         assert!(render_tiled(&d, d.bounds(), 16).px == whole.px, "{depth:?}: tiled render differs");
+    }
+}
+
+/// The interruptible composite renders band by band: with shapeless effects (whose maps are built
+/// per band) it still gives the whole-document composite.
+#[test]
+fn interruptible_composite_with_shapeless_effects_matches_the_whole_composite() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let d = shapeless_fx_doc(depth);
+        let fmt = PixelFormat::new(ColorMode::Rgb, depth, true);
+        purge_effect_cache();
+        let expected = composite_to_surface(&d, d.bounds(), fmt, None);
+        purge_effect_cache();
+        let actual = composite_to_surface_with_interrupt(&d, d.bounds(), fmt, None, &photocraft_raster::Interrupt::NONE).unwrap();
+        assert!(actual.read_region(d.bounds()) == expected.read_region(d.bounds()), "{depth:?}: the interruptible composite differs");
     }
 }
 

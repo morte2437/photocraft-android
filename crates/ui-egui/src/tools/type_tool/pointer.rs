@@ -140,7 +140,7 @@ pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifie
             }
             return true;
         }
-        // ⇧/⌥ on that click combine a Type Mask with the selection.
+        // A Type Mask replaces the selection with ⇧ or ⌥ on that click too (#12073).
         commit_with(app, mods);
         return true; // Photoshop: a click outside commits without starting new text
     }
@@ -152,6 +152,13 @@ pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifie
     }
     if let Some(id) = hit_layer(app, x, y) {
         let _ = app.session.select_layer(id);
+        // Lock All (the layer's own or a group's) refuses the edit before it starts, as the engine
+        // would refuse the first keystroke; the reference application says so in an alert (#12040).
+        if app.session.active().is_some_and(|st| st.doc.effective_locks(id).all) {
+            let message = json!({"message": tl!("Could not use the type tool because the layer is locked.")});
+            app.ui.open_dialog(crate::state::DialogKind::Error, message.as_object().cloned().unwrap_or_default());
+            return true;
+        }
         let key = session_key(app);
         if begin_edit(app, id, &key).is_err() {
             return true;

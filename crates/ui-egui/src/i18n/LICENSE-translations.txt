@@ -1,7 +1,13 @@
 PhotoCraft's Korean, German, Spanish, Brazilian Portuguese, Italian, Ukrainian, Dutch, Czech,
-Turkish, Hungarian, Serbian, Russian, Swedish, Finnish, Danish, Norwegian Bokmål and Bosnian UI
-translation catalogs are licensed under MIT OR Apache-2.0, at your option.
+Turkish, Hungarian, Serbian, Russian, Swedish, Finnish, Danish, Norwegian Bokmål, Bosnian, Hebrew,
+Urdu, Romanian, Azerbaijani, Thai and Tamil UI translation catalogs are licensed under MIT OR
+Apache-2.0, at your option.
 The full license texts are in ../../../../LICENSE-MIT and ../../../../LICENSE-APACHE.
+
+Azerbaijani (Latin script) translations: machine-assisted drafts of PhotoCraft's
+English labels using Google Translate, with core menu/tool terminology, contextual meanings and
+plural messages edited by OpenAI Codex. No proprietary application localization resources were
+used. Native-speaker review is pending; no human contributor name is inferred or assigned.
 
 Korean translations: PhotoCraft contributors, original translations of
 PhotoCraft's English labels; no proprietary translation resources were used.
@@ -61,3 +67,21 @@ translations of PhotoCraft's English labels, and no proprietary translation reso
 Bosnian translations: Nine (@nine-codes) with Claude Code (AI-assisted), original translations of
 PhotoCraft's English labels, shared with storytold/craft-i18n (locales/bs/); no proprietary
 translation resources were used. Not yet reviewed by a native speaker.
+Hebrew translations: machine-translated for @tronicum with Claude (Anthropic) as an AI
+contributor and not yet reviewed by a native speaker; original translations of PhotoCraft's
+English labels, and no proprietary translation resources were used.
+Urdu translations: machine-translated for @tronicum with Claude (Anthropic) as an AI
+contributor and not yet reviewed by a native speaker; original translations of PhotoCraft's
+English labels, and no proprietary translation resources were used.
+Romanian translations: machine-translated for @tronicum with Claude (Anthropic) as an AI
+contributor and not yet reviewed by a native speaker; original translations of PhotoCraft's
+English labels, and no proprietary translation resources were used.
+
+Thai translations: PhotoCraft contributors, with opencode (DeepSeek) as an AI contributor; a
+machine-assisted first draft from PhotoCraft's English labels, reviewed for UI terminology. The
+resulting catalog is licensed under MIT OR Apache-2.0 as stated above, and no proprietary
+localisation resource was used.
+
+Tamil translations: @newsbaba24x7 and PhotoCraft contributors, original translations of
+PhotoCraft's English labels written from their plain meaning; no proprietary localisation
+resource was used.

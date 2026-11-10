@@ -94,6 +94,9 @@ pub const MAX_PLAYBACK_STEPS: u64 = 100_000;
 #[serde(default)]
 pub struct ActionState {
     pub list: Vec<Action>,
+    /// Painting-tool strokes are recorded only when the user enables them for this session.
+    #[serde(skip)]
+    pub record_tools: bool,
     /// Journal length when recording started, and the action index being recorded into.
     #[serde(skip)]
     pub recording: Option<(usize, usize)>,
@@ -165,7 +168,7 @@ pub fn playback_params(s: &Session, id: &str, p: &Value) -> Result<Value> {
             }
         }
     }
-    if id.starts_with("filter.gallery.")
+    if (id.starts_with("filter.gallery.") || id == crate::atn_cmds::MENU_ITEM)
         && let Some(object) = p.as_object_mut()
     {
         object.remove(crate::atn_cmds::RECORDED_EVENT);
@@ -276,6 +279,63 @@ pub fn playback_plan(s: &Session, p: &Value) -> Result<(Action, usize)> {
     Ok((action, from))
 }
 
+/// Visit calls in the current namespace, leaving embedded inline Batch scopes untouched.
+fn visit_calls(steps: &mut [(String, Value)], f: &mut impl FnMut(&str, &mut Value, bool)) {
+    let mut pending: Vec<_> = steps.iter_mut().rev().map(|(id, params)| (id.clone(), params)).collect();
+    while let Some((id, params)) = pending.pop() {
+        let scoped = id == "file.automate.batch" && params.get("calledActions").is_some_and(|v| !v.is_null());
+        if id == "file.automate.batch" {
+            let inline = if params.get("steps").is_some() { Some("steps") } else { params.get("action").is_some_and(Value::is_array).then_some("action") };
+            if let Some(key) = inline {
+                if scoped {
+                    continue;
+                }
+                // A present invalid `steps` still wins over `action`, just as at runtime.
+                let Some(steps) = params.get_mut(key).and_then(Value::as_array_mut) else { continue };
+                for step in steps.iter_mut().rev() {
+                    let call = match step {
+                        Value::Array(a) => {
+                            let Some(id) = a.first().and_then(Value::as_str).map(str::to_owned) else { continue };
+                            a.get_mut(1).map(|params| (id, params))
+                        }
+                        Value::Object(o) => {
+                            let Some(id) = o.get("command").or_else(|| o.get("id")).and_then(Value::as_str).map(str::to_owned) else { continue };
+                            o.get_mut("params").map(|params| (id, params))
+                        }
+                        // String steps and omitted params use `{}`, with no action target.
+                        _ => None,
+                    };
+                    if let Some(call) = call {
+                        pending.push(call);
+                    }
+                }
+                continue;
+            }
+        }
+        f(&id, params, scoped);
+    }
+}
+
+/// Shift numeric selectors in the session list, including calls in unscoped inline Batch steps.
+pub(crate) fn shift_action_calls(list: &mut [Action], at: usize, count: usize) {
+    for action in list {
+        visit_calls(&mut action.steps, &mut |id, params, _| {
+            if !matches!(id, "actions.play" | "file.automate.batch") {
+                return;
+            }
+            let Some(value) = params.get("action") else { return };
+            let Some(index) = num(value).and_then(|i| usize::try_from(i).ok()) else { return };
+            if index >= at {
+                params["action"] = if let Some(fractional) = value.as_f64().filter(|_| value.is_f64()) {
+                    json!(fractional + count as f64)
+                } else {
+                    json!(index.saturating_add(count))
+                };
+            }
+        });
+    }
+}
+
 /// Capture transitive Play Action, Conditional and Batch dependencies for a standalone droplet
 /// (#2794, #6804). Ordinary references become names; normalized copies keep source-list order.
 /// A named Batch with its own action list selects an untouched source copy at an exported index,
@@ -285,42 +345,6 @@ pub fn called_actions(list: &[Action], steps: &mut [(String, Value)]) -> Vec<Act
     /// Resolve in the current namespace before capture rewrites the reference.
     fn target(list: &[Action], params: &Value, id: &str) -> Result<usize> {
         if id == "file.automate.batch" { crate::file_cmds::batch_action(list, params) } else { resolve(list, params, id) }
-    }
-    /// Visit calls in the current namespace, leaving embedded inline Batch scopes untouched.
-    fn visit_calls(steps: &mut [(String, Value)], f: &mut impl FnMut(&str, &mut Value, bool)) {
-        let mut pending: Vec<_> = steps.iter_mut().rev().map(|(id, params)| (id.clone(), params)).collect();
-        while let Some((id, params)) = pending.pop() {
-            let scoped = id == "file.automate.batch" && params.get("calledActions").is_some_and(|v| !v.is_null());
-            if id == "file.automate.batch" {
-                let inline = if params.get("steps").is_some() { Some("steps") } else { params.get("action").is_some_and(Value::is_array).then_some("action") };
-                if let Some(key) = inline {
-                    if scoped {
-                        continue;
-                    }
-                    // A present invalid `steps` still wins over `action`, just as at runtime.
-                    let Some(steps) = params.get_mut(key).and_then(Value::as_array_mut) else { continue };
-                    for step in steps.iter_mut().rev() {
-                        let call = match step {
-                            Value::Array(a) => {
-                                let Some(id) = a.first().and_then(Value::as_str).map(str::to_owned) else { continue };
-                                a.get_mut(1).map(|params| (id, params))
-                            }
-                            Value::Object(o) => {
-                                let Some(id) = o.get("command").or_else(|| o.get("id")).and_then(Value::as_str).map(str::to_owned) else { continue };
-                                o.get_mut("params").map(|params| (id, params))
-                            }
-                            // String steps and omitted params use `{}`, with no action target.
-                            _ => None,
-                        };
-                        if let Some(call) = call {
-                            pending.push(call);
-                        }
-                    }
-                    continue;
-                }
-            }
-            f(&id, params, scoped);
-        }
     }
     /// Capture ordinary calls transitively, but retain an untouched source for scoped named Batch.
     fn targets(list: &[Action], steps: &mut [(String, Value)], depth: usize, queue: &mut VecDeque<(usize, usize)>, scoped: &mut BTreeSet<usize>) {
@@ -482,7 +506,7 @@ fn from_step(p: &Value, len: usize) -> Result<usize> {
 fn list(s: &mut Session, _p: &Value) -> Result<Value> {
     let actions: Vec<Value> = s.actions.list.iter().map(|a| json!({"name": a.name, "steps": a.steps.len(), "set": a.set})).collect();
     let recording = s.actions.recording.and_then(|(_, i)| s.actions.list.get(i).map(|a| a.name.clone()));
-    Ok(json!({"actions": actions, "sets": crate::actions_edit_cmds::set_names(s), "recording": recording}))
+    Ok(json!({"actions": actions, "sets": crate::actions_edit_cmds::set_names(s), "recording": recording, "toolRecording": s.actions.record_tools}))
 }
 
 fn get(s: &mut Session, p: &Value) -> Result<Value> {
@@ -545,7 +569,32 @@ const RECORDED_WITH_DIALOG: &[&str] = &["edit.checkSpelling"];
 /// Replayable journal entries not yet committed to this action while recording.
 pub fn pending_steps(s: &Session, action: usize) -> impl Iterator<Item = &(String, Value)> {
     let from = s.actions.recording.filter(|(_, i)| *i == action).map_or(s.journal.len(), |(from, _)| from);
-    s.journal.iter().skip(from).filter(|(id, p)| recorded(id, p))
+    s.journal.iter().skip(from).filter(|(id, p)| recorded(id, p) && (s.actions.record_tools || !tool_stroke(id)))
+}
+
+/// The point-based painting tools committed by the canvas; fills and gradients remain commands.
+pub(crate) fn tool_stroke(id: &str) -> bool {
+    matches!(
+        id,
+        "paint.stroke"
+            | "paint.pencil"
+            | "paint.mixerBrush"
+            | "paint.colorReplacement"
+            | "paint.blur"
+            | "paint.sharpen"
+            | "paint.smudge"
+            | "paint.dodge"
+            | "paint.burn"
+            | "paint.sponge"
+            | "paint.cloneStamp"
+            | "paint.healingBrush"
+            | "paint.historyBrush"
+            | "paint.artHistoryBrush"
+            | "paint.patternStamp"
+            | "paint.backgroundEraser"
+            | "paint.spotHealing"
+            | "paint.remove"
+    )
 }
 
 pub(crate) fn flush_recording(s: &mut Session) -> Result<()> {
@@ -1094,7 +1143,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "List Actions",
             menu: &[],
             shortcut: None,
-            params: "{} → {actions:[{name, steps:count, set:name|null}], sets:[name…] (every set in panel order, empty ones too), recording:name|null}",
+            params: "{} → {actions:[{name, steps:count, set:name|null}], sets:[name…] (every set in panel order, empty ones too), recording:name|null, toolRecording:bool}",
             enabled: always,
             run: list,
             journal: false,

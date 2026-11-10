@@ -426,6 +426,9 @@ pub struct SelectMaskWorkspace {
     /// Document px per reduced-copy px (High Quality Preview uses 1).
     k: u32,
     pressed: bool,
+    /// An on-canvas brush resize in progress (#10497): the tool it resizes, where it began on
+    /// screen, the size and hardness then, and the button that drags it.
+    resize: Option<(SmTool, Pos2, f64, f32, egui::PointerButton)>,
     /// The device's texture side limit, as the context reports it each frame.
     texture_limit: usize,
     image_tex: Option<TextureHandle>,
@@ -480,6 +483,18 @@ impl SelectMaskWorkspace {
             SmTool::Brush => self.brush_size = v,
             _ => {}
         }
+    }
+
+    /// Esc mid-resize: the brush goes back to its size and hardness when the drag began, as in
+    /// Photoshop. egui drops the drag on Esc, so the rest of it does nothing.
+    fn escape_resize(&mut self) {
+        let Some((tool, _, size, hardness, _)) = self.resize.take() else { return };
+        match tool {
+            SmTool::Quick => self.quick_size = size,
+            SmTool::RefineEdge => self.refine_size = size,
+            _ => self.brush_size = size,
+        }
+        self.hardness = hardness;
     }
 
     fn pick(&mut self, t: SmTool) {
@@ -761,6 +776,7 @@ pub fn open(app: &mut PhotocraftApp) -> Result<(), String> {
         hide_view: false,
         k,
         pressed: false,
+        resize: None,
         texture_limit: 2048,
         image_tex: None,
         zoom: 0.0,
@@ -877,9 +893,16 @@ pub fn enter(app: &mut PhotocraftApp) -> bool {
     false
 }
 
-/// Esc: drops a Polygonal Lasso polygon being drawn, else Cancel.
+/// A brush resize is in progress (Esc then ends it, with Control+Alt still held too).
+pub fn resizing(app: &PhotocraftApp) -> bool {
+    app.distort.select_mask.as_ref().is_some_and(|w| w.resize.is_some())
+}
+
+/// Esc: ends a brush resize as it began, else drops a Polygonal Lasso polygon being drawn, else
+/// Cancel.
 pub fn escape(app: &mut PhotocraftApp) {
     match app.distort.select_mask.as_mut() {
+        Some(w) if w.resize.is_some() => w.escape_resize(),
         Some(w) if w.poly.is_some() => w.poly = None,
         _ => cancel(app),
     }
@@ -1408,6 +1431,11 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
             w.pick(t);
         }
     }
+    // E cycles the tool mode (add, subtract); Hand and Zoom edit nothing, so it leaves them alone.
+    let bare_e = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::E, pressed: true, modifiers, .. } if modifiers.is_none())));
+    if bare_e && w.tool.edits() && pressed(Key::E, Modifiers::NONE) {
+        w.add = !w.add;
+    }
     if pressed(Key::OpenBracket, Modifiers::NONE) {
         let s = w.size();
         w.set_size((s * 0.9).min(s - 1.0));
@@ -1747,13 +1775,28 @@ fn paint_cursor(ctx: &egui::Context, w: &mut SelectMaskWorkspace, clip: &egui::P
             ctx.set_cursor_icon(egui::CursorIcon::Grab);
         } else if w.tool.brushes() {
             let r = (w.size() as f32 * 0.5 * v.zoom).max(2.0);
-            clip.circle_stroke(hp, r, Stroke::new(1.5, Color32::BLACK));
-            clip.circle_stroke(hp, r, Stroke::new(0.75, Color32::WHITE));
-            let add = w.add != alt;
-            for s in [Stroke::new(2.5, Color32::from_black_alpha(140)), Stroke::new(1.0, Color32::from_white_alpha(220))] {
-                clip.line_segment([hp - vec2(3.0, 0.0), hp + vec2(3.0, 0.0)], s);
-                if add {
-                    clip.line_segment([hp - vec2(0.0, 3.0), hp + vec2(0.0, 3.0)], s);
+            // While its size is dragged the circle stays where the drag began, with the
+            // Diameter/Hardness readout beside the pointer, as on the main canvas (#10497).
+            let resize = w.resize.filter(|&(tool, ..)| tool == w.tool);
+            let center = resize.map_or(hp, |(_, anchor, ..)| anchor);
+            clip.circle_stroke(center, r, Stroke::new(1.5, Color32::BLACK));
+            clip.circle_stroke(center, r, Stroke::new(0.75, Color32::WHITE));
+            if resize.is_some() {
+                let hardness = if w.tool == SmTool::Brush { format!("{}%", w.hardness.round() as i64) } else { "—".into() };
+                crate::canvas::draw_readout(
+                    ctx,
+                    "select-mask-brush-resize-readout",
+                    hp,
+                    ["Diameter:", "Hardness:"],
+                    [format!("{} px", w.size().round() as i64), hardness],
+                );
+            } else {
+                let add = w.add != alt;
+                for s in [Stroke::new(2.5, Color32::from_black_alpha(140)), Stroke::new(1.0, Color32::from_white_alpha(220))] {
+                    clip.line_segment([hp - vec2(3.0, 0.0), hp + vec2(3.0, 0.0)], s);
+                    if add {
+                        clip.line_segment([hp - vec2(0.0, 3.0), hp + vec2(0.0, 3.0)], s);
+                    }
                 }
             }
             ctx.set_cursor_icon(egui::CursorIcon::None);
@@ -1780,6 +1823,48 @@ fn canvas_input(
     events: &mut Vec<ToolEvent>,
     mods: &mut egui::Modifiers,
 ) {
+    // Alt+right-drag, or Control+Alt-drag, resizes the brush instead of selecting (#10497), from
+    // the press on, so its first frame never starts a stroke. Alt+left-drag still subtracts.
+    let (secondary, now) = ui.input(|i| (i.pointer.button_down(egui::PointerButton::Secondary), i.modifiers));
+    let gesture = if secondary { crate::brush_resize::is_right_gesture(now) } else { crate::brush_resize::is_gesture(now) };
+    // A resize keeps its drag until its button is let go: Space or the middle button may pan
+    // meanwhile, and if another tool is picked mid-drag the rest of it neither resizes nor
+    // selects with that tool.
+    let held = |button| ui.input(|i| i.pointer.button_down(button));
+    if let Some((tool, .., button)) = w.resize
+        && (pan || tool != w.tool)
+    {
+        if !held(button) {
+            w.resize = None;
+        }
+        if !pan {
+            ctx.request_repaint();
+            return;
+        }
+    }
+    if !pan && w.tool.brushes() && !w.pressed && (w.resize.is_some() || (resp.is_pointer_button_down_on() && gesture)) {
+        if w.resize.is_none()
+            && let Some(p) = ui.input(|i| i.pointer.press_origin()).or_else(|| resp.interact_pointer_pos())
+        {
+            let button = if secondary { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
+            w.resize = Some((w.tool, p, w.size(), w.hardness, button));
+        }
+        if let (Some((_, anchor, size0, hardness0, _)), Some(p)) = (w.resize, resp.interact_pointer_pos()) {
+            let d = p - anchor;
+            let zoom = if w.zoom.is_finite() && w.zoom > 0.0 { w.zoom } else { 1.0 };
+            let (size, hardness) = crate::brush_resize::resized((size0 as f32, hardness0 / 100.0), f64::from(d.x / zoom), f64::from(d.y / zoom), zoom);
+            w.set_size(f64::from(size));
+            // Only the Brush tool has a hardness; Quick Selection and Refine Edge change size only.
+            if w.tool == SmTool::Brush {
+                w.hardness = (hardness * 100.0).round();
+            }
+        }
+        if resp.drag_stopped() || w.resize.is_some_and(|(.., button)| !held(button)) {
+            w.resize = None;
+        }
+        ctx.request_repaint();
+        return;
+    }
     if pan && resp.dragged() {
         let dl = resp.drag_delta();
         w.center = [w.center[0] - f64::from(dl.x / w.zoom), w.center[1] - f64::from(dl.y / w.zoom)];
@@ -1973,5 +2058,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
+#[cfg(test)]
+mod cycle_tool_mode_tests;
 #[cfg(test)]
 mod tests;

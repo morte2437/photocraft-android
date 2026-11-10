@@ -183,6 +183,47 @@ fn small_layers_composite_only_over_their_bounds() {
     assert!(p.passes.iter().all(|p| p.clip.is_none()));
 }
 
+/// #8639: Stroke Emboss shades the stroke's band, which only the CPU compositor builds: a
+/// document using it is composited on the CPU, so both show the same pixels.
+#[test]
+fn stroke_emboss_defers_to_the_cpu() {
+    use photocraft_doc::{Bevel, BevelStyle, BevelTechnique, Contour, FxCommon};
+    let mut d = Document::with_background("t", Size::new(8, 8), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+    let mut l = Layer::raster("embossed", d.pixel_format());
+    l.surface_mut().unwrap().fill_rect(Rect::new(2, 2, 5, 5), &[1.0, 0.0, 0.0, 1.0]);
+    let bevel = |style| Bevel {
+        enabled: true,
+        style,
+        technique: BevelTechnique::Smooth,
+        depth: 1.0,
+        up: true,
+        size: 3.0,
+        soften: 0.0,
+        angle: 90.0,
+        altitude: 30.0,
+        use_global_light: false,
+        gloss_contour: Contour::Linear,
+        gloss_anti_alias: false,
+        highlight: FxCommon::new(BlendMode::Screen, 0.75),
+        highlight_color: Color::WHITE,
+        shadow: FxCommon::new(BlendMode::Multiply, 0.75),
+        shadow_color: Color::BLACK,
+        contour: None,
+        texture: None,
+    };
+    l.effects.items.push(photocraft_doc::Effect::BevelEmboss(bevel(BevelStyle::InnerBevel)));
+    d.layers.push(l);
+    assert!(plan(&d).is_ok(), "other bevel styles stay on the GPU");
+    d.layers[1].effects.items[0] = photocraft_doc::Effect::BevelEmboss(bevel(BevelStyle::StrokeEmboss));
+    let err = plan(&d).unwrap_err();
+    assert!(err.0.contains("Stroke Emboss"), "{err}");
+    // Turned off, it no longer matters.
+    if let photocraft_doc::Effect::BevelEmboss(b) = &mut d.layers[1].effects.items[0] {
+        b.enabled = false;
+    }
+    assert!(plan(&d).is_ok());
+}
+
 #[test]
 fn effects_are_planned_in_place() {
     let mut d = Document::with_background("t", Size::new(8, 8), ColorMode::Rgb, SampleType::U8, Color::WHITE);

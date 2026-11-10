@@ -144,6 +144,80 @@ fn print_dry_run_renders_a_pdf_and_reports_the_platform_backend() {
     assert!(s.execute("file.print", json!({"colorHandling": "photocraftManages", "dryRun": true})).is_err(), "needs a printer profile");
 }
 
+/// The Japanese papers are in the table at their metric sizes, their customary names resolve (case,
+/// spaces and punctuation ignored), and the sizes that were there before are unchanged.
+#[test]
+fn japanese_paper_sizes_and_aliases() {
+    // mm -> pt, within 0.1 pt.
+    for (name, w_mm, h_mm) in [
+        ("postcard", 100.0, 148.0),
+        ("double-postcard", 148.0, 200.0),
+        ("b5", 182.0, 257.0),
+        ("b4", 257.0, 364.0),
+        ("a6", 105.0, 148.0),
+        ("l", 89.0, 127.0),
+        ("2l", 127.0, 178.0),
+        ("kg", 102.0, 152.0),
+        ("6cut", 203.0, 254.0),
+        ("4cut", 254.0, 305.0),
+    ] {
+        let (w, h) = paper_size(name).unwrap_or_else(|| panic!("{name}"));
+        let want = (w_mm * 72.0 / 25.4, h_mm * 72.0 / 25.4);
+        assert!((w - want.0).abs() < 0.1 && (h - want.1).abs() < 0.1, "{name}: {w} x {h}, wanted {want:?}");
+    }
+    // The customary and English names resolve to the same paper.
+    for (a, b) in [
+        ("はがき", "postcard"),
+        ("ハガキ", "postcard"),
+        ("葉書", "postcard"),
+        ("往復はがき", "double-postcard"),
+        ("JIS B5", "b5"),
+        ("B5 (JIS)", "b5"),
+        ("JIS B4", "b4"),
+        ("L判", "l"),
+        ("Lサイズ", "l"),
+        ("l-size", "l"),
+        ("2L判", "2l"),
+        ("KG判", "kg"),
+        ("六切", "6cut"),
+        ("6切", "6cut"),
+        ("四切", "4cut"),
+        ("4切", "4cut"),
+        ("A4", "a 4"),
+        ("4 × 6", "4x6"),
+        ("B5（JIS）", "b5"),
+        ("JIS B5.", "b5"),
+        ("JIS B5。", "b5"),
+    ] {
+        assert_eq!(paper_size(a), paper_size(b), "{a} vs {b}");
+    }
+    assert!(paper_size("napkin").is_none());
+    // The papers that were already there keep their sizes.
+    assert_eq!(paper_size("letter"), Some((612.0, 792.0)));
+    assert_eq!(paper_size("a4"), Some((595.28, 841.89)));
+    assert_eq!(paper_size("4x6"), Some((288.0, 432.0)));
+    assert_eq!(paper_size("5x7"), Some((360.0, 504.0)));
+}
+
+/// A print on はがき or L判 writes a PDF page of that paper's size: 100 × 148 mm is
+/// 283.46 × 419.53 pt and 89 × 127 mm is 252.28 × 360.00 pt. The customary names and the JIS
+/// spelling work too, and an unknown paper is still refused.
+#[test]
+fn japanese_paper_sizes_reach_the_pdf_page() {
+    let dir = tmp("jp-paper");
+    for (paper, w, h) in [("postcard", 283.46, 419.53), ("l", 252.28, 360.00), ("はがき", 283.46, 419.53), ("JIS B5", 515.91, 728.50)] {
+        let mut s = session("rgb", 8);
+        let out = format!("{dir}/{}.pdf", paper.replace(' ', "_"));
+        let r = s.execute("file.print", json!({"output": out, "paper": paper, "scaleToFit": true})).unwrap();
+        assert_eq!(r["pdf"], out);
+        let pdf = std::fs::read(&out).unwrap();
+        let text = String::from_utf8_lossy(&pdf);
+        let want = format!("/MediaBox [0 0 {w:.2} {h:.2}]");
+        assert!(text.contains(&want), "{paper}: wanted {want}");
+    }
+    assert!(session("rgb", 8).execute("file.print", json!({"paper": "napkin", "dryRun": true})).is_err());
+}
+
 #[test]
 fn photocraft_manages_colors_converts_to_the_printer_profile() {
     let mut s = session("rgb", 8);

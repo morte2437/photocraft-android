@@ -40,6 +40,9 @@ serde_json = { workspace = true }
 log = { workspace = true }
 # Display order of right-to-left labels (`bidi_text.rs`); already linked through usvg.
 unicode-bidi = "0.3"
+# Context-sensitive dotted/dotless I mapping for Azerbaijani and Turkish UI text.
+icu_casemap = "2.3"
+icu_locale_core = "2.3"
 base64 = "0.23"
 # Inflating the translation catalogs, stored deflated (build.rs); already linked through photocraft-io.
 flate2 = { workspace = true }

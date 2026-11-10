@@ -57,6 +57,8 @@ struct MapStopDrag {
     index: usize,
     offset: f32,
     changed: bool,
+    /// Dragged off the strip: out of the gradient, kept to come back if the drag returns.
+    removed: Option<Stop>,
 }
 
 /// Keep selection on the same stop when it crosses another stop (including coincident stops).
@@ -87,28 +89,45 @@ fn gradient_map_strip(ui: &mut egui::Ui, stops: &mut Vec<Stop>, cx: &EditorCx, s
     {
         *selected = index;
         let offset = stops.get(index).map_or(0.0, |s| pos.x - x_of(s.0));
-        ui.data_mut(|d| d.insert_temp(key, MapStopDrag { index, offset, changed: false }));
+        ui.data_mut(|d| d.insert_temp(key, MapStopDrag { index, offset, changed: false, removed: None }));
     }
     if let Some(mut drag) = ui.data(|d| d.get_temp::<MapStopDrag>(key)) {
         if (resp.dragged() || resp.drag_stopped())
             && let Some(pos) = resp.interact_pointer_pos()
         {
             let location = round(loc_of(pos.x - drag.offset), 0.001);
-            let changed = stops.get(drag.index).is_some_and(|s| s.0 != location);
-            if let Some(index) = move_map_stop(stops, drag.index, location) {
-                drag.index = index;
-                drag.changed |= changed;
-                *selected = index;
-                edit.changed |= changed;
+            // As far off the strip as the Gradient tool's; two stops always stay.
+            let off = crate::gradient_ui::off_strip(pos, bar);
+            if off && drag.removed.is_none() && stops.len() > 2 && drag.index < stops.len() {
+                drag.removed = Some(stops.remove(drag.index));
+                *selected = drag.index.min(stops.len() - 1);
+                drag.changed = true;
+                edit.changed = true;
+            } else if let Some(stop) = drag.removed.filter(|_| !off) {
+                drag.removed = None;
+                stops.push((location, stop.1));
+                drag.index = stops.len() - 1;
+                // Changed, wherever it lands: the preview had it removed.
+                edit.changed = true;
+            }
+            if drag.removed.is_none() {
+                let changed = stops.get(drag.index).is_some_and(|s| s.0 != location);
+                if let Some(index) = move_map_stop(stops, drag.index, location) {
+                    drag.index = index;
+                    drag.changed |= changed;
+                    *selected = index;
+                    edit.changed |= changed;
+                }
             }
         }
-        if resp.drag_stopped() {
+        // A drag can also end without `drag_stopped` (released outside the window, focus lost):
+        // either way what the preview shows is committed, so a stop taken off the strip isn't left
+        // removed with no History step.
+        if resp.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
             edit.commit = drag.changed;
             ui.data_mut(|d| d.remove::<MapStopDrag>(key));
-        } else if ui.input(|i| i.pointer.primary_down()) {
-            ui.data_mut(|d| d.insert_temp(key, drag));
         } else {
-            ui.data_mut(|d| d.remove::<MapStopDrag>(key));
+            ui.data_mut(|d| d.insert_temp(key, drag));
         }
     }
     if resp.clicked()
@@ -161,38 +180,33 @@ pub(super) fn gradient_map(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> E
         label(ui, tl!("Preset:"));
         let mut picked = None;
         let (press, close) = crate::press_menu::PressCombo::before(ui, cx.mem.with("gm-preset"));
-        let combo = craft_ui::ComboBox::from_id_salt(cx.mem.with("gm-preset"))
-            .selected_text(tl!("Custom"))
-            .width(ui.available_width().min(190.0))
-            .height(420.0)
-            .icon(widgets::chevron_icon)
-            .close_behavior(close)
-            .show_ui(ui, |ui| {
-                let gear = crate::icons::button(ui, "settings", 24.0, false, tl!("Gradient Preset Options"));
-                egui::containers::menu::SubMenu::new().show(ui, &gear, |ui| {
-                    if ui.button(tl!("Import .GRD")).clicked() {
-                        e.import_gradients = true;
-                        ui.close();
-                    }
-                });
-                ui.separator();
-                for g in &cx.gradients {
-                    ui.label(RichText::new(&g.name).color(t.text_faint));
-                    for p in &g.items {
-                        ui.horizontal(|ui| {
-                            // A map has no transparency: colour stops only, shown opaque.
-                            let rgba: Vec<(f32, [f32; 4])> = p.resolve(fg, bg).into_iter().map(|(at, c)| (at, [c[0], c[1], c[2], 1.0])).collect();
-                            let (r, swatch) = ui.allocate_exact_size(vec2(48.0, 16.0), Sense::click());
-                            crate::preset_panels::paint_gradient(ui, r, &rgba);
-                            // Both, not short-circuited: the name is drawn either way.
-                            let name = ui.selectable_label(false, &p.name);
-                            if press.chosen(ui, &swatch) | press.chosen(ui, &name) {
-                                picked = Some(rgba.iter().map(|(at, c)| (*at, [c[0], c[1], c[2]])).collect::<Vec<Stop>>());
-                            }
-                        });
-                    }
+        let width = ui.available_width().min(190.0);
+        let combo = widgets::combo_list(ui, cx.mem.with("gm-preset"), tl!("Custom"), width, close, |ui| {
+            let gear = crate::icons::button(ui, "settings", 24.0, false, tl!("Gradient Preset Options"));
+            egui::containers::menu::SubMenu::new().show(ui, &gear, |ui| {
+                if ui.button(tl!("Import .GRD")).clicked() {
+                    e.import_gradients = true;
+                    ui.close();
                 }
             });
+            ui.separator();
+            for g in &cx.gradients {
+                ui.label(RichText::new(&g.name).color(t.text_faint));
+                for p in &g.items {
+                    ui.horizontal(|ui| {
+                        // A map has no transparency: colour stops only, shown opaque.
+                        let rgba: Vec<(f32, [f32; 4])> = p.resolve(fg, bg).into_iter().map(|(at, c)| (at, [c[0], c[1], c[2], 1.0])).collect();
+                        let (r, swatch) = ui.allocate_exact_size(vec2(48.0, 16.0), Sense::click());
+                        crate::preset_panels::paint_gradient(ui, r, &rgba);
+                        // Both, not short-circuited: the name is drawn either way.
+                        let name = ui.selectable_label(false, &p.name);
+                        if press.chosen(ui, &swatch) | press.chosen(ui, &name) {
+                            picked = Some(rgba.iter().map(|(at, c)| (*at, [c[0], c[1], c[2]])).collect::<Vec<Stop>>());
+                        }
+                    });
+                }
+            }
+        });
         press.after(&combo.response);
         let _ = combo.response.accessible_name(tl!("Preset:"));
         if let Some(p) = picked {

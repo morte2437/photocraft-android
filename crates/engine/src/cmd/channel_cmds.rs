@@ -54,9 +54,10 @@ fn can_split(s: &Session) -> std::result::Result<(), String> {
         Ok(())
     }
 }
+/// Merge Channels needs a document per colour channel: three at least (RGB and Lab; CMYK four).
 fn can_merge(s: &Session) -> std::result::Result<(), String> {
     has_doc(s)?;
-    if mergeable(s).len() >= 2 { Ok(()) } else { Err("Merge Channels needs at least two open grayscale documents of the same size".into()) }
+    if mergeable(s).len() >= 3 { Ok(()) } else { Err("Merge Channels needs at least three open grayscale documents of the same size".into()) }
 }
 
 // ---------------------------------------------------------------------------------------------

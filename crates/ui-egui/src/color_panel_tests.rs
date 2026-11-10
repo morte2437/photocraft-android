@@ -221,7 +221,7 @@ fn web_sliders_snap_and_take_hex() {
     // Not a web colour: the cube alert snaps it.
     type_into(&mut h, egui::accesskit::Role::TextInput, 1, "C8");
     assert_eq!(bytes(h.state().session.tools.foreground), [0x66, 0xC8, 0]);
-    let alert = h.get_by_label("Not a web colour: click for the nearest web colour").rect().center();
+    let alert = h.get_by_label("Not a web color: click for the nearest web color").rect().center();
     press(&mut h, alert, Modifiers::NONE);
     assert_eq!(bytes(h.state().session.tools.foreground), [0x66, 0xCC, 0]);
 }
@@ -230,7 +230,7 @@ fn web_sliders_snap_and_take_hex() {
 fn cube_modes_warn_when_the_colour_cannot_print() {
     // #8672: Photoshop's Hue and Brightness Cube show the ⚠ and the nearest printable colour under
     // the chips, as the slider modes do; a click takes that colour.
-    const GAMUT: &str = "Out of gamut for printing: click for the nearest printable colour";
+    const GAMUT: &str = "Out of gamut for printing: click for the nearest printable color";
     for mode in [ColorPanelMode::HueCube, ColorPanelMode::BrightnessCube] {
         let mut h = color_tab(ThemeKind::Classic, mode, [0.0, 1.0, 0.0, 1.0]);
         let near = crate::color_picker_ui::out_of_gamut([0.0, 1.0, 0.0]).expect("pure green can't print");

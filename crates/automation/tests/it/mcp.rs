@@ -513,6 +513,70 @@ async fn headless_doc_save_writes_tiff_options() {
     cleanup(&dir);
 }
 
+/// #8064: headless `doc_save`/`doc_export` take `maximizeCompatibility` for a layered PSD/PSB's
+/// merged image: false writes Photoshop's placeholder and says so in resource 1057; unset, the
+/// real image. A value that isn't a boolean is refused before anything is written.
+#[tokio::test(flavor = "multi_thread")]
+async fn headless_doc_save_takes_maximize_compatibility() {
+    let dir = tmp("maximize-compat");
+    let client = connect(headless_in(&dir)).await;
+    call(&client, "doc_new", json!({"width": 64, "height": 32, "background": "white"})).await;
+    let r = call(&client, "command_run", json!({"id": "layer.new.layer", "params": {}})).await;
+    assert_ne!(r.is_error, Some(true), "{}", text(&r));
+    for (tool, params, real) in [
+        ("doc_export", json!({"path": "default.psd"}), true),
+        ("doc_export", json!({"path": "off.psd", "maximizeCompatibility": false}), false),
+        ("doc_save", json!({"path": "off.psb", "maximizeCompatibility": false}), false),
+        ("doc_save", json!({"path": "on.psd", "maximizeCompatibility": true}), true),
+    ] {
+        let r = call(&client, tool, params.clone()).await;
+        assert_ne!(r.is_error, Some(true), "{params}: {}", text(&r));
+        let bytes = std::fs::read(dir.join(params["path"].as_str().unwrap())).unwrap();
+        assert_eq!(photocraft_psd::PsdFile::from_bytes(&bytes).unwrap().has_real_merged_data(), Some(real), "{params}");
+    }
+    let r = call(&client, "doc_export", json!({"path": "bad.psd", "maximizeCompatibility": "no"})).await;
+    assert_eq!(r.is_error, Some(true), "{}", text(&r));
+    assert!(!dir.join("bad.psd").exists());
+    client.cancel().await.unwrap();
+    cleanup(&dir);
+}
+
+/// #8064: `doc_export_layers` takes `maximizeCompatibility` too, for PSD/PSB layer files.
+#[tokio::test(flavor = "multi_thread")]
+async fn headless_doc_export_layers_takes_maximize_compatibility() {
+    let dir = tmp("export-layers-maximize-compat");
+    let client = connect(headless_in(&dir)).await;
+    call(&client, "doc_new", json!({"width": 16, "height": 16, "background": "white", "name": "card"})).await;
+    for (sub, params, real) in
+        [("on", json!({"dir": "on", "format": "psd"}), true), ("off", json!({"dir": "off", "format": "psd", "maximizeCompatibility": false}), false)]
+    {
+        let result = json_of(&call(&client, "doc_export_layers", params.clone()).await);
+        assert_eq!(result["count"], 1, "{params}: {result}");
+        let file = result["files"][0].as_str().unwrap();
+        assert!(file.starts_with(sub), "{file}");
+        let bytes = std::fs::read(dir.join(file)).unwrap();
+        assert_eq!(photocraft_psd::PsdFile::from_bytes(&bytes).unwrap().has_real_merged_data(), Some(real), "{params}");
+    }
+    let r = call(&client, "doc_export_layers", json!({"dir": "bad", "format": "psd", "maximizeCompatibility": "no"})).await;
+    assert_eq!(r.is_error, Some(true), "{}", text(&r));
+    client.cancel().await.unwrap();
+    cleanup(&dir);
+}
+
+/// #8064: `maximizeCompatibility` reaches the app's `app.save` through the bridge; unset, nothing
+/// is sent and the app's preference decides.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_doc_save_forwards_maximize_compatibility() {
+    let (addr, app) = fake_app().await;
+    let client = connect(PhotocraftMcp::bridge(&addr, CONTROL_TOKEN).unwrap()).await;
+    let saved = json_of(&call(&client, "doc_save", json!({"path": "out.psd", "maximizeCompatibility": false})).await);
+    assert_eq!(saved, json!({"saved": {"path": "out.psd", "maximizeCompatibility": false}}));
+    let saved = json_of(&call(&client, "doc_save", json!({"path": "out.psd"})).await);
+    assert_eq!(saved, json!({"saved": {"path": "out.psd"}}));
+    client.cancel().await.unwrap();
+    app.abort();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn bridge_response_budget_drops_connection_without_retrying_the_operation() {
     use photocraft_automation::{BridgeClient, budgets::MAX_RESPONSE_BYTES};

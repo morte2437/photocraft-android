@@ -33,6 +33,160 @@ fn dragging_on_the_image_moves_the_selected_shadow() {
     assert_eq!(params(&f, "fx1"), (120.0, 0.0));
 }
 
+/// Review: the drag starts from the offset the gradient shows: a stored pair beyond ±4 at the
+/// clamp, a malformed pair at the effect's own offset (its `fx` snapshot) or, without one, at the
+/// centre, since the engine applies `offset` only when it is two finite numbers.
+#[test]
+fn a_drag_starts_from_the_offset_the_gradient_shows() {
+    let mut f = Map::new();
+    f.insert("selected".into(), json!("fx1"));
+    f.insert(
+        "effects".into(),
+        json!([
+            {"id": "fx1", "kind": "gradientOverlay", "on": true, "params": {"offset": [5.0, 0.0]}},
+            {"id": "fx2", "kind": "gradientOverlay", "on": true, "params": {"offset": [0.5, null]}},
+            {"id": "fx3", "kind": "gradientOverlay", "on": true, "params": {"offset": [0.5, null]}, "fx": {"GradientOverlay": {"gradient": {"offset": [0.2, 0.3]}}}},
+            {"id": "fx4", "kind": "gradientOverlay", "on": true, "params": {"offset": [0.1, 0.2, 9]}},
+        ]),
+    );
+    let offset = |f: &Map<String, Value>, id: &str| entry(f, id).unwrap()["params"].get("offset").cloned();
+    // Stored at 5, shown at 4: a short drag left moves it from 4, not from 5.
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([5.0, 0.0])), "a plain press leaves it");
+    drag_gradient(&mut f, false, [-20.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([3.9, 0.0])));
+    // A malformed pair without a snapshot: the renderer shows the centre, so the drag starts there.
+    f.insert("selected".into(), json!("fx2"));
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.5, null])), "a plain press leaves it");
+    drag_gradient(&mut f, false, [50.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.25, 0.0])));
+    // With a snapshot: the renderer shows the effect's own offset, so the drag starts there.
+    f.insert("selected".into(), json!("fx3"));
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    drag_gradient(&mut f, false, [50.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx3"), Some(json!([0.45, 0.3])));
+    // Three elements: the first two count, as the engine reads them.
+    f.insert("selected".into(), json!("fx4"));
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx4"), Some(json!([0.1, 0.2, 9])), "a plain press leaves it");
+    drag_gradient(&mut f, false, [50.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx4"), Some(json!([0.35, 0.2])));
+}
+
+/// Review: with the dialog's layer gone, a drag on the image has nothing to move, so the Hand
+/// tool pans as usual: `gradient_layer_bounds` finds the dialog's layer, or nothing.
+#[test]
+fn the_gradient_drag_needs_its_layer() {
+    let mut s = session();
+    let empty = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.execute("edit.fill", json!({"contents": "color", "color": "#ff0000"})).unwrap();
+    let mut f = Map::new();
+    f.insert("layer".into(), json!(id.0));
+    assert_eq!(gradient_layer_bounds(&s, &f), Some([64.0, 64.0]), "the dialog's layer");
+    // An empty layer paints no gradient (review): nothing to move, the Hand tool pans.
+    f.insert("layer".into(), json!(empty.0));
+    assert_eq!(gradient_layer_bounds(&s, &f), None, "an empty layer");
+    f.insert("layer".into(), json!(id.0 + 1000));
+    assert_eq!(gradient_layer_bounds(&s, &f), None, "a layer that is gone");
+    f.remove("layer");
+    assert_eq!(gradient_layer_bounds(&s, &f), None, "a dialog without a layer");
+}
+
+/// Review: the selected instance changing under a held press, or a Gradient Overlay page chosen
+/// during a press that began on another page, moves that instance from its own offset by the
+/// pointer's travel from that moment, not from the press.
+#[test]
+fn the_drag_rebases_when_the_selected_effect_changes() {
+    let mut f = Map::new();
+    f.insert("selected".into(), json!("fx3"));
+    f.insert(
+        "effects".into(),
+        json!([
+            {"id": "fx1", "kind": "gradientOverlay", "on": true, "params": {}},
+            {"id": "fx2", "kind": "gradientOverlay", "on": true, "params": {"offset": [0.1, 0.1]}},
+            {"id": "fx3", "kind": "dropShadow", "on": true, "params": {}},
+        ]),
+    );
+    let offset = |f: &Map<String, Value>, id: &str| entry(f, id).unwrap()["params"].get("offset").cloned();
+    // The press began on the shadow page: nothing for the gradient, until its page is chosen.
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    drag_gradient(&mut f, false, [40.0, 0.0], [200.0, 100.0]);
+    f.insert("selected".into(), json!("fx1"));
+    drag_gradient(&mut f, false, [40.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), None, "nothing moved since the page was chosen");
+    drag_gradient(&mut f, false, [60.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([0.1, 0.0])), "20 px on from the switch");
+    // Another instance selected mid-press: it moves by the travel from here, from its own offset.
+    f.insert("selected".into(), json!("fx2"));
+    drag_gradient(&mut f, false, [60.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.1, 0.1])), "nothing moved yet");
+    drag_gradient(&mut f, false, [80.0, 20.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.2, 0.3])));
+    assert_eq!(offset(&f, "fx1"), Some(json!([0.1, 0.0])), "the first one stays");
+    // The page left and the same instance chosen again under the held press (the canvas ends the
+    // stored drag while off the page): it starts over from the offset shown, not from the old
+    // origin and baseline, so the travel made meanwhile doesn't land on it.
+    f.insert("selected".into(), json!("fx3"));
+    end_gradient_drag(&mut f);
+    f.insert("selected".into(), json!("fx2"));
+    drag_gradient(&mut f, false, [120.0, 20.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.2, 0.3])), "nothing moved since the page came back");
+    drag_gradient(&mut f, false, [140.0, 20.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.3, 0.3])));
+}
+
+/// #10763: with a Gradient Overlay page selected, a drag on the image moves the gradient: its
+/// centre follows the pointer as a fraction of the layer's bounds.
+#[test]
+fn dragging_on_the_image_moves_the_selected_gradient_overlay() {
+    let mut f = Map::new();
+    f.insert("selected".into(), json!("fx1"));
+    f.insert(
+        "effects".into(),
+        json!([
+            {"id": "fx1", "kind": "gradientOverlay", "on": true, "params": {"angle": 90.0, "scale": 100.0}},
+            {"id": "fx2", "kind": "gradientOverlay", "on": true, "params": {"angle": 90.0, "offset": [0.1, 0.1]}},
+        ]),
+    );
+    assert!(drags_gradient(&f));
+    let offset = |f: &Map<String, Value>, id: &str| entry(f, id).unwrap()["params"].get("offset").cloned();
+    // The press keeps the gradient where it is (centred, no offset yet, and none written); 50 × 25
+    // px on a 200 × 100 layer move it a quarter of the way each.
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), None, "a plain press writes nothing");
+    drag_gradient(&mut f, false, [50.0, 25.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([0.25, 0.25])));
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.1, 0.1])), "another instance is left alone");
+    // Back and past the start: the way the pointer went, from where the drag began.
+    drag_gradient(&mut f, false, [-100.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([-0.5, 0.0])));
+    // A new drag starts from the offset the last one left.
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    drag_gradient(&mut f, false, [20.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([-0.4, 0.0])));
+    // A press that moves nothing keeps a precise offset as it is; a drag that comes back to where
+    // it began still writes, since the gradient moved in between. The offset stays within ±4.
+    f.insert("selected".into(), json!("fx2"));
+    set_param(&mut f, "fx2", "offset", json!([0.123456, 0.1]));
+    drag_gradient(&mut f, true, [0.0, 0.0], [200.0, 100.0]);
+    drag_gradient(&mut f, false, [0.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.123456, 0.1])), "nothing moved: nothing rounded");
+    drag_gradient(&mut f, false, [20.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.223, 0.1])));
+    drag_gradient(&mut f, false, [0.0, 0.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([0.123, 0.1])), "back at the start: the start is written");
+    drag_gradient(&mut f, false, [100_000.0, -100_000.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx2"), Some(json!([4.0, -4.0])), "clamped as the renderer clamps");
+    // Not on a gradient page: nothing moves.
+    f.insert("selected".into(), json!(BLENDING));
+    assert!(!drags_gradient(&f));
+    drag_gradient(&mut f, true, [50.0, 50.0], [200.0, 100.0]);
+    assert_eq!(offset(&f, "fx1"), Some(json!([-0.4, 0.0])));
+}
+
 fn session() -> photocraft_engine::Session {
     let mut s = photocraft_engine::Session::new();
     s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();

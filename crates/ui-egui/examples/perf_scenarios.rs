@@ -1562,8 +1562,77 @@ fn full_layer_doc(w: u32, h: u32, depth: u32) -> Res<(Session, u64)> {
     Ok((s, layer))
 }
 
-/// #9329 PR A: the redraw area of edits on a full-canvas layer, where redrawing the whole
-/// document is the expensive cliff. Each row checks it hits that path and prints `refresh px`.
+/// The index of `layer` among the document's top-level layers (bottom first).
+fn top_index(s: &Session, layer: u64) -> Res<usize> {
+    let doc = &s.active().ok_or("no document")?.doc;
+    doc.layers.iter().position(|l| l.id.0 == layer).ok_or_else(|| "layer is not top-level".to_string())
+}
+
+/// The composite pixel at (`x`, `y`).
+fn composite_px(s: &Session, x: i32, y: i32) -> Res<Vec<f32>> {
+    let doc = &s.active().ok_or("no document")?.doc;
+    Ok(photocraft_compose::render(doc, Rect::new(x, y, x + 1, y + 1)).px.first().ok_or("empty render")?.to_vec())
+}
+
+/// #9329 PR B: the layered document with a Curves above panel 2, masked to a small rect inside
+/// the panel. Returns the session, the Curves and a probe point inside the mask.
+fn masked_curves_doc(w: u32, h: u32) -> Res<(Session, u64, (i32, i32))> {
+    let (mut s, _) = layered_doc(w, h)?;
+    let panel = s.active().ok_or("no document")?.doc.layers.iter().find(|l| l.name == "panel 2").map(|l| l.id.0).ok_or("no panel 2")?;
+    exec(&mut s, "layer.select", json!({"layer": panel}))?;
+    let (x, y, mw, mh) = (2 * w / 3 + w / 12, h / 8, w / 10, h / 10);
+    exec(&mut s, "select.rect", json!({"x": x, "y": y, "width": mw, "height": mh}))?;
+    let curves =
+        exec(&mut s, "layer.newAdjustmentLayer.curves", json!({"points": [[0, 0], [90, 170], [255, 255]]}))?["layer"].as_u64().ok_or("no curves id")?;
+    let doc = s.active().ok_or("no document")?.doc.clone();
+    let above = doc.layers.len() - 1 - top_index(&s, curves)?;
+    if above < 4 {
+        return Err(format!("path check: {above} layers above the Curves, not >= 4 (the prefix cache would cover it)"));
+    }
+    let mask = doc.layer(photocraft_doc::LayerId(curves)).and_then(|l| l.mask.as_ref()).ok_or("path check: the Curves has no mask")?;
+    let share = coverage(&doc, mask.surface.content_bounds());
+    if mask.value(0, 0) != 0.0 || share > 0.05 {
+        return Err(format!("path check: the mask reveals {:.2} % of the canvas, not <= 5 %", share * 100.0));
+    }
+    let probe = ((x + mw / 2) as i32, (y + mh / 2) as i32);
+    let shown = composite_px(&s, probe.0, probe.1)?;
+    exec(&mut s, "layer.setProps", json!({"layer": curves, "visible": false}))?;
+    let hidden = composite_px(&s, probe.0, probe.1)?;
+    exec(&mut s, "layer.setProps", json!({"layer": curves, "visible": true}))?;
+    if shown == hidden {
+        return Err("path check: toggling the Curves changes no pixel inside its mask".into());
+    }
+    Ok((s, curves, probe))
+}
+
+/// #9329 PR B: the many-layer document with a small layer added directly above `mid`,
+/// overlapping it. Returns the session, `mid` and the neighbour.
+fn reorder_doc(w: u32, h: u32, n: usize) -> Res<(Session, u64, u64)> {
+    let (mut s, mid) = many_layers_doc(w, h, n)?;
+    let mb = layer_bounds(&s, mid)?;
+    exec(&mut s, "layer.select", json!({"layer": mid}))?;
+    exec(&mut s, "layer.new.layer", json!({"name": "neighbour"}))?;
+    let next = active_layer(&s)?;
+    exec(&mut s, "select.rect", json!({"x": mb.x0 + mb.size().width as i32 / 3, "y": mb.y0 + mb.size().height as i32 / 3, "width": w / 10, "height": h / 10}))?;
+    exec(&mut s, "edit.fill", json!({"color": "#3050d0"}))?;
+    exec(&mut s, "select.deselect", json!({}))?;
+    exec(&mut s, "layer.select", json!({"layer": mid}))?;
+    let doc = s.active().ok_or("no document")?.doc.clone();
+    let share = coverage(&doc, mb);
+    if share > 0.02 {
+        return Err(format!("path check: the layer covers {:.2} % of the canvas, not <= 2 %", share * 100.0));
+    }
+    if top_index(&s, next)? != top_index(&s, mid)? + 1 {
+        return Err("path check: the neighbour is not directly above the layer".into());
+    }
+    if layer_bounds(&s, next)?.intersect(&mb).is_empty() {
+        return Err("path check: the layer does not overlap the neighbour it passes".into());
+    }
+    Ok((s, mid, next))
+}
+
+/// #9329: the redraw area of edits where redrawing the whole document is the expensive cliff
+/// (PR A: full-canvas layers; PR B: a masked adjustment mid-stack and a reorder). Each row checks it hits that path and prints `refresh px`.
 fn redraw_area_scenarios(b: &mut Bench, sz: &Sizes) {
     let undo = "undo a brush dab on a full-canvas 16-bit 15000x10000 layer + refresh";
     if b.wanted(undo) {
@@ -1630,4 +1699,137 @@ fn redraw_area_scenarios(b: &mut Bench, sz: &Sizes) {
             }
         }
     }
+
+    let toggle = "toggle a masked adjustment mid-stack in the layered document + refresh";
+    if b.wanted(toggle) {
+        b.current = Some(toggle.to_string());
+        let (w, h) = sz.layered;
+        match masked_curves_doc(w, h) {
+            Err(e) => b.errors.push((toggle.to_string(), e)),
+            Ok((mut s, curves, _)) => {
+                let _ = b.refresh(&s, true);
+                let reps = b.reps;
+                b.time(toggle, &mut s, reps, true, |b, s, i| {
+                    let t = Instant::now();
+                    exec(s, "layer.setProps", json!({"layer": curves, "visible": i % 2 == 1}))?;
+                    let took = ms(t) + b.refresh(s, false)?;
+                    b.px.borrow_mut().push(b.last_px.get());
+                    Ok(took)
+                });
+            }
+        }
+    }
+
+    let reorder = "bring forward / send backward a small layer in the many-layer document + refresh";
+    if b.wanted(reorder) {
+        b.current = Some(reorder.to_string());
+        let (w, h) = sz.layered;
+        match reorder_doc(w, h, sz.many_layers) {
+            Err(e) => b.errors.push((reorder.to_string(), e)),
+            Ok((mut s, mid, _)) => {
+                let _ = b.refresh(&s, true);
+                let reps = b.reps;
+                b.time(reorder, &mut s, reps, true, |b, s, i| {
+                    let before = top_index(s, mid)?;
+                    let cmd = if i % 2 == 0 { "layer.arrange.bringForward" } else { "layer.arrange.sendBackward" };
+                    let t = Instant::now();
+                    exec(s, cmd, json!({"layer": mid}))?;
+                    let took = ms(t) + b.refresh(s, false)?;
+                    b.px.borrow_mut().push(b.last_px.get());
+                    if top_index(s, mid)? == before {
+                        return Err("path check: the layer's index did not change".into());
+                    }
+                    Ok(took)
+                });
+            }
+        }
+    }
+
+    let paste = "app frame after Paste Into on 24 MP (CPU canvas)";
+    if b.wanted(paste) {
+        let (w, h) = sz.big_photo;
+        paste_into_frame_scenario(b, paste, w, h);
+    }
+}
+
+/// #9329 PR C: the whole app (kittest harness, CPU canvas) with a 24 MP photo. Each sample runs
+/// Paste Into a 5 % selection (untimed, after a frame that shows the selection), then times the
+/// next frame, then undoes the paste and the selection (untimed). Paste Into is a compound command (several
+/// revisions), so the frame's refresh goes through the real `damage_since` path.
+fn paste_into_frame_scenario(b: &mut Bench, name: &str, w: u32, h: u32) {
+    // 0.224² ≈ 5 % of the canvas.
+    let sel = json!({"x": w / 2, "y": h / 2, "width": w * 224 / 1000, "height": h * 224 / 1000});
+    let built = open_photo(w, h).and_then(|mut s| {
+        exec(&mut s, "select.rect", json!({"x": w / 10, "y": h / 10, "width": w / 5, "height": h / 5}))?;
+        exec(&mut s, "edit.copy", json!({}))?;
+        Ok(s)
+    });
+    let mut s = match built {
+        Ok(s) => s,
+        Err(e) => return b.errors.push((name.into(), e)),
+    };
+    let doc = std::mem::take(&mut s);
+    let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_max_steps(4).build_eframe(move |cc| {
+        photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        photocraft_ui_egui::PhotocraftApp::new(doc, photocraft_ui_egui::Services::default())
+    });
+    // Warm up: first frames build the canvas cache of the 24 MP document.
+    harness.run_steps(6);
+    b.current = Some(name.to_string());
+    b.sampler.reset();
+    b.px.borrow_mut().clear();
+    let mut samples = Vec::new();
+    let run = (|| -> Res<()> {
+        let layers = |h: &egui_kittest::Harness<'_, photocraft_ui_egui::PhotocraftApp>| h.state().session.active().map(|d| d.doc.layers.len());
+        let base_layers = layers(&harness);
+        let past = |h: &egui_kittest::Harness<'_, photocraft_ui_egui::PhotocraftApp>| h.state().session.active().map(|d| d.history.past_len());
+        let base_past = past(&harness);
+        for i in 0..=b.reps.max(1) {
+            let rev = |h: &egui_kittest::Harness<'_, photocraft_ui_egui::PhotocraftApp>| h.state().session.active().map(|d| d.revision);
+            // Untimed: Paste Into turns the selection into the pasted layer's
+            // mask, so each sample re-creates the same ~5 % selection (the
+            // clipboard is not consumed), and shows it for a frame, as the app
+            // does between a selection and the next command. Without that frame
+            // the canvas would last have shown the revision before `select.rect`,
+            // two commands back, and redraw everything whatever Paste Into reports.
+            harness.state_mut().run("select.rect", sel.clone())?;
+            harness.step();
+            let before = rev(&harness).ok_or("no document")?;
+            harness.state_mut().run("edit.pasteSpecial.pasteInto", json!({}))?;
+            let after = rev(&harness).ok_or("no document")?;
+            // The path claim: a multi-revision command.
+            if after < before + 2 {
+                return Err(format!("path check: Paste Into moved revision by {}, not >= 2", after - before));
+            }
+            harness.state_mut().perf.last_refresh_px = 0;
+            let t = Instant::now();
+            harness.step();
+            let took = ms(t);
+            let px = harness.state().perf.last_refresh_px;
+            if px == 0 {
+                return Err("path check: the frame after Paste Into recorded no refresh".into());
+            }
+            // Untimed: undo the paste and then the selection (one history step each), so every
+            // sample pastes onto the same document rather than onto the layers earlier samples
+            // pasted, and starts from the same history rather than one more selection state per
+            // sample. The next sample's selection frame shows the undone document before its timer.
+            harness.state_mut().run("edit.undo", json!({}))?;
+            if layers(&harness) != base_layers {
+                return Err("path check: undoing Paste Into did not restore the layer stack".into());
+            }
+            harness.state_mut().run("edit.undo", json!({}))?;
+            if past(&harness) != base_past {
+                return Err("path check: undoing Paste Into and the selection did not restore the history".into());
+            }
+            // Sample 0 is the warm-up.
+            if i > 0 {
+                samples.push(took);
+                b.px.borrow_mut().push(px);
+            }
+        }
+        Ok(())
+    })();
+    // The rows' document handle: the harness's session.
+    let st = std::mem::take(&mut harness.state_mut().session);
+    b.record(name, &st, &samples, &[], run);
 }

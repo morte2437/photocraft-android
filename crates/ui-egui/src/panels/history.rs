@@ -62,16 +62,7 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             } else if resp.hovered() {
                 ui.painter().rect_filled(rect, 0.0, t.hover.gamma_multiply(0.5));
             }
-            let icon = match e.as_str() {
-                s if s.contains("Brush") || s.contains("Eraser") => "brush",
-                // The Layers panel's controls (layer.setProps).
-                "Opacity Change" | "Fill Opacity Change" | "Blending Change" => "layers",
-                s if s.contains("Layer") => "layers",
-                s if s.contains("Select") || s.contains("Marquee") || s.contains("Deselect") || s.contains("Lasso") => "square-dashed",
-                s if s.contains("Fill") => "paint-bucket",
-                "Open" => "image",
-                _ => "sliders-horizontal",
-            };
+            let icon = step_icon(&e);
             let color = if is_redo { t.text_faint } else { t.text };
             icons::paint(
                 ui,
@@ -144,9 +135,11 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 });
             }
             let can_snap = app.session.is_enabled("history.newSnapshot");
-            // ⌥-click opens New Snapshot (name, From) instead, as in Photoshop.
+            // ⌥-click opens New Snapshot (name, From) instead, as in Photoshop; with History
+            // Options › Show New Snapshot Dialog by Default a plain click does too.
+            let dialog_by_default = photocraft_engine::history_options_cmds::show_new_snapshot_dialog(&app.session);
             if ui.add_enabled_ui(can_snap, |ui| icons::button(ui, "scan", 26.0, false, tl!("Create new snapshot"))).inner.clicked() {
-                if ui.input(|i| i.modifiers.alt) {
+                if dialog_by_default || ui.input(|i| i.modifiers.alt) {
                     snapshot_dialog = true;
                 } else {
                     footer_cmd = Some(("history.newSnapshot", json!({})));
@@ -189,6 +182,24 @@ pub(super) fn history(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     {
         app.ui.status = e;
         app.ui.status_error = true;
+    }
+}
+
+/// The icon of a History step, from its name.
+pub(crate) fn step_icon(step: &str) -> &'static str {
+    match step {
+        s if s.contains("Brush") || s.contains("Eraser") => "brush",
+        // Applying a patch edits pixels; only the Patch tool's lasso is a selection step.
+        "Patch Selection" => "sliders-horizontal",
+        // The Layers panel's controls (layer.setProps).
+        "Opacity Change" | "Fill Opacity Change" | "Blending Change" => "layers",
+        s if s.contains("Layer") => "layers",
+        s if s.contains("Select") || s.contains("Marquee") || s.contains("Deselect") || s.contains("Lasso") => "square-dashed",
+        // The selections the Patch tool draws (select.lasso's historyName).
+        "Patch Tool" => "square-dashed",
+        s if s.contains("Fill") => "paint-bucket",
+        "Open" => "image",
+        _ => "sliders-horizontal",
     }
 }
 

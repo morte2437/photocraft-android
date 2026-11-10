@@ -564,6 +564,12 @@ impl SmartObject {
             perspective: None,
         }
     }
+
+    /// Where the placed source lands (transform, perspective and warp), as JSON: the placement a
+    /// smart filter stored in document pixels (an imported Puppet Warp mesh) was made for.
+    pub fn placement_json(&self) -> serde_json::Value {
+        serde_json::json!({"transform": self.transform.m, "perspective": self.perspective, "warp": self.warp})
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

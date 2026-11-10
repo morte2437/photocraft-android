@@ -30,6 +30,7 @@ fn requested_languages_resolve_regional_preferences() {
         ("id-ID", "id"),
         ("vi-VN", "vi"),
         ("sr-RS", "sr"),
+        ("az-Latn-AZ", "az"),
         ("bs-BA", "bs"),
     ] {
         assert_eq!(Lang::from_pref(tag), lang(code), "{tag}");
@@ -37,6 +38,80 @@ fn requested_languages_resolve_regional_preferences() {
     assert_eq!(lang_from_tag("ko_KR.UTF-8"), Some(lang("ko")));
     assert_eq!(lang_from_tag("FR-fr"), Some(lang("fr")));
     assert_eq!(lang_from_tag("ko"), Some(lang("ko")));
+}
+
+/// Switching redraws the menu and persists through the shell's save/load services on restart.
+#[test]
+fn azerbaijani_draw_after_switching_and_restore_after_restart() {
+    use std::{cell::RefCell, rc::Rc};
+
+    let code = "az";
+    let file = "Fayl";
+    with_language(Lang::EN, || {
+        let saved = Rc::new(RefCell::new(None::<String>));
+        let (load, store) = (saved.clone(), saved.clone());
+        let services = Services {
+            load_prefs: Some(Box::new(move || load.borrow().clone())),
+            save_prefs: Some(Box::new(move |text| {
+                *store.borrow_mut() = Some(text.to_owned());
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut h = harness_with_services(services);
+        h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": code})).expect("choose language");
+        h.run_steps(4);
+        assert_eq!(current(), lang(code));
+        assert_eq!(tr(current(), "File"), file);
+        assert!(drawn_text(&h).iter().any(|text| *text == file_title(lang(code))));
+        let persisted = saved.borrow().clone().expect("shell saved preferences");
+        let value: serde_json::Value = serde_json::from_str(&persisted).expect("saved JSON");
+        assert_eq!(value["interface"]["language"], code);
+        h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "en"})).expect("switch back");
+        h.run_steps(4);
+        assert_eq!(current(), Lang::EN);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&saved.borrow().clone().expect("saved English preferences")).expect("saved JSON")["interface"]["language"],
+            "en"
+        );
+        h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": code})).expect("choose language again");
+        h.run_steps(4);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&saved.borrow().clone().expect("saved language preferences")).expect("saved JSON")["interface"]["language"],
+            code
+        );
+        drop(h);
+        // The restarted shell, not the old one's drawing language, must bring Azerbaijani back.
+        set_current(Lang::EN);
+        let services = Services { load_prefs: Some(Box::new(move || saved.borrow().clone())), ..Default::default() };
+        let restarted = harness_with_services(services);
+        assert_eq!(restarted.state().session.prefs().interface.language, code);
+        assert_eq!(current(), lang(code));
+        assert!(drawn_text(&restarted).iter().any(|text| *text == file_title(lang(code))));
+    });
+}
+
+/// Preferences draw the catalog terms verbatim and the bundled UI font covers their letters.
+#[test]
+fn azerbaijani_preferences_draw_terms_and_glyphs() {
+    let code = "az";
+    let interface = "İnterfeys";
+    let light = "Açıq mövzu";
+    with_language(Lang::EN, || {
+        let mut h = harness();
+        h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": code})).expect("choose language");
+        crate::prefs_ui::open_preferences(h.state_mut(), "interface");
+        h.run_steps(4);
+        let text = drawn_text(&h);
+        for expected in [interface, light, tr(lang(code), "UI font size"), tr(lang(code), "UI scale")] {
+            assert!(text.iter().any(|text| text == expected), "{code}: missing {expected:?}");
+            h.ctx.fonts_mut(|fonts| {
+                for c in expected.chars().chain("ƏəĞğIıİiÖöŞşÜüÇç".chars()).filter(|c| c.is_alphabetic()) {
+                    assert!(fonts.has_glyph(&egui::FontId::proportional(12.0), c), "{code}: missing glyph {c}");
+                }
+            });
+        }
+    });
 }
 
 #[test]
@@ -231,6 +306,7 @@ fn harness_with_services(services: Services) -> egui_kittest::Harness<'static, P
     harness
 }
 
+/// Auto draws the detected system language on first launch while keeping the Auto preference.
 #[test]
 fn first_launch_renders_the_system_language_without_overwriting_auto() {
     for (tag, code) in [
@@ -245,6 +321,7 @@ fn first_launch_renders_the_system_language_without_overwriting_auto() {
         ("fi-FI", "fi"),
         ("da-DK", "da"),
         ("nb-NO", "nb"),
+        ("az-AZ", "az"),
     ] {
         system::with_system_tags(&[tag], || {
             with_language(Lang::EN, || {

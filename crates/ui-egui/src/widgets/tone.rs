@@ -374,11 +374,10 @@ pub fn histograms(app: &mut PhotocraftApp, source: HistSource, space: ToneSpace)
         HistSource::BelowLayer(l) | HistSource::Layer(l) | HistSource::UpTo(l) => l,
         HistSource::Channel { layer, .. } | HistSource::Colors { layer, .. } => layer,
     };
-    let pixels_kept = view_only(st);
     if let Some((d, l, r, h)) = app.tone_hist.as_mut()
         && *d == doc_id
         && *l == layer
-        && (*r == rev || (*r + 1 == rev && pixels_kept))
+        && (*r == rev || pixels_kept_since(st, *r))
         && h.tag == want
     {
         *r = rev;
@@ -391,10 +390,10 @@ pub fn histograms(app: &mut PhotocraftApp, source: HistSource, space: ToneSpace)
     h
 }
 
-/// Whether the latest revision changed no pixels (selecting a layer, say): cached histograms of
-/// the previous revision still hold (#125).
-pub(crate) fn view_only(st: &photocraft_engine::DocState) -> bool {
-    st.last_damage.is_some_and(|r| r.is_empty())
+/// Whether no pixels changed since revision `seen` (selecting a layer, say): cached histograms of
+/// that revision still hold (#125).
+pub(crate) fn pixels_kept_since(st: &photocraft_engine::DocState, seen: u64) -> bool {
+    seen >= st.damage_from() && seen < st.revision && st.last_damage.is_some_and(|r| r.is_empty())
 }
 
 /// After an editor commits its own adjustment layer, the image below it is unchanged: keep the

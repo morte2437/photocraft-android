@@ -16,6 +16,9 @@ corpus = []
 heif = ["photocraft-codecs/heif"]
 # Test support for synthetic memory injection, estimate charges and verification across crates.
 testgen = []
+# Editable PDF import (experimental): painted paths and embedded-font text become editable
+# layers; unsupported constructs keep the raster page.
+pdf-editable = ["dep:kurbo"]
 
 [dependencies]
 photocraft-geom = { workspace = true }
@@ -49,6 +52,13 @@ imagesize = "0.13"
 # already in the tree through the UI's icon loader; text shaping needs the fonts feature set.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+# The SVG fallback font search keeps each font file's character map (already in the tree through usvg).
+ttf-parser = { version = "0.25", default-features = false }
+# PDF import (pdf_import.rs): craft-pdf rasterizes pages in pure Rust; no shared library ships.
+craft-pdf = { workspace = true }
+# Editable PDF import (pdf_editable.rs): craft-pdf's Device trait uses kurbo paths and transforms.
+# This is the same kurbo 0.13 that craft-pdf already links; naming it adds no crate to the graph.
+kurbo = { version = "0.13", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 resvg = { version = "0.45", default-features = false, features = ["text", "raster-images"] }

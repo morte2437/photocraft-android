@@ -12,7 +12,7 @@
 //! the stated white level. Unclipped samples keep their values, and a file whose data reaches its white
 //! level, or has no pile-up, is left alone. Same detector as storytold/lightcraft#586.
 
-use crate::sensor::Sensor;
+use crate::sensor::{Cfa, Rect, Sensor};
 
 /// A saturation plateau must hold at least this share of its colour's samples (and 100 of them), as
 /// many must lie below it (a scene, not a flat field)...
@@ -28,6 +28,51 @@ const ABOVE_MARGIN: f32 = 0.01;
 const NEAR_WHITE: f32 = 0.03;
 /// How far below the plateau the "average value just below it" reaches.
 const NEIGHBOURHOOD: usize = 64;
+
+/// Largest number of row bands counted in parallel: each holds a 768 KiB histogram.
+const MAX_PARTS: usize = 16;
+
+/// Per-colour histogram of the samples of `active` (and the sample count per colour). Row bands are
+/// counted in parallel, each row through one repeat of the CFA colours (one `Cfa::color` per pattern
+/// column instead of one per sample), and the integer counts are summed, so the result does not depend
+/// on the number of workers.
+fn colour_histogram(data: &[u16], stride: usize, a: Rect, cfa: &Cfa) -> (Vec<[u32; 3]>, [u64; 3]) {
+    let parts = crate::par::workers().clamp(1, MAX_PARTS.min(a.height.max(1)));
+    let rows_per = a.height.div_ceil(parts).max(1);
+    let pw = cfa.width.max(1);
+    let partial = crate::par::map(a.height.div_ceil(rows_per), |p| {
+        let mut hist = vec![[0u32; 3]; 65536];
+        let mut pattern = vec![0usize; pw];
+        for y in a.y + p * rows_per..(a.y + (p + 1) * rows_per).min(a.y + a.height) {
+            for (k, c) in pattern.iter_mut().enumerate() {
+                *c = usize::from(cfa.color(a.x + k, y)).min(2);
+            }
+            let row = &data[y * stride + a.x..][..a.width];
+            for run in row.chunks(pw) {
+                for (&v, &c) in run.iter().zip(&pattern) {
+                    hist[usize::from(v)][c] += 1;
+                }
+            }
+        }
+        hist
+    });
+    let mut parts = partial.into_iter();
+    let mut hist = parts.next().unwrap_or_else(|| vec![[0u32; 3]; 65536]);
+    for part in parts {
+        for (h, q) in hist.iter_mut().zip(&part) {
+            for c in 0..3 {
+                h[c] += q[c];
+            }
+        }
+    }
+    let mut total = [0u64; 3];
+    for h in &hist {
+        for c in 0..3 {
+            total[c] += u64::from(h[c]);
+        }
+    }
+    (hist, total)
+}
 
 impl Sensor {
     /// The value each colour's samples saturate at, when that is clearly below the stated white level
@@ -55,16 +100,7 @@ impl Sensor {
         if lo + NEIGHBOURHOOD >= hi {
             return none;
         }
-        let mut hist = vec![[0u32; 3]; 65536];
-        let mut total = [0u64; 3];
-        for y in a.y..a.y + a.height {
-            let row = &self.data[y * self.width + a.x..][..a.width];
-            for (x, &v) in (a.x..).zip(row) {
-                let c = usize::from(cfa.color(x, y)).min(2);
-                total[c] += 1;
-                hist[usize::from(v)][c] += 1;
-            }
-        }
+        let (hist, total) = colour_histogram(&self.data, self.width, a, cfa);
         let mut out = none;
         for c in 0..3 {
             // the most populated value of the upper half of the range
@@ -119,6 +155,7 @@ impl Sensor {
 
 #[cfg(test)]
 mod tests {
+    use super::colour_histogram;
     use crate::*;
 
     /// A 64 x 64 RGGB mosaic with a gradient, black 528, white `white`, whose samples above `clip` (when
@@ -261,5 +298,35 @@ mod tests {
         let mut s = sensor_with(Some(3567), 4095.0);
         s.data.pop();
         assert_eq!(s.lift_clipped_samples(), 0);
+    }
+
+    /// The per-row pattern and the parallel bands count exactly what a per-sample `Cfa::color` pass does,
+    /// for offset patterns, a 6 x 6 pattern, an inner active area and any number of bands.
+    #[test]
+    fn histogram_matches_the_per_sample_count() {
+        let (w, h) = (53usize, 47usize);
+        let data: Vec<u16> = (0..w * h).map(|i| ((i * 2654435761) >> 7) as u16 % 4096).collect();
+        let xtrans = Cfa { width: 6, height: 6, colors: (0..36).map(|i| [1, 0, 2, 1, 2, 0][(i * 7 + i / 6) % 6]).collect(), origin_x: 5, origin_y: 2 };
+        let mut offset = Cfa::bayer("GBRG").unwrap();
+        offset.origin_x = 3;
+        offset.origin_y = 1;
+        for cfa in [Cfa::bayer("RGGB").unwrap(), offset, xtrans] {
+            for a in [Rect::new(0, 0, w, h), Rect::new(7, 5, 31, 22), Rect::new(1, 3, 1, 1), Rect::new(2, 2, 40, 1), Rect::new(0, 0, 0, 0)] {
+                let mut hist = vec![[0u32; 3]; 65536];
+                let mut total = [0u64; 3];
+                for y in a.y..a.y + a.height {
+                    for x in a.x..a.x + a.width {
+                        let c = usize::from(cfa.color(x, y)).min(2);
+                        total[c] += 1;
+                        hist[usize::from(data[y * w + x])][c] += 1;
+                    }
+                }
+                for threads in [1, 2, 3, 8] {
+                    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+                    let (got, got_total) = pool.install(|| colour_histogram(&data, w, a, &cfa));
+                    assert!(got == hist && got_total == total, "{threads} threads, active {a:?}");
+                }
+            }
+        }
     }
 }

@@ -63,9 +63,9 @@ note = "No ONNX runtime dependency"
 [[item]]
 id = "AUTO-219-8"
 target = "xtask check that every panel button routes through a command id"
-status = "missing"
+status = "partial"
 issue = 219
-note = "No such xtask check"
+note = "cargo xtask panel-commands (run by xtask ci and CI) fails on a shell click handler that changes the document or session directly; 1 allowlisted function left (panels/color.rs color_field assigns the foreground/background colour instead of tools.setColors)"
 
 [[item]]
 id = "AUTO-219-9"

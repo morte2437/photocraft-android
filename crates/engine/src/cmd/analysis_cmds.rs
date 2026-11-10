@@ -13,6 +13,11 @@
 //! values the luminosity (0.30 R + 0.59 G + 0.11 B) of the composite in the document's value
 //! range (0–255 at 8 bits, 0–32768 at 16 bits, 0–1 at 32 bits), integrated density area × mean.
 //! Lengths and areas are scaled by the measurement scale.
+//!
+//! Straighten Layer is offered where the reference application offers it: the ruler line is needed,
+//! and the target must be a single layer that is not the Background, not a group and not locked in
+//! place ([`straighten_disabled`], #12033). A hidden target layer keeps the button and is refused
+//! with [`STRAIGHTEN_HIDDEN_ERROR`] before anything changes.
 
 use std::sync::Arc;
 
@@ -138,6 +143,60 @@ fn has_ruler(s: &Session) -> std::result::Result<(), String> {
     s.active().and_then(|d| d.doc.measurement.ruler).map(|_| ()).ok_or_else(|| "no ruler line".into())
 }
 
+/// The reference's alert for Straighten Layer on a hidden target layer (#12033), measured: one
+/// alert window with an OK button, and the document and its History stay as they were. The button
+/// is *enabled* for a hidden layer, so this is the command's refusal and not a greyed state; the
+/// options bar shows the same text through `tl!` (English is the catalog source).
+pub const STRAIGHTEN_HIDDEN_ERROR: &str = "Could not straighten the layer because the target layer is hidden.";
+
+/// The enabled check of `image.analysis.straightenLayer`: a ruler line, and a target the reference
+/// straightens ([`straighten_disabled`], #12033).
+fn has_straightenable_layer(s: &Session) -> std::result::Result<(), String> {
+    has_ruler(s)?;
+    straighten_disabled(s).map_or(Ok(()), |why| Err(why.into()))
+}
+
+/// Why Straighten Layer is greyed out for the current target, `None` when its button is live
+/// (#12033). Measured with a ruler line drawn: the Background, two or more selected layers, a
+/// group, a layer with Lock All and a layer with Lock Position all grey it out.
+///
+/// Deliberately not here: a hidden target layer keeps the button enabled and is refused by
+/// [`straighten`] with [`STRAIGHTEN_HIDDEN_ERROR`], and the states the ticket marks *not measured*
+/// (a layer with a mask, a shape, vector or adjustment layer, artboards, and the lock kinds other
+/// than Lock All and Lock Position) keep today's behaviour. A document with no active layer keeps
+/// turning the whole canvas as it does now; an active id the document no longer holds is refused.
+fn straighten_disabled(s: &Session) -> Option<&'static str> {
+    let st = s.active()?;
+    if st.selected_layers().len() > 1 {
+        return Some("several layers selected");
+    }
+    // The active layer is the one the Layers panel targets; with none, the command turns the
+    // canvas, which the reference was not measured for.
+    let id = st.active_layer?;
+    // An id the document no longer holds: `Session::edit` keeps the *selected* layers valid but
+    // not the active one, so an edit that drops the active layer can leave a stale id behind.
+    // Turning and cropping the whole canvas for a layer that is not there is the worse answer, and
+    // `select_layer` and `restore_layer_selection` both refuse such an id.
+    let Some(layer) = st.doc.layer(id) else {
+        return Some("no active layer");
+    };
+    if st.doc.is_background(id) {
+        return Some("the Background");
+    }
+    if layer.is_group() {
+        return Some("a group");
+    }
+    // Locks inherited from a group count, as they do for the Move tool.
+    let locks = st.doc.effective_locks(id);
+    if locks.all {
+        return Some("the layer is locked");
+    }
+    if locks.position {
+        return Some("the layer's position is locked");
+    }
+    None
+}
+
 fn has_log(s: &Session) -> std::result::Result<(), String> {
     if s.analysis.log.is_empty() { Err("the Measurement Log is empty".into()) } else { Ok(()) }
 }
@@ -188,6 +247,8 @@ pub(crate) fn compound<R>(s: &mut Session, label: &str, f: impl FnOnce(&mut Sess
     // Color Sampler points are view state a step may move (crop, rotation): roll them back too, so
     // a failed second step can't leave them pinned to pixels the restored document no longer has.
     let samplers = st.color_samplers.clone();
+    // So is the painting symmetry, which a rotation moves with the pixels.
+    let symmetry = st.symmetry.clone();
     let r = f(s);
     if r.is_err() {
         s.journal.truncate(journal);
@@ -205,19 +266,22 @@ pub(crate) fn compound<R>(s: &mut Session, label: &str, f: impl FnOnce(&mut Sess
             Ok(v)
         }
         Err(e) => {
-            st.doc = before;
+            let failed = std::mem::replace(&mut st.doc, before);
             st.active_layer = prior.active;
             st.selected_layers = prior.selected;
             st.layer_anchor = anchor;
             st.channel_view = channel_view;
             st.coalesce = coalesce;
             st.color_samplers = samplers;
+            st.symmetry = symmetry;
             st.revision += 1;
             // A failed compound does not make an otherwise untouched document dirty.
             if was_clean {
                 st.saved_revision = st.revision;
             }
-            st.last_damage = None;
+            // This revision's damage; `Session::dispatch` reports the command's whole span (nothing,
+            // when the inner commands had changed pixels and the restore took them back).
+            st.last_damage = crate::layer_multi_cmds::step_damage(&failed, &st.doc);
             Err(e)
         }
     };
@@ -715,6 +779,12 @@ pub fn straighten_angle(r: &Ruler) -> f64 {
 fn straighten(s: &mut Session, p: &Value) -> Result<Value> {
     let d = doc(s)?;
     let r = d.measurement.ruler.ok_or_else(|| EngineError::Other("no ruler line".into()))?;
+    // A hidden target layer keeps its button and gets this alert instead of a rotation (#12033).
+    // Asked before anything is read for the edit, so the document, its History and the ruler line
+    // stay exactly as they were; a layer inside a hidden group is hidden too (#571).
+    if s.active().and_then(|st| st.active_layer).is_some_and(|id| d.path_of(id).is_some_and(|path| !d.shown_at(&path))) {
+        return Err(EngineError::Other(STRAIGHTEN_HIDDEN_ERROR.into()));
+    }
     let rot = straighten_angle(&r);
     if rot.abs() < 1e-9 {
         return Ok(json!({"angle": 0.0}));
@@ -793,7 +863,7 @@ fn count_add(s: &mut Session, p: &Value) -> Result<Value> {
     if gi.is_some_and(|i| i >= group_count) {
         return Err(bad("count.add", "no such group"));
     }
-    let n = s.edit("Count", |d, _| {
+    let n = s.edit("Add Count Object", |d, _| {
         if d.measurement.count_groups.is_empty() {
             let g = new_group(d, None, None);
             d.measurement.count_groups.push(g);
@@ -843,7 +913,7 @@ fn locate(s: &Session, p: &Value, cmd: &str) -> Result<(usize, usize)> {
 
 fn count_remove(s: &mut Session, p: &Value) -> Result<Value> {
     let (g, i) = locate(s, p, "count.remove")?;
-    s.edit("Count", |d, _| {
+    s.edit("Delete Count Object", |d, _| {
         d.measurement.count_groups[g].points.remove(i);
         Ok(())
     })?;
@@ -853,7 +923,7 @@ fn count_remove(s: &mut Session, p: &Value) -> Result<Value> {
 fn count_move(s: &mut Session, p: &Value) -> Result<Value> {
     let to = point(p.get("to")).ok_or_else(|| bad("count.move", "pass `to`: [x, y]"))?;
     let (g, i) = locate(s, p, "count.move")?;
-    s.edit("Count", |d, _| {
+    s.edit("Drag Count Object", |d, _| {
         d.measurement.count_groups[g].points[i] = to;
         Ok(())
     })?;
@@ -878,7 +948,7 @@ fn count_clear(s: &mut Session, p: &Value) -> Result<Value> {
 fn count_new_group(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
     let color = color_of("count.newGroup", p, "color")?;
-    s.edit("New Count Group", |d, _| {
+    s.edit("Add Count Group", |d, _| {
         let g = new_group(d, name, color);
         d.measurement.count_groups.push(g);
         d.measurement.active_count_group = d.measurement.count_groups.len() - 1;
@@ -893,9 +963,15 @@ fn count_delete_group(s: &mut Session, p: &Value) -> Result<Value> {
     s.edit("Delete Count Group", |d, _| {
         d.measurement.count_groups.remove(g);
         let n = d.measurement.count_groups.len();
-        // Removing a group before the active one shifts it down a slot.
+        // Deleting the current group makes the first one current (#11771); removing a group
+        // before the current one shifts it down a slot (#5654).
         let a = d.measurement.active_count_group;
-        d.measurement.active_count_group = (if g < a { a - 1 } else { a }).min(n.saturating_sub(1));
+        let next = match g.cmp(&a) {
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Less => a - 1,
+            std::cmp::Ordering::Greater => a,
+        };
+        d.measurement.active_count_group = next.min(n.saturating_sub(1));
         Ok(())
     })?;
     Ok(count_json(doc(s)?.as_ref()))
@@ -940,8 +1016,24 @@ fn count_set_group(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let activate = p.get("active").and_then(Value::as_bool) == Some(true) || p.as_object().is_some_and(|o| o.len() == 1 && o.contains_key("group"));
     let changed = grp != d.measurement.count_groups[g];
-    if changed || (activate && d.measurement.active_count_group != g) {
-        s.edit("Count Group Options", |d, _| {
+    let switches = activate && d.measurement.active_count_group != g;
+    if changed || switches {
+        // One field changed: Photoshop's name for it (#11763). Several fields, or a switch of the
+        // current group (not measured), keep "Count Group Options".
+        let old = &d.measurement.count_groups[g];
+        let fields = [
+            (grp.name != old.name, "Set Count Group Name"),
+            (grp.visible != old.visible, "Set Count Group Visibility"),
+            (grp.color != old.color, "Set Count Draw Color"),
+            (grp.marker_size != old.marker_size, "Set Count Marker Size"),
+            (grp.label_size != old.label_size, "Set Count Font Size"),
+        ];
+        let mut one = fields.iter().filter(|(c, _)| *c).map(|(_, l)| *l);
+        let label = match (one.next(), one.next()) {
+            (Some(l), None) if !switches => l,
+            _ => "Count Group Options",
+        };
+        s.edit(label, |d, _| {
             d.measurement.count_groups[g] = grp;
             if activate {
                 d.measurement.active_count_group = g;
@@ -1009,7 +1101,9 @@ fn record(s: &mut Session, p: &Value) -> Result<Value> {
         other => return Err(bad(CMD, format!("unknown source `{other}` (auto|selection|ruler|count)"))),
     };
     // Numbered only once the rows exist, so a failed measurement does not use up a label.
-    let label = format!("Measurement {}", s.analysis.next_measurement + 1);
+    // A count's row is "Count N" (#11775); the number is the shared one.
+    let word = if source == "count" { "Count" } else { "Measurement" };
+    let label = format!("{word} {}", s.analysis.next_measurement + 1);
     let now = p.get("dateTime").and_then(Value::as_str).map(str::to_string).unwrap_or_else(now_iso);
     let factor = d.measurement.scale.factor();
     let mut rows: Vec<Map<String, Value>> = Vec::new();
@@ -1288,8 +1382,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "image.analysis.straightenLayer",
             "Straighten Layer",
             [],
-            r##"{"crop":bool=(active layer is the Background)} (rotates so the ruler line is level; crop = rotate the canvas and crop to the image)"##,
-            has_ruler,
+            r##"{"crop":bool=(active layer is the Background)} (rotates so the ruler line is level; crop = rotate the canvas and crop to the image; off for the Background, two or more selected layers, a group, Lock All and Lock Position, and a hidden target layer answers "Could not straighten the layer because the target layer is hidden." with nothing changed (#12033))"##,
+            has_straightenable_layer,
             straighten,
             true
         ),
@@ -1323,5 +1417,8 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+#[cfg(test)]
+#[path = "analysis_straighten_enabled_tests.rs"]
+mod analysis_straighten_enabled_tests;
 #[cfg(test)]
 mod tests;

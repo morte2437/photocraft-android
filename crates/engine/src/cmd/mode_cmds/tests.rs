@@ -248,6 +248,160 @@ fn indexed_color_palettes_and_dithers() {
 }
 
 #[test]
+fn indexed_exact_preserves_profile_and_samples_through_default_rgb() {
+    for depth in [8, 16, 32] {
+        for profile in ["adobe-rgb-compat", "display-p3", "prophoto-compat", "none"] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 1, "height": 1, "depth": depth, "background": "transparent"})).unwrap();
+            s.execute("edit.assignProfile", json!({"profile": profile})).unwrap();
+            paint(&mut s, |_, _| [100.0 / 255.0, 150.0 / 255.0, 200.0 / 255.0, 1.0]);
+            let source_profile = doc(&s).icc_profile.clone();
+            s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "transparency": false})).unwrap();
+            assert_eq!(doc(&s).icc_profile, source_profile, "{profile} at {depth}-bit: Indexed profile");
+            assert_eq!(doc(&s).color_table.as_ref().unwrap().colors, vec![[100, 150, 200]]);
+            let indexed_pixel = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
+            s.execute("image.mode.rgb", json!({})).unwrap();
+            assert_eq!(doc(&s).mode, ColorMode::Rgb);
+            assert_eq!(doc(&s).icc_profile, source_profile, "{profile} at {depth}-bit: RGB profile");
+            assert_eq!(doc(&s).layers[0].surface().unwrap().rgba(0, 0), indexed_pixel);
+            assert!(doc(&s).color_table.is_none());
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(doc(&s).mode, ColorMode::Indexed);
+            assert_eq!(doc(&s).icc_profile, source_profile);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(doc(&s).mode, ColorMode::Rgb);
+            assert_eq!(doc(&s).icc_profile, source_profile);
+            s.execute("edit.undo", json!({})).unwrap();
+            s.execute("image.mode.rgb", json!({"profile": "srgb"})).unwrap();
+            assert_eq!(doc(&s).icc_profile, Some(photocraft_cms::Builtin::Srgb.profile().to_bytes()), "an explicit target still converts");
+            if profile != "none" {
+                assert_ne!(doc(&s).layers[0].surface().unwrap().rgba(0, 0), indexed_pixel);
+            }
+        }
+    }
+}
+
+#[test]
+fn indexed_matte_blends_edges_without_replacing_clear_pixels() {
+    for depth in [8, 16, 32] {
+        for (matte, color) in [
+            ("black", [0.0, 0.0, 0.0]),
+            ("white", [1.0, 1.0, 1.0]),
+            ("#0000ff", [0.0, 0.0, 1.0]),
+            ("foreground", [0.0, 0.0, 1.0]),
+            ("background", [0.0, 1.0, 0.0]),
+        ] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 4, "height": 1, "depth": depth, "background": "transparent"})).unwrap();
+            s.execute("tools.setColors", json!({"foreground": "#0000ff", "background": "#00ff00"})).unwrap();
+            paint(&mut s, |x, _| match x {
+                0 => [0.0, 1.0, 0.0, 1.0],
+                1 => [1.0, 0.0, 0.0, 0.75],
+                2 => [1.0, 0.0, 0.0, 0.25],
+                _ => [0.0; 4],
+            });
+            let source = [1, 2].map(|x| doc(&s).layers[0].surface().unwrap().rgba(x, 0));
+            let expected = source.map(|pixel| [0, 1, 2].map(|i| pixel[i] * pixel[3] + color[i] * (1.0 - pixel[3])));
+            s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte})).unwrap();
+            let surface = doc(&s).layers[0].surface().unwrap();
+            let edges = [1, 2].map(|x| surface.rgba(x, 0));
+            for (edge, expected) in edges.iter().zip(expected) {
+                for i in 0..3 {
+                    assert!((edge[i] - expected[i]).abs() <= 1.0 / 255.0, "{depth}-bit {matte}: {edge:?} vs {expected:?}");
+                }
+                assert_eq!(edge[3], 1.0);
+            }
+            assert_eq!(surface.rgba(3, 0)[3], 0.0, "{matte}: fully transparent pixels stay clear");
+            assert_eq!(surface.rgba(0, 0), [0.0, 1.0, 0.0, 1.0]);
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!([1, 2].map(|x| doc(&s).layers[0].surface().unwrap().rgba(x, 0)), source);
+            s.execute("edit.redo", json!({})).unwrap();
+            assert_eq!([1, 2].map(|x| doc(&s).layers[0].surface().unwrap().rgba(x, 0)), edges);
+        }
+    }
+}
+
+#[test]
+fn indexed_matte_converts_working_rgb_to_document_profile_at_every_depth() {
+    use photocraft_cms::Transform;
+
+    for depth in [8, 16, 32] {
+        for (matte, color) in [("foreground", [0.0, 1.0, 0.0]), ("background", [1.0, 0.0, 0.0])] {
+            for (intent, bpc) in [("relative", false), ("absolute", true)] {
+                let mut s = Session::new();
+                s.execute("edit.colorSettings", json!({"workingRgb": "display-p3", "intent": intent, "bpc": bpc})).unwrap();
+                s.execute("file.new", json!({"width": 2, "height": 1, "depth": depth, "background": "transparent"})).unwrap();
+                s.execute("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+                s.execute("tools.setColors", json!({"foreground": "#00ff00", "background": "#ff0000"})).unwrap();
+                paint(&mut s, |x, _| if x == 0 { [1.0, 0.0, 0.0, 0.5] } else { [0.0; 4] });
+                let pixel = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
+                let profile = doc(&s).icc_profile.clone();
+                let source = s.color.working(ColorMode::Rgb);
+                let destination = crate::color_cmds::document_profile(doc(&s));
+                let transform = Transform::new(&source, &destination, s.color.settings.intent(), bpc).unwrap();
+                let mut converted = [0.0; 16];
+                transform.eval(&color, &mut converted);
+                let expected = [0, 1, 2].map(|i| ((pixel[i] * pixel[3] + converted[i].clamp(0.0, 1.0) * (1.0 - pixel[3])) * 255.0).round() as u8);
+                s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte})).unwrap();
+                let edge = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
+                assert_eq!([edge[0], edge[1], edge[2]].map(|v| (v * 255.0).round() as u8), expected, "{depth}-bit {matte} {intent}, bpc={bpc}");
+                assert_eq!(edge[3], 1.0);
+                assert_eq!(doc(&s).icc_profile, profile);
+                assert_eq!(doc(&s).layers[0].surface().unwrap().rgba(1, 0)[3], 0.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn indexed_matte_hex_stays_in_document_rgb_coordinates() {
+    for depth in [8, 16, 32] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 1, "height": 1, "depth": depth, "background": "transparent"})).unwrap();
+        s.execute("edit.assignProfile", json!({"profile": "adobe-rgb-compat"})).unwrap();
+        paint(&mut s, |_, _| [1.0, 0.0, 0.0, 0.5]);
+        s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "matte": "#3366cc"})).unwrap();
+        let edge = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
+        let expected = [0.5 + 0.5 * 0.2, 0.5 * 0.4, 0.5 * 0.8];
+        for (got, want) in edge[..3].iter().zip(expected) {
+            assert!((got - want).abs() <= 2.0 / 255.0, "{depth}-bit: {edge:?} vs {expected:?}");
+        }
+        assert_eq!(edge[3], 1.0);
+    }
+}
+
+#[test]
+fn indexed_matte_named_gray_choices_use_their_document_samples() {
+    for (matte, channel) in [("gray", 128.0 / 255.0), ("netscapeGray", 192.0 / 255.0)] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 1, "height": 1, "depth": 32, "background": "transparent"})).unwrap();
+        paint(&mut s, |_, _| [1.0, 0.0, 0.0, 0.5]);
+        s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte})).unwrap();
+        let edge = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
+        assert!((edge[0] - (0.5 + channel * 0.5)).abs() <= 1.0 / 255.0, "{matte}: {edge:?}");
+        for value in edge[1..3].iter() {
+            assert!((*value - channel * 0.5).abs() <= 2.0 / 255.0, "{matte}: {edge:?}");
+        }
+        assert_eq!(edge[3], 1.0);
+    }
+}
+
+#[test]
+fn indexed_matte_without_transparency_fills_clear_pixels_and_rejects_bad_input_atomically() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 2, "height": 1, "background": "transparent"})).unwrap();
+    let before = s.active().unwrap().revision;
+    for matte in [json!(false), json!(12), json!("#gg0000"), json!("#000000ff"), json!("unknown")] {
+        assert!(s.execute("image.mode.indexedColor", json!({"matte": matte})).is_err(), "{matte}");
+        assert_eq!(s.active().unwrap().revision, before);
+        assert_eq!(doc(&s).mode, ColorMode::Rgb);
+    }
+    s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "transparency": false, "matte": "#0000ff"})).unwrap();
+    assert_eq!(doc(&s).layers[0].surface().unwrap().rgba(0, 0), [0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(doc(&s).color_table.as_ref().unwrap().transparent, None);
+}
+
+#[test]
 fn indexed_exact_transparency_and_sources() {
     // Two colours + transparency: exact palette with a transparent entry.
     let mut s = Session::new();
@@ -450,6 +604,18 @@ fn bitmap_output_resolution_resamples_and_sets_the_resolution() {
     s.execute("image.mode.bitmap", json!({"method": "threshold"})).unwrap();
     assert_eq!((doc(&s).size.width, doc(&s).resolution_dpi), (256, 300.0));
     assert_eq!(first_white(doc(&s), 0, 1, 0), Some(128));
+}
+
+/// #9212: the Output resolution resamples the pixels outside the canvas too. A 10 px crop that
+/// kept a 1000 px document's pixels, converted from 1 to 100 ppi, would grow them to 100000 px a
+/// side (20 GB of gray and alpha at 8 bits, past the 8 GiB budget): refused before allocating.
+#[test]
+fn bitmap_output_resolution_budgets_the_hidden_pixels() {
+    let mut s = ramp(1000, 1000, 8, 1.0);
+    s.execute("image.crop", json!({"x": 0, "y": 0, "width": 10, "height": 10, "deleteCroppedPixels": false})).unwrap();
+    let err = s.execute("image.mode.bitmap", json!({"method": "threshold", "resolution": 100})).unwrap_err().to_string();
+    assert!(err.contains("100000 x 100000 px is 10000 megapixels"), "{err}");
+    assert_eq!((doc(&s).size.width, doc(&s).mode), (10, ColorMode::Grayscale));
 }
 
 #[test]

@@ -123,7 +123,7 @@ pub(crate) fn refusal(s: &Session, id: &str, p: &Value) -> Option<String> {
         return Some("Move and transforms on several colour channels are not implemented yet".into());
     }
     if id == "filter.cameraRaw" {
-        return Some("Camera Raw requires the composite or one colour channel".into());
+        return Some("RAW Develop requires the composite or one colour channel".into());
     }
     None
 }

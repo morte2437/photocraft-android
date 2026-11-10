@@ -966,6 +966,27 @@ fn command_list_filter_finds_the_marquees_by_keyword() {
     assert!(found("no command is called this").is_empty());
 }
 
+/// The rename to "RAW Develop" is display only: the filter and RAW Defaults are still found by
+/// Photoshop's "Camera Raw" name, which their keywords carry (#12403).
+#[test]
+fn command_list_filter_finds_the_raw_commands_by_their_photoshop_name() {
+    let mut s = Session::new();
+    let list = s.execute("command.list", json!({})).unwrap();
+    let rows = list.as_array().unwrap();
+    let found = |needle: &str| -> Vec<String> {
+        rows.iter().filter(|c| crate::commands::list_entry_matches(c, needle)).map(|c| c["id"].as_str().unwrap().to_string()).collect()
+    };
+    for needle in ["camera raw", "Camera Raw", "CAMERA RAW"] {
+        let ids = found(needle);
+        assert!(ids.contains(&"filter.cameraRaw".to_string()), "{needle}: {ids:?}");
+        assert!(ids.contains(&"edit.preferences.rawDefaults".to_string()), "{needle}: {ids:?}");
+    }
+    // What the menus show is the new name, and the keywords are not a label.
+    let label = |id: &str| rows.iter().find(|c| c["id"] == id).unwrap()["label"].as_str().unwrap().to_string();
+    assert_eq!(label("filter.cameraRaw"), "RAW Develop Filter…");
+    assert_eq!(label("edit.preferences.rawDefaults"), "RAW Defaults…");
+}
+
 /// Every keyword entry names a real command, so a renamed id can't leave one behind.
 #[test]
 fn search_keywords_name_real_commands() {
@@ -1985,4 +2006,60 @@ fn the_document_activation_generation_bumps_on_switch_and_back() {
     s.execute("layer.new.layer", json!({})).unwrap();
     assert_eq!(s.active_generation(), g3);
     assert_eq!(s.active().unwrap().doc.id, first);
+}
+
+#[test]
+fn the_active_layer_change_count_moves_only_when_a_command_changes_the_active_layer() {
+    let mut s = session_with_doc();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let a = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let b = s.active().unwrap().active_layer.unwrap();
+    let n = s.active_layer_changes();
+    s.execute("layer.select", json!({"layer": b.0})).unwrap();
+    assert_eq!(s.active_layer_changes(), n, "selecting the active layer again changes nothing");
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    assert!(s.active_layer_changes() > n);
+    let m = s.active_layer_changes();
+    s.execute("layer.select", json!({"layer": b.0})).unwrap();
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    assert!(s.active_layer_changes() >= m + 2, "a round trip back to the same layer still counts");
+}
+
+#[test]
+fn direct_selection_calls_count_active_layer_changes_only_when_the_layer_changes() {
+    let mut s = session_with_doc();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let a = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let b = s.active().unwrap().active_layer.unwrap();
+    let count = |s: &Session| s.active_layer_changes();
+    let n = count(&s);
+    s.select_layer(b).unwrap();
+    assert_eq!(count(&s), n, "select_layer of the active layer");
+    s.select_layer(a).unwrap();
+    assert_eq!(count(&s), n + 1, "select_layer of another layer");
+    s.restore_layer_selection(Some(a), &[a], Some(a)).unwrap();
+    assert_eq!(count(&s), n + 1, "restore_layer_selection of the same active layer");
+    s.restore_layer_selection(Some(b), &[b], Some(b)).unwrap();
+    assert_eq!(count(&s), n + 2, "restore_layer_selection of another layer");
+    layer_multi_cmds::set_selection(&mut s, vec![b], Some(b), Some(b)).unwrap();
+    assert_eq!(count(&s), n + 2, "set_selection of the same active layer");
+    layer_multi_cmds::set_selection(&mut s, vec![a], Some(a), Some(a)).unwrap();
+    assert_eq!(count(&s), n + 3, "set_selection of another layer");
+    s.set_active_layer(Some(a));
+    assert_eq!(count(&s), n + 3, "set_active_layer of the same layer");
+    s.set_active_layer(Some(b));
+    assert_eq!(count(&s), n + 4, "set_active_layer of another layer");
+}
+
+#[test]
+fn the_active_layer_marker_advances_for_a_new_document_and_not_for_a_same_layer_select() {
+    let mut s = session_with_doc();
+    let before = s.active_layer_changes();
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.select_layer(id).unwrap();
+    assert_eq!(s.active_layer_changes(), before, "re-selecting the active layer leaves the marker alone");
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    assert!(s.active_layer_changes() > before, "a new active document advances the marker");
 }

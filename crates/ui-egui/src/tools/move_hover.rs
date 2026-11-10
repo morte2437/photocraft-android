@@ -30,6 +30,7 @@ pub(crate) struct Hover {
 pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: bool, pressed: bool) -> Option<Rect> {
     if !app.session.prefs().tools.show_highlight_on_rollover
         || app.ui.tool != Tool::Move
+        || !app.ui.tool_options.move_show_hover_bounds
         || pressed
         || app.drag.is_some()
         || app.guide_drag.is_some()
@@ -102,6 +103,7 @@ pub(crate) fn active_outline(app: &mut PhotocraftApp, at: Option<[f64; 2]>, comm
     }
     // A layer hovered in the Layers panel takes precedence over canvas rollover.
     if let Some(id) = app.hover_layer
+        && (app.ui.tool != Tool::Move || app.ui.tool_options.move_show_layers_hover_bounds)
         && app.drag.is_none()
         && app.guide_drag.is_none()
         && app.ui.transform.is_none()

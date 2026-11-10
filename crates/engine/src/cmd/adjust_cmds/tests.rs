@@ -36,6 +36,12 @@ fn changed(a: [f32; 4], b: [f32; 4]) -> f32 {
     (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f32::max)
 }
 
+/// Every pixel of the active layer, row by row.
+fn pixels(s: &Session) -> Vec<[f32; 4]> {
+    let b = doc(s).bounds();
+    (b.y0..b.y1).flat_map(|y| (b.x0..b.x1).map(move |x| (x, y))).map(|(x, y)| rgba(s, x, y)).collect()
+}
+
 fn doc(s: &Session) -> &Document {
     &s.active().unwrap().doc
 }
@@ -752,6 +758,239 @@ fn replace_color_localized_clusters_only_change_the_colour_near_the_sample() {
     assert!(err.to_string().contains("points"), "{err}");
     let err = s.execute("image.adjustments.replaceColor", json!({"points": [[1]]})).unwrap_err();
     assert!(err.to_string().contains("bad point"), "{err}");
+}
+
+/// #6280: Add to Sample and Subtract from Sample, as in Photoshop: several picked colours are
+/// all replaced, and a subtracted one is left alone, matching as Select › Color Range does for
+/// the same samples.
+#[test]
+fn replace_color_adds_and_subtracts_samples_as_color_range_does() {
+    // Red on the left (x < 16), blue in the middle, green on the right (32 ≤ x < 44), and a
+    // lighter red at the edge that the samples only partly cover.
+    let (red, blue, green, pink) = ([0.85, 0.1, 0.1, 1.0], [0.1, 0.15, 0.85, 1.0], [0.1, 0.8, 0.15, 1.0], [0.95, 0.25, 0.25, 1.0]);
+    let mut s = session(8, "rgb");
+    paint(&mut s, |x, _| {
+        if x < 16 {
+            red
+        } else if x < 32 {
+            blue
+        } else if x < 44 {
+            green
+        } else {
+            pink
+        }
+    });
+    let before = (rgba(&s, 4, 16), rgba(&s, 24, 16), rgba(&s, 40, 16), rgba(&s, 46, 16));
+    let original = pixels(&s);
+    let shift = |extra: Value| {
+        let mut p = json!({"fuzziness": 40, "hue": 120, "saturation": 20});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        p
+    };
+    // Red and blue sampled (one added): both change, green doesn't.
+    s.execute("image.adjustments.replaceColor", shift(json!({"color": "#d91a1a", "points": [[4, 16], [24, 16]]}))).unwrap();
+    assert!(changed(rgba(&s, 4, 16), before.0) > 0.1, "red is replaced");
+    assert!(changed(rgba(&s, 24, 16), before.1) > 0.1, "the added blue is replaced");
+    assert_eq!(rgba(&s, 40, 16), before.2, "green wasn't sampled");
+    let partial = rgba(&s, 46, 16);
+    // One undo step brings every pixel back exactly.
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(pixels(&s) == original, "undo restores the pixels");
+    // The same coverage as Select › Color Range for the same clicks.
+    s.execute("select.colorRange", json!({"points": [[4, 16], [24, 16]], "fuzziness": 40})).unwrap();
+    let sel = doc(&s).selection.clone().unwrap();
+    for x in [4, 24, 40] {
+        let want = sel.read_region(Rect::from_xywh(x, 16, 1, 1))[0];
+        assert!((want > 0.5) == (x < 32), "Color Range at {x}: {want}");
+    }
+    // The lighter red is partly covered, and replaced in proportion: the blend of its colour and
+    // its fully replaced colour at that coverage, not either one (as a 0.5 threshold would give).
+    let k = sel.read_region(Rect::from_xywh(46, 16, 1, 1))[0];
+    assert!(k > 0.1 && k < 0.9, "partial coverage: {k}");
+    let mut full = [before.3];
+    tone::replace_color_masked(&mut full, &[1.0], 120.0, 20.0, 0.0);
+    let blend: [f32; 4] = std::array::from_fn(|c| before.3[c] + (full[0][c] - before.3[c]) * k);
+    assert!(changed(partial, blend) < 1.5 / 255.0, "{partial:?} vs the blend {blend:?} at coverage {k}");
+    assert!(changed(blend, before.3).min(changed(blend, full[0])) > 0.1, "the blend is far from both ends a threshold gives");
+    s.execute("select.deselect", json!({})).unwrap();
+    // A subtraction undoes exactly too. (Blue is far from the red sample here, so subtracting
+    // it changes nothing; `replace_color_subtracting_inside_the_added_range_takes_a_colour_out`
+    // has a subtraction that does.)
+    let selected = pixels(&s);
+    s.execute("image.adjustments.replaceColor", shift(json!({"points": [[4, 16]], "subtractPoints": [[24, 16]], "order": ["+", "-"]}))).unwrap();
+    assert!(changed(rgba(&s, 4, 16), before.0) > 0.1);
+    assert_eq!(rgba(&s, 40, 16), before.2);
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(pixels(&s) == selected, "undo restores the pixels");
+    // Bad samples are refused, naming this command.
+    let err = s.execute("image.adjustments.replaceColor", shift(json!({"points": [[4, 16]], "subtractPoints": [[999, 16]]}))).unwrap_err();
+    assert!(err.to_string().contains("replaceColor") && err.to_string().contains("outside"), "{err}");
+}
+
+/// FredApps review on #10443: a subtracted sample inside the added range. Photoshop's Subtract
+/// from Sample reshapes the samples' Lab box (`LabRange::subtract`): a subtracted colour inside
+/// it pulls the nearer edge onto itself, so it stays matched and the added colour beyond that
+/// edge drops out. Two added greys span dark to light; subtracting a grey near the light end
+/// leaves the light one unreplaced.
+#[test]
+fn replace_color_subtracting_inside_the_added_range_takes_a_colour_out() {
+    let grey = |v: f32| [v, v, v, 1.0];
+    // Dark grey (x < 12), mid grey (subtracted), light grey, black (never sampled).
+    let mut s = session(8, "rgb");
+    paint(&mut s, |x, _| match x {
+        ..12 => grey(0.25),
+        12..24 => grey(0.65),
+        24..36 => grey(0.75),
+        _ => grey(0.0),
+    });
+    let at = [(4, 16), (16, 16), (28, 16), (40, 16)];
+    let before: Vec<_> = at.iter().map(|&(x, y)| rgba(&s, x, y)).collect();
+    let added = json!({"fuzziness": 20, "lightness": -50, "points": [[4, 16], [28, 16]]});
+    // Added only: the box spans dark to light, so all three greys are replaced.
+    s.execute("image.adjustments.replaceColor", added.clone()).unwrap();
+    for (i, &(x, y)) in at[..3].iter().enumerate() {
+        assert!(changed(rgba(&s, x, y), before[i]) > 0.1, "grey {i} is in the added range");
+    }
+    assert_eq!(rgba(&s, 40, 16), before[3]);
+    s.execute("edit.undo", json!({})).unwrap();
+    // Mid grey subtracted: the light end moves onto it, so the light grey is left alone.
+    let mut subtracted = added.clone();
+    subtracted["subtractPoints"] = json!([[16, 16]]);
+    subtracted["order"] = json!(["+", "+", "-"]);
+    s.execute("image.adjustments.replaceColor", subtracted.clone()).unwrap();
+    assert!(changed(rgba(&s, 4, 16), before[0]) > 0.1, "the dark grey is still replaced");
+    assert!(changed(rgba(&s, 16, 16), before[1]) > 0.1, "the subtracted grey stays matched, at the new edge");
+    assert_eq!(rgba(&s, 28, 16), before[2], "the light grey beyond it is taken out");
+    assert_eq!(rgba(&s, 40, 16), before[3]);
+    // Select › Color Range agrees for the same clicks.
+    s.execute("edit.undo", json!({})).unwrap();
+    let mut range = subtracted;
+    range.as_object_mut().unwrap().remove("lightness");
+    s.execute("select.colorRange", range).unwrap();
+    let sel = doc(&s).selection.clone().unwrap();
+    let covered: Vec<bool> = at.iter().map(|&(x, y)| sel.read_region(Rect::from_xywh(x, y, 1, 1))[0] > 0.5).collect();
+    assert_eq!(covered, [true, true, false, false]);
+}
+
+/// CodeRabbit review on #10443: the click order (`"order"`) reaches the matcher, as in Select ›
+/// Color Range. Added dark grey, subtracted mid grey, added light grey (`+ - +`): the subtraction
+/// comes while the box is the dark grey alone, far from the mid grey, so it changes nothing and the
+/// light grey is replaced; all additions first (`+ + -`) would leave it out.
+#[test]
+fn replace_color_follows_the_click_order_as_color_range_does() {
+    let grey = |v: f32| [v, v, v, 1.0];
+    // Dark grey (x < 12), mid grey (subtracted), light grey, black (never sampled).
+    let mut s = session(8, "rgb");
+    paint(&mut s, |x, _| match x {
+        ..12 => grey(0.25),
+        12..24 => grey(0.65),
+        24..36 => grey(0.75),
+        _ => grey(0.0),
+    });
+    let at = [(4, 16), (16, 16), (28, 16), (40, 16)];
+    let before: Vec<_> = at.iter().map(|&(x, y)| rgba(&s, x, y)).collect();
+    let clicks = json!({"fuzziness": 20, "points": [[4, 16], [28, 16]], "subtractPoints": [[16, 16]], "order": ["+", "-", "+"]});
+    let mut p = clicks.clone();
+    p["lightness"] = json!(-50);
+    s.execute("image.adjustments.replaceColor", p).unwrap();
+    let replaced: Vec<bool> = at.iter().enumerate().map(|(i, &(x, y))| changed(rgba(&s, x, y), before[i]) > 0.1).collect();
+    s.execute("edit.undo", json!({})).unwrap();
+    // Darkening leaves black black whether or not it's matched: lighten to see whether it is.
+    p = clicks.clone();
+    p["lightness"] = json!(50);
+    s.execute("image.adjustments.replaceColor", p).unwrap();
+    let lifted = changed(rgba(&s, 40, 16), before[3]) > 0.1;
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("select.colorRange", clicks).unwrap();
+    let sel = doc(&s).selection.clone().unwrap();
+    let covered: Vec<bool> = at.iter().map(|&(x, y)| sel.read_region(Rect::from_xywh(x, y, 1, 1))[0] > 0.5).collect();
+    assert_eq!(covered, [true, true, true, false], "Color Range: the light grey is added back after the subtraction");
+    assert_eq!(replaced, covered, "Replace Color matches what Color Range covers for the same clicks");
+    assert_eq!(lifted, covered[3], "Replace Color matches black as Color Range does");
+}
+
+/// FredApps review on #10443: Localized Color Clusters with several samples. A matching colour
+/// is replaced only near one of the samples, as in Select › Color Range.
+#[test]
+fn replace_color_localized_clusters_with_several_samples() {
+    // Two creams, sampled at x = 2 and x = 24; the first cream again far right (x ≥ 40).
+    let (cream, cream2, grey) = ([0.9, 0.88, 0.79, 1.0], [0.88, 0.86, 0.76, 1.0], [0.5, 0.5, 0.5, 1.0]);
+    let mut s = session(8, "rgb");
+    paint(&mut s, |x, _| match x {
+        ..8 => cream,
+        20..28 => cream2,
+        40.. => cream,
+        _ => grey,
+    });
+    let at = [(3, 16), (24, 16), (44, 16), (14, 16)];
+    let before: Vec<_> = at.iter().map(|&(x, y)| rgba(&s, x, y)).collect();
+    let mut p = json!({"fuzziness": 20, "hue": 180, "saturation": 60, "points": [[2, 16], [24, 16]]});
+    // Without clusters both creams change everywhere, the far one too.
+    s.execute("image.adjustments.replaceColor", p.clone()).unwrap();
+    assert!(changed(rgba(&s, 44, 16), before[2]) > 0.05, "far cream without clusters");
+    s.execute("edit.undo", json!({})).unwrap();
+    // Range 20 % of 48 px: within about 10 px of either sample.
+    p["localized"] = json!(true);
+    p["range"] = json!(20);
+    s.execute("image.adjustments.replaceColor", p.clone()).unwrap();
+    assert!(changed(rgba(&s, 3, 16), before[0]) > 0.05, "near the first sample");
+    assert!(changed(rgba(&s, 24, 16), before[1]) > 0.05, "near the second sample");
+    assert_eq!(rgba(&s, 44, 16), before[2], "the same cream far from both samples");
+    assert_eq!(rgba(&s, 14, 16), before[3], "grey isn't sampled");
+    // Select › Color Range agrees for the same clicks.
+    s.execute("edit.undo", json!({})).unwrap();
+    for k in ["hue", "saturation"] {
+        p.as_object_mut().unwrap().remove(k);
+    }
+    s.execute("select.colorRange", p).unwrap();
+    let sel = doc(&s).selection.clone().unwrap();
+    let covered: Vec<bool> = at.iter().map(|&(x, y)| sel.read_region(Rect::from_xywh(x, y, 1, 1))[0] > 0.5).collect();
+    assert_eq!(covered, [true, true, false, false]);
+}
+
+/// #10443 review: with only Subtract from Sample clicks, the dialog's From colour is what the
+/// subtraction starts from, not the foreground (black here), so the red is still replaced.
+#[test]
+fn replace_color_subtract_only_starts_from_the_from_colour() {
+    let (red, blue) = ([0.85, 0.1, 0.1, 1.0], [0.1, 0.15, 0.85, 1.0]);
+    let mut s = session(8, "rgb");
+    paint(&mut s, |x, _| if x < 16 { red } else { blue });
+    let (r0, b0) = (rgba(&s, 4, 16), rgba(&s, 24, 16));
+    let p = json!({"color": "#d91a1a", "hue": 120, "fuzziness": 40, "points": [], "subtractPoints": [[24, 16]]});
+    s.execute("image.adjustments.replaceColor", p).unwrap();
+    assert_ne!(rgba(&s, 4, 16), r0, "the From colour (red) is replaced");
+    // Blue is outside the From colour's range anyway: subtracting from a single colour doesn't
+    // reshape its range, as in Photoshop (see
+    // `replace_color_subtracting_inside_the_added_range_takes_a_colour_out`).
+    assert_eq!(rgba(&s, 24, 16), b0, "blue isn't matched");
+}
+
+/// #10443 review: a `null` From colour means the foreground, for the subtract-only matcher too.
+#[test]
+fn replace_color_subtract_only_reads_a_null_colour_as_the_foreground() {
+    let (red, blue) = ([0.85, 0.1, 0.1, 1.0], [0.1, 0.15, 0.85, 1.0]);
+    let mut s = session(8, "rgb");
+    paint(&mut s, |x, _| if x < 16 { red } else { blue });
+    s.tools.foreground = red;
+    let r0 = rgba(&s, 4, 16);
+    let p = json!({"color": null, "hue": 120, "fuzziness": 40, "points": [], "subtractPoints": [[24, 16]]});
+    s.execute("image.adjustments.replaceColor", p).unwrap();
+    assert_ne!(rgba(&s, 4, 16), r0, "the foreground (red) is replaced");
+}
+
+/// A malformed `subtractPoints` is refused even with one sample, where the single-colour path
+/// would otherwise ignore it (CodeRabbit review on #10443).
+#[test]
+fn replace_color_refuses_malformed_subtract_points() {
+    let mut s = session(8, "rgb");
+    paint(&mut s, |_, _| [0.85, 0.1, 0.1, 1.0]);
+    for points in [json!([]), json!([[4, 16]])] {
+        let p = json!({"color": "#d91a1a", "hue": 120, "points": points, "subtractPoints": "invalid"});
+        let err = s.execute("image.adjustments.replaceColor", p).unwrap_err();
+        assert!(err.to_string().contains("replaceColor") && err.to_string().contains("subtractPoints"), "{err}");
+    }
+    // An empty list is no subtraction: the single-colour path.
+    s.execute("image.adjustments.replaceColor", json!({"color": "#d91a1a", "hue": 120, "points": [[4, 16]], "subtractPoints": []})).unwrap();
 }
 
 /// #6095: ⌘I in Quick Mask inverts the whole mask, not only where it was white, so leaving Quick

@@ -86,6 +86,7 @@
 	Right	Høyre
 	Open Recent	Åpne nylig brukte
 	Clear Recent Files	Tøm nylig brukte filer
+	Clear Recent File List	Tøm nylig brukte filer
 	Remove from Recent	Fjern fra nylig brukte
 	Remove {name} from Recent	Fjern {name} fra nylig brukte
 	Close	Lukk
@@ -94,6 +95,10 @@
 	Restore	Gjenopprett
 	Close All	Lukk alle
 	Close Others	Lukk andre
+	New Document…	Nytt dokument…
+	Open Document…	Åpne…
+	Consolidate All to Here	Samle alle her
+	Move to New Window	Flytt til nytt vindu
 	Save	Lagre
 	Save As…	Lagre som…
 	Save a Copy…	Lagre en kopi…
@@ -106,7 +111,6 @@
 	Export As…	Eksporter som…
 	Export	Eksporter
 	Export…	Eksporter…
-	Quick Export As PNG	Hurtigeksport som PNG
 	Quick Export as PNG	Hurtigeksport som PNG
 	Place Embedded…	Plasser innebygd…
 	Place Linked…	Plasser koblet…
@@ -181,8 +185,8 @@
 	Trap…	Overlapping…
 
 # Layer
-	Layer via Copy	Lag via kopiering
-	Layer via Cut	Lag via utklipp
+	Layer Via Copy	Lag via kopiering
+	Layer Via Cut	Lag via utklipp
 	Duplicate Layer…	Dupliser lag…
 	Duplicate…	Dupliser…
 	Delete	Slett
@@ -310,7 +314,6 @@
 	All	Alle
 	Deselect	Opphev utvalg
 	Reselect	Velg på nytt
-	Inverse Selection	Inverter utvalget
 	Inverse	Inverter
 	Color Range…	Fargeområde…
 	Select and Mask…	Velg og masker…
@@ -347,7 +350,7 @@
 	Last Filter	Siste filter
 	Filter Gallery…	Filtergalleri…
 	Liquify…	Gjør flytende…
-	Camera Raw Filter…	Camera Raw-filter…
+	RAW Develop Filter…	RAW-fremkalling-filter…
 	Adaptive Wide Angle…	Adaptiv vidvinkel…
 	Lens Correction…	Objektivkorreksjon…
 	Vanishing Point…	Fluktpunkt…
@@ -508,7 +511,6 @@
 	Match Location	Samkjør plassering
 	Match Rotation	Samkjør rotasjon
 	Match All	Samkjør alle
-	New Window for Document	Nytt vindu for dokument
 	Workspace	Arbeidsområde
 	Extensions	Utvidelser
 	Panels	Paneler
@@ -538,6 +540,12 @@
 	Timeline	Tidslinje
 	Tool Presets	Verktøyforvalg
 	Tools	Verktøy
+	Contextual Task Bar	Kontekstavhengig oppgavelinje
+	Hide bar	Skjul linjen
+	Reset bar position	Tilbakestill linjens plassering
+	Pin bar position	Fest linjens plassering
+	Move bar	Flytt linjen
+	More options	Flere alternativer
 	Libraries	Biblioteker
 	3D	3D
 	Toolbars	Verktøylinjer
@@ -596,8 +604,8 @@
 	Background	Bakgrunn
 	Set foreground color	Angi forgrunnsfarge
 	Set background color	Angi bakgrunnsfarge
-	Swap colours (X)	Bytt farger (X)
-	Default colours (D)	Standardfarger (D)
+	Switch Foreground and Background Colors (X)	Bytt forgrunns- og bakgrunnsfarge (X)
+	Default Foreground and Background Colors (D)	Standard forgrunns- og bakgrunnsfarge (D)
 	Brush Tool Options	Alternativer for penselverktøy
 	Opacity	Dekkevne
 	Flow	Flyt
@@ -686,6 +694,7 @@
 	Units & Rulers…	Enheter og linjaler…
 	Guides, Grid & Slices…	Hjelpelinjer, rutenett og segmenter…
 	Plug-ins…	Programtillegg…
+	Plugins…	Programtillegg…
 	Technology Previews	Teknologiforhåndsvisninger
 	Scratch Disks…	Arbeidsdisker…
 	Export Preferences…	Eksportinnstillinger…
@@ -866,7 +875,7 @@
 	Working Black Plate	Arbeidsplate for svart
 	Working Gray Plate	Arbeidsplate for grå
 
-# Camera Raw and lens dialogs
+# RAW Develop and lens dialogs
 	Basic	Grunnleggende
 	Detail	Detalj
 	HSL/Grayscale	HSL/gråtoner
@@ -896,8 +905,8 @@
 	Luminance Smoothness	Luminansjevnhet
 	Vignetting	Vignettering
 	White Balance: As Shot	Hvitbalanse: som fotografert
-	Camera Raw…	Camera Raw…
-	Camera Raw isn't open	Camera Raw er ikke åpen
+	RAW Defaults…	RAW-standarder…
+	RAW Develop isn't open	RAW-fremkalling er ikke åpen
 	Dehaze	Fjern dis
 	Texture	Tekstur
 	Focal Length	Brennvidde
@@ -920,8 +929,8 @@
 	ACES	ACES
 	Industry Standard	Bransjestandard
 	Web	Web
-	Internet Standard RGB	Internettstandard RGB
-	Legacy Macintosh RGB	Eldre Macintosh RGB
+	Internet Standard RGB (sRGB)	Internettstandard RGB (sRGB)
+	Legacy Macintosh RGB (Gamma 1.8)	Eldre Macintosh RGB (Gamma 1.8)
 	Monitor RGB	Skjerm-RGB
 	Windows LCD	Windows LCD
 	Coated CMYK	Bestrøket CMYK
@@ -1168,8 +1177,6 @@
 	Roman Hanging Punctuation	Antikva hengende tegnsetting
 	Avoid Widows/Orphans	Unngå enker/horunger
 	Compose	Komponer
-	Adobe Single-line Composer	Adobe setter for én linje
-	Adobe Every-line Composer	Adobe setter for hver linje
 	Justification	Justering
 	Word Spacing	Ordmellomrom
 	Letter Spacing	Bokstavavstand
@@ -1209,6 +1216,7 @@
 	Path to Illustrator…	Bane til Illustrator…
 	Make Work Path	Opprett arbeidsbane
 	Make Selection	Opprett utvalg
+	Make Shape	Opprett form
 	Fill Path	Fyll bane
 	Stroke Path	Strek opp bane
 	Clipping Path	Klippebane
@@ -1602,7 +1610,7 @@
 	Revert “{name}” to the last saved version? Your changes will be lost.	Tilbakestille «{name}» til sist lagrede versjon? Endringene dine går tapt.
 	{key} to subtract	{key} for å trekke fra
 	↑↓ navigate   {key} run   esc close	↑↓ naviger   {key} kjør   esc lukk
-	Click to restore the current colour	Klikk for å gjenopprette gjeldende farge
+	Click to restore the current color	Klikk for å gjenopprette gjeldende farge
 	Click with the Note tool to add a note.	Klikk med notatverktøyet for å legge til et notat.
 	Drag a rectangle around the object	Dra et rektangel rundt objektet
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Dra på bildet for å legge til en begrensning. Shift for vannrett/loddrett. Høyreklikk på en begrensning for å endre eller slette den.
@@ -1626,6 +1634,7 @@
 	Move Tool	Flytteverktøy
 	Could not use the move tool because the layer is locked.	Kunne ikke bruke flytteverktøyet fordi laget er låst.
 	Could not complete the Free Transform command because the layer is locked.	Kunne ikke fullføre Fri transformering fordi laget er låst.
+	Could not transform because the layer is locked.	Kunne ikke transformere fordi laget er låst.
 	Rectangular Marquee Tool	Rektangulær markeringsramme
 	Elliptical Marquee Tool	Elliptisk markeringsramme
 	Single Row Marquee Tool	Markeringsramme for enkeltrad
@@ -1683,10 +1692,10 @@
 	Drag to move the active layer	Dra for å flytte det aktive laget
 	Drag to pan  ·  hold Space with any tool	Dra for å panorere  ·  hold mellomrom med et hvilket som helst verktøy
 	Drag to draw a gradient	Dra for å tegne en gradient
-	Click to fill similar colours	Klikk for å fylle lignende farger
+	Click to fill similar colors	Klikk for å fylle lignende farger
 	Click to add text	Klikk for å legge til tekst
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Dra (lasso) eller klikk punkter (polygon) · {add} legg til · {sub} trekk fra
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Dra en beskjæringsramme · dra innenfor for å flytte · kantene endrer størrelse ({ratio} forhold, {centre} midtpunkt) · mellomrom flytter under tegning · piltaster forskyver · X bytter retning · {commit} bekrefter · Esc avbryter
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Dra en beskjæringsramme · dra innenfor for å flytte · kantene endrer størrelse ({ratio} forhold, {centre} midtpunkt) · mellomrom flytter under tegning · piltaster forskyver · X bytter retning · {commit} bekrefter · Esc avbryter
 	{mode} Color · {bits} bit	{mode}-farge · {bits} biter
 	Drag to move the layer	Dra for å flytte laget
 	Fit Screen	Tilpass til skjerm
@@ -1718,7 +1727,7 @@
 	Appearance	Utseende
 	Text Position:	Tekstplassering:
 	Text color	Tekstfarge
-	Uses the foreground and background colours.	Bruker forgrunns- og bakgrunnsfargene.
+	Uses the foreground and background colors.	Bruker forgrunns- og bakgrunnsfargene.
 	Answer the unsaved-changes prompt first	Svar først på spørsmålet om ulagrede endringer
 	Unsaved changes	Ulagrede endringer
 	Don't Save	Ikke lagre
@@ -1738,18 +1747,19 @@
 	name	navn
 	new	ny
 	Go to Layer	Gå til lag
-	Open a document to select a colour range.	Åpne et dokument for å velge et fargeområde.
+	Open a document to select a color range.	Åpne et dokument for å velge et fargeområde.
 	Saved	Lagret
 	Reveal in Finder	Vis i Finder
 	Show in Explorer	Vis i Utforsker
+	Reveal in Explorer	Vis i Utforsker
 	Show in Folder	Vis i mappe
 	Before (Y)	Før (Y)
 	Save Settings…	Lagre innstillinger…
 	Load Settings…	Last inn innstillinger…
 	Save these settings as a Camera Raw .xmp file	Lagre disse innstillingene som en Camera Raw .xmp-fil
 	Load settings from a Camera Raw .xmp file	Last inn innstillinger fra en Camera Raw .xmp-fil
-	Loaded Camera Raw settings from {file}	Lastet inn Camera Raw-innstillinger fra {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Lastet inn Camera Raw-innstillinger fra {file} ({n} støttes ikke)
+	Loaded RAW Develop settings from {file}	Lastet inn RAW-fremkalling-innstillinger fra {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	Lastet inn RAW-fremkalling-innstillinger fra {file} ({n} støttes ikke)
 	After (X)	Etter (X)
 	Original	Original
 	Current	Gjeldende
@@ -1915,12 +1925,14 @@
 	Character Styles Panel	Tegnstilpanel
 	Clear Canvas Guides	Fjern lerrethjelpelinjer
 	Clear Selected Artboard Guides	Fjern hjelpelinjer på valgt tegneflate
-	Color Blindness — Deuteranopia-type	Fargeblindhet: deuteranopi-type
-	Color Blindness — Protanopia-type	Fargeblindhet: protanopi-type
+	Color Blindness - Deuteranopia-type	Fargeblindhet: deuteranopi-type
+	Color Blindness - Protanopia-type	Fargeblindhet: protanopi-type
 	Color Table…	Fargetabell…
 	Combine Shapes	Kombiner former
 	Contract…	Trekk sammen…
 	Convert to Embedded	Konverter til innebygd
+	Embed Linked	Bygg inn koblet
+	Embed All Linked	Bygg inn alle koblede
 	Convert to Layers	Konverter til lag
 	Convert to Linked…	Konverter til koblet…
 	Count	Telling
@@ -2008,6 +2020,7 @@
 	Pixelate	Pikseler
 	Place Scale Marker…	Plasser skalamarkør…
 	Plug-ins	Programtillegg
+	Plugins	Programtillegg
 	Print One Copy	Skriv ut ett eksemplar
 	Print…	Skriv ut…
 	Range	Område
@@ -2052,7 +2065,7 @@
 	Vertical Centers	Loddrette sentre
 	Video Frames to Layers…	Videorammer til lag…
 	WIA Support…	WIA-støtte…
-	Working CMY Plate	Arbeidsplate for CMY
+	Working CMY Plates	Arbeidsplater for CMY
 
 # tl! literals (third pass)
 	Absolute	Absolutt
@@ -2087,7 +2100,7 @@
 	Canvas	Lerret
 	Capture	Opptak
 	Center Crop Marks	Sentrerte beskjæringsmerker
-	Centre the gradient (offset 0, 0)	Sentrer gradienten (forskyvning 0, 0)
+	Center the gradient (offset 0, 0)	Sentrer gradienten (forskyvning 0, 0)
 	Change Screen Mode  (F)	Bytt skjermmodus  (F)
 	Change To:	Endre til:
 	Clear All	Fjern alle
@@ -2239,7 +2252,7 @@
 	Roughness	Ruhet
 	Roundness	Rundhet
 	Rulers & Grids	Linjaler og rutenett
-	Sample: foreground colour	Prøve: forgrunnsfarge
+	Sample: foreground color	Prøve: forgrunnsfarge
 	Sampling: Background Swatch	Prøvetaking: bakgrunnsfargeprøve
 	Sampling: Continuous	Prøvetaking: kontinuerlig
 	Sampling: Once	Prøvetaking: én gang
@@ -2333,11 +2346,16 @@
 	CPU (no GPU acceleration)	CPU (ingen GPU-akselerasjon)
 	Cache levels	Buffernivåer
 	Cache tile size	Bufferflisstørrelse
-	Camera Raw Defaults	Camera Raw-standarder
+	RAW Defaults	RAW-standarder
 	Canvas border	Lerretkant
 	Show canvas dots	Vis lerretprikker
 	Clip thumbnails to layer bounds	Klipp miniatyrer til laggrensene
 	Clip Thumbnails to Layer Bounds	Klipp miniatyrer til laggrensene
+	No Thumbnails	Ingen miniatyrer
+	Small Thumbnails	Små miniatyrer
+	Medium Thumbnails	Middels miniatyrer
+	Large Thumbnails	Store miniatyrer
+	Clip Thumbnails to Document Bounds	Klipp miniatyrer til dokumentgrensene
 	Canvas color	Lerretfarge
 	Canvas custom color	Egendefinert lerretfarge
 	Classic	Klassisk
@@ -2420,7 +2438,6 @@
 	Never	Aldri
 	Normal tip	Normal spiss
 	Open as smart object	Åpne som smartobjekt
-	Open in camera raw	Åpne i Camera Raw
 	Open documents as tabs	Åpne dokumenter som faner
 	OpenGL	OpenGL
 	Orange	Oransje
@@ -2464,7 +2481,6 @@
 	Show only crosshair while painting	Vis bare trådkors under maling
 	Show slice numbers	Vis segmentnumre
 	Show tooltips	Vis verktøytips
-	Enable animations	Aktiver animasjoner
 	Show highlight on rollover	Vis utheving ved pekerberøring
 	Show bounding box when dragging layer	Vis avgrensningsboks når lag dras
 	System title bar	Systemets tittellinje
@@ -2508,7 +2524,7 @@
 	Alt-click to define a source point to clone from	Alt-klikk for å angi et kildepunkt å klone fra
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Ingen bane å lage et utvalg fra: tegn en med pennverktøyet eller velg en i banepanelet.
 	Cancel opening	Avbryt åpning
-	Cancelled opening {name}	Avbrøt åpning av {name}
+	Canceled opening {name}	Avbrøt åpning av {name}
 	Damaged Photoshop document	Skadet Photoshop-dokument
 	The document “{name}” may be damaged.	Dokumentet «{name}» kan være skadet.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Noen lag, piksler eller masker kunne ikke leses. Vil du fortsette å åpne det?
@@ -2518,7 +2534,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokumentet «{name}» har en innebygd fargeprofil som ikke samsvarer med gjeldende {mode}-arbeidsfargerom.
 	Working: {working}	Arbeidsfargerom: {working}
 	Developing {name}	Fremkaller {name}
-	Cancelled {label}	Avbrøt {label}
+	Canceled {label}	Avbrøt {label}
 	Esc to cancel	Esc for å avbryte
 	Opened {name}	Åpnet {name}
 	Opening {name}	Åpner {name}
@@ -2526,7 +2542,7 @@
 	Saving {name}	Lagrer {name}
 	Saving {percent}	Lagrer {percent}
 	A save to {name} is still running; try again when it finishes	En lagring til {name} pågår fortsatt. Prøv igjen når den er ferdig
-	{label} is writing the file and can no longer be cancelled	{label} skriver filen og kan ikke lenger avbrytes
+	{label} is writing the file and can no longer be canceled	{label} skriver filen og kan ikke lenger avbrytes
 	Opening {name}…	Åpner {name}…
 	Opening…	Åpner…
 	Reading…	Leser…
@@ -2562,9 +2578,9 @@
 	Tone Histogram	Tonehistogram
 	Show Selected Region	Vis valgt område
 cameraRaw	Light	Lys
-# Camera Raw: contextual controls and window title
-	Camera Raw Filter ({layer})	Camera Raw-filter ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+# RAW Develop: contextual controls and window title
+	RAW Develop Filter ({layer})	RAW-fremkalling-filter ({layer})
+	RAW Develop ({name})	RAW-fremkalling ({name})
 	Aqua	Akvamarin
 cameraRaw	Amount	Mengde
 cameraRaw	Blacks	Svarttoner
@@ -2623,7 +2639,7 @@ cameraRaw	Roughness	Ruhet
 	Discard Layers and Save a Copy	Forkast lag og lagre en kopi
 	Don't show again	Ikke vis igjen
 	Save failed: {error}	Lagring mislyktes: {error}
-	Save cancelled	Lagring avbrutt
+	Save canceled	Lagring avbrutt
 	Couldn't place {name}: {error}	Kunne ikke plassere {name}: {error}
 	Magnetic Lasso Tool	Magnetlasso
 	Frequency	Frekvens
@@ -2767,7 +2783,7 @@ fontWeight	Italic	Kursiv
 	Impressionist	Impresjonistisk
 	Rotate View Tool	Roter visningverktøy
 	Reset View	Tilbakestill visning
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Dra rundt midtpunktet for å rotere visningen  ·  Shift begrenser til 15°
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Dra rundt midtpunktet for å rotere visningen  ·  Shift begrenser til 15°
 
 # Painting symmetry presets.
 	Dual Axis	Dobbel akse
@@ -2787,11 +2803,11 @@ fontWeight	Italic	Kursiv
 	All Layers No Adjustments	Alle lag uten justeringer
 	Current & Below No Adjustments	Gjeldende og under uten justeringer
 	Show Sampling Ring	Vis prøvetakingsring
-	Click to sample the foreground colour  ·  {key}-click for background	Klikk for å hente forgrunnsfargen  ·  {key}-klikk for bakgrunn
+	Click to sample the foreground color  ·  {key}-click for background	Klikk for å hente forgrunnsfargen  ·  {key}-klikk for bakgrunn
 
 # Color Picker warnings
-	Out of gamut for printing: click for the nearest printable colour	Utenfor fargeomfanget for utskrift: klikk for nærmeste utskrivbare farge
-	Not a web colour: click for the nearest web colour	Ikke en webfarge: klikk for nærmeste webfarge
+	Out of gamut for printing: click for the nearest printable color	Utenfor fargeomfanget for utskrift: klikk for nærmeste utskrivbare farge
+	Not a web color: click for the nearest web color	Ikke en webfarge: klikk for nærmeste webfarge
 	Color to Alpha…	Farge til alfa…
 	Transparency Threshold	Gjennomsiktighetsterskel
 	Opacity Threshold	Dekkevneterskel
@@ -3209,7 +3225,7 @@ curves	Smooth	Jevn ut
 # Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Ikke kryss også av for Speilvend bilde i Utskriftsinnstillinger…: de to vendingene opphever hverandre.
 	Print Settings…	Utskriftsinnstillinger…
-	Remember to turn off the printer's own colour management in Print Settings…	Husk å slå av skriverens egen fargestyring i Utskriftsinnstillinger…
+	Remember to turn off the printer's own color management in Print Settings…	Husk å slå av skriverens egen fargestyring i Utskriftsinnstillinger…
 	Sent to {printer}	Sendt til {printer}
 	set in Print Settings…	angitt i Utskriftsinnstillinger…
 	ICO is limited to 256 × 256 pixels	ICO er begrenset til 256 × 256 piksler
@@ -3369,7 +3385,7 @@ curves	Smooth	Jevn ut
 	{name} was changed by another app after it was opened or saved here.	{name} ble endret av et annet program etter at den ble åpnet eller lagret her.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Erstatt den med dette dokumentet, eller avbryt og bruk Fil › Lagre som for å beholde begge.
 
-# Dynamic UI labels (fourth pass): filter and adjustment parameters, Camera Raw panels,
+# Dynamic UI labels (fourth pass): filter and adjustment parameters, RAW Develop panels,
 # lighting, History/Layers/paths/channels menus, metadata, System Info, status templates and
 # dialog text that other catalogs already carry. Written from the meaning of the English labels
 # in the ordinary Russian graphics-editor vocabulary; no proprietary resource consulted.
@@ -3395,13 +3411,11 @@ curves	Smooth	Jevn ut
 	Adjustment Layers	Justeringslag
 	Adjustment Properties	Egenskaper for justering
 	Adjustment layers have nothing to transform	Justeringslag har ingenting å transformere
-	Adobe PDF Presets…	Adobe PDF-forvalg…
 	Adobe-rgb-compat	Adobe RGB-kompatibel
 	Adwaita (Dark)	Adwaita (mørk)
 	Adwaita (Light)	Adwaita (lys)
 	After	Etter
 	Airbrush: keeps painting while the pointer rests.	Airbrush: fortsetter å male mens pekeren hviler.
-	All shortcuts reset to Photoshop defaults.	Alle hurtigtaster tilbakestilt til Photoshop-standard.
 	Altitude	Høyde
 	Ambience	Stemning
 	Ambient	Omgivelseslys
@@ -3486,8 +3500,8 @@ curves	Smooth	Jevn ut
 	Brush Type	Penseltype
 	Burlap	Jutevev
 	Calculations	Beregninger
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Camera Raw-filter
+	RAW Develop	RAW-fremkalling
+	RAW Develop Filter	RAW-fremkalling-filter
 	Cancel transform	Avbryt transformering
 	Candle Light	Levende lys
 	Canvas Size	Lerretstørrelse
@@ -3634,7 +3648,6 @@ curves	Smooth	Jevn ut
 	Deep Yellow	Dyp gul
 	Default Foreground and Background Colors	Standard forgrunns- og bakgrunnsfarge
 	Default Leaves	Standardblader
-	Default Photoshop Size	Standard Photoshop-størrelse
 	Defaults	Standarder
 	Define Brush Preset	Definer penselforvalg
 	Define Custom Shape	Definer egendefinert form
@@ -3873,12 +3886,12 @@ curves	Smooth	Jevn ut
 	In White	I hvitt
 	Increase Brush Hardness	Øk penselhardhet
 	Demosaic	Demosaikk
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hvordan kameraets fargefiltermosaikk fylles ut. Det brukes når filen åpnes. Forhåndsvisningen viser metoden den ble åpnet med.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hvordan kameraets fargefiltermosaikk fylles ut. Det brukes når filen åpnes. Forhåndsvisningen viser metoden den ble åpnet med.
 	AHD (adaptive homogeneity)	AHD (adaptiv homogenitet)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: de reneste kantene og minst fargefrynsing, den tregeste.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradientkorrigert interpolering: skarp og rask, med noe fargefrynsing på fine detaljer.
-	The fastest and the softest, with colour fringing on fine detail.	Den raskeste og mykeste, med fargefrynsing på fine detaljer.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: de reneste kantene og minst fargefrynsing, den tregeste.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Gradientkorrigert interpolering: skarp og rask, med noe fargefrynsing på fine detaljer.
+	The fastest and the softest, with color fringing on fine detail.	Den raskeste og mykeste, med fargefrynsing på fine detaljer.
 	“{name}” already exists. Replace it?	«{name}» finnes allerede. Erstatte den?
 	The name in the save dialog was “{name}”.	Navnet i lagringsdialogen var «{name}».
 	Move Up	Flytt opp
@@ -4474,7 +4487,7 @@ curves	Smooth	Jevn ut
 	The file could not be saved.	Filen kunne ikke lagres.
 	Thickness	Tykkelse
 	This Layer:	Dette laget:
-	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	Dette smartobjektet må rasteriseres før du fortsetter. Innholdet kan da ikke lenger redigeres. Rasterisere smartobjektet?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	Dette smartobjektet må rasteriseres før du fortsetter. Innholdet kan da ikke lenger redigeres. Rasterisere smartobjektet?
 	This adjustment ({key}) is kept as imported and can't be edited yet.	Denne justeringen ({key}) beholdes som importert og kan ikke redigeres ennå.
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Dette fyllaget må rasteriseres før du fortsetter. Fyllinnholdet kan da ikke lenger redigeres. Rasterisere laget?
 	This layer must be rasterized before proceeding.	Dette laget må rasteriseres før du fortsetter.
@@ -4529,7 +4542,6 @@ curves	Smooth	Jevn ut
 	Use File › Open to open an image.	Bruk Fil › Åpne for å åpne et bilde.
 	Use Selection In Source	Bruk utvalg i kilde
 	Use Selection In Target	Bruk utvalg i mål
-	Uses the foreground and background colors.	Bruker forgrunns- og bakgrunnsfargene.
 	Vanishing Point	Fluktpunkt
 	Variable Data Sets	Variable datasett
 	Vector Mask Hides Effects	Vektormaske skjuler effekter
@@ -4687,6 +4699,7 @@ shape	Appearance	Utseende
 	Grayscale Ramp	Gråtonerampe
 	Current Colors	Gjeldende farger
 	Make Ramp Web Safe	Gjør rampen webtrygg
+	Scroll All Windows	Rull alle vinduer
 # Art History Brush (#213).
 	Art History Brush Tool	Kunsthistorikkpensel
 	Tight Short	Stram kort
@@ -4735,12 +4748,12 @@ shape	Appearance	Utseende
 @plural	{n} document|{n} documents	{n} dokument|{n} dokumenter
 @plural	{n} pixel|{n} pixels	{n} piksel|{n} piksler
 cameraRaw	Before (Y)	Før (Y)
-cameraRaw	Camera Raw ({name})	Camera Raw ({name})
-cameraRaw	Camera Raw Filter ({layer})	Camera Raw-filter ({layer})
-cameraRaw	Camera Raw isn't open	Camera Raw er ikke åpen
+cameraRaw	RAW Develop ({name})	RAW-fremkalling ({name})
+cameraRaw	RAW Develop Filter ({layer})	RAW-fremkalling-filter ({layer})
+cameraRaw	RAW Develop isn't open	RAW-fremkalling er ikke åpen
 cameraRaw	Cancel	Avbryt
-cameraRaw	Cancelled opening {name}	Avbrøt åpning av {name}
-cameraRaw	Cancelled {label}	Avbrøt {label}
+cameraRaw	Canceled opening {name}	Avbrøt åpning av {name}
+cameraRaw	Canceled {label}	Avbrøt {label}
 cameraRaw	Color Priority	Fargeprioritet
 cameraRaw	Developing {name}	Fremkaller {name}
 cameraRaw	Full-resolution preview unavailable	Forhåndsvisning i full oppløsning er ikke tilgjengelig
@@ -4749,7 +4762,7 @@ cameraRaw	Highlight Clipping Warning (O)	Advarsel for høylysklipping (O)
 cameraRaw	Highlight Priority	Høylysprioritet
 cameraRaw	Load Settings…	Last inn innstillinger…
 cameraRaw	Load settings from a Camera Raw .xmp file	Last inn innstillinger fra en Camera Raw .xmp-fil
-cameraRaw	Loaded Camera Raw settings from {file}	Lastet inn Camera Raw-innstillinger fra {file}
+cameraRaw	Loaded RAW Develop settings from {file}	Lastet inn RAW-fremkalling-innstillinger fra {file}
 cameraRaw	Noise Reduction	Støyreduksjon
 cameraRaw	OK	OK
 cameraRaw	Open	Åpne
@@ -4787,3 +4800,33 @@ cameraRaw	White Balance: As Shot	Hvitbalanse: som fotografert
 	Pause For	Pause i
 	seconds	sekunder
 	Create a single history state	Opprett én historikktilstand
+
+# Channels panel menu (#11451)
+	Channel Options…	Kanalalternativer…
+	Specify Channels:	Angi kanaler:
+	Not enough grayscale documents for this mode.	Ikke nok dokumenter i gråtoner for denne modusen.
+	Pick a different document for each channel.	Velg et annet dokument for hver kanal.
+	A picked document is no longer open.	Et av de valgte dokumentene er ikke lenger åpent.
+	A picked document is no longer a grayscale document of the same size.	Et av de valgte dokumentene er ikke lenger et dokument i gråtoner av samme størrelse.
+	Netscape Gray	Netscape-grå
+# Move tool options bar (#11381)
+	Align top edges	Juster øverste kanter
+	Align vertical centers	Juster loddrette midtpunkter
+	Align bottom edges	Juster nederste kanter
+	Distribute vertically	Fordel loddrett
+	Distribute horizontally	Fordel vannrett
+	Show layer bounds on hover	Vis lagets grenser ved hovring
+	Expand layer group on click	Utvid lagergruppe ved klikk
+	Show hover bounds from Layers	Vis hovringsgrenser fra Lag
+# Artboard tool options bar (#11385)
+	Distribute Widths	Fordel bredder
+	Distribute Heights	Fordel høyder
+	Auto-nest Layers	Neste lag automatisk
+	Auto-size Canvas	Endre lerretstørrelse automatisk
+	Keep Relative Position During Layer Reordering	Behold relativ posisjon ved omordning av lag
+	Shrinkwrap Canvas on Save	Krymp lerretet til innholdet ved lagring
+	Move Toolbar to the Right	Flytt verktøylinjen til høyre
+	Move Toolbar to the Left	Flytt verktøylinjen til venstre
+
+# RAW Develop feature labels
+	Saved RAW Develop settings to {file}	RAW-fremkallingsinnstillinger lagret i {file}

@@ -5,8 +5,7 @@
 //! action like a step dialog does (a [`super::PausedPlayback`] token holding the suspended history and
 //! recording), and [`tick`] resumes it once the wait is over, so the steps share one history state
 //! and the canvas redraws between them. Esc, the panel's Stop button, an edit of the action list or a
-//! new recording end it there, keeping the steps already applied. Agents (`automation_input`) and
-//! headless playback never wait.
+//! new recording end it there, keeping the steps already applied. Programmatic playback never waits.
 
 use serde_json::{Map, Value, json};
 use web_time::{Duration, Instant};
@@ -34,10 +33,15 @@ pub(crate) struct Timer {
     rev: u64,
 }
 
+/// Native Play and control-channel menu clicks may open editors and wait between steps.
+pub(super) fn is_interactive(app: &PhotocraftApp) -> bool {
+    !app.automation_input && !app.programmatic_playback
+}
+
 /// How long a person's Play waits after a step, or `None` when it goes straight on (Accelerated,
 /// and always for agents).
 pub(super) fn step_pause(app: &PhotocraftApp) -> Option<Duration> {
-    if app.automation_input {
+    if !is_interactive(app) {
         return None;
     }
     let a = &app.session.prefs().actions;

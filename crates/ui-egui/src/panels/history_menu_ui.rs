@@ -42,8 +42,9 @@ fn enabled(app: &PhotocraftApp, cmd: &str) -> bool {
     if cmd == "window.panel.close" {
         return !app.session.prefs().workspace_locked;
     }
-    // An open Free Transform owns the history (see `panels::history`).
-    app.ui.transform.is_none() && app.session.is_enabled(cmd)
+    // An open Free Transform owns the history (see `panels::history`), and a drawn crop frame
+    // holds its jumps back (`crop_ui::holds_history`).
+    app.ui.transform.is_none() && !crate::crop_ui::holds_history(app, cmd) && app.session.is_enabled(cmd)
 }
 
 /// Draw the History items of the panel menu and run the one clicked.
@@ -156,6 +157,26 @@ mod tests {
         for label in ["Step Backward", "New Snapshot…", "Delete", "Clear History", "New Document"] {
             assert!(is_disabled(&h, label), "{label}");
         }
+    }
+
+    /// A drawn crop frame greys the items that move the document under it (#9285).
+    #[test]
+    fn jumps_wait_for_a_drawn_crop_frame() {
+        let mut app = app();
+        app.ui.tool = crate::state::Tool::Crop;
+        app.ui.crop_rect = Some([4.0, 4.0, 40.0, 30.0]);
+        app.crop.default_frame = false;
+        app.session.execute("history.stepBackward", json!({})).unwrap();
+        let mut h = harness(app);
+        for label in ["Step Backward", "Step Forward", "Delete"] {
+            assert!(is_disabled(&h, label), "{label}");
+        }
+        assert!(!is_disabled(&h, "New Snapshot…"), "a snapshot leaves the document as it is");
+        h.state_mut().crop.default_frame = true;
+        h.run_steps(2);
+        assert!(!is_disabled(&h, "Step Backward"), "the tool's own frame around the canvas holds nothing back");
+        click(&mut h, "Step Backward");
+        assert_eq!(states(&h), (2, 2));
     }
 
     #[test]

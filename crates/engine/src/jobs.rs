@@ -12,6 +12,10 @@
 //! - [`Session::start`] runs a job-capable command on a worker thread and returns its
 //!   [`JobId`]; [`Session::poll_jobs`] (called every frame by the UI) applies finished jobs.
 //!   On wasm `start` runs inline (same API, written once).
+//! - Work that is written as [`StepWork`] (Place) also runs where there are no threads: with
+//!   [`Session::set_cooperative_jobs`] (the web build's default) [`run_stepped`] registers the job
+//!   without a worker, and [`Session::poll_jobs`] runs one slice of it, about 8 ms, per call. The
+//!   UI stays responsive between slices, and the result is the same as on a worker.
 //! - [`Session::cancel_job`] sets the flag; the algorithms check it per tile, row band or
 //!   iteration, and the result is discarded. The document is never touched by a worker.
 //! - A job with an effect outside the session (a save replacing its file) calls
@@ -459,19 +463,43 @@ pub struct JobInfo {
 type Payload = Box<dyn Any + Send>;
 type Apply = Box<dyn FnOnce(&mut Session, Payload) -> Result<Value> + Send>;
 
-/// Wall-clock milliseconds since some fixed point (0 on wasm, where `Instant` is unavailable and
-/// jobs run inline anyway).
+/// Milliseconds on the monotonic clock since some fixed point (`web_time` reads the browser's on wasm).
 fn now_ms() -> f64 {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        0.0
+    static START: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(web_time::Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
+/// How much of a frame [`Session::poll_jobs`] gives a [`StepWork`] job, unless
+/// [`Session::set_job_step_budget`] says otherwise.
+const STEP_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// A deadline no job reaches, for running [`StepWork`] to the end in one go.
+fn no_deadline() -> web_time::Instant {
+    let now = web_time::Instant::now();
+    now.checked_add(std::time::Duration::from_secs(1 << 30)).unwrap_or(now)
+}
+
+/// Work a job does a slice at a time (see [`run_stepped`]).
+pub trait StepWork<T>: Send + 'static {
+    /// Does some of the work and returns `Ok(None)` for "not finished, call again", or the result.
+    /// It should return soon after `deadline` passes (checking it between units of work), but
+    /// always does at least one unit, so that calling it again makes progress. `ctx` reports
+    /// progress and tells of cancellation, as for a worker.
+    fn step(&mut self, ctx: &JobCtx, deadline: web_time::Instant) -> Result<Option<T>>;
+}
+
+/// Runs `work` to the end, as a worker does.
+fn drive<T>(mut work: impl StepWork<T>, ctx: &JobCtx) -> Result<T> {
+    loop {
+        ctx.check()?;
+        if let Some(t) = work.step(ctx, no_deadline())? {
+            return Ok(t);
+        }
     }
 }
+
+/// Runs one slice of a cooperative job: `Ok(None)` when it has more to do.
+type Stepper = Box<dyn FnMut(&JobCtx, web_time::Instant) -> Result<Option<Payload>> + Send>;
 
 struct Running {
     id: JobId,
@@ -479,9 +507,9 @@ struct Running {
     label: String,
     params: Value,
     journal: bool,
-    /// The recording (`ActionState::take`) running when the job started, if any (set by
-    /// `dispatch`, once recording resumes). Only that recording gets the job's step: one started
-    /// later must not pick up an edit made before it.
+    /// The take active at dispatch, including strokes started with tool recording off.
+    started_in_take: Option<u64>,
+    /// The take eligible to receive this job's step under the mode at dispatch.
     recorded_by: Option<u64>,
     pre_selected: Option<Vec<LayerId>>,
     before: crate::actions_record::Before,
@@ -496,7 +524,10 @@ struct Running {
     /// The document's layer selection when the job started: applying targets it, not whatever
     /// got selected meanwhile (a Type click does that without editing the document, #7366).
     layers: Option<LayerSelection>,
-    rx: std::sync::mpsc::Receiver<Result<Payload>>,
+    /// Where the worker thread sends its result. A cooperative job has none: [`Session::poll_jobs`]
+    /// runs its `stepper` instead.
+    rx: Option<std::sync::mpsc::Receiver<Result<Payload>>>,
+    stepper: Option<Stepper>,
     apply: Option<Apply>,
     #[cfg(not(target_arch = "wasm32"))]
     handle: Option<std::thread::JoinHandle<()>>,
@@ -524,6 +555,16 @@ impl LayerSelection {
 }
 
 impl Running {
+    /// Runs a slice of a cooperative job until `deadline`: `Ok(None)` when it has more to do.
+    /// A cancelled job ends with `Err(Cancelled)` before doing more.
+    fn step(&mut self, deadline: web_time::Instant) -> Result<Option<Payload>> {
+        self.ctx.check()?;
+        match self.stepper.as_mut() {
+            Some(stepper) => stepper(&self.ctx, deadline),
+            None => Err(EngineError::Other(format!("`{}` has nothing to run", self.label))),
+        }
+    }
+
     fn info(&self) -> JobInfo {
         JobInfo {
             id: self.id,
@@ -563,7 +604,6 @@ fn reap_draining(draining: &mut Vec<Draining>) -> bool {
 }
 
 /// The session's job table (see the module docs).
-#[derive(Default)]
 pub struct Jobs {
     next: u64,
     /// Set while [`Session::start`] runs a command: [`run`] spawns instead of running inline.
@@ -580,6 +620,39 @@ pub struct Jobs {
     draining: Vec<Draining>,
     /// The context inline job work runs under (see [`Session::set_inline_job_ctx`]).
     inline: Option<JobCtx>,
+    /// No worker threads: [`StepWork`] jobs are stepped by [`Session::poll_jobs`], everything else
+    /// runs inline. On for wasm; see [`Session::set_cooperative_jobs`].
+    cooperative: bool,
+    /// How long [`Session::poll_jobs`] runs a cooperative job per call.
+    step_budget: std::time::Duration,
+}
+
+// Derivable on a desktop, where `cooperative` starts off; wasm starts it on.
+#[allow(clippy::derivable_impls)]
+impl Default for Jobs {
+    /// No jobs, spawning off; a session steps its jobs itself (cooperative) on wasm only.
+    fn default() -> Self {
+        Self {
+            next: 0,
+            spawn: false,
+            pending: None,
+            running: Vec::new(),
+            events: Vec::new(),
+            recent: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            draining: Vec::new(),
+            inline: None,
+            cooperative: cfg!(target_arch = "wasm32"),
+            step_budget: STEP_BUDGET,
+        }
+    }
+}
+
+impl Jobs {
+    /// Does a job started now run on a worker thread? (Not inline, and not stepped on this thread.)
+    fn threaded(&self) -> bool {
+        self.spawn && !self.cooperative && !cfg!(target_arch = "wasm32")
+    }
 }
 
 const RECENT: usize = 16;
@@ -684,10 +757,81 @@ pub fn run<T: Send + 'static>(
     // The job's document: stored paths it follows are resolved against it on any thread.
     let document = s.active().and_then(|d| d.path.as_deref()).map(std::path::PathBuf::from);
     let _document = crate::doc_path::scope(document.as_deref());
-    if !s.jobs.spawn || cfg!(target_arch = "wasm32") {
+    if !s.jobs.threaded() {
         let t = work(&s.jobs.inline.clone().unwrap_or_default())?;
         return apply(s, t);
     }
+    let mut job = new_job(s, label, lock_document, authorization, document.clone(), apply)?;
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Payload>>();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let wctx = job.ctx.clone();
+        let label_w = label.to_string();
+        // The work closure is moved into the thread. If spawning fails (thread limits), there is
+        // no way to get it back, so the error is reported instead.
+        let spawned = std::thread::Builder::new().name(format!("photocraft-job-{}", job.id.0)).spawn(move || {
+            let _authorization = AuthorizationScope::enter(authorization);
+            let _document = crate::doc_path::scope(document.as_deref());
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&wctx).map(|t| Box::new(t) as Payload)))
+                .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label_w}` failed with an internal error (logged); the document is unchanged"))));
+            wctx.finish_work();
+            // The receiver is gone when the job was cancelled: nothing to report.
+            let _ = tx.send(r);
+        });
+        job.handle = Some(spawned.map_err(|e| EngineError::Other(format!("could not start a background job: {e}")))?);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Unreachable (wasm runs inline above); keep the types used.
+        drop((work, tx));
+    }
+    job.rx = Some(rx);
+    let id = job.id;
+    s.jobs.pending = Some(job);
+    Ok(json!({"job": id.0}))
+}
+
+/// [`run`] for work done a slice at a time ([`StepWork`]): where the session has no worker threads
+/// ([`Session::set_cooperative_jobs`], the web build) the job runs on the UI thread, a slice of
+/// about 8 ms per [`Session::poll_jobs`], so the window keeps repainting meanwhile. Elsewhere it
+/// is [`run`] with `work` driven to the end: on a worker thread for [`Session::start`], inline for
+/// [`Session::execute`]. The result is the same either way.
+pub fn run_stepped<T: Send + 'static>(
+    s: &mut Session,
+    label: &str,
+    lock_document: bool,
+    work: impl StepWork<T>,
+    apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
+) -> Result<Value> {
+    if !(s.jobs.spawn && s.jobs.cooperative) {
+        return run(s, label, lock_document, move |ctx| drive(work, ctx), apply);
+    }
+    let authorization = s.authorize.or_else(|| RENDER_AUTHORIZATION.with(std::cell::Cell::get));
+    let document = s.active().and_then(|d| d.path.as_deref()).map(std::path::PathBuf::from);
+    let mut job = new_job(s, label, lock_document, authorization, document.clone(), apply)?;
+    let (label_w, mut work) = (label.to_string(), work);
+    // The slices run under the requesting session's authority and document, as a worker would.
+    job.stepper = Some(Box::new(move |ctx, deadline| {
+        let _authorization = AuthorizationScope::enter(authorization);
+        let _document = crate::doc_path::scope(document.as_deref());
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work.step(ctx, deadline)))
+            .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label_w}` failed with an internal error (logged); the document is unchanged"))))
+            .map(|done| done.map(|t| Box::new(t) as Payload))
+    }));
+    let id = job.id;
+    s.jobs.pending = Some(job);
+    Ok(json!({"job": id.0}))
+}
+
+/// A job for [`run`] and [`run_stepped`] to start, without its worker.
+fn new_job<T: Send + 'static>(
+    s: &mut Session,
+    label: &str,
+    lock_document: bool,
+    authorization: Option<Authorization>,
+    document: Option<std::path::PathBuf>,
+    apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
+) -> Result<Running> {
     if s.jobs.pending.is_some() {
         return Err(EngineError::Other(format!("`{label}` started a second background job in one command")));
     }
@@ -706,62 +850,37 @@ pub fn run<T: Send + 'static>(
         (true, None) => return Err(EngineError::NoDocument),
         (false, _) => (None, None, None),
     };
-    let ctx = JobCtx::new();
-    let (tx, rx) = std::sync::mpsc::channel::<Result<Payload>>();
-    let apply_document = document.clone();
     let erased: Apply = Box::new(move |s, any| {
         let _authorization = AuthorizationScope::enter(authorization);
-        let _document = crate::doc_path::scope(apply_document.as_deref());
+        let _document = crate::doc_path::scope(document.as_deref());
         let t = any.downcast::<T>().map_err(|_| EngineError::Other("internal error: job result type mismatch".into()))?;
         apply(s, *t)
     });
     s.jobs.next = s.jobs.next.checked_add(1).ok_or_else(|| EngineError::Other("background job identifier space exhausted".into()))?;
-    let id = JobId(s.jobs.next);
-    #[cfg(not(target_arch = "wasm32"))]
-    let handle = {
-        let wctx = ctx.clone();
-        let label_w = label.to_string();
-        // The work closure is moved into the thread. If spawning fails (thread limits), there is
-        // no way to get it back, so the error is reported instead.
-        let spawned = std::thread::Builder::new().name(format!("photocraft-job-{}", id.0)).spawn(move || {
-            let _authorization = AuthorizationScope::enter(authorization);
-            let _document = crate::doc_path::scope(document.as_deref());
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&wctx).map(|t| Box::new(t) as Payload)))
-                .unwrap_or_else(|_| Err(EngineError::Other(format!("`{label_w}` failed with an internal error (logged); the document is unchanged"))));
-            wctx.finish_work();
-            // The receiver is gone when the job was cancelled: nothing to report.
-            let _ = tx.send(r);
-        });
-        Some(spawned.map_err(|e| EngineError::Other(format!("could not start a background job: {e}")))?)
-    };
-    #[cfg(target_arch = "wasm32")]
-    {
-        // Unreachable (wasm runs inline above); keep the types used.
-        drop((work, tx));
-    }
-    s.jobs.pending = Some(Running {
-        id,
+    Ok(Running {
+        id: JobId(s.jobs.next),
         command: String::new(),
         label: label.to_string(),
         params: Value::Null,
         journal: true,
+        started_in_take: None,
         recorded_by: None,
         pre_selected: None,
         before: crate::actions_record::Before::capture(s),
         doc,
         snapshot,
-        ctx,
+        ctx: JobCtx::new(),
         started_ms: now_ms(),
         coalesce: s.coalesce_request.clone(),
         color_restrict: s.color_restrict,
         filter_mask_layer: s.filter_mask_layer,
         layers,
-        rx,
+        rx: None,
+        stepper: None,
         apply: Some(erased),
         #[cfg(not(target_arch = "wasm32"))]
-        handle,
-    });
-    Ok(json!({"job": id.0}))
+        handle: None,
+    })
 }
 
 /// A document edit whose body is the job: like [`Session::edit`] (one undo step named `label`),
@@ -773,7 +892,7 @@ pub fn edit_job<R: Send + 'static>(
     f: impl FnOnce(&mut Document, &mut Option<LayerId>, &JobCtx) -> Result<R> + Send + 'static,
     finish: impl FnOnce(R) -> Value + Send + 'static,
 ) -> Result<Value> {
-    if !s.jobs.spawn || cfg!(target_arch = "wasm32") {
+    if !s.jobs.threaded() {
         // Inline: exactly `Session::edit`, as before jobs existed.
         let ctx = s.jobs.inline.clone().unwrap_or_default();
         let r = s.edit(label, |doc, active| f(doc, active, &ctx))?;
@@ -838,6 +957,14 @@ pub fn import_options(prefs: &crate::prefs::Preferences) -> photocraft_io::Impor
     photocraft_io::ImportOptions {
         max_group_depth: prefs.file_handling.rasterize_svg_groups_deeper_than as usize,
         demosaic: prefs.raw_defaults.demosaic.method(),
+        pdf_dpi: prefs.file_handling.pdf_dpi,
+        pdf_pages: match (prefs.file_handling.pdf_first_page, prefs.file_handling.pdf_last_page) {
+            (0, 0) => None,
+            (first, last) => {
+                let first = first.max(1);
+                Some((first, if last == 0 { u32::MAX } else { last.max(first) }))
+            }
+        },
         ..Default::default()
     }
 }
@@ -913,6 +1040,11 @@ pub struct PendingPsdPreflight {
 }
 
 impl Session {
+    /// A recording mode change must not reclassify an in-flight stroke from this take.
+    pub(crate) fn tool_stroke_job_running(&self) -> bool {
+        self.jobs.running.iter().any(|job| job.started_in_take == Some(self.actions.take) && crate::actions_cmds::tool_stroke(&job.command))
+    }
+
     /// Run the heavy part of inline (not background) job commands under `ctx`, so another thread
     /// can cancel them: a live preview whose parameters changed stops its stale computation
     /// (`Err(Cancelled)`, the document unchanged) instead of finishing it. `None` restores the
@@ -924,7 +1056,10 @@ impl Session {
     /// Run a command, in the background when it supports it (see [`jobs`](crate::jobs)). Errors
     /// like [`Session::execute`] for unknown, disabled or failing commands.
     pub fn start(&mut self, id: &str, params: Value) -> Result<Started> {
-        self.dispatch(id, params, true)
+        let before = self.active_layer_stamp();
+        let started = self.dispatch(id, params, true);
+        self.note_layer_change(before);
+        started
     }
 
     pub const MAX_PENDING_PREFLIGHTS: usize = 32;
@@ -1089,15 +1224,17 @@ impl Session {
     /// insert the layer as one undo step when [`Session::poll_jobs`] applies it. `name` names the
     /// layer and the file; `params` are the command's (`scale`, `center`, `fit`, `smartObject`).
     /// The job's result is the command's: `{layer, frame, scale, bounds, smartObject}`. The active
-    /// document is locked meanwhile, so this is refused while another job runs on it. Runs inline
-    /// on wasm.
+    /// document is locked meanwhile, so this is refused while another job runs on it. On wasm (and
+    /// in a [cooperative](Session::set_cooperative_jobs) session) it is not a worker's job but
+    /// one [`Session::poll_jobs`] runs a slice of per call.
     pub fn start_place_bytes(&mut self, name: &str, bytes: Vec<u8>, linked: Option<String>, params: Value) -> Result<Started> {
         let input = crate::file_cmds::PlaceInput::new(self, name, bytes, linked, &params)?;
         let (command, label) = (input.command(), input.job_label());
         if let Some(conflict) = self.job_conflict(command, true) {
             return Err(EngineError::Other(conflict));
         }
-        self.start_job(command, json!({"name": name}), &label, true, move |ctx| crate::file_cmds::prepare_place(input, ctx), crate::file_cmds::apply_place)
+        let work = crate::file_cmds::PlaceSteps::new(input, self.cooperative_jobs());
+        self.start_job_stepped(command, json!({"name": name}), &label, true, work, crate::file_cmds::apply_place)
     }
 
     /// Decodes a file in a job and optionally holds damaged PSD content for
@@ -1288,9 +1425,30 @@ impl Session {
         work: impl FnOnce(&JobCtx) -> Result<T> + Send + 'static,
         apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
     ) -> Result<Started> {
+        self.start_registered(command, params, spawn, |s| run(s, label, lock_document, work, apply))
+    }
+
+    /// [`Session::start_job`] for [`StepWork`]: on a worker, or where the session is cooperative
+    /// (see [`Session::set_cooperative_jobs`]) a slice per [`Session::poll_jobs`] on this thread.
+    pub fn start_job_stepped<T: Send + 'static>(
+        &mut self,
+        command: &str,
+        params: Value,
+        label: &str,
+        lock_document: bool,
+        work: impl StepWork<T>,
+        apply: impl FnOnce(&mut Session, T) -> Result<Value> + Send + 'static,
+    ) -> Result<Started> {
+        self.start_registered(command, params, true, |s| run_stepped(s, label, lock_document, work, apply))
+    }
+
+    /// Runs `register` (which calls [`run`] or [`run_stepped`]) with background jobs allowed when
+    /// `spawn` (the jobs then run on a worker, or on wasm inline or in slices, see
+    /// `Jobs::threaded`), and files the job it started under `command`.
+    fn start_registered(&mut self, command: &str, params: Value, spawn: bool, register: impl FnOnce(&mut Session) -> Result<Value>) -> Result<Started> {
         let prev_spawn = self.jobs.spawn;
-        self.jobs.spawn = spawn && !cfg!(target_arch = "wasm32");
-        let r = run(self, label, lock_document, work, apply);
+        self.jobs.spawn = spawn;
+        let r = register(self);
         self.jobs.spawn = prev_spawn;
         let pending = self.jobs.pending.take();
         match (r, pending) {
@@ -1311,23 +1469,58 @@ impl Session {
         }
     }
 
+    /// Whether this session has no worker threads: [`StepWork`] jobs are run a slice at a time by
+    /// [`Session::poll_jobs`] on the UI thread, and every other command runs inline. The web
+    /// build (wasm) is always like this; tests turn it on to run that path on a desktop.
+    pub fn cooperative_jobs(&self) -> bool {
+        self.jobs.cooperative
+    }
+
+    /// How long one [`Session::poll_jobs`] runs a cooperative job (8 ms by default, a share of a
+    /// frame). A slice always does one unit of work, so zero makes every poll do just that: tests
+    /// use it to count polls without depending on the machine's speed.
+    pub fn set_job_step_budget(&mut self, budget: std::time::Duration) {
+        self.jobs.step_budget = budget;
+    }
+
+    /// Turn [`Session::cooperative_jobs`] on or off. Jobs already running keep running as they
+    /// started.
+    pub fn set_cooperative_jobs(&mut self, on: bool) {
+        self.jobs.cooperative = on;
+    }
+
     /// Apply finished background jobs (on this thread) and return every job that ended since
-    /// the last call. Cheap when nothing runs; the UI calls it every frame.
+    /// the last call. Also runs one slice (about 8 ms) of a cooperative job, if there is one. Cheap
+    /// when nothing runs; the UI calls it every frame.
     pub fn poll_jobs(&mut self) -> Vec<JobEvent> {
         let mut i = 0;
+        let mut stepped = false;
+        let budget = self.jobs.step_budget;
         while i < self.jobs.running.len() {
-            match self.jobs.running.get(i).map(|r| r.rx.try_recv()) {
-                Some(Ok(r)) => {
+            let Some(job) = self.jobs.running.get_mut(i) else { break };
+            let finished = match &job.rx {
+                Some(rx) => match rx.try_recv() {
+                    Ok(r) => Some(r),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(EngineError::Other(format!("`{}` stopped unexpectedly; the document is unchanged", job.label))))
+                    }
+                },
+                // One cooperative job gets the frame's budget; any others wait for the next poll.
+                None if !stepped => {
+                    stepped = true;
+                    // An absurd budget (`Duration::MAX` through `set_job_step_budget`) must not
+                    // overflow the deadline: fall back to one no job reaches.
+                    job.step(web_time::Instant::now().checked_add(budget).unwrap_or_else(no_deadline)).transpose()
+                }
+                None => None,
+            };
+            match finished {
+                Some(r) => {
                     let job = self.jobs.running.remove(i);
                     self.finish_job(job, r);
                 }
-                Some(Err(std::sync::mpsc::TryRecvError::Empty)) => i += 1,
-                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                    let job = self.jobs.running.remove(i);
-                    let label = job.label.clone();
-                    self.finish_job(job, Err(EngineError::Other(format!("`{label}` stopped unexpectedly; the document is unchanged"))));
-                }
-                None => break,
+                None => i += 1,
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1343,11 +1536,19 @@ impl Session {
     }
 
     /// Block until job `id` ends, apply it, and return its result (the control channel's and
-    /// MCP's default `wait`, and the CLI). `Err(Cancelled)` if it was cancelled.
+    /// MCP's default `wait`, and the CLI). `Err(Cancelled)` if it was cancelled. A cooperative job
+    /// is run to the end here.
     pub fn wait_job(&mut self, id: JobId) -> Result<Value> {
         if let Some(i) = self.jobs.running.iter().position(|r| r.id == id) {
-            let job = self.jobs.running.remove(i);
-            let r = job.rx.recv().unwrap_or_else(|_| Err(EngineError::Other(format!("`{}` stopped unexpectedly", job.label))));
+            let mut job = self.jobs.running.remove(i);
+            let r = match &job.rx {
+                Some(rx) => rx.recv().unwrap_or_else(|_| Err(EngineError::Other(format!("`{}` stopped unexpectedly", job.label)))),
+                None => loop {
+                    if let Some(r) = job.step(no_deadline()).transpose() {
+                        break r;
+                    }
+                },
+            };
             self.finish_job(job, r);
         }
         match self.jobs.recent.iter().rev().find(|j| j.id == id) {
@@ -1589,7 +1790,7 @@ impl Session {
         // action it plays (a script step) must not flush the steps it ran so far into the action
         // being recorded, nor move the recording mark past the entries it is about to replace.
         let recording = if spec.journal && crate::actions_cmds::replayable(id) { self.actions.recording.take() } else { None };
-        let before = self.active().map(|st| st.doc.clone());
+        let before = self.active().map(|st| (st.doc.clone(), st.revision));
         let docs_before: Vec<_> = self.docs.iter().map(|st| st.doc.id).collect();
         // Last-resort guard (AGENTS.md, Never crash): a command that panics anyway fails with an
         // error instead of taking the app down. `edit` only commits a document after its closure
@@ -1610,6 +1811,11 @@ impl Session {
             self.hint_before = None;
         }
         let pending = self.jobs.pending.take();
+        if pending.is_none()
+            && let Some((doc, revision)) = &before
+        {
+            self.note_command_damage(id, doc, *revision);
+        }
         // Shape Blur by an installed shape's id or name records the geometry it ran with, as the
         // filter's own prepared params carry it: the journal (Last Filter, recorded actions)
         // replays where that shape is not installed. The run resolved it already, so it can't fail.
@@ -1627,7 +1833,8 @@ impl Session {
                 job.command = id.to_string();
                 job.params = params;
                 job.journal = spec.journal;
-                job.recorded_by = self.actions.recording.map(|_| self.actions.take);
+                job.started_in_take = self.actions.recording.map(|_| self.actions.take);
+                job.recorded_by = job.started_in_take.filter(|_| self.actions.record_tools || !crate::actions_cmds::tool_stroke(id));
                 job.pre_selected = pre_selected.clone();
                 job.before = std::mem::take(&mut record_before);
                 let jid = job.id;
@@ -1635,7 +1842,7 @@ impl Session {
                 Ok(Started::Job(jid))
             }
             (Ok(v), None) => {
-                if let Some(before) = &before {
+                if let Some((before, _)) = &before {
                     self.add_relayout_damage(before);
                 }
                 if let Some((doc_id, layer_id)) = new_fx_target
@@ -1662,6 +1869,29 @@ impl Session {
             photocraft_raster::scratch::release();
         }
         out
+    }
+
+    /// The one place a command's redraw area spans more than one revision. A command that moved
+    /// the active document's revision more than once (Paste Into, Stroke Path, a compound, a
+    /// script) reports what changed since it began, [`layer_multi_cmds::step_damage`] of the
+    /// document before and after, measured from the revision before it. A single-revision command
+    /// keeps the damage it reported. Debug and test builds also count a whole-document redraw of
+    /// a small change ([`Session::whole_redraws`]).
+    pub(crate) fn note_command_damage(&mut self, id: &str, before: &Arc<Document>, from: u64) {
+        let Some(st) = self.active_mut().filter(|st| st.doc.id == before.id && st.revision > from) else { return };
+        if st.revision - from > 1 {
+            st.last_damage = crate::layer_multi_cmds::step_damage(before, &st.doc);
+            st.damage_span = Some((from, st.revision));
+        }
+        #[cfg(any(test, debug_assertions))]
+        if st.last_damage.is_none()
+            && let Some(pct) = crate::layer_multi_cmds::small_change_pct(before, &st.doc)
+        {
+            eprintln!("warning: {id}: redraws the whole document but changed {pct}% of it");
+            self.whole_redraws += 1;
+        }
+        #[cfg(not(any(test, debug_assertions)))]
+        let _ = id;
     }
 
     /// Grows the damage a command reported for the pixels it changed by what effects laid out
@@ -1740,7 +1970,13 @@ impl Session {
     }
 
     /// Apply (or report the failure of) a job whose worker has delivered `r`.
-    fn finish_job(&mut self, mut job: Running, r: Result<Payload>) {
+    fn finish_job(&mut self, job: Running, r: Result<Payload>) {
+        let before = self.active_layer_stamp();
+        self.finish_job_step(job, r);
+        self.note_layer_change(before);
+    }
+
+    fn finish_job_step(&mut self, mut job: Running, r: Result<Payload>) {
         let apply = job.apply.take();
         // Keep the typed error beside its display text, so `wait_job` and `JobEvent` can still
         // report a hard budget's required/limit or an approval request's limits.
@@ -1948,7 +2184,7 @@ mod tests;
 
 #[cfg(test)]
 #[path = "../../io/tests/support/recovery_psd.rs"]
-mod psd_open_fixture;
+pub(crate) mod psd_open_fixture;
 
 #[cfg(test)]
 mod psd_open_confirmation_tests {

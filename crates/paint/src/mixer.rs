@@ -190,12 +190,14 @@ pub fn apply_mixer_dab(
     state: &mut MixerState,
     lock_transparency: bool,
 ) {
+    // Only the dab's own rectangle is ever read from the sample, not the whole stroke rectangle.
     let sample = sample.filter(|_| m.samples_canvas(&fp.dab)).map(|surface| {
-        let source = crate::retouch::Region::read(surface, work.rect);
+        let rect = fp.rect.intersect(&work.rect);
+        let source = crate::retouch::Region::read(surface, rect);
         if surface.format().mode == fmt.mode && surface.format().alpha == fmt.alpha {
             source
         } else {
-            let mut native = crate::retouch::Region::new(work.rect, fmt.channels());
+            let mut native = crate::retouch::Region::new(rect, fmt.channels());
             for (src, dst) in source.data.chunks_exact(source.ch).zip(native.data.chunks_exact_mut(native.ch)) {
                 from_rgba_into(&fmt, to_rgba(&surface.format(), src), dst);
             }
@@ -205,9 +207,10 @@ pub fn apply_mixer_dab(
     apply_mixer_dab_region(work, fp, fmt, sample.as_ref(), m, state, lock_transparency);
 }
 
-/// Contiguous native-channel sample variant. `sample` must have the same rectangle and
-/// channel layout as `work`. The live compositor supplies it directly, avoiding a tiled
-/// temporary surface and a heap allocation for every sampled/deposited pixel.
+/// Contiguous native-channel sample variant. `sample` must have the channel layout of `work` and
+/// cover at least `fp.rect` clipped to `work.rect` (the only pixels read). The live compositor
+/// supplies it directly, avoiding a tiled temporary surface and a heap allocation for every
+/// sampled/deposited pixel.
 pub fn apply_mixer_dab_region(
     work: &mut crate::retouch::Region,
     fp: &crate::retouch::Footprint,

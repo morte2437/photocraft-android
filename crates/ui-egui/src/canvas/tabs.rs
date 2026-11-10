@@ -9,6 +9,7 @@ pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         return;
     }
     crate::distort_ui::drop_foreign(app);
+    crate::layer_transfer::prepare(app, ui.ctx());
     documents(app, ui);
     crate::layer_transfer::finish(app, ui.ctx());
     // Once a frame, not per document view: the right-click or options-bar Brush Preset picker.
@@ -18,13 +19,17 @@ pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::brush_mode_menu::show(app, ui.ctx());
 }
 
+/// Where each docked document is drawn under Window › Arrange: its index and the cell it gets,
+/// at the border positions the user has dragged them to. `None` with no docked document, or when
+/// the arrangement is the plain single canvas. With more documents than the layout has cells, the
+/// shown run starts at [`PhotocraftApp::arrange_start`] and always includes the active one.
 pub(crate) fn arranged_cells(app: &PhotocraftApp, rect: Rect) -> Option<Vec<(usize, Rect)>> {
     let documents = docked_document_indices(app);
     let n = documents.len();
     if n == 0 {
         return None;
     }
-    let cells = crate::view_cmds::cells(&app.ui.view.arrange, rect, n)?;
+    let cells = crate::view_cmds::cells(&app.ui.view.arrange, rect, n, &app.ui.view.arrange_splits)?;
     // Keep stable tiles, expressing the remembered document index in the filtered docked list.
     let start = documents.partition_point(|&d| d < app.arrange_start).min(n.saturating_sub(cells.len()));
     let idx = app.session.active_index().and_then(|d| documents.iter().position(|&p| p == d));
@@ -109,19 +114,27 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if let Some(shown) = arranged_cells(app, rect) {
         app.arrange_start = shown.first().map_or(0, |(d, _)| *d);
         let t = crate::theme::Tokens::get(ui.ctx());
+        // A press on a border grip drags the border (`drag_borders`); it activates no document.
+        // The grips are laid out after the canvases, so egui gives them the press (#10101).
+        let grips: Vec<Rect> = border_grips(app, rect).into_iter().map(|(_, grip)| grip).collect();
         for (d, cell) in shown {
             let cell = cell.shrink(1.0);
             let view = app.ui.views[d].clone();
             let v = canvas_view(app, ui, d, cell, view, d == active_doc);
             if d != active_doc {
                 app.ui.views[d] = v;
-                if main_focused && ui.input(|i| i.pointer.primary_pressed() && i.pointer.interact_pos().is_some_and(|p| cell.contains(p))) {
+                if main_focused
+                    && ui.input(|i| {
+                        i.pointer.primary_pressed() && i.pointer.interact_pos().is_some_and(|p| cell.contains(p) && !grips.iter().any(|g| g.contains(p)))
+                    })
+                {
                     app.session.set_active(d);
                 }
             }
             let stroke = if d == active_doc { Stroke::new(1.5, t.accent) } else { Stroke::new(1.0, Color32::from_black_alpha(160)) };
             ui.painter().rect_stroke(cell, 0, stroke, egui::StrokeKind::Inside);
         }
+        drag_borders(app, ui, rect);
         return;
     }
     if idx != active_doc && main_focused && ui.input(|i| i.pointer.primary_pressed() && i.pointer.interact_pos().is_some_and(|p| rect.contains(p))) {
@@ -129,6 +142,33 @@ fn documents(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
     let view = app.ui.views[idx].clone();
     canvas_view(app, ui, idx, rect, view, app.session.active_index() == Some(idx));
+}
+
+/// Window › Arrange: the borders between the documents are dragged to give one more room, as in
+/// Photoshop (#10101). Laid out after the canvases, so a grip over a cell's edge takes the press.
+fn drag_borders(app: &mut PhotocraftApp, ui: &egui::Ui, rect: Rect) {
+    let n = docked_document_indices(app).len();
+    let layout = app.ui.view.arrange.clone();
+    for (border, grip) in border_grips(app, rect) {
+        let response = ui.interact(grip, ui.scope_id().with(("arrange-border", border.split)), Sense::drag());
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(if border.vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
+        }
+        if response.dragged()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            crate::view_cmds::drag_border(&layout, rect, n, &mut app.ui.view.arrange_splits, border.split, p);
+        }
+    }
+}
+
+/// The arrangement's borders, each with the strip either side of it that grabs it.
+fn border_grips(app: &PhotocraftApp, rect: Rect) -> Vec<(crate::view_cmds::Border, Rect)> {
+    let n = docked_document_indices(app).len();
+    crate::view_cmds::borders(&app.ui.view.arrange, rect, n, &app.ui.view.arrange_splits)
+        .into_iter()
+        .map(|b| (b, b.line.expand2(if b.vertical { egui::vec2(3.0, 0.0) } else { egui::vec2(0.0, 3.0) })))
+        .collect()
 }
 
 /// The tab strip; returns where its document tabs are.
@@ -327,24 +367,38 @@ fn tab_close_clicked(resp: &egui::Response, xresp: &egui::Response) -> bool {
     xresp.clicked() || xresp.middle_clicked() || resp.middle_clicked()
 }
 
-/// All tab actions go through the same guarded File commands as the menu bar, including the
+/// Rows of the document tab menu after which a separator is drawn: after Move to New Window and
+/// after Open Document…, as in the reference (#11403).
+pub(crate) const TAB_MENU_SEPARATORS_AFTER: [usize; 2] = [4, 6];
+
+pub(crate) type TabMenuItem = (&'static str, &'static str, serde_json::Value, bool);
+
+/// All tab actions go through the same guarded commands as the menu bar, including the
 /// unsaved-changes prompt. The clicked tab is explicit even when another document is active.
-pub(super) fn tab_context_items(index: usize, count: usize, has_path: bool) -> [(&'static str, &'static str, serde_json::Value, bool); 4] {
+/// Order and separators follow the reference application (#11403); see [`TAB_MENU_SEPARATORS_AFTER`].
+pub(crate) fn tab_context_items(index: usize, count: usize, has_path: bool) -> [TabMenuItem; 8] {
     [
+        ("Consolidate All to Here", "window.arrange.consolidateAllToTabs", json!({}), count > 1),
         ("Close", "file.close", json!({"document": index}), true),
-        ("Close Others", "file.closeOthers", json!({"document": index}), count > 1),
         ("Close All", "file.closeAll", json!({}), true),
+        ("Close Others", "file.closeOthers", json!({"document": index}), count > 1),
+        ("Move to New Window", "window.arrange.floatInWindow", json!({"document": index}), true),
+        ("New Document…", "file.new", json!({}), true),
+        ("Open Document…", "file.open", json!({}), true),
         (crate::menus::reveal_label(), "file.revealInFinder", json!({"document": index}), has_path),
     ]
 }
 
-fn tab_context_menu(ui: &mut egui::Ui, index: usize, count: usize, has_path: bool) -> Option<(&'static str, serde_json::Value)> {
+pub(crate) fn tab_context_menu(ui: &mut egui::Ui, index: usize, count: usize, has_path: bool) -> Option<(&'static str, serde_json::Value)> {
     crate::widgets::menu_scroll(ui, |ui| {
         ui.set_min_width(170.0);
-        for (label, id, params, enabled) in tab_context_items(index, count, has_path) {
+        for (row, (label, id, params, enabled)) in tab_context_items(index, count, has_path).into_iter().enumerate() {
             if ui.add_enabled(enabled, egui::Button::new(tl!(label))).clicked() {
                 ui.close();
                 return Some((id, params));
+            }
+            if TAB_MENU_SEPARATORS_AFTER.contains(&row) {
+                ui.separator();
             }
         }
         None
@@ -683,7 +737,7 @@ fn drop_slot_line(app: &mut PhotocraftApp, ui: &egui::Ui) {
     if ui.input(|i| i.raw.hovered_files.is_empty()) {
         return;
     }
-    let at = app.services.cursor_pos.as_mut().and_then(|f| f(ui.ctx()));
+    let at = app.cursor_pos(ui.ctx());
     let crate::file_open::DropTarget::Tabs(slot) = app.drop_target(ui.ctx(), at) else { return };
     let Some(tabs) = app.tab_strip.as_ref().map(|s| &s.tabs) else { return };
     let Some((r, after)) = tabs.iter().find(|(i, _)| *i == slot).map(|&(_, r)| (r, false)).or_else(|| tabs.last().map(|&(_, r)| (r, true))) else {
@@ -758,7 +812,9 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if let Some([x, y]) = w.position {
             builder = builder.with_position([x, y]);
         }
-        let mut view = w.view.clone();
+        // Read the window's view from `app.ui.windows`, not from `wins`: a Scroll All Windows drag in a
+        // window drawn earlier in this loop may have moved it since `wins` was taken.
+        let mut view = app.ui.windows.iter().find(|x| x.id == w.id).map_or_else(|| w.view.clone(), |x| x.view.clone());
         let mut close = false;
         let mut focused = false;
         ctx.show_viewport_immediate(vid, builder, |ui, class| {
@@ -771,7 +827,9 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
             }
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(crate::theme::Tokens::get(ui.ctx()).canvas)).show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
+                app.drawing_window = Some(w.id);
                 view = canvas_view(app, ui, w.document, rect, view.clone(), focused);
+                app.drawing_window = None;
                 // Preferences › Zoom Resizes Windows: a zoom wraps the window around the image.
                 crate::zoom_window_fit::follow(app, ui.ctx(), class, vid, &w, &mut view, rect);
             });

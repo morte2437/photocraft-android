@@ -214,12 +214,12 @@ fn prepare_pattern(b: &BrushSettings) -> Option<Arc<PatternImage>> {
     if !t.enabled {
         return None;
     }
-    let mut img = match &t.pattern {
-        Pattern::Procedural { style, size, seed } => crate::procedural::pattern(*style, *size, *seed),
-        p => match p.bitmap() {
-            Some(g) if g.is_valid() => PatternImage { width: g.width as usize, height: g.height as usize, data: g.to_f32() },
-            _ => return None,
-        },
+    if let Pattern::Procedural { style, size, seed } = &t.pattern {
+        return Some(crate::pattern_cache::procedural_pattern(*style, *size, *seed, t));
+    }
+    let mut img = match t.pattern.bitmap() {
+        Some(g) if g.is_valid() => PatternImage { width: g.width as usize, height: g.height as usize, data: g.to_f32() },
+        _ => return None,
     };
     for v in &mut img.data {
         *v = t.level(*v);
@@ -263,9 +263,7 @@ impl BrushContext {
         let (fx, fy) = ((x as f32 + 0.5) / s - 0.5, (y as f32 + 0.5) / s - 0.5);
         let (x0, y0) = (fx.floor(), fy.floor());
         let (tx, ty) = (fx - x0, fy - y0);
-        let a = p.sample_wrap(x0, y0) + (p.sample_wrap(x0 + 1.0, y0) - p.sample_wrap(x0, y0)) * tx;
-        let b = p.sample_wrap(x0, y0 + 1.0) + (p.sample_wrap(x0 + 1.0, y0 + 1.0) - p.sample_wrap(x0, y0 + 1.0)) * tx;
-        a + (b - a) * ty
+        p.sample_bilinear_wrap(x0, y0, tx, ty)
     }
 
     /// Bounding rectangle of a dab (rotated sampled tips need the corner reach).

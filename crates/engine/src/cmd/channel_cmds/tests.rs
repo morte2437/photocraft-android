@@ -1238,3 +1238,21 @@ fn split_refuses_an_image_with_more_than_one_layer() {
     assert!(s.execute("channel.split", json!({})).is_err());
     assert_eq!(s.documents().len(), 1);
 }
+
+/// Merge Channels is offered from three grayscale documents of one size, the fewest a mode
+/// (RGB or Lab) merges; two never merge (#11451).
+#[test]
+fn merge_channels_waits_for_three_grayscale_documents() {
+    let mut s = Session::new();
+    for _ in 0..2 {
+        s.execute("file.new", json!({"width": 8, "height": 8, "mode": "grayscale"})).unwrap();
+    }
+    s.execute("file.new", json!({"width": 9, "height": 8, "mode": "grayscale"})).unwrap();
+    s.set_active(0);
+    let why = s.disabled_reason("channel.merge").expect("two of one size are not enough");
+    assert!(why.contains("three"), "{why}");
+    s.execute("file.new", json!({"width": 8, "height": 8, "mode": "grayscale"})).unwrap();
+    assert!(s.is_enabled("channel.merge"));
+    s.execute("channel.merge", json!({"mode": "lab"})).unwrap();
+    assert_eq!(s.documents().len(), 2, "the three of one size merged; the other is left");
+}

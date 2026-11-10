@@ -84,6 +84,7 @@ pub fn params_for(id: &str, p: &Value) -> Option<FilterParams> {
         return Some(fp);
     }
     Some(match id {
+        "filter.blur.average" => FilterParams::Average,
         "filter.blur.gaussianBlur" => FilterParams::GaussianBlur { radius: f(p, "radius", 1.0).clamp(0.1, 1000.0) },
         "filter.blur.boxBlur" => FilterParams::BoxBlur { radius: f(p, "radius", 1.0).clamp(1.0, 2000.0) },
         "filter.blur.motionBlur" => FilterParams::MotionBlur { angle: f(p, "angle", 0.0), distance: f(p, "distance", 10.0).clamp(1.0, 2000.0) },
@@ -471,6 +472,7 @@ macro_rules! filter_cmd {
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         filter_cmd!("filter.blur.gaussianBlur", "Gaussian Blur…", ["Filter", "Blur"], r##"{"radius":0.1..1000=1}"##),
+        filter_cmd!("filter.blur.average", "Average", ["Filter", "Blur"], "{}"),
         filter_cmd!("filter.blur.blur", "Blur", ["Filter", "Blur"], "{}"),
         filter_cmd!("filter.blur.blurMore", "Blur More", ["Filter", "Blur"], "{}"),
         filter_cmd!("filter.sharpen.sharpen", "Sharpen", ["Filter", "Sharpen"], "{}"),

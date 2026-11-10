@@ -1417,3 +1417,169 @@ fn folder_saves_under_the_documents_own_name() {
     assert_eq!(r["files"], json!([format!("{dir}/named.png")]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn selected_slices_keep_their_place_in_the_html_table() {
+    // CodeRabbit review on PR #10557: exporting only the right of two slices put its image in
+    // the table's first column, on the left. Unexported slices stay as empty cells.
+    let dir = tmp("selected-html");
+    let mut s = session(8);
+    s.execute("slice.new", json!({"rect": [0, 0, 32, 48], "name": "left"})).unwrap();
+    s.execute("slice.new", json!({"rect": [32, 0, 32, 48], "name": "right"})).unwrap();
+    let right = photocraft_doc::slices::resolve(&s.active().unwrap().doc).iter().find(|r| r.name == "right").unwrap().number;
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": dir, "html": true, "numbers": [right]})).unwrap();
+    let files: Vec<&str> = r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().rsplit('/').next().unwrap()).collect();
+    assert_eq!(files, ["right.png"]);
+    let page = std::fs::read_to_string(r["html"].as_str().unwrap()).unwrap();
+    let row = &page[page.find("<tr>").unwrap()..page.find("</tr>").unwrap()];
+    let cells: Vec<&str> = row.split("<td").skip(1).collect();
+    assert!(cells.len() >= 2, "{row}");
+    assert!(!cells[0].contains("images/right.png"), "the right slice is in column 0:\n{row}");
+    assert!(cells[1].contains("images/right.png"), "column 1:\n{row}");
+}
+
+/// Two side-by-side user slices, `left` and `right`, and their numbers.
+fn two_slices() -> (Session, u64, u64) {
+    let mut s = session(8);
+    s.execute("slice.new", json!({"rect": [0, 0, 32, 48], "name": "left"})).unwrap();
+    s.execute("slice.new", json!({"rect": [32, 0, 32, 48], "name": "right"})).unwrap();
+    let all = photocraft_doc::slices::resolve(&s.active().unwrap().doc);
+    let number = |name: &str| all.iter().find(|r| r.name == name).unwrap().number as u64;
+    (s, number("left"), number("right"))
+}
+
+/// A refused slice export writes and remembers nothing, and (called directly, as the platform
+/// writer is) leaves a floating move in place.
+fn assert_refused(s: &mut Session, dir: &str, p: Value, expect: &str) {
+    s.execute("select.rect", json!({"x": 8, "y": 8, "width": 4, "height": 4})).unwrap();
+    s.execute("select.float", json!({"dx": 32})).unwrap();
+    let mut written = Vec::new();
+    let err = save_for_web_with_writer(s, &p, &mut |path, _| {
+        written.push(path.to_string());
+        Ok(())
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains(expect), "{p}: {err}");
+    assert_eq!(written, Vec::<String>::new(), "{p}: nothing written");
+    assert!(s.file_menu.last_web.is_none(), "{p}: nothing remembered");
+    assert!(crate::float_cmds::floating(s.active().unwrap()).is_some(), "{p}: the floating move is not committed");
+    let err = s.execute("file.export.saveForWebLegacy", p.clone()).unwrap_err().to_string();
+    assert!(err.contains(expect), "{p}: {err}");
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0, "{p}: nothing written");
+}
+
+#[test]
+fn slice_numbers_that_do_not_exist_are_refused() {
+    // FredApps review on PR #10557: a number naming no slice was dropped, so an export of only
+    // missing numbers "succeeded" with no files and a page of empty cells. Photoshop's dialog
+    // can only select existing slices; a script naming others is refused.
+    let dir = tmp("missing-numbers");
+    let (mut s, left, right) = two_slices();
+    let count = photocraft_doc::slices::resolve(&s.active().unwrap().doc).len() as u64;
+    let (gone, also_gone) = (count + 1, count + 7);
+    assert_refused(&mut s, &dir, json!({"format": "png24", "dir": dir, "html": true, "numbers": [gone]}), &format!("no slice numbered {gone}"));
+    // Partly missing: the dialog builds `numbers` from slices it shows, so every number it sends
+    // exists; one that doesn't is a stale or mistyped script and the export is refused whole.
+    let err = s
+        .execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": dir, "html": true, "numbers": [left, also_gone, right, gone]}))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(&format!("no slices numbered {gone}, {also_gone}")), "{err}");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing written");
+    // Slice numbers start at 1.
+    let err = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": dir, "numbers": [0]})).unwrap_err().to_string();
+    assert!(err.contains("no slice numbered 0"), "{err}");
+    // Existing numbers still export exactly those slices.
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": dir, "numbers": [right, left]})).unwrap();
+    let mut files: Vec<&str> = r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().rsplit('/').next().unwrap()).collect();
+    files.sort_unstable();
+    assert_eq!(files, ["left.png", "right.png"]);
+}
+
+#[test]
+fn slice_modes_are_validated() {
+    // FredApps review on PR #10557: any `slices` value but "user" exported every slice,
+    // including the dialog's "selected" without `numbers`.
+    let dir = tmp("slice-modes");
+    let (mut s, left, right) = two_slices();
+    for (p, expect) in [
+        (json!({"slices": "selcted"}), "unknown slices `selcted` (all|user|selected)"),
+        (json!({"slices": 2}), "unknown slices `2` (all|user|selected)"),
+        (json!({"slices": "selected"}), "no slices are selected"),
+        (json!({"slices": "selected", "numbers": []}), "numbers must be a list of slice numbers"),
+        (json!({"numbers": ["1"]}), "numbers must be a list of slice numbers"),
+        (json!({"numbers": 1}), "numbers must be a list of slice numbers"),
+    ] {
+        let mut p = p;
+        p["format"] = json!("png24");
+        p["dir"] = json!(dir);
+        assert_refused(&mut s, &dir, p, expect);
+    }
+    // Every valid call still works.
+    let count = photocraft_doc::slices::resolve(&s.active().unwrap().doc).len();
+    let names = |r: &Value| r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().rsplit('/').next().unwrap().to_string()).collect::<Vec<_>>();
+    for (mode, expect) in [(json!(null), count), (json!("all"), count), (json!("user"), 2)] {
+        let out = tmp("slice-modes-ok");
+        let mut p = json!({"format": "png24", "dir": out});
+        if !mode.is_null() {
+            p["slices"] = mode.clone();
+        }
+        assert_eq!(names(&s.execute("file.export.saveForWebLegacy", p).unwrap()).len(), expect, "{mode}");
+    }
+    let out = tmp("slice-modes-selected");
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": out, "slices": "selected", "numbers": [right]})).unwrap();
+    assert_eq!(names(&r), ["right.png"]);
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": out, "slices": "user", "numbers": [left]})).unwrap();
+    assert_eq!(names(&r), ["left.png"], "numbers choose the slices whatever the mode");
+    // A document without slices exports the whole image as one, whatever the dialog's Slices
+    // choice: the dialog sends "selected" without numbers then (`web_params`).
+    let mut s = session(8);
+    for mode in ["all", "user", "selected"] {
+        let out = tmp("slice-modes-none");
+        if mode != "user" {
+            let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "dir": out, "slices": mode})).unwrap();
+            assert_eq!(names(&r), ["web.png"], "{mode}");
+            assert_eq!(decode(r["files"][0].as_str().unwrap()).dimensions(), (64, 48), "{mode}");
+        }
+        let path = format!("{out}/whole.png");
+        s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": path, "slices": mode})).unwrap();
+        assert_eq!(decode(&path).dimensions(), (64, 48), "{mode}");
+    }
+}
+
+#[test]
+fn a_whole_image_path_with_slice_numbers_is_refused() {
+    // CodeRabbit review on PR #10557: `path` alone writes the whole image as one file, so slice
+    // `numbers` with it were ignored and every slice came out in that file. It is refused; `dir`
+    // exports the chosen slices.
+    let dir = tmp("path-numbers");
+    let (mut s, left, right) = two_slices();
+    let path = format!("{dir}/web.png");
+    assert_refused(&mut s, &dir, json!({"format": "png24", "path": path, "numbers": [right]}), "use `dir`");
+    assert_refused(&mut s, &dir, json!({"format": "png24", "path": path, "dir": "", "numbers": [left, right]}), "use `dir`");
+    // `folder` alone is the whole image under the document's name (#5305): refused the same way.
+    assert_refused(&mut s, &dir, json!({"format": "png24", "folder": dir, "numbers": [right]}), "use `dir`");
+    // An explicit null `slices` is the default mode, as if absent.
+    assert_refused(&mut s, &dir, json!({"format": "png24", "path": path, "slices": null, "numbers": [right]}), "use `dir`");
+    // Valid calls still work: `path` alone is the whole image; with `slices`, the chosen slices
+    // go next to it; `dir` with `numbers` writes those slices.
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": path})).unwrap();
+    assert_eq!(r["files"], json!([path]));
+    assert_eq!(decode(&path).dimensions(), (64, 48));
+    let names = |r: &Value| r["files"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().rsplit('/').next().unwrap().to_string()).collect::<Vec<_>>();
+    let out = tmp("path-numbers-selected");
+    let r = s
+        .execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": format!("{out}/web.png"), "slices": "selected", "numbers": [right]}))
+        .unwrap();
+    assert_eq!(names(&r), ["right.png"]);
+    let out = tmp("path-numbers-dir");
+    let r = s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": format!("{out}/web.png"), "dir": out, "numbers": [left]})).unwrap();
+    assert_eq!(names(&r), ["left.png"]);
+    // A document without slices is one image: its only slice number is the whole image.
+    let mut s = session(8);
+    let out = tmp("path-numbers-none");
+    let whole = format!("{out}/whole.png");
+    s.execute("file.export.saveForWebLegacy", json!({"format": "png24", "path": whole, "numbers": [1]})).unwrap();
+    assert_eq!(decode(&whole).dimensions(), (64, 48));
+}

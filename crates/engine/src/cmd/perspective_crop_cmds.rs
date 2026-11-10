@@ -12,7 +12,7 @@
 //! editable equivalent for them. Vector masks, paths, notes, slices and guides follow the affine
 //! map closest to the homography (exact when the quad is a parallelogram).
 
-use photocraft_algo::transform::{Homography, Interp, convex_quad, quad_size, quad_to_rect, warp_surface_clipped};
+use photocraft_algo::transform::{Homography, Interp, convex_quad, quad_free_size, quad_size, quad_to_rect, warp_surface_clipped};
 use photocraft_color::PixelFormat;
 use photocraft_doc::{Document, Layer, LayerContent, LayerId, Size};
 use photocraft_geom::{Affine, Rect};
@@ -60,8 +60,9 @@ fn corners(p: &Value) -> Result<[[f64; 2]; 4]> {
 }
 
 /// Output size: `width`/`height` in whole px; one alone keeps the quad's proportions; neither
-/// takes the quad's mean side lengths ([`quad_size`]).
-fn out_size(p: &Value, q: &[[f64; 2]; 4]) -> Result<(u32, u32)> {
+/// takes the rectangle the quad shows in perspective ([`quad_free_size`], `center` being the
+/// document's centre).
+fn out_size(p: &Value, q: &[[f64; 2]; 4], center: [f64; 2]) -> Result<(u32, u32)> {
     let side = |key: &str| -> Result<Option<f64>> {
         match p.get(key) {
             None | Some(Value::Null) => Ok(None),
@@ -77,7 +78,7 @@ fn out_size(p: &Value, q: &[[f64; 2]; 4]) -> Result<(u32, u32)> {
         (Some(w), Some(h)) => (w, h),
         (Some(w), None) => (w, w * qh / qw),
         (None, Some(h)) => (h * qw / qh, h),
-        (None, None) => (qw, qh),
+        (None, None) => quad_free_size(q, center),
     };
     let px = |v: f64| -> Result<u32> {
         let v = v.round().max(1.0);
@@ -216,7 +217,8 @@ fn map_samplers(points: &[[f64; 2]], h: &Homography, (w, ht): (u32, u32)) -> Vec
 
 fn perspective_crop(s: &mut Session, p: &Value) -> Result<Value> {
     let q = corners(p)?;
-    let (w, h) = out_size(p, &q)?;
+    let center = s.active().map_or([0.0; 2], |d| [f64::from(d.doc.size.width) / 2.0, f64::from(d.doc.size.height) / 2.0]);
+    let (w, h) = out_size(p, &q, center)?;
     let res = resolution(p)?;
     let interp = interpolation(p)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
@@ -259,12 +261,16 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Perspective Crop",
         menu: &[],
         shortcut: None,
-        params: r##"{"corners":[[x,y],[x,y],[x,y],[x,y]] (top-left, top-right, bottom-right, bottom-left; a convex quad, document px),"width":px,"height":px,"resolution":ppi,"interpolation":"bicubic|bilinear|nearest"="bicubic"} → {width,height,resolution,corners} (the quad is mapped onto an upright width x height canvas, all layers, one undo step; no width/height: the quad's mean side lengths, one alone keeps its proportions; type, shape, fill and smart object layers are rasterized)"##,
+        params: r##"{"corners":[[x,y],[x,y],[x,y],[x,y]] (top-left, top-right, bottom-right, bottom-left; a convex quad, document px),"width":px,"height":px,"resolution":ppi,"interpolation":"bicubic|bilinear|nearest"="bicubic"} → {width,height,resolution,corners} (the quad is mapped onto an upright width x height canvas, all layers, one undo step; no width/height: the rectangle the quad shows in perspective, one alone keeps its proportions; type, shape, fill and smart object layers are rasterized)"##,
         enabled: has_doc,
         run: perspective_crop,
         journal: true,
     }]
 }
+
+#[cfg(test)]
+#[path = "perspective_crop_size_tests.rs"]
+mod perspective_crop_size_tests;
 
 #[cfg(test)]
 mod tests {

@@ -65,8 +65,8 @@ use ctx::{Ctx, prepare_effects};
 use ctx::{LayerKeys, PREPARE_DEPTH, effect_layers, prepare_tones};
 use extents::mask_vals;
 pub use extents::{
-    change_bounds, change_bounds_in, composite_bounds, effect_outline, effect_source_bounds, effects_frame, hard_shape_bounds, layer_bounds, paint_bounds,
-    relayout_damage, shape_bounds, soft_shape_frame, transparent_outside,
+    Ancestors, Placement, adjustment_reach, change_bounds, change_bounds_in, composite_bounds, effect_outline, effect_source_bounds, effects_frame,
+    hard_shape_bounds, layer_bounds, layer_change_bounds, paint_bounds, relayout_damage, shape_bounds, siblings_of, soft_shape_frame, transparent_outside,
 };
 #[cfg(test)]
 use extents::{mask_k, shapeless_stroke_bounds, trim_to_painted};

@@ -970,3 +970,24 @@ fn split_selected_lifts_up_to_the_selection_and_leaves_the_rest() {
         assert!((l + r - a).abs() < 1e-6, "k = {k}: lifted {l} + left {r} != {a}");
     }
 }
+
+/// `stepName` names the step "Transform Path" (the shape tools' bounding box); without it the
+/// step stays "Free Transform"; any other name is refused and changes nothing.
+#[test]
+fn step_name_transform_path_is_the_only_name_taken() {
+    let mut s = session();
+    let p = json!({"scaleX": 50, "scaleY": 50});
+    s.execute("edit.transform", p.clone()).unwrap();
+    assert_eq!(s.active().unwrap().history.entries().last().map(String::as_str), Some("Free Transform"));
+    let mut named = p.clone();
+    named["stepName"] = json!("Transform Path");
+    s.execute("edit.transform", named).unwrap();
+    assert_eq!(s.active().unwrap().history.entries().last().map(String::as_str), Some("Transform Path"));
+    let steps = s.active().unwrap().history.past_len();
+    for bad_name in [json!("Free Transform"), json!("Move"), json!(""), json!(3), json!(["Transform Path"])] {
+        let mut wrong = p.clone();
+        wrong["stepName"] = bad_name.clone();
+        assert!(s.execute("edit.transform", wrong).is_err(), "{bad_name}");
+    }
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "a refused name changes nothing");
+}

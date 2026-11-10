@@ -1,4 +1,4 @@
-use super::layer_drag::{MaskDrag, fx_drop, layer_drag_and_drop, mask_drag_key, start_fx_drag, starts_mask_drag};
+use super::layer_drag::{MaskDrag, fx_drop, layer_drag_and_drop, mask_drag_key, mask_drop, start_fx_drag, starts_mask_drag};
 use super::layers::simple_lock_toggle;
 use super::{
     Color32, CornerRadius, Layer, LayerContent, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, Value, icons, json, pos2, theme, vec2, widgets,
@@ -207,6 +207,7 @@ pub(super) fn layer_row(
     let mask_drag = mask_drag.is_some();
     layer_drag_and_drop(app, ctx, ui, l, rect, &resp, actions);
     fx_drop(ctx, ui, l, rect, actions);
+    mask_drop(ctx, ui, l, rect, actions);
     crate::smart_ui::drop_on_row(ctx, ui, l, rect, actions);
     if resp.drag_started() && !mask_drag {
         crate::layer_transfer::begin_from_panel(app, ctx, l.id);
@@ -595,22 +596,37 @@ fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &Ro
     }
 }
 
-/// The visibility icon has its own color menu, and the layer-mask thumbnail its mask menu (#4575).
+/// The visibility icon has its own color menu, the layer-mask thumbnail its mask menu (#4575)
+/// and a pixel layer's thumbnail Select Pixels and the thumbnail settings (#12324).
 fn row_context_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui, rc: &RowCtx<'_>, eye_resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
     let (l, resp, masks, row) = (rc.l, rc.resp, rc.masks, rc.row);
     let (ctx, selected) = (&ui.ctx().clone(), row.selected);
-    // The visibility icon has its own color menu, and the layer-mask thumbnail its mask menu
-    // (#4575); elsewhere use the full layer menu.
+    // The visibility icon has its own color menu, the layer-mask thumbnail its mask menu
+    // (#4575) and a pixel layer's thumbnail its thumbnail menu; elsewhere the full layer menu.
     let on_mask_id = ui.scope_id().with(("mask-menu", l.id.0));
+    let on_thumb_id = ui.scope_id().with(("thumb-menu", l.id.0));
     if resp.secondary_clicked() {
-        let on_mask = resp.interact_pointer_pos().and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel);
-        ctx.data_mut(|d| d.insert_temp(on_mask_id, on_mask));
+        let pos = resp.interact_pointer_pos();
+        let on_mask = pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel);
+        // A pixel layer's thumbnail; not the Background's, which has no transparency to load.
+        // Type, shape, smart object, fill, adjustment and group thumbnails keep the layer menu
+        // with their own items (Rasterize, Edit Contents…).
+        let pixels = matches!(l.content, LayerContent::Raster(_)) && l.frame.is_none() && !rc.doc.is_background(l.id);
+        let on_thumb = !on_mask && pixels && rc.ts > 0.0 && pos.is_some_and(|p| masks.hit(p).is_none() && rc.thumb.expand(2.0).contains(p));
+        ctx.data_mut(|d| {
+            d.insert_temp(on_mask_id, on_mask);
+            d.insert_temp(on_thumb_id, on_thumb);
+        });
     }
     if !eye_resp.secondary_clicked() && !eye_resp.context_menu_opened() {
         resp.context_menu(|ui| {
             crate::widgets::style_spectrum_popup_menu(ui);
             if ui.ctx().data(|d| d.get_temp::<bool>(on_mask_id)).unwrap_or(false) {
                 crate::layer_menu_ui::show_mask(app, ui, l, actions);
+                return;
+            }
+            if ui.ctx().data(|d| d.get_temp::<bool>(on_thumb_id)).unwrap_or(false) {
+                super::layers_empty_menu::show_thumbnail(app, ui, l.id.0, actions);
                 return;
             }
             // Right-clicking inside a multi-selection keeps it and acts on every selected layer.

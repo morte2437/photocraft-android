@@ -68,7 +68,7 @@ const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("DPX and Cineon", &["dpx", "cin"]),
     ("Amiga IFF", &["iff", "lbm", "ilbm"]),
     ("DICOM", &["dcm", "dicom", "dc3"]),
-    ("Camera Raw", &["dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf"]),
+    ("RAW images", &["dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf"]),
     ("Brushes", &["abr"]),
     ("Gradients", &["grd"]),
     ("Styles", &["asl"]),
@@ -763,6 +763,7 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         open_url: Some(Box::new(|url: &str| open::that(url).map_err(|e| e.to_string()))),
         beep: Some(platform_beep),
         check_updates: Some(crate::updates::service()),
+        last_update: Some(crate::updates::last_update),
         clipboard_set_image: Some({
             let clip = clip.clone();
             guarded_clipboard_set(move |w: u32, h: u32, px: &[u8]| {

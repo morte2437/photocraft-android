@@ -24,6 +24,10 @@ use photocraft_doc::Layer;
 
 const CMD: &str = "paint.remove";
 
+/// The History step of an applied removal, as Photoshop names it (#12541). The job and its
+/// progress keep the command's label.
+const HISTORY: &str = "Remove Tool";
+
 /// Largest stroke, in pixels of its bounding box (as the Patch Tool's and Content-Aware Move's).
 /// Checked before the stroke's coverage is rendered, which allocates its whole bounding box, also
 /// where it leaves the canvas.
@@ -247,7 +251,7 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
         move |s, filled| {
             let Some((out, hole)) = filled else { return Ok(json!({"changed": false})) };
             if new_layer {
-                let (damage, nid) = s.edit(label, |doc, active| {
+                let (damage, nid) = s.edit(HISTORY, |doc, active| {
                     let r = fill_to_new_layer(doc, id, &out, &hole)?;
                     *active = Some(r.1);
                     Ok(r)
@@ -255,7 +259,7 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                 s.hint_damage(damage);
                 return Ok(json!({ "damage": damage_json(damage), "layer": nid.0 }));
             }
-            let damage = s.edit(label, |doc, _| replace(doc, Target { id, all_layers: false }, &p, &out, &hole))?;
+            let damage = s.edit(HISTORY, |doc, _| replace(doc, Target { id, all_layers: false }, &p, &out, &hole))?;
             s.hint_damage(damage);
             Ok(json!({ "damage": damage_json(damage) }))
         },

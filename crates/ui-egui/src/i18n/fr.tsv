@@ -38,7 +38,7 @@
 
 # Labels added on main after this catalog (depth labels, Wayland drop, profiles, rendering mode)
 
-# Camera Raw scopes and the Patch tool
+# RAW Develop scopes and the Patch tool
 
 # Warp grid presets (#388)
 
@@ -171,6 +171,7 @@
 	Right	Droite
 	Open Recent	Ouvrir un fichier récent
 	Clear Recent Files	Effacer la liste des fichiers récents
+	Clear Recent File List	Effacer la liste des fichiers récents
 	Remove from Recent	Retirer des fichiers récents
 	Remove {name} from Recent	Retirer {name} des fichiers récents
 	Close	Fermer
@@ -179,6 +180,10 @@
 	Restore	Restaurer
 	Close All	Tout fermer
 	Close Others	Fermer les autres
+	New Document…	Nouveau document…
+	Open Document…	Ouvrir…
+	Consolidate All to Here	Tout regrouper ici
+	Move to New Window	Déplacer vers une nouvelle fenêtre
 	Save	Enregistrer
 	Save As…	Enregistrer sous…
 	Save a Copy…	Enregistrer une copie…
@@ -231,6 +236,7 @@
 	Create Smart Object after Loading Layers	Créer un objet intelligent après le chargement des calques
 	Reveal in Finder	Afficher dans le Finder
 	Show in Explorer	Afficher dans l'Explorateur
+	Reveal in Explorer	Afficher dans l'Explorateur
 	Show in Folder	Afficher dans le dossier
 	File Info…	Informations sur le fichier…
 	Print…	Imprimer…
@@ -317,9 +323,10 @@
 	Units & Rulers…	Unités et règles…
 	Guides, Grid & Slices…	Repères, grille et tranches…
 	Plug-ins…	Extensions…
+	Plugins…	Extensions…
 	Type…	Texte…
 	Enhanced Controls…	Commandes avancées…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	Valeurs par défaut RAW…
 	Raw Defaults…	Valeurs Raw par défaut…
 	Integrations…	Intégrations…
 	AI Integrations…	Intégrations d'IA…
@@ -365,6 +372,8 @@
 	Match Color…	Faire correspondre la couleur…
 	Replace Color…	Remplacer la couleur…
 	Equalize	Égaliser
+	Equalize Selected Area Only	Égaliser uniquement la sélection
+	Equalize Entire Image Based On Selected Area	Égaliser toute l'image d'après la sélection
 	Auto Tone	Tonalité automatique
 	Auto Contrast	Contraste automatique
 	Auto Color	Couleur automatique
@@ -401,8 +410,8 @@
 	Artboard…	Plan de travail…
 	Artboard from Group…	Plan de travail d'après un groupe…
 	Artboard from Layers…	Plan de travail d'après des calques…
-	Layer via Copy	Calque par copie
-	Layer via Cut	Calque par coupe
+	Layer Via Copy	Calque par copie
+	Layer Via Cut	Calque par coupe
 	Layer From Background…	Calque d'après l'arrière-plan…
 	Layer from Background…	Calque d'après l'arrière-plan…
 	Background From Layer	Arrière-plan d'après le calque
@@ -466,6 +475,8 @@
 	Smart Object	Objet intelligent
 	Convert to Smart Object	Convertir en objet intelligent
 	Convert to Embedded	Convertir en objet incorporé
+	Embed Linked	Incorporer le lié
+	Embed All Linked	Incorporer tous les liés
 	Convert to Layers	Convertir en calques
 	Convert to Linked…	Convertir en objet lié…
 	Edit Contents	Modifier le contenu
@@ -610,7 +621,6 @@
 	Deselect	Désélectionner
 	Reselect	Resélectionner
 	Inverse	Inverser
-	Inverse Selection	Inverser la sélection
 	Similar	Similaire
 	Color Range…	Plage de couleurs…
 	Focus Area…	Zone de mise au point…
@@ -635,7 +645,7 @@
 	Last Filter	Dernier filtre
 	Filter Gallery…	Galerie de filtres…
 	Adaptive Wide Angle…	Grand angle adaptatif…
-	Camera Raw Filter…	Filtre Camera Raw…
+	RAW Develop Filter…	Filtre Développement RAW…
 	Liquify…	Liquéfier…
 	Vanishing Point…	Point de fuite…
 	Blur	Flou
@@ -718,6 +728,7 @@
 	Minimum…	Minimum…
 	Offset…	Décalage…
 	Plug-ins	Extensions
+	Plugins	Extensions
 	Proof Setup	Configuration d'épreuve
 	Proof Colors	Couleurs d'épreuve
 	Gamut Warning	Alerte de gamut
@@ -726,12 +737,12 @@
 	Working Magenta Plate	Plaque magenta de travail
 	Working Yellow Plate	Plaque jaune de travail
 	Working Black Plate	Plaque noire de travail
-	Working CMY Plate	Plaque CMJ de travail
-	Legacy Macintosh RGB	RVB Macintosh (ancien)
-	Internet Standard RGB	RVB standard d'Internet
+	Working CMY Plates	Plaques CMJ de travail
+	Legacy Macintosh RGB (Gamma 1.8)	RVB Macintosh (ancien) (Gamma 1.8)
+	Internet Standard RGB (sRGB)	RVB standard d'Internet (sRGB)
 	Monitor RGB	RVB du moniteur
-	Color Blindness — Protanopia-type	Daltonisme — type protanopie
-	Color Blindness — Deuteranopia-type	Daltonisme — type deutéranopie
+	Color Blindness - Protanopia-type	Daltonisme - type protanopie
+	Color Blindness - Deuteranopia-type	Daltonisme - type deutéranopie
 	Zoom In	Zoom avant
 	Zoom Out	Zoom arrière
 	Fit on Screen	Adapter à l'écran
@@ -820,7 +831,6 @@
 	Consolidate All to Tabs	Tout regrouper dans des onglets
 	Float in Window	Flottante dans une fenêtre
 	Float All in Windows	Toutes flottantes dans des fenêtres
-	New Window for Document	Nouvelle fenêtre pour le document
 	Workspace	Espace de travail
 	Essentials	Essentiel
 	Graphic and Web	Graphisme et Web
@@ -882,6 +892,12 @@
 	Timeline	Montage
 	Tool Presets	Préréglages d'outils
 	Tools	Outils
+	Contextual Task Bar	Barre des tâches contextuelle
+	Hide bar	Masquer la barre
+	Reset bar position	Réinitialiser la position de la barre
+	Pin bar position	Épingler la position de la barre
+	Move bar	Déplacer la barre
+	More options	Plus d'options
 	About PhotoCraft	À propos de PhotoCraft
 	PhotoCraft Website	Site web de PhotoCraft
 	PhotoCraft on GitHub	PhotoCraft sur GitHub
@@ -983,8 +999,8 @@
 	Load Settings…	Charger les paramètres…
 	Save these settings as a Camera Raw .xmp file	Enregistrer ces paramètres dans un fichier .xmp Camera Raw
 	Load settings from a Camera Raw .xmp file	Charger les paramètres d’un fichier .xmp Camera Raw
-	Loaded Camera Raw settings from {file}	Paramètres Camera Raw chargés depuis {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Paramètres Camera Raw chargés depuis {file} ({n} non pris en charge)
+	Loaded RAW Develop settings from {file}	Paramètres Développement RAW chargés depuis {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	Paramètres Développement RAW chargés depuis {file} ({n} non pris en charge)
 	Begin recording	Démarrer l'enregistrement
 	Bend:	Courbure :
 	Bicubic	Bicubique
@@ -1012,7 +1028,7 @@
 	Brush Reconstruct Options	Options du pinceau de reconstruction
 	Brush Tool Options	Options de l'outil Pinceau
 	Cache Level:	Niveau de cache :
-	Camera Raw isn't open	Camera Raw n'est pas ouvert
+	RAW Develop isn't open	Développement RAW n'est pas ouvert
 	Cancel	Annuler
 	Cancel (Esc)	Annuler (Échap)
 	Manage submitted jobs in the system print queue	Gérer les tâches soumises dans la file d’impression du système
@@ -1045,7 +1061,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	Cliquez pour ajouter un point · faites-le glisser hors du cadre, {key}-clic ou Suppr pour le retirer
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Cliquez pour appliquer, {key}-clic pour effacer les substitutions, double-clic pour les options de style
 	Click to edit the gradient	Cliquez pour modifier le dégradé
-	Click to restore the current colour	Cliquez pour rétablir la couleur actuelle
+	Click to restore the current color	Cliquez pour rétablir la couleur actuelle
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Cliquez pour zoomer  ·  {key}-clic pour dézoomer  ·  faites glisser vers la droite/gauche pour zoomer/dézoomer
 	Click with the Note tool to add a note.	Cliquez avec l'outil Note pour ajouter une note.
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Clic : angle · Glisser : lisse · Clic sur le premier point : fermer · {key} : terminer · Échap : annuler
@@ -1128,7 +1144,7 @@
 	Darks	Tons sombres
 	Data Sets	Jeux de données
 	Default	Par défaut
-	Default colours (D)	Couleurs par défaut (D)
+	Default Foreground and Background Colors (D)	Couleurs par défaut (D)
 	Default printer	Imprimante par défaut
 	Default restored.	Valeurs par défaut rétablies.
 	Define	Définir
@@ -1405,7 +1421,7 @@
 	Opacity Jitter	Variation de l'opacité
 	Opacity:	Opacité :
 	Open a document to define variables.	Ouvrez un document pour définir des variables.
-	Open a document to select a colour range.	Ouvrez un document pour sélectionner une plage de couleurs.
+	Open a document to select a color range.	Ouvrez un document pour sélectionner une plage de couleurs.
 	Open a document to use the timeline.	Ouvrez un document pour utiliser le montage.
 	Optical	Optique
 	Optimized	Optimisé
@@ -1481,7 +1497,6 @@
 	Purity	Pureté
 	Quality	Qualité
 	Quick Actions	Actions rapides
-	Quick Export As PNG	Exportation rapide au format PNG
 	Radial Gradient	Dégradé radial
 	Radius	Rayon
 	Radius:	Rayon :
@@ -1622,7 +1637,7 @@
 	Subtract from Sample	Soustraire de l'échantillon
 	Subtract from selection  ({key})	Soustraire de la sélection  ({key})
 	Suggestions:	Suggestions :
-	Swap colours (X)	Permuter les couleurs (X)
+	Switch Foreground and Background Colors (X)	Permuter les couleurs (X)
 	Swaps height and width	Permute la hauteur et la largeur
 	Switch between free transform and warp modes	Basculer entre les modes transformation libre et déformation
 	Switch theme	Changer de thème
@@ -1724,7 +1739,7 @@
 	Choke	Resserrement
 	Classic	Classique
 	Click to add text	Cliquez pour ajouter du texte
-	Click to fill similar colours	Cliquez pour remplir les couleurs similaires
+	Click to fill similar colors	Cliquez pour remplir les couleurs similaires
 	Clone Stamp Tool	Outil Tampon de clonage
 	Color Burn	Densité couleur +
 	Color Dodge	Densité couleur −
@@ -1825,6 +1840,7 @@
 	Move Tool	Outil Déplacement
 	Could not use the move tool because the layer is locked.	Impossible d'utiliser l'outil Déplacement, car le calque est verrouillé.
 	Could not complete the Free Transform command because the layer is locked.	Impossible d'exécuter la commande Transformation libre, car le calque est verrouillé.
+	Could not transform because the layer is locked.	Impossible de transformer, car le calque est verrouillé.
 	Multiply	Produit
 	My Brushes	Mes pinceaux
 	Neutrals	Neutres
@@ -1883,7 +1899,7 @@
 	Rectangular Marquee Tool	Outil Sélection rectangulaire
 	Reds	Rouges
 	Reflected	Réfléchi
-	Sample: foreground colour	Échantillon : couleur de premier plan
+	Sample: foreground color	Échantillon : couleur de premier plan
 	Sampled Colors	Couleurs échantillonnées
 	Satin	Satin
 	Save Pixel Aspect Ratio	Enregistrer le format des pixels
@@ -1922,7 +1938,6 @@
 	Transfer	Transfert
 	Triangle Tool	Outil Triangle
 	Unsaved changes	Modifications non enregistrées
-	Uses the foreground and background colours.	Utilise les couleurs de premier plan et d'arrière-plan.
 	Web	Web
 	Web Large	Web (grand)
 	Web Minimum	Web (minimum)
@@ -1957,6 +1972,7 @@
 	Allow scripts to connect	Autoriser la connexion des scripts
 	Always	Toujours
 	Always create smart objects when placing	Toujours créer des objets intelligents lors du placement
+	Skip transform when placing	Ignorer la transformation lors du placement
 	Animated zoom	Zoom animé
 	Apply auto tone	Appliquer la tonalité automatique
 	Ask	Demander
@@ -1974,11 +1990,16 @@
 	Brush preview color	Couleur de l'aperçu du pinceau
 	Cache levels	Niveaux de cache
 	Cache tile size	Taille des tuiles du cache
-	Camera Raw Defaults	Valeurs par défaut de Camera Raw
+	RAW Defaults	Valeurs par défaut RAW
 	Canvas border	Bordure du canevas
 	Show canvas dots	Afficher les points du canevas
 	Clip thumbnails to layer bounds	Rogner les vignettes aux limites du calque
 	Clip Thumbnails to Layer Bounds	Rogner les vignettes aux limites du calque
+	No Thumbnails	Aucune vignette
+	Small Thumbnails	Petites vignettes
+	Medium Thumbnails	Vignettes moyennes
+	Large Thumbnails	Grandes vignettes
+	Clip Thumbnails to Document Bounds	Rogner les vignettes aux limites du document
 	Canvas color	Couleur du canevas
 	Canvas custom color	Couleur personnalisée du canevas
 	Color picker	Sélecteur de couleurs
@@ -2056,7 +2077,6 @@
 	Never	Jamais
 	Normal tip	Pointe normale
 	Open as smart object	Ouvrir en tant qu'objet intelligent
-	Open in camera raw	Ouvrir dans Camera Raw
 	Open documents as tabs	Ouvrir les documents dans des onglets
 	Overscroll	Défilement au-delà des bords
 	Performance	Performances
@@ -2096,7 +2116,6 @@
 	Show only crosshair while painting	N'afficher que le réticule pendant la peinture
 	Show slice numbers	Afficher les numéros de tranche
 	Show tooltips	Afficher les info-bulles
-	Enable animations	Activer les animations
 	Show highlight on rollover	Afficher la mise en surbrillance au survol
 	Show transformation values	Afficher les valeurs de transformation
 	Slice color	Couleur des tranches
@@ -2186,7 +2205,7 @@
 	Graphics	Graphismes
 	Reset GPU Backend	Réinitialiser le moteur GPU
 	Applies at next launch.	Prend effet au prochain démarrage.
-	Click to sample the foreground colour  ·  {key}-click for background	Cliquez pour prélever la couleur de premier plan  ·  {key}-clic pour l'arrière-plan
+	Click to sample the foreground color  ·  {key}-click for background	Cliquez pour prélever la couleur de premier plan  ·  {key}-clic pour l'arrière-plan
 	{key}-click to set the source	{key}-clic pour définir la source
 	{key} to subtract	{key} pour soustraire
 	Clone source {n} ({key}-click with Clone Stamp to set)	Source de clonage {n} ({key}-clic avec le tampon de clonage pour la définir)
@@ -2244,7 +2263,7 @@
 	Gradient Options	Options de dégradé
 	Align with layer	Aligner sur le calque
 	Reset Alignment	Réinitialiser l'alignement
-	Centre the gradient (offset 0, 0)	Centrer le dégradé (décalage 0, 0)
+	Center the gradient (offset 0, 0)	Centrer le dégradé (décalage 0, 0)
 	Gradient Editor	Éditeur de dégradé
 	Gradient picker	Sélecteur de dégradé
 	Save As Preset	Enregistrer comme préreglage
@@ -2277,7 +2296,7 @@
 	Alt-click to define a source point to clone from	Alt-clic pour définir le point source du clonage
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Aucun tracé à partir duquel créer une sélection : dessinez-en un avec l'outil Plume ou sélectionnez-en un dans le panneau Tracés.
 	Cancel opening	Annuler l'ouverture
-	Cancelled opening {name}	Ouverture de {name} annulée
+	Canceled opening {name}	Ouverture de {name} annulée
 	Damaged Photoshop document	Document Photoshop endommagé
 	The document “{name}” may be damaged.	Le document « {name} » est peut-être endommagé.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Certains calques, pixels ou masques n’ont pas pu être lus. Voulez-vous poursuivre l’ouverture ?
@@ -2287,7 +2306,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Le document « {name} » a un profil colorimétrique incorporé qui ne correspond pas à l'espace de travail {mode} actuel.
 	Working: {working}	Espace de travail : {working}
 	Developing {name}	Développement de {name}
-	Cancelled {label}	{label} : annulé
+	Canceled {label}	{label} : annulé
 	Esc to cancel	Échap pour annuler
 	Opened {name}	Ouvert : {name}
 	Opening {name}	Ouverture de {name}
@@ -2295,7 +2314,7 @@
 	Saving {name}	Enregistrement de {name}
 	Saving {percent}	Enregistrement {percent}
 	A save to {name} is still running; try again when it finishes	Un enregistrement de {name} est encore en cours ; réessayez lorsqu’il sera terminé
-	{label} is writing the file and can no longer be cancelled	{label} écrit le fichier et ne peut plus être annulé
+	{label} is writing the file and can no longer be canceled	{label} écrit le fichier et ne peut plus être annulé
 	Opening {name}…	Ouverture de {name}…
 	Opening…	Ouverture…
 	Reading…	Lecture…
@@ -2461,8 +2480,6 @@
 	Roman Hanging Punctuation	Ponctuation latine hors justification
 	Avoid Widows/Orphans	Éviter les veuves et orphelines
 	Compose	Composition
-	Adobe Single-line Composer	Composeur ligne par ligne Adobe
-	Adobe Every-line Composer	Composeur multiligne Adobe
 	Justification	Justification
 	Word Spacing	Espacement des mots
 	Letter Spacing	Espacement des lettres
@@ -2480,6 +2497,7 @@
 	Path to Illustrator…	Tracé vers Illustrator…
 	Make Work Path	Créer un tracé de travail
 	Make Selection	Créer une sélection
+	Make Shape	Créer une forme
 	Fill Path	Remplir le tracé
 	Stroke Path	Contourner le tracé
 	Clipping Path	Tracé de détourage
@@ -2660,7 +2678,7 @@
 	Pixel	Pixel
 	Adjustment	Ajustement
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Faites glisser (lasso) ou cliquez des points (polygonal) · {add} ajouter · {sub} soustraire
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Tracez un cadre de recadrage · faites glisser à l'intérieur pour le déplacer · les bords le redimensionnent ({ratio} proportions, {centre} centre) · Espace le déplace pendant le tracé · flèches le décalent · X permute l'orientation · {commit} valide · Échap annule
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Tracez un cadre de recadrage · faites glisser à l'intérieur pour le déplacer · les bords le redimensionnent ({ratio} proportions, {centre} centre) · Espace le déplace pendant le tracé · flèches le décalent · X permute l'orientation · {commit} valide · Échap annule
 	{mode} Color · {bits} bit	Couleurs {mode} · {bits} bits
 	Drag to move the layer	Faites glisser pour déplacer le calque
 	Scrubby Zoom	Zoom par glissement
@@ -2716,7 +2734,6 @@
 	Intersect with	Intersection avec
 	Capture Comp	Capturer la composition
 	No Layer Comps	Aucune composition de calques
-	Adobe PDF Presets…	Préréglages Adobe PDF…
 	3D…	3D…
 	Technology Previews…	Aperçus technologiques…
 	Background from Layer	Arrière-plan d'après le calque
@@ -2807,8 +2824,8 @@
 	Tone Histogram	Histogramme des tons
 	Show Selected Region	Afficher la zone sélectionnée
 cameraRaw	Light	Lumière
-	Camera Raw Filter ({layer})	Filtre Camera Raw ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+	RAW Develop Filter ({layer})	Filtre Développement RAW ({layer})
+	RAW Develop ({name})	Développement RAW ({name})
 cameraRaw	Lights	Tons clairs
 cameraRaw	Darks	Tons sombres
 cameraRaw	Blacks	Noirs
@@ -2854,7 +2871,7 @@ cameraRaw	Blending	Fusion
 	Discard Layers and Save a Copy	Supprimer les calques et enregistrer une copie
 	Don't show again	Ne plus afficher
 	Save failed: {error}	Échec de l'enregistrement : {error}
-	Save cancelled	Enregistrement annulé
+	Save canceled	Enregistrement annulé
 	Couldn't place {name}: {error}	Impossible d'importer {name} : {error}
 	Magnetic Lasso Tool	Outil Lasso magnétique
 	Frequency	Fréquence
@@ -2983,7 +3000,7 @@ fontWeight	Italic	Italique
 	Impressionist	Impressionniste
 	Rotate View Tool	Outil Rotation de la vue
 	Reset View	Réinitialiser la vue
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Faites glisser autour du centre pour tourner la vue  ·  Maj contraint à 15°
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Faites glisser autour du centre pour tourner la vue  ·  Maj contraint à 15°
 	Dual Axis	Deux axes
 	Diagonal	Diagonale
 	Transform Symmetry	Transformer la symétrie
@@ -2998,8 +3015,8 @@ fontWeight	Italic	Italique
 	All Layers No Adjustments	Tous les calques sans ajustements
 	Current & Below No Adjustments	Actif et inférieurs sans ajustements
 	Show Sampling Ring	Afficher l'anneau d'échantillonnage
-	Out of gamut for printing: click for the nearest printable colour	Hors de la gamme d’impression : cliquez pour la couleur imprimable la plus proche
-	Not a web colour: click for the nearest web colour	Pas une couleur web : cliquez pour la couleur web la plus proche
+	Out of gamut for printing: click for the nearest printable color	Hors de la gamme d’impression : cliquez pour la couleur imprimable la plus proche
+	Not a web color: click for the nearest web color	Pas une couleur web : cliquez pour la couleur web la plus proche
 	Color to Alpha…	Couleur vers alpha…
 	Transparency Threshold	Seuil de transparence
 	Opacity Threshold	Seuil d'opacité
@@ -3296,7 +3313,7 @@ curves	Smooth	Lisser
 	Auto Add/Delete	Ajout/suppr. auto
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Ne cochez pas aussi Image miroir dans les paramètres d’impression : les deux inversions s’annulent.
 	Print Settings…	Paramètres d’impression…
-	Remember to turn off the printer's own colour management in Print Settings…	Pensez à désactiver la gestion des couleurs de l’imprimante dans les paramètres d’impression…
+	Remember to turn off the printer's own color management in Print Settings…	Pensez à désactiver la gestion des couleurs de l’imprimante dans les paramètres d’impression…
 	Sent to {printer}	Envoyé à {printer}
 	set in Print Settings…	défini dans les paramètres d’impression…
 	ICO is limited to 256 × 256 pixels	Le format ICO est limité à 256 × 256 pixels
@@ -3429,12 +3446,12 @@ curves	Smooth	Lisser
 	Decrease Brush Hardness	Réduire la dureté du pinceau
 	Increase Brush Hardness	Augmenter la dureté du pinceau
 	Demosaic	Dématriçage
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Comment la mosaïque du filtre couleur de l'appareil est complétée. Appliqué à l'ouverture du fichier ; l'aperçu montre la méthode avec laquelle il a été ouvert.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Comment la mosaïque du filtre couleur de l'appareil est complétée. Appliqué à l'ouverture du fichier ; l'aperçu montre la méthode avec laquelle il a été ouvert.
 	AHD (adaptive homogeneity)	AHD (homogénéité adaptative)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks : les bords les plus nets et le moins de franges colorées ; le plus lent.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolation corrigée par gradient : nette et rapide, avec quelques franges colorées sur les détails fins.
-	The fastest and the softest, with colour fringing on fine detail.	Le plus rapide et le plus doux, avec des franges colorées sur les détails fins.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks : les bords les plus nets et le moins de franges colorées ; le plus lent.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Interpolation corrigée par gradient : nette et rapide, avec quelques franges colorées sur les détails fins.
+	The fastest and the softest, with color fringing on fine detail.	Le plus rapide et le plus doux, avec des franges colorées sur les détails fins.
 	“{name}” already exists. Replace it?	« {name} » existe déjà. Le remplacer ?
 	The name in the save dialog was “{name}”.	Le nom dans la boîte de dialogue d'enregistrement était « {name} ».
 	Previous Brush	Pinceau précédent
@@ -3491,7 +3508,6 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Adwaita (Dark)	Adwaita (sombre)
 	Adwaita (Light)	Adwaita (clair)
 	After	Après
-	All shortcuts reset to Photoshop defaults.	Tous les raccourcis ont été réinitialisés aux valeurs par défaut de Photoshop.
 	Ambience	Ambiance
 	Ambient	Ambiante
 	Amplitude Max	Amplitude max.
@@ -3567,8 +3583,8 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Brush Type	Type de pinceau
 	Burlap	Toile de jute
 	Calculations	Calculs
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Filtre Camera Raw
+	RAW Develop	Développement RAW
+	RAW Develop Filter	Filtre Développement RAW
 	Cancel transform	Annuler la transformation
 	Candle Light	Bougie
 	Canvas Size	Taille du canevas
@@ -3677,7 +3693,6 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Deep Yellow	Jaune profond
 	Default Foreground and Background Colors	Couleurs par défaut du premier plan et de l'arrière-plan
 	Default Leaves	Feuilles par défaut
-	Default Photoshop Size	Taille Photoshop par défaut
 	Defaults	Valeurs par défaut
 	Define Brush Preset	Définir un préréglage de pinceau
 	Define Custom Shape	Définir une forme personnalisée
@@ -4312,7 +4327,7 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	The file could not be saved.	Impossible d'enregistrer le fichier.
 	Thickness	Épaisseur
 	This Layer:	Ce calque :
-	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	Cet objet intelligent doit être rastérisé pour continuer. Son contenu ne sera plus modifiable. Rastériser l'objet intelligent ?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	Cet objet intelligent doit être rastérisé pour continuer. Son contenu ne sera plus modifiable. Rastériser l'objet intelligent ?
 	This adjustment ({key}) is kept as imported and can't be edited yet.	Cet ajustement ({key}) est conservé tel qu'il a été importé et ne peut pas encore être modifié.
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Ce calque de remplissage doit être rastérisé pour continuer. Son contenu de remplissage ne sera plus modifiable. Rastériser le calque ?
 	This layer must be rasterized before proceeding.	Ce calque doit être rastérisé pour continuer.
@@ -4522,8 +4537,10 @@ shape	Appearance	Apparence
 	Grayscale Ramp	Barre de niveaux de gris
 	Current Colors	Couleurs actuelles
 	Make Ramp Web Safe	Limiter la barre aux couleurs Web
+	Scroll All Windows	Faire défiler toutes les fenêtres
 	The path was kept as the Work Path	Le tracé a été conservé comme tracé de travail
 	The path was discarded	Le tracé a été supprimé
+# Art History Brush (#213).
 	Art History Brush Tool	Outil Pinceau d'historique artistique
 	Tight Short	Serré court
 	Tight Medium	Serré moyen
@@ -4600,3 +4617,35 @@ shape	Appearance	Apparence
 	Replace Image…	Remplacer l’image…
 	The frame is locked	Le cadre est verrouillé
 	The frame is unavailable	Le cadre n’est pas disponible
+
+# Channels panel menu (#11451)
+	Channel Options…	Options de canal…
+	Specify Channels:	Indiquer les canaux :
+	Not enough grayscale documents for this mode.	Pas assez de documents en niveaux de gris pour ce mode.
+	Pick a different document for each channel.	Choisissez un document différent pour chaque canal.
+	A picked document is no longer open.	Un des documents choisis n'est plus ouvert.
+	A picked document is no longer a grayscale document of the same size.	Un des documents choisis n'est plus un document en niveaux de gris de même taille.
+	Netscape Gray	Gris Netscape
+# Move tool options bar (#11381)
+	Align top edges	Aligner les bords supérieurs
+	Align vertical centers	Aligner les centres verticaux
+	Align bottom edges	Aligner les bords inférieurs
+	Distribute vertically	Répartir verticalement
+	Distribute horizontally	Répartir horizontalement
+	Show layer bounds on hover	Afficher les limites du calque au survol
+	Expand layer group on click	Développer le groupe de calques au clic
+	Show hover bounds from Layers	Afficher les limites au survol depuis Calques
+	Saved RAW Develop settings to {file}	Réglages Développement RAW enregistrés dans {file}
+	Save the settings to each raw's sidecar without opening it	Enregistrer les réglages dans le fichier annexe de chaque raw sans l’ouvrir
+	No settings saved: these raws can't keep a sidecar here	Rien n’a été enregistré : ces raw ne peuvent pas avoir de fichier annexe ici
+	Some settings could not be saved; the raws stay open	Certains réglages n’ont pas pu être enregistrés ; les raw restent ouverts
+	Nothing to save: these raws are at their default settings	Rien à enregistrer : ces raw ont leurs réglages par défaut
+# Artboard tool options bar (#11385)
+	Distribute Widths	Répartir les largeurs
+	Distribute Heights	Répartir les hauteurs
+	Auto-nest Layers	Imbriquer les calques automatiquement
+	Auto-size Canvas	Redimensionner le canevas automatiquement
+	Keep Relative Position During Layer Reordering	Conserver la position relative lors de la réorganisation des calques
+	Shrinkwrap Canvas on Save	Réduire le canevas au contenu à l'enregistrement
+	Move Toolbar to the Right	Déplacer la barre d'outils à droite
+	Move Toolbar to the Left	Déplacer la barre d'outils à gauche

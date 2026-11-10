@@ -13,6 +13,52 @@ fn effects(s: &Session) -> Vec<Effect> {
     d.doc.layer(d.active_layer.unwrap()).unwrap().effects.items.clone()
 }
 
+/// #8639: Stroke Emboss bevels the outline of the layer with its Stroke effect, shading only
+/// the stroke, not the layer; without a stroke it shows nothing, as in Photoshop.
+#[test]
+fn stroke_emboss_shades_the_stroke_band_only() {
+    let render = |stroke: bool, bevel: Option<&str>| {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 120, "height": 90, "background": "#d8d8d8"})).unwrap();
+        s.execute("shape.create", json!({"kind": "rect", "rect": [30, 25, 60, 40], "fill": "#3f6fd8"})).unwrap();
+        if stroke {
+            s.execute("layer.layerStyle.stroke", json!({"size": 10, "position": "outside", "color": "#c0c0c0"})).unwrap();
+        }
+        if let Some(style) = bevel {
+            s.execute("layer.layerStyle.bevelEmboss", json!({"style": style, "size": 6, "depth": 200})).unwrap();
+        }
+        let d = &s.active().unwrap().doc;
+        photocraft_compose::render(d, d.bounds()).into_px()
+    };
+    let at = |px: &[[f32; 4]], x: usize, y: usize| px[y * 120 + x];
+    let (plain, embossed) = (render(true, None), render(true, Some("stroke")));
+    // The stroked outline is bevelled inward, inside the stroke only (the stroke covers rows
+    // 15..25 above the shape and 65..75 below it; flat it is 0.753): its top edge faces the
+    // light, its bottom edge away from it, and the stroke's inner part stays flat.
+    for ((x, y), change) in [((60, 16), 1.0), ((60, 73), -1.0), ((60, 23), 0.0), ((60, 66), 0.0)] {
+        let (e, p) = (at(&embossed, x, y)[0], at(&plain, x, y)[0]);
+        let ok = if change > 0.0 {
+            e > p + 0.1
+        } else if change < 0.0 {
+            e < p - 0.1
+        } else {
+            (e - p).abs() < 1e-3
+        };
+        assert!(ok, "({x}, {y}): {e} vs {p}");
+    }
+    // …while the layer's own pixels and the backdrop stay as they were (an Inner Bevel would
+    // shade the rectangle's edge).
+    for (x, y) in [(32, 30), (60, 45), (87, 62), (5, 5)] {
+        assert_eq!(at(&embossed, x, y), at(&plain, x, y), "({x}, {y})");
+    }
+    assert_ne!(at(&render(true, Some("inner")), 32, 30), at(&plain, 32, 30), "the old fallback shaded the layer");
+    // No stroke, nothing to emboss.
+    let (a, b) = (render(false, Some("stroke")), render(false, None));
+    let worst = a.iter().zip(&b).flat_map(|(p, q)| p.iter().zip(q).map(|(x, y)| (x - y).abs())).fold(0.0f32, f32::max);
+    // Equal but for float rounding: an effect sends the layer through the effects compositor.
+    assert!(worst < 1e-6, "{worst}");
+}
+
 #[test]
 fn bevel_command_sets_technique_contour_and_texture() {
     let mut s = session();

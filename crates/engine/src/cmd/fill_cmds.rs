@@ -279,7 +279,7 @@ fn content_aware_native_with_options(
     let window = sampling_window(hole_bounds, canvas);
     let n = surf.format().channels();
     let (w, h) = window_size(window)?;
-    let img = surf.read_region(window);
+    let img = crate::allocation::read_region(surf, window, "Content-Aware fill samples")?;
     let len = w.checked_mul(h).ok_or_else(|| EngineError::Other("the area is too large for Content-Aware fill".into()))?;
     let mut hole = crate::allocation::filled(len, false, "Content-Aware fill")?;
     let mut source = crate::allocation::filled(len, false, "Content-Aware fill")?;

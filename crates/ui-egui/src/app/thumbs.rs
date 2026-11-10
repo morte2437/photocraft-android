@@ -203,6 +203,15 @@ impl PhotocraftApp {
         b
     }
 
+    /// [`Self::cached_bounds`] where only a shared borrow is at hand: the cached box if `surface`
+    /// hasn't changed since, else a scan (not cached).
+    pub fn known_bounds(&self, key: u64, surface: &photocraft_raster::Surface) -> photocraft_geom::Rect {
+        match self.bounds_cache.get(&key) {
+            Some((r, b)) if *r == surface_fingerprint(surface) => *b,
+            _ => surface.content_bounds(),
+        }
+    }
+
     /// The box Properties › Transform shows for `layer` (X, Y, W, H): its pixels' bounds, but a
     /// soft shape's path and stroke, whose Density and Feather render past them (#5846), as its
     /// transform frame does.

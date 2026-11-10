@@ -670,9 +670,18 @@ fn main() -> eframe::Result {
             if let Some(monitor) = tablet::install_windows() {
                 let _ = tablet_monitor_win.set(monitor);
             }
+            // With Windows Ink disabled for the tablet, WinTab supplies the pen pressure, tilt,
+            // rotation and eraser end; the vendor driver still moves the cursor.
+            #[cfg(target_os = "windows")]
+            if let Some(poll) =
+                tablet::install_wintab(cc, &app.stylus.feed, app.session.prefs().tools.tablet_input == photocraft_engine::prefs::TabletInput::WinTab)
+            {
+                app.services.tablet_poll = Some(poll);
+            }
             #[cfg(target_os = "linux")]
             tablet::spawn_x11(&app.stylus.feed, display);
             app.services.right_button_down = tablet::right_button_service();
+            app.services.pen_end = tablet::pen_end_service();
             // Paths on the command line (Linux/Windows file associations, `photocraft a.psd`).
             app.open_paths(&files);
             if !unreadable_paths.is_empty() {
@@ -1031,7 +1040,7 @@ mod tests {
             read
         };
 
-        let r = read(r#"{"interface":{"enableAnimations":"nope"},"integrations":{"allowAgentControl":false,"controlPort":7878}}"#);
+        let r = read(r#"{"interface":{"showTooltips":"nope"},"integrations":{"allowAgentControl":false,"controlPort":7878}}"#);
         assert!(!r.allow_agent_control, "a bad value in another section");
         assert_eq!(r.control_port, 7878);
         let r = read(r#"{"integrations":{"allowAgentControl":false,"controlPort":"x"}}"#);

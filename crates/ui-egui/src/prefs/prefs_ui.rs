@@ -53,6 +53,9 @@ pub struct Runtime {
     /// Tool options as last remembered in the preferences (see `tool_memory`).
     pub(crate) tool_options: Option<crate::state::ToolOptions>,
     pub(crate) selected_tool: Option<crate::state::Tool>,
+    pub(crate) tool_colors: Option<[[[f32; 4]; 2]; 2]>,
+    pub(crate) tool_cmyk_picks: crate::tool_memory::CmykPicks,
+    pub(crate) group_tools: Option<Vec<crate::state::Tool>>,
     /// The tool owning the session brush and the other tools' brushes, as last remembered.
     pub(crate) tool_brushes: Option<crate::tool_memory::ToolBrushes>,
 }

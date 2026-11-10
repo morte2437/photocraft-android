@@ -138,6 +138,52 @@ fn a_segment_to_a_far_off_point_returns() {
     f.stroke_segment(&LiquifyStroke::new(LiquifyTool::Bloat, 30.0), [5.0, -1e15, 1.0], [5.0, 1e15, 1.0]);
 }
 
+/// A timed (live) stroke far off the field leaves it unchanged instead of panicking. The
+/// provisional closing dab used to take its node span from a far-off centre: the lower index
+/// saturated to `usize::MAX`, read as `-1` it passed the overlap check, and the snapshot then
+/// subtracted past zero (debug) or sliced out of range (release).
+#[test]
+fn a_timed_stroke_far_off_the_field_leaves_it_unchanged() {
+    let far = [
+        // The review's case: valid points, both far off on the right.
+        vec![vec![1e30, 3.0, 1.0], vec![1e30, 3.25, 1.0, 16.0]],
+        vec![vec![3.0, 1e30, 1.0], vec![3.25, 1e30, 1.0, 16.0]],
+        vec![vec![1e30, 1e30, 1.0], vec![1e30, 1e30 + 1e15, 1.0, 16.0]],
+        vec![vec![-1e30, 3.0, 1.0], vec![-1e30, 3.25, 1.0, 16.0]],
+        vec![vec![3.0, -1e30, 1.0], vec![3.25, -1e30, 1.0, 16.0]],
+        vec![vec![f64::MAX, 3.0, 1.0], vec![f64::MAX, 3.25, 1.0, 16.0]],
+    ];
+    use LiquifyTool::*;
+    for tool in [ForwardWarp, Reconstruct, Smooth, TwirlCw, TwirlCcw, Pucker, Bloat, PushLeft, Freeze, Thaw] {
+        for points in &far {
+            let mut s = LiquifyStroke::new(tool, 30.0);
+            s.points = points.clone();
+            s.validate().unwrap();
+            let mut f = LiquifyField::new(Rect::new(0, 0, 24, 16), 2.0);
+            f.apply_stroke(&s);
+            let fresh = LiquifyField::new(Rect::new(0, 0, 24, 16), 2.0);
+            assert!(f.d == fresh.d && f.freeze == fresh.freeze, "{tool:?} {points:?} changed the field");
+        }
+    }
+}
+
+/// `node_span` decides off the grid before converting to indices, on every side.
+#[test]
+fn node_span_rejects_spans_off_the_grid() {
+    let f = LiquifyField::new(Rect::new(0, 0, 24, 16), 2.0);
+    for c in [[1e30, 3.0], [3.0, 1e30], [-1e30, 3.0], [3.0, -1e30], [f64::MAX, f64::MAX], [-f64::MAX, 3.0], [f64::NAN, 3.0], [3.0, f64::INFINITY]] {
+        assert_eq!(f.node_span(c, 15.0), None, "{c:?}");
+    }
+    // On the grid, and partly off it, the span is the nodes inside it.
+    let (w, h) = (f.w - 1, f.h - 1);
+    assert_eq!(f.node_span([12.0, 8.0], 1e6), Some((0, 0, w, h)));
+    let Some((i0, j0, i1, j1)) = f.node_span([12.0, 8.0], 3.0) else { panic!("a dab on the field touches it") };
+    assert!(i0 <= i1 && i1 <= w && j0 <= j1 && j1 <= h, "{:?}", (i0, j0, i1, j1));
+    let Some((i0, _, i1, _)) = f.node_span([-10.0, 8.0], 12.0) else { panic!("a dab reaching the left edge touches it") };
+    assert_eq!(i0, 0);
+    assert!(i1 <= w);
+}
+
 fn sample(st: SampleType) -> Surface {
     let mut s = Surface::new(PixelFormat::new(ColorMode::Rgb, st, true));
     for y in 0..64 {
@@ -529,4 +575,218 @@ fn proxy_matches_the_full_render_roughly() {
         }
     }
     assert!(bad < 96 * 64 / 50, "{bad}");
+}
+
+// ---- Live strokes: the brush follows the pointer in real time ----
+
+/// `path` as live points, one event per `step` px along each leg, `ms` apart.
+fn live(path: &[[f64; 2]], step: f64, ms: f64) -> Vec<Vec<f64>> {
+    let mut out = vec![vec![path[0][0], path[0][1], 1.0, 0.0]];
+    for w in path.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let n = ((b[0] - a[0]).hypot(b[1] - a[1]) / step).ceil().max(1.0) as usize;
+        for k in 1..=n {
+            let t = k as f64 / n as f64;
+            out.push(vec![a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 1.0, ms]);
+        }
+    }
+    out
+}
+
+fn max_diff(a: &LiquifyField, b: &LiquifyField) -> f32 {
+    a.d.iter().zip(&b.d).map(|(p, q)| (p[0] - q[0]).abs().max((p[1] - q[1]).abs())).fold(0.0f32, f32::max)
+}
+
+/// The user's report: moving the mouse slowly, Liquify only changed the image once every dab
+/// spacing (a twentieth of the brush radius, 10 px for a 400 px brush), not with every movement.
+/// A live point now applies all the motion up to it, so every pointer event moves the image.
+#[test]
+fn a_slow_live_drag_moves_the_image_on_every_pointer_event() {
+    for tool in [LiquifyTool::ForwardWarp, LiquifyTool::PushLeft] {
+        let s = LiquifyStroke::new(tool, 200.0); // spacing 5 px
+        let mut f = LiquifyField::new(Rect::new(0, 0, 300, 200), 2.0);
+        let mut legacy = f.clone();
+        let start = [100.0, 100.0, 1.0];
+        f.stroke_begin(&s, start);
+        legacy.stroke_begin(&s, start);
+        let (mut prev, mut moves, mut legacy_moves) = (start, 0, 0);
+        // A crawl: half a pixel per event, 20 events (10 px, two spacings).
+        for k in 1..=20 {
+            let p = [100.0 + k as f64 * 0.5, 100.0, 1.0];
+            let (before, legacy_before) = (f.d.clone(), legacy.d.clone());
+            f.stroke_segment_live(&s, prev, p, 16.0);
+            legacy.stroke_segment(&s, prev, p);
+            moves += usize::from(f.d != before);
+            legacy_moves += usize::from(legacy.d != legacy_before);
+            prev = p;
+        }
+        assert_eq!(moves, 20, "{tool:?}: every event moves the image");
+        assert!(legacy_moves <= 3, "{tool:?}: the legacy walk only moved it once per spacing ({legacy_moves})");
+        // And all the motion is there: the centre has been pushed (almost) as far as the brush went.
+        let d = f.sample(105.0, 100.0);
+        let shift = if tool == LiquifyTool::ForwardWarp { -d[0] } else { d[1].abs() };
+        assert!(shift > 7.0, "{tool:?}: pushed {shift} px for a 10 px drag");
+    }
+}
+
+/// Following the pointer exactly must not bring back #2606's problem (a slow and a fast pointer
+/// giving different warps): the two differ by a small fraction of the displacement.
+#[test]
+fn live_drags_sampled_finely_or_coarsely_agree_closely() {
+    let path = [[40.0, 40.0], [180.0, 60.0], [200.0, 150.0], [60.0, 160.0]];
+    for (tool, size) in [(LiquifyTool::ForwardWarp, 60.0), (LiquifyTool::ForwardWarp, 200.0), (LiquifyTool::PushLeft, 80.0)] {
+        let field = |step: f64| {
+            let mut s = LiquifyStroke::new(tool, size);
+            s.points = live(&path, step, 16.0);
+            LiquifyField::from_strokes(Rect::new(0, 0, 260, 220), 2.0, &[s])
+        };
+        let (slow, fast) = (field(0.7), field(25.0));
+        let deep = slow.max_displacement();
+        let dd = max_diff(&slow, &fast);
+        assert!(deep > 10.0 && dd < deep * 0.1, "{tool:?} {size}px: slow and fast differ by {dd} px of {deep}");
+    }
+}
+
+/// Holding a stationary tool still works by elapsed time, not by how often frames come: one
+/// second at 30, 60 or 144 frames a second does the same.
+#[test]
+fn held_stationary_tools_work_at_the_same_speed_at_any_frame_rate() {
+    for tool in [LiquifyTool::TwirlCw, LiquifyTool::Bloat, LiquifyTool::Pucker] {
+        let field = |fps: f64| {
+            let mut s = LiquifyStroke::new(tool, 80.0);
+            let frames = fps as usize; // one second
+            s.points = std::iter::once(vec![100.0, 100.0, 1.0, 0.0]).chain((0..frames).map(|_| vec![100.0, 100.0, 1.0, 1000.0 / fps])).collect();
+            LiquifyField::from_strokes(Rect::new(0, 0, 200, 200), 2.0, &[s])
+        };
+        let (a, b, c) = (field(30.0), field(60.0), field(144.0));
+        let deep = a.max_displacement();
+        assert!(deep > 3.0, "{tool:?}: a second's hold does something ({deep} px)");
+        for (fps, f) in [(60, &b), (144, &c)] {
+            let dd = max_diff(&a, f);
+            assert!(dd < deep * 0.08, "{tool:?}: {fps} fps differs from 30 fps by {dd} px of {deep}");
+        }
+    }
+}
+
+/// The other half of the report: a stationary tool crept along slowly did nothing at all (the
+/// still-brush timer kept resetting and the distance never reached a dab spacing). Live, it works
+/// at least as fast as held still.
+#[test]
+fn a_creeping_stationary_tool_keeps_working() {
+    let s = LiquifyStroke::new(LiquifyTool::TwirlCw, 120.0); // spacing 3 px
+    let mut f = LiquifyField::new(Rect::new(0, 0, 240, 200), 2.0);
+    f.stroke_begin(&s, [100.0, 100.0, 1.0]);
+    let mut prev = [100.0, 100.0, 1.0];
+    let mut changed = 0;
+    for k in 1..=30 {
+        let p = [100.0 + k as f64 * 0.2, 100.0, 1.0];
+        let before = f.d.clone();
+        f.stroke_segment_live(&s, prev, p, 16.7);
+        changed += usize::from(f.d != before);
+        prev = p;
+    }
+    assert_eq!(changed, 30, "every frame twirls a little more");
+    assert!(f.max_displacement() > 3.0, "half a second of creeping twirls visibly ({})", f.max_displacement());
+}
+
+/// Live strokes replay to exactly the field the interactive calls built (what OK relies on), and
+/// a stall is capped instead of lurching.
+#[test]
+fn live_strokes_replay_exactly_and_stalls_are_capped() {
+    for tool in [LiquifyTool::ForwardWarp, LiquifyTool::TwirlCcw, LiquifyTool::Smooth, LiquifyTool::Freeze, LiquifyTool::Reconstruct] {
+        let mut s = LiquifyStroke::new(tool, 50.0);
+        s.points = live(&[[30.0, 30.0], [90.0, 70.0], [40.0, 90.0]], 1.3, 9.0);
+        let mut warp = LiquifyStroke::new(LiquifyTool::ForwardWarp, 60.0);
+        warp.points = vec![vec![40.0, 40.0], vec![80.0, 70.0]];
+        let mut f = LiquifyField::from_strokes(bounds(), 2.0, std::slice::from_ref(&warp));
+        let pts: Vec<[f64; 3]> = s.points.iter().map(|p| [p[0], p[1], p[2]]).collect();
+        f.stroke_begin(&s, pts[0]);
+        for (k, w) in pts.windows(2).enumerate() {
+            f.stroke_segment_live(&s, w[0], w[1], s.points[k + 1][3]);
+        }
+        assert_eq!(f, LiquifyField::from_strokes(bounds(), 2.0, &[warp, s]), "{tool:?}");
+    }
+    let s = LiquifyStroke::new(LiquifyTool::Bloat, 60.0);
+    let (mut stall, mut capped) = (LiquifyField::new(bounds(), 2.0), LiquifyField::new(bounds(), 2.0));
+    stall.stroke_segment_live(&s, [50.0, 50.0, 1.0], [50.0, 50.0, 1.0], 60_000.0);
+    capped.stroke_segment_live(&s, [50.0, 50.0, 1.0], [50.0, 50.0, 1.0], MAX_LIVE_MS);
+    assert_eq!(stall, capped);
+    // Hostile values neither panic nor hang.
+    let mut f = LiquifyField::new(Rect::new(0, 0, 24, 16), 2.0);
+    for tool in [LiquifyTool::ForwardWarp, LiquifyTool::Bloat, LiquifyTool::Freeze] {
+        let s = LiquifyStroke::new(tool, 30.0);
+        f.stroke_segment_live(&s, [0.0, 0.0, 1.0], [1e15, 0.0, 1.0], 16.0);
+        f.stroke_segment_live(&s, [5.0, -1e15, 1.0], [5.0, 1e15, 1.0], f64::NAN);
+        f.stroke_segment_live(&s, [-1e308, 5.0, 1.0], [1e308, 5.0, 1.0], -5.0);
+        f.stroke_segment_live(&s, [f64::NAN, 3.0, 1.0], [4.0, f64::INFINITY, 1.0], f64::INFINITY);
+    }
+    let mut bad = LiquifyStroke::new(LiquifyTool::ForwardWarp, 30.0);
+    bad.points = vec![vec![1.0, 2.0, 1.0, 16.0, 9.0]];
+    assert!(bad.validate().is_err());
+    bad.points = vec![vec![1.0, 2.0, 1.0, 16.0]];
+    assert!(bad.validate().is_ok());
+}
+
+/// Old strokes (no times) replay bit for bit as before: the live path is opt-in per point.
+#[test]
+fn strokes_without_times_replay_as_before() {
+    let path = [[20.0, 20.0, 1.0], [62.0, 26.0, 0.6], [70.0, 50.0, 0.9]];
+    for tool in [LiquifyTool::ForwardWarp, LiquifyTool::TwirlCw, LiquifyTool::Freeze] {
+        let mut s = LiquifyStroke::new(tool, 30.0);
+        s.points = sampled(&path, 7);
+        let mut f = LiquifyField::new(bounds(), 2.0);
+        let pts: Vec<[f64; 3]> = s.points.iter().map(|p| [p[0], p[1], p[2]]).collect();
+        f.stroke_begin(&s, pts[0]);
+        for w in pts.windows(2) {
+            f.stroke_segment(&s, w[0], w[1]);
+        }
+        assert_eq!(f, LiquifyField::from_strokes(bounds(), 2.0, &[s]), "{tool:?}");
+    }
+}
+
+/// A live segment with no strength changes nothing, so it leaves no provisional dab to take back;
+/// with strength it does. No strength is a zero pressure at the point or a zero stroke pressure.
+#[test]
+fn a_live_segment_without_strength_leaves_nothing_to_take_back() {
+    for (point_pressure, stroke_pressure, shown) in [(0.0, 100.0, false), (1.0, 0.0, false), (1.0, 100.0, true)] {
+        let mut s = LiquifyStroke::new(LiquifyTool::ForwardWarp, 200.0);
+        s.pressure = stroke_pressure;
+        let mut f = LiquifyField::new(Rect::new(0, 0, 300, 200), 2.0);
+        f.stroke_begin(&s, [100.0, 100.0, point_pressure]);
+        f.stroke_segment_live(&s, [100.0, 100.0, point_pressure], [100.5, 100.0, point_pressure], 16.0);
+        let case = format!("point pressure {point_pressure}, stroke pressure {stroke_pressure}");
+        assert_eq!(f.tail.is_some(), shown, "{case}");
+        assert_eq!(f.is_identity(), !shown, "{case}");
+    }
+}
+
+/// The provisional dab of one live segment is taken back before the next: a field reused across two
+/// segments has a tail after the first, and none after a second segment that has no strength, which
+/// also reports the taken-back area as changed so the caller repaints it. A second segment with
+/// strength takes it back too: the result is the same as one segment straight to the same point.
+#[test]
+fn the_next_live_segment_takes_back_the_provisional_dab() {
+    let s = LiquifyStroke::new(LiquifyTool::ForwardWarp, 200.0);
+    let field = || {
+        let mut f = LiquifyField::new(Rect::new(0, 0, 300, 200), 2.0);
+        f.stroke_begin(&s, [100.0, 100.0, 1.0]);
+        let first = f.stroke_segment_live(&s, [100.0, 100.0, 1.0], [100.5, 100.0, 1.0], 16.0);
+        (f, first)
+    };
+    let (mut f, first) = field();
+    assert!(f.tail.is_some(), "the first segment leaves a provisional dab");
+    assert!(!f.is_identity());
+    let undone = f.stroke_segment_live(&s, [100.5, 100.0, 1.0], [100.5, 100.0, 0.0], 16.0);
+    assert!(!undone.is_empty(), "the taken-back dab is reported as changed");
+    assert_eq!(undone.union(&first), undone, "and its area covers what the first segment repainted");
+    assert!(f.tail.is_none(), "the next segment took it back");
+    assert!(f.is_identity(), "and nothing of it is left in the field");
+
+    let (mut g, _) = field();
+    g.stroke_segment_live(&s, [100.5, 100.0, 1.0], [101.0, 100.0, 1.0], 16.0);
+    assert!(g.tail.is_some(), "the second segment leaves its own provisional dab");
+    let mut direct = LiquifyField::new(Rect::new(0, 0, 300, 200), 2.0);
+    direct.stroke_begin(&s, [100.0, 100.0, 1.0]);
+    direct.stroke_segment_live(&s, [100.0, 100.0, 1.0], [101.0, 100.0, 1.0], 16.0);
+    assert!(g == direct, "the first segment's dab was taken back before the second was applied");
 }

@@ -281,15 +281,78 @@ fn in_memory(id: usvg::fontdb::ID, db: &mut Arc<usvg::fontdb::Database>) -> usvg
     loaded.into_iter().find(|&n| db.face_source(n).is_some_and(|(_, i)| i == index)).unwrap_or(id)
 }
 
+/// Most `cmap` table bytes [`has_char`] keeps; past it a face is asked on disk (slow, still right).
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CACHED_CMAP_BYTES: usize = 64 << 20;
+
+/// Whether face `face` maps `c` to a glyph, as usvg's own check decides it. usvg reads a font
+/// file's whole font for every face it asks, so one character no font has re-read every
+/// installed font once per text element (430 ms each with 273 faces). A file face's `cmap` table
+/// is kept instead, read once per process; a file that doesn't load isn't remembered.
+#[cfg(not(target_arch = "wasm32"))]
+fn has_char(db: &usvg::fontdb::Database, face: &usvg::fontdb::FaceInfo, c: char) -> bool {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+    use ttf_parser::{Face, Tag, cmap};
+    type Cmaps = (HashMap<(PathBuf, u32), Arc<Vec<u8>>>, usize);
+    static CMAPS: OnceLock<Mutex<Cmaps>> = OnceLock::new();
+    let maps = || CMAPS.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner);
+    let in_cmap =
+        |table: &[u8]| cmap::Table::parse(table).is_some_and(|t| t.subtables.into_iter().any(|s| s.is_unicode() && s.glyph_index(u32::from(c)).is_some()));
+    let usvg_check = |data: &[u8], index| Face::parse(data, index).is_ok_and(|f| f.glyph_index(c).is_some());
+    let usvg::fontdb::Source::File(path) = &face.source else {
+        return db.with_face_data(face.id, usvg_check).unwrap_or(false);
+    };
+    let key = (path.clone(), face.index);
+    if let Some(table) = maps().0.get(&key).cloned() {
+        return in_cmap(&table);
+    }
+    // usvg's check parses the whole face first: one that doesn't parse has no characters. Its
+    // `cmap` is the last such table record (a linear walk, unsorted directories included).
+    let cmap_of = |data: &[u8], index| {
+        let face = Face::parse(data, index).ok()?;
+        let raw = face.raw_face();
+        let record = raw.table_records.into_iter().filter(|r| r.tag == Tag::from_bytes(b"cmap")).last();
+        let table = record.and_then(|r| {
+            let start = usize::try_from(r.offset).ok()?;
+            raw.data.get(start..start.checked_add(usize::try_from(r.length).ok()?)?)
+        });
+        Some(table.unwrap_or_default().to_vec())
+    };
+    let Some(table) = db.with_face_data(face.id, cmap_of).flatten() else {
+        return false;
+    };
+    let found = in_cmap(&table);
+    let mut maps = maps();
+    // An import that missed at the same time may have kept it already.
+    if !maps.0.contains_key(&key) && maps.1.saturating_add(table.len()) <= MAX_CACHED_CMAP_BYTES {
+        maps.1 = maps.1.saturating_add(table.len());
+        maps.0.insert(key, Arc::new(table));
+    }
+    found
+}
+
+/// usvg's fallback choice (the first face, in database order, not used yet, sharing the base
+/// face's style, weight or stretch and having `c`), asked through [`has_char`].
+#[cfg(not(target_arch = "wasm32"))]
+fn fallback_face(c: char, used: &[usvg::fontdb::ID], db: &usvg::fontdb::Database) -> Option<usvg::fontdb::ID> {
+    let base = db.face(*used.first()?)?;
+    db.faces()
+        .filter(|f| !used.contains(&f.id))
+        .filter(|f| base.style == f.style || base.weight == f.weight || base.stretch == f.stretch)
+        .find(|f| has_char(db, f, c))
+        .map(|f| f.id)
+}
+
 /// usvg's font choice, with the chosen faces read from memory ([`in_memory`]).
 fn font_resolver() -> usvg::FontResolver<'static> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let select = usvg::FontResolver::default_font_selector();
-        let fallback = usvg::FontResolver::default_fallback_selector();
         usvg::FontResolver {
             select_font: Box::new(move |font, db| select(font, db).map(|id| in_memory(id, db))),
-            select_fallback: Box::new(move |c, used, db| fallback(c, used, db).map(|id| in_memory(id, db))),
+            select_fallback: Box::new(|c, used, db| fallback_face(c, used, db).map(|id| in_memory(id, db))),
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -329,7 +392,7 @@ fn options(fontdb: Arc<usvg::fontdb::Database>, depth_left: usize) -> usvg::Opti
                 Ok(std::borrow::Cow::Owned(xml)) if !xml.starts_with(&[0x1f, 0x8b]) => ("image/svg+xml", Arc::new(xml)),
                 _ => return None,
             };
-            if nesting_depth(&xml, depth_left) > depth_left {
+            if !nesting_depth(&xml, depth_left).is_ok_and(|depth| depth <= depth_left) {
                 return None;
             }
             return default_resolver(mime, xml, opts);
@@ -366,7 +429,7 @@ fn parse(bytes: &[u8]) -> Result<Parsed, IoError> {
 /// [`parse`] with the font database `fonts` supplies (the tests hand in an empty one).
 fn parse_with(bytes: &[u8], fonts: fn() -> Arc<usvg::fontdb::Database>) -> Result<Parsed, IoError> {
     let xml = inflate(bytes)?;
-    let depth = nesting_depth(&xml, MAX_XML_DEPTH);
+    let depth = nesting_depth(&xml, MAX_XML_DEPTH)?;
     if depth > MAX_XML_DEPTH {
         return Err(IoError::Svg(format!("elements are nested more than {MAX_XML_DEPTH} levels deep")));
     }
@@ -627,7 +690,7 @@ fn parse_image_bounded_with(
     if left.is_none() {
         return Err(overrun(IoError::Svg("embedded SVG XML exceeds the decoded byte budget".into())));
     }
-    let nesting = nesting_depth(&xml, xml_left);
+    let nesting = nesting_depth(&xml, xml_left)?;
     if nesting > xml_left {
         return Err(IoError::Svg(format!("elements are nested more than {xml_left} levels deep")));
     }
@@ -806,8 +869,10 @@ fn inflate_with_limit(bytes: &[u8], limit: u64) -> Result<std::borrow::Cow<'_, [
 /// The deepest element nesting in `xml`, stopping as soon as it passes `limit` (the result is
 /// then `limit + 1`). Comments, CDATA sections, processing instructions and the DOCTYPE add
 /// nothing; quoted attribute values may hold `>` or `/>`. Malformed markup is only counted
-/// loosely: the parser rejects it afterwards.
-pub(crate) fn nesting_depth(xml: &[u8], limit: usize) -> usize {
+/// loosely: the parser rejects it afterwards. The parser expands the DTD's entities after this
+/// count, so an entity holding markup (a `<`) is an error: it could nest deeper than anything
+/// counted here. A `&#60;` there stays text.
+pub(crate) fn nesting_depth(xml: &[u8], limit: usize) -> Result<usize, IoError> {
     let after = |from: usize, pat: &[u8]| -> usize {
         xml.get(from..).and_then(|s| s.windows(pat.len()).position(|w| w == pat)).map_or(xml.len(), |p| from.saturating_add(p).saturating_add(pat.len()))
     };
@@ -829,6 +894,44 @@ pub(crate) fn nesting_depth(xml: &[u8], limit: usize) -> usize {
         }
         (xml.len(), false)
     };
+    // The byte after the DOCTYPE starting at `from`: its internal subset `[...]` is walked
+    // declaration by declaration, so a quote in a comment there can't hide the markup after it.
+    let doctype_end = |from: usize| -> Result<usize, IoError> {
+        let (mut quote, mut j) = (None, from);
+        loop {
+            let Some(&b) = xml.get(j) else { return Ok(xml.len()) };
+            j = j.saturating_add(1);
+            match quote {
+                Some(q) if b == q => quote = None,
+                Some(_) => {}
+                None if b == b'"' || b == b'\'' => quote = Some(b),
+                None if b == b'>' => return Ok(j),
+                None if b == b'[' => break,
+                None => {}
+            }
+        }
+        while let Some(rest) = xml.get(j..).filter(|r| !r.is_empty()) {
+            j = if rest.starts_with(b"<!--") {
+                after(j.saturating_add(4), b"-->")
+            } else if rest.starts_with(b"<?") {
+                after(j.saturating_add(2), b"?>")
+            } else if rest.starts_with(b"<!ENTITY") {
+                let end = tag_end(j.saturating_add(2)).0;
+                if xml.get(j.saturating_add(2)..end).is_some_and(|decl| decl.contains(&b'<')) {
+                    return Err(IoError::Svg("the SVG's DTD declares an entity holding markup, which isn't supported".into()));
+                }
+                end
+            } else if rest.starts_with(b"<!") {
+                // The parser ends ELEMENT, ATTLIST and NOTATION at the first `>`, quotes or not.
+                after(j.saturating_add(2), b">")
+            } else if rest.starts_with(b"]") {
+                return Ok(tag_end(j.saturating_add(1)).0);
+            } else {
+                j.saturating_add(1)
+            };
+        }
+        Ok(xml.len())
+    };
     let (mut depth, mut deepest, mut i) = (0usize, 0usize, 0usize);
     while let Some(p) = xml.get(i..).and_then(|s| s.iter().position(|&b| b == b'<')) {
         let at = i.saturating_add(p);
@@ -839,6 +942,8 @@ pub(crate) fn nesting_depth(xml: &[u8], limit: usize) -> usize {
             after(at.saturating_add(9), b"]]>")
         } else if rest.starts_with(b"<?") {
             after(at.saturating_add(2), b"?>")
+        } else if rest.starts_with(b"<!DOCTYPE") {
+            doctype_end(at.saturating_add(9))?
         } else if rest.starts_with(b"<!") {
             tag_end(at.saturating_add(2)).0
         } else if rest.starts_with(b"</") {
@@ -850,13 +955,13 @@ pub(crate) fn nesting_depth(xml: &[u8], limit: usize) -> usize {
                 depth = depth.saturating_add(1);
                 deepest = deepest.max(depth);
                 if deepest > limit {
-                    return deepest;
+                    return Ok(deepest);
                 }
             }
             end
         };
     }
-    deepest
+    Ok(deepest)
 }
 
 /// The document canvas for a drawing: its size in px, scaled down to [`MAX_SIDE`] when needed.

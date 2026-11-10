@@ -5,6 +5,27 @@ position and scale, crop and registration marks, labels, colour handling) and ha
 to a printer. The rendering is `print_cmds.rs` in `photocraft-engine`, shared by the dialog, the
 batch commands and automation (`file.print`, `file.printOneCopy`); this page is about the hand-off.
 
+## Paper sizes
+
+The Print dialog's named Paper entries and `file.print`'s named `paper` values use the paper table
+in `print_cmds.rs` (portrait sizes in points). `file.print` also accepts a custom `[width, height]`
+in points. Both produce a portrait PDF page:
+
+| Name | Size |
+|---|---|
+| `letter`, `legal`, `tabloid` | 8.5 × 11, 8.5 × 14, 11 × 17 in |
+| `a3`, `a4`, `a5`, `a6` | ISO A3/A4/A5/A6 |
+| `4x6`, `5x7` | 4 × 6, 5 × 7 in |
+| `postcard`, `double-postcard` | Japanese postcard はがき 100 × 148 mm (283.46 × 419.53 pt), 往復はがき 148 × 200 mm |
+| `b5`, `b4` | JIS B5 182 × 257 mm (515.91 × 728.50 pt), JIS B4 257 × 364 mm (728.50 × 1031.81 pt) |
+| `l`, `2l`, `kg` | L判 89 × 127 mm (252.28 × 360.00 pt), 2L判 127 × 178 mm, KG判 102 × 152 mm |
+| `6cut`, `4cut` | 六切 203 × 254 mm (575.43 × 720.00 pt), 四切 254 × 305 mm (720.00 × 864.57 pt) |
+
+Names are matched case-, space- and punctuation-insensitively, and the customary Japanese names
+are aliases: `はがき`/`ハガキ`/`葉書`/`ポストカード`, `往復はがき`, `JIS B5`/`B5 (JIS)`, `JIS B4`/`B4 (JIS)`,
+`L判`/`Lサイズ`/`L-size`, `2L判`, `KG判`, `六切`/`6切`, `四切`/`4切`. A size not in the table can be
+given as points (`[width, height]`), which is what the dialog's Custom row does.
+
 ## Positioning the preview
 
 Drag the visible image on the paper to change Top and Left. Starting a drag switches Center
@@ -93,7 +114,8 @@ job went) and `pdf` (the page's path, only when `output` named one).
   printer listing with state and default, the default printer and its absence, `Print-Job`
   with the document and the job id, chunked and content-length replies, HTTP and IPP error
   statuses, broken replies.
-- `crates/engine/src/print_cmds/tests.rs`: printer resolution (requested, default, only one,
+- `crates/engine/src/print_cmds/tests.rs`: the paper sizes and their alternative names (the Japanese
+  ones included) and the PDF pages they produce; printer resolution (requested, default, only one,
   several without a default, unknown, none); a complete `file.print` against a fake CUPS
   (printer URI, copies, job name, document format, the PDF itself) and `file.printers`;
   `lp` taking the job when it is on the path; the IPP route when it is not (a child process

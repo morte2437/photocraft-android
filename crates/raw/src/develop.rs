@@ -118,6 +118,70 @@ impl<'a> Scale<'a> {
     }
 }
 
+/// Row `y` of a LinearRaw (3-sample or monochrome) frame from column `x0` on, `row.len() / 3`
+/// pixels: [`Scale::value`] times the white balance, clipped. Monochrome data fills all three
+/// channels with its one sample.
+///
+/// The black level of a row depends on the column only through the repeat pattern, so (when
+/// there are no per-column deltas) it is worked out once per row and phase instead of per sample.
+fn fill_linear_row(sc: &Scale, mult: &[f32; 3], x0: usize, y: usize, row: &mut [f32]) {
+    let s = sc.s;
+    let spp = s.samples;
+    let w = row.len() / 3;
+    let bl = &s.black;
+    let cols = bl.cols.max(1);
+    if !bl.delta_h.is_empty() || !bl.delta_v.is_empty() || x0 < s.active.x || cols > 16 || !matches!(spp, 1 | 3) {
+        for (i, px) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+            for k in 0..3 {
+                px[k] = (sc.value(x0 + i, y, k.min(spp.saturating_sub(1))) * mult[k]).clamp(0.0, 1.0);
+            }
+        }
+        return;
+    }
+    // Black level and range per column phase and channel.
+    let ay = y.saturating_sub(s.active.y);
+    let table: Vec<[(f32, f32); 3]> = (0..cols)
+        .map(|p| {
+            [0, 1, 2].map(|k| {
+                let sample = k.min(spp - 1);
+                let black = bl.at(p, ay, sample, spp);
+                (black, s.white[sample.min(2)] - black)
+            })
+        })
+        .collect();
+    let src = &s.data[(y * s.width + x0) * spp..(y * s.width + x0 + w) * spp];
+    let phase = (x0 - s.active.x) % cols;
+    let lin = |raw: u16| match sc.lin {
+        Some(l) => f32::from(l.get(usize::from(raw)).or_else(|| l.last()).copied().unwrap_or(raw)),
+        None => f32::from(raw),
+    };
+    match spp {
+        3 => fill_samples(row, src.as_chunks::<3>().0.iter().copied(), &table, phase, mult, lin),
+        _ => fill_samples(row, src.iter().map(|r| [*r; 3]), &table, phase, mult, lin),
+    }
+}
+
+/// The pixels of [`fill_linear_row`]: `raw` gives each pixel's three raw values (the one sample
+/// of monochrome data three times), `table` the black level and range per column phase.
+#[inline(always)]
+fn fill_samples(row: &mut [f32], raw: impl Iterator<Item = [u16; 3]>, table: &[[(f32, f32); 3]], phase: usize, mult: &[f32; 3], lin: impl Fn(u16) -> f32) {
+    let mut phase = phase;
+    for (px, raw) in row.as_chunks_mut::<3>().0.iter_mut().zip(raw) {
+        let t = &table[phase];
+        phase = if phase + 1 == table.len() { 0 } else { phase + 1 };
+        for k in 0..3 {
+            let (black, range) = t[k];
+            let n = if range.is_nan() || range < 1.0 {
+                0.0
+            } else {
+                let n = (lin(raw[k]) - black) / range;
+                if n.is_finite() { n } else { 0.0 }
+            };
+            px[k] = (n * mult[k]).clamp(0.0, 1.0);
+        }
+    }
+}
+
 /// Grey-world neutral (camera-space R, G, B) from unclipped mid-range samples.
 fn grey_world(s: &Sensor, sc: &Scale) -> [f64; 3] {
     let c = s.crop;
@@ -293,13 +357,7 @@ fn develop(s: &Sensor, opts: &DevelopOptions, allow_fused: bool) -> Result<Devel
     let linear_rows = |y0: usize, chunk: &mut [f32]| {
         for (r, row) in chunk.chunks_exact_mut(w * 3).enumerate() {
             let y = c.y + y0 + r;
-            for i in 0..w {
-                for k in 0..3 {
-                    // Monochrome: the one sample in all three channels.
-                    let sample = k.min(s.samples.saturating_sub(1));
-                    row[i * 3 + k] = (sc.value(c.x + i, y, sample) * mult[k]).clamp(0.0, 1.0);
-                }
-            }
+            fill_linear_row(&sc, &mult, c.x, y, row);
             for k in 0..s.samples.min(3) {
                 if let Some(g) = gain_row(s, y, c.x, w, k) {
                     for (i, g) in g.into_iter().enumerate() {
@@ -707,6 +765,10 @@ pub(crate) fn source_xy(o: u16, w: usize, h: usize, x2: usize, y2: usize) -> (us
     }
 }
 
+/// Side of the square tiles orientations 5-8, which swap rows and columns, move at a time: both
+/// sides of a tile stay in L1 instead of one of them being walked a column at a time.
+const TILE: usize = 32;
+
 /// Applies a TIFF orientation (1–8) to interleaved RGB.
 pub(crate) fn orient(src: Vec<u16>, w: usize, h: usize, o: u16) -> (Vec<u16>, usize, usize) {
     if !(2..=8).contains(&o) {
@@ -715,25 +777,44 @@ pub(crate) fn orient(src: Vec<u16>, w: usize, h: usize, o: u16) -> (Vec<u16>, us
     let swap = o >= 5;
     let (ow, oh) = if swap { (h, w) } else { (w, h) };
     let mut out = vec![0u16; src.len()];
-    let band = par::band_rows(ow);
-    par::chunks_mut(&mut out, band * ow * 3, |b, chunk| {
-        for (r, row) in chunk.chunks_exact_mut(ow * 3).enumerate() {
-            let y2 = b * band + r;
-            for x2 in 0..ow {
-                let (x, y) = match o {
-                    2 => (w - 1 - x2, y2),
-                    3 => (w - 1 - x2, h - 1 - y2),
-                    4 => (x2, h - 1 - y2),
-                    5 => (y2, x2),
-                    6 => (y2, h - 1 - x2),
-                    7 => (w - 1 - y2, h - 1 - x2),
-                    _ => (w - 1 - y2, x2),
-                };
-                let i = (y * w + x) * 3;
-                row[x2 * 3..x2 * 3 + 3].copy_from_slice(&src[i..i + 3]);
+    if swap {
+        // Output pixel (x2, y2) is source pixel `base + x2 * sx + y2 * sy` (see `source_xy`).
+        let (base, sx, sy): (isize, isize, isize) = match o {
+            5 => (0, w as isize, 1),
+            6 => (((h - 1) * w) as isize, -(w as isize), 1),
+            7 => ((h * w - 1) as isize, -(w as isize), -1),
+            _ => ((w - 1) as isize, w as isize, -1),
+        };
+        let px = src.as_chunks::<3>().0;
+        par::chunks_mut(&mut out, TILE * ow * 3, |b, chunk| {
+            let rows = chunk.len() / (ow * 3);
+            for x0 in (0..ow).step_by(TILE) {
+                let x1 = (x0 + TILE).min(ow);
+                for r in 0..rows {
+                    let y2 = (b * TILE + r) as isize;
+                    for (x2, d) in (x0..x1).zip(chunk[(r * ow + x0) * 3..(r * ow + x1) * 3].as_chunks_mut::<3>().0) {
+                        *d = px[(base + x2 as isize * sx + y2 * sy) as usize];
+                    }
+                }
             }
-        }
-    });
+        });
+    } else {
+        let band = par::band_rows(ow);
+        par::chunks_mut(&mut out, band * ow * 3, |b, chunk| {
+            for (r, row) in chunk.chunks_exact_mut(ow * 3).enumerate() {
+                let y2 = b * band + r;
+                for x2 in 0..ow {
+                    let (x, y) = match o {
+                        2 => (w - 1 - x2, y2),
+                        3 => (w - 1 - x2, h - 1 - y2),
+                        _ => (x2, h - 1 - y2),
+                    };
+                    let i = (y * w + x) * 3;
+                    row[x2 * 3..x2 * 3 + 3].copy_from_slice(&src[i..i + 3]);
+                }
+            }
+        });
+    }
     (out, ow, oh)
 }
 
@@ -998,6 +1079,64 @@ mod tests {
         assert!((0..1000).map(|i| lut.encode(i as f32 / 999.0)).collect::<Vec<_>>().windows(2).all(|w| w[1] >= w[0]));
         // No curve: the plain gamma 1.8.
         assert!(near(GammaLut::with_curve(&[]).encode(0.25), code(0.25)));
+    }
+
+    #[test]
+    fn linear_fill_gives_the_bits_of_the_per_sample_scale() {
+        // 3-sample and monochrome frames, black patterns, deltas, a table, an offset crop.
+        for samples in [1usize, 3] {
+            for (rows, cols, deltas) in [(1, 1, false), (2, 2, false), (1, 3, false), (2, 1, true), (1, 17, false), (4, 4, false)] {
+                for table in [false, true] {
+                    let (w, h) = (53, 9);
+                    let mut s = test_sensor(w, h, None, samples);
+                    s.active = crate::Rect::new(2, 1, w - 2, h - 1);
+                    s.black.rows = rows;
+                    s.black.cols = cols;
+                    s.black.values = (0..rows * cols * samples).map(|i| 40.0 + (i * 7 % 23) as f32 + 0.25 * (i % 3) as f32).collect();
+                    if deltas {
+                        s.black.delta_h = (0..w).map(|i| (i % 5) as f32).collect();
+                        s.black.delta_v = (0..h).map(|i| 0.5 * i as f32).collect();
+                    }
+                    s.white = [4000.0, 3900.5, 0.5];
+                    if table {
+                        s.linearization = Some((0..3000u32).map(|i| (i * 3 / 2) as u16).collect());
+                    }
+                    let sc = Scale::new(&s);
+                    let mult = [1.3f32, 0.9, f32::INFINITY];
+                    for x0 in [0usize, 2, 5] {
+                        let n = w - x0 - 1;
+                        for y in 0..h {
+                            let mut got = vec![0.0f32; n * 3];
+                            fill_linear_row(&sc, &mult, x0, y, &mut got);
+                            let want: Vec<f32> =
+                                (0..n * 3).map(|j| (sc.value(x0 + j / 3, y, (j % 3).min(samples - 1)) * mult[j % 3]).clamp(0.0, 1.0)).collect();
+                            assert!(
+                                got.iter().zip(&want).all(|(a, b)| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())),
+                                "{samples} samples, black {rows}x{cols}, table {table}, x0 {x0}, row {y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_orientation_moves_each_pixel_to_its_source_position() {
+        // Sizes around the tile side (and 1-pixel strips), all eight orientations.
+        for (w, h) in [(1, 1), (1, 70), (70, 1), (31, 33), (32, 32), (33, 31), (65, 97), (100, 37)] {
+            let src: Vec<u16> = (0..w * h).flat_map(|i| [i as u16, (i >> 4) as u16 ^ 0x5a5a, !(i as u16)]).collect();
+            for o in 1..=8 {
+                let (out, ow, oh) = orient(src.clone(), w, h, o);
+                assert_eq!((ow, oh), if o >= 5 { (h, w) } else { (w, h) });
+                for y2 in 0..oh {
+                    for x2 in 0..ow {
+                        let (x, y) = source_xy(o, w, h, x2, y2);
+                        assert_eq!(out[(y2 * ow + x2) * 3..][..3], src[(y * w + x) * 3..][..3], "{w}x{h} orientation {o} at {x2},{y2}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

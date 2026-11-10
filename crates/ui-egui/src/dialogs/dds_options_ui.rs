@@ -116,7 +116,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
     } else if cancel {
         app.dds_options = None;
-        app.ui.status = tl!("Save cancelled").into();
+        app.ui.status = tl!("Save canceled").into();
         app.ui.status_error = false;
     }
 }

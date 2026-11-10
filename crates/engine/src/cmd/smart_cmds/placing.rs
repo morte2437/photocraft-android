@@ -1,8 +1,10 @@
+use super::rendering::{refresh_or_fail, unapplied_filters};
 use super::source::{SourceImage, buffer_to_surface, cache_key, cache_put, source_bytes};
 use super::{
     Affine, Arc, BlendMode, Document, EngineError, Homography, Layer, LayerContent, LayerId, PLACED_KEYS, Rect, Result, Session, Size, SmartContentsId,
-    SmartObject, SmartSource, Surface, Value, encode_source, json, layer_param, other, translate_surface,
+    SmartObject, SmartSource, Surface, Value, encode_source, json, layer_param, other, source_box, translate_surface,
 };
+use photocraft_algo::transform::Interp;
 
 /// Rounds float noise off a composed transform (scale 0.1 then 10 should be exactly 1), so
 /// repeated transforms land back on exact, lossless placements.
@@ -55,6 +57,73 @@ pub(crate) fn shift_smart(sm: &mut SmartObject, dx: i32, dy: i32) {
     if let Some(m) = &mut sm.filter_mask {
         m.surface = crate::layer_multi_cmds::shift_surface(&m.surface, dx, dy);
     }
+}
+
+/// Layer ▸ Smart Objects ▸ Reset Transform, and the same item of the Layers panel menu (#11662):
+/// the placement goes back to 100 % of the current contents' own size with rotation, skew, Distort,
+/// Perspective **and Warp** cleared, centred where the object sits. Measured in the reference
+/// application 2026-11-06 (see the #11675 discussion): a smart object warped with Arc 50, rotated
+/// and scaled came back with no warp at all, at its contents' own size, unrotated, and centred on
+/// the average of its four corners. The smart filters stay.
+///
+/// The step needs the contents re-rendered from their source: a stack whose filters can't all be
+/// applied, or a source that can't be read, refuses it whole rather than recording the old (still
+/// warped) pixels under a placement that no longer describes them.
+pub(super) fn reset_transform(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = layer_param(s, p)?;
+    let st = s.active().ok_or(EngineError::NoDocument)?;
+    let LayerContent::Smart(sm) = &st.doc.layer(id).ok_or(EngineError::NoLayer(id))?.content else {
+        return Err(other("the layer is not a smart object"));
+    };
+    // Checked before anything changes, so a filter PhotoCraft doesn't have (kept verbatim from a
+    // PSD) leaves the document as it was, as `layer.smartObjects.updateModifiedContent` insists on
+    // a re-render too.
+    let stuck = unapplied_filters(sm);
+    if let Some(name) = stuck.first() {
+        return Err(other(format!("the {name} smart filter is not supported, so the smart object's transform can't be reset")));
+    }
+    // The contents' own box in source pixels: 100 % maps it one-to-one onto the document.
+    let [x0, y0, x1, y1] = source_box(&st.doc, sm).ok_or_else(|| other("the smart object's contents are unavailable"))?;
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let old = placement(sm);
+    // The object stays where it is: the average of the placement's four corners, which is its
+    // centre for an affine placement and the quad's centre once Distort or Perspective bent it.
+    let (mut sx, mut sy) = (0.0, 0.0);
+    for (u, v) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+        let (px, py) = old.apply(u, v);
+        sx += px;
+        sy += py;
+    }
+    let (dx, dy) = (sx / 4.0 - cx, sy / 4.0 - cy);
+    let to = Affine { m: [1.0, 0.0, 0.0, 1.0, dx, dy] };
+    let new = affine_homography(&to);
+    // Everything the accumulated transform moved the pixels by, so the linked masks and the Smart
+    // Filter mask follow the placement back as they do under Free Transform.
+    let rel = new.mul(&old.inverse().ok_or_else(|| other("the smart object has a degenerate transform"))?);
+    if ![dx, dy, cx, cy].iter().all(|v| v.is_finite()) || !rel.0.iter().all(|v| v.is_finite()) {
+        return Err(other("the smart object's placement is not a usable transform"));
+    }
+    s.edit("Reset Transform", |doc, _| {
+        // The Warp is part of what the reference takes back, so the re-render below starts from the
+        // unwarped contents. How far a painted Smart Filter mask should follow a cleared warp is
+        // unmeasured: here it follows the placement, as it does under Free Transform.
+        if let Some(LayerContent::Smart(sm)) = doc.layer_mut(id).map(|l| &mut l.content) {
+            sm.warp = None;
+        }
+        crate::transform_cmds::transform_by_map(doc, id, &rel, None, Interp::Bicubic)?;
+        // Required, not best-effort: `transform_by_map` re-renders too, but falls back to the old
+        // pixels when that isn't possible. `Session::edit` runs this on a copy, so an `Err` here
+        // records no step and leaves the document exactly as it was. The state is unchanged since
+        // that render, so the guarded refresh answers from the stack cache rather than placing the
+        // contents a second time.
+        refresh_or_fail(doc, id)?;
+        // `new ∘ old⁻¹ ∘ old` only lands on the reset map to within float noise, and could leave a
+        // Distort placement behind as a nearly affine one: store the exact map.
+        if let Some(LayerContent::Smart(sm)) = doc.layer_mut(id).map(|l| &mut l.content) {
+            set_placement(sm, new);
+        }
+        Ok(json!({"layer": id.0, "transform": to.m}))
+    })
 }
 
 /// Forget PSD placed-layer data that no longer describes the smart object (its source changed):

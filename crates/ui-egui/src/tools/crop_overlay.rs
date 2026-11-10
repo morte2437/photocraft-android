@@ -94,8 +94,10 @@ impl CropOverlay {
 #[serde(rename_all = "camelCase")]
 pub enum OverlayShow {
     /// Only while the crop box is being dragged (drawn, moved, resized or turned).
-    #[default]
     Auto,
+    /// The whole time a crop is pending, as the reference application starts out (its Reset Tool
+    /// brings back Always Show Overlay, #10894).
+    #[default]
     Always,
     Never,
 }
@@ -263,7 +265,11 @@ pub fn current_guides_for_frame(app: &PhotocraftApp, q: [egui::Pos2; 4], clip: R
 
 fn current_guides_visible(app: &PhotocraftApp, w: f32, h: f32, visible: Rect) -> Vec<Polyline> {
     let o = &app.ui.tool_options;
-    if app.ui.tool != Tool::Crop || !o.crop_overlay_show.shows(app.crop.drag.is_some()) {
+    // A turn or a straighten line in progress shows its guides from the start, whether or not the
+    // frame has changed yet: they are how the gesture is aimed. Otherwise the overlay waits for
+    // the crop's first change (#10930).
+    let gesture = crate::crop_ui::turning(app).is_some() || app.crop.straighten.line.is_some();
+    if app.ui.tool != Tool::Crop || !(crop_started(app) || gesture) || !o.crop_overlay_show.shows(app.crop.drag.is_some()) {
         return Vec::new();
     }
     // Classic Mode and Straighten were not measured: only the default mode's turn
@@ -272,6 +278,55 @@ fn current_guides_visible(app: &PhotocraftApp, w: f32, h: f32, visible: Rect) ->
         return turn_grid(w, h, visible);
     }
     guides(o.crop_overlay, o.crop_overlay_orientation, w, h)
+}
+
+/// Whether the crop has started: its frame was changed since it was made (it is no longer the
+/// untouched default frame), or a drag is changing it now. Until then the reference application shows
+/// only the frame, with no shield and no overlay in any show mode; both start with the first change
+/// and stay until the crop is committed or cancelled (#10930). Classic Mode wasn't measured and
+/// keeps the behaviour it had.
+///
+/// Within a drag, the first change is what counts: a drag that changes the frame and brings it back
+/// to where it started keeps the started look until it ends, rather than flickering back to the
+/// untouched one (noted in review). Once it ends, `crop_ui::release` decides, as before.
+pub fn crop_started(app: &PhotocraftApp) -> bool {
+    app.ui.tool_options.crop_shield.classic_mode || !app.crop.default_frame || (app.crop.drag.is_some() && app.crop.drag_moved) || drag_changed(app)
+}
+
+/// Whether the drag in progress has changed the frame since its press. A press that hasn't moved
+/// anything yet is not the first change, so it leaves the untouched look (#10930). The tests mirror
+/// the ones `crop_ui` uses when a drag ends.
+pub(crate) fn drag_changed(app: &PhotocraftApp) -> bool {
+    use crate::crop_ui::CropDrag;
+    match &app.crop.drag {
+        None => false,
+        Some(CropDrag::Draw { anchor, cur, .. }) => anchor != cur,
+        Some(CropDrag::Move { rect, .. } | CropDrag::Resize { rect, .. } | CropDrag::MoveImage { rect, .. }) => app.ui.crop_rect != Some(*rect),
+        Some(CropDrag::Rotate { from, .. } | CropDrag::TurnImage { from, .. }) => crate::crop_ui::angle(app) != *from,
+    }
+}
+
+/// How the crop frame's outline and handles are drawn (#10930).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameLook {
+    /// Before the first change: a dashed outline, black on light grey like a selection's, and grey
+    /// handles.
+    Untouched,
+    /// Once the crop has started: a solid, thin, light outline and the same grey handles.
+    Started,
+    /// Classic Mode, which wasn't measured: the solid white outline and handles it always had.
+    Classic,
+}
+
+/// The look of the pending crop frame.
+pub fn frame_look(app: &PhotocraftApp) -> FrameLook {
+    if app.ui.tool_options.crop_shield.classic_mode {
+        FrameLook::Classic
+    } else if crop_started(app) {
+        FrameLook::Started
+    } else {
+        FrameLook::Untouched
+    }
 }
 
 /// The canvas's visible extent in the crop frame's own screen-point axes. The
@@ -540,7 +595,7 @@ mod tests {
     #[test]
     fn cycling_overlays_and_orientations() {
         let mut o = ToolOptions::default();
-        assert_eq!((o.crop_overlay, o.crop_overlay_show, o.crop_overlay_orientation), (CropOverlay::Thirds, OverlayShow::Auto, 0));
+        assert_eq!((o.crop_overlay, o.crop_overlay_show, o.crop_overlay_orientation), (CropOverlay::Thirds, OverlayShow::Always, 0));
         let mut seen = vec![o.crop_overlay];
         for _ in 0..6 {
             cycle(&mut o);
@@ -641,6 +696,8 @@ mod tests {
     #[test]
     fn the_overlay_shows_by_mode_and_gesture() {
         let mut app = crop_app();
+        // Auto is no longer the default (#10894): set it for the Auto half of this test.
+        app.ui.tool_options.crop_overlay_show = OverlayShow::Auto;
         assert!(current_guides(&app, 300.0, 200.0).is_empty(), "Auto: no guides without a drag");
         app.crop.drag = Some(crate::crop_ui::CropDrag::Move { start: [0.0, 0.0], rect: [0.0, 0.0, 10.0, 10.0] });
         assert_eq!(current_guides(&app, 300.0, 200.0).len(), 4, "Auto: the thirds while dragging");
@@ -649,6 +706,9 @@ mod tests {
         app.crop.drag = None;
         app.ui.tool_options.crop_overlay_show = OverlayShow::Always;
         app.ui.tool_options.crop_overlay = CropOverlay::Triangle;
+        assert!(current_guides(&app, 300.0, 200.0).is_empty(), "Always: still nothing on the untouched frame (#10930)");
+        // The frame has been changed, so the crop is pending: Always keeps showing after release.
+        app.crop.default_frame = false;
         assert_eq!(current_guides(&app, 300.0, 200.0).len(), 3);
         app.ui.tool = Tool::Brush;
         assert!(current_guides(&app, 300.0, 200.0).is_empty(), "a pending frame under another tool shows no guide");
@@ -657,7 +717,7 @@ mod tests {
     #[test]
     fn old_state_files_get_photoshops_defaults() {
         let o: ToolOptions = serde_json::from_str(r#"{"crop_ratio": "1:1"}"#).unwrap();
-        assert_eq!((o.crop_overlay, o.crop_overlay_show, o.crop_overlay_orientation), (CropOverlay::Thirds, OverlayShow::Auto, 0));
+        assert_eq!((o.crop_overlay, o.crop_overlay_show, o.crop_overlay_orientation), (CropOverlay::Thirds, OverlayShow::Always, 0));
         let o: ToolOptions = serde_json::from_str(r#"{"crop_overlay": "goldenSpiral", "crop_overlay_show": "always", "crop_overlay_orientation": 3}"#).unwrap();
         assert_eq!((o.crop_overlay, o.crop_overlay_show, o.crop_overlay_orientation), (CropOverlay::GoldenSpiral, OverlayShow::Always, 3));
     }

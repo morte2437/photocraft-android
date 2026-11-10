@@ -103,7 +103,7 @@ fn adjustment_editor_reopens_stored_parameters_and_updates_instead_of_appending(
     super::open_editor(&mut app, &ctx, layer.0, &sm, 2);
     let id = app.ui.dialogs.last().unwrap().id;
     let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
-    assert_eq!(fields["hue"], json!(35));
+    assert_eq!(fields["hue"].as_f64(), Some(35.0));
     assert!(crate::adjust_dialog::owns(fields));
     fields.insert("hue".into(), json!(75));
     let idx = app.session.active_index().unwrap();
@@ -120,6 +120,109 @@ fn adjustment_editor_reopens_stored_parameters_and_updates_instead_of_appending(
     let sm = smart(&app, layer).clone();
     super::open_editor(&mut app, &ctx, layer.0, &sm, 3);
     assert!(app.ui.dialogs.is_empty(), "Invert has no parameter editor");
+}
+
+/// Records `command` on a Smart Object in a `mode` document, opens the filter's editor, lets it
+/// draw and confirms with no edit. The filter's stored params afterwards.
+fn stored_after_confirming_unedited(mode: &str, command: &str, recorded: &serde_json::Value) -> serde_json::Value {
+    let (mut app, layer) = app(8, mode);
+    app.run(command, recorded.clone()).unwrap();
+    let sm = smart(&app, layer).clone();
+    let index = sm.smart_filters.len() - 1;
+    assert_eq!(sm.smart_filters[index].command, command);
+    let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(|ui, app: &mut PhotocraftApp| crate::dialogs::show(app, ui.ctx()), app);
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    let ctx = h.ctx.clone();
+    super::open_editor(h.state_mut(), &ctx, layer.0, &sm, index);
+    let dialog = h.state().ui.dialogs.last().unwrap().id;
+    h.run_steps(3);
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+    let after = smart(h.state(), layer);
+    assert_eq!(after.smart_filters.len(), sm.smart_filters.len(), "{command}: no filter was stacked");
+    after.smart_filters[index].params.clone()
+}
+
+/// Opening an adjustment smart filter and pressing OK changes nothing it renders, whichever of a
+/// setting's equivalent keys it was recorded with: the keys the dialog starts with must not be
+/// read over the recorded ones.
+#[test]
+fn confirming_an_unedited_adjustment_smart_filter_keeps_what_it_renders() {
+    use photocraft_doc::ColorMode::{Cmyk, Lab, Rgb};
+    use photocraft_engine::adjust_params::{default_for, from_params};
+    let dim = json!([[0, 0], [128, 64], [255, 255]]);
+    let lift = json!([[0, 40], [255, 255]]);
+    let drawn: Vec<f64> = (0..photocraft_doc::adjust::CURVE_MAP_LEN).map(|level| level as f64 * 0.5).collect();
+    let jagged: Vec<f64> = (0..photocraft_doc::adjust::CURVE_MAP_LEN).map(|level| if level % 2 == 0 { 40.0 } else { 200.0 }).collect();
+    let cases = [
+        ("lab", Lab, "curves", json!({"pencil": true, "smooth": 2, "points": jagged})),
+        ("rgb", Rgb, "curves", json!({"pencil": true, "smooth": 2, "points": jagged})),
+        ("lab", Lab, "curves", json!({"points": dim})),
+        ("lab", Lab, "curves", json!({"points": dim, "a": lift})),
+        ("lab", Lab, "curves", json!({"lightness": dim})),
+        ("lab", Lab, "curves", json!({"pencil": true, "points": drawn})),
+        ("lab", Lab, "levels", json!({"inBlack": 30, "gamma": 1.5})),
+        ("lab", Lab, "levels", json!({"inWhite": 200, "a": {"inBlack": 12}})),
+        ("lab", Lab, "levels", json!({"lightness": {"inBlack": 30}})),
+        ("rgb", Rgb, "curves", json!({"points": dim, "red": lift})),
+        ("rgb", Rgb, "curves", json!({"gray": dim})),
+        ("rgb", Rgb, "curves", json!({"pencil": true, "points": drawn})),
+        ("rgb", Rgb, "levels", json!({"inWhite": 200, "blue": {"gamma": 0.8}})),
+        ("cmyk", Cmyk, "curves", json!({"points": dim})),
+        ("cmyk", Cmyk, "curves", json!({"black": dim})),
+        ("cmyk", Cmyk, "levels", json!({"inBlack": 30})),
+        ("rgb", Rgb, "photoFilter", json!({"filter": "red"})),
+        ("rgb", Rgb, "channelMixer", json!({"monochrome": true})),
+        ("rgb", Rgb, "hueSaturation", json!({"colorize": true})),
+        ("rgb", Rgb, "brightnessContrast", json!({"brightness": 40})),
+    ];
+    let mut changed = Vec::new();
+    for (mode, color_mode, kind, recorded) in cases {
+        let read = |params: &serde_json::Value| from_params(kind, params, None, color_mode).unwrap();
+        assert_ne!(read(&recorded), default_for(kind, color_mode).unwrap(), "{mode} {kind} {recorded}: the case must record something");
+        let stored = stored_after_confirming_unedited(mode, &format!("image.adjustments.{kind}"), &recorded);
+        if read(&stored) != read(&recorded) {
+            changed.push(format!("{mode} {kind} {recorded} became {stored}"));
+        }
+    }
+    assert!(changed.is_empty(), "{}", changed.join("\n"));
+}
+
+/// The editor's controls show what the filter renders: in Lab the top-level `points` and Levels
+/// keys are the Lightness channel, which the dialog edits under `lightness`.
+#[test]
+fn a_lab_tone_smart_filter_opens_with_its_settings_on_the_lightness_channel() {
+    let (mut app, layer) = app(8, "lab");
+    let dim = json!([[0.0, 0.0], [128.0, 64.0], [255.0, 255.0]]);
+    app.run("image.adjustments.curves", json!({"points": dim})).unwrap();
+    app.run("image.adjustments.levels", json!({"inBlack": 30})).unwrap();
+    let sm = smart(&app, layer).clone();
+    let ctx = egui::Context::default();
+
+    super::open_editor(&mut app, &ctx, layer.0, &sm, 2);
+    let dialog = app.ui.dialogs.last().unwrap();
+    assert_eq!(dialog.fields["lightness"], dim);
+    assert_eq!(dialog.fields["points"], dim, "both keys say the same");
+    let id = dialog.id;
+    crate::dialogs::cancel(&mut app, id).unwrap();
+
+    super::open_editor(&mut app, &ctx, layer.0, &sm, 3);
+    let fields = &app.ui.dialogs.last().unwrap().fields;
+    assert_eq!(fields["lightness"]["inBlack"].as_f64(), Some(30.0));
+    assert_eq!(fields["inBlack"].as_f64(), Some(30.0), "both keys say the same");
+}
+
+/// Settings the engine can't read still open, as recorded, for OK to report on; the dialog and the
+/// Smart Filter are left as they are, without a panic.
+#[test]
+fn an_unreadable_adjustment_smart_filter_opens_with_its_recorded_values() {
+    let (mut app, layer) = app(8, "lab");
+    app.run("image.adjustments.curves", json!({"points": [[0, 0], [255, 255]]})).unwrap();
+    let mut sm = smart(&app, layer).clone();
+    sm.smart_filters[2].params = json!({"points": "not a curve"});
+    super::open_editor(&mut app, &egui::Context::default(), layer.0, &sm, 2);
+    let fields = &app.ui.dialogs.last().unwrap().fields;
+    assert_eq!(fields["points"], json!("not a curve"));
+    assert!(fields.contains_key("__smartFilter"));
 }
 
 /// The Smart Filters mask and the layer mask of one layer are cached as separate thumbnails.
@@ -184,4 +287,115 @@ fn filter_editor_starts_missing_parameters_from_defaults_not_remembered_values()
     // A plain Filter menu dialog still starts from the remembered values.
     let id = crate::filter_dialog::open(&mut app, command).unwrap();
     assert_eq!(app.ui.dialog_mut(id).unwrap().fields["reduceNoise"].as_f64(), Some(60.0));
+}
+
+/// A smart object in a `mode` document with `command` recorded as its one smart filter, and its layer id.
+fn adjustment_filter(mode: &str, command: &str, params: serde_json::Value) -> (PhotocraftApp, u64) {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 48, "mode": mode})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.execute("edit.fill", json!({"contents": "black"})).unwrap();
+    let id = s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute(command, params).unwrap();
+    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    app.background_jobs = false;
+    (app, id)
+}
+
+/// The smart object on layer `id`.
+fn recorded(app: &PhotocraftApp, id: u64) -> photocraft_doc::SmartObject {
+    match &app.session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().content {
+        photocraft_doc::LayerContent::Smart(sm) => sm.clone(),
+        other => panic!("expected a smart object, got {}", other.kind_name()),
+    }
+}
+
+/// The app in a harness with the editor of the layer's first smart filter open, and the dialog's id.
+fn edit_first_filter(app: PhotocraftApp, id: u64) -> (Harness<'static, PhotocraftApp>, u64) {
+    let sm = recorded(&app, id);
+    let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(|ui, app: &mut PhotocraftApp| crate::dialogs::show(app, ui.ctx()), app);
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    let ctx = h.ctx.clone();
+    super::open_editor(h.state_mut(), &ctx, id, &sm, 0);
+    let dialog = h.state().ui.dialogs.last().unwrap().id;
+    h.run_steps(3);
+    (h, dialog)
+}
+
+/// Monochrome off removes `gray` from the dialog's values; a stored one read over the Red row
+/// would keep the old mix, whatever the Red sliders say, on OK and on every later edit.
+#[test]
+fn a_channel_mixer_smart_filter_turned_off_monochrome_keeps_its_red_row() {
+    let (app, id) = adjustment_filter("rgb", "image.adjustments.channelMixer", json!({"monochrome": true, "gray": [30, 30, 40, 0]}));
+    let (mut h, dialog) = edit_first_filter(app, id);
+    h.get_by_label("Monochrome").click();
+    h.run_steps(3);
+    let fields = &mut h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+    assert_eq!(fields.get("monochrome"), Some(&json!(false)));
+    assert!(!fields.contains_key("gray"), "the editor removed the gray row: {fields:?}");
+    fields.insert("red".into(), json!([70.0, 30.0, 0.0, 0.0]));
+    h.run_steps(2);
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+
+    let sm = recorded(h.state(), id);
+    assert_eq!(sm.smart_filters.len(), 1, "no filter was stacked");
+    let adjustment = photocraft_engine::adjust_params::from_params("channelMixer", &sm.smart_filters[0].params, None, photocraft_doc::ColorMode::Rgb).unwrap();
+    let photocraft_doc::Adjustment::ChannelMixer { matrix, monochrome } = adjustment else { panic!("Channel Mixer params") };
+    assert!(!monochrome);
+    assert!(matrix[0].iter().zip([0.7, 0.3, 0.0, 0.0]).all(|(a, b)| (a - b).abs() < 1e-5), "the edited Red row renders: {:?}", matrix[0]);
+}
+
+/// In Lab, top-level `points` aliases Lightness and the editor removes it on an edit. A stored
+/// one must not override the edit: the Lightness the editor sends is what the filter renders.
+#[test]
+fn a_lab_curves_smart_filter_keeps_a_lightness_edit() {
+    let old = json!([[0, 0], [128, 64], [255, 255]]);
+    let (app, id) = adjustment_filter("lab", "image.adjustments.curves", json!({"points": old, "lightness": old}));
+    let (mut h, dialog) = edit_first_filter(app, id);
+    // Add a point on the Lightness curve, the channel the dialog shows first.
+    let graph = h.ctx.data(|d| d.get_temp::<egui::Rect>(crate::adjust_dialog::dialog_mem("curves").with("curves-graph"))).unwrap();
+    click(&mut h, egui::pos2(graph.left() + graph.width() * 0.75, graph.top() + graph.height() * 0.1));
+    let fields = &h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+    assert!(!fields.contains_key("points"), "the editor removed the alias: {fields:?}");
+    let edited = fields["lightness"].clone();
+    assert_ne!(edited, old, "the click edited Lightness");
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+
+    let sm = recorded(h.state(), id);
+    assert_eq!(sm.smart_filters.len(), 1, "no filter was stacked");
+    let read = |params: &serde_json::Value| photocraft_engine::adjust_params::from_params("curves", params, None, photocraft_doc::ColorMode::Lab).unwrap();
+    let photocraft_doc::Adjustment::Curves { per_channel, .. } = read(&sm.smart_filters[0].params) else { panic!("Curves params") };
+    let photocraft_doc::Adjustment::Curves { per_channel: wanted, .. } = read(&json!({"lightness": edited})) else { panic!("Curves params") };
+    assert_eq!(per_channel[0], wanted[0], "the edited Lightness renders");
+    assert!(sm.smart_filters[0].params.get("points").is_none(), "the removed alias is not stored");
+}
+
+/// Emptying a text field removes its key from the Color Lookup dialog, which draws from the
+/// command's schema. A stored `data` would be read over the `lut` chosen instead.
+#[test]
+fn a_color_lookup_smart_filter_with_its_data_cleared_uses_the_chosen_lut() {
+    let mut cube = String::from("LUT_3D_SIZE 2\n");
+    for b in 0..2 {
+        for g in 0..2 {
+            for r in 0..2 {
+                cube.push_str(&format!("{} {} {}\n", 1 - r, 1 - g, 1 - b));
+            }
+        }
+    }
+    let (app, id) = adjustment_filter("rgb", "image.adjustments.colorLookup", json!({"data": cube, "fileName": "invert.cube"}));
+    let (mut h, dialog) = edit_first_filter(app, id);
+    let fields = &mut h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+    assert_eq!(fields.get("data"), Some(&json!(cube)), "opens on the recorded settings");
+    fields.insert("data".into(), json!(""));
+    fields.insert("lut".into(), json!("warm"));
+    h.run_steps(2);
+    let fields = &h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+    assert!(!fields.contains_key("data"), "the dialog removed the emptied field");
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+
+    let sm = recorded(h.state(), id);
+    assert_eq!(sm.smart_filters.len(), 1, "no filter was stacked");
+    let params = &sm.smart_filters[0].params;
+    assert!(params.get("data").is_none(), "the removed data is not stored: {params}");
+    assert_eq!(params.get("lut"), Some(&json!("warm")));
 }

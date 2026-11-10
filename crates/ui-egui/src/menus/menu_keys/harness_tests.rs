@@ -280,6 +280,34 @@ fn underlined_text_marks_the_mnemonic_once_and_keeps_the_prefix() {
     out.textures_delta.clear();
 }
 
+/// Access keys preserve visible spelling and underline only the locale-correct I pair.
+#[test]
+fn azerbaijani_and_turkish_mnemonics_keep_the_two_i_pairs_distinct() {
+    for code in ["az", "tr"] {
+        let lang = crate::i18n::Lang::from_code(code).unwrap();
+        crate::i18n::with_language(lang, || {
+            assert_eq!(crate::menu_keys::assign(&["ix", "ı"], &[Some('I'), Some('I')]), [Some('X'), Some('I')]);
+            assert_eq!(crate::menu_keys::localized(&["i".into()], &["Image"], &[Some('I')]), (vec!["i(I)".into()], vec![Some('I')]));
+            let ctx = egui::Context::default();
+            let mut out = ctx.run_ui(Default::default(), |ui| {
+                for text in [crate::menu_keys::mnemonic_text(ui, "", "İıi", Some('I'), None), crate::menu_keys::menu_row_text(ui, false, "İıi", Some('I'))]
+                {
+                    let egui::WidgetText::LayoutJob(job) = text else { panic!("an access key makes a layout job") };
+                    assert!(job.text.ends_with("İıi"), "visible text is retained verbatim");
+                    let underlined: Vec<&str> = job
+                        .sections
+                        .iter()
+                        .filter(|s| s.format.underline != egui::Stroke::NONE)
+                        .map(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0])
+                        .collect();
+                    assert_eq!(underlined, ["ı"]);
+                }
+            });
+            out.textures_delta.clear();
+        });
+    }
+}
+
 /// The whole app: with the bar focused a letter opens a menu instead of picking a tool, and the
 /// arrows don't nudge the layer.
 #[test]

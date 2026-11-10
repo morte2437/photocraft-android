@@ -109,6 +109,19 @@ fn key_char(key: Key) -> Option<char> {
     }
 }
 
+/// The ASCII access key a displayed letter can represent. Turkic `i` uppercases to `İ`,
+/// which is not an ASCII key; dotless `ı` can represent `I`. Key codes themselves stay ASCII.
+pub(crate) fn label_key(c: char) -> Option<char> {
+    let lang = crate::i18n::current();
+    let upper = if matches!(lang.code(), "az" | "tr") && matches!(c, 'i' | 'ı' | 'İ') {
+        let mut bytes = [0; 4];
+        lang.uppercase(c.encode_utf8(&mut bytes)).chars().next()?
+    } else {
+        c.to_ascii_uppercase()
+    };
+    upper.is_ascii_alphanumeric().then_some(upper)
+}
+
 /// Mnemonics for `labels`, unique within the group: the preferred letter when the label has it,
 /// else the first unused ASCII letter or digit, trying the first character of each word before
 /// the others. Compared case-insensitively; the returned letter is upper case.
@@ -116,13 +129,13 @@ pub fn assign(labels: &[&str], preferred: &[Option<char>]) -> Vec<Option<char>> 
     let mut used: Vec<char> = Vec::new();
     let mut out = Vec::with_capacity(labels.len());
     for (i, label) in labels.iter().enumerate() {
-        let upper: Vec<char> = label.chars().map(|c| c.to_ascii_uppercase()).collect();
+        let upper: Vec<char> = label.chars().filter_map(label_key).collect();
         let has = |c: char| upper.contains(&c.to_ascii_uppercase());
         let mut pick = preferred.get(i).copied().flatten().map(|c| c.to_ascii_uppercase()).filter(|&c| has(c) && !used.contains(&c));
         if pick.is_none() {
             let starts = label.split(|c: char| !c.is_alphanumeric()).filter_map(|w| w.chars().next());
             let rest = label.chars();
-            pick = starts.chain(rest).filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).find(|c| !used.contains(c));
+            pick = starts.chain(rest).filter_map(label_key).find(|c| !used.contains(c));
         }
         if let Some(c) = pick {
             used.push(c);
@@ -139,13 +152,13 @@ pub fn assign(labels: &[&str], preferred: &[Option<char>]) -> Vec<Option<char>> 
 /// do in those languages ("文件(F)", #5863). Mnemonics stay unique within the group, and a shown
 /// "(F)" is always the row's key.
 pub fn localized(labels: &[String], english: &[&str], preferred: &[Option<char>]) -> (Vec<String>, Vec<Option<char>>) {
-    let typed = |l: &str| l.chars().any(|c| c.is_ascii_alphanumeric());
+    let typed = |l: &str| l.chars().any(|c| label_key(c).is_some());
     // The key goes before a trailing ellipsis, as Windows writes it: "新建(N)…".
     let with_key = |l: &str, k: char| match l.strip_suffix('…').map(|b| (b, "…")).or_else(|| l.strip_suffix("...").map(|b| (b, "..."))) {
         Some((base, tail)) => format!("{base}({k}){tail}"),
         None => format!("{l}({k})"),
     };
-    let english_keys = assign(english, preferred);
+    let english_keys = crate::i18n::with_language(crate::i18n::Lang::EN, || assign(english, preferred));
     let mut shown = Vec::with_capacity(labels.len());
     let mut pref = Vec::with_capacity(labels.len());
     for (i, label) in labels.iter().enumerate() {
@@ -181,7 +194,7 @@ pub fn mnemonic_text(ui: &Ui, prefix: &str, label: &str, mnemonic: Option<char>,
     let color = color.unwrap_or(Color32::PLACEHOLDER);
     let font = egui::TextStyle::Button.resolve(ui.style());
     let plain = egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
-    let at = mnemonic.and_then(|m| label.char_indices().find(|(_, c)| c.to_ascii_uppercase() == m).map(|(i, c)| (i, c.len_utf8())));
+    let at = mnemonic.and_then(|m| label.char_indices().find(|(_, c)| label_key(*c) == Some(m)).map(|(i, c)| (i, c.len_utf8())));
     let Some((i, len)) = at else {
         return egui::RichText::new(format!("{prefix}{label}")).color(color).into();
     };
@@ -225,7 +238,7 @@ pub fn menu_row_text(ui: &Ui, checked: bool, label: &str, mnemonic: Option<char>
         job.append(CHECK_MARK, 0.0, plain.clone());
         lead = 0.0;
     }
-    let at = mnemonic.and_then(|m| label.char_indices().find(|(_, c)| c.to_ascii_uppercase() == m).map(|(i, c)| (i, c.len_utf8())));
+    let at = mnemonic.and_then(|m| label.char_indices().find(|(_, c)| label_key(*c) == Some(m)).map(|(i, c)| (i, c.len_utf8())));
     let parts = match at {
         Some((i, len)) => [label.get(..i), label.get(i..i + len), label.get(i + len..)],
         None => [Some(label), None, None],

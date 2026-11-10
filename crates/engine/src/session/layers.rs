@@ -5,6 +5,7 @@ use crate::TypeLayerRef;
 impl Session {
     /// Replace the active document's active layer without creating a history step.
     pub fn select_layer(&mut self, id: LayerId) -> Result<()> {
+        let before = self.active_layer_stamp();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         if st.doc.layer(id).is_none() {
             return Err(EngineError::NoLayer(id));
@@ -20,6 +21,7 @@ impl Session {
             st.saved_revision = st.revision;
         }
         st.last_damage = Some(photocraft_geom::Rect::EMPTY);
+        self.note_layer_change(before);
         Ok(())
     }
 
@@ -28,6 +30,7 @@ impl Session {
     /// is no layer selected. Selected layers that are gone are dropped; an active layer that is
     /// gone is an error and changes nothing. Like [`Self::select_layer`], not an edit.
     pub fn restore_layer_selection(&mut self, active: Option<LayerId>, selected: &[LayerId], anchor: Option<LayerId>) -> Result<()> {
+        let before = self.active_layer_stamp();
         let st = self.active_mut().ok_or(EngineError::NoDocument)?;
         if let Some(id) = active
             && st.doc.layer(id).is_none()
@@ -45,6 +48,7 @@ impl Session {
             st.saved_revision = st.revision;
         }
         st.last_damage = Some(photocraft_geom::Rect::EMPTY);
+        self.note_layer_change(before);
         Ok(())
     }
 

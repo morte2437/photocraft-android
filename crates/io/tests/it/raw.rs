@@ -420,6 +420,36 @@ fn uncalibrated_raw_takes_its_colour_from_the_camera_jpeg() {
     assert_eq!(r.document.depth, SampleType::U16);
 }
 
+/// #9985: a sidecar's crop is measured on the raw as stored, before its Orientation turns it
+/// upright: the developed frame is cropped to the same sensor pixels, whichever way it is turned.
+#[test]
+fn camera_raw_tuning_crops_in_the_stored_orientation() {
+    use photocraft_io::camera_raw_xmp::Crop;
+    use photocraft_io::raw::{RawTuning, import_raw_tuned};
+    let (w, h) = (40, 24);
+    // Stored pixels x 4..24, y 6..18; then the upright frame's size and the same pixels in it.
+    let crop = Crop { top: 0.25, left: 0.1, bottom: 0.75, right: 0.6 };
+    for (orientation, size, [x0, y0, x1, y1]) in
+        [(1, (40, 24), [4, 6, 24, 18]), (3, (40, 24), [16, 6, 36, 18]), (6, (24, 40), [6, 4, 18, 24]), (8, (24, 40), [6, 16, 18, 36])]
+    {
+        let mut spec = DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535));
+        spec.as_shot_neutral = Some([0.6, 1.0, 0.8]);
+        spec.orientation = orientation;
+        let bytes = spec.build();
+        let (full, _) = import_raw_tuned("shot.dng", &bytes, &RawTuning::default()).unwrap();
+        let (cut, _) = import_raw_tuned("shot.dng", &bytes, &RawTuning { crop: Some(crop), ..Default::default() }).unwrap();
+        assert_eq!((full.document.size.width, full.document.size.height), size, "orientation {orientation}");
+        assert_eq!((cut.document.size.width, cut.document.size.height), (x1 - x0, y1 - y0), "orientation {orientation}");
+        assert!(cut.warnings.iter().any(|n| n.contains(&format!("cropped to {}×{}", x1 - x0, y1 - y0))), "{:?}", cut.warnings);
+        let full = photocraft_io::document_to_image(&full.document, &mut Vec::new()).unwrap();
+        let cut = photocraft_io::document_to_image(&cut.document, &mut Vec::new()).unwrap();
+        // 16-bit RGB: 6 bytes a pixel.
+        let row = |y: u32| &full.data()[((y * size.0 + x0) * 6) as usize..((y * size.0 + x1) * 6) as usize];
+        let expected: Vec<u8> = (y0..y1).flat_map(|y| row(y).to_vec()).collect();
+        assert_eq!(cut.data(), expected, "orientation {orientation}: the crop is the same pixels of the uncropped develop");
+    }
+}
+
 #[test]
 fn camera_raw_tuning_keeps_the_default_look_and_applies_user_gains_after_fitting() {
     use photocraft_io::raw::{RawTuning, fit_preview_look, import_raw_tuned};

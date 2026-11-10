@@ -50,7 +50,7 @@ pub fn options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.label(
         egui::RichText::new(crate::i18n::fmt(
-            tl!("Click to sample the foreground colour  ·  {key}-click for background"),
+            tl!("Click to sample the foreground color  ·  {key}-click for background"),
             &[("key", &crate::shortcuts::pretty("Alt"))],
         ))
         .color(t.text_faint),

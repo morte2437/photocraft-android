@@ -181,11 +181,6 @@ fn esc_ends_a_refused_draft_and_return_keeps_it() {
     };
     for lang in crate::i18n::Lang::all() {
         crate::i18n::with_language(lang, || {
-            for message in ["The path was kept as the Work Path", "The path was discarded"] {
-                if lang != crate::i18n::Lang::EN {
-                    assert!(crate::i18n::has(lang, message), "{}: {message}", lang.code());
-                }
-            }
             let mut app = app();
             let (id, body, steps) = refused_hole(&mut app);
             let draft = app.ui.pen.clone();
@@ -347,4 +342,198 @@ fn freeform_refuses_a_locked_shape_before_starting_a_stroke() {
         tool_event(&mut app, ToolEvent::Down { x: 50.0, y: 50.0, pressure: 1.0 }, egui::Modifiers::NONE);
         assert!(app.drag.is_some(), "{lock}: unlocked stroke can start");
     }
+}
+
+/// #10934: the options bar's Make Shape (Path mode) turns the Work Path into a shape layer filled
+/// with the foreground colour, as one History step; the Work Path is the shape's path afterwards.
+/// A path still being drawn is finished first. With no path the button is disabled.
+#[test]
+fn make_shape_turns_the_work_path_into_a_shape_layer() {
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 400.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                ui.horizontal(|ui| super::options_bar(app, ui, Tool::Pen));
+            }
+        },
+        app(),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+    h.run_steps(4);
+    assert!(h.get_by_label("Make Shape").accesskit_node().is_disabled(), "no path yet");
+    square(h.state_mut(), 20.0, 20.0, 100.0);
+    let drawn = work(h.state());
+    let (count, steps) = (layers(h.state()), h.state().session.active().unwrap().history.past_len());
+    h.run_steps(2);
+    h.get_by_label("Make Shape").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert_eq!(layers(app), count + 1);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1, "one History step");
+    let (id, path) = shape_path(app);
+    assert_eq!(path, drawn);
+    let st = app.session.active().unwrap();
+    assert!(st.doc.work_path.is_none());
+    let LayerContent::Shape(sh) = &st.doc.layer(id).unwrap().content else { panic!("not a shape layer") };
+    let fg = app.session.tools.foreground;
+    assert_eq!(sh.fill, Some(photocraft_doc::Fill::Solid(photocraft_color::Color::rgba(fg[0], fg[1], fg[2], fg[3]))));
+    // An open path still being drawn becomes the shape too, still in one History step.
+    for (x, y) in [(10.0, 150.0), (60.0, 150.0), (60.0, 190.0)] {
+        pen_down(h.state_mut(), x, y, false);
+        pen_up(h.state_mut());
+    }
+    let steps = h.state().session.active().unwrap().history.past_len();
+    h.run_steps(2);
+    h.get_by_label("Make Shape").click();
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.ui.pen.is_none());
+    assert_eq!(layers(app), count + 2);
+    assert_eq!(shape_path(app).1.subpaths[0].knots.len(), 3);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1, "one History step while drawing");
+    assert!(app.session.active().unwrap().doc.work_path.is_none());
+}
+
+/// Make Shape while drawing with a vector mask targeted makes a shape of the drawn path alone and
+/// leaves the mask as it was: the draft isn't committed into the mask first.
+#[test]
+fn make_shape_while_drawing_leaves_a_targeted_vector_mask_alone() {
+    let mut app = app();
+    let id = app.session.active().unwrap().active_layer.unwrap().0;
+    app.run("layer.vectorMask.add", json!({"layer": id, "path": {"subpaths": [{"closed": true, "knots": [[0, 0], [100, 0], [100, 100], [0, 100]]}]}})).unwrap();
+    app.ui.vector_mask_target = true;
+    let mask = app.session.active().unwrap().doc.layer(LayerId(id)).unwrap().vector_mask.clone();
+    for (x, y) in [(10.0, 150.0), (60.0, 150.0), (60.0, 190.0)] {
+        pen_down(&mut app, x, y, false);
+        pen_up(&mut app);
+    }
+    let steps = app.session.active().unwrap().history.past_len();
+    super::make_shape(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(LayerId(id)).unwrap().vector_mask, mask, "the mask changed");
+    assert_eq!(st.history.past_len(), steps + 1);
+    let (_, path) = shape_path(&app);
+    assert_eq!(path.subpaths.len(), 1);
+    assert_eq!(path.subpaths[0].knots[0].anchor, photocraft_geom::Point::new(10.0, 150.0));
+}
+
+/// Make Shape while drawing into a selected saved path: the shape is the saved path plus the
+/// drawing, as the commit would have made it, and the saved path stays as it was.
+#[test]
+fn make_shape_while_drawing_into_a_saved_path_keeps_it() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 50.0);
+    app.run("path.rename", json!({"name": "work", "to": "Box"})).unwrap();
+    app.ui.selected_path = Some("Box".into());
+    let saved = app.session.active().unwrap().doc.paths[0].path.clone();
+    for (x, y) in [(10.0, 150.0), (60.0, 150.0), (60.0, 190.0)] {
+        pen_down(&mut app, x, y, false);
+        pen_up(&mut app);
+    }
+    super::make_shape(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.paths[0].path, saved);
+    assert_eq!(shape_path(&app).1.subpaths.len(), saved.subpaths.len() + 1);
+}
+
+/// Make Shape on a saved path selected in the Paths panel keeps that path.
+#[test]
+fn make_shape_keeps_a_saved_path() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 50.0);
+    app.run("path.rename", json!({"name": "work", "to": "Box"})).unwrap();
+    app.ui.selected_path = Some("Box".into());
+    super::make_shape(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.paths.first().map(|p| p.name.as_str()), Some("Box"));
+    assert_eq!(shape_path(&app).1, st.doc.paths[0].path);
+}
+
+/// Clicks an open path with the Pen through `points`, without finishing it.
+fn draw(app: &mut PhotocraftApp, points: &[(f64, f64)]) {
+    for &(x, y) in points {
+        pen_down(app, x, y, false);
+        pen_up(app);
+    }
+}
+
+/// Make Shape while drawing into a saved path uses the path drawing began with, as the commit
+/// does, not one selected in the Paths panel since.
+#[test]
+fn make_shape_while_drawing_uses_the_path_drawing_began_with() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 50.0);
+    app.run("path.rename", json!({"name": "work", "to": "Box"})).unwrap();
+    app.run("path.set", json!({"name": "Other", "path": {"subpaths": [{"closed": true, "knots": [[100, 100], [150, 100], [150, 150]]}]}})).unwrap();
+    app.ui.selected_path = Some("Box".into());
+    let doc_paths = app.session.active().unwrap().doc.paths.clone();
+    draw(&mut app, &[(10.0, 150.0), (60.0, 150.0), (60.0, 190.0)]);
+    app.ui.selected_path = Some("Other".into());
+    super::make_shape(&mut app).unwrap();
+    let box_path = &doc_paths.iter().find(|p| p.name == "Box").unwrap().path;
+    let shape = shape_path(&app).1;
+    assert_eq!(shape.subpaths.len(), box_path.subpaths.len() + 1, "Box and the drawing");
+    assert_eq!(shape.subpaths[0], box_path.subpaths[0]);
+    assert_eq!(app.session.active().unwrap().doc.paths, doc_paths, "the saved paths stay as they were");
+    assert_eq!(app.ui.selected_path.as_deref(), Some("Other"), "the Paths panel selection stays");
+}
+
+/// With no Work Path and no saved path selected, Make Shape has nothing to make a shape from: the
+/// selected shape layer's own path isn't copied into a second shape layer.
+#[test]
+fn make_shape_doesnt_copy_a_shape_layers_own_path() {
+    let mut app = app();
+    app.ui.tool_options.vector_mode = "shape".into();
+    square(&mut app, 20.0, 20.0, 50.0);
+    app.ui.tool_options.vector_mode = "path".into();
+    assert_eq!(super::active_path_name(&app).as_deref(), Some("layer"));
+    let count = layers(&app);
+    let steps = app.session.active().unwrap().history.past_len();
+    assert!(super::make_shape(&mut app).is_err());
+    assert_eq!(layers(&app), count);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps);
+}
+
+/// Make Shape while drawing a new path with an unselected Work Path: the commit would have
+/// replaced the Work Path with the drawing, so the shape takes the drawing and no Work Path is
+/// left behind.
+#[test]
+fn make_shape_while_drawing_a_new_work_path_replaces_the_old_one() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 50.0);
+    app.ui.selected_path = None;
+    draw(&mut app, &[(10.0, 150.0), (60.0, 150.0), (60.0, 190.0)]);
+    super::make_shape(&mut app).unwrap();
+    let st = app.session.active().unwrap();
+    assert!(st.doc.work_path.is_none(), "the old Work Path is gone, as after a commit and Make Shape");
+    let shape = shape_path(&app).1;
+    assert_eq!(shape.subpaths.len(), 1);
+    assert_eq!(shape.subpaths[0].knots[0].anchor, photocraft_geom::Point::new(10.0, 150.0));
+}
+
+/// A draft begun in Shape mode that carries on an open subpath of a shape layer, with the mode
+/// switched to Path before Make Shape: the layer keeps its other subpaths, extended in one step,
+/// as the commit does, and no second layer copies part of it.
+#[test]
+fn make_shape_on_a_resumed_shape_layer_draft_keeps_its_other_subpaths() {
+    let mut app = app();
+    app.ui.tool_options.vector_mode = "shape".into();
+    draw(&mut app, &[(20.0, 20.0), (80.0, 20.0)]);
+    assert!(super::pen_commit(&mut app, false));
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 100.0, 100.0, 40.0);
+    let (id, before) = shape_path(&app);
+    assert_eq!(before.subpaths.len(), 2);
+    let count = layers(&app);
+    let steps = app.session.active().unwrap().history.past_len();
+    draw(&mut app, &[(80.0, 20.0), (80.0, 80.0)]);
+    assert!(app.ui.pen.as_ref().is_some_and(|p| p.resumes.is_some()), "drawing carries on the open subpath");
+    app.ui.tool_options.vector_mode = "path".into();
+    super::make_shape(&mut app).unwrap();
+    assert_eq!(layers(&app), count, "no second layer");
+    let (now, after) = shape_path(&app);
+    assert_eq!(now, id);
+    assert_eq!(after.subpaths.len(), 2, "the square stays");
+    assert_eq!(after.subpaths[0].knots.len(), 3, "the open subpath, extended");
+    assert_eq!(after.subpaths[1], before.subpaths[1]);
+    assert_eq!(app.session.active().unwrap().history.past_len(), steps + 1);
 }

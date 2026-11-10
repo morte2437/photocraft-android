@@ -49,7 +49,7 @@
 # Strings added to the UI after this catalog was first written (rebase onto main, 2026-10).
 # Gradient Editor window, opened from the options bar's gradient swatch.
 # Rendering mode and recovery
-# Camera Raw: contextual controls and window title
+# RAW Develop: contextual controls and window title
 
 
 
@@ -87,7 +87,7 @@
 # Smart Filter editors
 
 # Dynamic labels the tl! literal scanner cannot see: filter and Filter Gallery parameter names and
-# choices (humanized from their keys), Camera Raw controls, render filters (Flame, Picture Frame, Tree),
+# choices (humanized from their keys), RAW Develop controls, render filters (Flame, Picture Frame, Tree),
 # measurement columns, file info fields and the macOS application menu. Translated the same way as
 # above, from the plain meaning of the English label.
 # Select and Mask view modes (#1754)
@@ -129,7 +129,7 @@
 
 # Labels the UI looks up through a variable (tool, glyph-group, Liquify and warp names, command
 # parameters and choices humanized from their keys, history steps and contextual
-# Camera Raw / layer labels) that other catalogs already covered. Translated the same way as
+# RAW Develop / layer labels) that other catalogs already covered. Translated the same way as
 # above, from the plain meaning of the English label.
 
 # DDS Options (#1327)
@@ -203,6 +203,7 @@
 	Right	Vpravo
 	Open Recent	Otevřít nedávné
 	Clear Recent Files	Vymazat nedávné soubory
+	Clear Recent File List	Vymazat nedávné soubory
 	Remove from Recent	Odebrat z nedávných
 	Remove {name} from Recent	Odebrat {name} z nedávných
 	Close	Zavřít
@@ -211,6 +212,10 @@
 	Restore	Obnovit
 	Close All	Zavřít vše
 	Close Others	Zavřít ostatní
+	New Document…	Nový dokument…
+	Open Document…	Otevřít…
+	Consolidate All to Here	Sloučit vše sem
+	Move to New Window	Přesunout do nového okna
 	Save	Uložit
 	Save As…	Uložit jako…
 	Save a Copy…	Uložit kopii…
@@ -262,6 +267,7 @@
 	Create Smart Object after Loading Layers	Po načtení vrstev vytvořit chytrý objekt
 	Reveal in Finder	Zobrazit ve Finderu
 	Show in Explorer	Zobrazit v Průzkumníkovi
+	Reveal in Explorer	Zobrazit v Průzkumníkovi
 	Show in Folder	Zobrazit ve složce
 	File Info…	Informace o souboru…
 	Print…	Tisk…
@@ -350,9 +356,10 @@
 	Units & Rulers…	Jednotky a pravítka…
 	Guides, Grid & Slices…	Vodítka, mřížka a řezy…
 	Plug-ins…	Zásuvné moduly…
+	Plugins…	Zásuvné moduly…
 	Type…	Text…
 	Enhanced Controls…	Rozšířené ovládání…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	Výchozí nastavení RAW…
 	Raw Defaults…	Výchozí nastavení Raw…
 	Integrations…	Integrace…
 	AI Integrations…	Integrace AI…
@@ -403,6 +410,8 @@
 	Match Color…	Přizpůsobit barvy…
 	Replace Color…	Nahradit barvu…
 	Equalize	Vyrovnat
+	Equalize Selected Area Only	Vyrovnat pouze výběr
+	Equalize Entire Image Based On Selected Area	Vyrovnat celý obraz podle výběru
 	Auto Tone	Automatický tón
 	Auto Contrast	Automatický kontrast
 	Auto Color	Automatické barvy
@@ -439,8 +448,8 @@
 	Artboard…	Kreslicí plocha…
 	Artboard from Group…	Kreslicí plocha ze skupiny…
 	Artboard from Layers…	Kreslicí plocha z vrstev…
-	Layer via Copy	Vrstva kopírováním
-	Layer via Cut	Vrstva vyjmutím
+	Layer Via Copy	Vrstva kopírováním
+	Layer Via Cut	Vrstva vyjmutím
 	Layer From Background…	Vrstva z pozadí…
 	Layer from Background…	Vrstva z pozadí…
 	Background from Layer	Pozadí z vrstvy
@@ -507,6 +516,8 @@
 	Smart Object	Chytrý objekt
 	Convert to Smart Object	Převést na chytrý objekt
 	Convert to Embedded	Převést na vložený
+	Embed Linked	Vložit propojené
+	Embed All Linked	Vložit všechna propojená
 	Convert to Layers	Převést na vrstvy
 	Convert to Linked…	Převést na propojený…
 	Edit Contents	Upravit obsah
@@ -657,7 +668,6 @@
 	Deselect	Zrušit výběr
 	Reselect	Znovu vybrat
 	Inverse	Invertovat výběr
-	Inverse Selection	Invertovat výběr
 	Similar	Podobné
 	Color Range…	Rozsah barev…
 	Focus Area…	Oblast zaostření…
@@ -682,7 +692,7 @@
 	Last Filter	Poslední filtr
 	Filter Gallery…	Galerie filtrů…
 	Adaptive Wide Angle…	Adaptivní širokoúhlý objektiv…
-	Camera Raw Filter…	Filtr Camera Raw…
+	RAW Develop Filter…	Filtr Vyvolání RAW…
 	Liquify…	Zkapalnit…
 	Vanishing Point…	Úběžník…
 	Blur	Rozostření
@@ -764,6 +774,7 @@
 	Minimum…	Minimum…
 	Offset…	Posun…
 	Plug-ins	Zásuvné moduly
+	Plugins	Zásuvné moduly
 	Proof Setup	Nastavení nátisku
 	Proof Colors	Nátiskové barvy
 	Gamut Warning	Upozornění na gamut
@@ -772,12 +783,12 @@
 	Working Magenta Plate	Pracovní purpurový výtažek
 	Working Yellow Plate	Pracovní žlutý výtažek
 	Working Black Plate	Pracovní černý výtažek
-	Working CMY Plate	Pracovní výtažky CMY
-	Legacy Macintosh RGB	Starší Macintosh RGB
-	Internet Standard RGB	Internetový standard RGB
+	Working CMY Plates	Pracovní výtažky CMY
+	Legacy Macintosh RGB (Gamma 1.8)	Starší Macintosh RGB (Gamma 1.8)
+	Internet Standard RGB (sRGB)	Internetový standard RGB (sRGB)
 	Monitor RGB	RGB monitoru
-	Color Blindness — Protanopia-type	Barvoslepost — protanopie
-	Color Blindness — Deuteranopia-type	Barvoslepost — deuteranopie
+	Color Blindness - Protanopia-type	Barvoslepost - protanopie
+	Color Blindness - Deuteranopia-type	Barvoslepost - deuteranopie
 	Zoom In	Přiblížit
 	Zoom Out	Oddálit
 	Fit on Screen	Přizpůsobit obrazovce
@@ -866,7 +877,7 @@
 	Consolidate All to Tabs	Sloučit vše do záložek
 	Float in Window	Uvolnit do plovoucího okna
 	Float All in Windows	Uvolnit vše do plovoucích oken
-	New Window for Document	Nové okno dokumentu
+	New Window	Nové okno
 	Workspace	Pracovní prostor
 	Essentials	Základy
 	Graphic and Web	Grafika a web
@@ -928,6 +939,12 @@
 	Timeline	Časová osa
 	Tool Presets	Přednastavení nástrojů
 	Tools	Nástroje
+	Contextual Task Bar	Kontextový panel úloh
+	Hide bar	Skrýt panel
+	Reset bar position	Obnovit polohu panelu
+	Pin bar position	Připnout polohu panelu
+	Move bar	Přesunout panel
+	More options	Další možnosti
 	About PhotoCraft	O aplikaci PhotoCraft
 	PhotoCraft Website	Web PhotoCraft
 	PhotoCraft on GitHub	PhotoCraft na GitHubu
@@ -1033,8 +1050,8 @@
 	Load Settings…	Načíst nastavení…
 	Save these settings as a Camera Raw .xmp file	Uložit toto nastavení jako soubor Camera Raw .xmp
 	Load settings from a Camera Raw .xmp file	Načíst nastavení ze souboru Camera Raw .xmp
-	Loaded Camera Raw settings from {file}	Nastavení Camera Raw načteno ze souboru {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Nastavení Camera Raw načteno ze souboru {file} (nepodporováno: {n})
+	Loaded RAW Develop settings from {file}	Nastavení Vyvolání RAW načteno ze souboru {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	Nastavení Vyvolání RAW načteno ze souboru {file} (nepodporováno: {n})
 	Begin recording	Zahájit záznam
 	Bend:	Ohyb:
 	Bicubic	Bikubická
@@ -1062,7 +1079,7 @@
 	Brush Reconstruct Options	Možnosti štětce rekonstrukce
 	Brush Tool Options	Možnosti nástroje štětec
 	Cache Level:	Úroveň mezipaměti:
-	Camera Raw isn't open	Camera Raw není otevřen
+	RAW Develop isn't open	Vyvolání RAW není otevřen
 	Cancel	Zrušit
 	Cancel (Esc)	Zrušit (Esc)
 	Manage submitted jobs in the system print queue	Spravovat odeslané úlohy v systémové tiskové frontě
@@ -1095,7 +1112,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	Kliknutím přidáte bod · odstraníte tažením ven, {key}+kliknutím nebo klávesou Delete
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Kliknutím použijete, {key}+kliknutím zrušíte přepsání, dvojklikem otevřete možnosti stylu
 	Click to edit the gradient	Kliknutím upravíte přechod
-	Click to restore the current colour	Kliknutím obnovíte aktuální barvu
+	Click to restore the current color	Kliknutím obnovíte aktuální barvu
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Kliknutím přiblížíte  ·  {key}+kliknutím oddálíte  ·  tažením doprava/doleva přiblížíte/oddálíte
 	Click with the Note tool to add a note.	Poznámku přidáte kliknutím nástrojem poznámka.
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Kliknutí: roh · tažení: hladký bod · kliknutí na první bod: uzavřít · {key} dokončit · Esc zrušit
@@ -1178,7 +1195,7 @@
 	Darks	Tmavé tóny
 	Data Sets	Datové sady
 	Default	Výchozí
-	Default colours (D)	Výchozí barvy (D)
+	Default Foreground and Background Colors (D)	Výchozí barvy popředí a pozadí (D)
 	Default printer	Výchozí tiskárna
 	Default restored.	Výchozí hodnota obnovena.
 	Define	Definovat
@@ -1460,7 +1477,7 @@
 	Opacity Jitter	Kolísání krytí
 	Opacity:	Krytí:
 	Open a document to define variables.	Chcete-li definovat proměnné, otevřete dokument.
-	Open a document to select a colour range.	Chcete-li vybrat rozsah barev, otevřete dokument.
+	Open a document to select a color range.	Chcete-li vybrat rozsah barev, otevřete dokument.
 	Open a document to use the timeline.	Chcete-li použít časovou osu, otevřete dokument.
 	Optical	Optické
 	Optimized	Optimalizovaný
@@ -1536,7 +1553,6 @@
 	Purity	Čistota
 	Quality	Kvalita
 	Quick Actions	Rychlé akce
-	Quick Export As PNG	Rychlý export do PNG
 	Radial Gradient	Radiální přechod
 	Radius	Poloměr
 	Radius:	Poloměr:
@@ -1679,7 +1695,7 @@
 	Subtract from Sample	Odebrat ze vzorku
 	Subtract from selection  ({key})	Odebrat z výběru  ({key})
 	Suggestions:	Návrhy:
-	Swap colours (X)	Prohodit barvy (X)
+	Switch Foreground and Background Colors (X)	Prohodit barvy popředí a pozadí (X)
 	Swaps height and width	Prohodí výšku a šířku
 	Switch between free transform and warp modes	Přepnout mezi volnou transformací a deformací
 	Switch theme	Přepnout motiv
@@ -1784,7 +1800,7 @@
 	Choke	Stažení
 	Classic	Klasický
 	Click to add text	Kliknutím přidáte text
-	Click to fill similar colours	Kliknutím vyplníte podobné barvy
+	Click to fill similar colors	Kliknutím vyplníte podobné barvy
 	Clone Stamp Tool	Nástroj klonovací razítko
 	Color Burn	Ztmavit barvy
 	Color Dodge	Zesvětlit barvy
@@ -1885,6 +1901,7 @@
 	Move Tool	Nástroj přesun
 	Could not use the move tool because the layer is locked.	Nástroj Přesun nelze použít, protože vrstva je zamčená.
 	Could not complete the Free Transform command because the layer is locked.	Příkaz Volná transformace nelze dokončit, protože vrstva je zamčená.
+	Could not transform because the layer is locked.	Transformaci nelze provést, protože vrstva je zamčená.
 	Multiply	Násobit
 	My Brushes	Moje štětce
 	Neutrals	Neutrální
@@ -1943,7 +1960,7 @@
 	Rectangular Marquee Tool	Nástroj obdélníkový výběr
 	Reds	Červené
 	Reflected	Zrcadlený
-	Sample: foreground colour	Vzorek: barva popředí
+	Sample: foreground color	Vzorek: barva popředí
 	Sampled Colors	Vzorkované barvy
 	Satin	Satén
 	Save Pixel Aspect Ratio	Uložit poměr stran pixelu
@@ -1982,7 +1999,7 @@
 	Transfer	Přenos
 	Triangle Tool	Nástroj trojúhelník
 	Unsaved changes	Neuložené změny
-	Uses the foreground and background colours.	Používá barvy popředí a pozadí.
+	Uses the foreground and background colors.	Používá barvy popředí a pozadí.
 	Web	Web
 	Web Large	Web velký
 	Web Minimum	Web minimální
@@ -2019,6 +2036,7 @@
 	Allow scripts to connect	Povolit připojení skriptů
 	Always	Vždy
 	Always create smart objects when placing	Při umísťování vždy vytvořit chytré objekty
+	Skip transform when placing	Při umísťování přeskočit transformaci
 	Animated zoom	Animované zvětšování
 	Apply auto tone	Použít automatický tón
 	Ask	Zeptat se
@@ -2036,11 +2054,16 @@
 	Brush preview color	Barva náhledu štětce
 	Cache levels	Úrovně mezipaměti
 	Cache tile size	Velikost dlaždice mezipaměti
-	Camera Raw Defaults	Výchozí nastavení Camera Raw
+	RAW Defaults	Výchozí nastavení RAW
 	Canvas border	Okraj plátna
 	Show canvas dots	Zobrazit tečky plátna
 	Clip thumbnails to layer bounds	Oříznout miniatury na hranice vrstvy
 	Clip Thumbnails to Layer Bounds	Oříznout miniatury na hranice vrstvy
+	No Thumbnails	Bez miniatur
+	Small Thumbnails	Malé miniatury
+	Medium Thumbnails	Střední miniatury
+	Large Thumbnails	Velké miniatury
+	Clip Thumbnails to Document Bounds	Oříznout miniatury na hranice dokumentu
 	Canvas color	Barva plátna
 	Canvas custom color	Vlastní barva plátna
 	Color picker	Výběr barvy
@@ -2118,7 +2141,6 @@
 	Never	Nikdy
 	Normal tip	Normální hrot
 	Open as smart object	Otevřít jako chytrý objekt
-	Open in camera raw	Otevírat v Camera Raw
 	Open documents as tabs	Otevírat dokumenty jako záložky
 	Overscroll	Posouvání za okraj
 	Performance	Výkon
@@ -2158,7 +2180,6 @@
 	Show only crosshair while painting	Při malování zobrazit jen nitkový kříž
 	Show slice numbers	Zobrazit čísla řezů
 	Show tooltips	Zobrazit popisky nástrojů
-	Enable animations	Povolit animace
 	Show highlight on rollover	Zobrazit zvýraznění při přejetí
 	Show bounding box when dragging layer	Při přetahování vrstvy zobrazit ohraničovací rámeček
 	System title bar	Systémové záhlaví okna
@@ -2250,7 +2271,7 @@
 	Graphics	Grafika
 	Reset GPU Backend	Obnovit grafický backend
 	Applies at next launch.	Projeví se při příštím spuštění.
-	Click to sample the foreground colour  ·  {key}-click for background	Kliknutím nasnímáte barvu popředí  ·  {key}+kliknutím barvu pozadí
+	Click to sample the foreground color  ·  {key}-click for background	Kliknutím nasnímáte barvu popředí  ·  {key}+kliknutím barvu pozadí
 	{key}-click to set the source	{key}+kliknutím nastavíte zdroj
 	{key} to subtract	{key} pro odebrání
 	Clone source {n} ({key}-click with Clone Stamp to set)	Zdroj klonování {n} (nastavíte {key}+kliknutím klonovacím razítkem)
@@ -2312,7 +2333,7 @@
 	Gradient Options	Možnosti přechodu
 	Align with layer	Zarovnat s vrstvou
 	Reset Alignment	Obnovit zarovnání
-	Centre the gradient (offset 0, 0)	Vystředit přechod (posun 0, 0)
+	Center the gradient (offset 0, 0)	Vystředit přechod (posun 0, 0)
 	Gradient Editor	Editor přechodů
 	Gradient picker	Výběr přechodu
 	Save As Preset	Uložit jako preset
@@ -2345,7 +2366,7 @@
 	Alt-click to define a source point to clone from	Kliknutím s klávesou Alt určete zdrojový bod pro klonování
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Není k dispozici žádná cesta, ze které by šlo vytvořit výběr: nakreslete ji nástrojem Pero nebo ji vyberte na panelu Cesty.
 	Cancel opening	Zrušit otevírání
-	Cancelled opening {name}	Otevírání {name} zrušeno
+	Canceled opening {name}	Otevírání {name} zrušeno
 	Damaged Photoshop document	Poškozený dokument Photoshopu
 	The document “{name}” may be damaged.	Dokument „{name}“ může být poškozený.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Některé vrstvy, pixely nebo masky nebylo možné načíst. Chcete pokračovat v otevírání?
@@ -2354,7 +2375,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Dokument „{name}“ má vložený barevný profil, který neodpovídá aktuálnímu pracovnímu prostoru barev {mode}.
 	Working: {working}	Pracovní: {working}
 	Developing {name}	Vyvolávání {name}
-	Cancelled {label}	Zrušeno: {label}
+	Canceled {label}	Zrušeno: {label}
 	Esc to cancel	Esc pro zrušení
 	Opened {name}	Otevřeno: {name}
 	Opening {name}	Otevírání {name}
@@ -2362,7 +2383,7 @@
 	Saving {name}	Ukládání {name}
 	Saving {percent}	Ukládání {percent}
 	A save to {name} is still running; try again when it finishes	Ukládání do {name} stále probíhá; zkuste to znovu, až skončí
-	{label} is writing the file and can no longer be cancelled	{label} zapisuje soubor a už ho nelze zrušit
+	{label} is writing the file and can no longer be canceled	{label} zapisuje soubor a už ho nelze zrušit
 	Opening {name}…	Otevírání {name}…
 	Opening…	Otevírání…
 	Reading…	Načítání…
@@ -2397,8 +2418,8 @@
 	Tone Histogram	Histogram tónů
 	Show Selected Region	Zobrazit vybranou oblast
 cameraRaw	Light	Světlo
-	Camera Raw Filter ({layer})	Filtr Camera Raw ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+	RAW Develop Filter ({layer})	Filtr Vyvolání RAW ({layer})
+	RAW Develop ({name})	Vyvolání RAW ({name})
 cameraRaw	Red	Červené
 cameraRaw	Orange	Oranžové
 cameraRaw	Yellow	Žluté
@@ -2446,7 +2467,7 @@ cameraRaw	Color	Barvy
 	Discard Layers and Save a Copy	Zahodit vrstvy a uložit kopii
 	Don't show again	Příště nezobrazovat
 	Save failed: {error}	Uložení se nezdařilo: {error}
-	Save cancelled	Ukládání zrušeno
+	Save canceled	Ukládání zrušeno
 	Couldn't place {name}: {error}	Nelze umístit {name}: {error}
 	Magnetic Lasso Tool	Nástroj magnetické laso
 	Frequency	Frekvence
@@ -2579,7 +2600,7 @@ fontWeight	Italic	Kurzíva
 	Rotate View	Otočit zobrazení
 	Rotate View Tool	Nástroj otočení zobrazení
 	Reset View	Obnovit zobrazení
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Tažením kolem středu otočíte zobrazení  ·  Shift omezí na 15°
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Tažením kolem středu otočíte zobrazení  ·  Shift omezí na 15°
 	Dual Axis	Dvojitá osa
 	Diagonal	Diagonální
 	Transform Symmetry	Transformovat symetrii
@@ -2594,8 +2615,8 @@ fontWeight	Italic	Kurzíva
 	All Layers No Adjustments	Všechny vrstvy bez korekcí
 	Current & Below No Adjustments	Aktuální a pod ní bez korekcí
 	Show Sampling Ring	Zobrazit vzorkovací kroužek
-	Out of gamut for printing: click for the nearest printable colour	Mimo gamut tisku: klepnutím zvolíte nejbližší tisknutelnou barvu
-	Not a web colour: click for the nearest web colour	Není webová barva: klepnutím zvolíte nejbližší webovou barvu
+	Out of gamut for printing: click for the nearest printable color	Mimo gamut tisku: klepnutím zvolíte nejbližší tisknutelnou barvu
+	Not a web color: click for the nearest web color	Není webová barva: klepnutím zvolíte nejbližší webovou barvu
 	Color to Alpha…	Barva na alfu…
 	Transparency Threshold	Práh průhlednosti
 	Opacity Threshold	Práh krytí
@@ -2689,7 +2710,7 @@ fontWeight	Italic	Kurzíva
 	How often fastening points are placed by themselves	Jak často se kotevní body umisťují samy
 	Scrubby Zoom	Plynulá lupa
 	{mode} Color · {bits} bit	Barva {mode} · {bits} bitů
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Tažením nakreslete ořez · tažením uvnitř posunete · okraje mění velikost ({ratio} poměr, {centre} střed) · Mezerník posouvá při kreslení · šipky posunují · X prohodí orientaci · {commit} potvrdí · Esc zruší
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Tažením nakreslete ořez · tažením uvnitř posunete · okraje mění velikost ({ratio} poměr, {centre} střed) · Mezerník posouvá při kreslení · šipky posunují · X prohodí orientaci · {commit} potvrdí · Esc zruší
 	Appearance Settings…	Nastavení vzhledu…
 	Add to favorites	Přidat do oblíbených
 	Remove from favorites	Odebrat z oblíbených
@@ -2877,8 +2898,8 @@ cameraData	Lens	Objektiv
 	Burlap	Pytlovina
 	Calculations	Výpočty
 	Camera Calibration	Kalibrace fotoaparátu
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Filtr Camera Raw
+	RAW Develop	Vyvolání RAW
+	RAW Develop Filter	Filtr Vyvolání RAW
 	Candle Light	Plamen svíčky
 	Canvas Size	Velikost plátna
 	Caption	Popisek
@@ -3225,6 +3246,7 @@ cameraData	Lens	Objektiv
 	Magnetic Lasso	Magnetické laso
 	Make	Výrobce
 	Make Selection	Vytvořit výběr
+	Make Shape	Vytvořit tvar
 	Make Work Path	Vytvořit pracovní cestu
 	Manual	Ručně
 	Map Document	Dokument mapy
@@ -3784,7 +3806,7 @@ curves	Smooth	Vyhladit
 	Scroll menu down	Posunout nabídku dolů
 	This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?	Před pokračováním je nutné tuto textovou vrstvu rastrovat. Její text už nebude možné upravovat. Rastrovat text?
 	This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?	Před pokračováním je nutné tuto vrstvu tvaru rastrovat. Už ji nebude možné upravovat jako tvar. Rastrovat tvar?
-	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	Před pokračováním je nutné tento chytrý objekt rastrovat. Jeho obsah už nebude možné upravovat. Rastrovat chytrý objekt?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	Před pokračováním je nutné tento chytrý objekt rastrovat. Jeho obsah už nebude možné upravovat. Rastrovat chytrý objekt?
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Před pokračováním je nutné tuto vrstvu výplně rastrovat. Její výplň už nebude možné upravovat. Rastrovat vrstvu?
 	This layer must be rasterized before proceeding.	Před pokračováním je nutné tuto vrstvu rastrovat.
 	Color Picker (Background Color)	Výběr barvy (barva pozadí)
@@ -3906,10 +3928,13 @@ navigator	Zoom	Zvětšení
 	Auto Add/Delete	Automaticky přidat/odstranit
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Nezapínejte současně zrcadlení v nastavení tisku: obě převrácení se navzájem zruší.
 	Print Settings…	Nastavení tisku…
-	Remember to turn off the printer's own colour management in Print Settings…	Nezapomeňte v nastavení tisku vypnout vlastní správu barev tiskárny…
+	Remember to turn off the printer's own color management in Print Settings…	Nezapomeňte v nastavení tisku vypnout vlastní správu barev tiskárny…
 	Sent to {printer}	Odesláno do {printer}
 	set in Print Settings…	nastavuje se v nastavení tisku…
 	ICO is limited to 256 × 256 pixels	ICO je omezen na 256 × 256 pixelů
+	Automatically Create First Snapshot	Automaticky vytvořit první snímek
+	Automatically Create New Snapshot When Saving	Automaticky vytvořit nový snímek při ukládání
+	Show New Snapshot Dialog by Default	Ve výchozím nastavení zobrazit dialog Nový snímek
 	Memory usage percent	Využití paměti (%)
 	Show Favorite Fonts	Zobrazit oblíbená písma
 	No favorite fonts yet: click the star beside a font to add it.	Zatím žádná oblíbená písma: přidejte písmo kliknutím na hvězdičku vedle něj.
@@ -4038,12 +4063,12 @@ navigator	Zoom	Zvětšení
 	Decrease Brush Hardness	Snížit tvrdost štětce
 	Increase Brush Hardness	Zvýšit tvrdost štětce
 	Demosaic	Demozaikování
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Jak se doplňuje mozaika barevného filtru fotoaparátu. Použije se při otevření souboru; náhled ukazuje metodu, se kterou byl otevřen.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Jak se doplňuje mozaika barevného filtru fotoaparátu. Použije se při otevření souboru; náhled ukazuje metodu, se kterou byl otevřen.
 	AHD (adaptive homogeneity)	AHD (adaptivní homogenita)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: nejčistší hrany a nejméně barevných lemů, nejpomalejší.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Interpolace s korekcí gradientu: ostrá a rychlá, s mírnými barevnými lemy v jemných detailech.
-	The fastest and the softest, with colour fringing on fine detail.	Nejrychlejší a nejměkčí, s barevnými lemy v jemných detailech.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: nejčistší hrany a nejméně barevných lemů, nejpomalejší.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Interpolace s korekcí gradientu: ostrá a rychlá, s mírnými barevnými lemy v jemných detailech.
+	The fastest and the softest, with color fringing on fine detail.	Nejrychlejší a nejměkčí, s barevnými lemy v jemných detailech.
 	“{name}” already exists. Replace it?	„{name}“ již existuje. Nahradit?
 	The name in the save dialog was “{name}”.	Název v dialogu ukládání byl „{name}“.
 	Export As: {name}	Exportovat jako: {name}
@@ -4230,8 +4255,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	Přechod stupňů šedi
 	Current Colors	Aktuální barvy
 	Make Ramp Web Safe	Omezit pruh na webové barvy
+	Scroll All Windows	Posouvat všechna okna
 	The path was kept as the Work Path	Cesta byla zachována jako pracovní cesta
 	The path was discarded	Cesta byla zahozena
+# Art History Brush (#213).
 	Art History Brush	Štětec umělecké historie
 	Art History Brush Tool	Nástroj štětec umělecké historie
 	Tight Short	Těsný krátký
@@ -4313,3 +4340,35 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace Image…	Nahradit obrázek…
 	The frame is locked	Rámeček je zamčený
 	The frame is unavailable	Rámeček není dostupný
+
+# Channels panel menu (#11451)
+	Channel Options…	Možnosti kanálu…
+	Specify Channels:	Určit kanály:
+	Not enough grayscale documents for this mode.	Pro tento režim není dost dokumentů ve stupních šedi.
+	Pick a different document for each channel.	Pro každý kanál vyberte jiný dokument.
+	A picked document is no longer open.	Jeden z vybraných dokumentů už není otevřený.
+	A picked document is no longer a grayscale document of the same size.	Jeden z vybraných dokumentů už není dokument ve stupních šedi stejné velikosti.
+	Netscape Gray	Šedá Netscape
+# Move tool options bar (#11381)
+	Align top edges	Zarovnat horní okraje
+	Align vertical centers	Zarovnat svislé středy
+	Align bottom edges	Zarovnat dolní okraje
+	Distribute vertically	Rozmístit svisle
+	Distribute horizontally	Rozmístit vodorovně
+	Show layer bounds on hover	Zobrazit hranice vrstvy při najetí
+	Expand layer group on click	Rozbalit skupinu vrstev kliknutím
+	Show hover bounds from Layers	Zobrazit hranice při najetí z panelu Vrstvy
+	Saved RAW Develop settings to {file}	Nastavení Vyvolání RAW uložena do {file}
+	Save the settings to each raw's sidecar without opening it	Uložit nastavení do souboru sidecar každého snímku raw bez jeho otevření
+	No settings saved: these raws can't keep a sidecar here	Nic neuloženo: tyto snímky raw zde nemohou mít soubor sidecar
+	Some settings could not be saved; the raws stay open	Některá nastavení nelze uložit; snímky raw zůstávají otevřené
+	Nothing to save: these raws are at their default settings	Není co ukládat: tyto snímky raw mají výchozí nastavení
+# Artboard tool options bar (#11385)
+	Distribute Widths	Rozmístit šířky
+	Distribute Heights	Rozmístit výšky
+	Auto-nest Layers	Automaticky vnořovat vrstvy
+	Auto-size Canvas	Automaticky měnit velikost plátna
+	Keep Relative Position During Layer Reordering	Zachovat relativní polohu při změně pořadí vrstev
+	Shrinkwrap Canvas on Save	Při uložení zmenšit plátno na obsah
+	Move Toolbar to the Right	Přesunout panel nástrojů doprava
+	Move Toolbar to the Left	Přesunout panel nástrojů doleva

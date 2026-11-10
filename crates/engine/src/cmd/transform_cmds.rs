@@ -17,6 +17,9 @@ fn has_layer(s: &Session) -> std::result::Result<(), String> {
     s.active().and_then(|d| d.active_layer).map(|_| ()).ok_or_else(|| "no active layer".into())
 }
 
+/// The History step name of a shape-tool bounding box scale (`edit.transform` `stepName`).
+pub const TRANSFORM_PATH: &str = "Transform Path";
+
 fn bad(msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: "edit.transform".into(), msg: msg.into() }
 }
@@ -269,9 +272,9 @@ pub fn locked_for_transform(doc: &Document, id: LayerId) -> bool {
 }
 
 /// The layers Free Transform moves with the Layers panel's selection, bottom-to-top: with several
-/// layers selected, every one that no selected group already carries, as in Photoshop (#6501), but
-/// the Background, which Show Transform Controls doesn't frame either. With one layer selected (or
-/// only the Background besides it), that layer; the active layer when nothing else is.
+/// layers selected, every one that no selected group already carries, as in Photoshop (#6501). The
+/// Background stays among them, so such a box refuses as locked (#11101, [`background_among`]).
+/// With one layer selected, that layer; the active layer when nothing else is.
 pub fn selection_targets(st: &crate::DocState) -> Vec<LayerId> {
     targets_of(&st.doc, &st.selected_layers(), st.active_layer)
 }
@@ -282,14 +285,23 @@ pub(crate) fn targets_of(doc: &Document, selected: &[LayerId], active: Option<La
     if selected.len() < 2 {
         return active.into_iter().collect();
     }
-    let ids: Vec<LayerId> = crate::layer_multi_cmds::top_level(doc, selected).into_iter().filter(|id| !doc.is_background(*id)).collect();
+    let ids = crate::layer_multi_cmds::top_level(doc, selected);
     if ids.is_empty() { active.into_iter().collect() } else { ids }
+}
+
+/// The Background when it is among several layers one box would move: Photoshop refuses that Free
+/// Transform with its locked-layer alert rather than leaving the Background out (#11101).
+pub fn background_among(doc: &Document, ids: &[LayerId]) -> Option<LayerId> {
+    if ids.len() < 2 {
+        return None;
+    }
+    ids.iter().copied().find(|id| doc.is_background(*id))
 }
 
 /// The layers one box over `targets` moves: `targets` with the layers linked to them, as the Move
 /// tool takes them along. In Photoshop transforming one linked layer transforms the whole link
-/// group (#11217). A linked Background joins only when it is a target itself: `targets_of`
-/// leaves it out of a box over other layers, and a link doesn't bring it back in.
+/// group (#11217). A linked Background joins only when it is a target itself: a link doesn't
+/// bring it into a box over other layers.
 pub fn box_targets(doc: &Document, targets: &[LayerId]) -> Vec<LayerId> {
     let mut ids = crate::layer_multi_cmds::move_targets(doc, targets);
     ids.retain(|id| targets.contains(id) || !doc.is_background(*id));
@@ -622,18 +634,23 @@ pub fn split_selected(surf: &Surface, sel: &Surface) -> Result<(Surface, Surface
 /// masks and Smart Filter mask follow, and type, shapes and smart objects re-render. The document
 /// selection is left alone.
 pub(crate) fn transform_by(doc: &mut Document, id: LayerId, affine: Affine, interp: Interp) -> Result<()> {
-    let h = crate::smart_cmds::affine_homography(&affine);
+    transform_by_map(doc, id, &crate::smart_cmds::affine_homography(&affine), Some(affine), interp)
+}
+
+/// [`transform_by`] with the map already built, and `affine` only when it is affine (Distort and
+/// Perspective results aren't: their smart object keeps the full projective placement).
+pub(crate) fn transform_by_map(doc: &mut Document, id: LayerId, h: &Homography, affine: Option<Affine>, interp: Interp) -> Result<()> {
     let group = group_locks(doc, id);
     let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
     // Price the smart object caches before they are taken: the fallback warp below isn't budgeted.
-    check_layer_budget(None, l, &h)?;
+    check_layer_budget(None, l, h)?;
     let taken = crate::smart_cmds::take_caches(std::slice::from_mut(l));
-    apply_transform(None, group, l, &h, Some(affine), interp, &Interrupt::NONE)?;
+    apply_transform(None, group, l, h, affine, interp, &Interrupt::NONE)?;
     let snapshot = doc.clone();
     if let Some(l) = doc.layer_mut(id) {
         refresh_text(&snapshot, l);
     }
-    crate::smart_cmds::restore_unrendered(doc, taken, |c| warp_surface(c, c.content_bounds(), &h, interp))?;
+    crate::smart_cmds::restore_unrendered(doc, taken, |c| warp_surface(c, c.content_bounds(), h, interp))?;
     Ok(())
 }
 
@@ -841,6 +858,13 @@ fn with_panel_target(s: &Session, p: &Value) -> Value {
 }
 
 fn transform(s: &mut Session, p: &Value) -> Result<Value> {
+    // The shape tools' bounding box scales live shapes with this command and names the step as
+    // the reference does. Passed in, not renamed after: the edit may land later as a job.
+    let step_name = match p.get("stepName") {
+        None | Some(Value::Null) => "Free Transform",
+        Some(Value::String(n)) if n == TRANSFORM_PATH => TRANSFORM_PATH,
+        Some(_) => return Err(bad("`stepName` must be \"Transform Path\"")),
+    };
     let p = &with_panel_target(s, p);
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let many = layers_param(&st.doc, p)?;
@@ -864,7 +888,14 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
         (Some(ids), _) => ids,
         _ if lone.is_some() => Vec::new(),
         (None, Some(id)) => vec![id],
-        (None, None) => selection_targets(st),
+        (None, None) => {
+            let ids = selection_targets(st);
+            if let Some(bg) = background_among(&st.doc, &ids) {
+                let name = st.doc.layer(bg).map_or("Background", |l| l.name.as_str());
+                return Err(EngineError::Other(format!("layer \"{name}\" is locked")));
+            }
+            ids
+        }
     };
     if let Some(missing) = ids.iter().find(|id| st.doc.layer(**id).is_none()) {
         return Err(EngineError::NoLayer(*missing));
@@ -920,7 +951,7 @@ fn transform(s: &mut Session, p: &Value) -> Result<Value> {
     // on a worker with progress, and can be cancelled.
     crate::jobs::edit_job(
         s,
-        "Free Transform",
+        step_name,
         move |doc, _, ctx| ctx.stage(0.0, 1.0, "Transforming", |ctl| transform_doc(doc, id, &ids, &p, lone, &h, affine, interp, ctl)),
         move |()| json!({"rect": rect, "layers": layers}),
     )
@@ -1006,7 +1037,7 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Free Transform",
         menu: &[],
         shortcut: None,
-        params: r##"{"layer":id?,"layers":[id,…]? (several layers moved by one box, one step; default with neither = the selected layers but the Background, as Photoshop's Free Transform with several selected),"rect":[x0,y0,x1,y1]? (source frame; default = the layers' content ∩ selection),"quad":[[x,y]×4]? (where the frame's corners go, clockwise from top-left),"matrix":[a,b,c,d,e,f]? (affine alternative),"scaleX":%?,"scaleY":%?,"rotate":deg?,"dx":px?,"dy":px?,"reference":"center|topLeft|top|topRight|left|right|bottomLeft|bottom|bottomRight"|[x,y]="center" (relative alternative: scale and rotate about this point, then move),"interpolation":"bicubic|bilinear|nearest|bicubicSharper|bicubicSmoother|bicubicAutomatic"="bicubic" (Photoshop's bicubic variants render as Bicubic),"target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target (an unlinked mask, an alpha channel or the Quick Mask transforms alone; a linked mask moves with its layer)}"##,
+        params: r##"{"layer":id?,"layers":[id,…]? (several layers moved by one box, one step; default with neither = the selected layers, as Photoshop's Free Transform with several selected; refused as locked when the Background is among several),"rect":[x0,y0,x1,y1]? (source frame; default = the layers' content ∩ selection),"quad":[[x,y]×4]? (where the frame's corners go, clockwise from top-left),"matrix":[a,b,c,d,e,f]? (affine alternative),"scaleX":%?,"scaleY":%?,"rotate":deg?,"dx":px?,"dy":px?,"reference":"center|topLeft|top|topRight|left|right|bottomLeft|bottom|bottomRight"|[x,y]="center" (relative alternative: scale and rotate about this point, then move),"interpolation":"bicubic|bilinear|nearest|bicubicSharper|bicubicSmoother|bicubicAutomatic"="bicubic" (Photoshop's bicubic variants render as Bicubic),"stepName":"Transform Path"? (History step name; the shape tools' bounding box sends it; default "Free Transform"; any other value is refused),"target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target (an unlinked mask, an alpha channel or the Quick Mask transforms alone; a linked mask moves with its layer)}"##,
         enabled: has_layer,
         journal: true,
         run: transform,

@@ -87,7 +87,41 @@ fn unsmoothed_wheel_pans_at_once_without_a_glide() {
     assert!(smooth[1..].iter().any(|p| p.y != 0.0), "and the rest follows");
 }
 
-/// Interface › Enable Animations off only stops the *pan* gliding. A plain wheel that zooms
+/// Unsmoothed, only `Move` wheel events pan, as egui scrolls by them alone: a trackpad's
+/// `Start`, `End` or `Cancel` event with a delta doesn't move the canvas.
+#[test]
+fn unsmoothed_pan_ignores_wheel_events_outside_the_move_phase() {
+    let ctx = Context::default();
+    configure(&ctx);
+    let owner = Id::unique("test-unsmoothed-phase");
+    let event = |phase: TouchPhase| Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit: MouseWheelUnit::Point,
+        delta: Vec2::new(0.0, -30.0),
+        phase,
+        modifiers: Modifiers::NONE,
+    };
+    let pan_of = |n: u32, events: Vec<Event>| {
+        let raw = RawInput { time: Some(f64::from(n) / 60.0), predicted_dt: 1.0 / 60.0, events, ..Default::default() };
+        let mut pan = Vec2::ZERO;
+        let mut out = ctx.run_ui(raw, |ui| {
+            if let Some(Wheel::Pan(d)) = read_with(ui.ctx(), false, true, true, owner, true, false, true) {
+                pan = d;
+            }
+        });
+        out.textures_delta.clear();
+        pan
+    };
+    for (n, phase) in [TouchPhase::Start, TouchPhase::End, TouchPhase::Cancel].into_iter().enumerate() {
+        let n = u32::try_from(n).unwrap_or(0) * 2;
+        assert_eq!(pan_of(n, vec![event(phase)]), Vec2::ZERO, "{phase:?} doesn't pan");
+        assert_eq!(pan_of(n + 1, Vec::new()), Vec2::ZERO, "nor after {phase:?}");
+    }
+    let moved = pan_of(10, vec![event(TouchPhase::Start), event(TouchPhase::Move), event(TouchPhase::End)]);
+    assert!(near(moved, Vec2::new(0.0, -30.0)), "only the Move delta pans: {moved:?}");
+}
+
+/// Pan smoothing off (the canvas, #9479) only stops the *pan* gliding. A plain wheel that zooms
 /// (Zoom with Scroll Wheel) with Animated Zoom on must still ease over the frames of a notch,
 /// exactly as it does with the pan smoothing on.
 #[test]
@@ -372,7 +406,7 @@ fn animated_zoom_does_not_ease_a_trackpad() {
     assert!(frames[1..].iter().all(|f| *f == 1.0), "no tail after it: {frames:?}");
 }
 
-/// Zoom with Scroll Wheel + Animated Zoom with Enable Animations off: the wheel zooms eased, but
+/// Zoom with Scroll Wheel + Animated Zoom with pan smoothing off: the wheel zooms eased, but
 /// a sideways wheel still pans without a glide (#5721), all of it in the frame it turns.
 #[test]
 fn animated_zoom_keeps_the_sideways_wheel_unsmoothed_with_animations_off() {
@@ -395,6 +429,44 @@ fn animated_zoom_keeps_the_sideways_wheel_unsmoothed_with_animations_off() {
         .collect();
     assert!(near(pans[0], Vec2::new(40.0, 0.0)), "the whole notch at once: {:?}", &pans[..4]);
     assert!(pans[1..].iter().all(|p| *p == Vec2::ZERO), "no glide after it: {pans:?}");
+}
+
+/// One frame of `events` read with pan smoothing off (the canvas, #9479) and Animated Zoom on.
+fn unsmoothed_frame(events: Vec<Event>, zoom_with_wheel: bool) -> Option<Wheel> {
+    let ctx = Context::default();
+    configure(&ctx);
+    let raw = RawInput { time: Some(0.0), predicted_dt: 1.0 / 60.0, events, ..Default::default() };
+    let mut wheel = None;
+    let mut out = ctx.run_ui(raw, |ui| wheel = read_with(ui.ctx(), zoom_with_wheel, true, true, Id::unique("test-mixed"), true, false, true));
+    out.textures_delta.clear();
+    wheel
+}
+
+/// Unsmoothed, the canvas pans by the wheel events of the gesture in progress only (the latest
+/// event's modifiers pick it, as for zooming): a ⌥ notch (a zoom) or a ⇧ notch (a snap zoom)
+/// arriving in the same frame as the panning notch must not pan the canvas too.
+#[test]
+fn unsmoothed_pan_takes_only_the_wheel_events_of_the_gesture_in_progress() {
+    let down = Vec2::new(0.0, -1.0);
+    // ⌥ zooms, then a plain notch pans: one notch, not two.
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::ALT), wheel(down, Modifiers::NONE)], false);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(0.0, -40.0))), "only the plain notch pans");
+    // ⇧ + wheel pans sideways: a plain notch before it in the frame is not part of that.
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::NONE), wheel(down, Modifiers::SHIFT)], false);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(-40.0, 0.0))), "only the ⇧ notch pans, sideways");
+    // Zoom with Scroll Wheel: ⌥ + wheel pans; the plain notch before it zooms and doesn't pan.
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::NONE), wheel(down, Modifiers::ALT)], true);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(0.0, -40.0))), "only the ⌥ notch pans");
+    // ...and with the plain wheel zooming, a ⇧ snap notch earlier in the frame doesn't pan sideways.
+    let zoom = unsmoothed_frame(vec![wheel(Vec2::new(0.0, 1.0), Modifiers::SHIFT), wheel(down, Modifiers::NONE)], true);
+    assert!(matches!(zoom, Some(Wheel::Zoom(f)) if f < 1.0), "the plain notch zooms, nothing pans: {zoom:?}");
+    // ⌘/Ctrl + wheel is part of the plain gesture: it pans sideways alongside a plain notch.
+    let pan = unsmoothed_frame(vec![wheel(down, CTRL), wheel(down, Modifiers::NONE)], false);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(-40.0, -40.0))), "⌘/Ctrl + wheel and a plain notch both pan");
+    // A held ⌥ the wheel event itself misses (#8049) still makes it the ⌥ gesture's.
+    let alt_key = |pressed: bool| Event::Key { key: Key::AltLeft, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    let pan = unsmoothed_frame(vec![wheel(down, Modifiers::NONE), alt_key(true), wheel(down, Modifiers::NONE), alt_key(false)], true);
+    assert_eq!(pan, Some(Wheel::Pan(Vec2::new(0.0, -40.0))), "only the notch under the held ⌥ pans");
 }
 
 /// A diagonal point step with ⌥ is measured as egui measures it, folded onto one axis: (5, 5)

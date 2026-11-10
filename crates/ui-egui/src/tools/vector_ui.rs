@@ -30,7 +30,7 @@ pub(crate) use curvature::curvature_anchor_at;
 pub use curvature::{curvature_down, curvature_move, curvature_toggle, curvature_up};
 #[cfg(test)]
 use options::{corner_radii_patch, solid_paint};
-pub(crate) use options::{enabled_stroke_width, paint_gesture};
+pub(crate) use options::{draws_path, enabled_stroke_width, paint_gesture};
 pub use options::{options_bar, shape_properties};
 pub use overlay::draw_overlay;
 pub(crate) use overlay::selected_saved_path_index;
@@ -41,7 +41,9 @@ pub(crate) use overlay::{curve_points, path_lines, selected_saved_path, shows_an
 pub(crate) use overlay::{draw_anchor, draw_handle, draw_outline};
 #[cfg(test)]
 use path_ops::target_path;
-pub use path_ops::{active_path_name, path_selection_finish, path_to_selection, pick_shape_at, selected_document_path, takes_path_mask, with_active_path};
+pub use path_ops::{
+    active_path_name, make_shape, path_selection_finish, path_to_selection, pick_shape_at, selected_document_path, takes_path_mask, with_active_path,
+};
 pub(crate) use path_ops::{
     active_shape_path, active_type_path, delete_key_deletes_work_path, deselect_loaded_path, free_transform_path, targeted_vector_mask, work_path_shown,
 };
@@ -54,7 +56,8 @@ pub(crate) use pen::over_first_anchor;
 use pen::pen_to_json;
 pub(crate) use pen::{PATH_OPS, pen_path, pen_replace};
 pub use pen::{
-    cancel_stale, closes_path_at, freeform_finish, pen_break_handle, pen_commit, pen_down, pen_end, pen_grab_handle, pen_move, pen_undo_last_point, pen_up,
+    cancel_stale, closes_path_at, continues_path_at, freeform_finish, pen_break_handle, pen_commit, pen_down, pen_end, pen_grab_handle, pen_move,
+    pen_undo_last_point, pen_up,
 };
 #[cfg(test)]
 use pen::{closing, pen_path_op};
@@ -167,6 +170,11 @@ pub struct PenPath {
     /// commit replaces that subpath instead of adding one.
     #[serde(default)]
     pub resumes: Option<Resumed>,
+    /// The Curvature Pen carrying on a path: its knots as they were, which keep their shape while
+    /// the new anchors' handles follow them (`curvature_refresh`, #10726). The last one is the
+    /// endpoint drawing carries on from; only its outgoing handle bends into the new segment.
+    #[serde(default)]
+    pub fixed: Vec<[[f64; 2]; 3]>,
 }
 
 /// The subpath a Pen path carries on: where it is and what it was when drawing resumed. The
@@ -193,6 +201,9 @@ impl PenPath {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod path_drag_preview_tests;
 
 #[cfg(test)]
 mod path_selection_tests;

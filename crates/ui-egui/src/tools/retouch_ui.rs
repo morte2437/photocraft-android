@@ -29,9 +29,9 @@ pub(crate) fn clone_params(app: &PhotocraftApp) -> Option<Value> {
     let o = &app.ui.tool_options;
     // The options bar's Mode is the tool's own brush's.
     let mode = crate::blend_keys::brush_tool_mode(app.ui.tool, app.session.tools.brush.mode);
-    let mut p = json!({"aligned": o.clone_aligned, "sampleLayer": o.clone_sample, "mode": mode.label()});
+    // View › Pattern Preview: both tools carry a stroke on across the canvas edges (#8883).
+    let mut p = json!({"aligned": o.clone_aligned, "sampleLayer": o.clone_sample, "mode": mode.label(), "wrap": app.ui.view.pattern_preview});
     if app.ui.tool == Tool::CloneStamp {
-        p["wrap"] = json!(app.ui.view.pattern_preview);
         p["opacity"] = json!(app.session.tools.brush.opacity * 100.0);
         p["flow"] = json!(app.session.tools.brush.flow * 100.0);
     }
@@ -84,7 +84,9 @@ pub(crate) fn color_replacement_params(app: &PhotocraftApp) -> Value {
         "mode": o.cr_mode,
         "sampling": o.cr_sampling,
         "limits": o.cr_limits,
-        "tolerance": o.cr_tolerance,
+        // As the field stores it (#11930), so a restored fraction replaces the same pixels before
+        // and after the options bar shows it.
+        "tolerance": crate::eraser_ui::stored_tolerance(o.cr_tolerance),
         "antiAlias": o.cr_anti_alias,
         // A mask or channel target is refused: the tool recolours layer pixels only.
         "target": crate::canvas::paint_target(app),
@@ -126,7 +128,7 @@ pub(crate) fn stroke_seed(points: &[[f64; 3]]) -> u64 {
 }
 
 /// Finish a stroke with a retouching tool. Returns false if `tool` isn't one.
-pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], mods: egui::Modifiers) -> bool {
+pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], mods: egui::Modifiers, line: bool) -> bool {
     let o = app.ui.tool_options.clone();
     let pts = json!(points);
     let (cmd, mut p): (&str, Value) = match tool {
@@ -183,6 +185,7 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
     p["points"] = pts;
     // The layer mask, an alpha channel or the Quick Mask when targeted, as the Brush paints.
     p["target"] = crate::canvas::paint_target(app);
+    crate::canvas::unsmoothed_line(&mut p, line);
     let result = app.run(cmd, p);
     app.retouch_from_live = matches!(&result, Ok(r) if r.get("fromLive").and_then(Value::as_bool) == Some(true));
     match result {
@@ -313,6 +316,41 @@ pub fn patch_drags_selection(app: &PhotocraftApp, at: [f64; 2], mods: egui::Modi
     sel.sample_channel(at[0].floor() as i32, at[1].floor() as i32, 0) > 0.0
 }
 
+/// A Patch or Content-Aware Move lasso that makes a new selection is being drawn: the selection it
+/// replaces is hidden from the press on, as in Photoshop, rather than shown beside the new outline
+/// until the release (#11024). Adding, subtracting and intersecting keep it visible. A drag pressed
+/// on another document hides nothing, even before `cancel_stale` drops it (the active document can
+/// change between `sync_views` and the canvas paint).
+pub fn patch_replaces_selection(app: &PhotocraftApp) -> bool {
+    app.drag.as_ref().is_some_and(|d| {
+        matches!(d.tool, Tool::Patch | Tool::ContentAwareMove)
+            && d.document.as_ref().is_none_or(|doc| doc.is_active(app))
+            && !patch_drags_selection(app, d.start, d.modifiers)
+            && crate::canvas::selection_mode(app, d.modifiers) == "replace"
+    })
+}
+
+/// A Patch or Content-Aware Move drag belongs to the document it was pressed on: once another one
+/// is active it is dropped, so it neither hides that document's selection nor lassos or patches it
+/// on release, and its own document shows its selection again (#11024). A document reopened with
+/// the same ID is another one too.
+pub fn cancel_stale(app: &mut PhotocraftApp) {
+    if app.drag.as_ref().is_some_and(|d| matches!(d.tool, Tool::Patch | Tool::ContentAwareMove) && d.document.as_ref().is_some_and(|doc| !doc.is_active(app))) {
+        app.drag = None;
+    }
+}
+
+/// Where a Patch drag ends: with ⇧ pressed after the press (⇧ at the press adds to the selection
+/// instead, so this never sees it) the end is held to the dominant axis from the start, 0 or 90
+/// degrees only (#12129). Other tools, and a drag without ⇧, end at `end`.
+pub fn patch_end(d: &crate::canvas::Drag, end: [f64; 2]) -> [f64; 2] {
+    if d.tool != Tool::Patch || !d.live.shift {
+        return end;
+    }
+    let (dx, dy) = (end[0] - d.start[0], end[1] - d.start[1]);
+    if dx.abs() >= dy.abs() { [end[0], d.start[1]] } else { [d.start[0], end[1]] }
+}
+
 /// Whole-pixel offset for a drag from `start` to `end`, limited so the dragged outline stays on the
 /// canvas (the engine rejects a patch or move that leaves it).
 pub fn patch_offset(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) -> [i32; 2] {
@@ -388,6 +426,85 @@ pub fn finish_content_aware_move(app: &mut PhotocraftApp, start: [f64; 2], end: 
         app.ui.status = e;
         app.ui.status_error = true;
     }
+}
+
+/// The Content-Aware Move tool's "Don't show again" for [`content_aware_move_no_pixels`].
+const CAM_NO_PIXELS_PREF: &str = "contentAwareMove.noPixelsSelected";
+
+/// Content-Aware Move Tool with no selection: a drag whose lasso would select no pixel (a click,
+/// a straight line) selects nothing and adds no History state, and says so in the alert "No pixels
+/// are selected." with "Don't show again" (#12192). Returns whether this drag was such a one. With
+/// a selection, or a lasso that selects pixels, it is the tool's lasso as before.
+pub fn content_aware_move_no_pixels(app: &mut PhotocraftApp, points: &[[f64; 2]]) -> bool {
+    let Some(canvas) = app.session.active().filter(|s| s.doc.selection.is_none()).map(|s| s.doc.bounds()) else { return false };
+    if lasso_selects_pixels(points, canvas, app.ui.tool_options.anti_alias) {
+        return false;
+    }
+    crate::dialogs::dont_show_again::alert(app, tl!("No pixels are selected."), CAM_NO_PIXELS_PREF);
+    true
+}
+
+/// Whether `select.lasso` through `points` would select any pixel of `canvas`: the same
+/// rasterization (its coverage over the canvas's coordinates), kept where it rounds to a nonzero
+/// 8-bit value as the selection stores it. Only the lasso's bounds are rasterized, a strip of rows
+/// at a time, stopping at the first selected pixel. The strips start at 64 rows, so a lasso that
+/// selects is answered after the first, and double up to about 4 MP (16 MB), so a lasso that
+/// selects nothing (a long line) is rasterized and scanned in parallel: a corner-to-corner line
+/// on 7360 x 4912 takes 25-32 ms, about what the `select.lasso` it replaces took (23-27 ms).
+fn lasso_selects_pixels(points: &[[f64; 2]], canvas: photocraft_geom::Rect, anti_alias: bool) -> bool {
+    const FIRST_STRIP: u32 = 64;
+    const MAX_STRIP_PIXELS: u32 = 1 << 22;
+    // `coverage8` of the selection combine: the 8-bit value a pixel's coverage is stored as. It
+    // only grows with the coverage, so a pixel is kept from the least coverage it keeps (found
+    // once over the f32 bits in [0, 1]), and the scan is a single compare per pixel.
+    let stored = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let (mut below, mut kept) = (0u32, 1.0f32.to_bits());
+    while kept - below > 1 {
+        let mid = below + (kept - below) / 2;
+        if stored(f32::from_bits(mid)) > 0 { kept = mid } else { below = mid }
+    }
+    let least = f32::from_bits(kept);
+    // As `select.lasso` reads the points.
+    let pts: Vec<(f32, f32)> = points.iter().map(|p| (p[0] as f32, p[1] as f32)).collect();
+    if pts.len() < 3 {
+        return false;
+    }
+    let (mut lo, mut hi) = ((f32::INFINITY, f32::INFINITY), (f32::NEG_INFINITY, f32::NEG_INFINITY));
+    for &(x, y) in pts.iter().filter(|(x, y)| x.is_finite() && y.is_finite()) {
+        lo = (lo.0.min(x), lo.1.min(y));
+        hi = (hi.0.max(x), hi.1.max(y));
+    }
+    if lo.0 > hi.0 || lo.1 > hi.1 {
+        return false;
+    }
+    // Saturating float-to-int casts; the canvas clips them.
+    let bounds =
+        photocraft_geom::Rect::new(lo.0.floor() as i32, lo.1.floor() as i32, (hi.0.ceil() as i32).saturating_add(1), (hi.1.ceil() as i32).saturating_add(1));
+    let window = bounds.intersect(&canvas);
+    let max_rows = (MAX_STRIP_PIXELS / window.width().max(1)).max(FIRST_STRIP);
+    let (mut y, mut rows) = (window.y0, FIRST_STRIP);
+    while y < window.y1 {
+        let strip = photocraft_geom::Rect::new(window.x0, y, window.x1, y.saturating_add_unsigned(rows).min(window.y1));
+        if any_at_least(&photocraft_algo::selection::polygon_window(&pts, canvas, strip, anti_alias), least) {
+            return true;
+        }
+        y = strip.y1;
+        rows = rows.saturating_mul(2).min(max_rows);
+    }
+    false
+}
+
+/// Whether any of `mask` is at least `least`: in parallel blocks, each one a branch-free pass the
+/// compiler vectorizes.
+fn any_at_least(mask: &[f32], least: f32) -> bool {
+    let block = |b: &[f32]| b.iter().fold(false, |found, v| found | (*v >= least));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        mask.par_chunks(1 << 16).any(block)
+    }
+    #[cfg(target_arch = "wasm32")]
+    mask.chunks(1 << 16).any(block)
 }
 
 /// `paint.contentAwareMove`'s params for a drag by `offset`, from the options bar.
@@ -501,12 +618,167 @@ fn pct(ui: &mut egui::Ui, label: &str, v: &mut f32) {
     crate::widgets::value_field(ui, v, 1.0..=100.0, "%", 58.0);
 }
 
+const STRUCTURE_RANGE_ALERT: &str = "An integer between 1 and 7 is required. Closest value inserted.";
+const COLOR_RANGE_ALERT: &str = "An integer between 0 and 10 is required. Closest value inserted.";
+const STRUCTURE_TIP: &str = "Adjust how strictly the source structure is preserved";
+const COLOR_TIP: &str = "Adjust how much the source color can be modified";
+
+/// Structure or Color on the Content-Aware Move bar (#12193): a whole-number field and a slider
+/// popup. A typed value outside `lo..=hi` becomes the closest value; returns true once the field
+/// is left, so the caller opens the alert. A scrub stops at the end without an alert.
+fn cam_integer_popup(ui: &mut egui::Ui, id: &str, name: &str, value: &mut f32, lo: f32, hi: f32, tip: &str) -> bool {
+    *value = if value.is_finite() { value.round().clamp(lo, hi) } else { lo };
+    let draft_id = ui.make_persistent_id(egui::IdSalt::new(id)).with("typed");
+    let draft = ui.ctx().data(|d| d.get_temp::<(f32, f32)>(draft_id));
+    let mut typed = draft.filter(|(_, stored)| *stored == *value).map_or(*value, |(typed, _)| typed);
+    // Wide range so a typed 99 reaches here unclamped. The caption just before this names the field.
+    let r = crate::widgets::value_field(ui, &mut typed, -1.0e9..=1.0e9, "", 40.0).on_hover_text(tl!(tip));
+    let out_id = r.id.with("out-of-range");
+    if r.gained_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id));
+    }
+    if r.changed() && typed.is_finite() {
+        *value = typed.round().clamp(lo, hi);
+        let typing = (r.has_focus() || r.lost_focus()) && ui.ctx().dragged_id().is_none();
+        let out = typing && !(lo..=hi).contains(&typed);
+        ui.ctx().data_mut(|d| d.insert_temp(out_id, out));
+        if typing && r.has_focus() {
+            ui.ctx().data_mut(|d| d.insert_temp(draft_id, (typed, *value)));
+        } else {
+            ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32)>(draft_id));
+        }
+    }
+    if !r.has_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32)>(draft_id));
+    }
+    cam_amount_slider(ui, name, value, lo, hi, tip);
+    r.lost_focus() && ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id)).unwrap_or(false)
+}
+
+/// The ▾ beside a Content-Aware Move amount: its pop-up slider snaps to whole numbers in `lo..=hi`.
+fn cam_amount_slider(ui: &mut egui::Ui, name: &str, value: &mut f32, lo: f32, hi: f32, tip: &str) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 22.0), egui::Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), name));
+    let resp = resp.on_hover_text(tl!(tip));
+    let popup = egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let open = popup.is_open();
+    if resp.hovered() || open {
+        let t = Tokens::get(ui.ctx());
+        ui.painter().rect_filled(rect, t.radius_sm, t.field_border.gamma_multiply(0.6));
+    }
+    crate::widgets::chevron_icon(ui, rect, ui.style().interact(&resp), open);
+    let parent_layer = resp.layer_id;
+    popup.show(|ui| {
+        crate::press_menu::above_parent_ui(parent_layer, ui);
+        ui.set_min_width(160.0);
+        let mut v = *value;
+        let s = crate::widgets::slider(ui, &mut v, lo..=hi, None);
+        if v.is_finite() {
+            let snapped = v.round().clamp(lo, hi);
+            if snapped != *value {
+                *value = snapped;
+            }
+        }
+        s.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(*value), name));
+    });
+}
+
+fn open_cam_range_alert(app: &mut PhotocraftApp, message: &str) {
+    let message = tl!(message).to_owned();
+    let shown =
+        app.ui.dialogs.iter().any(|d| d.kind == crate::state::DialogKind::Error && d.fields.get("message").and_then(|m| m.as_str()) == Some(message.as_str()));
+    if !shown {
+        app.ui.open_dialog(crate::state::DialogKind::Error, json!({ "message": message }).as_object().cloned().unwrap_or_default());
+    }
+}
+
+/// Content-Aware Move's options (#12193). While the Transform On Drop box is up, the controls are
+/// greyed and Cancel then Commit sit at the right end.
+fn content_aware_move_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let live = crate::cam_transform::active(app);
+    ui.add_enabled_ui(!live, |ui| {
+        crate::panels::selection_mode_buttons(&mut app.ui.selection_mode, ui);
+        crate::widgets::vline(ui, 22.0);
+        opt(ui, tl!("Mode:"));
+        let modes = [("move".to_string(), tl!("Move")), ("extend".to_string(), tl!("Extend"))];
+        crate::widgets::dropdown(ui, "cam-mode", tl!("Mode"), &mut app.ui.tool_options.cam_mode, &modes, 90.0);
+        if let Some(mode) = ui.ctx().read_response(ui.make_persistent_id(egui::IdSalt::new("cam-mode"))) {
+            mode.on_hover_text(tl!("Choose a remix mode"));
+        }
+        opt(ui, tl!("Structure:"));
+        if cam_integer_popup(ui, "cam-structure", "Structure", &mut app.ui.tool_options.cam_structure, 1.0, 7.0, STRUCTURE_TIP) {
+            open_cam_range_alert(app, STRUCTURE_RANGE_ALERT);
+        }
+        opt(ui, tl!("Color:"));
+        if cam_integer_popup(ui, "cam-color", "Color", &mut app.ui.tool_options.cam_color, 0.0, 10.0, COLOR_TIP) {
+            open_cam_range_alert(app, COLOR_RANGE_ALERT);
+        }
+        crate::widgets::checkbox(ui, &mut app.ui.tool_options.sample_all.content_aware_move, tl!("Sample All Layers"))
+            .on_hover_text(tl!("Enable to remix all layers"));
+        crate::widgets::checkbox(ui, &mut app.ui.tool_options.cam_transform_on_drop, tl!("Transform On Drop"))
+            .on_hover_text(tl!("Allows rotation and scaling of selection"));
+    });
+    crate::widgets::vline(ui, 22.0);
+    if live {
+        // right_to_left places the first widget at the right, so Commit is the rightmost and
+        // Cancel sits just to its left.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let tip = crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]);
+            let commit = crate::icons::button(ui, "check", 26.0, false, &tip);
+            commit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Commit transform"));
+            if commit.clicked() {
+                crate::cam_transform::commit(app);
+            }
+            let cancel = crate::icons::button(ui, "ban", 26.0, false, tl!("Cancel transform (Esc)"));
+            cancel.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Cancel transform"));
+            if cancel.clicked() {
+                crate::cam_transform::cancel(app);
+            }
+        });
+    } else {
+        opt(ui, tl!("Lasso around an area, then drag the selection"));
+    }
+}
+
+/// Draw Protect Tones with the shared checkbox's appearance and mouse behavior.
+/// Keep the label response here so its accessibility description needs no shared-widget API change.
+fn protect_tones_checkbox(ui: &mut egui::Ui, on: &mut bool) -> (egui::Response, egui::Id) {
+    let label = tl!("Protect Tones");
+    let t = Tokens::get(ui.ctx());
+    let (mut resp, label_resp) = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let (rect, resp) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::CLICK);
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            let l = ui
+                .add(egui::Label::new(egui::RichText::new(label).color(t.text_dim)).selectable(false).sense(egui::Sense::click()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            // Pressing the label presses the box (#4476).
+            let pressed = resp.is_pointer_button_down_on() || l.is_pointer_button_down_on();
+            crate::widgets::check_box(ui.painter(), rect, *on, resp.hovered() || l.hovered(), pressed, &t);
+            (resp.union(l.clone()), l)
+        })
+        .inner;
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    // The label is the single named, focusable checkbox; the box is a mouse target.
+    // Override Label's metadata instead of creating a second node with the same name.
+    label_resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), *on, label));
+    (resp, label_resp.id)
+}
+
 /// Options bar for the retouching and smart-selection tools. Returns false for other tools.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bool {
     if !tool.is_brushlike() && !matches!(tool, Tool::QuickSelection | Tool::ObjectSelection | Tool::Patch | Tool::ContentAwareMove | Tool::RedEye)
         || matches!(tool, Tool::Brush | Tool::Pencil | Tool::MixerBrush | Tool::Eraser)
     {
         return false;
+    }
+    if tool == Tool::ContentAwareMove {
+        content_aware_move_bar(app, ui);
+        return true;
     }
     let composite = crate::canvas::paint_target(app).as_str() == Some("pixels");
     let o = &mut app.ui.tool_options;
@@ -542,8 +814,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             }
         }
         Tool::Patch => {
-            // Photoshop's options bar: Patch: Normal (Source / Destination) or Content-Aware
-            // (Structure, Color, Sample All Layers).
+            // Photoshop's options bar: the lasso's selection mode, then Patch: Normal (Source /
+            // Destination) or Content-Aware (Structure, Color, Sample All Layers).
+            crate::panels::selection_mode_buttons(&mut app.ui.selection_mode, ui);
+            crate::widgets::vline(ui, 22.0);
             opt(ui, tl!("Patch:"));
             let kinds = [("normal".to_string(), tl!("Normal")), ("contentAware".to_string(), tl!("Content-Aware"))];
             let mut kind = if o.patch_content_aware { "contentAware" } else { "normal" }.to_string();
@@ -566,34 +840,6 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::vline(ui, 22.0);
             opt(ui, tl!("Lasso around an area, then drag the selection"));
         }
-        Tool::ContentAwareMove => {
-            opt(ui, tl!("Mode:"));
-            let modes = [("move".to_string(), tl!("Move")), ("extend".to_string(), tl!("Extend"))];
-            crate::widgets::dropdown(ui, "cam-mode", tl!("Mode"), &mut o.cam_mode, &modes, 90.0);
-            opt(ui, tl!("Structure:"));
-            crate::widgets::value_field(ui, &mut o.cam_structure, 1.0..=7.0, "", 40.0);
-            opt(ui, tl!("Color:"));
-            crate::widgets::value_field(ui, &mut o.cam_color, 0.0..=10.0, "", 40.0);
-            crate::widgets::checkbox(ui, &mut o.sample_all.content_aware_move, tl!("Sample All Layers"));
-            crate::widgets::checkbox(ui, &mut o.cam_transform_on_drop, tl!("Transform On Drop"));
-            crate::widgets::vline(ui, 22.0);
-            if crate::cam_transform::active(app) {
-                // The box on the dropped patch: ✓ computes the move, ⊘ drops it (as ↩ / Esc).
-                let tip = crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]);
-                let commit = crate::icons::button(ui, "check", 26.0, false, &tip);
-                commit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Commit transform"));
-                if commit.clicked() {
-                    crate::cam_transform::commit(app);
-                }
-                let cancel = crate::icons::button(ui, "ban", 26.0, false, tl!("Cancel transform (Esc)"));
-                cancel.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Cancel transform"));
-                if cancel.clicked() {
-                    crate::cam_transform::cancel(app);
-                }
-            } else {
-                opt(ui, tl!("Lasso around an area, then drag the selection"));
-            }
-        }
         Tool::PatternStamp => {
             pattern_stamp_options(app, ui);
         }
@@ -612,11 +858,39 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             }
         }
         Tool::Dodge | Tool::Burn => {
+            let tooltip = |response: egui::Response, text: &str, accessibility_id: egui::Id| {
+                // The checkbox's box is a mouse target, not its named accessibility node.
+                // Match on_hover_text: enrich existing nodes without inventing another control.
+                if response.ctx.has_accesskit_node(accessibility_id) {
+                    response.ctx.accesskit_node_builder(accessibility_id, |node| {
+                        if node.description().is_none() {
+                            node.set_description(text);
+                        }
+                        if node.labelled_by().is_empty() && node.label().is_none_or(str::is_empty) {
+                            node.set_label(text);
+                        }
+                    });
+                }
+                response.on_hover_ui(|ui| {
+                    // Translations and larger UI fonts can make even the short tips overflow.
+                    let room = (ui.ctx().content_rect().width() - egui::Frame::popup(ui.style()).total_margin().sum().x).max(1.0);
+                    ui.set_max_width(ui.spacing().tooltip_width.min(room));
+                    ui.label(text);
+                });
+            };
             opt(ui, tl!("Range:"));
             let opts = [("shadows".to_string(), tl!("Shadows")), ("midtones".to_string(), tl!("Midtones")), ("highlights".to_string(), tl!("Highlights"))];
             crate::widgets::dropdown(ui, "tone-range", tl!("Range"), &mut o.tone_range, &opts, 100.0);
-            pct(ui, tl!("Exposure:"), &mut o.exposure);
-            crate::widgets::checkbox(ui, &mut o.protect_tones, tl!("Protect Tones"));
+            if let Some(range) = ui.ctx().read_response(ui.make_persistent_id(egui::IdSalt::new("tone-range"))) {
+                let id = range.id;
+                tooltip(range, tl!("Painting Mode"), id);
+            }
+            opt(ui, tl!("Exposure:"));
+            let exposure = crate::widgets::value_field(ui, &mut o.exposure, 1.0..=100.0, "%", 58.0);
+            let exposure_id = exposure.id;
+            tooltip(exposure, tl!("Set exposure for stroke"), exposure_id);
+            let (protect, protect_id) = protect_tones_checkbox(ui, &mut o.protect_tones);
+            tooltip(protect, tl!("Minimizes clipping in shadows and highlights, and keeps colors from shifting hue"), protect_id);
         }
         Tool::Sponge => {
             opt(ui, tl!("Mode:"));
@@ -646,6 +920,11 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 ("luminosity".to_string(), tl!("Luminosity")),
             ];
             crate::widgets::dropdown(ui, "color-replacement-mode", tl!("Mode"), &mut o.cr_mode, &modes, 100.0);
+            // The reference application's tooltips (#11930), on the dropdowns' buttons by the ids their
+            // combo boxes take.
+            if let Some(mode) = ui.ctx().read_response(ui.make_persistent_id(egui::IdSalt::new("color-replacement-mode"))) {
+                mode.on_hover_text(tl!("Painting Mode"));
+            }
             crate::widgets::vline(ui, 22.0);
             ui.spacing_mut().item_spacing.x = 2.0;
             for (k, icon, tip) in [
@@ -666,9 +945,21 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 ("findEdges".to_string(), tl!("Find Edges")),
             ];
             crate::widgets::dropdown(ui, "color-replacement-limits", tl!("Limits:"), &mut o.cr_limits, &limits, 110.0);
+            if let Some(limits) = ui.ctx().read_response(ui.make_persistent_id(egui::IdSalt::new("color-replacement-limits"))) {
+                limits.on_hover_text(tl!("Determines the spread of replaced color"));
+            }
             opt(ui, tl!("Tolerance:"));
-            crate::widgets::value_field(ui, &mut o.cr_tolerance, 0.0..=100.0, "%", 62.0);
-            crate::widgets::checkbox(ui, &mut o.cr_anti_alias, tl!("Anti-alias"));
+            // Whole numbers 1..=100 with the reference's alert, as the Background Eraser's (#11930).
+            let out_of_range = crate::eraser_ui::whole_tolerance_field(
+                ui,
+                &mut o.cr_tolerance,
+                "color-replacement-tolerance-typed",
+                tl!("Tolerance for choosing related colors"),
+            );
+            crate::widgets::checkbox(ui, &mut o.cr_anti_alias, tl!("Anti-alias")).on_hover_text(tl!("Anti-alias brush application"));
+            if out_of_range {
+                crate::eraser_ui::open_range_alert(app);
+            }
         }
         Tool::HistoryBrush => {
             let label = app.session.active().and_then(|st| match photocraft_engine::history_source_cmds::source(st)? {
@@ -771,3 +1062,15 @@ fn pattern_stamp_options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "../color_replacement_tolerance_field_tests.rs"]
+mod color_replacement_tolerance_field_tests;
+
+#[cfg(test)]
+#[path = "../cam_options_bar_tests.rs"]
+mod cam_options_bar_tests;
+
+#[cfg(test)]
+#[path = "../burn_bar_tooltips_tests.rs"]
+mod burn_bar_tooltips_tests;

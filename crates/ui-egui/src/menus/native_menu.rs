@@ -10,7 +10,9 @@
 //! - **Window** gets Minimize, Zoom and Bring All to Front, with the open documents after it
 //!   (where a Mac app lists its windows), and **Help** the system search field;
 //! - **clashes** with the system's keys (⌘H, ⌘M, ⌘W, ⌘,) are resolved in PhotoCraft's favour, and
-//!   reported; Hide and Minimize move to ⌃⌘H and ⌃⌘M, as Photoshop does.
+//!   reported; Hide and Minimize move to ⌃⌘H and ⌃⌘M, as Photoshop does. [`app_layout`] reads
+//!   who owns a key from dispatch, so a saved key on a command with no menu item, or an
+//!   alternate key, takes it from the system item too.
 //!
 //! **Keys stay with egui.** AppKit runs a menu's key equivalents before the window sees the key,
 //! which would skip PhotoCraft's key rules (text fields keep ⌘C/⌘V/⌘Z, dialogs and Camera Raw are
@@ -388,6 +390,14 @@ pub fn mac_layout(bar: &MenuBar, lang: Lang) -> Layout {
     let mut clashes = Vec::new();
     let bound: HashMap<String, String> = bar.items().iter().filter_map(|it| Some((Chord::parse(it.shortcut.as_deref()?)?.portable(), it.id.clone()))).collect();
     let taken = |sc: &str, own: Option<&str>| bound.get(sc).filter(|cmd| Some(cmd.as_str()) != own).cloned();
+    // Every ⌘, owner, read before About, Quit and Appearance leave the bar: `bound` keeps only one
+    // per key, and a saved key (Hide Layers on ⌘,, as in Photoshop) can share it with Settings.
+    let comma_owners: Vec<String> = bar
+        .items()
+        .into_iter()
+        .filter(|it| it.shortcut.as_deref().and_then(Chord::parse).is_some_and(|c| c.portable() == "Cmd+,"))
+        .map(|it| it.id.clone())
+        .collect();
     let named = |s: &str| crate::i18n::fmt(tr(lang, s), &[("app", APP_NAME)]);
 
     let about = take(&mut bar, |n| matches!(n, Node::Item(it) if it.role == Some(ItemRole::About)));
@@ -406,7 +416,7 @@ pub fn mac_layout(bar: &MenuBar, lang: Lang) -> Layout {
     }
     if let Some(s) = settings {
         let own = node_ids(&s);
-        let comma = bound.get("Cmd+,").filter(|cmd| !own.contains(*cmd)).cloned();
+        let comma = comma_owners.iter().find(|id| !own.contains(*id)).cloned();
         menu.push(settings_node(s, comma, lang, &mut clashes));
     }
     menu.extend(appearance);
@@ -495,9 +505,14 @@ fn settings_node(node: Node, comma_taken: Option<String>, lang: Lang, clashes: &
     if let Some(command) = &comma_taken {
         clashes.push(Clash { shortcut: "Cmd+,", system: "Settings", command: command.clone(), resolution: "Settings has no shortcut" });
     }
+    // Another command's ⌘, wins: Settings drops the key even when it is Settings' own default.
     let give = |it: &mut Item| {
-        if comma_taken.is_none() && it.shortcut.is_none() {
-            it.shortcut = Some("Cmd+,".into());
+        if comma_taken.is_none() {
+            if it.shortcut.is_none() {
+                it.shortcut = Some("Cmd+,".into());
+            }
+        } else if it.shortcut.as_deref().and_then(Chord::parse).is_some_and(|c| c.portable() == "Cmd+,") {
+            it.shortcut = None;
         }
     };
     match node {
@@ -623,6 +638,42 @@ pub fn photocraft_layout(items: &[MenuItem], lang: Lang, language: &str) -> Layo
     layout
 }
 
+/// Build native menus against effective dispatch ownership, including alternate shortcuts
+/// and commands without menu items. AppKit must not consume a saved creative shortcut.
+pub fn app_layout(app: &PhotocraftApp, items: &[MenuItem], lang: Lang, language: &str) -> Layout {
+    fn clear(nodes: &mut [Node], key: &str, owner: &str, lang: Lang) {
+        let parsed = crate::shortcuts::parse(key);
+        for node in nodes {
+            match node {
+                Node::Item(it) if it.id != owner && it.shortcut.as_deref().and_then(crate::shortcuts::parse) == parsed => it.shortcut = None,
+                Node::Standard(Standard::Minimize) if key == "Cmd+M" => {
+                    let mut item = Item::new(MINIMIZE, tr(lang, "Minimize"));
+                    item.role = Some(ItemRole::Minimize);
+                    *node = Node::Item(item);
+                }
+                Node::Submenu { children, .. } => clear(children, key, owner, lang),
+                _ => {}
+            }
+        }
+    }
+    let mut layout = photocraft_layout(items, lang, language);
+    let bindings = crate::shortcut_dispatch::bindings(app);
+    for (key, system) in [("Cmd+,", "Settings"), ("Cmd+H", "Hide"), ("Cmd+M", "Minimize"), ("Ctrl+Cmd+H", "Hide"), ("Ctrl+Cmd+M", "Minimize")] {
+        let parsed = crate::shortcuts::parse(key);
+        let owner = bindings.iter().find(|(_, sc)| Some(*sc) == parsed).map(|(id, _)| id);
+        if let Some(command) = owner {
+            let displayed = layout.bar.find(command).and_then(|it| it.shortcut.as_deref()).and_then(crate::shortcuts::parse);
+            if displayed != parsed {
+                for menu in &mut layout.bar.menus {
+                    clear(&mut menu.children, key, command, lang);
+                }
+                layout.clashes.push(Clash { shortcut: key, system, command: command.clone(), resolution: "System menu yields to saved command" });
+            }
+        }
+    }
+    layout
+}
+
 // ----------------------------------------------------------------------------- the app's side
 
 /// What the native menu reports.
@@ -721,7 +772,7 @@ pub fn sync(app: &mut PhotocraftApp, ctx: &egui::Context) {
     for it in &mut items {
         it.enabled &= crate::menus::modal_allows(app, &it.id);
     }
-    let layout = photocraft_layout(&items, lang, &app.session.prefs().interface.language);
+    let layout = app_layout(app, &items, lang, &app.session.prefs().interface.language);
     let Some(menu) = app.services.native_menu.as_mut() else { return };
     if !menu.logged {
         for c in &layout.clashes {
@@ -761,6 +812,8 @@ pub(crate) fn state_hash(app: &PhotocraftApp, input: Option<u64>) -> u64 {
     let ui = &app.ui;
     (&ui.recent_files, &ui.workspace, ui.palette_open, ui.transform.is_some(), ui.text_edit.is_some(), ui.dialogs.len()).hash(&mut h);
     (app.discard.is_some(), app.camera_raw.is_some(), crate::distort_ui::modal_workspace(app)).hash(&mut h);
+    // Edit / Clear Selected Guides are enabled only while a guide is selected.
+    crate::guide_select::selected(app).hash(&mut h);
     serde_json::to_string(&(&ui.panels, &ui.extras, &ui.view, ui.theme, ui.tool)).unwrap_or_default().hash(&mut h);
     s.prefs().interface.language.hash(&mut h);
     h.finish()

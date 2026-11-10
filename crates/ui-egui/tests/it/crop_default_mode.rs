@@ -93,6 +93,8 @@ fn setup() -> Option<Harness> {
         app.run("edit.fill", json!({"color": "#ff0000"})).expect("fill");
         app.run("select.deselect", json!({})).expect("deselect");
         app.sync_views();
+        // The options bar's Ratio dropdown: the contextual task bar shows the same one (#10890).
+        app.ui.panels.context_task_bar = false;
         app.ui.extras.rulers = false;
         app.ui.extras.snap = false;
         app.ui.view.show.smart_guides = false;

@@ -19,7 +19,8 @@
 //!   `crates/raw/src/vendor/nefc.rs`): recovered from CC0 raw.pixls.us samples
 //!   shot in both compressed and uncompressed mode, and verified on ~45 files
 //!   from ~35 bodies (D40 … D850, Df, Z 6, Z 50, 1 J1). Only the format facts
-//!   and the tables were taken over; this module is written against this
+//!   and the tables were taken over (and, for "lossy after split" below, the
+//!   dequantisation function); this module is written against this
 //!   crate's own TIFF reader.
 //!
 //! Format:
@@ -38,9 +39,23 @@
 //!   samples), not the sensor bit depth; see Bill Claff's NEF Compression tables.
 //! * Values in the maker note are in the maker note's byte order.
 //!
+//! * "Lossy after split" (type 2 only, a non-zero split row at `0x0096` offset
+//!   562): rows above the split row are Huffman coded as above. Row `split`
+//!   starts at the very next bit; from there every pixel is one fixed-rate
+//!   word of `bits - 4` bits (8 at 12 bit, 10 at 14 bit), MSB first, with no
+//!   row padding: a prefix code (every word but all-ones) for the category `n`,
+//!   followed by the top bits of the T.81 additional bits. The difference is
+//!   the centre of the magnitude bin that was kept, the predictor is the same
+//!   as above, and the running value is not clamped. The section fills the
+//!   strip to its last byte: whole rows (up to 4 more than the image), then
+//!   0–7 one-bits of padding. These facts, the prefix
+//!   tables and the dequantisation (`fixed_words`, ported from LightCraft's
+//!   `fixed_word_table`) come from LightCraft's black-box analysis of 11 CC0
+//!   raw.pixls.us files (storytold/lightcraft#633), like the Huffman tables above.
+//!
 //! Not decoded (reported as unsupported; the embedded preview is used
-//! instead): "lossy after split" files (non-zero split row), other `0x0096`
-//! versions and bit depths other than 12 / 14.
+//! instead): "lossy after split" strips that fail to decode, other
+//! `0x0096` versions and bit depths other than 12 / 14.
 
 use crate::Limits;
 use crate::error::{RawError, Result};
@@ -238,6 +253,9 @@ pub(crate) struct DecodeTable {
     pub encoding: Encoding,
     /// Predictor seeds `[row parity][column]`.
     pub seeds: [[i32; 2]; 2],
+    /// First row of the fixed-rate section ("lossy after split"); 0 when the whole strip is
+    /// Huffman coded.
+    pub split: usize,
 }
 
 /// Parses maker note `0x0096` for a `bits`-bit image; `le` is the maker
@@ -253,6 +271,7 @@ pub(crate) fn parse_table(t: &[u8], le: bool, bits: u32) -> Result<DecodeTable> 
     }
     let (Some(&v0), Some(&v1)) = (t.first(), t.get(1)) else { return Err(short()) };
     let mut seeds = [[0i32; 2]; 2];
+    let mut split = 0;
     for (i, s) in seeds.iter_mut().flatten().enumerate() {
         *s = i32::from(u16_at(2 + 2 * i).ok_or_else(short)?);
     }
@@ -267,9 +286,11 @@ pub(crate) fn parse_table(t: &[u8], le: bool, bits: u32) -> Result<DecodeTable> 
             if v1 == 0x10 {
                 Encoding::Lossy(points)
             } else {
-                let split = u16_at(562).unwrap_or(0);
-                if split != 0 {
-                    return Err(RawError::unsupported(format!("Nikon \"lossy after split\" compressed NEF (split at row {split})")));
+                split = usize::from(u16_at(562).unwrap_or(0));
+                // Bytes 12.. hold the curve; with more than 275 points it covers byte 562, so a
+                // non-zero value there is not a split row: refused as before (preview fallback).
+                if split != 0 && 12 + 2 * n > 562 {
+                    return Err(RawError::unsupported(format!("Nikon compressed NEF: {n}-point curve overlapping the split row field")));
                 }
                 // The modern lossy curve has a smaller *encoded* domain while
                 // its output remains in sensor ADUs. Using 2^bits stretches the
@@ -292,11 +313,85 @@ pub(crate) fn parse_table(t: &[u8], le: bool, bits: u32) -> Result<DecodeTable> 
         }
         _ => return Err(RawError::unsupported(format!("Nikon compressed NEF version {v0:#04x} {v1:#04x}"))),
     };
-    Ok(DecodeTable { encoding, seeds })
+    Ok(DecodeTable { encoding, seeds, split })
+}
+
+/// Difference-category prefix codes of the fixed-rate ("lossy after split") section:
+/// `(prefix bits, prefix length, category n)`. A word of `bits - 4` bits is a prefix followed by
+/// the top `bits - 4 - length` additional bits of category `n` (storytold/lightcraft#633; the
+/// 14-bit `010` prefix never occurred in the analysed files, its category 12 is deduced).
+const FIXED_12: &[(u32, u32, u32)] = &[
+    (0b00, 2, 9),
+    (0b010, 3, 10),
+    (0b011, 3, 8),
+    (0b100, 3, 7),
+    (0b101, 3, 6),
+    (0b110, 3, 5),
+    (0b1110, 4, 4),
+    (0b11110, 5, 3),
+    (0b111110, 6, 2),
+    (0b1111110, 7, 1),
+    (0b11111110, 8, 0),
+];
+const FIXED_14: &[(u32, u32, u32)] = &[
+    (0b00, 2, 8),
+    (0b010, 3, 12),
+    (0b011, 3, 11),
+    (0b100, 3, 10),
+    (0b101, 3, 9),
+    (0b110, 3, 7),
+    (0b1110, 4, 6),
+    (0b11110, 5, 5),
+    (0b111110, 6, 4),
+    (0b1111110, 7, 3),
+    (0b11111110, 8, 2),
+    (0b111111110, 9, 1),
+    (0b1111111110, 10, 0),
+];
+
+/// Fixed-rate word → dequantised difference, for `bits`-bit samples; `None` for the all-ones
+/// word, which no prefix covers.
+fn fixed_words(bits: u32) -> Vec<Option<i32>> {
+    let (w, codes) = if bits == 12 { (8, FIXED_12) } else { (10, FIXED_14) };
+    let mut lut = vec![None; 1 << w];
+    for &(prefix, len, n) in codes {
+        let kept = w - len;
+        // `dropped` low bits of the T.81 additional bits are not stored: the word gives the
+        // bin, the difference is its centre.
+        let dropped = n.saturating_sub(kept);
+        let half = (1i32 << dropped) >> 1;
+        for m in 0..1u32 << kept {
+            let extra = (m << dropped) as i32;
+            let d = if n == 0 {
+                0
+            } else if extra >= 1 << (n - 1) {
+                extra + half
+            } else if dropped > 0 {
+                extra + half - (1 << n)
+            } else {
+                extra - ((1 << n) - 1)
+            };
+            if let Some(slot) = lut.get_mut(((prefix << kept) | m) as usize) {
+                *slot = Some(d);
+            }
+        }
+    }
+    lut
 }
 
 /// Decodes a `w × h` Nikon Huffman-compressed strip with `bits`-bit samples.
+///
+/// A "lossy after split" strip that fails to decode for any reason is reported as unsupported,
+/// not malformed: before these files were decoded, every one was refused as unsupported and
+/// opened as the camera's embedded preview, and that fallback stays for files the rule does not fit.
 pub(crate) fn decode(src: &[u8], w: usize, h: usize, bits: u32, table: &DecodeTable) -> Result<Vec<u16>> {
+    match decode_strip(src, w, h, bits, table) {
+        Err(RawError::Malformed(m)) if table.split != 0 => Err(RawError::unsupported(format!("Nikon \"lossy after split\" NEF that does not decode: {m}"))),
+        r => r,
+    }
+}
+
+fn decode_strip(src: &[u8], w: usize, h: usize, bits: u32, table: &DecodeTable) -> Result<Vec<u16>> {
     if bits != 12 && bits != 14 {
         return Err(RawError::unsupported(format!("Nikon compressed NEF with {bits}-bit samples")));
     }
@@ -316,6 +411,14 @@ pub(crate) fn decode(src: &[u8], w: usize, h: usize, bits: u32, table: &DecodeTa
         Encoding::Lossless => (&[], (1i32 << bits) - 1),
         Encoding::Lossy(curve) => (curve, i32::try_from(curve.len()).unwrap_or(i32::MAX) - 1),
     };
+    if table.split != 0 && table.split >= h {
+        return Err(RawError::malformed(format!("NEF: split row {} for a {h}-row image", table.split)));
+    }
+    if table.split != 0 && !matches!(table.encoding, Encoding::Lossy(_)) {
+        return Err(RawError::malformed("NEF: split row with a lossless table"));
+    }
+    let fixed = if table.split != 0 { fixed_words(bits) } else { Vec::new() };
+    let word = bits - 4;
     let mut out = vec![0u16; n];
     let mut stream = Bits::new(src);
     let mut vpred = table.seeds;
@@ -323,8 +426,14 @@ pub(crate) fn decode(src: &[u8], w: usize, h: usize, bits: u32, table: &DecodeTa
     for (y, row) in out.chunks_exact_mut(w).enumerate() {
         let seeds = &mut vpred[y & 1];
         let mut hpred = [0i32; 2];
+        let fixed_rate = table.split != 0 && y >= table.split;
         for (x, o) in row.iter_mut().enumerate() {
-            let d = diff(&mut stream, &huff).ok_or_else(|| RawError::malformed(format!("NEF: invalid Huffman code in row {y}")))?;
+            let d = if fixed_rate {
+                let code = stream.take(word) as usize;
+                fixed.get(code).copied().flatten().ok_or_else(|| RawError::malformed(format!("NEF: unknown fixed-rate word in row {y}")))?
+            } else {
+                diff(&mut stream, &huff).ok_or_else(|| RawError::malformed(format!("NEF: invalid Huffman code in row {y}")))?
+            };
             let p = if x < 2 {
                 seeds[x] = seeds[x].saturating_add(d);
                 hpred[x] = seeds[x];
@@ -334,13 +443,27 @@ pub(crate) fn decode(src: &[u8], w: usize, h: usize, bits: u32, table: &DecodeTa
                 hpred[x & 1]
             };
             let v = p.clamp(0, max);
-            clipped += usize::from(v != p);
+            // The fixed-rate section's running value is not clamped and may leave the range.
+            clipped += usize::from(v != p && !fixed_rate);
             *o = if lut.is_empty() { v as u16 } else { lut.get(v as usize).copied().unwrap_or(0) };
         }
         // The camera pads the strip; reading well past its end means the data
         // is truncated or corrupt.
-        if stream.consumed > src.len() * 8 + 64 {
+        if stream.consumed > src.len().saturating_mul(8).saturating_add(64) {
             return Err(RawError::malformed(format!("NEF: compressed data ends in row {y} of {h}")));
+        }
+    }
+    // The fixed-rate section fills the rest of the strip: whole rows of `w` words, then 0–7
+    // one-bits up to the byte boundary (a strip may hold up to 4 rows more than the image). This
+    // checks the section's length, not its content: a strip that ends any other way does not
+    // follow the rule and is refused, but a wrong word inside a well-formed one is not detected.
+    if table.split != 0 {
+        let left = src.len().saturating_mul(8).checked_sub(stream.consumed);
+        let row_bits = w.saturating_mul(word as usize).max(1);
+        let pad = left.map(|l| l % row_bits);
+        let ones = |k: usize| src.last().is_some_and(|b| u32::from(*b) & ((1 << k) - 1) == (1 << k) - 1);
+        if !left.is_some_and(|l| l / row_bits <= 4) || !pad.is_some_and(|k| k < 8 && ones(k)) {
+            return Err(RawError::malformed(format!("NEF: the fixed-rate section from row {} does not end the strip", table.split)));
         }
     }
     // A wrong table or a corrupt stream drifts out of range quickly; real
@@ -365,6 +488,17 @@ pub(crate) fn read_compressed(t: &Tiff, raw: &Ifd, note: Option<&(Tiff, Ifd)>, l
         .and_then(|(n, m)| Some((n.raw(m.get(NIKON_LINEARIZATION_TABLE)?)?, n.le)))
         .ok_or_else(|| RawError::unsupported("Nikon compressed NEF without a linearization table (maker note 0x96)"))?;
     let table = parse_table(table.0, table.1, bits)?;
+    match read_strip(t, raw, width, height, bits, &table, limits) {
+        // Until split files were decoded, each was refused as unsupported before the image was
+        // read, and opened as the camera's preview: any failure after that point keeps it so.
+        Err(e @ (RawError::Malformed(_) | RawError::LimitExceeded(_))) if table.split != 0 => {
+            Err(RawError::unsupported(format!("Nikon \"lossy after split\" NEF that does not decode: {e}")))
+        }
+        r => r,
+    }
+}
+
+fn read_strip(t: &Tiff, raw: &Ifd, width: usize, height: usize, bits: u32, table: &DecodeTable, limits: &Limits) -> Result<Plane> {
     limits.check(width as u64, height as u64, 2)?;
     // One strip in every sample; several would be consecutive parts of the
     // same bit stream.
@@ -376,7 +510,7 @@ pub(crate) fn read_compressed(t: &Tiff, raw: &Ifd, note: Option<&(Tiff, Ifd)>, l
     let start = first as usize;
     let end = (last as usize).saturating_add(last_len as usize).min(t.data.len());
     let src = t.data.get(start..end).filter(|s| !s.is_empty()).ok_or_else(|| RawError::malformed("raw data lies outside the file"))?;
-    let data = decode(src, width, height, bits, &table)?;
+    let data = decode(src, width, height, bits, table)?;
     Ok(Plane { width, height, samples: 1, bits, data, float_scale: None })
 }
 

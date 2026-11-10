@@ -311,6 +311,104 @@ fn orient_bytes(src: &[u8], bpp: usize, o: u16, (w, h): (usize, usize), ow: usiz
     }
 }
 
+/// Writes the oriented output rows `y0..` that fit in `dst` (whole rows of `ow` pixels), `bpp`
+/// bytes per pixel: one band of [`orient_bytes`], the same pixels it writes.
+fn orient_band(src: &[u8], dst: &mut [u8], bpp: usize, o: u16, (w, h): (usize, usize), ow: usize, y0: usize) {
+    macro_rules! go {
+        ($n:literal) => {{
+            let (s, _) = src.as_chunks::<$n>();
+            let (d, _) = dst.as_chunks_mut::<$n>();
+            band(s, d, o, (w, h), ow, y0)
+        }};
+    }
+    match bpp {
+        1 => go!(1),
+        2 => go!(2),
+        3 => go!(3),
+        4 => go!(4),
+        5 => go!(5),
+        6 => go!(6),
+        8 => go!(8),
+        10 => go!(10),
+        12 => go!(12),
+        16 => go!(16),
+        _ => go!(20),
+    }
+}
+
+/// An image turned upright a band of rows at a time, for a caller that must not block for the
+/// whole image (the web build has no threads): [`OrientSteps::step`] gives the [`Image`]
+/// [`Image::oriented`] gives, once every band is written.
+pub struct OrientSteps {
+    src: Image,
+    o: u16,
+    bpp: usize,
+    /// The oriented size.
+    ow: usize,
+    oh: usize,
+    out: Vec<u8>,
+    /// Output rows written so far.
+    done: usize,
+}
+
+impl OrientSteps {
+    /// Sets up turning `img` upright for orientation `o` (2–8; anything else leaves it as it is).
+    /// Allocates the output, which the image is turned into beside the original.
+    pub fn new(img: Image, o: u16) -> Result<Self, CodecError> {
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let (ow, oh) = if o >= 5 { (h, w) } else { (w, h) };
+        let (layout, sample) = (img.layout(), img.sample_type());
+        let bpp = layout.channels() * sample.bytes();
+        let turns = (2..=8).contains(&o);
+        if turns && (!matches!(bpp, 1..=6 | 8 | 10 | 12 | 16 | 20) || w == 0 || h == 0) {
+            return Err(CodecError::InvalidImage(format!("cannot orient {layout:?} {sample:?} {w}x{h}")));
+        }
+        // Reserve without touching: `step` grows the buffer a band at a time, so no slice
+        // zero-fills the whole output.
+        let mut out = Vec::new();
+        if turns {
+            let n = img.data().len();
+            out.try_reserve_exact(n).map_err(|_| CodecError::LimitExceeded(format!("cannot allocate {n} bytes to orient the image")))?;
+        }
+        Ok(Self { src: img, o, bpp, ow, oh, out, done: 0 })
+    }
+
+    /// How much of the image is turned, `0.0..=1.0`.
+    pub fn progress(&self) -> f32 {
+        if self.oh == 0 { 1.0 } else { self.done as f32 / self.oh as f32 }
+    }
+
+    /// Writes bands of [`BAND`] output rows, at least one, then goes on while `more()` returns
+    /// true; `Some` with the upright image once the last band is written.
+    pub fn step(&mut self, more: &mut dyn FnMut() -> bool) -> Result<Option<Image>, CodecError> {
+        if !(2..=8).contains(&self.o) {
+            let placeholder = Image::from_raw(0, 0, self.src.layout(), self.src.sample_type(), Vec::new())?;
+            return Ok(Some(std::mem::replace(&mut self.src, placeholder)));
+        }
+        let (w, h) = (self.src.width() as usize, self.src.height() as usize);
+        while self.done < self.oh {
+            let rows = BAND.min(self.oh - self.done);
+            let row_bytes = self.ow.checked_mul(self.bpp).ok_or_else(|| CodecError::InvalidImage("image too large".into()))?;
+            let at = self.done.saturating_mul(row_bytes);
+            let end = at.saturating_add(rows.saturating_mul(row_bytes));
+            if self.out.len() < end {
+                self.out.resize(end, 0);
+            }
+            let dst = self.out.get_mut(at..end).ok_or_else(|| CodecError::InvalidImage("the oriented rows are out of range".into()))?;
+            orient_band(self.src.data(), dst, self.bpp, self.o, (w, h), self.ow, self.done);
+            self.done += rows;
+            if self.done < self.oh && !more() {
+                return Ok(None);
+            }
+        }
+        let (layout, sample) = (self.src.layout(), self.src.sample_type());
+        let placeholder = Image::from_raw(0, 0, layout, sample, Vec::new())?;
+        let src = std::mem::replace(&mut self.src, placeholder);
+        let data = std::mem::take(&mut self.out);
+        src.oriented_with(self.o, data).map(Some)
+    }
+}
+
 impl Image {
     /// The image turned upright for orientation `o` (1–8; anything else is
     /// treated as 1 and returns the image unchanged). Width and height swap
@@ -321,8 +419,7 @@ impl Image {
             return Ok(self);
         }
         let (w, h) = (self.width() as usize, self.height() as usize);
-        let swap = o >= 5;
-        let (ow, oh) = if swap { (h, w) } else { (w, h) };
+        let ow = if o >= 5 { h } else { w };
         let (layout, sample) = (self.layout(), self.sample_type());
         let bpp = layout.channels() * sample.bytes();
         // Every layout/sample pair is 1–20 bytes per pixel and has a fixed-size path.
@@ -330,6 +427,16 @@ impl Image {
             return Err(CodecError::InvalidImage(format!("cannot orient {layout:?} {sample:?} {w}x{h}")));
         }
         let data = orient_bytes(self.data(), bpp, o, (w, h), ow)?;
+        self.oriented_with(o, data)
+    }
+
+    /// The upright image of orientation `o` (2–8) whose turned pixels are `data`: the size,
+    /// metadata and extra samples of [`Image::oriented`].
+    fn oriented_with(self, o: u16, data: Vec<u8>) -> Result<Image, CodecError> {
+        let (w, h) = (self.width() as usize, self.height() as usize);
+        let swap = o >= 5;
+        let (ow, oh) = if swap { (h, w) } else { (w, h) };
+        let (layout, sample) = (self.layout(), self.sample_type());
         let mut meta = self.meta.clone();
         // Extra samples (a TIFF's alpha and spot planes, one sample a pixel) turn with the image.
         // A plane of the wrong size is left as it is: importers drop it with a warning.

@@ -40,7 +40,7 @@ pub fn display_rows(doc: &Document, show_all: bool) -> Vec<(usize, &Layer)> {
 /// Mask session's working text, which is no layer to the user: Photoshop shows only the mask
 /// overlay while you type (#3036).
 pub fn panel_rows<'a>(app: &PhotocraftApp, doc: &'a Document) -> Vec<(usize, &'a Layer)> {
-    let mut rows = display_rows(doc, crate::layer_filter_ui::Filter::of(&app.ui).active());
+    let mut rows = display_rows(doc, crate::layer_filter_ui::Filter::of(&app.ui).show_all());
     if let Some(working) = app.ui.text_edit.as_ref().filter(|ed| ed.mask).map(|ed| ed.layer) {
         rows.retain(|(_, l)| l.id.0 != working);
     }

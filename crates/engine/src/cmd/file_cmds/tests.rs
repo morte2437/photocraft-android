@@ -734,6 +734,27 @@ fn batch_quiet_raw_applies_prior_settings_and_workflow_without_touching_inputs()
     assert!(s.batch_open_notices.is_none());
 }
 
+/// #9985: quiet RAW opening crops to the sidecar's crop, as the interactive open does.
+#[test]
+fn batch_quiet_raw_applies_the_sidecar_crop() {
+    use photocraft_raw::testgen::{DngSpec, mosaic, scene};
+    let dir = tmp("batch-quiet-raw-crop");
+    let path = join(&dir, "raw.dng");
+    let (w, h) = (24, 16);
+    let bytes = DngSpec::cfa(w, h, mosaic(&scene(w, h), w, [0, 1, 1, 2], 0, 65535)).build();
+    std::fs::write(&path, &bytes).unwrap();
+    let crop = photocraft_io::camera_raw_xmp::Crop { top: 0.25, left: 0.125, bottom: 0.75, right: 0.625 };
+    let xmp = photocraft_io::camera_raw_xmp::save_with_crop(&photocraft_algo::camera_raw::CameraRaw::default(), Some(crop));
+    std::fs::write(join(&dir, "raw.xmp"), &xmp).unwrap();
+    let mut s = Session::new();
+    let output = join(&dir, "out");
+    let p = json!({"input":[path],"output":output,"format":"psd","suppressOpenOptions":true,"suppressWarnings":true,"steps":[]});
+    let result = s.execute("file.automate.batch", p).unwrap();
+    assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+    let actual = photocraft_io::import("raw.psd", &std::fs::read(join(&output, "raw.psd")).unwrap()).unwrap().document;
+    assert_eq!((actual.size.width, actual.size.height), (12, 8), "the 24x16 frame cropped to x 3..15, y 4..12");
+}
+
 fn tmp(name: &str) -> String {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1872,6 +1893,41 @@ fn full_composite_preference_controls_the_pcraft_full_size_composite() {
         let err = s.execute("file.saveACopy", json!({"path": out, "pcraftFullComposite": bad})).unwrap_err().to_string();
         assert!(err.contains("`pcraftFullComposite` must be true or false"), "{bad}: {err}");
         assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing is written");
+    }
+}
+
+/// #8064: `maximizeCompatibility` decides one save's PSD/PSB merged image over the preference
+/// (Photoshop's Maximize Compatibility checkbox); unset, the preference decides. Anything but a
+/// boolean is refused before anything is written.
+#[test]
+fn maximize_compatibility_param_overrides_the_preference_for_one_save() {
+    use crate::prefs::Ask;
+    let dir = tmp("maximize-param");
+    let mut s = session(300, 200, 16);
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let real_merged = |path: &str| photocraft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap().has_real_merged_data();
+    for (ask, param, expect) in [
+        (Ask::Always, json!(false), false),
+        (Ask::Never, json!(true), true),
+        (Ask::Ask, json!(false), false),
+        (Ask::Never, json!(null), false),
+        (Ask::Always, json!(null), true),
+    ] {
+        s.edit_prefs(|p| p.file_handling.maximize_psd_compatibility = ask);
+        for ext in ["psd", "psb"] {
+            let out = join(&dir, &format!("{ask:?}-{param}.{ext}"));
+            s.execute("file.saveACopy", json!({"path": out, "maximizeCompatibility": param})).unwrap();
+            assert_eq!(real_merged(&out), Some(expect), "{ask:?} {param} {ext}");
+        }
+    }
+    let state = |s: &Session| s.active().map(|st| (st.revision, st.path.clone(), st.is_dirty()));
+    let before = state(&s);
+    for bad in [json!("no"), json!(0), json!(1), json!([true])] {
+        let out = join(&dir, "bad.psd");
+        let r = s.execute("file.saveACopy", json!({"path": out, "maximizeCompatibility": bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing written");
+        assert_eq!(state(&s), before, "{bad}: the document is as it was");
     }
 }
 
@@ -3323,8 +3379,24 @@ fn reveal_in_finder_on_windows_passes_the_clicked_tabs_saved_path() {
     s.execute("file.new", json!({"width": 8, "height": 8, "name": "other"})).unwrap();
 
     let r = s.execute("file.revealInFinder", json!({"document": 0, "dryRun": true})).unwrap();
-    assert_eq!(r["program"], "explorer");
+    // The Windows Explorer by full path: a bare name would first find an explorer.exe in the app's folder.
+    let explorer = crate::layer_menu_cmds::windows_root(std::env::var_os("SystemRoot")).join("explorer.exe");
+    assert_eq!(r["program"], json!(explorer.to_string_lossy()));
     assert_eq!(r["args"], json!(["/select,", r"C:\项目 图片\海报 🖼.png"]));
+}
+
+/// Windows tools run from the Windows folder `SystemRoot` names, and from `C:\Windows` when it is
+/// unset or relative (which would resolve against the working directory).
+#[cfg(windows)]
+#[test]
+fn the_windows_folder_falls_back_when_system_root_is_unset_or_relative() {
+    use crate::layer_menu_cmds::windows_root;
+    use std::path::PathBuf;
+    assert_eq!(windows_root(Some(r"D:\WinNT".into())), PathBuf::from(r"D:\WinNT"));
+    assert_eq!(windows_root(None), PathBuf::from(r"C:\Windows"));
+    assert_eq!(windows_root(Some(r"Windows".into())), PathBuf::from(r"C:\Windows"));
+    assert_eq!(windows_root(Some(r"\Windows".into())), PathBuf::from(r"C:\Windows"));
+    assert_eq!(windows_root(Some("".into())), PathBuf::from(r"C:\Windows"));
 }
 
 /// "Include All Subfolders" (AUTO-219-5, #3753): Batch and Image Processor take the images in
@@ -4075,7 +4147,7 @@ fn approve_memory_releases_the_preflight_when_the_hard_limit_refuses_it() {
     photocraft_io::memory::with_mock_memory(snap_low, || {
         let err = s.execute("file.approveMemory", json!({"id": id, "approve": true, "background": false})).unwrap_err();
         match &err {
-            EngineError::PsdHardBudget { name, required, limit } => {
+            EngineError::PsdHardBudget { name, required, limit, .. } => {
                 assert_eq!(name, "ram_drop.psd");
                 assert_eq!((*required, *limit), (8 * gb, expected_limit));
             }
@@ -4104,7 +4176,7 @@ fn open_as_and_place_keep_the_typed_hard_budget_fields() {
             let mut s = Session::new();
             let err = s.execute("file.openAs", json!({"path": path.clone(), "approveHighMemory": true})).unwrap_err();
             match &err {
-                EngineError::PsdHardBudget { name, required, limit } => {
+                EngineError::PsdHardBudget { name, required, limit, .. } => {
                     assert_eq!(name, &path);
                     assert!(*required > hard && *limit == hard);
                 }

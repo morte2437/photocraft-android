@@ -72,7 +72,8 @@ impl SaveOpts {
     /// `jpegFormat` it doesn't name or a `tgaBits` other than 24 or 32 is an error); the image
     /// previews and the PSD merged image from the session's File Handling preferences (Ask When
     /// Saving has no dialog here, so it saves them, as Photoshop's Save As checkbox and its
-    /// Maximize Compatibility checkbox both start on). The `.pcraft` full-size composite comes from
+    /// Maximize Compatibility checkbox both start on); `maximizeCompatibility` decides the merged
+    /// image for this save instead. The `.pcraft` full-size composite comes from
     /// `pcraftFullComposite`, or without it from the File Handling preference.
     pub(crate) fn from_params(s: &Session, p: &Value, cmd: &str) -> Result<Self> {
         let file_handling = &s.prefs().file_handling;
@@ -88,7 +89,7 @@ impl SaveOpts {
             tiff_pyramid: tiff_bool_param(p, "tiffPyramid", cmd)?.unwrap_or(false),
             dds: dds_param(p, cmd)?.unwrap_or_default(),
             image_previews: file_handling.image_previews != crate::prefs::Ask::Never,
-            psd_maximize_compatibility: file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never,
+            psd_maximize_compatibility: maximize_compatibility_param(p, cmd)?.unwrap_or(file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never),
             pcraft_full_composite: pcraft_full_composite_param(p, cmd)?.unwrap_or(file_handling.pcraft_full_composite),
         })
     }
@@ -128,6 +129,19 @@ pub fn pcraft_full_composite_param(p: &Value, cmd: &str) -> Result<Option<bool>>
             .as_bool()
             .map(Some)
             .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`pcraftFullComposite` must be true or false, got {v}") }),
+    }
+}
+
+/// One save's Maximize Compatibility in `p` (`"maximizeCompatibility": bool`, Photoshop's checkbox
+/// when saving a PSD/PSB; absent or null: the File Handling preference decides). Anything else is
+/// a bad parameter of command `cmd` (#8064).
+pub fn maximize_compatibility_param(p: &Value, cmd: &str) -> Result<Option<bool>> {
+    match p.get("maximizeCompatibility") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`maximizeCompatibility` must be true or false, got {v}") }),
     }
 }
 

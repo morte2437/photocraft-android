@@ -7,14 +7,19 @@ use crate::{PhotocraftApp, icons};
 
 /// Case-insensitive subsequence match score (higher is better); None = no match.
 pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
+    fuzzy_score_in(crate::i18n::Lang::EN, query, text)
+}
+
+/// Score a subsequence after converting both strings in the text's language.
+fn fuzzy_score_in(lang: crate::i18n::Lang, query: &str, text: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let t: Vec<char> = text.to_lowercase().chars().collect();
+    let t: Vec<char> = lang.lowercase(text).chars().collect();
     let mut score = 0;
     let mut ti = 0;
     let mut last = None;
-    for qc in query.to_lowercase().chars() {
+    for qc in lang.lowercase(query).chars() {
         let mut found = false;
         while ti < t.len() {
             if t[ti] == qc {
@@ -39,8 +44,20 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 /// Bonus that puts a command or tool whose name is exactly the query ahead of every fuzzy match
 /// ("settings" finds Settings before Color Settings).
 fn exact_bonus(query: &str, names: &[&str]) -> i32 {
+    exact_bonus_in(crate::i18n::Lang::EN, query, names)
+}
+
+/// Favor a complete displayed name, ignoring its trailing ellipsis and localized case.
+fn exact_bonus_in(lang: crate::i18n::Lang, query: &str, names: &[&str]) -> i32 {
     let q = query.trim();
-    if !q.is_empty() && names.iter().any(|n| n.trim_end_matches('…').trim().to_lowercase() == q.to_lowercase()) { 1000 } else { 0 }
+    if !q.is_empty() && names.iter().any(|n| lang.lowercase(n.trim_end_matches('…').trim()) == lang.lowercase(q)) { 1000 } else { 0 }
+}
+
+/// Rank the UI wording in its language and the documented English aliases independently.
+fn bilingual_score(lang: crate::i18n::Lang, query: &str, local: &str, english: &str, local_name: &str, english_name: &str) -> Option<i32> {
+    let local = fuzzy_score_in(lang, query, local).map(|s| s + exact_bonus_in(lang, query, &[local_name]));
+    let english = fuzzy_score(query, english).map(|s| s + exact_bonus(query, &[english_name]));
+    local.into_iter().chain(english).max()
 }
 
 /// How many recently run commands the palette remembers.
@@ -105,7 +122,7 @@ fn menu_hits(menus: Vec<crate::menus::MenuItem>, q: &str, lang: crate::i18n::Lan
             let path = m.path.iter().map(|p| crate::i18n::tr(lang, p)).collect::<Vec<_>>().join(" › ");
             let label = crate::i18n::tr_id(lang, &m.id, &m.label);
             // Match what is shown and the English name (commands are documented in English).
-            let s = fuzzy_score(q, &format!("{label} {path} {} {path_en}", m.label))? + exact_bonus(q, &[label, &m.label]);
+            let s = bilingual_score(lang, q, &format!("{label} {path}"), &format!("{} {path_en}", m.label), label, &m.label)?;
             Some((
                 s,
                 m.id,
@@ -176,8 +193,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     if !empty || hits.is_empty() {
                         hits.extend(menu_hits(menus, &q, lang));
                         for tool in crate::state::Tool::ALL {
-                            if let Some(s) = fuzzy_score(&q, &format!("{} {}", tl!(tool.label()), tool.label())) {
-                                let s = s + exact_bonus(&q, &[tl!(tool.label()).as_ref(), tool.label()]);
+                            if let Some(s) = bilingual_score(lang, &q, tl!(tool.label()).as_ref(), tool.label(), tl!(tool.label()).as_ref(), tool.label()) {
                                 hits.push((
                                     s + 2,
                                     format!("tool:{tool:?}"),
@@ -266,6 +282,16 @@ mod tests {
 
     use super::{exact_bonus, fuzzy_score, push_recent};
     use crate::PhotocraftApp;
+
+    /// Localized fuzzy and exact matches use Turkic casing while English aliases use root casing.
+    #[test]
+    fn azerbaijani_palette_keeps_dotted_i_and_english_aliases() {
+        let az = crate::i18n::Lang::from_code("az").unwrap();
+        assert!(super::bilingual_score(az, "ŞƏKİL", "Şəkil", "Image", "Şəkil", "Image").unwrap() >= 1000);
+        assert_eq!(super::bilingual_score(az, "ŞƏKIL", "Şəkil", "Image", "Şəkil", "Image"), None);
+        assert!(super::bilingual_score(az, "IMAGE", "Şəkil", "Image", "Şəkil", "Image").unwrap() >= 1000);
+        assert!(super::fuzzy_score_in(az, "I\u{307}ŞIQ", "İşıq").is_some());
+    }
 
     #[test]
     fn open_palette_interrupts_the_ime_only_when_it_takes_focus() {

@@ -97,6 +97,63 @@ fn set_mask_with(s: &mut Session, p: &Value, label: &str, mask: Option<LayerMask
     Ok(Value::Null)
 }
 
+/// Drag a layer mask's thumbnail onto another layer or group in the Layers panel: the mask moves
+/// there (⌥: a copy goes there and the original stays), as in Photoshop (#10485). A layer that
+/// already has a mask keeps it unless `replace` (Photoshop asks first). One history step.
+pub(super) fn move_mask(s: &mut Session, p: &Value) -> Result<Value> {
+    let bad = |m: &str| EngineError::BadParams { cmd: "layer.layerMask.moveTo".into(), msg: m.into() };
+    let from = layer_param(s, p)?;
+    let to = mask_destination(s, p)?;
+    let copy = p.get("copy").and_then(Value::as_bool).unwrap_or(false);
+    let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
+    if from == to {
+        return Err(bad("the mask is already on that layer"));
+    }
+    let label = if copy { "Copy Layer Mask" } else { "Move Layer Mask" };
+    s.edit(label, |doc, _| {
+        let mask = doc.layer(from).ok_or(EngineError::NoLayer(from))?.mask.clone().ok_or_else(|| bad("the layer has no layer mask"))?;
+        if doc.layer(to).ok_or(EngineError::NoLayer(to))?.mask.is_some() && !replace {
+            return Err(bad("the layer already has a layer mask (pass `replace`)"));
+        }
+        check_all_unlocked(doc, to)?;
+        if !copy {
+            check_all_unlocked(doc, from)?;
+        }
+        // The Background can't hold a mask, so it becomes a normal layer first, as for Add Mask.
+        crate::extra_cmds::background_to_layer_for_mask(doc, to);
+        doc.layer_mut(to).ok_or(EngineError::NoLayer(to))?.mask = Some(mask);
+        if !copy {
+            doc.layer_mut(from).ok_or(EngineError::NoLayer(from))?.mask = None;
+        }
+        Ok(())
+    })?;
+    Ok(json!({"layer": from.0, "to": to.0, "copy": copy}))
+}
+
+/// `layer.layerMask.moveTo`'s `to`: an id, or a name (as a recorded step keeps it) with
+/// `toOccurrence` choosing among the layers that share it, in document order (required when
+/// several do).
+fn mask_destination(s: &Session, p: &Value) -> Result<LayerId> {
+    let bad = |m: String| EngineError::BadParams { cmd: "layer.layerMask.moveTo".into(), msg: m };
+    match p.get("to") {
+        Some(Value::String(name)) => {
+            let occurrence = p
+                .get("toOccurrence")
+                .map(|v| v.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("`toOccurrence` must be a non-negative integer".into())))
+                .transpose()?;
+            let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+            let matches: Vec<_> = doc.walk().into_iter().filter(|(_, _, l)| &l.name == name).map(|(_, _, l)| l.id).collect();
+            if matches.len() > 1 && occurrence.is_none() {
+                return Err(bad(format!("multiple layers named `{name}`; specify `toOccurrence`")));
+            }
+            let index = occurrence.unwrap_or(0);
+            matches.get(index).copied().ok_or_else(|| bad(format!("no layer named `{name}` at occurrence {index}")))
+        }
+        Some(v) => v.as_u64().map(LayerId).ok_or_else(|| bad("`to` must be a layer id or name".into())),
+        None => Err(bad("missing `to`".into())),
+    }
+}
+
 /// Move a layer's pixels, linked mask and type by whole pixels (vectors move via
 /// `vector_cmds::translate_vectors`).
 pub(crate) fn translate_layer(doc: &Document, l: &mut Layer, dx: i32, dy: i32) {
@@ -187,4 +244,111 @@ pub(super) fn merge_group(s: &mut Session, id: LayerId) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({ "layer": id.0 }))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// #10485: dragging a layer's mask onto a group moves it there, ⌥ copies it (Photoshop). A
+    /// layer that has a mask already keeps it unless asked to replace it; one undo puts it back.
+    #[test]
+    fn a_layer_mask_moves_or_copies_onto_another_layer_or_group() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+        let a = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("select.rect", json!({"x": 4, "y": 4, "width": 10, "height": 10})).unwrap();
+        s.execute("layer.layerMask.revealSelection", json!({})).unwrap();
+        let b = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+        let group = s.execute("layer.groupLayers", json!({"layer": b})).unwrap()["layer"].as_u64().unwrap();
+        let mask_of = |s: &Session, id: u64| s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().mask.clone();
+        let original = mask_of(&s, a).expect("a has a mask");
+        // Move onto the group.
+        s.execute("layer.layerMask.moveTo", json!({"layer": a, "to": group})).unwrap();
+        assert!(mask_of(&s, a).is_none(), "moved away");
+        assert_eq!(mask_of(&s, group).unwrap().surface, original.surface, "the same mask on the group");
+        // One undo puts it back.
+        s.execute("edit.undo", json!({})).unwrap();
+        assert!(mask_of(&s, a).is_some() && mask_of(&s, group).is_none());
+        // ⌥: a copy.
+        s.execute("layer.layerMask.moveTo", json!({"layer": a, "to": group, "copy": true})).unwrap();
+        assert!(mask_of(&s, a).is_some() && mask_of(&s, group).is_some());
+        assert_eq!(mask_of(&s, group).unwrap().surface, original.surface, "the copy on the group");
+        // The group gets a mask of its own: refused unless replacing, which leaves a's on it.
+        s.execute("layer.layerMask.delete", json!({"layer": group})).unwrap();
+        s.execute("layer.layerMask.hideAll", json!({"layer": group})).unwrap();
+        assert_ne!(mask_of(&s, group).unwrap().surface, original.surface, "the group's own mask differs");
+        assert!(s.execute("layer.layerMask.moveTo", json!({"layer": a, "to": group})).is_err());
+        s.execute("layer.layerMask.moveTo", json!({"layer": a, "to": group, "replace": true})).unwrap();
+        assert!(mask_of(&s, a).is_none());
+        assert_eq!(mask_of(&s, group).unwrap().surface, original.surface, "a's mask replaced the group's");
+        // Bad input.
+        assert!(s.execute("layer.layerMask.moveTo", json!({"layer": a, "to": group})).is_err(), "no mask to move");
+        assert!(s.execute("layer.layerMask.moveTo", json!({"layer": group, "to": group})).is_err(), "onto itself");
+        assert!(s.execute("layer.layerMask.moveTo", json!({"layer": group})).is_err(), "no target");
+    }
+
+    /// #10485: dropping a mask back on its own layer's row is a no-op: the mask keeps its pixels,
+    /// enabled state and density, nothing else in the document changes, and no history step is added.
+    #[test]
+    fn dropping_a_layer_mask_on_its_own_layer_changes_nothing() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+        let a = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("select.rect", json!({"x": 4, "y": 4, "width": 10, "height": 10})).unwrap();
+        s.execute("layer.layerMask.revealSelection", json!({})).unwrap();
+        s.execute("layer.layerMask.edit", json!({"layer": a, "density": 40})).unwrap();
+        s.execute("layer.layerMask.enabled", json!({"layer": a, "enabled": false})).unwrap();
+        let doc = s.active().unwrap().doc.clone();
+        let mask = doc.layer(photocraft_doc::LayerId(a)).unwrap().mask.clone().expect("a has a mask");
+        assert!(!mask.enabled && (mask.density - 0.4).abs() < 1e-6, "set up: disabled, 40% density");
+        let history = s.active().unwrap().history.entries();
+        for (copy, replace) in [(false, false), (true, false), (false, true), (true, true)] {
+            let r = s.execute("layer.layerMask.moveTo", json!({"layer": a, "to": a, "copy": copy, "replace": replace}));
+            assert!(r.is_err(), "copy: {copy}, replace: {replace}: refused");
+            let st = s.active().unwrap();
+            assert_eq!(st.doc.layer(photocraft_doc::LayerId(a)).unwrap().mask.as_ref(), Some(&mask), "copy: {copy}, replace: {replace}: the mask is untouched");
+            assert!(st.doc == doc, "copy: {copy}, replace: {replace}: the document is unchanged");
+            assert_eq!(st.history.entries(), history, "copy: {copy}, replace: {replace}: no history step");
+        }
+    }
+
+    /// #10485: one undo after an ⌥-copy, or after a move or copy that replaces the target's own
+    /// mask, puts both layers' masks back exactly (pixels, enabled, density, feather).
+    #[test]
+    fn undo_restores_both_masks_after_a_copy_or_a_replace() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+        let a = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("select.rect", json!({"x": 4, "y": 4, "width": 10, "height": 10})).unwrap();
+        s.execute("layer.layerMask.revealSelection", json!({})).unwrap();
+        s.execute("layer.layerMask.edit", json!({"layer": a, "density": 60, "feather": 3})).unwrap();
+        let b = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("select.rect", json!({"x": 18, "y": 2, "width": 6, "height": 20})).unwrap();
+        s.execute("layer.layerMask.hideSelection", json!({"layer": b})).unwrap();
+        s.execute("layer.layerMask.enabled", json!({"layer": b, "enabled": false})).unwrap();
+        let c = s.execute("layer.new.layer", json!({})).unwrap()["layer"].as_u64().unwrap();
+        let mask_of = |s: &Session, id: u64| s.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().mask.clone();
+        let (mask_a, mask_b) = (mask_of(&s, a).expect("a has a mask"), mask_of(&s, b).expect("b has a mask"));
+        assert_ne!(mask_a, mask_b, "set up: two different masks");
+        let doc = s.active().unwrap().doc.clone();
+        let history = s.active().unwrap().history.entries().len();
+        let cases = [
+            ("⌥-copy onto a layer without a mask", json!({"layer": a, "to": c, "copy": true}), c),
+            ("⌥-copy replacing a mask", json!({"layer": a, "to": b, "copy": true, "replace": true}), b),
+            ("move replacing a mask", json!({"layer": a, "to": b, "replace": true}), b),
+        ];
+        for (case, params, to) in cases {
+            s.execute("layer.layerMask.moveTo", params).unwrap();
+            assert_eq!(mask_of(&s, to).as_ref(), Some(&mask_a), "{case}: the target has a's mask");
+            assert_eq!(s.active().unwrap().history.entries().len(), history + 1, "{case}: one history step");
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(mask_of(&s, a).as_ref(), Some(&mask_a), "{case}: a's mask is back");
+            assert_eq!(mask_of(&s, b).as_ref(), Some(&mask_b), "{case}: b's mask is back");
+            assert!(mask_of(&s, c).is_none(), "{case}: c has no mask again");
+            assert!(s.active().unwrap().doc == doc, "{case}: the document is as before");
+        }
+    }
 }

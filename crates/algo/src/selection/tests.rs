@@ -106,7 +106,9 @@ fn wand_contiguous_vs_global() {
     let g = magic_wand(&px, a, (3, 3), 10.0, false, false);
     assert_eq!(g.iter().filter(|v| **v > 0.0).count(), 80);
     let aa = magic_wand(&px, a, (3, 3), 10.0, true, true);
-    assert!(aa[3 * 20 + 6] > 0.0 && aa[3 * 20 + 6] < 1.0);
+    // #11776: anti-aliasing keeps the region whole and adds no fringe next to a colour this far
+    // past the tolerance (white is 245 levels from red, beyond the fringe's fade).
+    assert_eq!((aa[3 * 20 + 5], aa[3 * 20 + 6]), (1.0, 0.0));
     assert!(magic_wand(&px, a, (50, 3), 10.0, true, false).iter().all(|v| *v == 0.0));
 }
 

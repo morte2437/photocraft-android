@@ -44,6 +44,16 @@ pub struct CutParts {
 }
 
 impl CutParts {
+    /// Selected pixels in source-document coordinates, including soft coverage.
+    pub(crate) fn selected_pixels(&self) -> &Surface {
+        &self.piece
+    }
+
+    /// Whether the floating piece contains a layer mask rather than layer pixels.
+    pub(crate) fn is_mask(&self) -> bool {
+        self.mask
+    }
+
     /// Split `layer` of `doc` by its selection. With `copy` the selected pixels stay in the layer
     /// too (the piece is a duplicate). Without, they leave a transparent hole, or on the Background,
     /// which can't hold transparency, one filled with `background` (Photoshop). Errors without a
@@ -243,6 +253,8 @@ pub struct Floating {
     /// The piece has been moved at least once, even if it is back where it was cut (nudged away
     /// and back): its selection is the moved pixels' then, as each of Photoshop's nudges leaves it.
     pub moved: bool,
+    /// History step name when dropped; `None` is "Move". The Move tool names a ⌥-drag copy "Duplicate".
+    pub step_name: Option<String>,
 }
 
 /// The floating piece of `st`, if it is still valid (the document hasn't changed under it).
@@ -289,12 +301,14 @@ pub fn locked_for_float(doc: &Document, l: &photocraft_doc::Layer) -> bool {
 fn float(s: &mut Session, p: &Value) -> Result<Value> {
     let (dx, dy) = (int_param(p, "dx"), int_param(p, "dy"));
     let copy = p.get("copy").and_then(Value::as_bool).unwrap_or(false);
+    // A name for the History step that drops the piece: short and not blank, else the default.
+    let step_name = p.get("stepName").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty() && s.chars().count() <= 64).map(str::to_string);
     let background = s.tools.background;
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
     if floating(st).is_none() {
         let layer = st.active_layer.ok_or_else(|| EngineError::Other("no active layer".into()))?;
         let parts = CutParts::new(&st.doc, layer, copy, background, crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::Mask)?;
-        st.floating = Some(Floating { layer, offset: (0, 0), revision: st.revision, parts: Arc::new(parts), moved: false });
+        st.floating = Some(Floating { layer, offset: (0, 0), revision: st.revision, parts: Arc::new(parts), moved: false, step_name });
     }
     let f = st.floating.as_mut().ok_or(EngineError::NoDocument)?;
     f.offset = (f.offset.0.saturating_add(dx), f.offset.1.saturating_add(dy));
@@ -311,20 +325,21 @@ pub fn drop_floating(s: &mut Session) -> Result<Value> {
         return Ok(json!({"dropped": false}));
     };
     st.floating = None;
+    let name = f.step_name.clone().unwrap_or_else(|| "Move".to_string());
     let (dx, dy) = f.offset;
     if (dx, dy) == (0, 0) {
         // Back where it was cut: the pixels are as they were. A piece that never moved (a click)
         // changes nothing; one nudged away and back keeps the moved pixels' selection (#7538).
         if let Some(outline) = f.parts.outline().filter(|_| f.moved) {
             let outline = outline.clone();
-            s.edit("Move", |doc, _| {
+            s.edit(&name, |doc, _| {
                 doc.selection = Some(outline);
                 Ok(())
             })?;
         }
         return Ok(json!({"dropped": true, "offset": [0, 0]}));
     }
-    s.edit("Move", |doc, _| {
+    s.edit(&name, |doc, _| {
         f.parts.place(doc, dx, dy)?;
         let sel = f.parts.outline().or(doc.selection.as_ref());
         doc.selection = sel.map(|sel| photocraft_algo::resample::translate_surface(sel, dx, dy));
@@ -335,7 +350,7 @@ pub fn drop_floating(s: &mut Session) -> Result<Value> {
 
 /// Commands that leave a floating piece floating: its own, and ones that don't touch documents.
 fn keeps_floating(id: &str) -> bool {
-    matches!(id, "select.float" | "select.drop" | "brush.mixer.sample" | "brush.mixer.load" | "brush.mixer.clean")
+    matches!(id, "select.float" | "select.drop" | "layer.copyToDocument" | "brush.mixer.sample" | "brush.mixer.load" | "brush.mixer.clean")
         || ["view.", "window.", "help.", "prefs."].iter().any(|p| id.starts_with(p))
 }
 
@@ -374,7 +389,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Float Selection",
             menu: &[],
             shortcut: None,
-            params: r##"{"dx":px=0,"dy":px=0,"copy":bool=false,"target":"pixels"|"mask"="pixels" (mask: float the selected part of the layer's mask, the hole takes the background colour)} → {layer, offset} (cuts the selected pixels of the active layer into a floating piece the first time, or with copy leaves them and floats a duplicate; on the Background the hole takes the background colour; then moves it by whole pixels; dropped by select.drop or any other command, put back by edit.undo)"##,
+            params: r##"{"dx":px=0,"dy":px=0,"copy":bool=false,"stepName":string="Move" (History name of the step that drops the piece; blank or over 64 characters falls back to Move),"target":"pixels"|"mask"="pixels" (mask: float the selected part of the layer's mask, the hole takes the background colour)} → {layer, offset} (cuts the selected pixels of the active layer into a floating piece the first time, or with copy leaves them and floats a duplicate; on the Background the hole takes the background colour; then moves it by whole pixels; dropped by select.drop or any other command, put back by edit.undo)"##,
             enabled: can_float,
             journal: true,
             run: float,

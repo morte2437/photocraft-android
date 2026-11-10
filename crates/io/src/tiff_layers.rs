@@ -1319,7 +1319,7 @@ mod tests {
                 let lowered = ImportOptions { psd_high_memory_approved: true, psd_max_pixel_bytes: required - 1, ..Default::default() };
                 assert!(matches!(
                     crate::import_with_options("l.tif", &bytes, &lowered),
-                    Err(IoError::PsdImportBudget { required: r, limit: l }) if r == required && l == required - 1
+                    Err(IoError::PsdImportBudget { required: r, limit: l, .. }) if r == required && l == required - 1
                 ));
             });
         });
@@ -1351,7 +1351,7 @@ mod tests {
         // remaining allowance is untouched.
         crate::psd_gate::set_active_attempt_budget(charged - 1);
         match crate::import_with_options_and_interrupt("charge.tif", &bytes, &ImportOptions::default(), &ctl) {
-            Err(IoError::PsdImportBudget { required, limit }) => assert_eq!((required, limit), (charged, charged - 1)),
+            Err(IoError::PsdImportBudget { required, limit, .. }) => assert_eq!((required, limit), (charged, charged - 1)),
             other => panic!("expected an import-budget refusal, got {other:?}"),
         }
         assert_eq!(crate::psd_gate::active_attempt_remaining(), Some(charged - 1), "a failed nested import leaves the allowance as it was");
@@ -1462,7 +1462,7 @@ mod tests {
         crate::memory::with_mock_memory(zero, || {
             crate::flat::with_before_composite_decode(hook(&decoded), || {
                 match crate::import_with_options("bogus.tif", &bytes, &ImportOptions::default()) {
-                    Err(IoError::PsdImportBudget { limit: 0, required }) => assert!(required > 0),
+                    Err(IoError::PsdImportBudget { limit: 0, required, .. }) => assert!(required > 0),
                     other => panic!("expected an import-budget refusal, got {other:?}"),
                 }
                 assert_eq!(decoded.get(), 0, "a refused file must not decode its composite");
@@ -1504,7 +1504,7 @@ mod tests {
         crate::memory::with_mock_memory(zero, || {
             crate::flat::with_before_composite_decode(hook(&decoded), || {
                 match crate::import_with_options("zero.tif", &bytes, &ImportOptions::default()) {
-                    Err(IoError::PsdImportBudget { limit: 0, required }) => assert!(required > 0),
+                    Err(IoError::PsdImportBudget { limit: 0, required, .. }) => assert!(required > 0),
                     other => panic!("expected an import-budget refusal, got {other:?}"),
                 }
                 assert_eq!(decoded.get(), 0, "a refused file must not decode its composite");
@@ -1589,7 +1589,7 @@ mod tests {
 
         let result = rx.recv_timeout(Duration::from_secs(10)).expect("the post-gate recheck must refuse instead of decoding");
         match result {
-            Err(IoError::PsdImportBudget { limit: 0, required }) => assert!(required > 0),
+            Err(IoError::PsdImportBudget { limit: 0, required, .. }) => assert!(required > 0),
             other => panic!("expected the post-gate recheck to refuse with a zero budget, got {other:?}"),
         }
         assert!(!decoded.load(Ordering::SeqCst), "the composite must not be decoded after the post-gate refusal");

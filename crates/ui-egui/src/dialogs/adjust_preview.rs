@@ -30,8 +30,8 @@
 //!   RGB, adjusts and converts back (CMYK even changes when the settings are neutral), which a
 //!   composite in display RGB can't reproduce;
 //! - in Grayscale documents, kinds that make colour from gray (Vibrance, Color Balance, Black &
-//!   White, Photo Filter, Channel Mixer, Gradient Map, colorized Hue/Saturation): the command
-//!   folds each pixel back to gray, the composite would carry the colour through;
+//!   White, Photo Filter, Channel Mixer, Gradient Map, Selective Color, colorized Hue/Saturation):
+//!   the command folds each pixel back to gray, the composite would carry the colour through;
 //! - on the GPU canvas, documents the wgpu compositor doesn't cover (it would fall back to a
 //!   full CPU composite per change); on the CPU canvas, documents above the proxy size.
 
@@ -191,7 +191,23 @@ fn dialog(app: &PhotocraftApp) -> Option<(String, Value, bool)> {
     }
     let kind = d.fields.get("__adjust")?.as_str()?.to_string();
     let preview = d.fields.get("__preview").and_then(Value::as_bool).unwrap_or(true);
-    Some((kind, crate::filter_dialog::params_of(&d.fields), preview))
+    let params = crate::filter_dialog::params_of(&d.fields);
+    let command = format!("image.adjustments.{kind}");
+    crate::actions::authorize_panel_preview(app, d.id, &d.fields, &command, &params).ok()?;
+    Some((kind, params, preview))
+}
+
+/// Whether Image › Adjustments `kind` on document `idx` would edit a channel (the Channels panel's
+/// target or the Quick Mask) or the active layer's mask instead of the layer's pixels.
+pub(crate) fn targets_channel(app: &PhotocraftApp, idx: usize, kind: &str, params: &Value) -> bool {
+    // The dialog's own target choice, when it has one, decides.
+    if let Some(target) = params.get("target") {
+        return target.as_str() != Some("pixels");
+    }
+    let Some(st) = app.session.documents().get(idx) else { return false };
+    st.channel_view.target != photocraft_engine::channel_cmds::ChannelTarget::Composite
+        || st.doc.quick_mask.is_some()
+        || !app.with_mask_target(&format!("image.adjustments.{kind}"), Value::Null).is_null()
 }
 
 /// FNV-1a over `parts`, never 0.
@@ -225,13 +241,7 @@ fn update(app: &mut PhotocraftApp, idx: usize) -> Option<&AdjustPreview> {
     let (doc_id, revision, target) = (st.doc.id, st.revision, st.active_layer?);
     // Commands that target a channel (Channels panel / Quick Mask) or a layer mask keep the proxy
     // preview.
-    let channel_target = if let Some(target) = params.get("target") {
-        target.as_str() != Some("pixels")
-    } else {
-        st.channel_view.target != photocraft_engine::channel_cmds::ChannelTarget::Composite
-            || st.doc.quick_mask.is_some()
-            || !app.with_mask_target(&format!("image.adjustments.{kind}"), Value::Null).is_null()
-    };
+    let channel_target = targets_channel(app, idx, &kind, &params);
     let session = hash(&[&doc_id.0.to_le_bytes(), &revision.to_le_bytes(), &target.0.to_le_bytes(), &[u8::from(channel_target)]]);
     let h = hash(&[kind.as_bytes(), params.to_string().as_bytes(), &[u8::from(preview)]]);
     if let Some(p) = &app.adjust_preview

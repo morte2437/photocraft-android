@@ -19,7 +19,7 @@ Smart selection runs on your computer. It needs no account and no cloud.
 
 ## Adjust the selection
 
-- **Select › Inverse Selection** swaps the selected and unselected areas.
+- **Select › Inverse** swaps the selected and unselected areas.
 - **Select › Modify** has **Border…**, **Smooth…**, **Expand…**, **Contract…** and **Feather…**. Feather softens the edge.
 - **Select › Select and Mask…** refines an edge, for example around hair.
 - **Select › Deselect** removes the selection. **Select › Reselect** brings back the last one.

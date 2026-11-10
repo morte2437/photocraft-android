@@ -272,6 +272,7 @@ pub fn duplicate_selected(s: &mut Session, in_place: bool, label: &str) -> Resul
     let sel = selected(s);
     let old_active = s.active().and_then(|d| d.active_layer);
     let add_copy = crate::commands::layer_panel_option(s, "addCopyToCopiedLayersAndGroups", true);
+    let mut shift = (0i32, 0i32);
     let (copies, active) = s.edit(label, |doc, active| {
         let mut copies = Vec::new();
         let mut new_active = None;
@@ -281,7 +282,9 @@ pub fn duplicate_selected(s: &mut Session, in_place: bool, label: &str) -> Resul
             let dup = crate::commands::layer_copy(doc, id, add_copy)?;
             let nid = doc.insert_above(Some(id), dup);
             if !in_place {
-                crate::artboard_cmds::place_copy(doc, nid)?;
+                // Each copy's shift moved the whole document, so they add up.
+                let (dx, dy) = crate::artboard_cmds::place_copy(doc, nid)?;
+                shift = (shift.0.saturating_add(dx), shift.1.saturating_add(dy));
             }
             if Some(id) == old_active {
                 new_active = Some(nid);
@@ -293,6 +296,7 @@ pub fn duplicate_selected(s: &mut Session, in_place: bool, label: &str) -> Resul
         *active = a;
         Ok((copies, a))
     })?;
+    crate::artboard_cmds::follow_shift(s, shift);
     let out = copies.iter().map(|l| l.0).collect::<Vec<_>>();
     reselect(s, copies, active);
     Ok(json!({"layers": out, "layer": active.map(|l| l.0)}))

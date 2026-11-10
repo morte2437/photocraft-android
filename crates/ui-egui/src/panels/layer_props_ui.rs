@@ -51,15 +51,32 @@ fn edit_tolerance(layer: &Layer, u: LenUnit, extent: f64) -> f32 {
 
 /// A number field that reports a value once committed (drag released, Enter, focus lost). `label` is its own
 /// label and the one stacked with it in the same column ("W" over "X"), which share a centre.
+/// `id` names the field and the layer it edits.
 /// `len` is the unit shown, its 100% extent (for percent) and the length a percentage typed into a
 /// length field is a share of (`50%` in a px W is half the current width, as in Photoshop,
 /// #10784); `name` is the field's accessible name.
 // The explicit accessible name accompanies the existing numeric-field parameters.
 #[expect(clippy::too_many_arguments)]
-fn field(ui: &mut egui::Ui, id: &str, label: (&str, &str), name: &str, current: f32, width: f32, len: (LenUnit, f64, f64), tol: f32) -> Option<f32> {
+fn field(ui: &mut egui::Ui, id: (&str, u64), label: (&str, &str), name: &str, current: f32, width: f32, len: (LenUnit, f64, f64), tol: f32) -> Option<f32> {
     let (u, extent, typed_pct) = len;
+    let (id, layer) = id;
     stacked_label(ui, tl!(label.0), &[tl!(label.0), tl!(label.1)], LABEL_W, 2.0);
     let key = ui.make_persistent_id(("layer-props-field", id));
+    // A wheeled value waiting for its gesture to end is its layer's, held while it is drawn.
+    // It is dropped rather than applied when another layer was made active in the meantime, when
+    // a pass went by without the field (the section collapsed, a layer without these fields
+    // shown), however briefly, or when what it edits changed underneath it (an Undo): applied
+    // later it would be a stale edit.
+    let wheel_key = key.with("wheel");
+    let pass = ui.ctx().cumulative_pass_nr();
+    let held = ui.data(|d| d.get_temp::<(u64, u64, u32)>(wheel_key));
+    let pending = held.is_some_and(|(l, drawn, from)| l == layer && pass.saturating_sub(drawn) <= 1 && from == current.to_bits());
+    if held.is_some() && !pending {
+        ui.data_mut(|d| {
+            d.remove::<(u64, u64, u32)>(wheel_key);
+            d.remove::<f32>(key);
+        });
+    }
     let mut v = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or_else(|| u.shown(f64::from(current), extent));
     // A field showing percent keeps its own 100%, so a length typed into it converts as shown.
     // Otherwise the current size, while the field is edited: clicking from W into a linked H
@@ -75,12 +92,24 @@ fn field(ui: &mut egui::Ui, id: &str, label: (&str, &str), name: &str, current: 
     } else {
         ui.data_mut(|d| d.remove::<f64>(pct_key));
     }
+    // The wheel over the field is held like a drag: each notch applied as its own edit resampled
+    // the layer again from the last result, and a fast scroll destroyed it (#9898).
+    let wheeled = resp.changed() || pending;
+    if wheeled && !resp.dragged() && !resp.has_focus() && crate::field_wheel::field_gesture_running(ui.ctx()) {
+        ui.data_mut(|d| {
+            d.insert_temp(key, v);
+            d.insert_temp(wheel_key, (layer, pass, current.to_bits()));
+        });
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::field_wheel::GESTURE_GAP));
+        return None;
+    }
     if resp.dragged() || resp.has_focus() {
         ui.data_mut(|d| d.insert_temp(key, v));
         return None;
     }
+    let wheel_ended = ui.data_mut(|d| d.remove_temp::<(u64, u64, u32)>(wheel_key)).is_some();
     ui.data_mut(|d| d.remove::<f32>(key));
-    if !(resp.drag_stopped() || resp.lost_focus() || resp.changed()) {
+    if !(resp.drag_stopped() || resp.lost_focus() || resp.changed() || wheel_ended) {
         return None;
     }
     let px = u.px(v, extent) as f32;
@@ -182,24 +211,24 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
             let w = ((ui.available_width() - 2.0 * (LABEL_W + LABEL_GAP) - LINK_W - 2.0 * LABEL_GAP) / 2.0).max(36.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
-                if let Some(v) = field(ui, "w", ("W", "X"), "Width", (bb[2] - bb[0]) as f32, w, (u, dw, bb[2] - bb[0]), tw) {
+                if let Some(v) = field(ui, ("w", layer.id.0), ("W", "X"), "Width", (bb[2] - bb[0]) as f32, w, (u, dw, bb[2] - bb[0]), tw) {
                     run.extend(transform_params(layer.id.0, bb, Some(v), None, linked, tw).map(|p| ("edit.transform".to_string(), p)));
                 }
                 if crate::icons::button(ui, if linked { "link" } else { "unlink" }, LINK_W, linked, tl!("Link width and height")).clicked() {
                     ui.data_mut(|d| d.insert_temp(link_key, !linked));
                 }
-                if let Some(v) = field(ui, "h", ("H", "Y"), "Height", (bb[3] - bb[1]) as f32, w, (u, dh, bb[3] - bb[1]), th) {
+                if let Some(v) = field(ui, ("h", layer.id.0), ("H", "Y"), "Height", (bb[3] - bb[1]) as f32, w, (u, dh, bb[3] - bb[1]), th) {
                     run.extend(transform_params(layer.id.0, bb, None, Some(v), linked, th).map(|p| ("edit.transform".to_string(), p)));
                 }
             });
             ui.add_space(ROW_GAP);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
-                if let Some(v) = field(ui, "x", ("X", "W"), "X", bb[0] as f32, w, (u, dw, dw), 0.5) {
+                if let Some(v) = field(ui, ("x", layer.id.0), ("X", "W"), "X", bb[0] as f32, w, (u, dw, dw), 0.5) {
                     run.push(("layer.translate".into(), json!({"layer": layer.id.0, "dx": (v - bb[0] as f32).round() as i32, "dy": 0})));
                 }
                 ui.add_space(LINK_W + LABEL_GAP);
-                if let Some(v) = field(ui, "y", ("Y", "H"), "Y", bb[1] as f32, w, (u, dh, dh), 0.5) {
+                if let Some(v) = field(ui, ("y", layer.id.0), ("Y", "H"), "Y", bb[1] as f32, w, (u, dh, dh), 0.5) {
                     run.push(("layer.translate".into(), json!({"layer": layer.id.0, "dx": 0, "dy": (v - bb[1] as f32).round() as i32})));
                 }
             });
@@ -361,6 +390,371 @@ mod tests {
         let at = |l: &str| centres.iter().find(|(s, _)| s == l).map(|(_, x)| *x).unwrap_or_else(|| panic!("no {l} label in {centres:?}"));
         assert!((at("W") - at("X")).abs() < 0.01, "W and X: {centres:?}");
         assert!((at("H") - at("Y")).abs() < 0.01, "H and Y: {centres:?}");
+    }
+
+    /// #9898: wheeling over W applied each notch as its own Free Transform, resampling the layer
+    /// again from the last result until a fast scroll destroyed it. A wheel gesture is one edit,
+    /// applied when it stops, from the pixels it started with.
+    #[test]
+    fn wheeling_the_width_is_one_transform_when_the_wheel_stops() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("select.rect", json!({"x": 10, "y": 10, "width": 100, "height": 60})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                crate::field_wheel::begin_frame(ui.ctx());
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let history = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+        let width = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>| {
+            let st = h.state().session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+            h.state_mut().layer_frame_bounds(&layer, layer.surface().unwrap()).width()
+        };
+        let before = history(&h);
+        assert_eq!(width(&mut h), 100);
+        let at = h.get_by_label("Width").rect().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..8 {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        assert_eq!(history(&h), before, "nothing applied while the wheel turns");
+        assert_eq!(width(&mut h), 100);
+        h.run_steps(12);
+        assert_eq!(history(&h), before + 1, "one edit for the whole gesture");
+        assert_eq!(width(&mut h), 108);
+    }
+
+    /// A wheeled width still waiting for its gesture to end is dropped, not applied to another
+    /// layer made active in the meantime (or to its own when it is made active again).
+    #[test]
+    fn a_wheeled_width_is_not_applied_to_another_layer() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+        let mut layers = Vec::new();
+        for (x, w) in [(10, 100), (120, 40)] {
+            app.run("layer.new.layer", json!({})).unwrap();
+            app.run("select.rect", json!({"x": x, "y": 10, "width": w, "height": 40})).unwrap();
+            app.run("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
+            app.run("select.deselect", json!({})).unwrap();
+            layers.push(app.session.active().unwrap().active_layer.unwrap());
+        }
+        app.run("layer.select", json!({"layer": layers[0].0})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                crate::field_wheel::begin_frame(ui.ctx());
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let widths = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>| {
+            let doc = h.state().session.active().unwrap().doc.clone();
+            layers
+                .iter()
+                .map(|id| doc.layer(*id).unwrap().clone())
+                .map(|l| h.state_mut().layer_frame_bounds(&l, l.surface().unwrap()).width())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(widths(&mut h), vec![100, 40]);
+        let at = h.get_by_label("Width").rect().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..3 {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.state_mut().run("layer.select", json!({"layer": layers[1].0})).unwrap();
+        h.run_steps(12);
+        assert_eq!(widths(&mut h), vec![100, 40], "the other layer took the first one's wheeled width");
+        h.state_mut().run("layer.select", json!({"layer": layers[0].0})).unwrap();
+        h.run_steps(12);
+        assert_eq!(widths(&mut h), vec![100, 40], "the dropped width came back on its own layer");
+    }
+
+    /// A wheeled width whose field stops being drawn before the gesture ends (Transform
+    /// collapsed) is dropped, not applied as a stale edit when the field shows again.
+    #[test]
+    fn a_wheeled_width_left_undrawn_is_dropped() {
+        use egui_kittest::kittest::Queryable;
+        let hide = egui::Id::unique("test-hide-layer-props");
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("select.rect", json!({"x": 10, "y": 10, "width": 100, "height": 60})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(0.05).build_ui_state(
+            move |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                crate::field_wheel::begin_frame(ui.ctx());
+                if ui.data(|d| d.get_temp::<bool>(hide)).unwrap_or(false) {
+                    return;
+                }
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let history = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+        let before = history(&h);
+        let at = h.get_by_label("Width").rect().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..3 {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.ctx.data_mut(|d| d.insert_temp(hide, true));
+        h.run_steps(40);
+        h.ctx.data_mut(|d| d.insert_temp(hide, false));
+        h.run_steps(12);
+        assert_eq!(history(&h), before, "the stale wheeled width was applied when the field showed again");
+    }
+
+    /// An Undo while a wheeled width waits drops it: applied afterwards it would redo the edit
+    /// the Undo just took back, under a new history step.
+    #[test]
+    fn a_wheeled_width_is_dropped_by_an_undo_during_the_gesture() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("select.rect", json!({"x": 10, "y": 10, "width": 100, "height": 60})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        let width = |app: &mut PhotocraftApp| {
+            let st = app.session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+            app.layer_frame_bounds(&layer, layer.surface().unwrap()).width()
+        };
+        let original = width(&mut app);
+        let st = app.session.active().unwrap();
+        let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+        let bb = frame(&layer, app.layer_frame_bounds(&layer, layer.surface().unwrap()));
+        let p = transform_params(layer.id.0, bb, Some((bb[2] - bb[0]) as f32 + 20.0), None, false, 0.5).unwrap();
+        app.run("edit.transform", p).unwrap();
+        assert!(width(&mut app) > original);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                crate::field_wheel::begin_frame(ui.ctx());
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let at = h.get_by_label("Width").rect().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..3 {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        let history = h.state().session.active().unwrap().history.past_len();
+        h.run_steps(40);
+        assert_eq!(h.state().session.active().unwrap().history.past_len(), history, "the wheeled width was applied after the Undo");
+        assert_eq!(width(h.state_mut()), original, "the Undo stands");
+    }
+
+    /// A wheeled width is dropped when a layer without these fields (a group) is shown, even for
+    /// a moment: going back to the layer before the gesture ends must not apply it.
+    #[test]
+    fn a_wheeled_width_is_dropped_by_a_moment_on_a_group() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.run("select.rect", json!({"x": 10, "y": 10, "width": 100, "height": 60})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        let layer = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.new.group", json!({})).unwrap();
+        let group = app.session.active().unwrap().active_layer.unwrap();
+        app.run("layer.select", json!({"layer": layer.0})).unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                crate::field_wheel::begin_frame(ui.ctx());
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let history = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+        let at = h.get_by_label("Width").rect().center();
+        h.hover_at(at);
+        h.run_steps(1);
+        for _ in 0..3 {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.state_mut().run("layer.select", json!({"layer": group.0})).unwrap();
+        h.run_steps(2);
+        h.state_mut().run("layer.select", json!({"layer": layer.0})).unwrap();
+        let before = history(&h);
+        h.run_steps(40);
+        assert_eq!(history(&h), before, "the wheeled width was applied after a moment on the group");
+    }
+
+    /// Moving straight from wheeling W to wheeling H is still W's gesture: W's value lands as
+    /// soon as the wheel turns off it, and H doesn't step until a gesture of its own, so the
+    /// two never apply from the same original box together.
+    #[test]
+    fn wheeling_width_then_height_applies_each_once() {
+        use egui_kittest::kittest::Queryable;
+        let setup = || {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 200, "height": 120})).unwrap();
+            app.run("layer.new.layer", json!({})).unwrap();
+            app.run("select.rect", json!({"x": 10, "y": 10, "width": 100, "height": 50})).unwrap();
+            app.run("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
+            app.run("select.deselect", json!({})).unwrap();
+            app
+        };
+        let app = setup();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(280.0, 900.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
+                    return;
+                }
+                crate::field_wheel::begin_frame(ui.ctx());
+                let state = app.session.active().unwrap();
+                let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
+                properties(app, ui, &layer);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let history = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().history.past_len();
+        let size = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>| {
+            let st = h.state().session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+            let r = h.state_mut().layer_frame_bounds(&layer, layer.surface().unwrap());
+            (r.width(), r.height())
+        };
+        let before = history(&h);
+        let notch = |h: &mut egui_kittest::Harness<'_, PhotocraftApp>| {
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        };
+        let (w_at, h_at) = (h.get_by_label("Width").rect().center(), h.get_by_label("Height").rect().center());
+        // What W's four notches alone make, and H's two after them, applied the same way on a copy
+        // of the document.
+        let (w_only, then_h) = {
+            let mut app = setup();
+            let st = app.session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+            let bb = frame(&layer, app.layer_frame_bounds(&layer, layer.surface().unwrap()));
+            let p = transform_params(layer.id.0, bb, Some((bb[2] - bb[0]) as f32 + 4.0), None, true, 0.5).unwrap();
+            app.run("edit.transform", p).unwrap();
+            let st = app.session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+            let r = app.layer_frame_bounds(&layer, layer.surface().unwrap());
+            let w_only = (r.width(), r.height());
+            let bb = frame(&layer, r);
+            let p = transform_params(layer.id.0, bb, None, Some((bb[3] - bb[1]) as f32 + 2.0), true, 0.5).unwrap();
+            app.run("edit.transform", p).unwrap();
+            let st = app.session.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+            let r = app.layer_frame_bounds(&layer, layer.surface().unwrap());
+            (w_only, (r.width(), r.height()))
+        };
+        h.hover_at(w_at);
+        h.run_steps(1);
+        for _ in 0..4 {
+            notch(&mut h);
+        }
+        h.hover_at(h_at);
+        h.run_steps(1);
+        for _ in 0..4 {
+            notch(&mut h);
+        }
+        h.run_steps(20);
+        assert_eq!(history(&h), before + 1, "W applied once, H not stepped by W's gesture");
+        assert_eq!(size(&mut h), w_only, "W's four notches, linked, and nothing from H");
+        // A new gesture over H is H's own.
+        for _ in 0..2 {
+            notch(&mut h);
+        }
+        h.run_steps(20);
+        assert_eq!(history(&h), before + 2);
+        assert_eq!(size(&mut h), then_h, "H's two notches, linked");
     }
 
     /// Types each `(name, text)` of `edits` in turn into the Transform field named `name` of an

@@ -112,6 +112,7 @@ pub(super) fn content_aware_scale(s: &mut Session, p: &Value) -> Result<Value> {
     let (w, h) = (region.width() as usize, region.height() as usize);
     let (nw, nh) = (dst.width() as usize, dst.height() as usize);
     let label = "Content-Aware Scale";
+    let background = s.tools.background;
     // A background job when started with `Session::start` (#210): seam carving runs on a worker
     // against the document snapshot and checks for cancellation before every seam.
     crate::jobs::run(
@@ -128,8 +129,11 @@ pub(super) fn content_aware_scale(s: &mut Session, p: &Value) -> Result<Value> {
         },
         move |s, out| {
             s.edit(label, |doc, _| {
+                // The scaled area is vacated as Delete leaves it: transparent, or on the Background,
+                // which can't hold transparency, the background colour (Photoshop).
+                writable_surface(doc, id)?;
+                crate::edit_cmds::clear_area(doc, id, region, None, background)?;
                 let surf = writable_surface(doc, id)?;
-                crate::pixels::try_clear_surface(surf, region, None)?;
                 surf.write_region(dst, &out);
                 surf.prune();
                 Ok(())

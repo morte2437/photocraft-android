@@ -7,13 +7,13 @@
 //! click picks a preset and keeps the picker open, a double-click picks it and closes the picker
 //! (#1031); drag to reorder, right-click to rename or delete. Each card is a 2 × 2 grid — tip at
 //! the top left, stroke preview at the top right and the name in the merged bottom row (or in the
-//! stroke's cell when only the tip and the name show) — and the gear's three boxes ([`body`]'s
-//! Brush Name/Brush Stroke/Brush Tip) hide its parts, at least one always on; the footer slider
-//! scales the cards. Its view state (search, collapsed groups, the card's parts, the footer
-//! scale, a rename in progress) is `UiState::brush_picker_list`, so the control channel can read
-//! and set it. The gear's parts and the footer scale are remembered across restarts
-//! ([`persist`]/[`restore`], `Preferences::brush_picker`); the search, collapsed groups and a
-//! rename in progress are not.
+//! stroke's cell when only the tip and the name show) — and the gear's three boxes ([`GEAR_MENU`]'s
+//! Brush Name/Brush Stroke/Brush Tip; the tip off at first, as in Photoshop) hide its parts, at
+//! least one always on; the footer slider scales the cards. Its view state (search, collapsed
+//! groups, the card's parts, the search bar, the footer scale, a rename in progress) is
+//! `UiState::brush_picker_list`, so the control channel can read and set it. The gear's parts,
+//! Show Search Bar and the footer scale are remembered across restarts ([`persist`]/[`restore`],
+//! `Preferences::brush_picker`); the search, collapsed groups and a rename in progress are not.
 //!
 //! The picker edits a copy of the brush; the caller sends the size and hardness edits through
 //! `tools.setBrush` ([`crate::brush_panel::commit_gesture`]) and applies the returned [`Pick`]s
@@ -82,7 +82,56 @@ pub(crate) fn picker_id() -> egui::Id {
 /// All opening paths protect the same frame, including the control channel and options bar.
 pub(crate) fn open(ui: &mut crate::state::UiState, ctx: &egui::Context, at: [f32; 2]) {
     ui.brush_picker = Some(at);
+    // A new opening takes the brush as it is then, not an earlier opening's.
+    ctx.data_mut(|d| d.remove_temp::<Opened>(opened_id()));
     crate::canvas_popup::mark_open(ctx, picker_id());
+}
+
+pub(crate) fn opened_id() -> egui::Id {
+    picker_id().with("opened-with")
+}
+
+/// What Escape in the picker goes back to (#11816): the Size, Hardness, Angle and Roundness it
+/// opened with (or a picked preset brought), and the values its own controls last set. Escape
+/// reverts a value only while it is still the picker's, so a change from elsewhere (`]`, the
+/// options bar) stays. Angle and Roundness come from the tip widget (#11821).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Opened {
+    opened: [f32; 4],
+    typed: [f32; 4],
+}
+
+fn picker_values(b: &photocraft_engine::BrushSettings) -> [f32; 4] {
+    [b.size, b.hardness, b.angle, b.roundness]
+}
+
+impl Opened {
+    pub(crate) fn new(b: &photocraft_engine::BrushSettings) -> Self {
+        Self { opened: picker_values(b), typed: picker_values(b) }
+    }
+
+    pub(crate) fn typed(&mut self, b: &photocraft_engine::BrushSettings) {
+        self.typed = picker_values(b);
+    }
+
+    pub(crate) fn revert(&self, now: &photocraft_engine::BrushSettings) -> photocraft_engine::BrushSettings {
+        let mut b = now.clone();
+        let [size, hardness, angle, roundness] = self.opened;
+        let [typed_size, typed_hardness, typed_angle, typed_roundness] = self.typed;
+        if b.size == typed_size {
+            b.size = size;
+        }
+        if b.hardness == typed_hardness {
+            b.hardness = hardness;
+        }
+        if b.angle == typed_angle {
+            b.angle = angle;
+        }
+        if b.roundness == typed_roundness {
+            b.roundness = roundness;
+        }
+        b
+    }
 }
 
 /// The options-bar brush chip that shows and hides the picker. A press on it isn't an outside
@@ -102,16 +151,18 @@ pub fn close(ui: &mut crate::state::UiState) {
     ui.brush_picker_list.renaming = None;
 }
 
-/// The state the picker's preset list starts from: every card part on (tip, stroke and name).
+/// The state the picker's preset list starts from: the cards show the name and the stroke, not the
+/// tip, and the search bar shows (Photoshop's defaults). The Brushes panel keeps
+/// [`BrushesPanelState::default`].
 pub fn list_state() -> BrushesPanelState {
-    BrushesPanelState::default()
+    BrushesPanelState { show_tip: false, ..BrushesPanelState::default() }
 }
 
-/// The picker's view remembered across restarts: the gear's three card parts and the footer
-/// scale (`Preferences::brush_picker`).
+/// The picker's view remembered across restarts: the gear's three card parts, Show Search Bar and
+/// the footer scale (`Preferences::brush_picker`).
 fn view(app: &PhotocraftApp) -> Value {
     let st = &app.ui.brush_picker_list;
-    json!({"showName": st.show_name, "showStroke": st.show_stroke, "showTip": st.show_tip, "scale": st.scale})
+    json!({"showName": st.show_name, "showStroke": st.show_stroke, "showTip": st.show_tip, "showSearch": st.show_search, "scale": st.scale})
 }
 
 /// Remember the picker's view in the preferences once the user lets go of the pointer: the
@@ -130,7 +181,7 @@ pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 /// Restore the picker's remembered view at launch. A missing or malformed part keeps its
 /// default, the scale is clamped to the slider's range, and the three parts can't all come
-/// back off (an empty card would show no brush at all).
+/// back off (an empty card would show no brush at all): then they get [`list_state`]'s.
 pub fn restore(app: &mut PhotocraftApp) {
     let saved = app.session.prefs().brush_picker.clone();
     let st = &mut app.ui.brush_picker_list;
@@ -143,13 +194,17 @@ pub fn restore(app: &mut PhotocraftApp) {
     if let Some(v) = saved.get("showTip").and_then(Value::as_bool) {
         st.show_tip = v;
     }
+    if let Some(v) = saved.get("showSearch").and_then(Value::as_bool) {
+        st.show_search = v;
+    }
     if let Some(v) = saved.get("scale").and_then(Value::as_f64)
         && v.is_finite()
     {
         st.scale = (v as f32).clamp(*SCALE_RANGE.start(), *SCALE_RANGE.end());
     }
     if ![st.show_name, st.show_stroke, st.show_tip].into_iter().any(|b| b) {
-        (st.show_name, st.show_stroke, st.show_tip) = (true, true, true);
+        let d = list_state();
+        (st.show_name, st.show_stroke, st.show_tip) = (d.show_name, d.show_stroke, d.show_tip);
     }
 }
 
@@ -202,7 +257,8 @@ pub(crate) fn named(resp: egui::Response, label: &str) -> egui::Response {
 }
 
 /// The picker's contents: Size, Hardness (round tips only: a sampled tip has none), a search
-/// field with the Brush Settings, New Preset and gear buttons, the preset list, and the footer
+/// field (unless the gear's Show Search Bar is off) with the Brush Settings, New Preset and gear
+/// buttons, the preset list, and the footer
 /// slider that scales the cards ([`scale_slider`]). Size and Hardness sit in a block flush with
 /// the left edge, at most [`HEAD_MAX_W`] wide, so a picker dragged wider doesn't stretch them.
 /// `current` is the selected preset's name (by identity, so edits don't deselect). `size` is the
@@ -224,43 +280,64 @@ pub fn body(
     ui.set_width(size.x);
     ui.set_min_height(size.y);
     let top = ui.cursor().min.y;
-    // The Size and Hardness controls live in one block flush with the left edge, at most
-    // [`HEAD_MAX_W`] wide: a picker dragged wider leaves the space past the block empty instead of
-    // stretching the rows across it.
-    ui.scope(|ui| {
-        ui.set_max_width(ui.available_width().min(HEAD_MAX_W));
-        // Size: value field plus a logarithmic slider (small sizes get most of the travel).
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tl!("Size")).color(t.text_dim));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut size = b.size;
-                if widgets::value_field(ui, &mut size, 1.0..=MAX_BRUSH_SIZE, "px", 72.0).accessible_name(tl!("Size")).changed() {
-                    b.size = size.round().clamp(1.0, MAX_BRUSH_SIZE);
-                }
+    // The tip's angle/roundness widget at the top left (#11821), then the Size and Hardness
+    // controls in one block, at most [`HEAD_MAX_W`] wide: a picker dragged wider leaves the space
+    // past the block empty instead of stretching the rows across it.
+    ui.horizontal_top(|ui| {
+        let (angle, roundness) = (b.angle, b.roundness);
+        crate::brush_sections::ellipse_widget(ui, &mut b.angle, &mut b.roundness);
+        // A pointer position that isn't finite leaves the tip as it was.
+        let finite = |p: egui::Pos2| p.x.is_finite() && p.y.is_finite();
+        let pointer_ok = ui.input(|i| i.pointer.interact_pos().is_none_or(finite) && i.pointer.latest_pos().is_none_or(finite));
+        if !(pointer_ok && b.angle.is_finite() && b.roundness.is_finite()) {
+            (b.angle, b.roundness) = (angle, roundness);
+        }
+        ui.vertical(|ui| {
+            ui.set_max_width(ui.available_width().min(HEAD_MAX_W));
+            // Size: value field plus a logarithmic slider (small sizes get most of the travel).
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tl!("Size")).color(t.text_dim));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut size = b.size;
+                    if widgets::value_field(ui, &mut size, 1.0..=MAX_BRUSH_SIZE, "px", 72.0).accessible_name(tl!("Size")).changed() {
+                        b.size = size.round().clamp(1.0, MAX_BRUSH_SIZE);
+                    }
+                });
             });
-        });
-        let mut lv = b.size.max(1.0).ln();
-        let size_slider = widgets::slider(ui, &mut lv, 0.0..=MAX_BRUSH_SIZE.ln(), None);
-        if size_slider.changed() {
-            b.size = lv.exp().round().clamp(1.0, MAX_BRUSH_SIZE);
-        }
-        dismiss_popup(&size_slider);
-        if b.tip == TipShape::Round {
-            let mut hard = b.hardness * 100.0;
-            let hardness = widgets::slider_row(ui, "Hardness", &mut hard, 0.0..=100.0, "%", None);
-            if hardness.changed() {
-                b.hardness = (hard / 100.0).clamp(0.0, 1.0);
+            let mut lv = b.size.max(1.0).ln();
+            let size_slider = widgets::slider(ui, &mut lv, 0.0..=MAX_BRUSH_SIZE.ln(), None);
+            if size_slider.changed() {
+                b.size = lv.exp().round().clamp(1.0, MAX_BRUSH_SIZE);
             }
-            dismiss_popup(&hardness);
-        }
+            dismiss_popup(&size_slider);
+            if b.tip == TipShape::Round {
+                let mut hard = b.hardness * 100.0;
+                let hardness = widgets::slider_row(ui, "Hardness", &mut hard, 0.0..=100.0, "%", None);
+                if hardness.changed() {
+                    b.hardness = (hard / 100.0).clamp(0.0, 1.0);
+                }
+                dismiss_popup(&hardness);
+            }
+        });
     });
     ui.add_space(6.0);
     widgets::hairline(ui);
     ui.add_space(6.0);
+    // A hidden search bar filters nothing: a search typed before hiding it would otherwise keep
+    // presets out of the list with no field to show why.
+    if !st.show_search {
+        st.filter.clear();
+    }
     ui.horizontal(|ui| {
-        icons::paint(ui, egui::Rect::from_min_size(ui.cursor().min + vec2(0.0, 3.0), vec2(16.0, 16.0)), "search", 14.0, t.text_faint);
-        ui.add_space(20.0);
-        widgets::text_field(ui, ui.scope_id().with("brush-picker-search"), &mut st.filter, tl!("Search Brushes"), (size.x - 118.0).max(60.0), false);
+        // In a scope of its own whether shown or not, so the buttons after it keep their ids and
+        // the gear's menu stays open when Show Search Bar takes the field away.
+        ui.scope(|ui| {
+            if st.show_search {
+                icons::paint(ui, egui::Rect::from_min_size(ui.cursor().min + vec2(0.0, 3.0), vec2(16.0, 16.0)), "search", 14.0, t.text_faint);
+                ui.add_space(20.0);
+                widgets::text_field(ui, ui.scope_id().with("brush-picker-search"), &mut st.filter, tl!("Search Brushes"), (size.x - 118.0).max(60.0), false);
+            }
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             gear_menu(ui, current, presets, st, &mut picks);
             let new_tip = "Create new brush preset from the current settings";
@@ -353,8 +430,103 @@ pub fn resize_grip(ui: &mut egui::Ui, frame: egui::Rect, content: egui::Vec2) ->
     })
 }
 
-/// The gear: Photoshop's picker menu. A new preset, rename or delete the current one, the list's
-/// view, and Import Brushes.
+/// An entry of the gear menu ([`GEAR_MENU`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Gear {
+    NewPreset,
+    NewGroup,
+    Rename,
+    Delete,
+    Name,
+    Stroke,
+    Tip,
+    AdditionalInfo,
+    SearchBar,
+    RecentBrushes,
+    AppendDefaults,
+    Import,
+    ExportSelected,
+    GetMore,
+    LegacyToolPresets,
+    LegacyBrushes,
+}
+
+impl Gear {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Gear::NewPreset => "New Brush Preset…",
+            Gear::NewGroup => "New Brush Group…",
+            Gear::Rename => "Rename Brush…",
+            Gear::Delete => "Delete Brush…",
+            Gear::Name => "Brush Name",
+            Gear::Stroke => "Brush Stroke",
+            Gear::Tip => "Brush Tip",
+            Gear::AdditionalInfo => "Show Additional Preset Info",
+            Gear::SearchBar => "Show Search Bar",
+            Gear::RecentBrushes => "Show Recent Brushes",
+            Gear::AppendDefaults => "Append Default Brushes…",
+            Gear::Import => "Import Brushes…",
+            Gear::ExportSelected => "Export Selected Brushes…",
+            Gear::GetMore => "Get More Brushes…",
+            Gear::LegacyToolPresets => "Converted Legacy Tool Presets",
+            Gear::LegacyBrushes => "Legacy Brushes",
+        }
+    }
+
+    /// Does this entry act on the selected preset (greyed with none selected)?
+    pub(crate) fn needs_preset(self) -> bool {
+        matches!(self, Gear::Rename | Gear::Delete | Gear::ExportSelected)
+    }
+
+    /// Is this entry only listed, its function still to come? It is greyed and does nothing.
+    /// New Brush Group…, Append Default Brushes…, Export Selected Brushes… and Legacy Brushes come
+    /// with the Brushes panel's library actions (#7450), Show Recent Brushes with the picker's
+    /// recent-brush bar (#7452). What Show Additional Preset Info, Get More Brushes… and Converted
+    /// Legacy Tool Presets do is not measured yet (#11819).
+    pub(crate) fn placeholder(self) -> bool {
+        matches!(
+            self,
+            Gear::NewGroup
+                | Gear::AdditionalInfo
+                | Gear::RecentBrushes
+                | Gear::AppendDefaults
+                | Gear::ExportSelected
+                | Gear::GetMore
+                | Gear::LegacyToolPresets
+                | Gear::LegacyBrushes
+        )
+    }
+}
+
+/// Photoshop's picker gear menu, top to bottom; `None` is a separator.
+pub(crate) const GEAR_MENU: &[Option<Gear>] = &[
+    Some(Gear::NewPreset),
+    Some(Gear::NewGroup),
+    None,
+    Some(Gear::Rename),
+    Some(Gear::Delete),
+    None,
+    Some(Gear::Name),
+    Some(Gear::Stroke),
+    Some(Gear::Tip),
+    None,
+    Some(Gear::AdditionalInfo),
+    None,
+    Some(Gear::SearchBar),
+    Some(Gear::RecentBrushes),
+    None,
+    Some(Gear::AppendDefaults),
+    Some(Gear::Import),
+    Some(Gear::ExportSelected),
+    None,
+    Some(Gear::GetMore),
+    None,
+    Some(Gear::LegacyToolPresets),
+    Some(Gear::LegacyBrushes),
+];
+
+/// The gear: Photoshop's picker menu ([`GEAR_MENU`]). A new preset, rename or delete the current
+/// one, the cards' parts, the search bar and Import Brushes; the entries still to come are greyed.
 fn gear_menu(ui: &mut egui::Ui, current: Option<&str>, presets: &[BrushPreset], st: &mut BrushesPanelState, picks: &mut Vec<Pick>) {
     let gear = named(icons::button(ui, "settings", 24.0, false, tl!("Brush Preset Options")), "Brush Preset Options");
     // The menu hangs 30 pt right of the gear, off the button's own edge; the align fallbacks still
@@ -364,40 +536,61 @@ fn gear_menu(ui: &mut egui::Ui, current: Option<&str>, presets: &[BrushPreset], 
         other => other,
     };
     egui::Popup::menu(&gear).anchor(anchor).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        if ui.button(tl!("New Brush Preset…")).clicked() {
-            picks.push(Pick::NewPreset);
-            ui.close();
-        }
-        ui.separator();
         let current = current.filter(|n| presets.iter().any(|p| p.name.eq_ignore_ascii_case(n))).map(str::to_string);
-        ui.add_enabled_ui(current.is_some(), |ui| {
-            if ui.button(tl!("Rename Brush…")).clicked()
-                && let Some(name) = current.clone()
-            {
-                st.renaming = Some(Renaming { group: false, name, folder: Vec::new(), text: String::new() });
-                ui.close();
-            }
-            if ui.button(tl!("Delete Brush")).clicked()
-                && let Some(name) = current.clone()
-            {
-                picks.push(Pick::List(Action::Delete(name)));
-                ui.close();
-            }
-        });
-        ui.separator();
         // What a preset's card shows: a checkbox per part. At least one stays on — clicking the
-        // last checked box does nothing, since an empty card would show no brush at all.
-        let on = [st.show_name, st.show_stroke, st.show_tip].into_iter().filter(|b| *b).count();
-        for (flag, label) in [(&mut st.show_name, tl!("Brush Name")), (&mut st.show_stroke, tl!("Brush Stroke")), (&mut st.show_tip, tl!("Brush Tip"))] {
-            let was = *flag;
-            if ui.checkbox(flag, label).changed() && was && on == 1 {
-                *flag = true;
+        // last checked box does nothing, since an empty card would show no brush at all. Counted
+        // before each box, so two clicks in one frame cannot turn off the last two parts.
+        for item in GEAR_MENU {
+            let Some(item) = *item else {
+                ui.separator();
+                continue;
+            };
+            let label = tl!(item.label());
+            match item {
+                Gear::Name | Gear::Stroke | Gear::Tip => {
+                    let on = [st.show_name, st.show_stroke, st.show_tip].into_iter().filter(|b| *b).count();
+                    let flag = match item {
+                        Gear::Name => &mut st.show_name,
+                        Gear::Stroke => &mut st.show_stroke,
+                        _ => &mut st.show_tip,
+                    };
+                    let was = *flag;
+                    if ui.checkbox(flag, label).changed() && was && on == 1 {
+                        *flag = true;
+                    }
+                }
+                Gear::SearchBar => {
+                    ui.checkbox(&mut st.show_search, label);
+                }
+                // Checked by default in Photoshop; greyed until their function lands.
+                Gear::AdditionalInfo | Gear::RecentBrushes => {
+                    ui.add_enabled(false, egui::Checkbox::new(&mut true, label));
+                }
+                _ => {
+                    let enabled = !item.placeholder() && (!item.needs_preset() || current.is_some());
+                    if !ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                        continue;
+                    }
+                    match (item, current.clone()) {
+                        (Gear::NewPreset, _) => picks.push(Pick::NewPreset),
+                        (Gear::Import, _) => picks.push(Pick::Import),
+                        (Gear::Rename, Some(name)) => {
+                            st.renaming = Some(Renaming { group: false, name, folder: Vec::new(), text: String::new() });
+                        }
+                        (Gear::Delete, Some(name)) => picks.push(Pick::List(Action::Delete(name))),
+                        _ => {}
+                    }
+                    ui.close();
+                }
             }
-        }
-        ui.separator();
-        if ui.button(tl!("Import Brushes…")).clicked() {
-            picks.push(Pick::Import);
-            ui.close();
         }
     });
 }
+
+#[cfg(test)]
+#[path = "../brush_picker_gear_menu_tests.rs"]
+mod gear_menu_tests;
+
+#[cfg(test)]
+#[path = "../brush_picker_angle_widget_tests.rs"]
+mod brush_picker_angle_widget_tests;

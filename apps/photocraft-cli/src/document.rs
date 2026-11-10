@@ -26,11 +26,29 @@ fn refuse_overwriting_input(in_place: bool, input: &Path, output: &Path) -> Resu
     Ok(())
 }
 
+/// `N` or `N-M`, 1-based and inclusive, into a normalized `(first, last)`.
+fn parse_pdf_pages(s: &str) -> Result<(u32, u32)> {
+    let (a, b) = s.split_once('-').unwrap_or((s, s));
+    let bad = || CliError::Other(format!("invalid --pdf-pages {s:?}; use N or N-M"));
+    let a = a.trim().parse::<u32>().map_err(|_| bad())?;
+    let b = b.trim().parse::<u32>().map_err(|_| bad())?;
+    if a == 0 || b == 0 {
+        return Err(CliError::Other(format!("--pdf-pages is 1-based; {s:?} starts at 0")));
+    }
+    Ok((a.min(b), a.max(b)))
+}
+
 pub(crate) fn convert(a: &ConvertArgs, _out: &mut dyn Write, err: &mut dyn Write) -> Result {
     let (input, output) = (&a.input, &a.output);
     let opts = ExportOptions::from(&a.export);
     refuse_overwriting_input(a.in_place, input, output)?;
-    let import_opts = photocraft_io::ImportOptions { psd_high_memory_approved: a.approve_high_memory, ..Default::default() };
+    let import_opts = photocraft_io::ImportOptions {
+        psd_high_memory_approved: a.approve_high_memory,
+        pdf_dpi: a.pdf_dpi.unwrap_or(300.0),
+        pdf_pages: a.pdf_pages.as_deref().map(parse_pdf_pages).transpose()?,
+        pdf_editable: a.pdf_editable,
+        ..Default::default()
+    };
     let mut o = files::open_with_options(input, &import_opts)?;
     // Preferences › Raw Defaults › Resolution at its default, as `run` and `info` open a raw.
     photocraft_engine::file_cmds::raw_defaults(&photocraft_engine::Session::new(), &o.warnings, &mut o.document);

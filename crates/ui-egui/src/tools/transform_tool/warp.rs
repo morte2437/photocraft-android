@@ -1,4 +1,5 @@
 use super::begin::warps_type;
+use super::cylinder::cylinder_pointer;
 use super::{BezierMesh, CursorIcon, PhotocraftApp, SplitTool, ToolEvent, ViewXform, Warp, WarpDrag, WarpStyle, json};
 
 /// An anchor or a handle on a section line. The inner control points of a patch are not shown.
@@ -120,6 +121,10 @@ pub(super) fn warp_pointer(app: &mut PhotocraftApp, ev: ToolEvent, tol: f64, mod
     // Type takes only the warp styles: nothing on the canvas to drag or split (#3004).
     if warps_type(app) {
         return;
+    }
+    // A cylinder has its own handles, and no splits (#4112).
+    if app.ui.transform.as_ref().and_then(|t| t.warp.as_ref()).is_some_and(|w| w.style == WarpStyle::Cylinder) {
+        return cylinder_pointer(app, ev, tol);
     }
     if split_gesture(app, ev, mods) {
         return;

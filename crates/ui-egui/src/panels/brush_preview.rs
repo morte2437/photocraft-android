@@ -296,7 +296,9 @@ mod tests {
 
     #[test]
     fn preview_draws_a_stroke_that_fits() {
-        let mut b = BrushSettings { size: 400.0, ..Default::default() };
+        // The preview's S-curve carries a pressure ramp, so the coverage window below is a
+        // tapering stroke's: Pressure for Size is off by default since #11809, so the brush asks.
+        let mut b = BrushSettings { size: 400.0, pressure_size: true, ..Default::default() };
         let px = preview_pixels(&b, 120, 40, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(px.len(), 120 * 40 * 4);
         let covered = px.as_chunks::<4>().0.iter().filter(|p| p[3] > 128).count();

@@ -1,9 +1,9 @@
-use super::options::solid_paint;
+use super::options::{draws_path, solid_paint};
 use super::overlay::path_lines;
 use super::{Affine, Color32, PhotocraftApp, Tokens, Tool, ToolOptions, Value, ViewXform, json, paint_param};
 
 pub fn is_shape_tool(t: Tool) -> bool {
-    matches!(t, Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line | Tool::CustomShape)
+    matches!(t, Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Star | Tool::Line | Tool::CustomShape)
 }
 
 fn rgb32(c: [f32; 4]) -> Color32 {
@@ -80,6 +80,8 @@ pub(super) fn shape_geometry(o: &ToolOptions, tool: Tool, start: [f64; 2], end: 
             Tool::Rectangle | Tool::CustomShape => json!({"kind": "rect", "rect": rect}),
             Tool::EllipseShape => json!({"kind": "ellipse", "rect": rect}),
             Tool::Triangle => json!({"kind": "polygon", "rect": rect, "sides": 3}),
+            // PhotoCraft's star defaults; the Star Tool's own options are not measured yet (#11377).
+            Tool::Star => json!({"kind": "star", "rect": rect, "sides": 5, "starRatio": 0.5}),
             _ => json!({"kind": "polygon", "rect": rect, "sides": o.polygon_sides.max(3)}),
         }
     })
@@ -100,6 +102,29 @@ pub fn shape_bounds(o: &ToolOptions, tool: Tool, start: [f64; 2], end: [f64; 2],
 
 /// Finish a Shape-tool drag: ⇧ constrains proportions, ⌥ draws from the centre.
 pub fn finish_shape(app: &mut PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) {
+    if draws_path(&app.ui.tool_options) {
+        // Path mode: the outline joins the work path (one more subpath), and no layer is made.
+        let Some(outline) = shape_outline(app, tool, start, end, mods) else { return };
+        // Appended here rather than with `path.set`'s `op`, which would turn a custom shape's
+        // subtracted subpaths (holes) into combined ones; the shape goes in as one component.
+        // A new work path takes the outline's fill rule.
+        let mut path = app
+            .session
+            .active()
+            .and_then(|st| st.doc.work_path.clone())
+            .unwrap_or_else(|| photocraft_doc::vector::Path { fill_rule: outline.fill_rule, ..Default::default() });
+        let outline = as_one_component(&outline, path.fill_rule).unwrap_or(outline);
+        path.subpaths.extend(outline.subpaths);
+        let r = app.run("path.set", json!({"name": "work", "path": photocraft_engine::vector_cmds::path_json(&path)}));
+        match r {
+            Ok(_) => app.ui.selected_path = Some("work".into()),
+            Err(e) => {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+        }
+        return;
+    }
     let Some(mut p) = shape_geometry(&app.ui.tool_options, tool, start, end, mods) else { return };
     if tool == Tool::CustomShape {
         // ⇧ keeps the shape's proportions (the rect is already squared).
@@ -127,22 +152,71 @@ pub fn create_shape(app: &mut PhotocraftApp, mut geometry: Value) -> Result<Valu
     app.run("shape.create", geometry)
 }
 
-/// The preview and command both use the full float tool colours, including transparent paint.
-pub(super) fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<photocraft_doc::ShapeLayer> {
-    let o = &app.ui.tool_options;
-    let geometry = shape_geometry(o, tool, start, end, mods)?;
-    let path = if tool == Tool::CustomShape {
+/// A custom shape as one shape component, the way Photoshop adds it to a path: the subpaths
+/// after the first join it, holes wound against it so that `rule` cuts them, so its holes cut
+/// the shape only and not the work path under it. `None` for a single subpath, and when joined
+/// it would cover a different area (an intersect or exclude subpath, or a cut reaching past
+/// the shape, like the Crescent Moon's).
+fn as_one_component(outline: &photocraft_doc::vector::Path, rule: photocraft_doc::vector::FillRule) -> Option<photocraft_doc::vector::Path> {
+    use photocraft_doc::vector::{Path, PathOp, Subpath};
+    // Clockwise on screen (y down) or not, from the flattened outline's signed area.
+    let clockwise = |s: &Subpath| {
+        let pts = photocraft_vector::flatten_subpath(s, 0.25).pts;
+        let twice_area: f64 = pts.iter().zip(pts.iter().cycle().skip(1)).map(|(p, q)| p.0 * q.1 - q.0 * p.1).sum();
+        twice_area > 0.0
+    };
+    let (first, rest) = outline.subpaths.split_first()?;
+    if rest.is_empty() {
+        return None;
+    }
+    let outer = clockwise(first);
+    let mut joined = Path { fill_rule: rule, ..outline.clone() };
+    for s in &mut joined.subpaths[1..] {
+        let want = match s.op {
+            PathOp::Join => continue,
+            PathOp::Combine => outer,
+            PathOp::Subtract => !outer,
+            PathOp::Intersect | PathOp::Exclude => return None,
+        };
+        if clockwise(s) != want {
+            s.knots.reverse();
+            for k in &mut s.knots {
+                std::mem::swap(&mut k.in_ctrl, &mut k.out_ctrl);
+            }
+        }
+        s.op = PathOp::Join;
+    }
+    // Compare the two areas at a small fixed size.
+    const SIDE: f64 = 128.0;
+    let rect = photocraft_geom::Rect::from_xywh(0, 0, SIDE as u32, SIDE as u32);
+    let cover = |p: &Path| photocraft_vector::path_coverage(&photocraft_engine::presets::shapes::fit(p, [0.0, 0.0, SIDE, SIDE], true), rect);
+    let same = cover(outline).iter().zip(cover(&joined)).all(|(a, b)| (a - b).abs() <= 0.5);
+    same.then_some(joined)
+}
+
+/// The outline a Shape-tool drag draws, as a path (a custom shape fitted to the drag's box).
+fn shape_outline(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<photocraft_doc::vector::Path> {
+    let geometry = shape_geometry(&app.ui.tool_options, tool, start, end, mods)?;
+    if tool == Tool::CustomShape {
         let rect = geometry.get("rect").and_then(|r| serde_json::from_value::<[f64; 4]>(r.clone()).ok())?;
         let groups = photocraft_engine::presets::shapes::all_groups(&app.session);
         let shape = groups.iter().flat_map(|g| &g.items).find(|s| s.name == app.ui.presets_ui.shape())?;
-        photocraft_engine::presets::shapes::fit(&shape.path, rect, mods.shift)
+        Some(photocraft_engine::presets::shapes::fit(&shape.path, rect, mods.shift))
     } else {
-        photocraft_engine::vector_cmds::shape_path(&geometry).ok()?
-    };
+        photocraft_engine::vector_cmds::shape_path(&geometry).ok()
+    }
+}
+
+/// The preview and command both use the full float tool colours, including transparent paint.
+/// In Path mode only the outline shows, as the drag draws no layer.
+pub(super) fn shape_preview(app: &PhotocraftApp, tool: Tool, start: [f64; 2], end: [f64; 2], mods: egui::Modifiers) -> Option<photocraft_doc::ShapeLayer> {
+    let o = &app.ui.tool_options;
+    let path = shape_outline(app, tool, start, end, mods)?;
+    let paint = !draws_path(o);
     Some(photocraft_doc::ShapeLayer {
         path,
-        fill: o.shape_fill.then(|| tool_paint(app, false)),
-        stroke: (o.stroke_width > 0.0).then(|| o.shape_stroke.stroke(o.stroke_width, tool_paint(app, true))),
+        fill: (paint && o.shape_fill).then(|| tool_paint(app, false)),
+        stroke: (paint && o.stroke_width > 0.0).then(|| o.shape_stroke.stroke(o.stroke_width, tool_paint(app, true))),
         ..Default::default()
     })
 }

@@ -487,6 +487,79 @@ fn imports_missing_the_same_font_at_once_share_one_read() {
     }
 }
 
+/// #9671: the fallback search for a character the text's font lacks reads each font file's
+/// character map once per process, not the whole file on every text element (430 ms an
+/// element with 273 installed faces). A second import still finds the fallback face after
+/// its file stopped being readable, so it didn't go back to the disk.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_fallback_search_reads_each_font_file_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static GONE: AtomicBool = AtomicBool::new(false);
+    fn path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("photocraft-svg-test-fallback-{}.ttf", std::process::id()))
+    }
+    fn inter_and_mono_on_disk() -> Arc<usvg::fontdb::Database> {
+        std::fs::write(path(), include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf")).unwrap();
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf").to_vec());
+        db.load_font_file(path()).unwrap();
+        if GONE.load(Ordering::SeqCst) {
+            std::fs::write(path(), b"not a font any more").unwrap();
+        }
+        Arc::new(db)
+    }
+    // Inter has no box-drawing characters; JetBrains Mono has.
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"60\"><text x=\"5\" y=\"45\" font-size=\"48\" font-family=\"Inter\">I\u{2500}I</text></svg>";
+    let outlines = |parsed: Parsed| {
+        let layers = import_parsed("t", parsed, MAX_GROUP_DEPTH, None, false).unwrap().document.layers;
+        let groups = layers.into_iter().filter_map(|l| if let LayerContent::Group(g) = l.content { Some(g) } else { None });
+        groups.flat_map(|g| g.children).filter_map(|l| if let LayerContent::Shape(s) = l.content { Some(s.path) } else { None }).collect::<Vec<_>>()
+    };
+    let first = parse_with(svg.as_bytes(), inter_and_mono_on_disk).unwrap();
+    let mono =
+        first.tree.fontdb().faces().any(|f| f.families.iter().any(|(n, _)| n == "JetBrains Mono") && matches!(f.source, usvg::fontdb::Source::Binary(_)));
+    assert!(mono, "the box-drawing character falls back to JetBrains Mono");
+    let first = outlines(first);
+    GONE.store(true, Ordering::SeqCst);
+    let second = outlines(parse_with(svg.as_bytes(), inter_and_mono_on_disk).unwrap());
+    let _ = std::fs::remove_file(path());
+    assert!(first.iter().any(|p| !p.subpaths.is_empty()), "the text has outlines");
+    assert!(second == first, "the second import set the character in the same fallback face");
+}
+
+/// #9671: the kept `cmap` is the one usvg reads (the last such record of a linear walk), also
+/// in a font whose table directory isn't sorted by tag, where a binary search misses it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_fallback_search_reads_the_cmap_of_an_unsorted_font() {
+    fn inter_and_unsorted_mono_on_disk() -> Arc<usvg::fontdb::Database> {
+        let mut font = include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf").to_vec();
+        let count = usize::from(u16::from_be_bytes([font[4], font[5]]));
+        // The `cmap` record moves to the end of the directory.
+        let mut records: Vec<Vec<u8>> = font[12..12 + count * 16].chunks(16).map(<[u8]>::to_vec).collect();
+        let at = records.iter().position(|r| r.starts_with(b"cmap")).unwrap();
+        let cmap = records.remove(at);
+        records.push(cmap);
+        font.splice(12..12 + count * 16, records.concat());
+        let raw = ttf_parser::RawFace::parse(&font, 0).unwrap();
+        assert!(raw.table(ttf_parser::Tag::from_bytes(b"cmap")).is_none(), "a binary search misses the cmap");
+        assert!(raw.table(ttf_parser::Tag::from_bytes(b"name")).is_some(), "fontdb still finds the name");
+        let path = std::env::temp_dir().join(format!("photocraft-svg-test-unsorted-{}.ttf", std::process::id()));
+        std::fs::write(&path, font).unwrap();
+        let mut db = usvg::fontdb::Database::new();
+        db.load_font_data(include_bytes!("../../../../assets/fonts/Inter-Regular.ttf").to_vec());
+        db.load_font_file(&path).unwrap();
+        Arc::new(db)
+    }
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"60\"><text x=\"5\" y=\"45\" font-family=\"Inter\">I\xE2\x94\x80I</text></svg>";
+    let parsed = parse_with(svg, inter_and_unsorted_mono_on_disk).unwrap();
+    let _ = std::fs::remove_file(std::env::temp_dir().join(format!("photocraft-svg-test-unsorted-{}.ttf", std::process::id())));
+    let mono =
+        parsed.tree.fontdb().faces().any(|f| f.families.iter().any(|(n, _)| n == "JetBrains Mono") && matches!(f.source, usvg::fontdb::Source::Binary(_)));
+    assert!(mono, "the box-drawing character falls back to JetBrains Mono");
+}
+
 /// #9406: moving a font collection into memory keeps its faces in their order, so the
 /// fallback search for a later text still finds the face it found on disk first.
 #[cfg(not(target_arch = "wasm32"))]

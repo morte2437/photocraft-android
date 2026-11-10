@@ -3,7 +3,9 @@
 //! 5–7, High 8–9, Maximum 10–12), mapped to the encoder's 1–100 by
 //! `photocraft_engine::file_cmds::jpeg_quality`; Format Options are Baseline ("Standard"), Baseline
 //! Optimized and Progressive. Matte, Scans and the size preview aren't offered yet. Re-saving an
-//! opened JPEG starts at the file's own quality, as File › Save keeps it (#4032).
+//! opened JPEG starts at the file's own quality, as File › Save keeps it (#4032). Otherwise the
+//! dialog starts at the quality and format it was last answered with, also after a restart, as
+//! Photoshop's does (see [`Start::for_active`]).
 //!
 //! The save is parked in [`Prompt`] while the modal is up (egui is immediate-mode) and written
 //! once answered. Cancel drops the save. Scripts skip the prompt by passing `quality` or
@@ -135,14 +137,58 @@ impl Start {
         Start { quality: quality_from_percent(quality), own_quality: None, format: JpegFormat::Baseline }
     }
 
-    /// For the active document: its opened JPEG's own quality (`Document::file_encoding`), or
-    /// else the Export preferences' JPEG quality (the one Quick Export uses).
+    /// For the active document: the Format Options the dialog was last answered with, else
+    /// Baseline; and the quality of its opened JPEG (`Document::file_encoding`, which File › Save
+    /// keeps, #4032), else the quality last answered, else the Export preferences' JPEG quality
+    /// (the one Quick Export uses).
     pub fn for_active(app: &PhotocraftApp) -> Self {
-        match app.session.active().and_then(|st| st.doc.file_encoding.jpeg_quality) {
+        let remembered = remembered(app);
+        let start = match app.session.active().and_then(|st| st.doc.file_encoding.jpeg_quality) {
             Some(q) => Start::own(q),
-            None => Start::percent(app.session.prefs().export.jpeg_quality),
-        }
+            None => match remembered.quality {
+                Some(quality) => Start { quality, own_quality: None, format: JpegFormat::Baseline },
+                None => Start::percent(app.session.prefs().export.jpeg_quality),
+            },
+        };
+        Start { format: remembered.format.unwrap_or(start.format), ..start }
     }
+}
+
+/// Preferences ▸ remembered dialog settings: JPEG Options writes its last answer under this key
+/// and starts the next dialog from it, as Photoshop does (it keeps it across restarts). There is
+/// no command of this id; the key only names the dialog among the others.
+const REMEMBER_KEY: &str = "file.jpegOptions";
+
+/// What the dialog was last answered with; a value that no longer fits (a hand-edited
+/// preferences file) is left out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Remembered {
+    quality: Option<u8>,
+    format: Option<JpegFormat>,
+}
+
+fn remembered(app: &PhotocraftApp) -> Remembered {
+    let Some(Value::Object(saved)) = app.session.prefs().dialogs.get(REMEMBER_KEY) else { return Remembered::default() };
+    Remembered {
+        quality: saved.get("quality").and_then(Value::as_u64).and_then(|q| u8::try_from(q).ok()).filter(|&q| q <= MAX_QUALITY),
+        format: saved.get("jpegFormat").and_then(Value::as_str).and_then(JpegFormat::parse),
+    }
+}
+
+/// Records an answered dialog for the next one. A quality left on the opened file's own is not
+/// an answer: the earlier one stays, so saving a series of opened JPEGs doesn't forget what a
+/// new document was last saved at.
+fn remember(app: &mut PhotocraftApp, choice: JpegChoice) {
+    let before = remembered(app);
+    let quality = choice.quality.or(before.quality);
+    let mut saved = serde_json::Map::new();
+    if let Some(q) = quality {
+        saved.insert("quality".into(), q.into());
+    }
+    saved.insert("jpegFormat".into(), choice.format.name().into());
+    app.session.prefs.edit(|p| {
+        p.dialogs.insert(REMEMBER_KEY.into(), Value::Object(saved));
+    });
 }
 
 /// A save waiting on the JPEG Options answer.
@@ -237,7 +283,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         confirm(app, ctx);
     } else if cancel {
         app.jpeg_options = None;
-        app.ui.status = tl!("Save cancelled").into();
+        app.ui.status = tl!("Save canceled").into();
         app.ui.status_error = false;
     }
 }
@@ -250,6 +296,7 @@ pub fn confirm(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // quality out, so a replay keeps the file's own quality too, as File › Save does (#4032).
     let own = p.own_quality.filter(|&q| quality_from_percent(u32::from(q)) == p.quality);
     let choice = JpegChoice { quality: own.is_none().then_some(p.quality), format: p.format };
+    remember(app, choice);
     let step = if p.record == "file.save" {
         // A plain Save writes whichever file the action is played on (#3531), with the answer.
         plain_save_step(Some(choice))

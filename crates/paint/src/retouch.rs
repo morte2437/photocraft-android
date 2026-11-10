@@ -207,10 +207,22 @@ pub fn apply_coverage(
     let mut region = target.read_region(rect);
     let w = rect.width() as usize;
     let a = alpha_index(&fmt);
+    // The selection row under the current coverage row, read once per row.
+    let mut sel_row = vec![1.0f32; if selection.is_some() { w } else { 0 }];
+    let mut sel_y = None;
     for (i, c) in cov.iter().enumerate() {
         let x = rect.x0 + (i % w) as i32;
         let y = rect.y0 + (i / w) as i32;
-        let sel = selection.map_or(1.0, |s| s.sample_channel(x, y, 0));
+        let sel = match selection {
+            Some(s) => {
+                if sel_y != Some(y) {
+                    s.sample_row_strided(y, rect.x0, 1, 0, &mut sel_row);
+                    sel_y = Some(y);
+                }
+                sel_row.get(i % w).copied().unwrap_or(1.0)
+            }
+            None => 1.0,
+        };
         let k = (c * opacity * sel).min(1.0);
         if k <= 0.0 {
             continue;
@@ -275,9 +287,14 @@ pub fn mix_back(target: &mut Surface, orig: &Region, work: &Region, rect: Rect, 
     let mut out = orig.crop(rect);
     let n = out.ch;
     let opacity = opacity.clamp(0.0, 1.0);
+    let mut sel_row = vec![1.0f32; if selection.is_some() { rect.width() as usize } else { 0 }];
     for y in rect.y0..rect.y1 {
+        if let Some(s) = selection {
+            s.sample_row_strided(y, rect.x0, 1, 0, &mut sel_row);
+        }
         for x in rect.x0..rect.x1 {
-            let k = opacity * selection.map_or(1.0, |s| s.sample_channel(x, y, 0));
+            let sel = if selection.is_some() { sel_row.get((x - rect.x0) as usize).copied().unwrap_or(1.0) } else { 1.0 };
+            let k = opacity * sel;
             if k <= 0.0 {
                 continue;
             }
@@ -359,29 +376,34 @@ impl Smudge {
     /// Apply one dab to the working copy.
     pub fn dab(&mut self, work: &mut Region, fp: &Footprint) {
         let (r, n) = (self.radius, work.ch);
+        if n == 0 {
+            return;
+        }
         let side = (2 * r + 1) as usize;
         let (cx, cy) = (fp.dab.center.x.floor() as i32, fp.dab.center.y.floor() as i32);
         let wr = work.rect;
         let alpha = self.alpha.filter(|a| *a < n);
-        let clamp_px = |work: &Region, x: i32, y: i32| -> Vec<f32> {
-            let mut v = work.px(x.clamp(wr.x0, wr.x1 - 1), y.clamp(wr.y0, wr.y1 - 1)).to_vec();
-            premultiply(&mut v, alpha);
-            v
-        };
         let carry = self.carry.get_or_insert_with(|| {
             let mut c = vec![0.0f32; side * side * n];
-            for qy in 0..side {
-                for qx in 0..side {
-                    let v = match &self.finger {
-                        Some(f) => {
-                            let mut f = f.clone();
-                            f.resize(n, 1.0);
-                            premultiply(&mut f, alpha);
-                            f
+            match &self.finger {
+                Some(f) => {
+                    let mut f = f.clone();
+                    f.resize(n, 1.0);
+                    premultiply(&mut f, alpha);
+                    for dst in c.chunks_exact_mut(n) {
+                        dst.copy_from_slice(&f);
+                    }
+                }
+                None => {
+                    // Straight into the buffer: no per-pixel allocation.
+                    for (qy, row) in c.chunks_exact_mut(side * n).enumerate() {
+                        let y = (cy + qy as i32 - r).clamp(wr.y0, wr.y1 - 1);
+                        for (qx, dst) in row.chunks_exact_mut(n).enumerate() {
+                            let x = (cx + qx as i32 - r).clamp(wr.x0, wr.x1 - 1);
+                            dst.copy_from_slice(work.px(x, y));
+                            premultiply(dst, alpha);
                         }
-                        None => clamp_px(work, cx + qx as i32 - r, cy + qy as i32 - r),
-                    };
-                    c[(qy * side + qx) * n..(qy * side + qx + 1) * n].copy_from_slice(&v[..n]);
+                    }
                 }
             }
             c
@@ -421,20 +443,24 @@ impl Smudge {
                 }
             }
         }
-        // Pick up: the carried colour keeps `strength` of itself.
+        // Pick up: the carried colour keeps `strength` of itself. Row by row over the part of the
+        // square inside the working copy.
         let keep = self.strength;
-        for qy in 0..side {
-            for qx in 0..side {
-                let (x, y) = (cx + qx as i32 - r, cy + qy as i32 - r);
-                if !wr.contains(x, y) {
+        let (qx0, qx1) = (wr.x0.saturating_sub(cx - r).clamp(0, side as i32) as usize, wr.x1.saturating_sub(cx - r).clamp(0, side as i32) as usize);
+        if qx0 < qx1 {
+            for qy in 0..side {
+                let y = cy + qy as i32 - r;
+                if y < wr.y0 || y >= wr.y1 {
                     continue;
                 }
-                let q = (qy * side + qx) * n;
-                let px = work.px(x, y);
-                let pa = alpha.map_or(1.0, |a| px[a]);
-                for c in 0..n {
-                    let v = if alpha.is_some_and(|a| a != c) { px[c] * pa } else { px[c] };
-                    carry[q + c] = carry[q + c] * keep + v * (1.0 - keep);
+                let src = &work.data[work.index(cx - r + qx0 as i32, y) * n..][..(qx1 - qx0) * n];
+                let dst = &mut carry[(qy * side + qx0) * n..(qy * side + qx1) * n];
+                for (px, cv) in src.chunks_exact(n).zip(dst.chunks_exact_mut(n)) {
+                    let pa = alpha.map_or(1.0, |a| px[a]);
+                    for c in 0..n {
+                        let v = if alpha.is_some_and(|a| a != c) { px[c] * pa } else { px[c] };
+                        cv[c] = cv[c] * keep + v * (1.0 - keep);
+                    }
                 }
             }
         }
@@ -585,6 +611,230 @@ mod tests {
             apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp));
             let p = s.rgba(34, 20);
             assert!(p[3] > 0.02 && p[0] > 0.97, "{fmt:?}: {p:?}");
+        }
+    }
+
+    /// A region without channels is left alone: the carry buffers would be chunked by zero.
+    #[test]
+    fn smudge_leaves_a_zero_channel_region_alone() {
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        s.fill_rect(Rect::new(0, 0, 60, 40), &[1.0, 1.0, 1.0, 1.0]);
+        let st = stroke(&[(20.0, 20.0), (40.0, 20.0)], 12.0, 1.0);
+        let mut sm = Smudge::new(0.8, None, 12.0);
+        let mut calls = 0;
+        apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| {
+            let mut empty = Region::new(w.rect, 0);
+            sm.dab(&mut empty, fp);
+            assert!(empty.data.is_empty() && sm.carry.is_none(), "no carry is built for zero channels");
+            calls += 1;
+        });
+        assert!(calls > 0);
+    }
+
+    /// The pre-optimisation `Smudge::dab` (one `Vec` per carry pixel, per-pixel pick-up), kept as an oracle.
+    fn reference_dab(sm: &mut Smudge, work: &mut Region, fp: &Footprint) {
+        let (r, n) = (sm.radius, work.ch);
+        let side = (2 * r + 1) as usize;
+        let (cx, cy) = (fp.dab.center.x.floor() as i32, fp.dab.center.y.floor() as i32);
+        let wr = work.rect;
+        let alpha = sm.alpha.filter(|a| *a < n);
+        let clamp_px = |work: &Region, x: i32, y: i32| -> Vec<f32> {
+            let mut v = work.px(x.clamp(wr.x0, wr.x1 - 1), y.clamp(wr.y0, wr.y1 - 1)).to_vec();
+            premultiply(&mut v, alpha);
+            v
+        };
+        let carry = sm.carry.get_or_insert_with(|| {
+            let mut c = vec![0.0f32; side * side * n];
+            for qy in 0..side {
+                for qx in 0..side {
+                    let v = match &sm.finger {
+                        Some(f) => {
+                            let mut f = f.clone();
+                            f.resize(n, 1.0);
+                            premultiply(&mut f, alpha);
+                            f
+                        }
+                        None => clamp_px(work, cx + qx as i32 - r, cy + qy as i32 - r),
+                    };
+                    c[(qy * side + qx) * n..(qy * side + qx + 1) * n].copy_from_slice(&v[..n]);
+                }
+            }
+            c
+        });
+        for y in fp.rect.y0.max(wr.y0)..fp.rect.y1.min(wr.y1) {
+            for x in fp.rect.x0.max(wr.x0)..fp.rect.x1.min(wr.x1) {
+                let k = fp.at(x, y) * sm.strength;
+                let (qx, qy) = (x - cx + r, y - cy + r);
+                if k <= 0.0 || qx < 0 || qy < 0 || qx >= side as i32 || qy >= side as i32 {
+                    continue;
+                }
+                let q = (qy as usize * side + qx as usize) * n;
+                let px = work.px_mut(x, y);
+                match alpha {
+                    Some(a) => {
+                        let ca = carry[q + a];
+                        let mut buf = [0.0f32; 16];
+                        let m = n.min(buf.len());
+                        buf[..m].copy_from_slice(&carry[q..q + m]);
+                        let src = &mut buf[..m];
+                        if ca > 1e-6 {
+                            for (c, v) in src.iter_mut().enumerate() {
+                                if c != a {
+                                    *v /= ca;
+                                }
+                            }
+                        }
+                        mix_premultiplied(px, src, a, k);
+                    }
+                    None => {
+                        for c in 0..n {
+                            px[c] += (carry[q + c] - px[c]) * k;
+                        }
+                    }
+                }
+            }
+        }
+        let keep = sm.strength;
+        for qy in 0..side {
+            for qx in 0..side {
+                let (x, y) = (cx + qx as i32 - r, cy + qy as i32 - r);
+                if !wr.contains(x, y) {
+                    continue;
+                }
+                let q = (qy * side + qx) * n;
+                let px = work.px(x, y);
+                let pa = alpha.map_or(1.0, |a| px[a]);
+                for c in 0..n {
+                    let v = if alpha.is_some_and(|a| a != c) { px[c] * pa } else { px[c] };
+                    carry[q + c] = carry[q + c] * keep + v * (1.0 - keep);
+                }
+            }
+        }
+    }
+
+    /// A busy test image: gradients plus a hole, so alpha and colour both vary.
+    fn busy(fmt: PixelFormat) -> Surface {
+        let mut s = Surface::new(fmt);
+        let n = fmt.channels();
+        for y in 0..60 {
+            for x in 0..90 {
+                let mut v = vec![(x as f32 / 90.0).min(1.0); n];
+                v[0] = (y as f32 / 60.0).min(1.0);
+                if n > 1 {
+                    v[1] = ((x * 7 + y * 3) % 17) as f32 / 17.0;
+                }
+                if fmt.alpha {
+                    v[n - 1] = if (30..45).contains(&x) && (20..40).contains(&y) { 0.0 } else { 0.25 + 0.75 * (((x + y) % 5) as f32 / 4.0) };
+                }
+                s.fill_rect(Rect::new(x, y, x + 1, y + 1), &v);
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn smudge_matches_the_per_pixel_reference_bit_for_bit() {
+        // Strokes that start and end at the page edge exercise the clamped start-up and the clipped pick-up.
+        let paths: [&[(f64, f64)]; 3] = [&[(2.0, 3.0), (45.0, 30.0), (88.0, 58.0)], &[(0.0, 0.0), (89.0, 0.0)], &[(40.0, 30.0), (50.0, 31.0)]];
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA32F, PixelFormat::GRAYA8, PixelFormat::GRAY8, PixelFormat::CMYKA8] {
+            let alpha = alpha_index(&fmt);
+            let n = fmt.channels();
+            for finger in [None, Some(vec![0.3; n])] {
+                for path in paths {
+                    let st = stroke(path, 14.0, 0.6);
+                    let mut a = busy(fmt);
+                    let mut b = a.clone();
+                    let mut sm_a = Smudge::new(0.7, finger.clone(), 14.0).with_alpha(alpha);
+                    let mut sm_b = sm_a.clone();
+                    apply_dab_stroke(&mut a, &st, None, false, 0, |w, fp| sm_a.dab(w, fp));
+                    apply_dab_stroke(&mut b, &st, None, false, 0, |w, fp| reference_dab(&mut sm_b, w, fp));
+                    let rect = Rect::new(-20, -20, 120, 90);
+                    assert_eq!(a.read_region(rect), b.read_region(rect), "{fmt:?} finger {} {path:?}", finger.is_some());
+                    assert_eq!(sm_a.carry, sm_b.carry, "{fmt:?} carry");
+                }
+            }
+        }
+    }
+
+    /// A selection that varies per pixel and has a gap, so a wrong row or column shows.
+    fn patterned_selection() -> Surface {
+        let mut sel = Surface::new(PixelFormat::GRAY8);
+        for y in 0..60 {
+            for x in 0..90 {
+                if (x + 2 * y) % 11 != 0 {
+                    sel.fill_rect(Rect::new(x, y, x + 1, y + 1), &[((x * 5 + y * 13) % 256) as f32 / 255.0]);
+                }
+            }
+        }
+        sel
+    }
+
+    #[test]
+    fn selection_rows_match_per_pixel_sampling() {
+        let sel = patterned_selection();
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA32F, PixelFormat::GRAY8] {
+            // Mix back: the selection weights each pixel of the stroke.
+            let st = stroke(&[(10.0, 10.0), (70.0, 40.0)], 16.0, 1.0);
+            let mut got = busy(fmt);
+            let mut want = got.clone();
+            let effect = |w: &mut Region, fp: &Footprint| {
+                for y in fp.rect.y0.max(w.rect.y0)..fp.rect.y1.min(w.rect.y1) {
+                    for x in fp.rect.x0.max(w.rect.x0)..fp.rect.x1.min(w.rect.x1) {
+                        w.px_mut(x, y).iter_mut().for_each(|v| *v = (*v * 0.5 + 0.1).min(1.0));
+                    }
+                }
+            };
+            let bounds = apply_dab_stroke(&mut got, &st, Some(&sel), false, 0, effect);
+            let orig = Region::read(&want, bounds);
+            let mut work = orig.clone();
+            let ctx = crate::BrushContext::new(&st.brush);
+            for (i, d) in dabs(&st).iter().enumerate() {
+                effect(&mut work, &ctx.footprint(d, i));
+            }
+            let a = alpha_index(&fmt);
+            let mut out = orig.clone();
+            for y in bounds.y0..bounds.y1 {
+                for x in bounds.x0..bounds.x1 {
+                    let k = st.brush.opacity.clamp(0.0, 1.0) * sel.sample_channel(x, y, 0);
+                    if k <= 0.0 {
+                        continue;
+                    }
+                    let wv = work.px(x, y).to_vec();
+                    let i = out.index(x, y) * out.ch;
+                    let o = &mut out.data[i..i + wv.len()];
+                    if *o == wv[..] {
+                        continue;
+                    }
+                    match a {
+                        Some(a) => mix_premultiplied(o, &wv, a, k),
+                        None => (0..wv.len()).for_each(|c| o[c] += (wv[c] - o[c]) * k),
+                    }
+                }
+            }
+            out.write(&mut want);
+            let rect = Rect::new(-20, -20, 120, 90);
+            assert_eq!(got.read_region(rect), want.read_region(rect), "mix_back {fmt:?}");
+
+            // Coverage composite with the same selection.
+            let r = Rect::new(-5, 3, 60, 50);
+            let w = r.width() as usize;
+            let cov: Vec<f32> = (0..w * r.height() as usize).map(|i| ((i * 7) % 10) as f32 / 9.0).collect();
+            let mut paint = Region::new(r, fmt.channels());
+            paint.data.iter_mut().enumerate().for_each(|(i, v)| *v = ((i * 3) % 7) as f32 / 6.0);
+            let mut got = busy(fmt);
+            let mut want = got.clone();
+            apply_coverage(&mut got, r, &cov, 0.8, Some(&sel), false, &paint, BlendMode::Normal);
+            let mut region = want.read_region(r);
+            let n = fmt.channels();
+            for (i, c) in cov.iter().enumerate() {
+                let (x, y) = (r.x0 + (i % w) as i32, r.y0 + (i / w) as i32);
+                let k = (c * 0.8 * sel.sample_channel(x, y, 0)).min(1.0);
+                if k > 0.0 {
+                    over_native(&fmt, &mut region[i * n..(i + 1) * n], paint.px(x, y), k, false);
+                }
+            }
+            want.write_region(r, &region);
+            assert_eq!(got.read_region(rect), want.read_region(rect), "apply_coverage {fmt:?}");
         }
     }
 

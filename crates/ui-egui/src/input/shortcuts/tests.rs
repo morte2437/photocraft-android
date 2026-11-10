@@ -72,6 +72,20 @@ fn shift_key_tool_switch_is_the_default() {
     assert_ne!(app.ui.tool, Tool::Type);
 }
 
+/// A tool with a shortcut of its own leaves its letter (#4086) but stays in the history: the letter
+/// falls back on the last tool it still picks, not on its group's first.
+#[test]
+fn a_tool_key_passes_over_a_remapped_tool_to_the_last_one_it_picks() {
+    use crate::state::Tool;
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    let ctx = egui::Context::default();
+    app.run("prefs.set", json!({"path": "shortcuts.tools.select.polygonLasso", "value": "F6"})).unwrap();
+    app.ui.remember_group_tool(Tool::MagneticLasso);
+    app.ui.remember_group_tool(Tool::PolygonLasso);
+    press_key(&mut app, &ctx, Key::L, Modifiers::NONE);
+    assert_eq!(app.ui.tool, Tool::MagneticLasso);
+}
+
 /// #3109: on a German layout Ö / # (physical `;` / `\`) step the brush size and ⇧Ö / ⇧#
 /// (⇧# types `'`) its hardness, as Photoshop's German shortcuts.
 #[test]

@@ -42,7 +42,7 @@
 # Strings added to the UI after this catalog was first written (rebase onto main, 2026-10).
 # Gradient Editor window, opened from the options bar's gradient swatch.
 # Rendering mode and recovery
-# Camera Raw: contextual controls and window title
+# RAW Develop: contextual controls and window title
 
 
 
@@ -195,6 +195,7 @@
 	Right	右
 	Open Recent	最近使ったファイルを開く
 	Clear Recent Files	最近使ったファイルを消去
+	Clear Recent File List	最近使ったファイルを消去
 	Remove from Recent	最近使ったファイルから削除
 	Remove {name} from Recent	{name} を最近使ったファイルから削除
 	Close	閉じる
@@ -203,6 +204,10 @@
 	Restore	元に戻す (縮小)
 	Close All	すべて閉じる
 	Close Others	ほかを閉じる
+	New Document…	新規ドキュメント…
+	Open Document…	開く…
+	Consolidate All to Here	すべてをここに統合
+	Move to New Window	新規ウィンドウに移動
 	Save	保存
 	Save As…	名前を付けて保存…
 	Save a Copy…	コピーを保存…
@@ -255,6 +260,7 @@
 	Create Smart Object after Loading Layers	レイヤーの読み込み後にスマートオブジェクトを作成
 	Reveal in Finder	Finder で表示
 	Show in Explorer	エクスプローラーで表示
+	Reveal in Explorer	エクスプローラーで表示
 	Show in Folder	フォルダーで表示
 	File Info…	ファイル情報…
 	Print…	プリント…
@@ -343,9 +349,10 @@
 	Units & Rulers…	単位・定規…
 	Guides, Grid & Slices…	ガイド・グリッド・スライス…
 	Plug-ins…	プラグイン…
+	Plugins…	プラグイン…
 	Type…	文字…
 	Enhanced Controls…	拡張コントロール…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	RAWの既定値…
 	Raw Defaults…	RAW の既定値…
 	Integrations…	連携…
 	AI Integrations…	AI 連携…
@@ -396,6 +403,8 @@
 	Match Color…	カラーを一致…
 	Replace Color…	色を置き換え…
 	Equalize	平均化
+	Equalize Selected Area Only	選択範囲のみ平均化
+	Equalize Entire Image Based On Selected Area	選択範囲に基づいて画像全体を平均化
 	Auto Tone	自動トーン補正
 	Auto Contrast	自動コントラスト
 	Auto Color	自動カラー補正
@@ -432,8 +441,8 @@
 	Artboard…	アートボード…
 	Artboard from Group…	グループからアートボード…
 	Artboard from Layers…	レイヤーからアートボード…
-	Layer via Copy	コピーしたレイヤー
-	Layer via Cut	切り取ったレイヤー
+	Layer Via Copy	コピーしたレイヤー
+	Layer Via Cut	切り取ったレイヤー
 	Layer From Background…	背景からレイヤーへ…
 	Layer from Background…	背景からレイヤーへ…
 	Background From Layer	レイヤーから背景
@@ -499,6 +508,8 @@
 	Smart Object	スマートオブジェクト
 	Convert to Smart Object	スマートオブジェクトに変換
 	Convert to Embedded	埋め込みに変換
+	Embed Linked	リンクを埋め込む
+	Embed All Linked	すべてのリンクを埋め込む
 	Convert to Layers	レイヤーに変換
 	Convert to Linked…	リンクに変換…
 	Edit Contents	コンテンツを編集
@@ -572,7 +583,9 @@
 	Unite Shapes	シェイプを結合
 	Subtract Front Shape	前面シェイプで型抜き
 	Intersect Shape Areas	シェイプの重なりを抽出
+	Unite Shapes at Overlap	シェイプの重なりを抽出
 	Exclude Overlapping Shapes	シェイプの重なりを除外
+	Subtract Shapes at Overlap	シェイプの重なりを除外
 	Merge Shape Components	シェイプの構成要素を結合
 	Path operations	パスの操作
 	Align	整列
@@ -649,7 +662,6 @@
 	Deselect	選択を解除
 	Reselect	再選択
 	Inverse	選択範囲を反転
-	Inverse Selection	選択範囲を反転
 	Similar	近似色を選択
 	Color Range…	色域指定…
 	Focus Area…	焦点領域…
@@ -674,7 +686,7 @@
 	Last Filter	直前のフィルター
 	Filter Gallery…	フィルターギャラリー…
 	Adaptive Wide Angle…	広角補正…
-	Camera Raw Filter…	Camera Raw フィルター…
+	RAW Develop Filter…	RAW現像 フィルター…
 	Liquify…	ゆがみ…
 	Vanishing Point…	消点…
 	Blur	ぼかし
@@ -756,6 +768,7 @@
 	Minimum…	最小値…
 	Offset…	オフセット…
 	Plug-ins	プラグイン
+	Plugins	プラグイン
 	Proof Setup	校正設定
 	Proof Colors	色の校正
 	Gamut Warning	色域外警告
@@ -764,12 +777,12 @@
 	Working Magenta Plate	作業用マゼンタ版
 	Working Yellow Plate	作業用イエロー版
 	Working Black Plate	作業用ブラック版
-	Working CMY Plate	作業用 CMY 版
-	Legacy Macintosh RGB	旧 Macintosh RGB
-	Internet Standard RGB	インターネット標準 RGB
+	Working CMY Plates	作業用 CMY 版
+	Legacy Macintosh RGB (Gamma 1.8)	旧 Macintosh RGB (Gamma 1.8)
+	Internet Standard RGB (sRGB)	インターネット標準 RGB (sRGB)
 	Monitor RGB	モニター RGB
-	Color Blindness — Protanopia-type	色覚特性 — 1 型(P 型)
-	Color Blindness — Deuteranopia-type	色覚特性 — 2 型(D 型)
+	Color Blindness - Protanopia-type	色覚特性 - 1 型(P 型)
+	Color Blindness - Deuteranopia-type	色覚特性 - 2 型(D 型)
 	Zoom In	拡大
 	Zoom Out	縮小
 	Fit on Screen	画面サイズに合わせる
@@ -858,7 +871,7 @@
 	Consolidate All to Tabs	すべてをタブに統合
 	Float in Window	ウィンドウ内に浮動
 	Float All in Windows	すべてをウィンドウ内に浮動
-	New Window for Document	ドキュメントの新規ウィンドウ
+	New Window	新規ウィンドウ
 	Workspace	ワークスペース
 	Essentials	基本
 	Graphic and Web	グラフィックと Web
@@ -920,6 +933,12 @@
 	Timeline	タイムライン
 	Tool Presets	ツールプリセット
 	Tools	ツール
+	Contextual Task Bar	コンテキストタスクバー
+	Hide bar	バーを隠す
+	Reset bar position	バーの位置をリセット
+	Pin bar position	バーの位置を固定
+	Move bar	バーを移動
+	More options	その他のオプション
 	About PhotoCraft	PhotoCraft について
 	PhotoCraft Website	PhotoCraft の Web サイト
 	PhotoCraft on GitHub	GitHub 上の PhotoCraft
@@ -1022,8 +1041,8 @@
 	Load Settings…	設定を読み込み…
 	Save these settings as a Camera Raw .xmp file	この設定を Camera Raw の .xmp ファイルとして保存
 	Load settings from a Camera Raw .xmp file	Camera Raw の .xmp ファイルから設定を読み込む
-	Loaded Camera Raw settings from {file}	{file} から Camera Raw の設定を読み込みました
-	Loaded Camera Raw settings from {file} ({n} not supported)	{file} から Camera Raw の設定を読み込みました（未対応: {n}）
+	Loaded RAW Develop settings from {file}	{file} から RAW現像 の設定を読み込みました
+	Loaded RAW Develop settings from {file} ({n} not supported)	{file} から RAW現像 の設定を読み込みました（未対応: {n}）
 	Begin recording	記録を開始
 	Bend:	曲げ:
 	Bicubic	バイキュービック
@@ -1051,7 +1070,7 @@
 	Brush Reconstruct Options	ブラシの復元オプション
 	Brush Tool Options	ブラシツールのオプション
 	Cache Level:	キャッシュレベル:
-	Camera Raw isn't open	Camera Raw は開いていません
+	RAW Develop isn't open	RAW現像 は開いていません
 	Cancel	キャンセル
 	Cancel (Esc)	キャンセル(Esc)
 	Manage submitted jobs in the system print queue	送信済みのジョブはシステムの印刷キューで管理してください
@@ -1084,7 +1103,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	クリックで点を追加 · 外へドラッグ、{key}+クリック、Delete で削除
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	クリックで適用、{key}+クリックで上書き解除、ダブルクリックでスタイルオプション
 	Click to edit the gradient	クリックしてグラデーションを編集
-	Click to restore the current colour	クリックして現在の色に戻す
+	Click to restore the current color	クリックして現在の色に戻す
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	クリックで拡大 · {key}+クリックで縮小 · 右/左にドラッグで拡大/縮小
 	Click with the Note tool to add a note.	注釈ツールでクリックすると注釈を追加できます。
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	クリック: 角 · ドラッグ: 滑らか · 最初の点をクリック: 閉じる · {key} 完了 · Esc キャンセル
@@ -1167,7 +1186,7 @@
 	Darks	暗部
 	Data Sets	データセット
 	Default	既定
-	Default colours (D)	初期カラーに戻す(D)
+	Default Foreground and Background Colors (D)	前景色と背景色を既定に戻す (D)
 	Default printer	既定のプリンター
 	Default restored.	既定に戻しました。
 	Define	定義
@@ -1449,7 +1468,7 @@
 	Opacity Jitter	不透明度のジッター
 	Opacity:	不透明度:
 	Open a document to define variables.	変数を定義するには、ドキュメントを開いてください。
-	Open a document to select a colour range.	色域を指定するには、ドキュメントを開いてください。
+	Open a document to select a color range.	色域を指定するには、ドキュメントを開いてください。
 	Open a document to use the timeline.	タイムラインを使うには、ドキュメントを開いてください。
 	Optical	オプティカル
 	Optimized	最適化
@@ -1525,7 +1544,6 @@
 	Purity	純度
 	Quality	画質
 	Quick Actions	クイックアクション
-	Quick Export As PNG	PNG としてクイック書き出し
 	Radial Gradient	円形グラデーション
 	Radius	半径
 	Radius:	半径:
@@ -1665,7 +1683,7 @@
 	Subtract from Sample	サンプルから削除
 	Subtract from selection  ({key})	選択範囲から削除 ({key})
 	Suggestions:	候補:
-	Swap colours (X)	描画色と背景色を入れ替え(X)
+	Switch Foreground and Background Colors (X)	前景色と背景色を入れ替え (X)
 	Swaps height and width	高さと幅を入れ替えます
 	Switch between free transform and warp modes	自由変形とワープのモードを切り替え
 	Switch theme	テーマを切り替え
@@ -1768,7 +1786,7 @@
 	Choke	境界のぼかし幅
 	Classic	クラシック
 	Click to add text	クリックしてテキストを追加
-	Click to fill similar colours	クリックして近い色を塗りつぶし
+	Click to fill similar colors	クリックして近い色を塗りつぶし
 	Clone Stamp Tool	コピースタンプツール
 	Color Burn	焼き込みカラー
 	Color Dodge	覆い焼きカラー
@@ -1870,6 +1888,7 @@
 	Move Tool	移動ツール
 	Could not use the move tool because the layer is locked.	レイヤーがロックされているため、移動ツールを使用できません。
 	Could not complete the Free Transform command because the layer is locked.	レイヤーがロックされているため、自由変形コマンドを完了できません。
+	Could not transform because the layer is locked.	レイヤーがロックされているため、変形できません。
 	Multiply	乗算
 	My Brushes	マイブラシ
 	Neutrals	中間色系
@@ -1928,7 +1947,7 @@
 	Rectangular Marquee Tool	長方形選択ツール
 	Reds	レッド系
 	Reflected	反射形
-	Sample: foreground colour	サンプル: 描画色
+	Sample: foreground color	サンプル: 描画色
 	Sampled Colors	サンプルしたカラー
 	Satin	サテン
 	Save Pixel Aspect Ratio	ピクセル縦横比を保存
@@ -1967,7 +1986,6 @@
 	Transfer	伝達
 	Triangle Tool	三角形ツール
 	Unsaved changes	未保存の変更
-	Uses the foreground and background colours.	描画色と背景色を使用します。
 	Web	Web
 	Web Large	Web (大)
 	Web Minimum	Web (最小)
@@ -2004,6 +2022,7 @@
 	Allow scripts to connect	スクリプトからの接続を許可
 	Always	常に
 	Always create smart objects when placing	配置時に常にスマートオブジェクトを作成
+	Skip transform when placing	配置時に変形をスキップ
 	Animated zoom	アニメーションズーム
 	Apply auto tone	自動トーン補正を適用
 	Ask	確認する
@@ -2021,11 +2040,16 @@
 	Brush preview color	ブラシプレビューの色
 	Cache levels	キャッシュレベル
 	Cache tile size	キャッシュタイルのサイズ
-	Camera Raw Defaults	Camera Raw の既定値
+	RAW Defaults	RAWの既定値
 	Canvas border	カンバスの境界
 	Show canvas dots	カンバスのドットを表示
 	Clip thumbnails to layer bounds	サムネールをレイヤーの境界でクリップ
 	Clip Thumbnails to Layer Bounds	サムネールをレイヤーの境界でクリップ
+	No Thumbnails	サムネールなし
+	Small Thumbnails	小さいサムネール
+	Medium Thumbnails	中サイズのサムネール
+	Large Thumbnails	大きいサムネール
+	Clip Thumbnails to Document Bounds	サムネールをドキュメントの境界でクリップ
 	Canvas color	カンバスの色
 	Canvas custom color	カンバスのカスタム色
 	Color picker	カラーピッカー
@@ -2103,7 +2127,6 @@
 	Never	しない
 	Normal tip	通常の先端
 	Open as smart object	スマートオブジェクトとして開く
-	Open in camera raw	Camera Raw で開く
 	Open documents as tabs	ドキュメントをタブで開く
 	Overscroll	オーバースクロール
 	Performance	パフォーマンス
@@ -2143,7 +2166,6 @@
 	Show only crosshair while painting	描画中は十字線のみ表示
 	Show slice numbers	スライス番号を表示
 	Show tooltips	ツールチップを表示
-	Enable animations	アニメーションを有効にする
 	Show highlight on rollover	ロールオーバー時にハイライトを表示
 	Show bounding box when dragging layer	レイヤーのドラッグ中にバウンディングボックスを表示
 	System title bar	システムのタイトルバー
@@ -2236,7 +2258,7 @@
 	Graphics	グラフィックス
 	Reset GPU Backend	GPU バックエンドをリセット
 	Applies at next launch.	次回の起動時に適用されます。
-	Click to sample the foreground colour  ·  {key}-click for background	クリックで描画色を取得 · {key}+クリックで背景色を取得
+	Click to sample the foreground color  ·  {key}-click for background	クリックで描画色を取得 · {key}+クリックで背景色を取得
 	{key}-click to set the source	{key}+クリックでソースを設定
 	{key} to subtract	{key} で削除
 	Clone source {n} ({key}-click with Clone Stamp to set)	コピーソース {n} ({key}+クリックでコピースタンプのソースを設定)
@@ -2295,7 +2317,7 @@
 	Gradient Options	グラデーションオプション
 	Align with layer	レイヤーに揃える
 	Reset Alignment	位置をリセット
-	Centre the gradient (offset 0, 0)	グラデーションを中央に配置(オフセット 0, 0)
+	Center the gradient (offset 0, 0)	グラデーションを中央に配置(オフセット 0, 0)
 	Gradient Editor	グラデーションエディター
 	Gradient picker	グラデーションピッカー
 	Save As Preset	プリセットとして保存
@@ -2327,7 +2349,7 @@
 	Vulkan	Vulkan
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	選択範囲を作成するパスがありません。ペンツールで描くか、パスパネルでパスを選択してください。
 	Cancel opening	開くのをキャンセル
-	Cancelled opening {name}	{name} を開くのをキャンセルしました
+	Canceled opening {name}	{name} を開くのをキャンセルしました
 	Damaged Photoshop document	破損した Photoshop ドキュメント
 	The document “{name}” may be damaged.	ドキュメント「{name}」は破損している可能性があります。
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	一部のレイヤー、ピクセル、またはマスクを読み込めませんでした。開く処理を続行しますか？
@@ -2337,7 +2359,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	ドキュメント「{name}」の埋め込みカラープロファイルは、現在の {mode} 作業用スペースと一致しません。
 	Working: {working}	作業用スペース: {working}
 	Developing {name}	{name} を現像中
-	Cancelled {label}	{label} をキャンセルしました
+	Canceled {label}	{label} をキャンセルしました
 	Esc to cancel	Esc キーでキャンセル
 	Opened {name}	{name} を開きました
 	Opening {name}	{name} を開いています
@@ -2345,7 +2367,7 @@
 	Saving {name}	{name} を保存しています
 	Saving {percent}	保存中 {percent}
 	A save to {name} is still running; try again when it finishes	{name} への保存がまだ実行中です。完了してからもう一度お試しください
-	{label} is writing the file and can no longer be cancelled	{label} はファイルを書き込み中のため、キャンセルできません
+	{label} is writing the file and can no longer be canceled	{label} はファイルを書き込み中のため、キャンセルできません
 	Opening {name}…	{name} を開いています…
 	Opening…	開いています…
 	Reading…	読み込み中…
@@ -2380,8 +2402,8 @@
 	Tone Histogram	階調ヒストグラム
 	Show Selected Region	選択範囲を表示
 cameraRaw	Light	ライト
-	Camera Raw Filter ({layer})	Camera Raw フィルター ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+	RAW Develop Filter ({layer})	RAW現像 フィルター ({layer})
+	RAW Develop ({name})	RAW現像 ({name})
 cameraRaw	Lights	明部
 cameraRaw	Blending	ブレンド
 cameraRaw	Blacks	黒レベル
@@ -2423,7 +2445,7 @@ cameraRaw	Color	カラー
 	Discard Layers and Save a Copy	レイヤーを破棄してコピーを保存
 	Don't show again	次回から表示しない
 	Save failed: {error}	保存に失敗しました: {error}
-	Save cancelled	保存をキャンセルしました
+	Save canceled	保存をキャンセルしました
 	Magnetic Lasso Tool	マグネット選択ツール
 	Frequency	頻度
 	Use tablet pressure to change pen width	タブレットの筆圧を使用してペンの幅を変更
@@ -2552,7 +2574,7 @@ fontWeight	Italic	斜体
 	Rotate View	表示を回転
 	Rotate View Tool	表示回転ツール
 	Reset View	表示をリセット
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	中心の周りをドラッグして表示を回転  ·  Shift で 15° 単位
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	中心の周りをドラッグして表示を回転  ·  Shift で 15° 単位
 	Dual Axis	二軸
 	Diagonal	斜め
 	Transform Symmetry	対称軸を変形
@@ -2567,8 +2589,8 @@ fontWeight	Italic	斜体
 	All Layers No Adjustments	すべてのレイヤー (色調補正なし)
 	Current & Below No Adjustments	現在のレイヤーとその下 (色調補正なし)
 	Show Sampling Ring	サンプリングリングを表示
-	Out of gamut for printing: click for the nearest printable colour	印刷の色域外: クリックすると最も近い印刷可能な色になります
-	Not a web colour: click for the nearest web colour	Web カラーではありません: クリックすると最も近い Web カラーになります
+	Out of gamut for printing: click for the nearest printable color	印刷の色域外: クリックすると最も近い印刷可能な色になります
+	Not a web color: click for the nearest web color	Web カラーではありません: クリックすると最も近い Web カラーになります
 	Accented Edges	輪郭の強調
 	Adjust Interval For Loops	ループ用に間隔を調整
 	Adjustment Properties	色調補正のプロパティ
@@ -2951,7 +2973,7 @@ fontWeight	Italic	斜体
 	Box Blur	ぼかし (ボックス)
 	Bulge	膨らみ
 	Burn	焼き込み
-	Camera Raw Filter	Camera Raw フィルター
+	RAW Develop Filter	RAW現像 フィルター
 	Canvas Size	カンバスサイズ
 	Circularity	真円度
 	Clipping Path	クリッピングパス
@@ -3025,6 +3047,7 @@ fontWeight	Italic	斜体
 	Magnetic Lasso	マグネット投げ縄
 	Make	作成
 	Make Selection	選択範囲を作成
+	Make Shape	シェイプを作成
 	Make Work Path	作業用パスを作成
 	Match Color	カラーを一致
 	Mezzotint	メゾティント
@@ -3135,7 +3158,7 @@ fontWeight	Italic	斜体
 	Border	境界
 	Browse	参照
 	Calculations	演算
-	Camera Raw	Camera Raw
+	RAW Develop	RAW現像
 	Caption	キャプション
 	Category	カテゴリー
 	Channel	チャンネル
@@ -3321,10 +3344,7 @@ fontWeight	Italic	斜体
 	Add to selection  (⇧)	選択範囲に追加  (⇧)
 	Adds grain to the soft edges of the brush tip.	ブラシ先端の柔らかい縁に粒子を加えます。
 	Adjustment Layer	色調補正レイヤー
-	Adobe Every-line Composer	Adobe 全行コンポーザー
-	Adobe PDF Presets…	Adobe PDF プリセット…
 	Adobe RGB (1998)	Adobe RGB (1998)
-	Adobe Single-line Composer	Adobe 1 行コンポーザー
 	Advanced Controls	詳細コントロール
 	After (X)	後 (X)
 	Airbrush: keeps painting while the pointer rests.	エアブラシ: ポインターを止めている間も描き続けます。
@@ -3410,7 +3430,7 @@ fontWeight	Italic	斜体
 	Document Size	ドキュメントサイズ
 	Dodge/Burn	覆い焼き/焼き込み
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	ドラッグ (投げ縄) またはクリックでポイント指定 (多角形) · {add} 追加 · {sub} 除外
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	切り抜きボックスをドラッグ · 内側をドラッグで移動 · 縁でサイズ変更 ({ratio} で比率、{centre} で中心) · 描画中は Space で移動 · 矢印キーで微調整 · X で縦横を切り替え · {commit} で確定 · Esc で取り消し
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	切り抜きボックスをドラッグ · 内側をドラッグで移動 · 縁でサイズ変更 ({ratio} で比率、{centre} で中心) · 描画中は Space で移動 · 矢印キーで微調整 · X で縦横を切り替え · {commit} で確定 · Esc で取り消し
 	Drag to move the layer	ドラッグしてレイヤーを移動
 	Duplicated selection name	複製した選択範囲の名前
 	Dynamics	ダイナミクス
@@ -3960,7 +3980,7 @@ curves	Smooth	スムーズ
 	Auto Add/Delete	自動追加・削除
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	印刷設定の「鏡像」も有効にしないでください。2回反転すると元に戻ります。
 	Print Settings…	印刷設定…
-	Remember to turn off the printer's own colour management in Print Settings…	印刷設定でプリンター独自のカラーマネジメントを無効にしてください…
+	Remember to turn off the printer's own color management in Print Settings…	印刷設定でプリンター独自のカラーマネジメントを無効にしてください…
 	Sent to {printer}	{printer} に送信しました
 	set in Print Settings…	印刷設定で指定…
 	Drag to pan · Scroll to zoom · Double-click to fit	ドラッグで移動 · スクロールでズーム · ダブルクリックで全体表示
@@ -4095,12 +4115,12 @@ curves	Smooth	スムーズ
 	Decrease Brush Hardness	ブラシの硬さを下げる
 	Increase Brush Hardness	ブラシの硬さを上げる
 	Demosaic	デモザイク
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	カメラのカラーフィルター配列をどのように補間するか。ファイルを開くときに適用されます。プレビューは開いたときの方式で表示されます。
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	カメラのカラーフィルター配列をどのように補間するか。ファイルを開くときに適用されます。プレビューは開いたときの方式で表示されます。
 	AHD (adaptive homogeneity)	AHD（適応的均質性）
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks：エッジが最もきれいで色にじみが最も少ないが、最も遅い。
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	勾配補正補間：シャープで高速だが、細部に多少の色にじみが出る。
-	The fastest and the softest, with colour fringing on fine detail.	最も高速で最も柔らかく、細部に色にじみが出る。
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks：エッジが最もきれいで色にじみが最も少ないが、最も遅い。
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	勾配補正補間：シャープで高速だが、細部に多少の色にじみが出る。
+	The fastest and the softest, with color fringing on fine detail.	最も高速で最も柔らかく、細部に色にじみが出る。
 	“{name}” already exists. Replace it?	「{name}」は既に存在します。置き換えますか？
 	The name in the save dialog was “{name}”.	保存ダイアログで指定した名前は「{name}」でした。
 	Previous Brush	前のブラシ
@@ -4160,8 +4180,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	グレースケールランプ
 	Current Colors	現在のカラー
 	Make Ramp Web Safe	ランプを Web セーフにする
+	Scroll All Windows	すべてのウィンドウをスクロール
 	The path was kept as the Work Path	パスは作業用パスとして保持されました
 	The path was discarded	パスは破棄されました
+# Art History Brush (#213).
 	Art History Brush Tool	アートヒストリーブラシツール
 	Tight Short	タイト・ショート
 	Tight Medium	タイト・ミディアム
@@ -4245,3 +4267,35 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace Image…	画像を置き換え…
 	The frame is locked	フレームはロックされています
 	The frame is unavailable	フレームを利用できません
+
+# Channels panel menu (#11451)
+	Channel Options…	チャンネルオプション…
+	Specify Channels:	チャンネルを指定:
+	Not enough grayscale documents for this mode.	このモードに必要なグレースケールのドキュメントが足りません。
+	Pick a different document for each channel.	チャンネルごとに別のドキュメントを選択してください。
+	A picked document is no longer open.	選択したドキュメントの一つが開かれていません。
+	A picked document is no longer a grayscale document of the same size.	選択したドキュメントの一つが、同じサイズのグレースケールのドキュメントではなくなりました。
+	Netscape Gray	Netscape グレー
+# Move tool options bar (#11381)
+	Align top edges	上端を揃える
+	Align vertical centers	垂直方向中央を揃える
+	Align bottom edges	下端を揃える
+	Distribute vertically	垂直方向に分布
+	Distribute horizontally	水平方向に分布
+	Show layer bounds on hover	ホバー時にレイヤーの境界を表示
+	Expand layer group on click	クリックでレイヤーグループを展開
+	Show hover bounds from Layers	レイヤーパネルからのホバー境界を表示
+	Saved RAW Develop settings to {file}	RAW現像 の設定を {file} に保存しました
+	Save the settings to each raw's sidecar without opening it	各 Raw のサイドカーファイルに設定を保存し、開かずに閉じます
+	No settings saved: these raws can't keep a sidecar here	保存されませんでした：これらの Raw にはここでサイドカーファイルを作成できません
+	Some settings could not be saved; the raws stay open	一部の設定を保存できませんでした。Raw は開いたままです
+	Nothing to save: these raws are at their default settings	保存するものはありません：これらの Raw は初期設定のままです
+# Artboard tool options bar (#11385)
+	Distribute Widths	幅を分布
+	Distribute Heights	高さを分布
+	Auto-nest Layers	レイヤーを自動でネスト
+	Auto-size Canvas	カンバスサイズを自動調整
+	Keep Relative Position During Layer Reordering	レイヤーの並べ替え中も相対位置を保持
+	Shrinkwrap Canvas on Save	保存時にカンバスを内容に合わせて縮小
+	Move Toolbar to the Right	ツールバーを右へ移動
+	Move Toolbar to the Left	ツールバーを左へ移動

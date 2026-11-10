@@ -13,13 +13,14 @@
 //!   (`pixelLength`, `logicalLength`, `logicalUnits`) follow Photoshop's scripting names for the
 //!   measurement scale; no sample file was available, so parsing is lenient and the raw resource
 //!   is kept byte-exact while the scale is unchanged.
-//! * Count information: image resource 1080 is kept verbatim (its layout is not public) unless
-//!   the document has its own count markers, which only `.pcraft` stores.
+//! * Count information: image resource 1080 (a version-16 `Cnt ` descriptor) maps to the
+//!   document's ordered Count groups. Unreadable resources are kept while there are no groups.
 
 use std::sync::Arc;
 
-use photocraft_doc::{Color, Document, MeasurementScale, Note};
-use photocraft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
+use photocraft_doc::{Color, CountGroup, Document, MeasurementScale, Note};
+use photocraft_psd::ImageResource;
+use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
 
 pub const MEASUREMENT_SCALE: u16 = 1074;
 pub const COUNT_INFO: u16 = 1080;
@@ -341,16 +342,117 @@ pub fn fresh_scale_resource(doc: &Document) -> Option<Vec<u8>> {
     (!doc.measurement.scale.is_default()).then(|| write_scale_resource(&doc.measurement.scale))
 }
 
+/// Decode the measured resource as a whole so unknown or damaged groups stay opaque.
+fn count_groups_from_resource(data: &[u8]) -> Option<Vec<CountGroup>> {
+    let d = VersionedDescriptor::from_bytes(data).ok()?.descriptor;
+    if !d.class_id.is("Cnt ") || d.items.len() != 2 || d.get("Vrsn") != Some(&Value::Integer(1)) {
+        return None;
+    }
+    let Value::List(groups) = d.get("countGroupList")? else { return None };
+    groups.iter().map(count_group_from_descriptor).collect()
+}
+
+/// Decode the fields the Count tool can use without coercing unrecognized data.
+fn count_group_from_descriptor(value: &Value) -> Option<CountGroup> {
+    let Value::Descriptor(d) = value else { return None };
+    if !d.class_id.is("countGroup") || d.items.len() != 8 {
+        return None;
+    }
+    let integer = |key| match d.get(key)? {
+        Value::Integer(n) => u32::try_from(*n).ok(),
+        _ => None,
+    };
+    let channel = |key| u8::try_from(integer(key)?).ok().map(|n| f32::from(n) / 255.0);
+    let color = Color::rgb(channel("Rd  ")?, channel("Grn ")?, channel("Bl  ")?);
+    let Value::Text(name) = d.get("Nm  ")? else { return None };
+    let Value::Boolean(visible) = d.get("Vsbl")? else { return None };
+    let Value::List(objects) = d.get("countObjectList")? else { return None };
+    let marker_size = integer("Rds ")?;
+    let label_size = integer("fontSize")?;
+    // Keep out-of-range sizes opaque instead of passing them to the marker and text renderers.
+    if !(1..=10).contains(&marker_size) || !(8..=72).contains(&label_size) {
+        return None;
+    }
+    let name = String::from_utf16(name.0.strip_suffix(&[0]).unwrap_or(&name.0)).ok()?;
+    let points = objects.iter().map(count_point_from_descriptor).collect::<Option<_>>()?;
+    Some(CountGroup { name, color, marker_size, label_size, visible: *visible, points })
+}
+
+/// Keep document coordinates as doubles and reject nonfinite values.
+fn count_point_from_descriptor(value: &Value) -> Option<[f64; 2]> {
+    let Value::Descriptor(d) = value else { return None };
+    if !d.class_id.is("countObject") || d.items.len() != 2 {
+        return None;
+    }
+    let (Value::Double(x), Value::Double(y)) = (d.get("X   ")?, d.get("Y   ")?) else { return None };
+    (x.is_finite() && y.is_finite()).then_some([*x, *y])
+}
+
+/// Consume readable Count data. Keep only opaque bytes when no resource can be read.
+pub(crate) fn import_count_resource(doc: &mut Document) {
+    if let Some(groups) = doc.metadata.psd_resources.iter().filter(|(id, _, _)| *id == COUNT_INFO).find_map(|(_, _, data)| count_groups_from_resource(data)) {
+        doc.measurement.count_groups = groups;
+        doc.metadata.psd_resources.retain(|(id, _, _)| *id != COUNT_INFO);
+    }
+}
+
+/// Resource 1080 from the current groups, warning when PSD changes sizes or omits points.
+pub(crate) fn fresh_count_resource(doc: &Document, warnings: &mut Vec<String>) -> Option<ImageResource> {
+    if doc.measurement.count_groups.is_empty() {
+        return None;
+    }
+    let groups = doc.measurement.count_groups.iter().map(|group| count_group_descriptor(group, warnings)).collect();
+    let d = Descriptor::new("Cnt ").with("Vrsn", Value::Integer(1)).with("countGroupList", Value::List(groups));
+    Some(ImageResource::new(COUNT_INFO, VersionedDescriptor::new(d).to_bytes()))
+}
+
+/// Write the measured group layout and preserve marker order.
+fn count_group_descriptor(group: &CountGroup, warnings: &mut Vec<String>) -> Value {
+    let marker_size = group.marker_size.clamp(1, 10);
+    let label_size = group.label_size.clamp(8, 72);
+    if marker_size != group.marker_size || label_size != group.label_size {
+        warnings.push(format!(
+            "Count group {:?} sizes adjusted for PSD (marker {} to {marker_size}, label {} to {label_size})",
+            group.name, group.marker_size, group.label_size
+        ));
+    }
+    let [r, g, b, _] = group.color.to_rgba8();
+    let objects: Vec<_> = group
+        .points
+        .iter()
+        .filter(|[x, y]| x.is_finite() && y.is_finite())
+        .map(|&[x, y]| Value::Descriptor(Descriptor::new("countObject").with("X   ", Value::Double(x)).with("Y   ", Value::Double(y))))
+        .collect();
+    let omitted = group.points.len() - objects.len();
+    if omitted != 0 {
+        warnings.push(format!("Count group {:?} had nonfinite points omitted from PSD export ({omitted} total)", group.name));
+    }
+    Value::Descriptor(
+        Descriptor::new("countGroup")
+            .with("Rd  ", Value::Integer(i32::from(r)))
+            .with("Grn ", Value::Integer(i32::from(g)))
+            .with("Bl  ", Value::Integer(i32::from(b)))
+            .with("Nm  ", Value::Text(UnicodeString::new_nul(&group.name)))
+            .with("Rds ", Value::Integer(marker_size as i32))
+            .with("fontSize", Value::Integer(label_size as i32))
+            .with("Vsbl", Value::Boolean(group.visible))
+            .with("countObjectList", Value::List(objects)),
+    )
+}
+
 /// Whether to keep a preserved resource with this id on export.
 pub fn keep_resource(doc: &Document, id: u16) -> bool {
     match id {
         MEASUREMENT_SCALE => keep_raw_scale(doc),
-        // Our count markers can't be written into Photoshop's (unpublished) layout; a stale copy
-        // would contradict them, so it is dropped once the document has markers of its own.
-        COUNT_INFO => doc.measurement.count_total() == 0,
+        // An opaque copy is only used when there are no document groups to write.
+        COUNT_INFO => doc.measurement.count_groups.is_empty(),
         _ => true,
     }
 }
+
+#[cfg(test)]
+#[path = "count_resource_tests.rs"]
+mod count_resource_tests;
 
 #[cfg(test)]
 mod tests {

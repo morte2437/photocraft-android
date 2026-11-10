@@ -40,7 +40,7 @@
 
 # Tool and Scope strings
 
-# Camera Raw
+# RAW Develop
 
 # Coverage-test keys (English until translated)
 
@@ -65,6 +65,10 @@
 	Close	बंद करें
 	Close All	सभी बंद करें
 	Close Others	अन्य सभी बंद करें
+	New Document…	New Document…
+	Open Document…	खोलें…
+	Consolidate All to Here	सभी को यहाँ समेकित करें
+	Move to New Window	नई विंडो में ले जाएँ
 	Save	सहेजें
 	Save As…	इस रूप में सहेजें…
 	Save a Copy…	एक प्रति सहेजें…
@@ -156,6 +160,8 @@
 	Layer Mask	लेयर मास्क
 	Hide All	सभी छिपाएँ
 	Reveal Selection	चयन दिखाएँ
+	Reveal in Finder	Finder में दिखाएँ
+	Reveal in Explorer	Explorer में दिखाएँ
 	Hide Selection	चयन छिपाएँ
 	From Transparency	पारदर्शिता से
 	Apply	लागू करें
@@ -231,6 +237,12 @@
 	Info	जानकारी
 	Timeline	टाइमलाइन
 	Tools	टूल्स
+	Contextual Task Bar	प्रासंगिक कार्य पट्टी
+	Hide bar	पट्टी छिपाएँ
+	Reset bar position	पट्टी की स्थिति रीसेट करें
+	Pin bar position	पट्टी की स्थिति पिन करें
+	Move bar	पट्टी खिसकाएँ
+	More options	अधिक विकल्प
 	Options	विकल्प
 	Status Bar	स्टेटस बार
 	Move Tool	मूव टूल
@@ -345,7 +357,8 @@
 	Impressionist	प्रभाववादी
 	Aligned	संरेखित
 	Fit in View	दृश्य में फ़िट करें
-	Camera Raw	Camera Raw
+	RAW Develop	RAW डेवलप
+	RAW Defaults…	RAW डिफ़ॉल्ट…
 cameraRaw	Amount	मात्रा
 	Amount	मात्रा
 cameraRaw	Aqua	एक्वा
@@ -360,16 +373,16 @@ cameraRaw	Blending	मिश्रण
 	Blending	मिश्रण
 cameraRaw	Blue	नीला
 	Blue	नीला
-cameraRaw	Camera Raw ({name})	Camera Raw ({name})
-cameraRaw	Camera Raw Filter ({layer})	Camera Raw फ़िल्टर ({layer})
-	Camera Raw Filter ({layer})	Camera Raw फ़िल्टर ({layer})
-cameraRaw	Camera Raw isn't open	Camera Raw खुला नहीं है
-	Camera Raw isn't open	Camera Raw खुला नहीं है
+cameraRaw	RAW Develop ({name})	RAW डेवलप ({name})
+cameraRaw	RAW Develop Filter ({layer})	RAW डेवलप फ़िल्टर ({layer})
+	RAW Develop Filter ({layer})	RAW डेवलप फ़िल्टर ({layer})
+cameraRaw	RAW Develop isn't open	RAW डेवलप खुला नहीं है
+	RAW Develop isn't open	RAW डेवलप खुला नहीं है
 cameraRaw	Cancel	रद्द करें
-cameraRaw	Cancelled opening {name}	{name} खोलना रद्द किया गया
-	Cancelled opening {name}	{name} खोलना रद्द किया गया
-cameraRaw	Cancelled {label}	{label} रद्द किया गया
-	Cancelled {label}	{label} रद्द किया गया
+cameraRaw	Canceled opening {name}	{name} खोलना रद्द किया गया
+	Canceled opening {name}	{name} खोलना रद्द किया गया
+cameraRaw	Canceled {label}	{label} रद्द किया गया
+	Canceled {label}	{label} रद्द किया गया
 cameraRaw	Clarity	स्पष्टता
 	Clarity	स्पष्टता
 cameraRaw	Color	रंग
@@ -423,8 +436,8 @@ cameraRaw	Load Settings…	सेटिंग्स लोड करें…
 	Load Settings…	सेटिंग्स लोड करें…
 cameraRaw	Load settings from a Camera Raw .xmp file	Camera Raw .xmp फ़ाइल से सेटिंग्स लोड करें
 	Load settings from a Camera Raw .xmp file	Camera Raw .xmp फ़ाइल से सेटिंग्स लोड करें
-cameraRaw	Loaded Camera Raw settings from {file}	{file} से Camera Raw सेटिंग्स लोड की गईं
-	Loaded Camera Raw settings from {file}	{file} से Camera Raw सेटिंग्स लोड की गईं
+cameraRaw	Loaded RAW Develop settings from {file}	{file} से RAW डेवलप सेटिंग्स लोड की गईं
+	Loaded RAW Develop settings from {file}	{file} से RAW डेवलप सेटिंग्स लोड की गईं
 cameraRaw	Luminance	लुमिनेंस
 	Luminance	लुमिनेंस
 cameraRaw	Luminance Detail	लुमिनेंस डिटेल
@@ -546,6 +559,7 @@ cameraRaw	Yellow	पीला
 	Layer deleted, but confirmation preference could not be saved: {error}	लेयर हटा दी गई, लेकिन पुष्टि की प्राथमिकता सहेजी नहीं जा सकी: {error}
 	The path was kept as the Work Path	पथ को कार्य पथ के रूप में रखा गया
 	The path was discarded	पथ हटा दिया गया
+	Scroll All Windows	सभी विंडो स्क्रॉल करें
 	Art History Brush	आर्ट हिस्ट्री ब्रश
 	Style	शैली
 	Area	क्षेत्र
@@ -630,6 +644,8 @@ cameraRaw	Yellow	पीला
 @plural	{n} action file loaded|{n} action files loaded	{n} एक्शन फ़ाइल लोड हुई|{n} एक्शन फ़ाइलें लोड हुईं
 	{set} from {file} replaced the one from {earlier}	{file} के सेट {set} ने {earlier} वाले सेट की जगह ले ली
 @plural	{n} file could not be loaded: {errors}|{n} files could not be loaded: {errors}	{n} फ़ाइल लोड नहीं हो सकी: {errors}|{n} फ़ाइलें लोड नहीं हो सकीं: {errors}
+	Embed Linked	लिंक किए गए को एम्बेड करें
+	Embed All Linked	सभी लिंक किए गए को एम्बेड करें
 	Toggle reference point	संदर्भ बिंदु दिखाएँ/छिपाएँ
 
 # Action Stop message (#8386)
@@ -645,3 +661,44 @@ cameraRaw	Yellow	पीला
 	Pause For	इतने समय रुकें
 	seconds	सेकंड
 	Create a single history state	एक ही इतिहास स्थिति बनाएँ
+
+# Channels panel menu (#11451)
+	New Channel…	नया चैनल…
+	Duplicate Channel	चैनल को डुप्लीकेट करें
+	Delete Channel	चैनल हटाएँ
+	New Spot Channel…	नया स्पॉट चैनल…
+	Merge Spot Channel	स्पॉट चैनल मर्ज करें
+	Channel Options…	चैनल विकल्प…
+	Split Channels	चैनल्स विभाजित करें
+	Merge Channels…	चैनल्स मर्ज करें…
+	Specify Channels:	चैनल्स निर्दिष्ट करें:
+	Not enough grayscale documents for this mode.	इस मोड के लिए पर्याप्त ग्रेस्केल डॉक्यूमेंट नहीं हैं।
+	Pick a different document for each channel.	हर चैनल के लिए अलग डॉक्यूमेंट चुनें।
+	A picked document is no longer open.	चुना गया एक डॉक्यूमेंट अब खुला नहीं है।
+	A picked document is no longer a grayscale document of the same size.	चुना गया एक डॉक्यूमेंट अब उसी आकार का ग्रेस्केल डॉक्यूमेंट नहीं है।
+	Netscape Gray	Netscape धूसर
+# Move tool options bar (#11381)
+	Align top edges	ऊपरी किनारे संरेखित करें
+	Align vertical centers	ऊर्ध्वाधर केंद्र संरेखित करें
+	Align bottom edges	निचले किनारे संरेखित करें
+	Distribute vertically	ऊर्ध्वाधर रूप से वितरित करें
+	Distribute horizontally	क्षैतिज रूप से वितरित करें
+	Show layer bounds on hover	होवर पर लेयर की सीमाएँ दिखाएँ
+	Expand layer group on click	क्लिक पर लेयर समूह विस्तृत करें
+	Show hover bounds from Layers	लेयर्स से होवर सीमाएँ दिखाएँ
+# Artboard tool options bar (#11385)
+	Distribute Widths	चौड़ाइयाँ वितरित करें
+	Distribute Heights	ऊंचाइयाँ वितरित करें
+	Auto-nest Layers	लेयर्स को स्वचालित रूप से नेस्ट करें
+	Auto-size Canvas	कैनवास का आकार स्वचालित रूप से बदलें
+	Keep Relative Position During Layer Reordering	लेयर्स का क्रम बदलते समय सापेक्ष स्थिति बनाए रखें
+	Shrinkwrap Canvas on Save	सहेजते समय कैनवास को सामग्री के अनुसार छोटा करें
+	Move Toolbar to the Right	टूलबार को दाएँ ले जाएँ
+	Move Toolbar to the Left	टूलबार को बाएँ ले जाएँ
+	RAW Defaults	RAW डिफ़ॉल्ट
+
+# RAW Develop feature labels
+	Saved RAW Develop settings to {file}	RAW डेवलप सेटिंग्स {file} में सहेजी गईं
+	RAW Develop Filter	RAW डेवलप फ़िल्टर
+	RAW Develop Filter…	RAW डेवलप फ़िल्टर…
+	Loaded RAW Develop settings from {file} ({n} not supported)	{file} से RAW डेवलप सेटिंग्स लोड की गईं ({n} समर्थित नहीं)

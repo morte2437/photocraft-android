@@ -128,6 +128,7 @@
 	Right	Rechts
 	Open Recent	Recent geopend
 	Clear Recent Files	Recente bestanden wissen
+	Clear Recent File List	Recente bestanden wissen
 	Remove from Recent	Verwijderen uit recente bestanden
 	Remove {name} from Recent	{name} verwijderen uit recente bestanden
 	Close	Sluiten
@@ -136,6 +137,10 @@
 	Restore	Herstellen
 	Close All	Alles sluiten
 	Close Others	Andere sluiten
+	New Document…	Nieuw document…
+	Open Document…	Openen…
+	Consolidate All to Here	Alles hier samenvoegen
+	Move to New Window	Verplaatsen naar nieuw venster
 	Save	Opslaan
 	Save As…	Opslaan als…
 	Save a Copy…	Kopie opslaan…
@@ -187,6 +192,7 @@
 	Create Smart Object after Loading Layers	Slim object maken na laden van lagen
 	Reveal in Finder	Weergeven in Finder
 	Show in Explorer	Weergeven in Verkenner
+	Reveal in Explorer	Weergeven in Verkenner
 	Show in Folder	Weergeven in map
 	File Info…	Bestandsinformatie…
 	Print…	Afdrukken…
@@ -275,9 +281,10 @@
 	Units & Rulers…	Eenheden en linialen…
 	Guides, Grid & Slices…	Hulplijnen, raster en segmenten…
 	Plug-ins…	Plug-ins…
+	Plugins…	Plug-ins…
 	Type…	Tekst…
 	Enhanced Controls…	Uitgebreide bediening…
-	Camera Raw…	Camera Raw…
+	RAW Defaults…	RAW-standaardwaarden…
 	Raw Defaults…	Raw-standaardwaarden…
 	Integrations…	Integraties…
 	AI Integrations…	AI-integraties…
@@ -328,6 +335,8 @@
 	Match Color…	Kleur afstemmen…
 	Replace Color…	Kleur vervangen…
 	Equalize	Egaliseren
+	Equalize Selected Area Only	Alleen geselecteerd gebied egaliseren
+	Equalize Entire Image Based On Selected Area	Hele afbeelding egaliseren op basis van geselecteerd gebied
 	Auto Tone	Automatische tooncorrectie
 	Auto Contrast	Automatisch contrast
 	Auto Color	Automatische kleur
@@ -364,8 +373,8 @@
 	Artboard…	Tekengebied…
 	Artboard from Group…	Tekengebied uit groep…
 	Artboard from Layers…	Tekengebied uit lagen…
-	Layer via Copy	Laag via kopiëren
-	Layer via Cut	Laag via knippen
+	Layer Via Copy	Laag via kopiëren
+	Layer Via Cut	Laag via knippen
 	Layer From Background…	Laag uit achtergrond…
 	Layer from Background…	Laag uit achtergrond…
 	Background From Layer	Achtergrond uit laag
@@ -431,6 +440,8 @@
 	Smart Object	Slim object
 	Convert to Smart Object	Omzetten naar slim object
 	Convert to Embedded	Omzetten naar ingesloten
+	Embed Linked	Gekoppeld insluiten
+	Embed All Linked	Alles gekoppeld insluiten
 	Convert to Layers	Omzetten naar lagen
 	Convert to Linked…	Omzetten naar gekoppeld…
 	Edit Contents	Inhoud bewerken
@@ -504,7 +515,9 @@
 	Unite Shapes	Vormen verenigen
 	Subtract Front Shape	Voorste vorm aftrekken
 	Intersect Shape Areas	Overlappende vormgebieden
+	Unite Shapes at Overlap	Overlappende vormgebieden
 	Exclude Overlapping Shapes	Overlappende vormen uitsluiten
+	Subtract Shapes at Overlap	Overlappende vormen uitsluiten
 	Merge Shape Components	Vormcomponenten samenvoegen
 	Path operations	Padbewerkingen
 	Align	Uitlijnen
@@ -581,7 +594,6 @@
 	Deselect	Deselecteren
 	Reselect	Opnieuw selecteren
 	Inverse	Omkeren
-	Inverse Selection	Selectie omkeren
 	Similar	Vergelijkbaar
 	Color Range…	Kleurbereik…
 	Focus Area…	Scherptegebied…
@@ -605,7 +617,7 @@
 	Last Filter	Laatste filter
 	Filter Gallery…	Filtergalerie…
 	Adaptive Wide Angle…	Adaptieve groothoek…
-	Camera Raw Filter…	Camera Raw-filter…
+	RAW Develop Filter…	RAW-ontwikkeling-filter…
 	Liquify…	Uitvloeien…
 	Vanishing Point…	Verdwijnpunt…
 	Blur	Vervagen
@@ -687,6 +699,7 @@
 	Minimum…	Minimum…
 	Offset…	Verschuiving…
 	Plug-ins	Plug-ins
+	Plugins	Plug-ins
 	Proof Setup	Proefinstellingen
 	Proof Colors	Proefkleuren
 	Gamut Warning	Waarschuwing kleurbereik
@@ -695,12 +708,12 @@
 	Working Magenta Plate	Werkplaat magenta
 	Working Yellow Plate	Werkplaat geel
 	Working Black Plate	Werkplaat zwart
-	Working CMY Plate	Werkplaat CMY
-	Legacy Macintosh RGB	Verouderde Macintosh RGB
-	Internet Standard RGB	Internetstandaard RGB
+	Working CMY Plates	CMY-werkplaten
+	Legacy Macintosh RGB (Gamma 1.8)	Verouderde Macintosh RGB (Gamma 1.8)
+	Internet Standard RGB (sRGB)	Internetstandaard RGB (sRGB)
 	Monitor RGB	Monitor-RGB
-	Color Blindness — Protanopia-type	Kleurenblindheid — type protanopie
-	Color Blindness — Deuteranopia-type	Kleurenblindheid — type deuteranopie
+	Color Blindness - Protanopia-type	Kleurenblindheid - type protanopie
+	Color Blindness - Deuteranopia-type	Kleurenblindheid - type deuteranopie
 	Zoom In	Inzoomen
 	Zoom Out	Uitzoomen
 	Fit on Screen	Passend in scherm
@@ -779,7 +792,6 @@
 	Consolidate All to Tabs	Alles samenvoegen in tabbladen
 	Float in Window	Zwevend in venster
 	Float All in Windows	Alles zwevend in vensters
-	New Window for Document	Nieuw venster voor document
 	Workspace	Werkruimte
 	Essentials	Basis
 	Graphic and Web	Grafisch en web
@@ -843,6 +855,12 @@
 	Timeline	Tijdlijn
 	Tool Presets	Gereedschapsvoorinstellingen
 	Tools	Gereedschappen
+	Contextual Task Bar	Contextuele taakbalk
+	Hide bar	Balk verbergen
+	Reset bar position	Balkpositie herstellen
+	Pin bar position	Balkpositie vastzetten
+	Move bar	Balk verplaatsen
+	More options	Meer opties
 	About PhotoCraft	Over PhotoCraft
 	PhotoCraft Website	Website van PhotoCraft
 	PhotoCraft on GitHub	PhotoCraft op GitHub
@@ -944,8 +962,8 @@
 	Load Settings…	Instellingen laden…
 	Save these settings as a Camera Raw .xmp file	Deze instellingen opslaan als Camera Raw-.xmp-bestand
 	Load settings from a Camera Raw .xmp file	Instellingen laden uit een Camera Raw-.xmp-bestand
-	Loaded Camera Raw settings from {file}	Camera Raw-instellingen geladen uit {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw-instellingen geladen uit {file} ({n} niet ondersteund)
+	Loaded RAW Develop settings from {file}	RAW-ontwikkeling-instellingen geladen uit {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	RAW-ontwikkeling-instellingen geladen uit {file} ({n} niet ondersteund)
 	Begin recording	Opname starten
 	Bend:	Buiging:
 	Bicubic	Bicubisch
@@ -972,7 +990,7 @@
 	Brush Reconstruct Options	Opties reconstructiepenseel
 	Brush Tool Options	Opties penseelgereedschap
 	Cache Level:	Cacheniveau:
-	Camera Raw isn't open	Camera Raw is niet geopend
+	RAW Develop isn't open	RAW-ontwikkeling is niet geopend
 	Cancel	Annuleren
 	Reset	Herstellen
 	Cancel (Esc)	Annuleren (Esc)
@@ -1006,7 +1024,7 @@
 	Click to add a point · drag off or {key}-click or Delete to remove	Klik om een punt toe te voegen · sleep weg, {key}-klik of Delete om te verwijderen
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Klik om toe te passen, {key}-klik om overschrijvingen te wissen, dubbelklik voor stijlopties
 	Click to edit the gradient	Klik om het verloop te bewerken
-	Click to restore the current colour	Klik om de huidige kleur te herstellen
+	Click to restore the current color	Klik om de huidige kleur te herstellen
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Klik om in te zoomen  ·  {key}-klik om uit te zoomen  ·  sleep naar rechts/links om in/uit te zoomen
 	Click with the Note tool to add a note.	Klik met het notitiegereedschap om een notitie toe te voegen.
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Klik: hoek · Slepen: vloeiend · Klik op eerste punt: sluiten · {key} voltooien · Esc annuleren
@@ -1091,7 +1109,7 @@
 	Darks	Donkere tinten
 	Data Sets	Gegevenssets
 	Default	Standaard
-	Default colours (D)	Standaardkleuren (D)
+	Default Foreground and Background Colors (D)	Standaard voorgrond- en achtergrondkleur (D)
 	Default printer	Standaardprinter
 	Default restored.	Standaard hersteld.
 	Define	Definiëren
@@ -1374,7 +1392,7 @@
 	Opacity Jitter	Dekkingsvariatie
 	Opacity:	Dekking:
 	Open a document to define variables.	Open een document om variabelen te definiëren.
-	Open a document to select a colour range.	Open een document om een kleurbereik te selecteren.
+	Open a document to select a color range.	Open een document om een kleurbereik te selecteren.
 	Open a document to use the timeline.	Open een document om de tijdlijn te gebruiken.
 	Optical	Optisch
 	Optimized	Geoptimaliseerd
@@ -1450,7 +1468,6 @@
 	Purity	Zuiverheid
 	Quality	Kwaliteit
 	Quick Actions	Snelle acties
-	Quick Export As PNG	Snel exporteren als PNG
 	Radial Gradient	Radiaal verloop
 	Radius	Straal
 	Radius:	Straal:
@@ -1589,7 +1606,7 @@
 	Subtract from Sample	Van monster aftrekken
 	Subtract from selection  ({key})	Van selectie aftrekken  ({key})
 	Suggestions:	Suggesties:
-	Swap colours (X)	Kleuren omwisselen (X)
+	Switch Foreground and Background Colors (X)	Voorgrond- en achtergrondkleur omwisselen (X)
 	Swaps height and width	Wisselt hoogte en breedte om
 	Switch between free transform and warp modes	Wisselen tussen vrije transformatie en verbuigen
 	Switch theme	Thema wisselen
@@ -1691,7 +1708,7 @@
 	Choke	Inkrimpen
 	Classic	Klassiek
 	Click to add text	Klik om tekst toe te voegen
-	Click to fill similar colours	Klik om vergelijkbare kleuren te vullen
+	Click to fill similar colors	Klik om vergelijkbare kleuren te vullen
 	Clone Stamp Tool	Kloonstempelgereedschap
 	Color Burn	Kleur doordrukken
 	Color Dodge	Kleur tegenhouden
@@ -1792,6 +1809,7 @@
 	Move Tool	Verplaatsgereedschap
 	Could not use the move tool because the layer is locked.	Kan het verplaatsgereedschap niet gebruiken omdat de laag is vergrendeld.
 	Could not complete the Free Transform command because the layer is locked.	Kan de opdracht Vrije transformatie niet voltooien omdat de laag is vergrendeld.
+	Could not transform because the layer is locked.	Kan niet transformeren omdat de laag is vergrendeld.
 	Multiply	Vermenigvuldigen
 	My Brushes	Mijn penselen
 	Neutrals	Neutrale tinten
@@ -1850,7 +1868,7 @@
 	Rectangular Marquee Tool	Rechthoekig selectiekader
 	Reds	Roodtinten
 	Reflected	Gespiegeld
-	Sample: foreground colour	Monster: voorgrondkleur
+	Sample: foreground color	Monster: voorgrondkleur
 	Sampled Colors	Bemonsterde kleuren
 	Satin	Satijn
 	Save Pixel Aspect Ratio	Pixelverhouding opslaan
@@ -1889,7 +1907,6 @@
 	Transfer	Overdracht
 	Triangle Tool	Driehoekgereedschap
 	Unsaved changes	Niet-opgeslagen wijzigingen
-	Uses the foreground and background colours.	Gebruikt de voorgrond- en achtergrondkleur.
 	Web	Web
 	Web Large	Web groot
 	Web Minimum	Web minimum
@@ -1926,6 +1943,7 @@
 	Allow scripts to connect	Scripts toestaan verbinding te maken
 	Always	Altijd
 	Always create smart objects when placing	Bij plaatsen altijd slimme objecten maken
+	Skip transform when placing	Transformatie overslaan bij plaatsen
 	Animated zoom	Geanimeerd zoomen
 	Apply auto tone	Automatische tooncorrectie toepassen
 	Ask	Vragen
@@ -1943,11 +1961,16 @@
 	Brush preview color	Kleur penseelvoorvertoning
 	Cache levels	Cacheniveaus
 	Cache tile size	Tegelgrootte cache
-	Camera Raw Defaults	Standaardwaarden Camera Raw
+	RAW Defaults	RAW-standaardwaarden
 	Canvas border	Canvasrand
 	Show canvas dots	Canvasstippen tonen
 	Clip thumbnails to layer bounds	Miniaturen bijsnijden tot laaggrenzen
 	Clip Thumbnails to Layer Bounds	Miniaturen bijsnijden tot laaggrenzen
+	No Thumbnails	Geen miniaturen
+	Small Thumbnails	Kleine miniaturen
+	Medium Thumbnails	Middelgrote miniaturen
+	Large Thumbnails	Grote miniaturen
+	Clip Thumbnails to Document Bounds	Miniaturen bijsnijden tot documentgrenzen
 	Canvas color	Canvaskleur
 	Canvas custom color	Aangepaste canvaskleur
 	Color picker	Kleurkiezer
@@ -2025,7 +2048,6 @@
 	Never	Nooit
 	Normal tip	Normale punt
 	Open as smart object	Openen als slim object
-	Open in camera raw	Openen in Camera Raw
 	Open documents as tabs	Documenten openen als tabbladen
 	Overscroll	Doorscrollen
 	Performance	Prestaties
@@ -2065,7 +2087,6 @@
 	Show only crosshair while painting	Alleen dradenkruis tonen tijdens schilderen
 	Show slice numbers	Segmentnummers tonen
 	Show tooltips	Knopinfo tonen
-	Enable animations	Animaties inschakelen
 	Show highlight on rollover	Markering bij aanwijzen tonen
 	Show bounding box when dragging layer	Selectiekader tonen bij slepen van laag
 	System title bar	Titelbalk van systeem
@@ -2155,7 +2176,7 @@
 	Graphics	Grafisch
 	Reset GPU Backend	GPU-backend herstellen
 	Applies at next launch.	Wordt toegepast bij de volgende start.
-	Click to sample the foreground colour  ·  {key}-click for background	Klik om de voorgrondkleur te bemonsteren  ·  {key}-klik voor achtergrond
+	Click to sample the foreground color  ·  {key}-click for background	Klik om de voorgrondkleur te bemonsteren  ·  {key}-klik voor achtergrond
 	{key}-click to set the source	{key}-klik om de bron in te stellen
 	{key} to subtract	{key} om af te trekken
 	Clone source {n} ({key}-click with Clone Stamp to set)	Kloonbron {n} ({key}-klik met kloonstempel om in te stellen)
@@ -2214,7 +2235,7 @@
 	Gradient Options	Verloopopties
 	Align with layer	Uitlijnen met laag
 	Reset Alignment	Uitlijning herstellen
-	Centre the gradient (offset 0, 0)	Het verloop centreren (verschuiving 0, 0)
+	Center the gradient (offset 0, 0)	Het verloop centreren (verschuiving 0, 0)
 	Gradient Editor	Verloopeditor
 	Gradient picker	Verloopkiezer
 	Gradient stops	Verloopstops
@@ -2248,7 +2269,7 @@
 	Alt-click to define a source point to clone from	Alt-klik om een bronpunt te definiëren om van te klonen
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Geen pad om een selectie van te maken: teken er een met het pengereedschap of selecteer er een in het paneel Paden.
 	Cancel opening	Openen annuleren
-	Cancelled opening {name}	Openen van {name} geannuleerd
+	Canceled opening {name}	Openen van {name} geannuleerd
 	Damaged Photoshop document	Beschadigd Photoshop-document
 	The document “{name}” may be damaged.	Het document ‘{name}’ is mogelijk beschadigd.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Sommige lagen, pixels of maskers konden niet worden gelezen. Wilt u doorgaan met openen?
@@ -2257,7 +2278,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Het document “{name}” heeft een ingesloten kleurprofiel dat niet overeenkomt met de huidige {mode}-werkruimte.
 	Working: {working}	Werkruimte: {working}
 	Developing {name}	{name} wordt ontwikkeld
-	Cancelled {label}	{label} geannuleerd
+	Canceled {label}	{label} geannuleerd
 	Esc to cancel	Esc om te annuleren
 	Opened {name}	{name} geopend
 	Opening {name}	{name} openen
@@ -2265,7 +2286,7 @@
 	Saving {name}	{name} opslaan
 	Saving {percent}	Opslaan {percent}
 	A save to {name} is still running; try again when it finishes	Er wordt nog opgeslagen naar {name}; probeer het opnieuw zodra dat klaar is
-	{label} is writing the file and can no longer be cancelled	{label} schrijft het bestand en kan niet meer worden geannuleerd
+	{label} is writing the file and can no longer be canceled	{label} schrijft het bestand en kan niet meer worden geannuleerd
 	Opening {name}…	{name} openen…
 	Opening…	Openen…
 	Reading…	Lezen…
@@ -2308,6 +2329,7 @@
 	Punctuation	Interpunctie
 	Make Work Path	Werkpad maken
 	Make Selection	Selectie maken
+	Make Shape	Vorm maken
 	Fill Path	Pad vullen
 	Stroke Path	Pad omlijnen
 	Delete Path	Pad verwijderen
@@ -2326,7 +2348,7 @@
 	Pixel	Pixel
 	Adjustment	Aanpassing
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Slepen (lasso) of punten klikken (veelhoek) · {add} toevoegen · {sub} aftrekken
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Sleep een bijsnijkader · sleep binnenin om te verplaatsen · randen wijzigen formaat ({ratio} verhouding, {centre} midden) · Spatie verplaatst tijdens tekenen · pijltjes verschuiven · X wisselt oriëntatie · {commit} past toe · Esc annuleert
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Sleep een bijsnijkader · sleep binnenin om te verplaatsen · randen wijzigen formaat ({ratio} verhouding, {centre} midden) · Spatie verplaatst tijdens tekenen · pijltjes verschuiven · X wisselt oriëntatie · {commit} past toe · Esc annuleert
 	{mode} Color · {bits} bit	{mode}-kleur · {bits} bit
 	Scrubby Zoom	Sleepzoom
 	Auto Erase	Automatisch gummen
@@ -2374,8 +2396,8 @@
 	3 x 3	3 x 3
 	4 x 4	4 x 4
 	5 x 5	5 x 5
-	Camera Raw Filter ({layer})	Camera Raw-filter ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+	RAW Develop Filter ({layer})	RAW-ontwikkeling-filter ({layer})
+	RAW Develop ({name})	RAW-ontwikkeling ({name})
 	Edit Type	Tekst bewerken
 	Grid:	Raster:
 	Highlight Clipping Warning (O)	Waarschuwing afsnijden hooglichten (O)
@@ -2420,7 +2442,7 @@
 	Discard Layers and Save a Copy	Lagen negeren en kopie opslaan
 	Don't show again	Niet meer tonen
 	Save failed: {error}	Opslaan mislukt: {error}
-	Save cancelled	Opslaan geannuleerd
+	Save canceled	Opslaan geannuleerd
 	Style {name} saved	Stijl {name} opgeslagen
 	Make Default	Als standaard instellen
 	Reset to Default	Terugzetten naar standaard
@@ -2556,7 +2578,7 @@ fontWeight	Italic	Cursief
 	Rotate View	Weergave roteren
 	Rotate View Tool	Weergave-roteergereedschap
 	Reset View	Weergave herstellen
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Sleep rond het midden om de weergave te roteren  ·  Shift beperkt tot 15°
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Sleep rond het midden om de weergave te roteren  ·  Shift beperkt tot 15°
 @id	select.all	Alles selecteren
 @id	edit.stroke	Omlijnen…
 @id	edit.transform.scale	Schalen
@@ -3375,7 +3397,6 @@ cameraRaw	Color	Kleur
 	Add Pins	Spelden toevoegen
 	Add a mask  (from the selection; ⌥ inverts)	Een masker toevoegen  (vanuit de selectie; ⌥ keert om)
 	Adds grain to the soft edges of the brush tip.	Voegt korrel toe aan de zachte randen van de penseelpunt.
-	Adobe PDF Presets…	Adobe PDF-voorinstellingen…
 	Advanced Blending	Geavanceerd overvloeien
 	After (X)	Na (X)
 	Airbrush: keeps painting while the pointer rests.	Airbrush: blijft schilderen zolang de aanwijzer stilstaat.
@@ -3402,8 +3423,8 @@ cameraRaw	Color	Kleur
 	Border	Rand
 	Box Blur	Kadervervaging
 	Calculations	Berekeningen
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Camera Raw-filter
+	RAW Develop	RAW-ontwikkeling
+	RAW Develop Filter	RAW-ontwikkeling-filter
 	Canvas rotation	Canvasrotatie
 	Channel1	Kanaal 1
 	Channel2	Kanaal 2
@@ -3682,8 +3703,6 @@ cameraRaw	Whites	Witten
 	Mac Crisp	Mac helder
 	Mac Strong	Mac krachtig
 	Mac Smooth	Mac vloeiend
-	Adobe Single-line Composer	Adobe-zetmachine per regel
-	Adobe Every-line Composer	Adobe-zetmachine voor alle regels
 	X	X
 	Y	Y
 	30 fps	30 fps
@@ -3730,8 +3749,8 @@ cameraRaw	Whites	Witten
 @id	filter.sharpen.sharpen	Verscherpen
 	Good	Goed
 	Best	Beste
-	Out of gamut for printing: click for the nearest printable colour	Buiten afdrukbereik: klik voor de dichtstbijzijnde afdrukbare kleur
-	Not a web colour: click for the nearest web colour	Geen webkleur: klik voor de dichtstbijzijnde webkleur
+	Out of gamut for printing: click for the nearest printable color	Buiten afdrukbereik: klik voor de dichtstbijzijnde afdrukbare kleur
+	Not a web color: click for the nearest web color	Geen webkleur: klik voor de dichtstbijzijnde webkleur
 	Adjustment Properties	Eigenschappen aanpassing
 	Brush Stroke	Penseelstreek
 	Default Foreground and Background Colors	Standaard voorgrond- en achtergrondkleur
@@ -4048,7 +4067,7 @@ curves	Smooth	Vloeiend maken
 	Auto Add/Delete	Automatisch toevoegen/verwijderen
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Schakel niet ook Spiegelbeeld in bij de afdrukinstellingen: de twee spiegelingen heffen elkaar op.
 	Print Settings…	Afdrukinstellingen…
-	Remember to turn off the printer's own colour management in Print Settings…	Vergeet niet het eigen kleurbeheer van de printer uit te schakelen in de afdrukinstellingen…
+	Remember to turn off the printer's own color management in Print Settings…	Vergeet niet het eigen kleurbeheer van de printer uit te schakelen in de afdrukinstellingen…
 	Sent to {printer}	Verzonden naar {printer}
 	set in Print Settings…	instellen in de afdrukinstellingen…
 	ICO is limited to 256 × 256 pixels	ICO is beperkt tot 256 × 256 pixels
@@ -4178,12 +4197,12 @@ curves	Smooth	Vloeiend maken
 	Decrease Brush Hardness	Penseelhardheid verlagen
 	Increase Brush Hardness	Penseelhardheid verhogen
 	Demosaic	Demosaicing
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hoe het kleurfiltermozaïek van de camera wordt ingevuld. Wordt toegepast bij het openen van het bestand; de voorvertoning toont de methode waarmee het is geopend.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hoe het kleurfiltermozaïek van de camera wordt ingevuld. Wordt toegepast bij het openen van het bestand; de voorvertoning toont de methode waarmee het is geopend.
 	AHD (adaptive homogeneity)	AHD (adaptieve homogeniteit)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: de schoonste randen en de minste kleurranden, het traagst.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradiëntgecorrigeerde interpolatie: scherp en snel, met wat kleurranden in fijne details.
-	The fastest and the softest, with colour fringing on fine detail.	Het snelst en het zachtst, met kleurranden in fijne details.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: de schoonste randen en de minste kleurranden, het traagst.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Gradiëntgecorrigeerde interpolatie: scherp en snel, met wat kleurranden in fijne details.
+	The fastest and the softest, with color fringing on fine detail.	Het snelst en het zachtst, met kleurranden in fijne details.
 	“{name}” already exists. Replace it?	“{name}” bestaat al. Vervangen?
 	The name in the save dialog was “{name}”.	De naam in het venster Opslaan was “{name}”.
 	Previous Brush	Vorig penseel
@@ -4242,8 +4261,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	Grijswaardenbalk
 	Current Colors	Huidige kleuren
 	Make Ramp Web Safe	Balk beperken tot webkleuren
+	Scroll All Windows	Alle vensters schuiven
 	The path was kept as the Work Path	Het pad is behouden als werkpad
 	The path was discarded	Het pad is weggegooid
+# Art History Brush (#213).
 	Art History Brush Tool	Artistiek historiepenseel
 	Tight Short	Strak kort
 	Tight Medium	Strak middel
@@ -4322,3 +4343,42 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace Image…	Afbeelding vervangen…
 	The frame is locked	Het kader is vergrendeld
 	The frame is unavailable	Het kader is niet beschikbaar
+
+# Channels panel menu (#11451)
+	New Channel…	Nieuw kanaal…
+	Duplicate Channel	Kanaal dupliceren
+	Delete Channel	Kanaal verwijderen
+	New Spot Channel…	Nieuw steunkleurkanaal…
+	Merge Spot Channel	Steunkleurkanaal samenvoegen
+	Channel Options…	Kanaalopties…
+	Split Channels	Kanalen splitsen
+	Merge Channels…	Kanalen samenvoegen…
+	Specify Channels:	Kanalen opgeven:
+	Not enough grayscale documents for this mode.	Niet genoeg grijswaardendocumenten voor deze modus.
+	Pick a different document for each channel.	Kies voor elk kanaal een ander document.
+	A picked document is no longer open.	Een gekozen document is niet meer geopend.
+	A picked document is no longer a grayscale document of the same size.	Een gekozen document is geen grijswaardendocument van hetzelfde formaat meer.
+	Netscape Gray	Netscape-grijs
+# Move tool options bar (#11381)
+	Align top edges	Bovenranden uitlijnen
+	Align vertical centers	Verticale middens uitlijnen
+	Align bottom edges	Onderranden uitlijnen
+	Distribute vertically	Verticaal verdelen
+	Distribute horizontally	Horizontaal verdelen
+	Show layer bounds on hover	Laaggrenzen tonen bij aanwijzen
+	Expand layer group on click	Laaggroep uitvouwen bij klikken
+	Show hover bounds from Layers	Aanwijsgrenzen tonen vanuit Lagen
+	Saved RAW Develop settings to {file}	RAW-ontwikkeling-instellingen opgeslagen in {file}
+	Save the settings to each raw's sidecar without opening it	De instellingen in het sidecarbestand van elke raw opslaan zonder die te openen
+	No settings saved: these raws can't keep a sidecar here	Niets opgeslagen: deze raws kunnen hier geen sidecarbestand krijgen
+	Some settings could not be saved; the raws stay open	Sommige instellingen konden niet worden opgeslagen; de raws blijven open
+	Nothing to save: these raws are at their default settings	Niets op te slaan: deze raws staan op hun standaardinstellingen
+# Artboard tool options bar (#11385)
+	Distribute Widths	Breedtes verdelen
+	Distribute Heights	Hoogtes verdelen
+	Auto-nest Layers	Lagen automatisch nesten
+	Auto-size Canvas	Canvasgrootte automatisch aanpassen
+	Keep Relative Position During Layer Reordering	Relatieve positie behouden bij het wijzigen van de laagvolgorde
+	Shrinkwrap Canvas on Save	Canvas bij opslaan verkleinen tot de inhoud
+	Move Toolbar to the Right	Werkbalk naar rechts verplaatsen
+	Move Toolbar to the Left	Werkbalk naar links verplaatsen

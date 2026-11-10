@@ -352,6 +352,23 @@ pub(crate) fn keep_newer(app: &PhotocraftApp, layout: &mut Value) {
     }
 }
 
+/// Writes the current panels/layout snapshot now, for a discrete change such as the toolbar side,
+/// whether or not the dock was drawn this frame. Only while Remember Workspace Changes is on.
+pub(crate) fn persist_panels(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if !app.session.prefs().workspace.remember_workspace_changes {
+        return;
+    }
+    // Geometry still settling (OS window move, dock-edge drag, or a held pointer): keep the
+    // toolbar-side change pending and save it once stable, even if the dock is not drawn.
+    if panels_moving(app, ctx) {
+        set_panels_pending(ctx, true);
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        return;
+    }
+    persist_panels_now(app);
+    set_panels_pending(ctx, false);
+}
+
 /// Remember the layout in the preferences once the user lets go of the mouse (Workspace ›
 /// Remember Workspace Changes), and once panel windows the OS moves or resizes keep still. Cheap:
 /// a small JSON compare per frame.
@@ -360,7 +377,7 @@ pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if app.ui.docking.is_some() {
         app.ui.docking_kept = None;
     }
-    if !app.session.prefs().workspace.remember_workspace_changes || ctx.input(|i| i.pointer.any_down()) {
+    if !app.session.prefs().workspace.remember_workspace_changes || ctx.input(|i| i.pointer.any_down()) || crate::panels::dock_edge_drag_active(ctx) {
         return;
     }
     if native_moved(app, ctx) {
@@ -375,16 +392,86 @@ pub fn persist(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 /// A floating panel's own window has another place than last frame. A move or resize by its OS
 /// title bar or edges changes the place each frame with no button down in any of the app's
-/// windows.
+/// windows. The answer is cached for the frame so the dock pass and `persist_panels` agree even
+/// though only the first call can observe the change.
 fn native_moved(app: &PhotocraftApp, ctx: &egui::Context) -> bool {
     let places: Vec<(u64, [f32; 4])> =
         app.ui.docking.iter().flat_map(|workspace| workspace.layout.floating.iter().filter_map(|window| Some((window.id, window.native?)))).collect();
-    let id = egui::Id::unique("dock-native-places");
+    let places_id = egui::Id::unique("dock-native-places");
+    let cache_id = egui::Id::unique("dock-native-moved-frame");
+    let frame = ctx.cumulative_frame_nr();
     ctx.data_mut(|data| {
-        let moved = data.get_temp::<Vec<(u64, [f32; 4])>>(id).is_some_and(|last| last != places);
-        data.insert_temp(id, places);
+        // Keep any movement seen earlier in the frame, but still compare the bounds now: the
+        // docking UI can update them after persist_pending's early check, and the later dock save
+        // must not trust a stale `false`.
+        let cached = match data.get_temp::<(u64, bool)>(cache_id) {
+            Some((at, moved)) if at == frame => Some(moved),
+            _ => None,
+        };
+        let previous = data.get_temp::<Vec<(u64, [f32; 4])>>(places_id);
+        let changed = previous.as_ref().is_some_and(|last| last != &places);
+        let moved = cached.unwrap_or(false) || changed;
+        if changed || previous.is_none() {
+            data.insert_temp(places_id, places);
+        }
+        data.insert_temp(cache_id, (frame, moved));
         moved
     })
+}
+
+/// Writes the panels/layout snapshot if it changed.
+fn persist_panels_now(app: &mut PhotocraftApp) {
+    let now = snapshot(app);
+    if app.session.prefs().panel_layout != now {
+        app.session.prefs.edit(|p| p.panel_layout = now);
+    }
+}
+
+/// True while a persistence pass must not record geometry: an in-progress dock-edge drag, a
+/// pointer button down, or a native panel window that moved this frame.
+fn panels_moving(app: &PhotocraftApp, ctx: &egui::Context) -> bool {
+    crate::panels::dock_edge_drag_active(ctx) || ctx.input(|i| i.pointer.any_down()) || native_moved(app, ctx)
+}
+
+/// Whether a toolbar-side save is waiting for the dock geometry to settle.
+fn panels_pending(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(egui::Id::unique("dock-persist-panels-pending")).unwrap_or(false))
+}
+
+/// Marks or clears the deferred toolbar-side save that [`persist_pending`] retries.
+fn set_panels_pending(ctx: &egui::Context, pending: bool) {
+    let id = egui::Id::unique("dock-persist-panels-pending");
+    ctx.data_mut(|data| {
+        if pending {
+            data.insert_temp(id, true);
+        } else {
+            data.remove::<bool>(id);
+        }
+    });
+}
+
+/// Retries a toolbar-side save that was deferred while geometry was moving; called every frame so
+/// the save happens once the geometry is stable even when the dock and toolbar were not drawn.
+pub(crate) fn persist_pending(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    // If the dock-edge layout stopped rendering (Shift+Tab hides the dock mid-drag), its stored
+    // drag start cannot be cleared by the panel; drop it so deferred saves can resume.
+    let rendered = ctx.data(|data| data.get_temp::<u64>(egui::Id::unique("dock-edge-rendered-frame")));
+    if rendered.is_none_or(|at| at + 1 < ctx.cumulative_frame_nr()) {
+        crate::panels::clear_dock_edge_drag(ctx);
+    }
+    if !app.session.prefs().workspace.remember_workspace_changes {
+        set_panels_pending(ctx, false);
+        return;
+    }
+    if !panels_pending(ctx) {
+        return;
+    }
+    if panels_moving(app, ctx) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        return;
+    }
+    persist_panels_now(app);
+    set_panels_pending(ctx, false);
 }
 
 /// Restore the remembered layout at launch. Unreadable parts keep their defaults.
@@ -423,10 +510,15 @@ pub fn apply(app: &mut PhotocraftApp, v: &Value) {
         Some(_) => v.get("dockingCollapsed").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
         None => Vec::new(),
     };
-    if let Some(mut p) = v.get("panels").and_then(|p| serde_json::from_value::<Panels>(p.clone()).ok()) {
+    if let Some(saved) = v.get("panels")
+        && let Ok(mut p) = serde_json::from_value::<Panels>(saved.clone())
+    {
         // The embedding host owns these flags, including for layouts that serialize them.
         p.menu_bar = app.ui.panels.menu_bar;
         p.rail = app.ui.panels.rail;
+        // A layout saved before the toolbar could move (or with an unreadable side) keeps the
+        // current side; a valid saved side still belongs to the workspace.
+        p.toolbar_side = saved.get("toolbar_side").and_then(|side| serde_json::from_value(side.clone()).ok()).unwrap_or(app.ui.panels.toolbar_side);
         app.ui.panels = p;
     }
     if let Some(t) = v.get("dockTabs").and_then(|t| serde_json::from_value(t.clone()).ok()) {

@@ -5,9 +5,12 @@ use photocraft_io::{ImportResult, raw::RawTuning};
 
 use super::{EngineError, Result, Session, Value, json};
 
+/// The prior settings of a sidecar, and its crop (in the raw's stored orientation).
+type Prior = (CameraRaw, Option<photocraft_io::camera_raw_xmp::Crop>);
+
 /// Read only a bounded regular XMP file. No ambient sidecar reads are granted to gated sessions.
 #[cfg(not(target_arch = "wasm32"))]
-fn prior_settings(path: Option<&str>) -> Result<Option<CameraRaw>> {
+fn prior_settings(path: Option<&str>) -> Result<Option<Prior>> {
     use std::io::Read;
     let Some(path) = path else { return Ok(None) };
     let sidecar = match path.rsplit_once('.') {
@@ -31,11 +34,11 @@ fn prior_settings(path: Option<&str>) -> Result<Option<CameraRaw>> {
     if !report.ignored.is_empty() {
         return Err(EngineError::Other(format!("{sidecar}: unsupported prior RAW settings: {}", report.ignored.join(", "))));
     }
-    Ok(Some(settings))
+    Ok(Some((settings, report.crop)))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn prior_settings(path: Option<&str>) -> Result<Option<CameraRaw>> {
+fn prior_settings(path: Option<&str>) -> Result<Option<Prior>> {
     if path.is_some() { Err(EngineError::Other("cannot read RAW sidecars on the web".into())) } else { Ok(None) }
 }
 
@@ -67,6 +70,8 @@ pub(super) fn prepare(s: &Session, name: &str, path: Option<&str>, bytes: &[u8])
         return Err(EngineError::Other("RAW sidecar opening requires a trusted session; no implicit read capability is available".into()));
     }
     let prior = prior_settings(path)?;
+    let crop = prior.as_ref().and_then(|(_, crop)| *crop);
+    let prior = prior.map(|(settings, _)| settings);
     let mut settings = prior.clone().unwrap_or_default();
     let opts = crate::jobs::import_options(s.prefs());
     let mut imported = photocraft_io::import_with_options(name, bytes, &opts).map_err(|error| EngineError::Other(format!("{name}: {error}")))?;
@@ -87,6 +92,8 @@ pub(super) fn prepare(s: &Session, name: &str, path: Option<&str>, bytes: &[u8])
         clarity: settings.clarity,
         texture: settings.texture,
         dehaze: settings.dehaze,
+        // The sidecar's crop, as the interactive open applies it: before the Camera Raw step.
+        crop,
     };
     if tuning != (RawTuning { demosaic: opts.demosaic, ..Default::default() }) {
         super::open::raw_defaults(s, &imported.warnings, &mut imported.document);

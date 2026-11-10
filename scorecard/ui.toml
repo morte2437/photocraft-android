@@ -10,7 +10,7 @@ id = "UI-217-1"
 target = "Tool options, last Export As / Save for Web / Fill settings and font recents persist"
 status = "partial"
 issue = 217
-note = "Tool options (Preferences.toolOptions, tool_memory.rs, #2814; clamped to the options-bar ranges on restore), each painting tool's own brush (Preferences.toolBrushes + lastBrush, #6212) and the selected tool persist; Reset Tool / Reset All Tools (tool_reset.rs) clear them. Fill, Liquify, Export As (export_dialog.rs COMMAND) and Save for Web (file_ui.rs WEB_COMMAND) remember their last settings in prefs.dialogs. Missing: font recents (type.recentFonts is in the prefs audit's unused list)"
+note = "Tool options (Preferences.toolOptions, tool_memory.rs, #2814; clamped to the options-bar ranges on restore), each painting tool's own brush (Preferences.toolBrushes + lastBrush, #6212) and the selected tool persist; Reset Tool / Reset All Tools (tool_reset.rs) clear them. The last tool of each toolbar slot and tool key persists too (Preferences.groupTools, #3569). Fill, Liquify, Export As (export_dialog.rs COMMAND) and Save for Web (file_ui.rs WEB_COMMAND) remember their last settings in prefs.dialogs. Missing: font recents (type.recentFonts is in the prefs audit's unused list)"
 
 [[item]]
 id = "UI-217-2"
@@ -70,10 +70,10 @@ note = "prefs::UiScale offers Auto plus 75 to 300 percent (17 presets: 75 to 125
 
 [[item]]
 id = "UI-217-10"
-target = "Appearance: animation toggle, canvas pattern toggle per theme, start-screen recents"
+target = "Appearance: canvas pattern toggle per theme, start-screen recents"
 status = "partial"
 issue = 217
-note = "interface.enableAnimations (prefs_ui.rs sync_animations, #3273) zeroes egui animation_time and scroll animation in both styles; the Home screen lists recent files (canvas.rs home_recent, #2691); the canvas dot pattern toggle is interface.showCanvasDots (#2264, global rather than per theme); interface.showHomeRecentFiles hides the Home screen recents (#4382)"
+note = "the Home screen lists recent files (canvas.rs home_recent, #2691); the canvas dot pattern toggle is interface.showCanvasDots (#2264, global rather than per theme); interface.showHomeRecentFiles hides the Home screen recents (#4382)"
 
 [[item]]
 id = "UI-217-11"

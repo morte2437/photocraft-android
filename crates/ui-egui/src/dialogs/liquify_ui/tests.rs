@@ -199,8 +199,9 @@ fn brush_settings_are_remembered_between_uses() {
 }
 
 /// The reference application's Liquify has Twirl Clockwise only: no Twirl Counterclockwise
-/// tool on the strip or a shortcut, and a script or saved setting naming it is refused with a
-/// clear error instead of selecting it (Alt with Twirl Clockwise twirls counterclockwise).
+/// tool on the strip or a shortcut. A script naming it is refused with a clear error (Alt with
+/// Twirl Clockwise twirls counterclockwise); a setting saved by an older version opens on Twirl
+/// Clockwise.
 #[test]
 fn the_tool_strip_has_no_twirl_counterclockwise() {
     assert!(!LiquifyTool::ALL.contains(&LiquifyTool::TwirlCcw));
@@ -218,12 +219,18 @@ fn the_tool_strip_has_no_twirl_counterclockwise() {
     let err = control(&mut app, &json!({"tool": "twirlCcw"})).unwrap_err();
     assert!(err.contains("twirlCw") && err.contains("Alt"), "{err}");
     assert_eq!(app.distort.liquify.as_ref().unwrap().opts.tool, LiquifyTool::Pucker, "the tool stays");
-    // A preference saved by an older version that names it opens, and on another tool.
+    // Actions that are not tools are refused too, without the Alt hint that fits twirlCcw only.
+    for action in ["reconstructAll", "freezeAll", "thawAll", "invertFreeze"] {
+        let err = control(&mut app, &json!({ "tool": action })).unwrap_err();
+        assert!(err.contains("not a Liquify tool") && !err.contains("Alt"), "{action}: {err}");
+    }
+    assert_eq!(app.distort.liquify.as_ref().unwrap().opts.tool, LiquifyTool::Pucker, "the tool stays");
+    // A preference saved by an older version that names it opens on Twirl Clockwise.
     cancel(&mut app);
     app.session.prefs.edit(|p| p.dialogs.insert(REMEMBERED.into(), json!({"tool": "twirlCcw", "density": 70})));
     open(&mut app, &ctx).unwrap();
     let o = &app.distort.liquify.as_ref().unwrap().opts;
-    assert_ne!(o.tool, LiquifyTool::TwirlCcw);
+    assert_eq!(o.tool, LiquifyTool::TwirlCw, "the saved twirl keeps its tool");
     assert_eq!(o.density, 70.0, "the rest of the saved settings still apply");
 }
 
@@ -1052,4 +1059,187 @@ fn workspaces_open_on_a_smart_object_with_its_filter_mask_targeted() {
     let st = app.session.active().unwrap();
     let Some(photocraft_doc::LayerContent::Smart(sm)) = st.doc.layer(layer).map(|l| &l.content) else { panic!("not a smart object") };
     assert_eq!(sm.smart_filters.iter().map(|f| f.command.as_str()).collect::<Vec<_>>(), ["filter.blur.gaussianBlur", photocraft_engine::distort_cmds::LIQUIFY]);
+}
+
+/// The dialog's field and recorded points after a stroke of `tool` from (40, 40) through
+/// (50, 40) to (60, 40) over 32 ms, its moves handed over one frame at a time (`batched` false)
+/// or both in one frame (`true`).
+fn timed_stroke(tool: &str, pressure: f64, batched: bool) -> (LiquifyField, Vec<Vec<f64>>) {
+    let ctx = egui::Context::default();
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    control(&mut app, &json!({"tool": tool, "size": 200, "pressure": pressure})).unwrap();
+    let none = egui::Modifiers::NONE;
+    let (a, b) = (ToolEvent::Move { x: 50.0, y: 40.0, pressure: 1.0 }, ToolEvent::Move { x: 60.0, y: 40.0, pressure: 1.0 });
+    dispatch_frame(&mut app, vec![ToolEvent::Down { x: 40.0, y: 40.0, pressure: 1.0 }], none, 1000.0);
+    if batched {
+        dispatch_frame(&mut app, vec![a, b], none, 1032.0);
+    } else {
+        dispatch_frame(&mut app, vec![a], none, 1016.0);
+        dispatch_frame(&mut app, vec![b], none, 1032.0);
+    }
+    let d = app.distort.liquify.as_ref().unwrap();
+    let points = d.cur.as_ref().unwrap().0.points.clone();
+    (d.field.clone(), points)
+}
+
+/// A frame's moves share its time evenly: two moves batched into one frame paint what the same
+/// moves give delivered one per frame over the same time (FredApps' review of #10690). Reading
+/// the clock per event gave the first move nearly the whole frame and the second only processing
+/// time, so a stationary tool's strength and where it landed depended on the batching.
+#[test]
+fn moves_batched_in_one_frame_share_its_time() {
+    for (tool, pressure) in [("freeze", 10.0), ("twirlCw", 100.0), ("bloat", 50.0), ("forwardWarp", 100.0)] {
+        let (separate, sp) = timed_stroke(tool, pressure, false);
+        let (batched, bp) = timed_stroke(tool, pressure, true);
+        let ms = |p: &[Vec<f64>]| p.iter().map(|q| q.get(3).copied().unwrap_or(0.0)).collect::<Vec<_>>();
+        assert_eq!(ms(&bp), [0.0, 16.0, 16.0], "{tool}: each move gets half the frame");
+        assert_eq!(ms(&sp), ms(&bp), "{tool}");
+        assert!(separate == batched, "{tool}: batching changed the field");
+    }
+}
+
+/// After a stall, a frame's batched moves count for at most `MAX_LIVE_MS` in all, as a single
+/// move after the stall does, instead of each catching up on a share of the whole stall.
+#[test]
+fn a_stalled_frame_counts_for_at_most_the_catch_up_limit() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    control(&mut app, &json!({"tool": "twirlCw", "size": 60})).unwrap();
+    let none = egui::Modifiers::NONE;
+    dispatch_frame(&mut app, vec![ToolEvent::Down { x: 40.0, y: 40.0, pressure: 1.0 }], none, 1000.0);
+    let moves = (1..=4).map(|k| ToolEvent::Move { x: 40.0 + f64::from(k), y: 40.0, pressure: 1.0 }).collect();
+    dispatch_frame(&mut app, moves, none, 3000.0);
+    let d = app.distort.liquify.as_ref().unwrap();
+    let total: f64 = d.cur.as_ref().unwrap().0.points.iter().filter_map(|p| p.get(3)).sum();
+    assert_eq!(total, MAX_LIVE_MS);
+}
+
+/// Preview off shows the image unwarped while strokes still change the field, and P turns it back
+/// on, as Photoshop's Liquify Preview checkbox does (#7905). Each opening starts with it on.
+#[test]
+fn preview_off_shows_the_original_and_p_toggles_it() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    let render = |d: &LiquifyDialog, field: &LiquifyField| {
+        let mut out = vec![[0u8; 4]; d.proxy.w * d.proxy.h];
+        d.proxy.render(field, [0, 0, d.proxy.w, d.proxy.h], &mut out);
+        out
+    };
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert!(d.preview && d.describe()["preview"] == json!(true), "Liquify opens with Preview on");
+    let original = render(d, &LiquifyField::new(d.canvas, d.cell));
+    let stroke = |app: &mut PhotocraftApp, y: f64| {
+        for ev in [ToolEvent::Down { x: 35.0, y, pressure: 1.0 }, ToolEvent::Move { x: 60.0, y, pressure: 1.0 }, ToolEvent::Up { x: 60.0, y }] {
+            pointer(app, ev, egui::Modifiers::NONE);
+        }
+    };
+    control(&mut app, &json!({"tool": "forwardWarp", "size": 40})).unwrap();
+    stroke(&mut app, 40.0);
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert_ne!(d.out, original, "the warp shows");
+
+    let r = control(&mut app, &json!({"preview": false})).unwrap();
+    assert_eq!(r["preview"], json!(false));
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert_eq!(d.out, original, "Preview off: the image as it was");
+    // A stroke with Preview off still warps the field, unseen.
+    stroke(&mut app, 30.0);
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert_eq!(d.strokes.len(), 2);
+    assert_eq!(d.out, original, "still unwarped while Preview is off");
+    {
+        let d = app.distort.liquify.as_mut().unwrap();
+        d.zoom = 2.0;
+        d.view_bounds = Some(Rect::new(0, 0, 20, 20));
+        d.view_dirty = None;
+    }
+
+    // P turns it back on, with both strokes.
+    let mut input = egui::RawInput::default();
+    input.events.push(egui::Event::Key { key: egui::Key::P, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    ctx.begin_pass(input);
+    keys(&mut app, &ctx);
+    ctx.end_pass().textures_delta.clear();
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert!(d.preview);
+    assert_eq!(d.out, render(d, &d.field), "Preview on: the warp of both strokes");
+    assert_eq!(d.view_dirty, d.view_bounds, "the zoomed preview is redrawn too");
+}
+
+/// A forward-warp stroke across the test layer, at row `y`.
+fn warp_stroke(app: &mut PhotocraftApp, y: f64) {
+    for ev in [ToolEvent::Down { x: 35.0, y, pressure: 1.0 }, ToolEvent::Move { x: 60.0, y, pressure: 1.0 }, ToolEvent::Up { x: 60.0, y }] {
+        pointer(app, ev, egui::Modifiers::NONE);
+    }
+}
+
+/// The active layer's pixels over the whole document.
+fn layer_pixels(app: &PhotocraftApp) -> Vec<f32> {
+    let st = app.session.active().unwrap();
+    st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().read_region(Rect::new(0, 0, 120, 80))
+}
+
+/// With Preview off, a stroke changes the displacement field but the display stays the original
+/// image (#7905).
+#[test]
+fn a_stroke_with_preview_off_changes_the_field_but_not_the_display() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    control(&mut app, &json!({"tool": "forwardWarp", "size": 40, "preview": false})).unwrap();
+    let d = app.distort.liquify.as_ref().unwrap();
+    let (field_before, shown_before) = (d.field.clone(), d.out.clone());
+    assert_eq!(d.field.max_displacement(), 0.0);
+    warp_stroke(&mut app, 40.0);
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert_ne!(d.field, field_before, "the stroke changes the field");
+    assert!(d.field.max_displacement() > 3.0);
+    assert_eq!(d.out, shown_before, "the display does not change");
+}
+
+/// OK with Preview off applies the warp: the layer ends up exactly as it does when the same stroke
+/// is committed with Preview on.
+#[test]
+fn ok_with_preview_off_applies_the_warp() {
+    let ctx = egui::Context::default();
+    let commit_with = |preview: bool| {
+        let mut app = app_with_layer();
+        let before = layer_pixels(&app);
+        open(&mut app, &ctx).unwrap();
+        control(&mut app, &json!({"tool": "forwardWarp", "size": 40, "preview": preview})).unwrap();
+        warp_stroke(&mut app, 40.0);
+        let past = app.session.active().unwrap().history.past_len();
+        control(&mut app, &json!({"commit": true})).unwrap();
+        assert!(app.distort.liquify.is_none());
+        assert_eq!(app.session.active().unwrap().history.past_len(), past + 1, "one Liquify step");
+        (before, layer_pixels(&app))
+    };
+    let (before, unpreviewed) = commit_with(false);
+    assert_ne!(unpreviewed, before, "OK with Preview off warps the layer");
+    assert_eq!(unpreviewed, commit_with(true).1, "the same warp as with Preview on");
+}
+
+/// The identity field (as large as the image's field) exists only while Preview is off: turning
+/// Preview back on frees it, and closing the dialog drops it.
+#[test]
+fn the_identity_field_exists_only_while_preview_is_off() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_layer();
+    open(&mut app, &ctx).unwrap();
+    let identity = |app: &PhotocraftApp| app.distort.liquify.as_ref().unwrap().identity.is_some();
+    assert!(!identity(&app), "not made while Preview is on");
+    control(&mut app, &json!({"preview": false})).unwrap();
+    assert!(identity(&app));
+    control(&mut app, &json!({"preview": true})).unwrap();
+    assert!(!identity(&app), "freed when Preview is turned back on");
+    control(&mut app, &json!({"preview": false})).unwrap();
+    assert!(identity(&app), "made again when Preview is turned off again");
+    control(&mut app, &json!({"cancel": true})).unwrap();
+    assert!(app.distort.liquify.is_none(), "closing drops the dialog and its identity field");
+    open(&mut app, &ctx).unwrap();
+    let d = app.distort.liquify.as_ref().unwrap();
+    assert!(d.preview && d.identity.is_none(), "a new opening starts with Preview on and no identity field");
 }

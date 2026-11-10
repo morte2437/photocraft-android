@@ -177,10 +177,10 @@ pub fn specs() -> Vec<CommandSpec> {
         section!("edit.preferences.transparencyAndGamut", "Transparency & Gamut…"),
         section!("edit.preferences.unitsAndRulers", "Units & Rulers…"),
         section!("edit.preferences.guidesGridAndSlices", "Guides, Grid & Slices…"),
-        section!("edit.preferences.plugIns", "Plug-ins…"),
+        section!("edit.preferences.plugIns", "Plugins…"),
         section!("edit.preferences.type", "Type…"),
         section!("edit.preferences.enhancedControls", "Enhanced Controls…"),
-        section!("edit.preferences.rawDefaults", "Camera Raw…"),
+        section!("edit.preferences.rawDefaults", "RAW Defaults…"),
         section!("edit.preferences.integrations", "Integrations…"),
         spec!(
             "edit.keyboardShortcuts",

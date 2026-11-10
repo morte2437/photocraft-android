@@ -8,6 +8,7 @@ mod corpus_pins;
 mod i18n_coverage;
 mod ico;
 mod layers;
+mod panel_commands;
 mod perf;
 mod pinned;
 mod scorecard;
@@ -24,10 +25,12 @@ usage: cargo xtask <command>
 
 commands:
   layers          enforce the crate dependency layering (docs/architecture.md §3)
+  panel-commands  fail on a shell click handler that changes the document or session directly instead of
+                  dispatching a command id (allowlist: xtask/src/panel_commands.rs)
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates (one call, plus
                   one per optional web feature)
   test            workspace tests (cargo nextest when installed, else cargo test), then doctests
-  ci              the CI gate: fmt --check, clippy -D warnings, layers, scorecard --check, tests
+  ci              the CI gate: fmt --check, clippy -D warnings, layers, panel-commands, scorecard --check, tests
                   (nextest --profile ci), panic_hunt, doctests and wasm, with --locked --features heif
                   (stops at first failure), then the i18n-coverage report
   corpus [--all | --pngsuite | --psd | --psd-tools | --pixls | --atn | --photoshop | --gimp] [--local] [--update-manifest]
@@ -61,6 +64,7 @@ fn main() -> ExitCode {
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
         Some("layers") => cmd_layers(),
+        Some("panel-commands") => panel_commands::run(&root()),
         Some("wasm") => cmd_wasm(),
         Some("test") => cmd_test().and_then(|()| cmd_doctest()),
         Some("ci") => cmd_ci(),
@@ -279,6 +283,7 @@ fn cmd_ci() -> Result<(), String> {
             }),
         ),
         ("layers", Box::new(cmd_layers)),
+        ("panel-commands", Box::new(|| panel_commands::run(&root()))),
         ("scorecard", Box::new(|| scorecard::run(&root(), &["--check"]))),
         ("test", Box::new(|| cmd_gate_tests(false))),
         ("panic_hunt", Box::new(|| cmd_gate_tests(true))),

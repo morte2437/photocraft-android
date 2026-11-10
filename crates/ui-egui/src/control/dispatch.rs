@@ -1,8 +1,8 @@
 use super::METHODS;
 use super::inspect::inspect;
 use super::params::{
-    BUTTONS, KEY_MODIFIERS, MAX_CLICKS, POINTER_MODIFIERS, UI_SET_FIELDS, bool_field, err, f32_field, f32_range, input_choice, input_modifiers, input_number,
-    input_object, merged_object, modifiers_from, num_field, ok, screen_point, uint_field, whole_object,
+    BUTTONS, KEY_MODIFIERS, MAX_CLICKS, MAX_SCREEN_POINT, POINTER_MODIFIERS, UI_SET_FIELDS, bool_field, err, f32_field, f32_range, input_choice,
+    input_modifiers, input_number, input_object, merged_object, modifiers_from, num_field, ok, screen_point, uint_field, whole_object,
 };
 use super::{ControlRequest, DialogKind, Outcome, PhotocraftApp, SHELL_DIALOG, Tool, ToolEvent, Value, json, run_waiting, tool_event, wrap};
 use photocraft_engine::jobs::{CancelReport, JobId};
@@ -116,7 +116,12 @@ fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRe
     // params and never open a dialog (an agent would otherwise get a modal instead of a
     // result). `ui.menu.invoke` behaves like a menu click, so it may open the dialog.
     if req.method == "engine.execute" && photocraft_engine::commands::find(id).is_some() {
-        return run_waiting(app, wait, |app| app.run(id, params));
+        return run_waiting(app, wait, |app| {
+            let previous = std::mem::replace(&mut app.programmatic_playback, true);
+            let result = app.run(id, params);
+            app.programmatic_playback = previous;
+            result
+        });
     }
     run_waiting(app, wait, |app| crate::menus::invoke(app, ctx, id, params))
 }
@@ -605,6 +610,23 @@ fn crop_fill_param(p: &Value) -> std::result::Result<Option<bool>, String> {
 
 // -- panels: Histogram, masks targets, docking, Color panel --
 
+/// The `panels` patch with its `task_bar` merged into the bar's current place, so `{"at": [x, y]}`
+/// keeps a pin and `{"pinned": true}` keeps a dragged position (#10890).
+fn panels_patch(app: &PhotocraftApp, patch: Option<&Value>) -> std::result::Result<Option<Value>, String> {
+    let Some(mut patch) = patch.cloned() else { return Ok(None) };
+    // Saved panels read an unknown side as the default; a control request is still refused.
+    if let Some(side) = patch.get("toolbar_side") {
+        serde_json::from_value::<crate::state::ToolbarSide>(side.clone()).map_err(|e| format!("panels.toolbar_side: {e}"))?;
+    }
+    if let Some(obj) = patch.as_object_mut()
+        && let Some(bar) = obj.get("task_bar")
+    {
+        let merged = merged_object(&app.ui.panels.task_bar, Some(bar), "panels.task_bar")?;
+        obj.insert("task_bar".into(), serde_json::to_value(merged).map_err(|e| e.to_string())?);
+    }
+    Ok(Some(patch))
+}
+
 struct PanelSet {
     histogram_panel: Option<crate::histogram_panel::HistogramPanelState>,
     histogram_range: Option<Option<[u8; 2]>>,
@@ -629,7 +651,7 @@ impl PanelSet {
             histogram_panel: merged_object(&app.ui.histogram_panel, p.get("histogramPanel"), "histogramPanel")?,
             histogram_range: histogram_range_param(p)?,
             histogram_refresh: bool_field(p, "histogramRefresh")?,
-            panels: merged_object(&app.ui.panels, p.get("panels"), "panels")?,
+            panels: merged_object(&app.ui.panels, panels_patch(app, p.get("panels"))?.as_ref(), "panels")?,
             mask_target: bool_field(p, "maskTarget")?,
             updates_open: bool_field(p, "updatesOpen")?,
             vector_mask_target: bool_field(p, "vectorMaskTarget")?,
@@ -707,11 +729,12 @@ impl PanelSet {
         }
     }
 
+    /// Applies the Color panel state and queues the requested end-dock width for the next frame.
     fn apply_color_and_width(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context) {
         if let Some(v) = self.color_panel.take() {
             app.ui.color_panel = v;
         }
-        // Right dock width in points (clamped to the dock's 250..=520 range), applied next frame.
+        // End dock width in points, clamped to its window-dependent range and applied next frame.
         if let Some(w) = self.dock_width {
             crate::panels::request_dock_width(ctx, w as f32);
         }
@@ -1155,8 +1178,9 @@ fn click(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value, click: bool) -
     let parsed = (|| -> std::result::Result<_, String> {
         let p = input_object(p, None, fields)?;
         // Screen coordinates in points (as reported by ui.inspect window size).
-        let x = input_number(&p, "x", "x", None)?.unwrap_or(0.0) as f32;
-        let y = input_number(&p, "y", "y", None)?.unwrap_or(0.0) as f32;
+        let range = Some((-MAX_SCREEN_POINT, MAX_SCREEN_POINT));
+        let x = input_number(&p, "x", "x", range)?.unwrap_or(0.0) as f32;
+        let y = input_number(&p, "y", "y", range)?.unwrap_or(0.0) as f32;
         let button = match input_choice(&p, "button", "button", &BUTTONS)?.unwrap_or("left") {
             "right" | "secondary" => egui::PointerButton::Secondary,
             "middle" => egui::PointerButton::Middle,
@@ -1258,7 +1282,10 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
                 continue;
             }
             if app.ui.tool == Tool::Move && !gesture.secondary && !gesture.middle && !gesture.space && matches!(sample.ev, ToolEvent::Down { .. }) {
-                app.begin_move_transform_controls(ctx, sample.x, sample.y);
+                // A press the controls refused (the Background among the layers) goes nowhere else (#11101).
+                if app.begin_move_transform_controls(ctx, sample.x, sample.y) == crate::canvas::ControlsPress::Refused {
+                    continue;
+                }
             }
             forward_pointer_event(app, &gesture, sample);
         }
@@ -1320,11 +1347,11 @@ fn parse_pointer_event(i: usize, e: &Value) -> std::result::Result<PointerSample
 
 /// Whether a modal tool, picker or context menu took the event instead of the canvas.
 fn pointer_event_intercepted(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
-    let took = pointer_eyedropper_took(app, ctx, g, s) || color_range_took(app, g, s) || (g.secondary && secondary_menu_took(app, ctx, g, s));
+    let took = pointer_eyedropper_took(app, ctx, g, s) || color_range_took(app, g, s);
     if took && matches!(s.ev, ToolEvent::Up { .. }) && !g.secondary && !g.middle {
         release_taken_drag(app, g);
     }
-    took
+    took || preview_locator_took(app, g, s) || (g.secondary && secondary_menu_took(app, ctx, g, s))
 }
 
 /// A sampler (Color Picker, Curves/Levels or Properties eyedroppers, Curves ⌘-click, Color
@@ -1336,6 +1363,28 @@ fn release_taken_drag(app: &mut PhotocraftApp, g: &PointerGesture) {
     if let Some([x, y]) = app.drag.as_ref().map(|d| d.points.last().map_or(d.start, |p| [p[0], p[1]])) {
         tool_event(app, ToolEvent::Up { x, y }, g.mods);
     }
+}
+
+/// A filter dialog with a preview window on top: the image is its locator, as for the mouse
+/// (#9648). A press with the primary button centres the window there; every other event
+/// is consumed too, so nothing reaches the tool under the dialog, except the moves and release of
+/// a tool gesture begun before the dialog opened, which finish it along the path they draw. A Crop
+/// frame or Straighten drag is one too, though the Crop tool keeps it apart from `app.drag`. While
+/// one is open, a second primary press (no mouse can make one) is dropped: it neither centres the
+/// window nor reaches the tool, so no locator press splits the gesture's moves and release.
+fn preview_locator_took(app: &mut PhotocraftApp, g: &PointerGesture, s: &PointerSample) -> bool {
+    if crate::filter_preview_ui::locator(app).is_none() {
+        return false;
+    }
+    let down = matches!(s.ev, ToolEvent::Down { .. });
+    let tool_gesture = app.drag.is_some() || app.crop.drag.is_some() || app.crop.straighten.line.is_some();
+    if !g.secondary && !g.middle && tool_gesture {
+        return down;
+    }
+    if down && !g.secondary && !g.middle && !g.space {
+        crate::filter_preview_ui::center_at(app, s.x, s.y);
+    }
+    true
 }
 
 fn pointer_eyedropper_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
@@ -1435,6 +1484,10 @@ fn secondary_transform_or_crop_took(app: &mut PhotocraftApp, ctx: &egui::Context
 fn secondary_canvas_menu_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
     let (x, y) = (s.x, s.y);
     let down = matches!(s.ev, ToolEvent::Down { .. });
+    // A Magnetic Lasso border being drawn: no menu over it, as on the canvas (#11689).
+    if crate::canvas_tool_menu::magnetic_drawing(app) {
+        return true;
+    }
     if crate::canvas_tool_menu::pasteboard_at(app, app.ui.tool, [x, y]) {
         if down {
             crate::canvas_tool_menu::open_pasteboard(app, ctx, app.ui.tool, screen_point(app, x, y));

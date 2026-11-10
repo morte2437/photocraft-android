@@ -90,13 +90,15 @@ struct RowInteractions<'a> {
     masked: Option<&'a photocraft_doc::Layer>,
     actions: &'a mut Vec<(String, Value)>,
     mask_click: &'a mut Option<bool>,
+    /// Whether Merge Channels… can run (enough grayscale documents of one size).
+    merge_enabled: bool,
 }
 
 fn handle_row_interactions(ui: &mut egui::Ui, mut row: RowInteractions<'_>) {
     let rename_id = egui::Id::unique(("chan-rename", row.doc.id.0, format!("{:?}", row.row.reference())));
     handle_channel_row_click(ui, &mut row);
     handle_channel_row_double_click(ui, &mut row, rename_id);
-    row.response.context_menu(|ui| draw_row_menu(ui, row.row, row.doc, row.masked, row.actions));
+    row.response.context_menu(|ui| draw_row_menu(ui, row.row, row.doc, row.masked, row.merge_enabled, row.actions));
 }
 
 fn handle_channel_row_click(ui: &egui::Ui, row: &mut RowInteractions<'_>) {
@@ -167,7 +169,14 @@ fn handle_alpha_double_click(ui: &mut egui::Ui, row: &mut RowInteractions<'_>, i
     }
 }
 
-fn draw_row_menu(ui: &mut egui::Ui, row: Row, doc: &photocraft_doc::Document, masked: Option<&photocraft_doc::Layer>, actions: &mut Vec<(String, Value)>) {
+fn draw_row_menu(
+    ui: &mut egui::Ui,
+    row: Row,
+    doc: &photocraft_doc::Document,
+    masked: Option<&photocraft_doc::Layer>,
+    merge_enabled: bool,
+    actions: &mut Vec<(String, Value)>,
+) {
     crate::widgets::menu_scroll(ui, |ui| {
         ui.set_min_width(210.0);
         match row {
@@ -177,11 +186,11 @@ fn draw_row_menu(ui: &mut egui::Ui, row: Row, doc: &photocraft_doc::Document, ma
             Row::LayerMask => draw_mask_menu(ui, masked, actions),
         }
         ui.separator();
-        item(ui, actions, "New Channel…", "channel.new", json!({}));
+        item(ui, actions, "New Channel…", "ui.newChannel", json!({}));
         item(ui, actions, "New Spot Channel…", "ui.newSpotChannel", json!({}));
         ui.separator();
         item(ui, actions, "Split Channels", "channel.split", json!({}));
-        item(ui, actions, "Merge Channels…", "channel.merge", json!({}));
+        item_enabled(ui, actions, "Merge Channels…", "ui.mergeChannels", json!({}), merge_enabled);
     });
 }
 
@@ -288,14 +297,14 @@ fn row_presentation(row: Row, context: &RowPresentationContext<'_>, mask_visible
             !context.view.quick_mask_hidden,
             context.view.target == ChannelTarget::Composite,
         ),
-        Row::LayerMask => {
-            (context.masked.map_or_else(String::new, |layer| format!("{} Mask", layer.name)), usize::MAX, None, mask_visible, context.mask_targeted)
-        }
+        Row::LayerMask => (context.masked.map_or_else(String::new, mask_row_name), usize::MAX, None, mask_visible, context.mask_targeted),
     };
     RowPresentation { name, thumb_idx, slot, visible, selected }
 }
 
 pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    // Greyed in the rows' menu as in the panel menu and the command palette.
+    let merge_enabled = crate::menus::is_enabled(app, "channel.merge");
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
         ui.add_space(6.0);
@@ -316,10 +325,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     // The active layer's mask (Photoshop lists it, in italics, below the colour channels).
     let masked = active_layer.and_then(|id| doc.layer(id)).filter(|l| l.mask.is_some());
     let mask_tex = masked.as_ref().and_then(|l| Some(app.mask_thumb(&ctx, &doc, l.id, l.mask.as_ref()?)));
-    let mask_targeted = masked.is_some()
-        && (app.ui.mask_target || view.target == ChannelTarget::LayerMask)
-        && (view.target == ChannelTarget::Composite || view.target == ChannelTarget::LayerMask)
-        && !quick;
+    let mask_targeted = mask_row_targeted(masked.is_some(), app.ui.mask_target, view.target, quick);
     // Multichannel images are their ink channels only (no composite or colour rows).
     let multichannel = doc.mode == photocraft_doc::ColorMode::Multichannel;
     let mut rows = if multichannel { Vec::new() } else { vec![Row::Composite] };
@@ -436,6 +442,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     masked,
                     actions: &mut actions,
                     mask_click: &mut mask_click,
+                    merge_enabled,
                 },
             );
         }
@@ -467,13 +474,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     };
     // Photoshop's order from the left: Load as selection, Save selection, New, Delete.
     widgets::panel_footer(ui, |ui| {
-        let target_ref = match view.target {
-            ChannelTarget::Alpha(i) => json!(i),
-            ChannelTarget::Color(k) => json!({ "color": k }),
-            ChannelTarget::Composite => json!("composite"),
-            ChannelTarget::LayerMask => json!("mask"),
-            ChannelTarget::VectorMask => json!("vectorMask"),
-        };
+        let target_ref = target_reference(view.target);
         let trash = icons::button(ui, "trash", 26.0, false, tl!("Delete current channel"));
         if trash.clicked() {
             actions.push(("channel.delete".into(), json!({})));
@@ -510,6 +511,20 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             continue;
         }
+        // The row menu's New Channel… and Merge Channels… ask first, as the panel menu's do
+        // (the footer's New button makes a channel at once).
+        let asks = match id.as_str() {
+            "ui.newChannel" => Some("channel.new"),
+            "ui.mergeChannels" => Some("channel.merge"),
+            _ => None,
+        };
+        if let Some(cmd) = asks {
+            if let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({})) {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+            continue;
+        }
         if id == "ui.newSpotChannel" {
             crate::channel_options_ui::open_new_spot(app);
             continue;
@@ -523,6 +538,91 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if let Some(on) = mask_click {
         app.ui.mask_target = on;
         app.sync_mask_targets();
+    }
+}
+
+/// The engine reference of the targeted channel (`channel.*` and `select.loadSelection` take it).
+fn target_reference(target: ChannelTarget) -> Value {
+    match target {
+        ChannelTarget::Alpha(i) => json!(i),
+        ChannelTarget::Color(k) => json!({ "color": k }),
+        ChannelTarget::Composite => json!("composite"),
+        ChannelTarget::LayerMask => json!("mask"),
+        ChannelTarget::VectorMask => json!("vectorMask"),
+    }
+}
+
+/// Whether the selected layer's mask row is the one shown targeted: the layer has a mask, and it
+/// (not the composite) is what painting edits, outside Quick Mask.
+fn mask_row_targeted(has_mask: bool, mask_target: bool, target: ChannelTarget, quick: bool) -> bool {
+    has_mask && (mask_target || target == ChannelTarget::LayerMask) && matches!(target, ChannelTarget::Composite | ChannelTarget::LayerMask) && !quick
+}
+
+/// The layer mask row's name, "<layer> Mask", as Photoshop lists it.
+fn mask_row_name(layer: &photocraft_doc::Layer) -> String {
+    format!("{} Mask", layer.name)
+}
+
+/// The Channels panel's own items at the top of its panel menu (☰, #11451), in Photoshop's
+/// order: New Channel…, Duplicate Channel, Delete Channel, New Spot Channel…, Merge Spot Channel,
+/// Channel Options…, Split Channels, Merge Channels…. The ones that act on one channel take the
+/// targeted row and are greyed without one (a colour composite, several colour channels). New
+/// Channel…, New Spot Channel…, Channel Options… and Merge Channels… open their dialogs, as from
+/// the command palette; Split Channels runs at once.
+pub fn panel_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    use crate::layers_panel_ui::run_menu_command;
+    let target = MenuTarget::of(app);
+    run_menu_command(app, ui, tl!("New Channel…"), "channel.new", Some(json!({})));
+    run_menu_command(app, ui, tl!("Duplicate Channel"), "channel.duplicate", target.duplicate);
+    run_menu_command(app, ui, tl!("Delete Channel"), "channel.delete", target.alpha.map(|i| json!({ "channel": i })));
+    ui.separator();
+    run_menu_command(app, ui, tl!("New Spot Channel…"), "channel.newSpot", Some(json!({})));
+    run_menu_command(app, ui, tl!("Merge Spot Channel"), "channel.mergeSpot", target.spot.map(|i| json!({ "channel": i })));
+    run_menu_command(app, ui, tl!("Channel Options…"), "channel.options", target.options.then(|| json!({})));
+    ui.separator();
+    run_menu_command(app, ui, tl!("Split Channels"), "channel.split", Some(json!({})));
+    run_menu_command(app, ui, tl!("Merge Channels…"), "channel.merge", Some(json!({})));
+}
+
+/// What the panel menu's single-channel items act on: the targeted row.
+#[derive(Default)]
+struct MenuTarget {
+    /// The `channel.duplicate` params: the targeted row as its footer's New button copies it.
+    duplicate: Option<Value>,
+    /// The targeted alpha or spot channel.
+    alpha: Option<usize>,
+    /// The targeted spot channel.
+    spot: Option<usize>,
+    /// Whether Channel Options… has something to show (an alpha / spot channel, Quick Mask or a
+    /// layer mask), as the menu bar's command decides.
+    options: bool,
+}
+
+impl MenuTarget {
+    fn of(app: &PhotocraftApp) -> Self {
+        let mask = app.layer_mask_targeted();
+        let Some(st) = app.session.active() else { return Self::default() };
+        let view = &st.channel_view;
+        let alpha = match view.target {
+            ChannelTarget::Alpha(i) if i < st.doc.channels.len() => Some(i),
+            _ => None,
+        };
+        let quick = st.doc.quick_mask.is_some();
+        let masked = st.active_layer.and_then(|id| st.doc.layer(id)).filter(|l| l.mask.is_some());
+        let duplicate = match view.target {
+            // The composite targeted in Quick Mask mode: the Quick Mask row is the selected one.
+            ChannelTarget::Composite if quick => Some(json!({ "channel": "quickMask" })),
+            _ if mask_row_targeted(masked.is_some(), app.ui.mask_target, view.target, quick) => {
+                masked.and_then(|layer| drop_action(Row::LayerMask, &mask_row_name(layer), Some(layer.id.0), Footer::New)).map(|(_, p)| p)
+            }
+            ChannelTarget::Alpha(_) if alpha.is_some() => Some(json!({ "channel": target_reference(view.target) })),
+            ChannelTarget::Color(_) if view.selected_colors.len() <= 1 => Some(json!({ "channel": target_reference(view.target) })),
+            // A one-channel image (Grayscale, Bitmap, Duotone): the composite is its channel.
+            ChannelTarget::Composite if channel_cmds::color_count(&st.doc) == 1 => Some(json!({ "channel": "composite" })),
+            _ => None,
+        };
+        let spot = alpha.filter(|&i| st.doc.channels.get(i).is_some_and(|c| c.spot.is_some()));
+        Self { duplicate, alpha, spot, options: alpha.is_some() || quick || mask }
     }
 }
 
@@ -575,7 +675,12 @@ pub fn fit_thumb(cell: Rect, w: u32, h: u32) -> (Rect, Rect) {
 }
 
 fn item(ui: &mut egui::Ui, actions: &mut Vec<(String, Value)>, label: &str, cmd: &str, p: Value) {
-    if ui.button(tl!(&label)).clicked() {
+    item_enabled(ui, actions, label, cmd, p, true);
+}
+
+/// [`item`], greyed unless `enabled`.
+fn item_enabled(ui: &mut egui::Ui, actions: &mut Vec<(String, Value)>, label: &str, cmd: &str, p: Value, enabled: bool) {
+    if ui.add_enabled(enabled, egui::Button::new(tl!(&label))).clicked() {
         actions.push((cmd.into(), p));
         ui.close();
     }

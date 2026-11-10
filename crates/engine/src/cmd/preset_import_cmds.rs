@@ -176,6 +176,9 @@ fn add_abr_presets(s: &mut Session, p: &Value, group: String, imp: photocraft_io
         && let Some(pr) = photocraft_paint::presets::find(&s.tools.presets, first)
     {
         let mut b = pr.brush.clone().picked_over(&s.tools.brush);
+        // Opacity takes 1-100 %, as `tools.setBrush` floors it: a preset saved at 0 % would show
+        // 1 % but paint nothing (#11812).
+        b.opacity = b.opacity.max(0.01);
         s.load_brush_tips(&mut b).map_err(|e| bad("brush.presets.importAbr", e))?;
         s.tools.brush = b;
         s.tools.brush_changed();
@@ -475,6 +478,24 @@ mod tests {
             true,
         )
         .unwrap()
+    }
+
+    /// #11812: selecting an imported brush whose tool options hold 0 % opacity floors it at 1 %,
+    /// the value its options-bar field shows, so it paints instead of laying down nothing.
+    #[test]
+    fn selecting_an_imported_zero_opacity_brush_floors_it_at_one_percent() {
+        use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
+        let preset = |opacity: i32| {
+            Descriptor::new("brushPreset")
+                .with("Nm  ", D::Text(UnicodeString::new_nul("Faint")))
+                .with("toolOptions", D::Descriptor(Descriptor::new("currentToolOptions").with("Opct", D::Integer(opacity))))
+        };
+        for (opacity, expected) in [(0, 0.01), (37, 0.37)] {
+            let abr = photocraft_psd::abr::write_v6_folders(2, &[], &[], &[preset(opacity)], &[vec![]], true).unwrap();
+            let mut s = Session::new();
+            s.execute("brush.presets.importAbr", json!({"data": photocraft_paint::tile::b64_encode(&abr), "select": true})).unwrap();
+            assert!((s.tools.brush.opacity - expected).abs() < 1e-6, "{opacity}: {}", s.tools.brush.opacity);
+        }
     }
 
     #[test]

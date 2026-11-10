@@ -1,6 +1,6 @@
 # Brush and painting parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-31 · **Change:** minor (Art History Brush Opacity on the options bar, #10263; no estimate changed; Shift+right-click menu for every painting tool: Edit Brush… and the tool's own Mode list; Brush Shift+right-click Mode picker and Escape dismissal; Art History Brush row added as partial, 8 of 10 styles, TOOL-213-20, #1610; hard-round built-in presets use 5% spacing to remove stacked-tip outlines and reduce pressure-opacity bands, #8842; Mode for Clone Stamp, Pattern Stamp, History Brush, Healing and Paint Bucket; named, stateful Brush Settings locks and visible keyboard focus; independent Brush Pose tilt-axis overrides; Transfer Wetness/Mix tool applicability; dragged preset tip preview; Hue Jitter amount track; Brush Settings minimum fields follow their Control; checkbox-only rows and non-destructive Smoothing switch; shaped-tip cursor follows the view; Color Replacement is a live toolbar tool; no brush-feel estimate changed; 2026-10-11: Pattern Stamp and Background Eraser draw live, TOOL-213-7) · **Target:** Adobe Photoshop 2026
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-11-07 · **Change:** minor (Both Axes on Scatter headers, #3825 partial; Brush Tip Shape Spacing checkbox and percentage share one header, #3825 partial; Angle/Roundness fields left of the Brush Tip Shape widget, labels right-aligned, #3825 partial; the eraser end of the pen switches to the Eraser on Windows with Windows Ink on, #2285; no estimate changed; Art History Brush Opacity on the options bar, #10263; no estimate changed; Shift+right-click menu for every painting tool: Edit Brush… and the tool's own Mode list; Brush Shift+right-click Mode picker and Escape dismissal; Art History Brush row added as partial, 8 of 10 styles, TOOL-213-20, #1610; hard-round built-in presets use 5% spacing to remove stacked-tip outlines and reduce pressure-opacity bands, #8842; Mode for Clone Stamp, Pattern Stamp, History Brush, Healing and Paint Bucket; named, stateful Brush Settings locks and visible keyboard focus; independent Brush Pose tilt-axis overrides; Transfer Wetness/Mix tool applicability; dragged preset tip preview; Hue Jitter amount track; Brush Settings minimum fields follow their Control; checkbox-only rows and non-destructive Smoothing switch; shaped-tip cursor follows the view; Color Replacement is a live toolbar tool; no brush-feel estimate changed; 2026-10-11: Pattern Stamp and Background Eraser draw live, TOOL-213-7) · **Target:** Adobe Photoshop 2026
 
 Painting is where Photoshop users notice differences first, so it gets its own checklist: the
 brush engine (`crates/paint/src/brush.rs`), the Brush Settings UI
@@ -19,8 +19,11 @@ tablets against Photoshop side by side.
 | Section | Status | Evidence |
 |---|---|---|
 | Brush Tip Shape: size, angle, roundness, hardness, spacing, flip X/Y | done | `brush.rs` |
+| Brush Tip Shape Spacing checkbox and percentage share one header without a duplicated label | done | #3825 (Spacing header only); UI regressions cover all 14 themes, enabled/disabled editing, percentage limits, fractional-value retention and `tools.setBrush` routing. |
+| Brush Tip Shape places aligned Angle/Roundness controls left of the interactive widget | done | #3825 (Angle/Roundness layout only); UI regressions cover 14 themes at two panel widths, imported-value retention, numeric limits, actual arrow/handle gestures and existing command routing. |
 | Shape Dynamics (size/angle/roundness jitter, pen pressure/tilt/rotation/wheel controls, minimums, flip jitter, brush projection) | done | #174 |
 | Scattering (both axes, count, count jitter) | done | |
+| Scattering and Dual Brush place Both Axes between the Scatter label and percentage | done | #3825 (Both Axes header placement only); all-theme UI regressions cover both axis values, fractional-value retention, percentage limits, label scrubbing, amount-track edits and existing command routing. |
 | Texture (pattern, scale, brightness, contrast, mode, depth, each tip) | done | |
 | Dual Brush | done | |
 | Color Dynamics (FG/BG, hue/sat/brightness jitter, purity, per tip) | done | |
@@ -48,7 +51,7 @@ tablets against Photoshop side by side.
 | Quick taps keep their pressure | partial | #1967 fixed one case; tap paints a full blob (#1798), tap sensitivity (#1933) |
 | Smooth pressure on Windows | partial | "jumpy" (#2046) |
 | Tilt and rotation drive angle/roundness | partial | macOS, X11, web; not Windows; rotation not applied (#1301) |
-| Eraser end of the pen switches to Eraser | partial | macOS; flipped Wacom on Windows not (#2285) |
+| Eraser end of the pen switches to Eraser | partial | macOS, Windows (WinTab; Windows Ink not yet confirmed on hardware, #2285); X11 and web partial |
 
 ## Stroke quality and feel
 
@@ -120,6 +123,7 @@ tablets against Photoshop side by side.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-06 | minor | Eraser end of the pen switches to the Eraser on Windows with Windows Ink on (#2285); row stays partial (X11, web); no estimate changed |
 | 2026-10-30 | minor | Art History Brush Opacity on the options bar, #10263; no estimate changed |
 | 2026-10-25 | minor | Art History Brush row added as partial (8 of 10 styles, TOOL-213-20, #1610). No brush-feel estimate changed. |
 | 2026-10-23 | minor | Hard-round built-in presets use 5% spacing (#8842); rendered large-tip outline and pressure-opacity continuity tests cover 8/16/32-bit and 0/49% smoothing. Other presets and user settings retain their spacing; percentages and estimates unchanged. |
@@ -132,7 +136,10 @@ tablets against Photoshop side by side.
 | 2026-10-12 | minor | A shaped tip's cursor outline turns and flips with a rotated or flipped view, and follows pixel aspect correction |
 | 2026-10-13 | minor | Shape Dynamics and Transfer minimum inputs follow their Control and retain their values while disabled (#3825, partial). No brush-feel estimate changed. |
 | 2026-10-13 | minor | Hue Jitter uses the same themed amount slider as other jitter controls (#3825, partial). No brush-feel estimate changed. |
+| 2026-10-13 | minor | Brush Tip Shape combines the Spacing checkbox and percentage into one header (#3825, partial), retaining the value while disabled. No brush-feel estimate changed. |
 | 2026-10-13 | minor | Brush-only Shift+right-click Mode menu shares options-bar choices, including Clear; preserves existing right-click gestures and consumes outside dismissal without painting (#4929). No brush-feel estimate changed. |
+| 2026-10-13 | minor | Scattering and Dual Brush place Both Axes on the shared Scatter header (#3825, partial), preserving label scrubbing and values. No brush-feel estimate changed. |
+| 2026-10-13 | minor | Angle/Roundness controls use right-aligned labels in the left column, with the interactive widget on the right (#3825, partial). Units, limits and gestures retained; no brush-feel estimate changed. |
 | 2026-10-13 | minor | Transfer Wetness/Mix controls follow the active tool and retain their settings while disabled (#3825, partial). No brush-feel estimate changed. |
 | 2026-10-14 | minor | The 12 existing Brush Settings section locks expose translated names and locked state to AccessKit and show themed keyboard focus (#3477 workflow); icons, hit targets and command behavior retained. No brush-feel estimate changed. |
 | 2026-10-14 | minor | Options-bar Mode for Clone Stamp, Pattern Stamp, History Brush and Healing (kept in each tool's brush) and Paint Bucket (with Clear); each tool's first brush starts in Normal. No brush-feel estimate changed. |

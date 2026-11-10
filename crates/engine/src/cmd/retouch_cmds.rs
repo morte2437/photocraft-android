@@ -142,6 +142,11 @@ pub fn stroke_brush(base: &BrushSettings, p: &Value) -> BrushSettings {
         flow: pct("flow", 100.0, 1.0, 100.0),
         // Brush Settings › Brush Tip Shape › Spacing, as the Brush uses it (#2140).
         spacing: pct("spacing", base.spacing * 100.0, 1.0, 1000.0),
+        // The options bar's Smoothing; the UI sends 0 for a ⇧-click line, which isn't smoothed (#11887).
+        smoothing: match p.get("smoothing") {
+            Some(_) => photocraft_paint::Smoothing { enabled: true, amount: pct("smoothing", 0.0, 0.0, 100.0), ..base.smoothing.clone() },
+            None => base.smoothing.clone(),
+        },
         erase: false,
         ..base.clone()
     }
@@ -205,7 +210,7 @@ fn damage_json(r: Rect) -> Value {
 /// The brush every retouching command shares, plus the tool's own params.
 macro_rules! brush_params {
     ($extra:literal) => {
-        concat!("{", r#""points":[[x,y,pressure?],…],"size":1..5000 px=tool size,"hardness":0..100=tool hardness,"opacity":1..100=100,"flow":1..100=100,"spacing":1..1000 (% of size)=Brush Settings spacing,"layer":id?=active,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target"#, $extra, "}")
+        concat!("{", r#""points":[[x,y,pressure?],…],"size":1..5000 px=tool size,"hardness":0..100=tool hardness,"opacity":1..100=100,"flow":1..100=100,"spacing":1..1000 (% of size)=Brush Settings spacing,"smoothing":0..100=options bar Smoothing,"layer":id?=active,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target"#, $extra, "}")
     };
 }
 
@@ -260,7 +265,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","source":[sx,sy] | "offset":[dx,dy],"aligned":bool=true,"sampleLayer":"current|currentAndBelow|all"="current","mode":"normal|…"="normal" → {"damage","offset","aligned","nextSource"}"#
+                r#","source":[sx,sy] | "offset":[dx,dy],"aligned":bool=true,"sampleLayer":"current|currentAndBelow|all"="current","mode":"normal|…"="normal","wrap":bool=false (View › Pattern Preview: the stroke goes on across the canvas edges) → {"damage","offset","aligned","nextSource"}"#
             ),
             enabled: has_pixel_layer,
             run: healing_brush,
@@ -397,3 +402,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod patch_history_names_tests;
+
+#[cfg(test)]
+mod remove_history_name_tests;

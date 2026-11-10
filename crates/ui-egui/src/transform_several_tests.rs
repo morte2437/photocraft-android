@@ -153,26 +153,16 @@ fn a_locked_layer_among_them_refuses_before_the_box_opens() {
 }
 
 #[test]
-fn with_the_background_active_the_box_moves_the_other_selected_layers() {
-    let (mut app, paint, text) = app();
+fn with_the_background_active_among_them_the_box_refuses_as_locked() {
+    // Photoshop's locked-layer alert, not a box that leaves the Background out (#11101).
+    let (mut app, _, _) = app();
     let bg = app.session.active().unwrap().doc.layers[0].id;
     app.run("layer.select", json!({"layer": bg.0, "mode": "add"})).unwrap();
     assert_eq!(app.session.active().unwrap().active_layer, Some(bg));
-    assert!(crate::menus::is_enabled(&app, "edit.freeTransform"), "not greyed for the Background");
-    free_transform(&mut app);
-    let t = app.ui.transform.as_ref().unwrap();
-    assert_eq!((t.layer, t.layers.clone()), (bg.0, vec![paint.0, text.0]));
-    let p0 = bounds(&app, paint);
-    if let Some(t) = app.ui.transform.as_mut() {
-        // Nearest neighbour: no resampling fringe at the block's edge.
-        t.interpolation = "nearest".into();
-        t.quad = t.quad.map(|[x, y]| [x + 5.0, y]);
-    }
-    crate::transform_tool::commit(&mut app);
-    assert_eq!(app.ui.status, "");
-    let st = app.session.active().unwrap();
-    assert!(st.doc.is_background(bg), "the Background is left alone");
-    assert_eq!(bounds(&app, paint), p0.translate(5, 0));
+    assert!(crate::menus::is_enabled(&app, "edit.freeTransform"), "not greyed: choosing it shows the alert");
+    let r = crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({}));
+    assert_eq!(r, Err(crate::transform_tool::LOCKED.into()));
+    assert!(app.ui.transform.is_none());
 }
 
 #[test]

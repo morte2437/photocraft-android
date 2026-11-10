@@ -60,14 +60,16 @@ fn coord(cmd: &str, p: &Value, key: &str) -> Result<f64> {
     p.get(key).and_then(Value::as_f64).filter(|v| v.is_finite()).ok_or_else(|| bad(cmd, format!("`{key}` must be a finite number (document pixels)")))
 }
 
-/// The pixel a point at document coordinate `(x, y)` sits on, if it is inside the canvas. Whole
-/// pixels only: the click's fractional position floors to the pixel it lands on.
+/// The centre of the pixel a point at document coordinate `(x, y)` sits on, if it is inside the
+/// canvas: the click's fractional position snaps to the middle of the pixel it lands on, so a
+/// click anywhere in pixel 199,149 stores 199.5,149.5, as in Photoshop (#11725). The readout
+/// floors it back to that pixel.
 fn pixel(doc: &Document, x: f64, y: f64) -> Option<[f64; 2]> {
     let (px, py) = (x.floor(), y.floor());
     if px < f64::from(i32::MIN) || px > f64::from(i32::MAX) || py < f64::from(i32::MIN) || py > f64::from(i32::MAX) {
         return None;
     }
-    doc.bounds().contains(px as i32, py as i32).then_some([px, py])
+    doc.bounds().contains(px as i32, py as i32).then_some([px + 0.5, py + 0.5])
 }
 
 fn index_param(cmd: &str, p: &Value) -> Result<usize> {
@@ -202,3 +204,6 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pixel_centre_tests;

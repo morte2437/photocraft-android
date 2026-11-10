@@ -473,10 +473,8 @@ fn sweep_orphans(recovery_dir: &Path, min_age: std::time::Duration) {
 #[cfg(not(target_arch = "wasm32"))]
 fn sweep_temp_file(path: &Path, min_age: std::time::Duration) {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return };
-    // `.{stem}.{pid}-{n}.pcsave.tmp`
-    let Some(rest) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".pcsave.tmp")) else { return };
-    let Some((_, owner)) = rest.rsplit_once('.') else { return };
-    let Some(pid) = owner.split_once('-').and_then(|(pid, _)| pid.parse::<u32>().ok()) else { return };
+    // `{stem}.{pid}-{n}.pcsave.tmp`, or `.{stem}…` from versions before #11624.
+    let Some(pid) = crate::atomic::temp_owner(name) else { return };
     if pid != std::process::id() && untouched_for(path, min_age, false) {
         let _ = std::fs::remove_file(path);
     }
@@ -570,6 +568,30 @@ mod tests {
         let entries = list_recovery(&dir);
         assert_eq!(entries.len(), 1, "the complete entry survives");
         assert_eq!(recover(&entries[0]).unwrap(), *doc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #11624: temp files are no longer dot files; the sweep removes another process's in both
+    /// forms, so what older versions left is still cleaned up.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sweep_removes_temp_files_of_both_name_forms() {
+        let dir = std::env::temp_dir().join(format!(
+            "pcraft-sweep-forms-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let foreign = [dir.join("kept.json.4294967294-3.pcsave.tmp"), dir.join(".kept.json.4294967294-4.pcsave.tmp")];
+        let own = [dir.join(crate::atomic::temp_name("kept.json")), dir.join(format!(".kept.json.{}-9.pcsave.tmp", std::process::id()))];
+        let others = [dir.join("kept.json"), dir.join("kept.json.4294967294-3.tmp"), dir.join("kept.json.pcsave.tmp")];
+        for p in foreign.iter().chain(&own).chain(&others) {
+            std::fs::write(p, b"tmp").unwrap();
+        }
+        sweep_orphans(&dir, std::time::Duration::ZERO);
+        assert!(foreign.iter().all(|p| !p.exists()), "another process's temp files are swept, either form");
+        assert!(own.iter().all(|p| p.is_file()), "this process's temp files are kept");
+        assert!(others.iter().all(|p| p.is_file()), "anything else is left alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -33,6 +33,11 @@ impl From<&ExportArgs> for ExportOptions {
             o.encode.dds.compression = c;
         }
         o.encode.dds.mipmaps = a.dds_mipmaps;
+        o.psd_maximize_compatibility = !a.no_maximize_compatibility;
+        // Conversions keep the whole packet unless asked, as Save As does (#733, #9466).
+        if let Some(m) = a.metadata {
+            o.xmp = m;
+        }
         o
     }
 }

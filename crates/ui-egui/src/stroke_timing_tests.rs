@@ -366,7 +366,7 @@ fn a_committed_stroke_repaints_a_gradient_overlay_over_the_whole_layer() {
     let c = app.committed_stroke.as_ref().expect("the commit took the live stroke's pixels");
     assert_eq!(c.revision, st.revision);
     // A cache that showed the live stroke's last step.
-    let missed = crate::canvas::damage_since(app, idx, (st.revision - 1, c.last_key()), (st.revision, 0), 0, st.last_damage).unwrap();
+    let missed = crate::canvas::damage_since(app, idx, (st.revision - 1, c.last_key()), (st.revision, 0), 0, (st.damage_from(), st.last_damage)).unwrap();
     assert!(missed.contains(25, 25), "the gradient around the first stroke is repainted: {missed:?}");
 }
 
@@ -390,7 +390,7 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
             app.perf.stage.start(t0, moves);
             app.perf.stage.ui_start(t0, Some(0.004));
             egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
-            app.finish_frame(crate::gpu_canvas::now_ms() - t0);
+            app.finish_frame(&ctx, crate::gpu_canvas::now_ms() - t0);
         },
         app,
     );
@@ -497,6 +497,41 @@ fn releasing_a_sequential_dab_stroke_commits_what_a_replay_paints() {
         assert_eq!(a.px.len(), b.px.len());
         assert!(a.px.iter().zip(&b.px).all(|(x, y)| x == y), "{cmd}: live commit and replay differ");
     }
+}
+
+/// A ⇧-click Dodge line isn't smoothed (#11887): its live preview and its commit both send
+/// `smoothing: 0`, so the release still takes the pixels the preview drew.
+#[test]
+fn a_shift_click_dodge_line_commits_its_live_pixels_unsmoothed() {
+    let mut h = harness();
+    h.state_mut().run("paint.stroke", json!({"points": [[10, 20], [190, 80]], "size": 30, "color": "#2060c0"})).unwrap();
+    h.state_mut().ui.tool = Tool::Dodge;
+    h.run_steps(1);
+    h.state_mut().run("tools.setBrush", json!({"brush": {"size": 12, "smoothing": {"amount": 0.6, "catchUpOnEnd": false}}})).unwrap();
+    move_to(&mut h, 40.0, 30.0);
+    button(&mut h, 40.0, 30.0, true);
+    move_to(&mut h, 100.0, 50.0);
+    button(&mut h, 100.0, 50.0, false);
+    h.run_steps(2);
+    let shift = |h: &mut Harness<'static, PhotocraftApp>, pressed: bool| {
+        let pos = screen(h, 160.0, 70.0);
+        h.event(egui::Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::SHIFT });
+        h.run_steps(1);
+    };
+    h.event(egui::Event::ModifiersChanged(Modifiers::SHIFT));
+    move_to(&mut h, 160.0, 70.0);
+    shift(&mut h, true);
+    assert!(h.state().live_stroke.is_some(), "a live line");
+    h.state_mut().retouch_from_live = false;
+    shift(&mut h, false);
+    h.run_steps(2);
+    let app = h.state();
+    let (_, p) = app.session.journal.iter().rev().find(|(id, _)| id == "paint.dodge").cloned().expect("a committed line");
+    let ends: Vec<[f64; 2]> = p["points"].as_array().unwrap().iter().map(|q| [q[0].as_f64().unwrap(), q[1].as_f64().unwrap()]).collect();
+    assert_eq!(ends, vec![[100.0, 50.0], [160.0, 70.0]]);
+    assert_eq!(p["smoothing"], json!(0.0));
+    assert!(app.retouch_from_live, "the release took the live pixels instead of rendering the line again");
+    assert_eq!(app.session.tools.brush.smoothing.amount, 0.6);
 }
 
 /// Pressure changes Smudge's painted footprint, but not the square of colour it carries.

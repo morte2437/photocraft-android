@@ -73,6 +73,42 @@ pub fn path_to_selection(app: &mut PhotocraftApp, params: Value) -> Result<Value
     Ok(r)
 }
 
+/// The Pen options bar's Make Shape (Path mode, #10934): a new shape layer from the path being
+/// drawn, or else from the Work Path or saved path that is the target path, with the shape tools'
+/// fill and stroke, as one History step. A path being drawn is not committed: the shape takes what
+/// the commit would have made (with a vector mask targeted, only the drawn path, and the mask
+/// stays), see [`super::pen::make_shape_from_draft`]. A shape layer's own path or vector mask
+/// isn't copied. The Work Path becomes the shape's path, so it is no longer selected in the Paths
+/// panel.
+pub fn make_shape(app: &mut PhotocraftApp) -> Result<Value, String> {
+    super::cancel_stale_pen(app);
+    if let Some(mut pen) = app.ui.pen.clone().filter(|p| p.knots.len() >= 2) {
+        if pen.curvature {
+            super::curvature::curvature_refresh(&mut pen, false);
+        }
+        let r = super::pen::make_shape_from_draft(app, &pen)?;
+        app.ui.pen = None;
+        app.ui.pen_doc = None;
+        if app.ui.direct_selection.target == Some(crate::direct_select::PathRef::Pen) {
+            app.ui.direct_selection = Default::default();
+        }
+        return Ok(r);
+    }
+    let name =
+        shape_source_path(app).ok_or_else(|| tl!("No path to make a shape from: draw one with the Pen tool or select one in the Paths panel.").to_string())?;
+    let r = app.run("path.toShape", json!({"name": name, "fill": super::shapes::fill_param(app), "stroke": super::shapes::stroke_param(app)}))?;
+    if name == "work" && app.ui.selected_path.as_deref() == Some("work") {
+        app.ui.selected_path = None;
+    }
+    Ok(r)
+}
+
+/// The path Make Shape makes a shape from without a draft: [`active_path_name`] when it is the
+/// Work Path or a saved path, never a layer's own path (that would duplicate the shape or mask).
+pub fn shape_source_path(app: &PhotocraftApp) -> Option<String> {
+    active_path_name(app).filter(|n| n != "layer")
+}
+
 /// After the Pen or Path Selection tool made a selection from the path `name` (⌘↩, the canvas
 /// menu's Make Selection…), Photoshop deselects it in the Paths panel and stops drawing it; the
 /// path itself stays (#6079). The Work Path is hidden too when a saved path was loaded, so no
@@ -253,7 +289,7 @@ pub fn pick_shape_at(doc: &Document, at: [f64; 2], tol: f64) -> Option<photocraf
             continue;
         }
         if let LayerContent::Shape(sh) = &l.content {
-            if photocraft_vector::edit::hit(&sh.path, photocraft_geom::Point::new(at[0], at[1]), tol, &[]).is_some() {
+            if near_outline(&sh.path, at, tol) && photocraft_vector::edit::hit(&sh.path, photocraft_geom::Point::new(at[0], at[1]), tol, &[]).is_some() {
                 return Some(l.id);
             }
             if sh.fill.is_some() {
@@ -295,16 +331,73 @@ pub fn pick_shape_at(doc: &Document, at: [f64; 2], tol: f64) -> Option<photocraf
     None
 }
 
-pub fn path_selection_finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
+/// Whether `at` lies within `tol` of the box round `path`'s anchors and control points, which
+/// holds every curve of it (each segment stays inside its control points' hull). Outside it
+/// `edit::hit` can't find an anchor or a segment, so the pick skips its curve sampling: the box's
+/// side band asks on every hover frame, past every shape layer (#11473). The box is grown a hair
+/// more than `tol` so rounding in the sampled distances never drops a hit.
+fn near_outline(path: &Path, at: [f64; 2], tol: f64) -> bool {
+    let Some((x0, y0, x1, y1)) = path.control_bounds() else { return false };
+    let pad = tol * 1.001 + 1e-9 * (1.0 + at[0].abs() + at[1].abs());
+    // Written so a NaN bound keeps the check (`edit::hit` decides), as an infinite one does.
+    !(at[0] < x0 - pad || at[0] > x1 + pad || at[1] < y0 - pad || at[1] > y1 + pad)
+}
+
+/// How far a Path Selection drag from `start` to `end` moves its path: whole pixels. `None` for
+/// a click (under half a pixel of travel), which picks a shape layer instead.
+fn path_selection_offset(start: [f64; 2], end: [f64; 2]) -> Option<[f64; 2]> {
     let (dx, dy) = (end[0] - start[0], end[1] - start[1]);
-    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
     if dx.abs() + dy.abs() < 0.5 {
+        return None;
+    }
+    Some([dx.round(), dy.round()])
+}
+
+/// The path a Path Selection drag in progress shows moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MovedPath {
+    Work,
+    /// The saved path selected in the Paths panel.
+    Saved,
+}
+
+/// The work path or selected saved path of a Path Selection drag in progress, moved where its
+/// release puts it ([`path_selection_finish`]: the same offset, only the selected components when
+/// some but not all are), so the outline follows the pointer instead of jumping on release.
+/// `None` without a live drag on `doc`, for a click, and for a shape layer's or vector mask's
+/// path, whose pixels move only on release.
+pub(crate) fn path_selection_preview(app: &PhotocraftApp, doc: &Document) -> Option<(MovedPath, Path)> {
+    let d = app.drag.as_ref().filter(|d| d.tool == Tool::PathSelection && d.vector_owner_valid(app))?;
+    if app.session.active().is_none_or(|st| st.doc.id != doc.id) {
+        return None;
+    }
+    let end = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
+    let [dx, dy] = path_selection_offset(d.start, end).filter(|o| o.iter().all(|v| v.is_finite()))?;
+    if let Some((r, path)) = crate::path_components::moved_selected(app, [dx, dy]) {
+        return match r {
+            crate::direct_select::PathRef::Work => Some((MovedPath::Work, path)),
+            crate::direct_select::PathRef::Saved(_) => Some((MovedPath::Saved, path)),
+            _ => None,
+        };
+    }
+    let (target, path) = target_path(app)?;
+    let moved = match target {
+        PathTarget::Work => MovedPath::Work,
+        PathTarget::Saved(_) => MovedPath::Saved,
+        PathTarget::Shape(_) | PathTarget::VectorMask(_) => return None,
+    };
+    Some((moved, path.transform(&Affine::translate(dx, dy))))
+}
+
+pub fn path_selection_finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
+    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
+    let Some([dx, dy]) = path_selection_offset(start, end) else {
         let Some(st) = app.session.active() else { return };
         if let Some(id) = pick_shape_at(&st.doc, start, tol) {
             let _ = app.run("layer.select", json!({"layer": id.0}));
         }
         return;
-    }
+    };
     if target_path(app).is_none() {
         let Some(st) = app.session.active() else { return };
         if let Some(id) = pick_shape_at(&st.doc, start, tol) {
@@ -312,7 +405,7 @@ pub fn path_selection_finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64
         }
     }
     // Selected components move on their own (`path_components`); with none, the whole path.
-    if let Some(r) = crate::path_components::move_selected(app, [dx.round(), dy.round()]) {
+    if let Some(r) = crate::path_components::move_selected(app, [dx, dy]) {
         if let Err(e) = r {
             app.ui.status = e;
             app.ui.status_error = true;
@@ -321,17 +414,17 @@ pub fn path_selection_finish(app: &mut PhotocraftApp, start: [f64; 2], end: [f64
     }
     let Some((target, path)) = target_path(app) else { return };
     let _ = match target {
-        PathTarget::Shape(id) => app.run("shape.edit", json!({"layer": id, "move": [dx.round(), dy.round()]})),
+        PathTarget::Shape(id) => app.run("shape.edit", json!({"layer": id, "move": [dx, dy]})),
         PathTarget::VectorMask(id) => {
-            let moved = path.transform(&Affine::translate(dx.round(), dy.round()));
+            let moved = path.transform(&Affine::translate(dx, dy));
             app.run("layer.vectorMask.edit", json!({"layer": id, "path": photocraft_engine::vector_cmds::path_json(&moved)}))
         }
         PathTarget::Work => {
-            let moved = path.transform(&Affine::translate(dx.round(), dy.round()));
+            let moved = path.transform(&Affine::translate(dx, dy));
             app.run("path.set", json!({"name": "work", "path": photocraft_engine::vector_cmds::path_json(&moved)}))
         }
         PathTarget::Saved(name) => {
-            let moved = path.transform(&Affine::translate(dx.round(), dy.round()));
+            let moved = path.transform(&Affine::translate(dx, dy));
             app.run("path.set", json!({"name": name, "path": photocraft_engine::vector_cmds::path_json(&moved)}))
         }
     };

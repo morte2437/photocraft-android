@@ -1,6 +1,7 @@
 use super::display::{canvas_display, checker, display_doc, display_image};
 use super::drag::{
-    angle_readout, draw_marquee_readout, draw_value_readout, marquee_ants, marquee_drag_ants, marquee_preview_px, single_line_drag_px, size_readout,
+    angle_readout, doc_box_corners, draw_marquee_readout, draw_value_readout, marquee_ants, marquee_drag_ants, marquee_preview_px, single_line_drag_px,
+    size_readout,
 };
 use super::gesture::constrained_polygon_point;
 use super::strokes::{EngineStroke, SPOT_HEALING_TRAIL, draw_smoothing_string, strokes_live};
@@ -191,7 +192,7 @@ pub(crate) fn marching_ants_line_shapes(painter: &egui::Painter, lines: impl Ite
 /// Photoshop crop overlay: the `shield` outside (`crop_shield::fill`; none when disabled), bright
 /// frame, the composition `guides` (unit-square polylines, `crop_overlay::guides`), corner and
 /// edge handles.
-fn crop_overlay(painter: &egui::Painter, r: Rect, shield: Option<Color32>, guides: &[crate::crop_overlay::Polyline]) {
+fn crop_overlay(painter: &egui::Painter, r: Rect, shield: Option<Color32>, guides: &[crate::crop_overlay::Polyline], look: crate::crop_overlay::FrameLook) {
     let clip = painter.clip_rect();
     if let Some(dim) = shield {
         for band in [
@@ -203,9 +204,8 @@ fn crop_overlay(painter: &egui::Painter, r: Rect, shield: Option<Color32>, guide
             painter.rect_filled(band, 0.0, dim);
         }
     }
-    painter.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Middle);
+    let h = crop_frame_outline(painter, [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], look);
     draw_crop_guides(painter, guides, |a, b| r.min + r.size() * vec2(a, b));
-    let h = Stroke::new(3.0, Color32::WHITE);
     let l = 14.0f32.min(r.width() / 3.0).min(r.height() / 3.0);
     for (c, dx, dy) in [(r.left_top(), 1.0, 1.0), (r.right_top(), -1.0, 1.0), (r.left_bottom(), 1.0, -1.0), (r.right_bottom(), -1.0, -1.0)] {
         painter.line_segment([c, c + vec2(l * dx, 0.0)], h);
@@ -221,7 +221,13 @@ fn crop_overlay(painter: &egui::Painter, r: Rect, shield: Option<Color32>, guide
 
 /// [`crop_overlay`] for a turned frame (or a rotated view): `q` is the frame's top-left, top-right,
 /// bottom-right and bottom-left corner on screen, a parallelogram.
-fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], shield: Option<Color32>, guides: &[crate::crop_overlay::Polyline]) {
+fn crop_overlay_turned(
+    painter: &egui::Painter,
+    q: [Pos2; 4],
+    shield: Option<Color32>,
+    guides: &[crate::crop_overlay::Polyline],
+    look: crate::crop_overlay::FrameLook,
+) {
     let (u, v) = (q[1] - q[0], q[3] - q[0]);
     let (lu, lv) = (u.length(), v.length());
     if !(lu.is_finite() && lv.is_finite()) || lu < 1e-3 || lv < 1e-3 {
@@ -245,9 +251,8 @@ fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], shield: Option<Col
         }
         painter.add(egui::Shape::mesh(mesh));
     }
-    painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, Color32::WHITE)));
+    let h = crop_frame_outline(painter, q, look);
     draw_crop_guides(painter, guides, at);
-    let h = Stroke::new(3.0, Color32::WHITE);
     let l = 14.0f32.min(lu / 3.0).min(lv / 3.0);
     let (du, dv) = (u / lu, v / lv);
     for (c, su, sv) in [(q[0], 1.0, 1.0), (q[1], -1.0, 1.0), (q[3], 1.0, -1.0), (q[2], -1.0, -1.0)] {
@@ -259,6 +264,78 @@ fn crop_overlay_turned(painter: &egui::Painter, q: [Pos2; 4], shield: Option<Col
     for (c, e) in [(at(0.5, 0.0), du * lx), (at(0.5, 1.0), du * lx), (at(0.0, 0.5), dv * ly), (at(1.0, 0.5), dv * ly)] {
         painter.line_segment([c - e, c + e], h);
     }
+}
+
+/// Draw the crop frame's outline along its corners `q` (top-left, top-right, bottom-right,
+/// bottom-left) as `look` asks, and return the stroke its handles take (#10930). The outline is
+/// drawn over the image, so it uses the overlay's own black and light tones, like a selection's;
+/// the handles' grey comes from the theme.
+fn crop_frame_outline(painter: &egui::Painter, q: [Pos2; 4], look: crate::crop_overlay::FrameLook) -> Stroke {
+    use crate::crop_overlay::FrameLook;
+    let grey = Stroke::new(2.0, crate::theme::Tokens::get(painter.ctx()).text_faint);
+    match look {
+        FrameLook::Classic => {
+            painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, Color32::WHITE)));
+            Stroke::new(3.0, Color32::WHITE)
+        }
+        FrameLook::Untouched => {
+            // Dashed like a selection outline: 4 px black, then 4 px light grey. Static rather
+            // than marching, so an untouched frame doesn't keep the canvas repainting.
+            // Each edge is cut to the visible area first: zoomed far in, a frame's edges run
+            // thousands of points off screen, and dashing them all would make a shape per dash.
+            let view = painter.clip_rect().expand(4.0);
+            for i in 0..4 {
+                let (a, b) = (q[i], q[(i + 1) % 4]);
+                if let Some([from, to]) = clip_segment(a, b, view) {
+                    painter.line_segment([from, to], Stroke::new(1.0, Color32::from_gray(210)));
+                    let offset = dash_offset(a, from, DASH);
+                    painter.extend(egui::Shape::dashed_line_with_offset(&[from, to], Stroke::new(1.0, Color32::BLACK), &[DASH], &[DASH], offset));
+                }
+            }
+            grey
+        }
+        FrameLook::Started => {
+            painter.add(egui::Shape::closed_line(q.to_vec(), Stroke::new(1.0, Color32::from_white_alpha(220))));
+            grey
+        }
+    }
+}
+
+/// Length of the untouched frame's dashes and of the gaps between them.
+const DASH: f32 = 4.0;
+
+/// Where the dashes of an edge cut to the view begin, so they keep the places they have counted
+/// from the edge's `corner`: started afresh at the cut, the pattern slid along the edge as the view
+/// panned (noted in review). The dashes start every `2 * dash` from the corner; `dashes_from_line`
+/// can only begin on a dash, so a dash the cut divides starts a period later -- that piece is in
+/// the margin the view is grown by, out of sight.
+fn dash_offset(corner: Pos2, start: Pos2, dash: f32) -> f32 {
+    let period = 2.0 * dash;
+    (period - (start - corner).length() % period) % period
+}
+
+/// The part of the segment `a`–`b` inside `r` (Liang–Barsky), or None when none of it is.
+fn clip_segment(a: Pos2, b: Pos2, r: Rect) -> Option<[Pos2; 2]> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [(-d.x, a.x - r.min.x), (d.x, r.max.x - a.x), (-d.y, a.y - r.min.y), (d.y, r.max.y - a.y)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let t = q / p;
+        if p < 0.0 {
+            t0 = t0.max(t);
+        } else {
+            t1 = t1.min(t);
+        }
+        if t0 > t1 {
+            return None;
+        }
+    }
+    (t0.is_finite() && t1.is_finite()).then(|| [a + d * t0, a + d * t1])
 }
 
 /// The crop overlay's guides, each unit-square point placed on screen by `at`.
@@ -479,10 +556,17 @@ pub(super) fn draw_tool_state(app: &PhotocraftApp, painter: &egui::Painter, xf: 
                 r,
                 shield,
                 &crate::crop_overlay::current_guides_for_frame(app, [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], painter.clip_rect()),
+                crate::crop_overlay::frame_look(app),
             );
         } else {
             let q = crate::crop_ui::corners(c, deg).map(|p| xf.to_screen(p[0] as f32, p[1] as f32));
-            crop_overlay_turned(painter, q, shield, &crate::crop_overlay::current_guides_for_frame(app, q, painter.clip_rect()));
+            crop_overlay_turned(
+                painter,
+                q,
+                shield,
+                &crate::crop_overlay::current_guides_for_frame(app, q, painter.clip_rect()),
+                crate::crop_overlay::frame_look(app),
+            );
         }
         // The frame's angle beside the pointer while it turns (#1792).
         if let (Some(a), Some(h)) = (crate::crop_ui::turning(app), hover) {
@@ -576,7 +660,7 @@ pub(super) fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter
         // Patch / Content-Aware Move dragging the selection: its outline follows the pointer.
         Tool::Patch | Tool::ContentAwareMove if crate::retouch_ui::patch_drags_selection(app, d.start, d.modifiers) => {
             let start = d.start;
-            let [dx, dy] = crate::retouch_ui::patch_offset(app, start, last);
+            let [dx, dy] = crate::retouch_ui::patch_offset(app, start, crate::retouch_ui::patch_end(d, last));
             if let Some((_, _, segs)) = &app.outline_cache {
                 let moved: Vec<crate::outline::Segment> = segs.iter().map(|(a, b)| ([a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy])).collect();
                 marching_ants_segments(painter, xf, &moved, painter.ctx().input(|i| i.time));
@@ -615,8 +699,8 @@ pub(super) fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter
             painter.circle_filled(b, 3.0, Color32::WHITE);
         }
         Tool::Type | Tool::VerticalType | Tool::HorizontalTypeMask | Tool::VerticalTypeMask => {
-            let r = Rect::from_two_pos(xf.to_screen(d.start[0] as f32, d.start[1] as f32), xf.to_screen(last[0] as f32, last[1] as f32));
-            let pts = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+            let [p0, p1, p2, p3] = doc_box_corners(xf, d.start, last);
+            let pts = [p0, p1, p2, p3, p0];
             painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.0, Color32::WHITE)));
             painter.add(egui::Shape::dashed_line(&pts, Stroke::new(1.0, Color32::BLACK), 3.0, 3.0));
         }
@@ -627,5 +711,78 @@ pub(super) fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter
             painter.arrow(from, off, Stroke::new(2.0, crate::theme::Tokens::get(painter.ctx()).accent));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod clip_segment_tests {
+    use super::{DASH, Pos2, Rect, clip_segment, dash_offset, pos2};
+
+    /// Where each dash of the edge from `corner`, cut to `view`, begins, as distances from the corner.
+    fn dash_starts(corner: Pos2, end: Pos2, view: Rect) -> Vec<f32> {
+        let Some([from, to]) = clip_segment(corner, end, view) else { return Vec::new() };
+        let shapes =
+            egui::Shape::dashed_line_with_offset(&[from, to], egui::Stroke::new(1.0, egui::Color32::BLACK), &[DASH], &[DASH], dash_offset(corner, from, DASH));
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::LineSegment { points, .. } => Some((points[0] - corner).length()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The dashes of an edge cut to the view stay where they are counted from the frame's corner,
+    /// however the view sits on the edge, so panning does not slide them along it (noted in review).
+    #[test]
+    fn the_dashes_keep_their_places_as_the_view_pans() {
+        let (corner, end) = (pos2(0.0, 50.0), pos2(10_000.0, 50.0));
+        for left in [0.0f32, 1.0, 3.3, 4.0, 5.9, 123.45, 4_001.7] {
+            let view = Rect::from_min_max(pos2(left, 0.0), pos2(left + 300.0, 100.0));
+            let starts = dash_starts(corner, end, view);
+            assert!(!starts.is_empty(), "the view at {left} shows dashes");
+            for d in starts {
+                let off = d % (2.0 * DASH);
+                assert!(off < 0.01 || off > 2.0 * DASH - 0.01, "view at {left}: a dash starts {d} from the corner, off the pattern by {off}");
+            }
+        }
+    }
+
+    fn view() -> Rect {
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 50.0))
+    }
+
+    /// Within a hundredth of a point, far below a device pixel: f32 on edges tens of thousands of
+    /// points long can't do better, and the screen doesn't need it to.
+    fn near(a: Pos2, b: Pos2) -> bool {
+        (a - b).length() < 1e-2
+    }
+
+    #[test]
+    fn a_segment_inside_is_kept_whole() {
+        let [a, b] = clip_segment(pos2(10.0, 10.0), pos2(90.0, 40.0), view()).unwrap();
+        assert!(near(a, pos2(10.0, 10.0)) && near(b, pos2(90.0, 40.0)));
+    }
+
+    #[test]
+    fn a_segment_running_far_off_screen_is_cut_to_the_view() {
+        // A frame edge at 3200 % runs tens of thousands of points past the view.
+        let [a, b] = clip_segment(pos2(-40_000.0, 20.0), pos2(40_000.0, 20.0), view()).unwrap();
+        assert!(near(a, pos2(0.0, 20.0)) && near(b, pos2(100.0, 20.0)), "{a:?} {b:?}");
+        let [a, b] = clip_segment(pos2(50.0, -1000.0), pos2(50.0, 1000.0), view()).unwrap();
+        assert!(near(a, pos2(50.0, 0.0)) && near(b, pos2(50.0, 50.0)));
+    }
+
+    #[test]
+    fn a_slanted_segment_through_a_corner_is_cut_on_both_sides() {
+        let [a, b] = clip_segment(pos2(-10.0, -10.0), pos2(60.0, 60.0), view()).unwrap();
+        assert!(near(a, pos2(0.0, 0.0)) && near(b, pos2(50.0, 50.0)), "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn a_segment_outside_the_view_draws_nothing() {
+        assert!(clip_segment(pos2(-50.0, 10.0), pos2(-5.0, 40.0), view()).is_none(), "left of it");
+        assert!(clip_segment(pos2(10.0, 60.0), pos2(90.0, 90.0), view()).is_none(), "below it");
+        assert!(clip_segment(pos2(-10.0, 70.0), pos2(70.0, 200.0), view()).is_none(), "past a corner");
     }
 }

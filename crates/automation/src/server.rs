@@ -113,6 +113,11 @@ pub struct ExportLayersParams {
     /// Encoder quality, 0..12, for the formats that take one.
     #[serde(default)]
     pub quality: Option<f64>,
+    /// PSD/PSB: write the real merged image (Photoshop's Maximize Compatibility); false writes
+    /// Photoshop's white placeholder (Bitmap, Indexed Color and Duotone documents still write the
+    /// real image). Unset: the engine's Preferences › File Handling decides.
+    #[serde(default, rename = "maximizeCompatibility")]
+    pub maximize_compatibility: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -214,6 +219,13 @@ pub struct SaveParams {
     /// The save may omit it; check the manifest's `full_composite` member. Off by default.
     #[serde(default, rename = "pcraftFullComposite")]
     pub pcraft_full_composite: Option<bool>,
+    /// PSD/PSB: write the real merged image (Photoshop's Maximize Compatibility). false writes
+    /// Photoshop's white placeholder instead: a smaller file and a faster save, but readers that
+    /// show only the merged image see white. Bitmap, Indexed Color and Duotone documents still
+    /// write the real image. Unset: the real image (in bridge mode, the app's
+    /// Preferences › File Handling decides).
+    #[serde(default, rename = "maximizeCompatibility")]
+    pub maximize_compatibility: Option<bool>,
     #[serde(default)]
     pub index: Option<usize>,
 }
@@ -514,8 +526,9 @@ fn png_result(png: &[u8], note: String) -> CallToolResult {
 }
 
 /// Adds the typed byte counts of a memory refusal to an error object: an approval request keeps
-/// its soft limit, hard limit and (when known) capacity; a hard refusal keeps only its required
-/// and hard amounts, because no approval can raise that ceiling.
+/// its soft limit, hard limit and (when known) capacity; a hard refusal keeps its required and
+/// hard amounts, because no approval can raise that ceiling, and adds the free memory when
+/// measured memory set the limit.
 fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
     let Some(obj) = obj.as_object_mut() else { return };
     match err {
@@ -531,11 +544,15 @@ fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
                 obj.insert("availableRam".into(), json!(avail));
             }
         }
-        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
-        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit, free_memory })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, free_memory, .. }) => {
             obj.insert("required".into(), json!(required));
             obj.insert("hard".into(), json!(limit));
             obj.insert("hardLimit".into(), json!(limit));
+            if let Some(free) = free_memory {
+                obj.insert("available".into(), json!(free));
+                obj.insert("availableRam".into(), json!(free));
+            }
         }
         _ => {}
     }
@@ -792,6 +809,9 @@ impl PhotocraftMcp {
         }
         if let Some(v) = p.quality {
             opts.insert("quality".into(), json!(v));
+        }
+        if let Some(v) = p.maximize_compatibility {
+            opts.insert("maximizeCompatibility".into(), json!(v));
         }
         let opts = Value::Object(opts);
         // Bridge mode runs the app on this machine, which writes its own paths like any command.
@@ -1181,9 +1201,10 @@ impl PhotocraftMcp {
         if let Some(b) = self.bridge_client() {
             // The bridge forwards to the running app's `app.save`, which takes only an optional
             // path (without one it writes back to the document's own layered file, as headless
-            // does), the Targa bits, the DDS options and the TIFF compression, transparency and
-            // pyramid, so the other options are headless-only. Saying so beats saving with
-            // defaults while the caller believes their quality or format was applied.
+            // does), the Targa bits, the DDS options, the TIFF compression, transparency and
+            // pyramid, and Maximize Compatibility, so the other options are headless-only. Saying
+            // so beats saving with defaults while the caller believes their quality or format was
+            // applied.
             let unsupported: Vec<&str> = [
                 p.format.is_some().then_some("format"),
                 p.quality.is_some().then_some("quality"),
@@ -1221,6 +1242,9 @@ impl PhotocraftMcp {
             if p.tiff_pyramid {
                 params["tiffPyramid"] = json!(true);
             }
+            if let Some(maximize) = p.maximize_compatibility {
+                params["maximizeCompatibility"] = json!(maximize);
+            }
             return to_result(b.call("app.save", params).await);
         }
         let Some(r) = self
@@ -1238,6 +1262,9 @@ impl PhotocraftMcp {
                 }
                 opts.encode.tiff_pyramid = p.tiff_pyramid;
                 opts.encode.dds = photocraft_io::DdsOptions { compression: dds_compression.unwrap_or_default(), mipmaps: p.dds_mipmaps };
+                if let Some(maximize) = p.maximize_compatibility {
+                    opts.psd_maximize_compatibility = maximize;
+                }
                 if let Some(q) = p.quality {
                     opts.encode.jpeg_quality = q;
                     opts.encode.webp_quality = q;
@@ -1614,7 +1641,12 @@ mod tests {
             assert!(serde_json::from_value::<PlaceParams>(json!({"path": "file.psd", "approve_high_memory": invalid})).is_err(), "{invalid}");
         }
 
-        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { name: "huge.psd".into(), required: 9_000, limit: 8_000 });
+        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget {
+            name: "huge.psd".into(),
+            required: 9_000,
+            limit: 8_000,
+            free_memory: None,
+        });
         let res = to_result(Err(err)).unwrap();
         assert_eq!(res.is_error, Some(true));
         let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
@@ -1625,6 +1657,21 @@ mod tests {
         for absent in ["soft", "softLimit", "available", "availableRam"] {
             assert!(v.get(absent).is_none(), "a hard refusal has no {absent}: {v}");
         }
+
+        // With measured free memory behind the limit, the refusal reports it too.
+        let err = AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget {
+            name: "huge.psd".into(),
+            required: 9_000,
+            limit: 8_000,
+            free_memory: Some(10_000),
+        });
+        let res = to_result(Err(err)).unwrap();
+        let text = &res.content.first().and_then(|c| c.as_text()).unwrap().text;
+        let v: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(v["hardLimit"], 8_000);
+        assert_eq!(v["available"], 10_000);
+        assert_eq!(v["availableRam"], 10_000);
+        assert!(v.get("soft").is_none(), "a hard refusal has no soft limit: {v}");
     }
 
     /// The MCP server applies finished jobs before every tool call too (#503).

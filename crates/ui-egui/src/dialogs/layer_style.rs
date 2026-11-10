@@ -324,6 +324,7 @@ fn values_of(e: &Effect, light: f32) -> Value {
             set(&mut v, gradient_field::KEY, gradient_field::stops_json(stops));
             set(&mut v, gradient_field::OPACITY_KEY, gradient_field::opacity_json(&g.opacity_stops));
             set(&mut v, "reverse", json!(g.reverse));
+            set(&mut v, "offset", json!([g.offset.0, g.offset.1]));
             set(
                 &mut v,
                 "style",
@@ -533,6 +534,82 @@ pub fn drag_shadow(f: &mut Map<String, Value>, start: bool, total: [f64; 2]) {
     let new_angle = if d >= 0.5 { oy.atan2(-ox).to_degrees().round() } else { angle };
     set_param(f, &id, "angle", json!(new_angle));
     set_param(f, &id, "distance", json!(d.round().clamp(0.0, 30000.0)));
+}
+
+/// Whether the selected page is a Gradient Overlay, which a drag on the image moves while the
+/// dialog is open, as in Photoshop (#10763; [`drag_gradient`]).
+pub fn drags_gradient(f: &Map<String, Value>) -> bool {
+    let selected = f.get("selected").and_then(Value::as_str).unwrap_or_default();
+    entry(f, selected).and_then(|e| e.get("kind")).and_then(Value::as_str) == Some("gradientOverlay")
+}
+
+/// Ends a gradient drag's stored origin ([`drag_gradient`]): the canvas calls this whenever its
+/// gradient branch is inactive on a Layer Style dialog (another page chosen under a held press,
+/// say), so a Gradient Overlay page chosen again starts from the offset shown, not from an origin
+/// and a baseline taken before the pointer travelled on another page.
+pub fn end_gradient_drag(f: &mut Map<String, Value>) {
+    f.remove("__gradientDrag");
+}
+
+/// The width and height of the layer the dialog `f` is open on, what a Gradient Overlay's offset
+/// is a fraction of (`photocraft_compose::layer_bounds`, what the renderer paints against): `None`
+/// once that layer is gone or while it is empty (a gradient paints nothing there), when a drag on
+/// the image has nothing to move and the Hand tool pans.
+pub fn gradient_layer_bounds(session: &photocraft_engine::Session, f: &Map<String, Value>) -> Option<[f64; 2]> {
+    let id = f.get("layer").and_then(Value::as_u64)?;
+    let st = session.active()?;
+    let b = photocraft_compose::layer_bounds(st.doc.layer(photocraft_doc::LayerId(id))?, st.doc.bounds());
+    let [w, h] = [f64::from(b.width()), f64::from(b.height())];
+    (w > 0.0 && h > 0.0).then_some([w, h])
+}
+
+/// A drag on the image with a Gradient Overlay page selected: `start` is true on the press (it
+/// records the gradient's offset then, as does a change of the selected instance under a held
+/// press), `total` the pointer's movement since in document pixels
+/// and `bounds` the layer's width and height. The gradient's centre moves with the pointer, kept
+/// as a fraction of the layer's bounds (`offset`, what the renderer takes), to a thousandth.
+pub fn drag_gradient(f: &mut Map<String, Value>, start: bool, total: [f64; 2], bounds: [f64; 2]) {
+    const KEY: &str = "__gradientDrag";
+    let Some(id) = f.get("selected").and_then(Value::as_str).map(str::to_string).filter(|_| drags_gradient(f)) else { return };
+    let Some(e) = entry(f, &id) else { return };
+    // The offset the gradient shows: `offset` as stored when its first two elements are finite
+    // numbers (the only form the engine applies, and all it reads of a longer array), else the
+    // effect's own (its `fx` snapshot), else the centre
+    // (None: never set); within ±4 of the layer's size, as the renderer keeps it, so the drag
+    // starts from where the gradient is seen.
+    let pair = |v: Option<&Value>| {
+        let a = v?.as_array()?;
+        let (x, y) = (a.first()?.as_f64()?, a.get(1)?.as_f64()?);
+        (x.is_finite() && y.is_finite()).then(|| [x.clamp(-4.0, 4.0), y.clamp(-4.0, 4.0)])
+    };
+    let shown = pair(e.get("params").and_then(|p| p.get("offset"))).or_else(|| pair(e.get("fx").and_then(|fx| fx.pointer("/GradientOverlay/gradient/offset"))));
+    // The origin: the offset shown, the instance it is for and the pointer's total then. Taken on
+    // the press, when there is none, and when the page changed under a held press (another
+    // instance selected, or a Gradient Overlay page chosen during a press that began elsewhere):
+    // that instance then moves by the pointer's travel from this moment, not from the press.
+    let read = |v: Option<&Value>| {
+        let a = v?.as_array()?;
+        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?])
+    };
+    if start || f.get(KEY).and_then(|o| o.get("id")).and_then(Value::as_str) != Some(id.as_str()) {
+        f.insert(KEY.into(), json!({"id": id, "origin": shown.unwrap_or([0.0, 0.0]), "base": total}));
+    }
+    let Some(origin) = f.get(KEY) else { return };
+    let (Some([x0, y0]), Some([bx, by])) = (read(origin.get("origin")), read(origin.get("base"))) else { return };
+    let [w, h] = [bounds[0].max(1.0), bounds[1].max(1.0)];
+    // Kept within what the renderer takes (±4 of the layer's size), so the next drag starts from
+    // where the gradient shows.
+    let (x, y) = ((x0 + (total[0] - bx) / w).clamp(-4.0, 4.0), (y0 + (total[1] - by) / h).clamp(-4.0, 4.0));
+    if !(x.is_finite() && y.is_finite()) {
+        return;
+    }
+    // A press that has not moved the gradient (or a drag back to where it began, with nothing
+    // written since) leaves the offset as it is: a stored one to its full precision, none where
+    // there was none.
+    if x == x0 && y == y0 && shown.is_none_or(|s| s == [x0, y0]) {
+        return;
+    }
+    set_param(f, &id, "offset", json!([(x * 1000.0).round() / 1000.0, (y * 1000.0).round() / 1000.0]));
 }
 
 pub fn initial_fields(layer: &Layer, select: Option<&str>, light: f32) -> Map<String, Value> {

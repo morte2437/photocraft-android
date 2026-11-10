@@ -78,7 +78,14 @@ LayerInfo::unpadded_len(version), LayerInfo::pad_to(version, 4)   // Photoshop p
 // Image resources
 ImageResource { signature, id, name, data };  ImageResource::parsed() -> Option<Result<ResourceData>>
 ResourceData::{ResolutionInfo, LayerState, LayerGroupInfo, Thumbnail, GlobalAngle, IccProfile,
-               GlobalAltitude, VersionInfo, Exif, Xmp}
+               GlobalAltitude, VersionInfo, Exif, Xmp, TimelineInfo, Animation}
+
+// Legacy animation syntax (no playback/document-model dependency)
+animation::AnimationResource::from_bytes / to_bytes  // maniIRFR; ordered raw records
+animation::AnimationRecord::descriptor()              // AnDs; version-16 descriptor
+animation::{frame_info, frame_sets, layer_frame_states} // borrowed sparse views, opaque ids
+animation::parse_descriptor                          // descriptor + up to 3 zero alignment bytes
+metadata::MetadataItem::animation_descriptor()       // mlst / tmln; leaves other metadata alone
 
 // Compression
 Compression::{Raw, Rle, Zip, ZipPrediction, Unknown(u16)}
@@ -117,6 +124,7 @@ testgen::{all_cases, merged_only, layered, small, sample_descriptor, pattern_pla
 | luni lsct lsdk lyid lnsr clbl infx knko lspf lclr iOpa shmd | ✓ | ✓ | ✓ | `TaggedBlock::parsed()` |
 | Layer XMP (`shmd` › `cust` › `layerXMP`) | ✓ | ✓ | ✓ | `metadata::layer_xmp` / `take_layer_xmp` / `put_layer_xmp`, laid out as Photoshop 2026 writes it |
 | ActionDescriptor (all OSTypes) | ✓ | ✓ | ✓ | including references, `ObAr` (best effort), `UnFl`, `Pth `, version-16 wrapper |
+| Legacy frame animation syntax | ✓ | ✓ | partial | `mani` / `AnDs`, `mlst`, `tmln`, resource 1075; raw-preserving descriptor views, not playback or keyframe evaluation |
 | Layer tree (groups) | ✓ | ✓ | ✓ | open/closed folders plus bounding dividers; tolerant of malformed nesting |
 | RGBA8 extraction | ✓ | – | – | RGB / gray / CMYK layers; merged image also supports indexed / bitmap / duotone |
 | Builder | – | ✓ | – | RGB / gray / CMYK at 8/16 bit, masks, groups, blend modes, opacity, fill, visibility, clipping |
@@ -139,6 +147,25 @@ allocations for padded channels return an error on failure.
 * Vector masks and shapes: `vmsk`, `vsms`, `vogk`, `vscg`.
 * Adjustment and fill layers: `curv`, `levl`, `hue2`, `SoCo`, `GdFl`, `PtFl`, …, plus `Patt`, `Txt2`, `FMsk`, 3D and video blocks.
 * Global layer mask info (raw, with accessors), thumbnails (raw), slices, guides, paths, and every other resource id.
+
+## Legacy animation inspection
+
+```sh
+cargo run -p photocraft-psd --example animation_inspect -- /path/to/input.psd
+cargo test -p photocraft-psd --test it animation::
+```
+
+The inspection example accepts an explicit local PSD/PSB (up to 128 MiB), reports frame counts,
+stored delays and descriptor counts, and checks byte-exact raw round-trips without modifying the
+input. It does not print layer names, text or descriptor values. No personal file is bundled;
+committed animation tests construct synthetic payloads and PSD/PSB containers.
+
+`mani` is detected by its payload signature within the plug-in resource range 4000–4999, not by
+assuming that resource 4003 always belongs to animation. Unknown records and unsupported descriptor
+versions stay raw. `FrIn` definitions and `FSts` playback order are separate; ids are opaque stored
+`long` values. Missing frame delays remain absent, and sparse `mlst` properties are not filled with
+guessed defaults. Timeline tracks, loops, inheritance and property evaluation are left to higher
+layers. This parser alone does **not** make PSD animations play in PhotoCraft.
 
 ## Testing
 

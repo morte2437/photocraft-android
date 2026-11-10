@@ -295,4 +295,24 @@ mod tests {
         let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
         assert_eq!([b.x0, b.y0, b.width() as i32, b.height() as i32], [8, 8, 24, 24]);
     }
+
+    /// On the Background the box's preview shows the vacated area in the background colour, as
+    /// the command leaves it.
+    #[test]
+    fn on_the_background_the_preview_vacates_to_the_background_colour() {
+        for depth in [8, 16] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            let ctx = egui::Context::default();
+            app.run("file.new", json!({"width": 64, "height": 48, "depth": depth, "background": "white"})).unwrap();
+            app.session.tools.background = [0.0, 0.0, 1.0, 1.0];
+            app.run("select.rect", json!({"x": 8, "y": 8, "width": 40, "height": 24})).unwrap();
+            app.sync_views();
+            crate::menus::invoke(&mut app, &ctx, COMMAND, json!({})).unwrap();
+            let pv = app.transform_preview.as_ref().unwrap();
+            let id = app.session.active().unwrap().active_layer.unwrap();
+            let px = |x, y| pv.doc.layer(id).unwrap().surface().unwrap().rgba(x, y);
+            assert_eq!(px(20, 20), [0.0, 0.0, 1.0, 1.0], "{depth}-bit: under the box");
+            assert_eq!(px(4, 4), [1.0, 1.0, 1.0, 1.0], "{depth}-bit: outside it");
+        }
+    }
 }

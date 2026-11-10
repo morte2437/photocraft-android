@@ -11,7 +11,7 @@
 use egui::{Context, Event, Id, MouseWheelUnit, Rect, Ui, Vec2};
 
 /// Wheel events this close together (seconds) are one gesture.
-const GESTURE_GAP: f64 = 0.3;
+pub(crate) const GESTURE_GAP: f64 = 0.3;
 
 /// Who a wheel gesture belongs to.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,6 +91,20 @@ pub fn begin_frame(ctx: &Context) {
         _ => Owner::New,
     };
     ctx.data_mut(|d| d.insert_temp(gesture_id(), Gesture { last: now, owner }));
+}
+
+/// Whether a wheel gesture stepping a value field is still running: its last notch came less than
+/// [`GESTURE_GAP`] ago. A field that applies each value as a new edit holds the wheeled value until
+/// this turns false, so a burst of notches is one edit (#9898).
+pub fn field_gesture_running(ctx: &Context) -> bool {
+    let now = ctx.input(|i| i.time);
+    ctx.data(|d| d.get_temp::<Gesture>(gesture_id())).is_some_and(|g| matches!(g.owner, Owner::Field(_)) && now - g.last <= GESTURE_GAP)
+}
+
+/// Whether [`begin_frame`] handed wheel notches to the focused value field this frame: they step
+/// it as the arrow keys do, though the frame's scroll delta no longer shows them.
+pub(crate) fn focused_field_wheeled(ctx: &Context) -> bool {
+    ctx.data(|d| d.get_temp::<Vec<Event>>(taken_id())).is_some_and(|e| !e.is_empty())
 }
 
 /// Record that value field `id` (whose slot is `field`, as given to [`notches`]) has keyboard

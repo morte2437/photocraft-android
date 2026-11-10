@@ -188,3 +188,26 @@ fn sparse_large_footprint_only_allocates_and_dirties_nonzero_tiles() {
     map.accumulate(Rect::new(0, 0, 0, 0), &[], 0.8, None, None);
     assert_eq!(map.bounds(), bounds);
 }
+
+/// `texture_at` at a scale other than 100 % is the bilinear value of the four wrapped texels around
+/// the sample: x and y are not swapped, and a different fraction on each axis is honoured.
+#[test]
+fn texture_at_scaled_is_the_bilinear_of_the_wrapped_texels() {
+    let (w, h) = (4usize, 3usize);
+    let data: Vec<f32> = (0..w * h).map(|i| (i * i) as f32 / 100.0).collect();
+    let mut brush = BrushSettings::default();
+    brush.texture.scale = 4.0;
+    let mut ctx = BrushContext::new(&brush);
+    ctx.texture = Some(Arc::new(PatternImage { width: w, height: h, data: data.clone() }));
+    let texel = |x: i64, y: i64| data[y.rem_euclid(h as i64) as usize * w + x.rem_euclid(w as i64) as usize];
+    for (x, y) in [(5, 2), (2, 5), (-3, 7), (0, 0), (-9, -4)] {
+        let (fx, fy) = ((x as f32 + 0.5) / 4.0 - 0.5, (y as f32 + 0.5) / 4.0 - 0.5);
+        let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
+        let (tx, ty) = (fx - fx.floor(), fy - fy.floor());
+        let top = texel(x0, y0) + (texel(x0 + 1, y0) - texel(x0, y0)) * tx;
+        let bottom = texel(x0, y0 + 1) + (texel(x0 + 1, y0 + 1) - texel(x0, y0 + 1)) * tx;
+        let want = top + (bottom - top) * ty;
+        let got = ctx.texture_at(x, y);
+        assert!((got - want).abs() < 1e-5, "({x}, {y}): {got} vs {want}");
+    }
+}

@@ -24,7 +24,7 @@ fn equalize_average_and_clouds_edit_the_targeted_channel() {
                 s.tools.foreground = [0.0, 0.0, 0.0, 1.0];
                 s.tools.background = [1.0, 1.0, 1.0, 1.0];
                 s.execute("edit.fill", json!({"contents": "color", "color": "#808080"})).unwrap();
-                let p = match target {
+                let mut p = match target {
                     "quickMask" => {
                         s.execute("select.editInQuickMaskMode", json!({"on": true})).unwrap();
                         json!({"seed": 1})
@@ -39,6 +39,10 @@ fn equalize_average_and_clouds_edit_the_targeted_channel() {
                         json!({"seed": 1, "target": "mask"})
                     }
                 };
+                // Average has no seed parameter; only Clouds uses it.
+                if cmd == "filter.blur.average" {
+                    p.as_object_mut().unwrap().remove("seed");
+                }
                 // Two levels in the target, so Equalize and Average have something to change.
                 let edit_target = json!({ "target": if target == "alpha" { json!({"channel": 0}) } else { json!(target) } });
                 s.edit("levels", |doc, active| {
@@ -65,6 +69,18 @@ fn equalize_average_and_clouds_edit_the_targeted_channel() {
                 let case = format!("{cmd} on {target} at {depth}");
                 assert_eq!(layer1, layer0, "{case}: the layer is untouched");
                 assert_ne!(target1, target0, "{case}: the target changed");
+                if cmd == "filter.blur.average" {
+                    // The equal-sized halves contribute equally, using their stored sample values.
+                    let mean = (f64::from(target0[0]) + f64::from(target0[20])) / 2.0;
+                    let tolerance = match depth {
+                        8 => 1.0 / 255.0,
+                        16 => 1.0 / 65535.0,
+                        _ => 1e-6,
+                    };
+                    for value in &target1 {
+                        assert!((f64::from(*value) - mean).abs() <= tolerance, "{case}: {value}, expected {mean}");
+                    }
+                }
                 assert_eq!(s.active().unwrap().history.past_len(), past + 1, "{case}");
                 s.undo();
                 assert_eq!(read(&s).1, target0, "{case}: undo restores the target");
@@ -473,6 +489,64 @@ fn equalize_spreads_values() {
     }
 }
 
+/// Equalize with a selection: by default only the selected pixels change, as Photoshop's
+/// Equalize Selected Area Only; `selectedAreaOnly: false` maps the layer within the canvas by the
+/// selected pixels' histogram, as its Equalize Entire Image Based On Selected Area.
+#[test]
+fn equalize_entire_image_based_on_the_selected_area() {
+    let setup = |depth: u32| {
+        let mut s = session(depth);
+        paint_square(&mut s, Rect::new(0, 0, 30, 15), [0.4, 0.4, 0.4, 1.0]);
+        paint_square(&mut s, Rect::new(0, 15, 30, 30), [0.5, 0.5, 0.5, 1.0]);
+        // Darker than anything selected: the selection's mapping sends it to black.
+        paint_square(&mut s, Rect::new(30, 0, 40, 30), [0.3, 0.3, 0.3, 1.0]);
+        s.execute("select.rect", json!({"x": 0, "y": 0, "width": 20, "height": 30})).unwrap();
+        s
+    };
+    for depth in [8, 16, 32] {
+        for params in [json!({}), json!({"selectedAreaOnly": true})] {
+            let mut s = setup(depth);
+            s.execute("image.adjustments.equalize", params.clone()).unwrap();
+            let inside = (pixel(&s, 1, 1)[0], pixel(&s, 1, 20)[0]);
+            assert!(inside.0 < 0.05 && inside.1 > 0.95, "{depth} {params}: inside {inside:?}");
+            let outside = [pixel(&s, 25, 1)[0], pixel(&s, 25, 20)[0], pixel(&s, 35, 1)[0]];
+            assert!(outside.iter().zip([0.4, 0.5, 0.3]).all(|(v, want)| (v - want).abs() < 0.01), "{depth} {params}: outside {outside:?}");
+        }
+        let mut s = setup(depth);
+        s.execute("image.adjustments.equalize", json!({"selectedAreaOnly": false})).unwrap();
+        for (x, y, want_light) in [(1, 1, false), (1, 20, true), (25, 1, false), (25, 20, true), (35, 1, false), (35, 20, false)] {
+            let v = pixel(&s, x, y)[0];
+            assert!(if want_light { v > 0.95 } else { v < 0.05 }, "{depth}: ({x}, {y}) = {v}");
+        }
+        assert!(doc(&s).selection.is_some(), "{depth}: the selection stays");
+        s.undo();
+        let undone = [pixel(&s, 1, 1)[0], pixel(&s, 25, 20)[0], pixel(&s, 35, 1)[0]];
+        assert!(undone.iter().zip([0.4, 0.5, 0.3]).all(|(v, want)| (v - want).abs() < 0.01), "{depth}: one undo step {undone:?}");
+    }
+}
+
+/// Without a selection, `selectedAreaOnly: false` gives the same pixels as plain Equalize.
+#[test]
+fn equalize_entire_image_without_a_selection_is_plain_equalize() {
+    let run = |params: Value| {
+        let mut s = session(8);
+        paint_square(&mut s, Rect::new(0, 0, 40, 15), [0.4, 0.4, 0.4, 1.0]);
+        paint_square(&mut s, Rect::new(0, 15, 40, 30), [0.5, 0.5, 0.5, 1.0]);
+        s.execute("image.adjustments.equalize", params).unwrap();
+        active(&s).surface().unwrap().read_region(Rect::new(0, 0, 40, 30))
+    };
+    assert_eq!(run(json!({"selectedAreaOnly": false})), run(json!({})));
+}
+
+#[test]
+fn equalize_refuses_a_selected_area_only_that_is_not_a_boolean() {
+    for bad in [json!(null), json!("false"), json!(0), json!([true]), json!({})] {
+        let mut s = session(8);
+        let e = s.execute("image.adjustments.equalize", json!({"selectedAreaOnly": bad})).unwrap_err().to_string();
+        assert!(e.contains("selectedAreaOnly"), "{bad}: {e}");
+    }
+}
+
 /// A selection masks Clouds but doesn't change their size: inside it they are the canvas's
 /// clouds, as when Clouds sized itself by the document (before it became a filter).
 #[test]
@@ -495,6 +569,52 @@ fn clouds_in_a_selection_are_the_canvas_clouds() {
             assert!((0..4).all(|c| (a[c] - b[c]).abs() < 1e-3), "depth {depth} at {x},{y}: {a:?} vs {b:?}");
         }
         assert_eq!(pixel(&s, 300, 200)[3], 0.0, "outside the selection the layer stays empty");
+    }
+}
+
+#[test]
+fn average_preserves_transparency_and_averages_hidden_colours() {
+    // Photoshop 26.6.1, RGB8 PNG with opaque red and transparent blue halves:
+    // Average produces (128, 0, 128), retaining each pixel's original alpha.
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        paint_square(&mut s, Rect::new(0, 0, 20, 30), [1.0, 0.0, 0.0, 1.0]);
+        paint_square(&mut s, Rect::new(20, 0, 40, 30), [0.0, 0.0, 1.0, 0.0]);
+        let bounds = Rect::new(0, 0, 40, 30);
+        let before = active(&s).surface().unwrap().read_region(bounds);
+        let steps = s.active().unwrap().history.past_len();
+        s.execute("filter.blur.average", json!({})).unwrap();
+        let after = active(&s).surface().unwrap().read_region(bounds);
+        for (old, new) in before.as_chunks::<4>().0.iter().zip(after.as_chunks::<4>().0) {
+            assert_eq!(new[3], old[3], "depth {depth}: Average must preserve alpha");
+            assert!((new[0] - 0.5).abs() < 0.003 && new[1] == 0.0 && (new[2] - 0.5).abs() < 0.003, "{depth}: {new:?}");
+        }
+        assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
+        s.undo();
+        assert_eq!(active(&s).surface().unwrap().read_region(bounds), before);
+        s.redo();
+        assert_eq!(active(&s).surface().unwrap().read_region(bounds), after);
+    }
+}
+
+#[test]
+fn average_preserves_partial_alpha_and_pixels_outside_selection() {
+    for depth in [8, 16, 32] {
+        let mut s = session(depth);
+        paint_square(&mut s, Rect::new(0, 0, 20, 30), [1.0, 0.0, 0.0, 0.25]);
+        paint_square(&mut s, Rect::new(20, 0, 40, 30), [0.0, 0.0, 1.0, 0.75]);
+        s.execute("select.rect", json!({"x": 10, "y": 0, "width": 15, "height": 30})).unwrap();
+        let before: Vec<_> = (0..40).map(|x| pixel(&s, x, 15)).collect();
+        s.execute("filter.blur.average", json!({})).unwrap();
+        for x in 0..40 {
+            let p = pixel(&s, x, 15);
+            assert_eq!(p[3], before[x as usize][3], "depth {depth}, x {x}");
+            if (10..25).contains(&x) {
+                assert!((p[0] - 2.0 / 3.0).abs() < 0.003 && (p[2] - 1.0 / 3.0).abs() < 0.003, "{depth}: {p:?}");
+            } else {
+                assert_eq!(p, before[x as usize]);
+            }
+        }
     }
 }
 

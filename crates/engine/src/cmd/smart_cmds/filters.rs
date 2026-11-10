@@ -170,7 +170,9 @@ fn edited_shape_params(s: &Session, previous: &Value, patch: &Value) -> Result<V
 
 pub(super) fn set_filter_params(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "layer.smartFilter.setParams";
-    let new = p.get("params").cloned().ok_or_else(|| bad(CMD, "pass `params` (merged into the filter's parameters)"))?;
+    let new = p.get("params").cloned().ok_or_else(|| bad(CMD, "pass `params` (merged into the filter's parameters, or replacing them with `replace`)"))?;
+    // An editor holding all of a filter's settings replaces them, so a key it removed stops applying.
+    let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
     let authorize = s.authorize;
     // A Displace given another open document as its map embeds that one in place of the old
     // (#7423). It is read here, before the edit, from the session; the request is authorized
@@ -183,7 +185,9 @@ pub(super) fn set_filter_params(s: &mut Session, p: &Value) -> Result<Value> {
         let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
         let sm = smart(doc, layer_param(s, p)?)?;
         let f = sm.smart_filters.get(filter_index(CMD, p, sm)?).ok_or_else(|| bad(CMD, "no smart filter at this index"))?;
-        let shape_params = if f.command == "filter.blur.shapeBlur" { Some(edited_shape_params(s, &f.params, &new)?) } else { None };
+        let nothing = json!({});
+        let previous = if replace { &nothing } else { &f.params };
+        let shape_params = if f.command == "filter.blur.shapeBlur" { Some(edited_shape_params(s, previous, &new)?) } else { None };
         (f.command == DISPLACE, shape_params)
     };
     let new_map = if displace && new_map_asked {
@@ -209,6 +213,8 @@ pub(super) fn set_filter_params(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(params) = shape_params {
             f.params = params;
+        } else if replace {
+            f.params = new;
         } else {
             match (&mut f.params, new) {
                 (Value::Object(old), Value::Object(n)) => old.extend(n),

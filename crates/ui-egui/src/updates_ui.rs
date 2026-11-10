@@ -11,6 +11,12 @@ pub(crate) struct Runtime {
     /// The startup prompt and the self-update behind it (desktop).
     #[cfg(not(target_arch = "wasm32"))]
     updater: craft_update::updater::Updater,
+    /// What the last self-update came to, shown in the result window until it is closed.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_update: craft_update::updater::Status,
+    /// The check running was asked for with Help ▸ Check for Updates.
+    #[cfg(not(target_arch = "wasm32"))]
+    requested: bool,
 }
 
 impl Default for Runtime {
@@ -20,6 +26,10 @@ impl Default for Runtime {
             notified_version: None,
             #[cfg(not(target_arch = "wasm32"))]
             updater: craft_update::updater::Updater::new(&crate::UPDATE_APP, photocraft_engine::build_info::VERSION),
+            #[cfg(not(target_arch = "wasm32"))]
+            last_update: craft_update::updater::Status::Idle,
+            #[cfg(not(target_arch = "wasm32"))]
+            requested: false,
         }
     }
 }
@@ -51,11 +61,33 @@ pub(crate) fn check(app: &mut PhotocraftApp, _ctx: &egui::Context, params: Value
         app.updates_rt.startup_checked = true;
         // A release the user dismissed is offered again by a manual check.
         app.updates_rt.notified_version = None;
+        // The window shows this check from now on.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            app.updates_rt.requested = true;
+            app.updates_rt.updater.dismiss_status();
+            app.updates_rt.last_update = craft_update::updater::Status::Idle;
+            // A check made before the first frame leaves the last self-update's records for the
+            // next start.
+            app.services.last_update = None;
+        }
     }
     result
 }
 
 pub(crate) fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(read) = app.services.last_update.take() {
+        use craft_update::updater::Status as Shown;
+        app.updates_rt.last_update = match read() {
+            Some(Ok(version)) => Shown::Updated(version),
+            Some(Err(reason)) => Shown::InstallFailed(reason),
+            None => Shown::Idle,
+        };
+        if app.updates_rt.last_update != Shown::Idle {
+            app.ui.updates_open = true;
+        }
+    }
     // `updates.status` also polls (automation may consume the result before this frame).
     app.session.updates.poll();
     if let Status::Available { release } = &app.session.updates.status
@@ -64,7 +96,19 @@ pub(crate) fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.updates_rt.notified_version = Some(release.version.clone());
         app.ui.updates_open = true;
         #[cfg(not(target_arch = "wasm32"))]
-        app.updates_rt.updater.offer(release_of(release));
+        {
+            let updater = &mut app.updates_rt.updater;
+            updater.offer(release_of(release));
+            // While an update installs or waits for the app to close, or while the launcher keeps
+            // this version, no prompt opens: a manual check reports that state in the result window.
+            if std::mem::take(&mut app.updates_rt.requested) && !updater.prompt_open() {
+                updater.check_now(ctx);
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if !matches!(app.session.updates.status, Status::Checking) {
+        app.updates_rt.requested = false;
     }
     if app.session.updates.check.is_none() {
         return;
@@ -89,7 +133,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     {
         let was_open = app.updates_rt.updater.prompt_open();
         app.updates_rt.updater.tick(ctx);
-        // The restart helper is scheduled before the app closes, so no update starts over unsaved work.
+        // An update starts, and a ready one asks the app to close, only while no work is unsaved.
         let clean = !app.has_unsaved_work();
         match app.updates_rt.updater.show_if(ctx, clean) {
             craft_update::updater::Action::None => {}
@@ -98,8 +142,9 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             // relaunches once the process exits.
             craft_update::updater::Action::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
+        // The last self-update's outcome, hidden while the prompt showed, is still shown after it.
         if was_open && !app.updates_rt.updater.prompt_open() {
-            app.ui.updates_open = false;
+            app.ui.updates_open = app.updates_rt.last_update != craft_update::updater::Status::Idle;
         }
     }
     if let Some(url) = download {
@@ -108,15 +153,37 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if app.updates_rt.updater.prompt_open() {
         return;
     }
-    if app.ui.updates_open {
-        let dialog = craft_update::CheckResultDialog::new(&crate::UPDATE_APP, photocraft_engine::build_info::VERSION);
-        match dialog.show(ctx, &check_status(&app.session.updates.status)) {
-            craft_update::CheckResultResponse::None => {}
-            craft_update::CheckResultResponse::Close => app.ui.updates_open = false,
-            craft_update::CheckResultResponse::CheckAgain => {
-                let _ = check(app, ctx, serde_json::json!({}));
-            }
+    let status = shown_status(app);
+    let dialog = craft_update::CheckResultDialog::new(&crate::UPDATE_APP, photocraft_engine::build_info::VERSION);
+    match dialog.show(ctx, &status) {
+        craft_update::CheckResultResponse::None => {}
+        craft_update::CheckResultResponse::Close => {
+            app.ui.updates_open = false;
+            app.updates_rt.updater.dismiss_status();
+            app.updates_rt.last_update = craft_update::updater::Status::Idle;
         }
+        craft_update::CheckResultResponse::CheckAgain => {
+            let _ = check(app, ctx, serde_json::json!({}));
+        }
+        craft_update::CheckResultResponse::RestartToUpdate => app.updates_rt.updater.restart_to_update(),
+    }
+}
+
+/// What the open result window shows: the updater's answer to a manual check (an update installing
+/// or ready, or a version the launcher keeps), else the last self-update's outcome, else the
+/// engine's check.
+#[cfg(not(target_arch = "wasm32"))]
+fn shown_status(app: &PhotocraftApp) -> craft_update::updater::Status {
+    use craft_update::updater::Status as Shown;
+    let updater = app.updates_rt.updater.status();
+    if !app.ui.updates_open {
+        Shown::Idle
+    } else if *updater != Shown::Idle {
+        updater.clone()
+    } else if app.updates_rt.last_update != Shown::Idle {
+        app.updates_rt.last_update.clone()
+    } else {
+        check_status(&app.session.updates.status)
     }
 }
 
@@ -268,6 +335,59 @@ mod tests {
         });
         output.textures_delta.clear();
         assert!(app.updates_rt.updater.prompt_open());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn press_escape(app: &mut PhotocraftApp, ctx: &egui::Context) {
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let mut output = ctx.run_ui(egui::RawInput { events: vec![escape], ..Default::default() }, |ui| show(app, ui.ctx()));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn the_last_update_opens_the_result_window_once_until_it_is_closed() {
+        use craft_update::updater::Status as Shown;
+        let (mut app, _, _) = app();
+        app.services.last_update = Some(|| Some(Ok("99.0.0".into())));
+        let ctx = egui::Context::default();
+        at(&mut app, &ctx, 0.0);
+        assert!(app.ui.updates_open);
+        assert_eq!(shown_status(&app), Shown::Updated("99.0.0".into()));
+        assert!(app.services.last_update.is_none(), "read once");
+        at(&mut app, &ctx, 1.0);
+        assert_eq!(shown_status(&app), Shown::Updated("99.0.0".into()), "shown until closed");
+        press_escape(&mut app, &ctx);
+        assert!(!app.ui.updates_open);
+        assert_eq!(app.updates_rt.last_update, Shown::Idle);
+        assert_eq!(shown_status(&app), Shown::Idle);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_failed_update_is_reported_until_a_manual_check_replaces_it() {
+        use craft_update::updater::Status as Shown;
+        let (mut app, calls, _) = app();
+        app.services.last_update = Some(|| Some(Err("the installer exited with code 1603".into())));
+        app.session.edit_prefs(|p| p.general.automatically_check_updates = false);
+        let ctx = egui::Context::default();
+        at(&mut app, &ctx, 0.0);
+        assert_eq!(shown_status(&app), Shown::InstallFailed("the installer exited with code 1603".into()));
+        menus::invoke(&mut app, &ctx, "help.checkForUpdates", serde_json::json!({})).unwrap();
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(shown_status(&app), Shown::Checking, "the window shows the new check");
+
+        let (mut early, _, _) = self::app();
+        early.services.last_update = Some(|| Some(Err("unread".into())));
+        menus::invoke(&mut early, &ctx, "help.checkForUpdates", serde_json::json!({})).unwrap();
+        at(&mut early, &ctx, 0.0);
+        assert_eq!(shown_status(&early), Shown::Checking, "a check before the first frame is not replaced by the last update");
+        assert!(early.services.last_update.is_none());
+
+        let (mut quiet, _, _) = self::app();
+        quiet.services.last_update = Some(|| None);
+        at(&mut quiet, &ctx, 0.0);
+        assert!(!quiet.ui.updates_open, "nothing to report opens nothing");
     }
 
     #[test]

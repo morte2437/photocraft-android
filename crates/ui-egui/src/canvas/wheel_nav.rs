@@ -36,8 +36,9 @@
 //!   (the Photoshop behaviour, measured frame by frame on a screen recording). Zooming reads the
 //!   wheel events themselves and ignores egui's smoothed tail.
 //!
-//! In both modes panning keeps the smoothed delta, and ⇧/Shift snap zoom reads the wheel events
-//! and stays instant. The Alt state is taken from the wheel events (and the Alt key's own press
+//! In both modes the canvas pans by this frame's wheel events, the whole notch at once with no
+//! glide, as in Photoshop (#9479), while [`read`] keeps egui's smoothed delta; ⇧/Shift snap zoom
+//! reads the wheel events and stays instant. The Alt state is taken from the wheel events (and the Alt key's own press
 //! and release, `wheel_events`) and kept until the next wheel event: releasing Alt while the tail
 //! is still settling must not turn it into a pan.
 
@@ -366,9 +367,10 @@ fn alt_gesture(m: &Modifiers) -> bool {
     m.alt && (!m.command || (m.ctrl && !m.mac_cmd && !m.shift))
 }
 
-/// [`read`], choosing how a plain wheel scroll pans: `smooth` glides it over a few frames (egui's
-/// smoothed delta); off, as with Interface › Enable Animations off, the view moves the whole notch
-/// in the frame the wheel turns and stops there (#5721), as scroll areas already do.
+/// [`read`], choosing how a wheel scroll pans: `smooth` glides it over a few frames (egui's
+/// smoothed delta, as in the Liquify and Camera Raw previews); off, the view moves the whole notch
+/// in the frame the wheel turns and stops there (#5721). The canvas pans with it off, as Photoshop
+/// does (#9479).
 /// `touch_gestures` is Preferences › Enhanced Controls › Enable Gestures: off, a touch screen's
 /// two-finger pinch doesn't zoom ([`pinch_factor`]).
 /// `animated_zoom` is Preferences › General › Animated Zoom: on, the wheel zoom is eased over the
@@ -384,16 +386,16 @@ pub fn read_with(
     smooth: bool,
     touch_gestures: bool,
 ) -> Option<Wheel> {
-    let notch = ctx.options(|o| o.input_options.line_scroll_speed);
+    let options = ctx.options(|o| o.input_options);
+    let notch = options.line_scroll_speed;
 
     // --- Modifier tracking (always runs for all callers) ---
-    let (scroll, zoom_delta, latest_alt, latest_shift, wheel, page) = ctx.input(|i| {
+    let (smoothed, zoom_delta, latest_alt, latest_shift, wheel, page) = ctx.input(|i| {
         let wheel = wheel_events(i);
-        let latest_alt = wheel.last().map(|(_, _, m, _)| alt_gesture(m));
-        let latest_shift = wheel.last().map(|(_, _, m, _)| m.shift && !m.command && !m.ctrl);
+        let latest_alt = wheel.last().map(|(_, _, m, _)| gesture_mode(m).0);
+        let latest_shift = wheel.last().map(|(_, _, m, _)| gesture_mode(m).1);
         (i.smooth_scroll_delta, pinch_factor(i, touch_gestures), latest_alt, latest_shift, wheel, i.content_rect().height())
     });
-    let wheel = mark_unsmoothed(ctx, wheel);
     let alt = match latest_alt {
         Some(a) => {
             ctx.data_mut(|d| d.insert_temp(alt_id(), a));
@@ -408,6 +410,8 @@ pub fn read_with(
         }
         None => ctx.data(|d| d.get_temp::<bool>(shift_id())).unwrap_or(false),
     };
+    let scroll = if smooth { smoothed } else { unsmoothed_scroll(&wheel, (alt, shift), &options, page) };
+    let wheel = mark_unsmoothed(ctx, wheel);
 
     if !hovered {
         return None;
@@ -510,15 +514,53 @@ pub fn read_with(
             let eased = ease_zoom_delta(ctx, owner, along(raw - instant)) + along(instant);
             // The plain wheel zooms through `y`; its sideways part (⌘/Ctrl + wheel, a trackpad's
             // horizontal scroll) is not a zoom event, so it pans like any scroll: smoothed, or
-            // with Enable Animations off at once (#5721).
-            if alt { Vec2::new(0.0, eased) } else { Vec2::new(if smooth { scroll.x } else { raw.x }, eased) }
+            // unsmoothed at once (#5721, #9479).
+            if alt { Vec2::new(0.0, eased) } else { Vec2::new(scroll.x, eased) }
         } else {
             ctx.data_mut(|d| d.remove::<ZoomEase>(zoom_ease_id(owner)));
-            // Unsmoothed, a plain scroll pans by this frame's own wheel events (none: no tail).
-            if smooth || alt || shift { scroll } else { raw }
+            // Unsmoothed, a scroll pans by this frame's own wheel events (none: no tail).
+            scroll
         };
         classify(Input { scroll, raw, zoom_delta, alt, shift, zoom_with_wheel, pinch_zooms, animated_zoom, notch })
     }
+}
+
+/// The ⌥/Alt and ⇧/Shift gesture a wheel event belongs to: ⌥ as [`alt_gesture`] decides; ⇧ with
+/// ⌘/Ctrl is not one (it scrolls sideways, [`configure`]), so it belongs to the plain wheel.
+fn gesture_mode(m: &Modifiers) -> (bool, bool) {
+    (alt_gesture(m), m.shift && !m.command && !m.ctrl)
+}
+
+/// This frame's wheel scroll without egui's smoothing (points, content direction): what egui's
+/// smoothed delta spreads over the next frames, all of it now and no tail after. ⇧ or ⌘/Ctrl fold
+/// it sideways as egui does ([`configure`]), so every pan, plain or sideways, moves at once.
+/// Only the wheel events of the gesture in progress (`mode`, the ⌥ and ⇧ of [`gesture_mode`])
+/// count: a ⌥ zoom notch in the same frame as a plain pan notch doesn't pan too.
+fn unsmoothed_scroll(wheel: &[(MouseWheelUnit, Vec2, Modifiers, TouchPhase)], mode: (bool, bool), options: &egui::InputOptions, page: f32) -> Vec2 {
+    wheel.iter().fold(Vec2::ZERO, |sum, (unit, delta, modifiers, phase)| {
+        // egui scrolls only by `Move` events; a trackpad's `Start`, `End` or `Cancel` delta
+        // (`WheelState::on_wheel_event`) is not a scroll.
+        if *phase != TouchPhase::Move || gesture_mode(modifiers) != mode {
+            return sum;
+        }
+        // egui turns these into its own zoom, not a scroll.
+        if modifiers.matches_any(options.zoom_modifier) {
+            return sum;
+        }
+        let d = *delta
+            * match unit {
+                MouseWheelUnit::Point => 1.0,
+                MouseWheelUnit::Line => options.line_scroll_speed,
+                MouseWheelUnit::Page => page,
+            };
+        let sideways = modifiers.matches_any(options.horizontal_scroll_modifier);
+        let upright = modifiers.matches_any(options.vertical_scroll_modifier);
+        sum + match (sideways, upright) {
+            (true, false) => Vec2::new(d.x + d.y, 0.0),
+            (false, true) => Vec2::new(0.0, d.x + d.y),
+            _ => d,
+        }
+    })
 }
 
 fn is_alt_key(key: Key) -> bool {

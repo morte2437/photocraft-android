@@ -32,7 +32,8 @@ pub use crate::cicp::Cicp;
 pub use crate::codecs::exr_cryptomatte::{cryptomatte_id, cryptomatte_key, cryptomatte_preview_color};
 pub use crate::codecs::gif_frames::{AnimationFrame, MAX_GIF_FRAMES};
 pub use crate::codecs::png::{
-    PngExtras, PngHeader, PngPalette, PngRowSink, PngRows, encode_indexed as encode_png_indexed, palette as png_palette, stereo as png_stereo,
+    PngDecodeRows, PngExtras, PngHeader, PngPalette, PngRowSink, PngRows, SharedBytes, encode_indexed as encode_png_indexed, palette as png_palette,
+    stereo as png_stereo,
 };
 pub use crate::codecs::tiff::{
     PhotoshopTags as TiffPhotoshopTags, TiffBands, photoshop_tags as tiff_photoshop_tags, writes_little_endian as tiff_writes_little_endian,
@@ -50,7 +51,7 @@ pub use crate::options::{
     DdsCompression, DdsOptions, DecodeOptions, DpxBits, EncodeOptions, ExrCompression, JpegFormat, Limits, PngCompression, PngStereo, TIFF_PYRAMID_MIN,
     TiffCompression,
 };
-pub use crate::orientation::{exif_orientation, upright_exif, upright_xmp};
+pub use crate::orientation::{OrientSteps, exif_orientation, upright_exif, upright_xmp};
 pub use crate::resolution::{exif_resolution, export_exif, export_xmp, photoshop_resolution, xmp_resolution};
 pub use crate::source_settings::{WebpEncoding, jpeg_quality, webp_encoding};
 pub use half::f16;
@@ -99,10 +100,56 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         Format::Jxl => Err(CodecError::unsupported(format, "JPEG XL reading is not yet available; export is supported")),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::decode(format, bytes, l),
     }?;
+    finish_format(format, bytes, img, opts)
+}
+
+/// What [`decode_as_with`] does with a PNG decoded in steps by [`PngDecodeRows`] (`img` is its
+/// output): the resolution from the metadata, the upright orientation and the final limit check,
+/// so the result equals [`decode_as_with`]'s on the same file.
+pub fn finish_png_decode(img: Image, opts: &DecodeOptions) -> Result<Image, CodecError> {
+    match begin_png_finish(img, opts)? {
+        PngFinish::Done(img) => Ok(*img),
+        PngFinish::Orient(mut steps) => loop {
+            if let Some(img) = steps.step(&mut || true)? {
+                return Ok(img);
+            }
+        },
+    }
+}
+
+/// Where [`begin_png_finish`] leaves a decoded PNG.
+pub enum PngFinish {
+    /// Finished: it was already upright (or the options keep the orientation).
+    Done(Box<Image>),
+    /// To be turned upright, a band of rows at a time, by driving these steps.
+    Orient(Box<OrientSteps>),
+}
+
+/// [`finish_png_decode`] with the turning upright (orientations 2-8) left to the caller, in
+/// bands it can pace: the resolution from the metadata and the limit checks are made here, and the
+/// result of the steps equals what [`finish_png_decode`] returns.
+pub fn begin_png_finish(mut img: Image, opts: &DecodeOptions) -> Result<PngFinish, CodecError> {
+    if img.meta.dpi.is_none() {
+        img.meta.dpi = resolution::from_metadata(img.meta.exif.as_deref(), img.meta.xmp.as_deref());
+    }
+    let o = img.meta.exif.as_deref().map_or(1, exif_orientation);
+    let l = &opts.limits;
+    // As `finish_decode` does: the final guard, then (turning 5-8 swaps the sides) the upright size.
+    l.check(img.width(), img.height(), img.layout(), img.sample_type())?;
+    if opts.keep_orientation || !(2..=8).contains(&o) {
+        return Ok(PngFinish::Done(Box::new(img)));
+    }
+    if (5..=8).contains(&o) {
+        l.check(img.height(), img.width(), img.layout(), img.sample_type())?;
+    }
+    Ok(PngFinish::Orient(Box::new(OrientSteps::new(img, o)?)))
+}
+
+/// The steps after a decoder of `format` has produced `img` from `bytes`.
+fn finish_format(format: Format, bytes: &[u8], mut img: Image, opts: &DecodeOptions) -> Result<Image, CodecError> {
     // Without a resolution of the format's own (PNG pHYs, TIFF tags, JPEG's metadata), the
     // XMP or EXIF one counts, like Photoshop: a WebP, HEIF or PNG from a camera or phone
     // opens at its recorded resolution, not at the 72 ppi default.
-    let mut img = img;
     if img.meta.dpi.is_none() && format != Format::Tiff {
         img.meta.dpi = resolution::from_metadata(img.meta.exif.as_deref(), img.meta.xmp.as_deref());
     }

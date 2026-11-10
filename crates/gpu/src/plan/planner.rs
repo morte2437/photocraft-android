@@ -807,6 +807,10 @@ impl<'a> Planner<'a> {
         for c in clipped {
             content = self.atop(c, content)?;
         }
+        // Stroke Emboss shades the stroke's band, which only the CPU compositor builds (#8639).
+        if layer.effects.items.iter().any(|e| matches!(e, Effect::BevelEmboss(b) if e.enabled() && b.style == photocraft_doc::BevelStyle::StrokeEmboss)) {
+            return Err(Unsupported(format!("Stroke Emboss on `{}` (composited on the CPU)", layer.name)));
+        }
         let fx = self.fx.len();
         self.fx.push(FxLayer { layer, region, bounds: sb });
         let outline = photocraft_compose::effect_outline(layer).is_some();

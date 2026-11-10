@@ -1,5 +1,5 @@
 use super::curvature::curvature_refresh;
-use super::path_ops::{active_type_path, targeted_vector_mask, work_path_shown_in};
+use super::path_ops::{MovedPath, active_type_path, path_selection_preview, targeted_vector_mask, work_path_shown_in};
 use super::pen::{closing, over_first_anchor, shift_45};
 use egui::{Color32, Pos2, Rect, Stroke, pos2, vec2};
 use photocraft_doc::vector::Path;
@@ -157,14 +157,17 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // a path tool is active, as in Photoshop: a Work Path left unselected (one a PSD arrived
         // with, or after Ctrl-click Load as Selection) would otherwise cover the marching ants (#6551).
         let anchors = shows_anchors(tool);
+        // A Path Selection drag shows its path where the release will put it.
+        let moving = path_selection_preview(app, doc);
+        let moved = |which: MovedPath| moving.as_ref().filter(|(m, _)| *m == which).map(|(_, p)| p);
         if let Some(wp) = doc.work_path.as_ref().filter(|_| work_path_shown_in(app, doc))
             && (anchors || app.ui.selected_path.as_deref() == Some("work"))
         {
-            draw_path(wp, anchors);
+            draw_path(moved(MovedPath::Work).unwrap_or(wp), anchors);
         }
         // The saved path selected in the Paths panel is the target path (#6550).
         if let Some(p) = selected_saved_path(app) {
-            draw_path(p, anchors);
+            draw_path(moved(MovedPath::Saved).unwrap_or(p), anchors);
         }
         let st = app.session.active();
         if let Some(l) = st.and_then(|s| s.active_layer.and_then(|id| s.doc.layer(id)))
@@ -188,11 +191,21 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // Path Selection's selected components show solid anchors, as in Photoshop.
         if tool == Tool::PathSelection
             && st.is_some_and(|s| s.doc.id == doc.id)
-            && let Some((_, path, _)) = crate::path_components::selected(app)
+            && let Some((r, path, _)) = crate::path_components::selected(app)
         {
+            let path = match r {
+                crate::direct_select::PathRef::Work => moved(MovedPath::Work),
+                crate::direct_select::PathRef::Saved(_) => moved(MovedPath::Saved),
+                _ => None,
+            }
+            .unwrap_or(&path);
             for k in app.ui.direct_selection.anchors.iter().filter_map(|[s, k]| path.subpaths.get(*s).and_then(|sp| sp.knots.get(*k))) {
                 draw_anchor(painter, to_scr([k.anchor.x, k.anchor.y]), true, accent);
             }
+        }
+        // Only over the active document, whose selected layers the box frames.
+        if st.is_some_and(|s| s.doc.id == doc.id) {
+            crate::shape_bounds_box::draw(app, painter, &to_scr, accent);
         }
         crate::corner_radius::draw(app, painter, &to_scr, accent);
     }

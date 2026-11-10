@@ -12,6 +12,52 @@ pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive
     value_field_in(ui, value, range, suffix, width, 0.0, FieldOpts::default(), None).0
 }
 
+/// A [`value_field_named`] for whole numbers that says when a typed value was past `range`
+/// (Photoshop's "Closest value inserted" alerts, #11938): it stores the closest whole number in
+/// range, and returns true once the field is left after such a value was typed, so the caller
+/// shows its alert. While the field has the keyboard it keeps the typed text (a `0` on the way to
+/// `05` stays). A scrub past the ends just stops there and says nothing.
+pub fn value_field_whole_alerting(
+    ui: &mut Ui,
+    name: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    width: f32,
+) -> (Response, bool) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let fit = |v: f32| if v.is_finite() { v.round().clamp(lo, hi) } else { lo };
+    *value = fit(*value);
+    let draft_id = ui.make_persistent_id(egui::IdSalt::new(("whole-alerting-typed", name)));
+    // Typed text only while its field still has the keyboard: one left without being drawn (a
+    // tool switch) shows the stored value when it comes back.
+    let draft = ui.ctx().data(|d| d.get_temp::<(f32, f32, Option<egui::Id>)>(draft_id));
+    let draft = draft.filter(|(_, stored, field)| *stored == *value && field.is_some_and(|f| ui.ctx().memory(|m| m.has_focus(f))));
+    let mut typed = draft.map_or(*value, |(typed, _, _)| typed);
+    // The field's own range is wide, so the typed value reaches here unclamped.
+    let r = value_field_named(ui, name, &mut typed, -1.0e9..=1.0e9, suffix, width);
+    let out_id = r.id.with("out-of-range");
+    if r.gained_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id));
+    }
+    if r.changed() && typed.is_finite() {
+        *value = fit(typed);
+        let typing = (r.has_focus() || r.lost_focus()) && ui.ctx().dragged_id().is_none();
+        let out = typing && !(lo..=hi).contains(&typed);
+        ui.ctx().data_mut(|d| d.insert_temp(out_id, out));
+        if typing && r.has_focus() {
+            ui.ctx().data_mut(|d| d.insert_temp(draft_id, (typed, *value, Some(r.id))));
+        } else {
+            ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32, Option<egui::Id>)>(draft_id));
+        }
+    }
+    if !r.has_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<(f32, f32, Option<egui::Id>)>(draft_id));
+    }
+    let alert = r.lost_focus() && ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id)).unwrap_or(false);
+    (r, alert)
+}
+
 /// A [`value_field`] whose visible caption was drawn apart from it (an options-bar caption in a
 /// nested layout): `name` names the number when the caption's scrub link did not reach it.
 pub fn value_field_named(ui: &mut Ui, name: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> Response {
@@ -492,6 +538,8 @@ fn number_edit(
                 };
                 let s = ready.as_str();
                 let v = if hold_typed { zoom_number(s, units) } else { parse_num_in(s, units) };
+                // Whether the text being typed is a number at all, for [`typed_text_parses`].
+                ctx.data_mut(|d| d.insert_temp(id.with("parses"), v.is_some()));
                 if ctx.memory(|m| m.has_focus(id)) && plain(s).is_none() {
                     // Still typing arithmetic: hold it, and stop applying keystrokes once it parses.
                     ctx.data_mut(|d| d.insert_temp(held, v.is_some()));
@@ -524,6 +572,12 @@ fn number_edit(
     }
     resp.flags.set(egui::response::Flags::CHANGED, *value != before);
     resp
+}
+
+/// Whether the text last typed into the number field `id` (a [`value_field`]'s response id) reads
+/// as a number, an arithmetic entry included once it is complete: `None` before anything was typed.
+pub fn typed_text_parses(ctx: &egui::Context, id: egui::Id) -> Option<bool> {
+    ctx.data(|d| d.get_temp::<bool>(id.with("parses")))
 }
 
 /// The zoom a zoom field's text stands for, with at most one decimal separator (`,` or `.`): a

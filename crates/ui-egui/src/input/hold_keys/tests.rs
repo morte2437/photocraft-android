@@ -612,7 +612,8 @@ fn cmd_alt_drag_duplicates_the_layer_then_moves_the_copy() {
         assert_eq!(bounds(&h, orig), Rect::new(100, 100, 160, 160), "the original stays");
         assert_eq!(bounds(&h, copy), Rect::new(140, 120, 200, 180), "the copy moved");
         assert_eq!(st.history.past_len(), h0 + 1, "one undo step");
-        assert_eq!(st.history.undo_label(), Some(crate::move_mods::DUPLICATE_MOVE_LABEL));
+        // A drag that copies a layer is one "Move" step, as in Photoshop (#11383).
+        assert_eq!(st.history.undo_label(), Some(tl!("Move")));
         assert_eq!(h.state().ui.tool, tool);
     }
 }

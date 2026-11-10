@@ -32,11 +32,11 @@ impl Pass {
             return false;
         }
         if adapter.get_info().device_type == wgpu::DeviceType::Cpu {
-            log::info!("Camera Raw develops on the CPU: software graphics adapter");
+            log::info!("RAW Develop develops on the CPU: software graphics adapter");
             return false;
         }
         if !CameraRawDevelop::supported(adapter) {
-            log::info!("Camera Raw develops on the CPU: the adapter can't render Rgba32Float");
+            log::info!("RAW Develop develops on the CPU: the adapter can't render Rgba32Float");
             return false;
         }
         true
@@ -53,7 +53,7 @@ impl Pass {
             let (on, out) = (device.clone(), slot.clone());
             let spawned = std::thread::Builder::new().name("camera-raw-pipeline".into()).spawn(move || {
                 let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::build_on(&on))).unwrap_or_else(|_| {
-                    log::warn!("building the Camera Raw pipeline panicked; Camera Raw develops on the CPU");
+                    log::warn!("building the RAW Develop pipeline panicked; RAW Develop develops on the CPU");
                     None
                 });
                 let _ = out.set(pass);
@@ -70,7 +70,7 @@ impl Pass {
         match CameraRawDevelop::new(device) {
             Ok(pass) => Some(Pass(Arc::new(Mutex::new(pass)))),
             Err(e) => {
-                log::warn!("{e}; Camera Raw develops on the CPU");
+                log::warn!("{e}; RAW Develop develops on the CPU");
                 None
             }
         }
@@ -140,7 +140,7 @@ impl CameraRawGpu {
             match pass.develop(&self.device, &self.queue, Some(&self.health), px, key, size, &stages) {
                 Ok(out) => Some(out),
                 Err(e) => {
-                    log::warn!("{}; Camera Raw develops on the CPU", e.0);
+                    log::warn!("{}; RAW Develop develops on the CPU", e.0);
                     self.failed.store(true, Ordering::Relaxed);
                     None
                 }
@@ -215,7 +215,7 @@ mod tests {
         let _gpu = photocraft_testkit::gpu_lock();
         let Some((mut app, ctx)) = gpu_app(8) else { return };
         let canvas = app.gpu.clone().expect("GPU canvas");
-        assert!(!canvas.camera_raw_started(), "no Camera Raw pipeline at launch (#6419)");
+        assert!(!canvas.camera_raw_started(), "no RAW Develop pipeline at launch (#6419)");
         crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
         assert!(canvas.camera_raw_started(), "built (or refused) from the first open");
         assert_eq!(app.camera_raw.as_ref().map(|d| d.develop_backend), Some("cpu"), "the first frame doesn't wait for the pipeline");
@@ -233,7 +233,7 @@ mod tests {
             force_pass(&app);
             crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
             if app.camera_raw.as_ref().is_some_and(|d| d.gpu.is_none()) {
-                eprintln!("skipping: the device can't run the Camera Raw pass");
+                eprintln!("skipping: the device can't run the RAW Develop pass");
                 return;
             }
             let per_pixel = CameraRaw {
@@ -272,7 +272,7 @@ mod tests {
         force_pass(&app);
         crate::camera_raw_ui::open(&mut app, &ctx).unwrap();
         if app.camera_raw.as_ref().is_some_and(|d| d.gpu.is_none()) {
-            eprintln!("skipping: the device can't run the Camera Raw pass");
+            eprintln!("skipping: the device can't run the RAW Develop pass");
             return;
         }
         let (backend, _, _) = developed(&mut app, &ctx, CameraRaw { exposure: 0.5, ..Default::default() });

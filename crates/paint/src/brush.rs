@@ -538,7 +538,7 @@ pub struct Smoothing {
 
 impl Default for Smoothing {
     fn default() -> Self {
-        Self { enabled: true, amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: true, adjust_for_zoom: true }
+        Self { enabled: true, amount: 0.0, pulled_string: false, catch_up: true, catch_up_on_end: false, adjust_for_zoom: true }
     }
 }
 
@@ -630,7 +630,8 @@ impl Default for BrushSettings {
             spacing_enabled: true,
             opacity: 1.0,
             flow: 1.0,
-            pressure_size: true,
+            // Off, as the reference application leaves it after Reset Tool (#11809).
+            pressure_size: false,
             pressure_opacity: false,
             color: [0.0, 0.0, 0.0, 1.0],
             color_cmyk: None,
@@ -702,6 +703,15 @@ impl BrushSettings {
         brush.dual_brush.size = safe_size(brush.dual_brush.size);
         brush.scattering.scatter.jitter = safe_scatter(brush.scattering.scatter.jitter);
         brush.dual_brush.scatter = safe_scatter(brush.dual_brush.scatter);
+        // A NaN here would paint fully opaque (`f32::min` returns the other operand) or not at all;
+        // it falls back to the default (the values of `BrushSettings::default` and `DualBrush::default`). Every other value, infinities included, is left to the clamps downstream.
+        let nan_or = |v: f32, d: f32| if v.is_nan() { d } else { v };
+        brush.opacity = nan_or(brush.opacity, 1.0);
+        brush.flow = nan_or(brush.flow, 1.0);
+        brush.hardness = nan_or(brush.hardness, 1.0);
+        brush.spacing = nan_or(brush.spacing, 0.1);
+        brush.dual_brush.hardness = nan_or(brush.dual_brush.hardness, 1.0);
+        brush.dual_brush.spacing = nan_or(brush.dual_brush.spacing, 0.25);
         brush
     }
 

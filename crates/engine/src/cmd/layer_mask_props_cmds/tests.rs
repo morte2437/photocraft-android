@@ -45,10 +45,10 @@ fn edits_preserve_mask_pixels_and_layer_at_all_depths_with_undo_redo() {
             assert_eq!(s.active().unwrap().active_layer, Some(background));
             assert_eq!(s.active().unwrap().history.entries().len(), count + 1);
             // Properties invalidate the composite as far as their undo would (the masked layer is
-            // empty here; the adjustment reaches everything).
+            // empty here, and the adjustment reaches only what lies beneath it: nothing, #9329).
             let damage = s.active().unwrap().last_damage;
             assert_eq!(damage, crate::layer_multi_cmds::step_damage(&before, &s.active().unwrap().doc));
-            assert_eq!(damage.is_none(), adjustment);
+            assert_eq!(damage, Some(Rect::EMPTY), "adjustment: {adjustment}");
             s.execute("edit.undo", json!({})).unwrap();
             assert_eq!(*s.active().unwrap().doc, *before);
             s.execute("edit.redo", json!({})).unwrap();

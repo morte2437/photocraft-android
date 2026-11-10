@@ -130,26 +130,19 @@ pub(super) fn clone_stamp(s: &mut Session, p: &Value) -> Result<Value> {
     let from_live = live.is_some();
     let map = clone_mapping(s, p, &stroke, CMD)?;
     let off = map.offset();
-    let dmg =
-        run_stroke(s, "Clone Stamp", id, p, |pre, surf, sel, lock| {
-            if let Some(l) = live {
-                *surf = l.surface;
-                return Ok(l.bounds);
-            }
-            if flag(p, "wrap", false) {
-                let mut renderer = photocraft_paint::StrokeRenderer::new(&stroke.brush, None, 1.0);
-                renderer.push(&stroke.points);
-                renderer.finish();
-                let before = surf.clone();
-                let bounds = renderer.bounds();
-                return periodic::Composite { target: surf, before: &before, tile: pre.bounds(), opacity: stroke.brush.opacity, selection: sel, lock, mode }
-                    .draw(bounds, &stroke.brush, &stroke.points, |r| clone_sample(pre, id, &before, which, r, &map, true, CMD));
-            }
-            let (bounds, cov) = coverage(CMD, &stroke)?;
-            // Samples come from the pre-stroke state, so pixels painted earlier in the stroke are never re-cloned.
-            let paint = clone_sample(pre, id, surf, which, bounds, &map, flag(p, "wrap", false), CMD)?;
-            Ok(apply_coverage(surf, bounds, &cov, stroke.brush.opacity, sel, lock, &paint, mode))
-        })?;
+    let dmg = run_stroke(s, "Clone Stamp", id, p, |pre, surf, sel, lock| {
+        if let Some(l) = live {
+            *surf = l.surface;
+            return Ok(l.bounds);
+        }
+        if flag(p, "wrap", false) {
+            return periodic::stroke(pre, surf, &stroke, sel, lock, mode, CMD, |before, r| clone_sample(pre, id, before, which, r, &map, true, CMD));
+        }
+        let (bounds, cov) = coverage(CMD, &stroke)?;
+        // Samples come from the pre-stroke state, so pixels painted earlier in the stroke are never re-cloned.
+        let paint = clone_sample(pre, id, surf, which, bounds, &map, flag(p, "wrap", false), CMD)?;
+        Ok(apply_coverage(surf, bounds, &cov, stroke.brush.opacity, sel, lock, &paint, mode))
+    })?;
     let mut r = clone_result(dmg, off, aligned, p, &stroke);
     if from_live {
         r["fromLive"] = json!(true);
@@ -272,11 +265,14 @@ impl LiveRetouch {
     /// Everything the stroke has touched so far.
     pub fn bounds(&self) -> Rect {
         let bounds = self.renderer.bounds().union(&self.tail);
-        if self.cmd == "paint.cloneStamp" && flag(&self.params, "wrap", false) {
-            periodic::project(bounds, self.pre.bounds()).into_iter().fold(Rect::EMPTY, |a, b| a.union(&b))
-        } else {
-            bounds
-        }
+        if self.wraps() { periodic::project(bounds, self.pre.bounds()).into_iter().fold(Rect::EMPTY, |a, b| a.union(&b)) } else { bounds }
+    }
+
+    /// Whether the stroke repeats across the canvas edges (View › Pattern Preview). Only the Clone
+    /// Stamp and the Healing Brush do: the reference application's other retouching tools stop
+    /// at the edge.
+    fn wraps(&self) -> bool {
+        matches!(self.cmd.as_str(), "paint.cloneStamp" | "paint.healingBrush") && flag(&self.params, "wrap", false)
     }
 
     /// Every point rendered so far, in order.
@@ -328,7 +324,7 @@ impl LiveRetouch {
         let pts: Vec<_> = pts.iter().map(|q| StrokePoint::new(q.x, q.y, q.pressure)).collect();
         self.points.extend_from_slice(&pts);
         self.renderer.push(&pts);
-        if self.cmd == "paint.cloneStamp" && flag(&self.params, "wrap", false) {
+        if self.wraps() {
             return self.push_periodic();
         }
         let old = std::mem::replace(&mut self.tail, Rect::EMPTY);
@@ -360,6 +356,8 @@ impl LiveRetouch {
         let LivePaint::Clone { which, map, cmd } = &self.paint else {
             return Err(bad(&self.cmd, "periodic painting requires a clone source"));
         };
+        let (pre, id, pre_surf, live_cmd) = (&self.pre, self.id, &self.pre_surf, self.cmd.as_str());
+        let paint = |r| clone_sample(pre, id, pre_surf, *which, r, map, true, cmd);
         let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.id, &self.params)?;
         periodic::Composite {
             target: surf,
@@ -369,8 +367,9 @@ impl LiveRetouch {
             selection: self.sel.as_ref(),
             lock: self.lock,
             mode: self.mode,
+            cmd: live_cmd,
         }
-        .draw(dirty, &self.brush, &self.points, |r| clone_sample(&self.pre, self.id, &self.pre_surf, *which, r, map, true, cmd))
+        .draw(dirty, &self.brush, &self.points, paint)
     }
 
     /// Redraw `r` from the pre-stroke pixels with the clone source through coverage `cov`.

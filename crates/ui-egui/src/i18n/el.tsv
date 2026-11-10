@@ -144,6 +144,7 @@
 	Right	Δεξιά
 	Open Recent	Πρόσφατα αρχεία
 	Clear Recent Files	Εκκαθάριση πρόσφατων αρχείων
+	Clear Recent File List	Εκκαθάριση πρόσφατων αρχείων
 	Remove from Recent	Αφαίρεση από τα πρόσφατα
 	Remove {name} from Recent	Αφαίρεση του {name} από τα πρόσφατα
 	Close	Κλείσιμο
@@ -152,6 +153,10 @@
 	Restore	Επαναφορά
 	Close All	Κλείσιμο όλων
 	Close Others	Κλείσιμο των υπόλοιπων
+	New Document…	Νέο έγγραφο…
+	Open Document…	Άνοιγμα…
+	Consolidate All to Here	Συγκέντρωση όλων εδώ
+	Move to New Window	Μετακίνηση σε νέο παράθυρο
 	Save	Αποθήκευση
 	Save As…	Αποθήκευση ως…
 	Save a Copy…	Αποθήκευση αντιγράφου…
@@ -203,6 +208,7 @@
 	Create Smart Object after Loading Layers	Δημιουργία έξυπνου αντικειμένου μετά τη φόρτωση επιπέδων
 	Reveal in Finder	Εμφάνιση στο Finder
 	Show in Explorer	Εμφάνιση στην Εξερεύνηση αρχείων
+	Reveal in Explorer	Εμφάνιση στην Εξερεύνηση αρχείων
 	Show in Folder	Εμφάνιση στον φάκελο
 	File Info…	Πληροφορίες αρχείου…
 	Print…	Εκτύπωση…
@@ -260,6 +266,12 @@
 	Info	Πληροφορίες
 	Actions	Ενέργειες
 	Tools	Εργαλεία
+	Contextual Task Bar	Γραμμή εργασιών περιβάλλοντος
+	Hide bar	Απόκρυψη γραμμής
+	Reset bar position	Επαναφορά θέσης γραμμής
+	Pin bar position	Καρφίτσωμα θέσης γραμμής
+	Move bar	Μετακίνηση γραμμής
+	More options	Περισσότερες επιλογές
 	Zoom In	Μεγέθυνση
 	Zoom Out	Σμίκρυνση
 	Fit on Screen	Προσαρμογή στην οθόνη
@@ -755,6 +767,8 @@
 	Channel Mixer	Μείκτης καναλιών
 	Desaturate	Αφαίρεση κορεσμού
 	Equalize	Εξισορρόπηση
+	Equalize Selected Area Only	Εξισορρόπηση μόνο της επιλεγμένης περιοχής
+	Equalize Entire Image Based On Selected Area	Εξισορρόπηση ολόκληρης της εικόνας βάσει της επιλεγμένης περιοχής
 	Auto Tone	Αυτόματη διόρθωση τόνων
 	Auto Contrast	Αυτόματη αντίθεση
 	Auto Color	Αυτόματη διόρθωση χρωμάτων
@@ -855,7 +869,7 @@
 	Current Layer	Τρέχον επίπεδο
 	Current Size	Τρέχον μέγεθος
 	Custom Shapes	Προσαρμοσμένα σχήματα
-	Default colours (D)	Προεπιλεγμένα χρώματα (D)
+	Default Foreground and Background Colors (D)	Προεπιλεγμένα χρώματα (D)
 	Default printer	Προεπιλεγμένος εκτυπωτής
 	Default restored.	Έγινε επαναφορά των προεπιλογών.
 	Define at least one variable first.	Ορίστε πρώτα τουλάχιστον μία μεταβλητή.
@@ -881,7 +895,7 @@
 	Drop an image or PSD anywhere to open it.	Σύρετε μια εικόνα ή ένα PSD εδώ για να το ανοίξετε.
 	Native file drag-and-drop is unavailable	Η μεταφορά και απόθεση αρχείων δεν είναι διαθέσιμη
 	Open a document to define variables.	Ανοίξτε ένα έγγραφο για να ορίσετε μεταβλητές.
-	Open a document to select a colour range.	Ανοίξτε ένα έγγραφο για να επιλέξετε εύρος χρωμάτων.
+	Open a document to select a color range.	Ανοίξτε ένα έγγραφο για να επιλέξετε εύρος χρωμάτων.
 	Open a document to use the timeline.	Ανοίξτε ένα έγγραφο για να χρησιμοποιήσετε τη χρονογραμμή.
 	Option-click to define a source point to clone from	Πατήστε Option και κάντε κλικ για να ορίσετε σημείο προέλευσης κλωνοποίησης
 	Output Channel:	Κανάλι εξόδου:
@@ -916,7 +930,6 @@
 	Protect Foreground Color	Προστασία χρώματος προσκηνίου
 	Protect Tones	Προστασία τονικών τιμών
 	Quick Actions	Γρήγορες ενέργειες
-	Quick Export As PNG	Γρήγορη εξαγωγή ως PNG
 	Radial Gradient	Ακτινική διαβάθμιση
 	Paints from the document's opening state	Ζωγραφίζει χρησιμοποιώντας την αρχική κατάσταση του εγγράφου
 	PhotoCraft website	Ιστότοπος PhotoCraft
@@ -926,7 +939,7 @@
 	Portrait, 5 x 7	Κατακόρυφο, 5 × 7
 	Protect Texture	Προστασία υφής
 	Recent	Πρόσφατα
-	Sample: foreground colour	Δείγμα: χρώμα προσκηνίου
+	Sample: foreground color	Δείγμα: χρώμα προσκηνίου
 	Sampled Colors	Χρώματα δείγματος
 	Save Pixel Aspect Ratio	Διατήρηση αναλογίας εικονοστοιχείων
 	Scratch Sizes	Μεγέθη πρόχειρης μνήμης
@@ -1227,7 +1240,7 @@
 	Discard Layers and Save a Copy	Απόρριψη επιπέδων και αποθήκευση αντιγράφου
 	Don't show again	Να μην εμφανιστεί ξανά
 	Save failed: {error}	Αποτυχία αποθήκευσης: {error}
-	Save cancelled	Η αποθήκευση ακυρώθηκε
+	Save canceled	Η αποθήκευση ακυρώθηκε
 	Use tablet pressure to change pen width	Χρησιμοποιήστε την πίεση της γραφίδας για να αλλάξετε το πλάτος της
 	Date and Time	Ημερομηνία και ώρα
 	Scale Units	Μονάδες κλίμακας
@@ -1589,11 +1602,10 @@
 	Company	Εταιρεία
 	% of all commits	% του συνόλου των commits
 	Lines +/−	Γραμμές +/−
-	Open in camera raw	Άνοιγμα στο Camera Raw
 	System title bar	Γραμμή τίτλου συστήματος
 	More documents	Περισσότερα έγγραφα
 	Developing {name}	Επεξεργασία του {name}
-	Camera Raw ({name})	Επεξεργασία RAW ({name})
+	RAW Develop ({name})	Επεξεργασία RAW ({name})
 	New Brush Preset…	Νέα προεπιλογή πινέλου…
 	Capture Brush Size in Preset	Αποθήκευση μεγέθους πινέλου στην προεπιλογή
 	Include Tool Settings	Συμπερίληψη ρυθμίσεων εργαλείου
@@ -1606,7 +1618,6 @@
 	Show only crosshair while painting	Εμφάνιση μόνο σταυρονήματος κατά τη ζωγραφική
 	Show slice numbers	Εμφάνιση αριθμών τομών
 	Show tooltips	Εμφάνιση επεξηγήσεων
-	Enable animations	Ενεργοποίηση κινούμενων εφέ
 	Show highlight on rollover	Εμφάνιση επισήμανσης κατά την κατάδειξη
 	Show bounding box when dragging layer	Εμφάνιση πλαισίου οριοθέτησης κατά τη μετακίνηση επιπέδου
 	Show transformation values	Εμφάνιση τιμών μετασχηματισμού
@@ -1684,7 +1695,7 @@
 	Gradient Options	Επιλογές διαβάθμισης
 	Align with layer	Στοίχιση με το επίπεδο
 	Reset Alignment	Επαναφορά στοίχισης
-	Centre the gradient (offset 0, 0)	Κεντράρισμα διαβάθμισης (μετατόπιση 0, 0)
+	Center the gradient (offset 0, 0)	Κεντράρισμα διαβάθμισης (μετατόπιση 0, 0)
 	Refine Strokes	Πινελιές βελτίωσης
 	Edits	Επεξεργασίες
 	Gradient Editor	Επεξεργασία διαβάθμισης
@@ -1714,7 +1725,7 @@
 	Alt-click to define a source point to clone from	Alt-κλικ για ορισμό σημείου προέλευσης κλωνοποίησης
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Δεν υπάρχει διαδρομή για δημιουργία επιλογής: σχεδιάστε μία με το εργαλείο Πένα (Pen Tool) ή επιλέξτε μία στο πλαίσιο Διαδρομές.
 	Cancel opening	Ακύρωση ανοίγματος
-	Cancelled opening {name}	Ακυρώθηκε το άνοιγμα του {name}
+	Canceled opening {name}	Ακυρώθηκε το άνοιγμα του {name}
 	Damaged Photoshop document	Κατεστραμμένο έγγραφο Photoshop
 	The document “{name}” may be damaged.	Το έγγραφο «{name}» μπορεί να είναι κατεστραμμένο.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Δεν ήταν δυνατή η ανάγνωση ορισμένων επιπέδων, εικονοστοιχείων ή μασκών. Θέλετε να συνεχίσετε το άνοιγμα;
@@ -1722,7 +1733,7 @@
 	The document “{name}” does not have an embedded {mode} profile.	Το έγγραφο «{name}» δεν έχει ενσωματωμένο προφίλ {mode}.
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Το έγγραφο «{name}» έχει ενσωματωμένο χρωματικό προφίλ που δεν ταιριάζει με τον τρέχοντα χώρο εργασίας {mode}.
 	Working: {working}	Χώρος εργασίας: {working}
-	Cancelled {label}	Ακυρώθηκε: {label}
+	Canceled {label}	Ακυρώθηκε: {label}
 	Esc to cancel	Esc για ακύρωση
 	Opened {name}	Άνοιξε το {name}
 	Opening {name}	Άνοιγμα του {name}
@@ -1730,7 +1741,7 @@
 	Saving {name}	Αποθήκευση του {name}
 	Saving {percent}	Αποθήκευση {percent}
 	A save to {name} is still running; try again when it finishes	Η αποθήκευση στο {name} βρίσκεται ακόμη σε εξέλιξη· δοκιμάστε ξανά όταν ολοκληρωθεί
-	{label} is writing the file and can no longer be cancelled	{label}: γίνεται εγγραφή του αρχείου και δεν μπορεί πλέον να ακυρωθεί
+	{label} is writing the file and can no longer be canceled	{label}: γίνεται εγγραφή του αρχείου και δεν μπορεί πλέον να ακυρωθεί
 	Opening {name}…	Άνοιγμα του {name}…
 	Opening…	Άνοιγμα…
 	Reading…	Ανάγνωση…
@@ -1745,6 +1756,7 @@
 	Allow agent control	Να επιτρέπεται ο έλεγχος από πράκτορες
 	Allow scripts to connect	Να επιτρέπεται η σύνδεση σεναρίων
 	Always create smart objects when placing	Να δημιουργούνται πάντα έξυπνα αντικείμενα κατά την τοποθέτηση
+	Skip transform when placing	Παράλειψη μετασχηματισμού κατά την τοποθέτηση
 	Animated zoom	Κινούμενη μεγέθυνση
 	Apply auto tone	Εφαρμογή αυτόματης τονικής διόρθωσης
 	Ask before saving layered tiff	Ερώτηση πριν από την αποθήκευση TIFF με επίπεδα
@@ -1761,11 +1773,16 @@
 	Brush preview color	Χρώμα προεπισκόπησης πινέλου
 	Cache levels	Επίπεδα προσωρινής μνήμης
 	Cache tile size	Μέγεθος πλακιδίου προσωρινής μνήμης
-	Camera Raw Defaults	Προεπιλογές Camera Raw
+	RAW Defaults	Προεπιλογές RAW
 	Canvas border	Περίγραμμα καμβά
 	Show canvas dots	Εμφάνιση κουκκίδων καμβά
 	Clip thumbnails to layer bounds	Περικοπή μικρογραφιών στα όρια του επιπέδου
 	Clip Thumbnails to Layer Bounds	Περικοπή μικρογραφιών στα όρια του επιπέδου
+	No Thumbnails	Χωρίς μικρογραφίες
+	Small Thumbnails	Μικρές μικρογραφίες
+	Medium Thumbnails	Μεσαίες μικρογραφίες
+	Large Thumbnails	Μεγάλες μικρογραφίες
+	Clip Thumbnails to Document Bounds	Περικοπή μικρογραφιών στα όρια του εγγράφου
 	Canvas color	Χρώμα καμβά
 	Canvas custom color	Προσαρμοσμένο χρώμα καμβά
 	Color picker	Επιλογέας χρώματος
@@ -1847,6 +1864,7 @@
 	Units & Rulers…	Μονάδες και χάρακες…
 	Guides, Grid & Slices…	Οδηγοί, πλέγμα και τομές…
 	Plug-ins…	Πρόσθετα…
+	Plugins…	Πρόσθετα…
 	Type…	Κείμενο…
 	Enhanced Controls…	Προηγμένα χειριστήρια…
 	Raw Defaults…	Προεπιλογές RAW…
@@ -1908,8 +1926,8 @@
 	Group…	Ομάδα…
 	Artboard…	Πίνακας σχεδίασης…
 	Artboard from Group…	Πίνακας σχεδίασης από ομάδα…
-	Layer via Copy	Επίπεδο μέσω αντιγραφής
-	Layer via Cut	Επίπεδο μέσω αποκοπής
+	Layer Via Copy	Επίπεδο μέσω αντιγραφής
+	Layer Via Cut	Επίπεδο μέσω αποκοπής
 	Layer From Background…	Επίπεδο από φόντο…
 	Layer from Background…	Επίπεδο από φόντο…
 	Background From Layer	Φόντο από επίπεδο
@@ -1951,6 +1969,8 @@
 	Hide Selection	Απόκρυψη επιλογής
 	From Transparency	Από διαφάνεια
 	Convert to Embedded	Μετατροπή σε ενσωματωμένο
+	Embed Linked	Ενσωμάτωση συνδεδεμένου
+	Embed All Linked	Ενσωμάτωση όλων των συνδεδεμένων
 	Convert to Linked…	Μετατροπή σε συνδεδεμένο…
 	Edit Contents	Επεξεργασία περιεχομένου
 	Replace Contents…	Αντικατάσταση περιεχομένου…
@@ -2009,7 +2029,9 @@
 	Unite Shapes	Ένωση σχημάτων
 	Subtract Front Shape	Αφαίρεση μπροστινού σχήματος
 	Intersect Shape Areas	Τομή περιοχών σχημάτων
+	Unite Shapes at Overlap	Τομή περιοχών σχημάτων
 	Exclude Overlapping Shapes	Εξαίρεση επικαλυπτόμενων σχημάτων
+	Subtract Shapes at Overlap	Εξαίρεση επικαλυπτόμενων σχημάτων
 	Merge Shape Components	Συγχώνευση συστατικών σχήματος
 	Path operations	Λειτουργίες διαδρομών
 	Top Edges	Επάνω ακμές
@@ -2046,11 +2068,11 @@
 	Load Settings…	Φόρτωση ρυθμίσεων…
 	Save these settings as a Camera Raw .xmp file	Αποθήκευση αυτών των ρυθμίσεων ως αρχείο Camera Raw .xmp
 	Load settings from a Camera Raw .xmp file	Φόρτωση ρυθμίσεων από αρχείο Camera Raw .xmp
-	Loaded Camera Raw settings from {file}	Φορτώθηκαν ρυθμίσεις Camera Raw από το {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Φορτώθηκαν ρυθμίσεις Camera Raw από το {file} ({n} δεν υποστηρίζονται)
+	Loaded RAW Develop settings from {file}	Φορτώθηκαν ρυθμίσεις Επεξεργασία RAW από το {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	Φορτώθηκαν ρυθμίσεις Επεξεργασία RAW από το {file} ({n} δεν υποστηρίζονται)
 	Blending	Ανάμειξη
-	Camera Raw Filter ({layer})	Φίλτρο Camera Raw ({layer})
-	Camera Raw isn't open	Το Camera Raw δεν είναι ανοιχτό
+	RAW Develop Filter ({layer})	Φίλτρο Επεξεργασία RAW ({layer})
+	RAW Develop isn't open	Το Επεξεργασία RAW δεν είναι ανοιχτό
 	Clarity	Διαύγεια
 	Color Detail	Λεπτομέρεια χρώματος
 	Color Grading	Χρωματική διαβάθμιση
@@ -2139,7 +2161,6 @@
 	Adds grain to the soft edges of the brush tip.	Προσθέτει κόκκο στις απαλές άκρες του πινέλου.
 	Adjust for Zoom	Προσαρμογή στη μεγέθυνση
 	Adjustment visible	Η προσαρμογή είναι ορατή
-	Adobe PDF Presets…	Προεπιλογές Adobe PDF…
 	Adobe RGB (1998) compatible	Συμβατό με Adobe RGB (1998)
 	Advanced Blending	Σύνθετες επιλογές ανάμειξης
 	After (X)	Μετά (X)
@@ -2239,10 +2260,10 @@
 	Bulge	Κυρτότητα
 	Cache Level:	Επίπεδο προσωρινής μνήμης:
 	Calculations	Υπολογισμοί
-	Camera Raw	Επεξεργασία ακατέργαστης εικόνας
-	Camera Raw Filter	Φίλτρο επεξεργασίας ακατέργαστης εικόνας
-	Camera Raw Filter…	Φίλτρο επεξεργασίας ακατέργαστης εικόνας…
-	Camera Raw…	Επεξεργασία ακατέργαστης εικόνας…
+	RAW Develop	Επεξεργασία RAW
+	RAW Develop Filter	Φίλτρο Επεξεργασία RAW
+	RAW Develop Filter…	Φίλτρο Επεξεργασία RAW…
+	RAW Defaults…	Προεπιλογές RAW…
 	Cancel (Esc)	Ακύρωση (Esc)
 	Manage submitted jobs in the system print queue	Διαχειριστείτε τις υποβληθείσες εργασίες στην ουρά εκτύπωσης του συστήματος
 	Cancel any current edits (Esc)	Ακύρωση τρεχουσών αλλαγών (Esc)
@@ -2295,9 +2316,9 @@
 	Click to add text	Κάντε κλικ για προσθήκη κειμένου
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Κλικ για εφαρμογή, {key}-κλικ για απαλοιφή αλλαγών, διπλό κλικ για επιλογές στυλ
 	Click to edit the gradient	Κάντε κλικ για επεξεργασία της διαβάθμισης
-	Click to fill similar colours	Κάντε κλικ για γέμισμα παρόμοιων χρωμάτων
-	Click to restore the current colour	Κάντε κλικ για επαναφορά του τρέχοντος χρώματος
-	Click to sample the foreground colour  ·  {key}-click for background	Κλικ για δειγματοληψία χρώματος προσκηνίου · {key}-κλικ για φόντο
+	Click to fill similar colors	Κάντε κλικ για γέμισμα παρόμοιων χρωμάτων
+	Click to restore the current color	Κάντε κλικ για επαναφορά του τρέχοντος χρώματος
+	Click to sample the foreground color  ·  {key}-click for background	Κλικ για δειγματοληψία χρώματος προσκηνίου · {key}-κλικ για φόντο
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Κλικ για μεγέθυνση · {key}-κλικ για σμίκρυνση · σύρσιμο δεξιά/αριστερά για αλλαγή μεγέθυνσης
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Κλικ: γωνία · Σύρσιμο: εξομάλυνση · Κλικ στο πρώτο σημείο: κλείσιμο · {key}: τέλος · Esc: ακύρωση
 	Click: corner · Drag: smooth · {alt}-drag: break handle · Click or drag first point: close · {key} finish · Esc cancel	Κλικ: γωνία · Σύρσιμο: εξομάλυνση · {alt}+σύρσιμο: διάσπαση λαβής · Κλικ ή σύρσιμο στο πρώτο σημείο: κλείσιμο · {key}: τέλος · Esc: ακύρωση
@@ -2314,8 +2335,8 @@
 	Collapse	Σύμπτυξη
 	Collapse group  ({key}-click: all groups)	Σύμπτυξη ομάδας  ({key}-κλικ: όλες οι ομάδες)
 	Color & Swatches	Χρώμα και δείγματα
-	Color Blindness — Deuteranopia-type	Αχρωματοψία — τύπος δευτερανωπίας
-	Color Blindness — Protanopia-type	Αχρωματοψία — τύπος πρωτανωπίας
+	Color Blindness - Deuteranopia-type	Αχρωματοψία - τύπος δευτερανωπίας
+	Color Blindness - Protanopia-type	Αχρωματοψία - τύπος πρωτανωπίας
 	Color Decontaminate	Απομάκρυνση χρωματικής επιμόλυνσης
 	Color Dynamics	Δυναμική χρώματος
 	Color Halftone	Χρωματικός ημιτονισμός
@@ -2448,8 +2469,8 @@
 	Dots	Κουκκίδες
 	Down	Κάτω
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Σύρετε για λάσο ή κάντε κλικ για πολυγωνική επιλογή · {add} προσθήκη · {sub} αφαίρεση
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Σύρετε για περιοχή περικοπής · σύρετε στο εσωτερικό για μετακίνηση · από τα άκρα αλλάζει μέγεθος ({ratio} αναλογία, {centre} κέντρο) · Space για μετακίνηση κατά τη σχεδίαση · βέλη για μετακίνηση · X εναλλαγή προσανατολισμού · {commit} εφαρμογή · Esc ακύρωση
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Σύρετε γύρω από το κέντρο για να περιστρέψετε την προβολή  ·  Shift περιορίζει στις 15°
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Σύρετε για περιοχή περικοπής · σύρετε στο εσωτερικό για μετακίνηση · από τα άκρα αλλάζει μέγεθος ({ratio} αναλογία, {centre} κέντρο) · Space για μετακίνηση κατά τη σχεδίαση · βέλη για μετακίνηση · X εναλλαγή προσανατολισμού · {commit} εφαρμογή · Esc ακύρωση
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Σύρετε γύρω από το κέντρο για να περιστρέψετε την προβολή  ·  Shift περιορίζει στις 15°
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Σύρετε πάνω στην εικόνα για προσθήκη περιορισμού· Shift για οριζόντιο/κατακόρυφο· δεξί κλικ σε έναν περιορισμό για αλλαγή ή διαγραφή.
 	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Σύρετε ή κάντε κλικ για πολυγωνικά σημεία · κρατήστε Alt κατά το λάσο για ευθείες · {add} προσθήκη · {sub} αφαίρεση πριν από τη σχεδίαση
 	Drag to draw a gradient	Σύρετε για να σχεδιάσετε διαβάθμιση
@@ -2665,13 +2686,12 @@
 	Install Plug-in	Εγκατάσταση προσθέτου
 	Integrations	Ενσωματώσεις
 	Interlaced	Πεπλεγμένο
-	Internet Standard RGB	Τυπικό RGB διαδικτύου
+	Internet Standard RGB (sRGB)	Τυπικό RGB διαδικτύου (sRGB)
 	Interpolation:	Παρεμβολή:
 	Interpret Footage	Ερμηνεία πλάνων
 	Intersect with selection  ({key})	Τομή με την επιλογή  ({key})
 	Intersect with selection  (⇧⌥)	Τομή με την επιλογή  (⇧⌥)
 	Invalid {mode} profile	Μη έγκυρο προφίλ {mode}
-	Inverse Selection	Αντιστροφή επιλογής
 	Invert All	Αντιστροφή όλων
 	Invert has no settings.	Η αντιστροφή δεν διαθέτει ρυθμίσεις.
 	Invert…	Αντιστροφή…
@@ -2718,7 +2738,7 @@
 	Leave as is (don't color manage)	Διατήρηση ως έχει (χωρίς διαχείριση χρώματος)
 	Left align text	Αριστερή στοίχιση κειμένου
 	Legacy	Παλαιού τύπου
-	Legacy Macintosh RGB	Παλαιό Macintosh RGB
+	Legacy Macintosh RGB (Gamma 1.8)	Παλαιό Macintosh RGB (Gamma 1.8)
 	Legacy compositing	Παλαιός τρόπος σύνθεσης
 	Legal	Μέγεθος Legal
 	Length:	Μήκος:
@@ -2782,6 +2802,7 @@
 	Make	Κατασκευαστής
 	Make Default	Ορισμός ως προεπιλογής
 	Make Selection	Δημιουργία επιλογής
+	Make Shape	Δημιουργία σχήματος
 	Make Work Path	Δημιουργία διαδρομής εργασίας
 	Marker Size	Μέγεθος δείκτη
 	Master	Κύριο
@@ -2855,7 +2876,6 @@
 	New Video Group	Νέα ομάδα βίντεο
 	New Video Layer	Νέο επίπεδο βίντεο
 	New Video Layer from File	Νέο επίπεδο βίντεο από αρχείο
-	New Window for Document	Νέο παράθυρο για το έγγραφο
 	New Workspace	Νέος χώρος εργασίας
 	New Workspace…	Νέος χώρος εργασίας…
 	New document…	Νέο έγγραφο…
@@ -2948,6 +2968,7 @@
 	Play	Αναπαραγωγή
 	Play selection	Αναπαραγωγή επιλογής
 	Plug-ins	Πρόσθετα
+	Plugins	Πρόσθετα
 	Point size	Μέγεθος σε σημεία
 	Pointillize	Πουαντιγισμός
 	Pointillize…	Πουαντιγισμός…
@@ -3262,7 +3283,7 @@
 	Sumi-e	Ιαπωνική ζωγραφική με μελάνι
 	Surface Blur	Θόλωση επιφάνειας
 	Surface Blur…	Θόλωση επιφάνειας…
-	Swap colours (X)	Εναλλαγή χρωμάτων (X)
+	Switch Foreground and Background Colors (X)	Εναλλαγή χρωμάτων (X)
 	Swaps height and width	Εναλλαγή ύψους και πλάτους
 	Swash	Διακοσμητικά τελειώματα
 	Switch between free transform and warp modes	Εναλλαγή ελεύθερου μετασχηματισμού και παραμόρφωσης
@@ -3335,7 +3356,6 @@
 	Use File › Open to open an image.	Χρησιμοποιήστε Αρχείο › Άνοιγμα για να ανοίξετε μια εικόνα.
 	Use Legacy	Χρήση παλαιάς λειτουργίας
 	Use Measurement Scale	Χρήση κλίμακας μέτρησης
-	Uses the foreground and background colours.	Χρησιμοποιεί τα χρώματα προσκηνίου και φόντου.
 	Vanishing Point	Σημείο φυγής
 	Vanishing Point…	Σημείο φυγής…
 	Variable Data Sets	Σύνολα δεδομένων μεταβλητών
@@ -3371,7 +3391,7 @@
 	Word Spacing	Διάστημα λέξεων
 	Work Path	Διαδρομή εργασίας
 	Working Black Plate	Κανάλι μαύρου εργασίας
-	Working CMY Plate	Κανάλια CMY εργασίας
+	Working CMY Plates	Κανάλια CMY εργασίας
 	Working CMYK	Χώρος εργασίας CMYK
 	Working Cyan Plate	Κανάλι κυανού εργασίας
 	Working Gray Plate	Κανάλι γκρι εργασίας
@@ -3459,6 +3479,7 @@ cameraRaw	Yellow	Κίτρινο
 	Move Tool	Μετακίνηση (Move Tool)
 	Could not use the move tool because the layer is locked.	Δεν ήταν δυνατή η χρήση του εργαλείου Μετακίνηση, επειδή το επίπεδο είναι κλειδωμένο.
 	Could not complete the Free Transform command because the layer is locked.	Δεν ήταν δυνατή η ολοκλήρωση της εντολής Ελεύθερος μετασχηματισμός, επειδή το επίπεδο είναι κλειδωμένο.
+	Could not transform because the layer is locked.	Δεν ήταν δυνατός ο μετασχηματισμός, επειδή το επίπεδο είναι κλειδωμένο.
 	Note Tool	Σημείωση (Note Tool)
 	Object Selection Tool	Επιλογή αντικειμένου (Object Selection Tool)
 	Paint Bucket Tool	Κουβάς γεμίσματος (Paint Bucket Tool)
@@ -3687,8 +3708,8 @@ fontWeight	Thin	Πολύ λεπτά
 	All Layers No Adjustments	Όλα τα επίπεδα χωρίς προσαρμογές
 	Current & Below No Adjustments	Τρέχον και υποκείμενα χωρίς προσαρμογές
 	Show Sampling Ring	Εμφάνιση δακτυλίου δειγματοληψίας
-	Out of gamut for printing: click for the nearest printable colour	Εκτός γκάμας εκτύπωσης: κάντε κλικ για το πλησιέστερο εκτυπώσιμο χρώμα
-	Not a web colour: click for the nearest web colour	Δεν είναι χρώμα web: κάντε κλικ για το πλησιέστερο χρώμα web
+	Out of gamut for printing: click for the nearest printable color	Εκτός γκάμας εκτύπωσης: κάντε κλικ για το πλησιέστερο εκτυπώσιμο χρώμα
+	Not a web color: click for the nearest web color	Δεν είναι χρώμα web: κάντε κλικ για το πλησιέστερο χρώμα web
 	Color to Alpha…	Χρώμα σε άλφα…
 	Transparency Threshold	Κατώφλι διαφάνειας
 	Opacity Threshold	Κατώφλι αδιαφάνειας
@@ -3989,7 +4010,7 @@ curves	Smooth	Εξομάλυνση
 	Auto Add/Delete	Αυτόματη προσθήκη/διαγραφή
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Μην ενεργοποιείτε επίσης τον κατοπτρισμό στις ρυθμίσεις εκτύπωσης: οι δύο αναστροφές αλληλοαναιρούνται.
 	Print Settings…	Ρυθμίσεις εκτύπωσης…
-	Remember to turn off the printer's own colour management in Print Settings…	Θυμηθείτε να απενεργοποιήσετε τη διαχείριση χρωμάτων του εκτυπωτή στις ρυθμίσεις εκτύπωσης…
+	Remember to turn off the printer's own color management in Print Settings…	Θυμηθείτε να απενεργοποιήσετε τη διαχείριση χρωμάτων του εκτυπωτή στις ρυθμίσεις εκτύπωσης…
 	Sent to {printer}	Στάλθηκε στον {printer}
 	set in Print Settings…	ορίζεται στις ρυθμίσεις εκτύπωσης…
 	ICO is limited to 256 × 256 pixels	Το ICO περιορίζεται σε 256 × 256 εικονοστοιχεία
@@ -4120,12 +4141,12 @@ curves	Smooth	Εξομάλυνση
 	Decrease Brush Hardness	Μείωση σκληρότητας πινέλου
 	Increase Brush Hardness	Αύξηση σκληρότητας πινέλου
 	Demosaic	Αποψηφιδοποίηση
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Πώς συμπληρώνεται το ψηφιδωτό του χρωματικού φίλτρου της κάμερας. Εφαρμόζεται όταν ανοίγει το αρχείο· η προεπισκόπηση δείχνει τη μέθοδο με την οποία άνοιξε.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Πώς συμπληρώνεται το ψηφιδωτό του χρωματικού φίλτρου της κάμερας. Εφαρμόζεται όταν ανοίγει το αρχείο· η προεπισκόπηση δείχνει τη μέθοδο με την οποία άνοιξε.
 	AHD (adaptive homogeneity)	AHD (προσαρμοστική ομοιογένεια)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: οι πιο καθαρές ακμές και τα λιγότερα χρωματικά περιθώρια, η πιο αργή.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Παρεμβολή με διόρθωση κλίσης: ευκρινής και γρήγορη, με λίγα χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
-	The fastest and the softest, with colour fringing on fine detail.	Η πιο γρήγορη και η πιο μαλακή, με χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: οι πιο καθαρές ακμές και τα λιγότερα χρωματικά περιθώρια, η πιο αργή.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Παρεμβολή με διόρθωση κλίσης: ευκρινής και γρήγορη, με λίγα χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
+	The fastest and the softest, with color fringing on fine detail.	Η πιο γρήγορη και η πιο μαλακή, με χρωματικά περιθώρια στις λεπτές λεπτομέρειες.
 	“{name}” already exists. Replace it?	Το «{name}» υπάρχει ήδη. Να αντικατασταθεί;
 	The name in the save dialog was “{name}”.	Το όνομα στο παράθυρο αποθήκευσης ήταν «{name}».
 	Previous Brush	Προηγούμενο πινέλο
@@ -4184,8 +4205,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	Διαβάθμιση του γκρι
 	Current Colors	Τρέχοντα χρώματα
 	Make Ramp Web Safe	Μόνο χρώματα ιστού στη διαβάθμιση
+	Scroll All Windows	Κύλιση όλων των παραθύρων
 	The path was kept as the Work Path	Η διαδρομή διατηρήθηκε ως διαδρομή εργασίας
 	The path was discarded	Η διαδρομή απορρίφθηκε
+# Art History Brush (#213).
 	Art History Brush Tool	Πινέλο ιστορικού τέχνης (Art History Brush Tool)
 	Tight Short	Σφιχτό κοντό
 	Tight Medium	Σφιχτό μεσαίο
@@ -4268,3 +4291,42 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	The frame is unavailable	Το πλαίσιο δεν είναι διαθέσιμο
 	X	X
 	Y	Y
+
+# Channels panel menu (#11451)
+	New Channel…	Νέο κανάλι…
+	Duplicate Channel	Δημιουργία αντιγράφου καναλιού
+	Delete Channel	Διαγραφή καναλιού
+	New Spot Channel…	Νέο κανάλι πλακάτου χρώματος…
+	Merge Spot Channel	Συγχώνευση καναλιού πλακάτου χρώματος
+	Channel Options…	Επιλογές καναλιού…
+	Split Channels	Διαχωρισμός καναλιών
+	Merge Channels…	Συγχώνευση καναλιών…
+	Specify Channels:	Καθορισμός καναλιών:
+	Not enough grayscale documents for this mode.	Δεν υπάρχουν αρκετά έγγραφα σε κλίμακα του γκρι για αυτή τη λειτουργία.
+	Pick a different document for each channel.	Επιλέξτε διαφορετικό έγγραφο για κάθε κανάλι.
+	A picked document is no longer open.	Ένα από τα επιλεγμένα έγγραφα δεν είναι πλέον ανοιχτό.
+	A picked document is no longer a grayscale document of the same size.	Ένα από τα επιλεγμένα έγγραφα δεν είναι πλέον έγγραφο σε κλίμακα του γκρι ίδιου μεγέθους.
+	Netscape Gray	Γκρι Netscape
+# Move tool options bar (#11381)
+	Align top edges	Στοίχιση πάνω άκρων
+	Align vertical centers	Στοίχιση κατακόρυφων κέντρων
+	Align bottom edges	Στοίχιση κάτω άκρων
+	Distribute vertically	Κατανομή κατακόρυφα
+	Distribute horizontally	Κατανομή οριζόντια
+	Show layer bounds on hover	Εμφάνιση ορίων στρώσης στο πέρασμα του δείκτη
+	Expand layer group on click	Ανάπτυξη ομάδας στρώσεων με κλικ
+	Show hover bounds from Layers	Εμφάνιση ορίων στο πέρασμα από τις Στρώσεις
+	Saved RAW Develop settings to {file}	Οι ρυθμίσεις Επεξεργασία RAW αποθηκεύτηκαν στο {file}
+	Save the settings to each raw's sidecar without opening it	Αποθήκευση των ρυθμίσεων στο συνοδευτικό αρχείο κάθε raw χωρίς άνοιγμα
+	No settings saved: these raws can't keep a sidecar here	Δεν αποθηκεύτηκε τίποτα: αυτά τα raw δεν μπορούν να έχουν συνοδευτικό αρχείο εδώ
+	Some settings could not be saved; the raws stay open	Ορισμένες ρυθμίσεις δεν ήταν δυνατό να αποθηκευτούν· τα raw παραμένουν ανοιχτά
+	Nothing to save: these raws are at their default settings	Τίποτα για αποθήκευση: αυτά τα raw έχουν τις προεπιλεγμένες ρυθμίσεις
+# Artboard tool options bar (#11385)
+	Distribute Widths	Κατανομή πλατών
+	Distribute Heights	Κατανομή υψών
+	Auto-nest Layers	Αυτόματη ένθεση επιπέδων
+	Auto-size Canvas	Αυτόματη αλλαγή μεγέθους καμβά
+	Keep Relative Position During Layer Reordering	Διατήρηση σχετικής θέσης κατά την αναδιάταξη επιπέδων
+	Shrinkwrap Canvas on Save	Σμίκρυνση καμβά στο περιεχόμενο κατά την αποθήκευση
+	Move Toolbar to the Right	Μετακίνηση γραμμής εργαλείων δεξιά
+	Move Toolbar to the Left	Μετακίνηση γραμμής εργαλείων αριστερά

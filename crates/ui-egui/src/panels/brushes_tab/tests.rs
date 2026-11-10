@@ -188,6 +188,8 @@ fn brush_picker_cards_follow_the_part_boxes() {
     h.state_mut().run("file.new", serde_json::json!({"width": 400, "height": 300})).unwrap();
     h.state_mut().ui.tool = crate::state::Tool::Brush;
     h.state_mut().ui.brush_picker = Some([300.0, 120.0]);
+    // Every part on (Brush Tip starts off).
+    h.state_mut().ui.brush_picker_list.show_tip = true;
     h.run_steps(8);
     let presets = h.state().session.tools.presets.clone();
     let cards = |h: &Harness<'_, PhotocraftApp>| -> Vec<Rect> {

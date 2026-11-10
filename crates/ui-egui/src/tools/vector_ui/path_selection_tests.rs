@@ -537,3 +537,28 @@ fn cmd_shift_and_alt_enter_use_the_path_selected_in_the_paths_panel() {
     press(&mut h, Key::Enter, Modifiers { alt: true, ..command() });
     assert_eq!(selection(&h), Some([40, 40, 20, 20]), "{}", h.state().ui.status);
 }
+
+/// The selected area in pixels (partly selected pixels count in part).
+fn selected_area(h: &Harness<'_, PhotocraftApp>) -> f32 {
+    let d = &h.state().session.active().unwrap().doc;
+    d.selection.as_ref().map_or(0.0, |s| s.read_region(d.bounds()).iter().sum())
+}
+
+/// #7726: as in Photoshop, ⇧⌘↩ adds the path to the selection, ⌥⌘↩ subtracts it and ⇧⌥⌘↩
+/// intersects them. A 100×60 selection and a 100×20 path overlapping it by 40×20; the areas are
+/// Photoshop 2025's for the same document.
+#[test]
+fn shift_and_option_with_cmd_enter_combine_the_path_with_the_selection() {
+    let alt = Modifiers { alt: true, ..command() };
+    let shift = Modifiers { shift: true, ..command() };
+    let both = Modifiers { shift: true, ..alt };
+    for (mods, area) in [(shift, 7200.0), (alt, 5200.0), (both, 800.0), (command(), 2000.0)] {
+        let mut h = harness();
+        h.state_mut().run("path.set", json!({"name": "work", "path": rect_path(80.0, 40.0, 100.0, 20.0)})).unwrap();
+        h.state_mut().run("select.rect", json!({"x": 20, "y": 20, "width": 100, "height": 60, "antiAlias": false})).unwrap();
+        h.state_mut().ui.tool = Tool::Brush;
+        h.run_steps(2);
+        press(&mut h, Key::Enter, mods);
+        assert!((selected_area(&h) - area).abs() < 0.5, "{mods:?}: {} px, wanted {area}: {}", selected_area(&h), h.state().ui.status);
+    }
+}

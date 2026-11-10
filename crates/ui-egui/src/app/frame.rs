@@ -75,6 +75,7 @@ impl PhotocraftApp {
         vector_ui::finish_pen_if_left(self);
         transform_tool::end_if_left(self);
         shape_stroke_ui::sync_editor(self, ctx);
+        crate::dock::persist_pending(self, ctx);
         prefs_ui::tick(self, ctx);
         updates_ui::tick(self, ctx);
         monitor_status::poll_frame(self, ctx, frame);
@@ -121,7 +122,7 @@ impl PhotocraftApp {
         }
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
-            let at = self.services.cursor_pos.as_mut().and_then(|f| f(ctx));
+            let at = self.cursor_pos(ctx);
             self.open_dropped(ctx, dropped, at);
             // Files dragged in from another app's window: PhotoCraft comes to the front and takes
             // the keyboard, as Photoshop does, instead of staying behind the source (#5687).
@@ -169,6 +170,8 @@ impl PhotocraftApp {
         // A real UI pass consumes the one in-flight synthetic batch (see `inject_synthetic`).
         self.begin_synthetic_pass(&ctx);
         self.hover_layer = None;
+        // The contextual task bar reports itself again if this frame draws it (#10890).
+        self.ui.task_bar_shown = None;
         i18n::set_current(i18n::Lang::from_pref(&self.session.prefs().interface.language));
         // Fonts registered via set_fonts only take effect next frame; named families would panic now.
         if !self.fonts_ready {
@@ -180,7 +183,7 @@ impl PhotocraftApp {
             // No editor was drawn this pass: end its IME context rather than keep a stale owner.
             type_tool::sync_ime(self, &ctx);
             // The frame's stage record was started with its input: close it here too.
-            self.finish_frame(0.0);
+            self.finish_frame(&ctx, 0.0);
             return;
         }
         let t0 = gpu_canvas::now_ms();
@@ -203,7 +206,7 @@ impl PhotocraftApp {
             self.perf.record_gpu(t);
         }
         self.perf.frame(ui_ms);
-        self.finish_frame(ui_ms);
+        self.finish_frame(&ctx, ui_ms);
         if !drawn {
             return;
         }
@@ -307,21 +310,44 @@ impl PhotocraftApp {
         if chrome && self.ui.panels.status_bar && !home {
             panels::status_bar(self, ui);
         }
-        if (((chrome || self.full_screen_toolbar) && self.ui.panels.toolbar) || tabbed_in) && !home {
-            panels::toolbar(self, ui);
-        }
+        let toolbar_shown = (((chrome || self.full_screen_toolbar) && self.ui.panels.toolbar) || tabbed_in) && !home;
         // craft-ui's layout holds the canvas as its protected `canvas` panel.
         let docking = ((chrome && self.ui.panels.dock) || tabbed_in) && !home;
-        if docking {
-            panels::dock_area(self, ui);
-        } else {
+        let toolbar_side = self.ui.panels.toolbar_side.resolve();
+        let toolbar_right = toolbar_side == crate::state::ToolbarSide::Right;
+        // The compact layout stacks the dock, rail and toolbar on the dock's physical edge.
+        let dock_right = !crate::direction::is_rtl();
+        let toolbar_at_dock_edge = toolbar_right == dock_right;
+        // The dock-edge layout drops the canvas from craft-ui's split, which is only safe while
+        // nothing else is docked beside it. A panel already beside the canvas keeps the standard
+        // layout so it stays visible and dockable. The layout must not change once a drag starts:
+        // craft-ui records the areas on the press, and swapping the shape cancels the drag.
+        let dock_edge_layout = toolbar_shown && docking && toolbar_at_dock_edge && crate::panel_docking::canvas_alone(self);
+        if dock_edge_layout {
+            // Dock outermost, then its rail, then the toolbox, then the canvas: the toolbox sits
+            // between the canvas and the dock, not outside the dock at the window edge.
+            panels::dock_panel(self, ui);
+            panels::toolbar(self, ui);
             let t = theme::Tokens::get(&ctx);
             let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
                 canvas::document_area(self, ui);
             });
-            if !home {
-                panels::properties_window(self, &ctx);
+        } else {
+            if toolbar_shown {
+                panels::toolbar(self, ui);
+            }
+            if docking {
+                panels::dock_area(self, ui);
+            } else {
+                let t = theme::Tokens::get(&ctx);
+                let backdrop = if chrome { prefs_ui::pasteboard_color(self).unwrap_or(t.canvas) } else { egui::Color32::BLACK };
+                egui::CentralPanel::default().frame(egui::Frame::NONE.fill(backdrop)).show(ui, |ui| {
+                    canvas::document_area(self, ui);
+                });
+                if !home {
+                    panels::properties_window(self, &ctx);
+                }
             }
         }
         // The floating editor windows belong to the editor: Home covers them (dialogs and notices

@@ -344,6 +344,9 @@ impl Tile {
 /// Most taps per axis of the minification filter (the WGSL mirror uses the same cap).
 const MAX_TAPS: usize = 8;
 
+/// The smallest pattern scale a placement draws at (a fraction): keeps tile coordinates finite.
+pub const MIN_PLACEMENT_SCALE: f64 = 1e-6;
+
 /// Taps per axis for a placement whose inverse scale is `inv_scale`: one pixel covers
 /// `inv_scale` tile pixels, so that many taps (capped) box-filter it. 1 at 100 % and above.
 fn pixel_taps(inv_scale: f64) -> usize {
@@ -387,7 +390,9 @@ impl Placement {
         let base = if link { anchor } else { (0.0, 0.0) };
         let origin = (base.0 + f64::from(phase.0), base.1 + f64::from(phase.1));
         let s = f64::from(scale);
-        let inv_scale = if s.is_finite() && s > 1e-3 { 1.0 / s } else { 1.0 };
+        // Any positive scale draws: a preview at a reduced work scale takes a stored 2 % pattern
+        // well below 0.1 %. Only 0, negatives and non-finite values fall back to 100 %.
+        let inv_scale = if s.is_finite() && s > 0.0 { 1.0 / s.max(MIN_PLACEMENT_SCALE) } else { 1.0 };
         let a = f64::from(angle).to_radians();
         Placement { origin, cs: (a.cos(), a.sin()), inv_scale }
     }
@@ -606,6 +611,31 @@ mod tests {
         let one = Placement::new(Rect::EMPTY, false, (0.0, 0.0), 1.0, 0.0);
         let row = render(&t, &one, Rect::new(0, 0, 2, 1));
         assert_eq!((row[0][0], row[1][0]), (0.0, 1.0));
+    }
+
+    /// Review of #9256: a preview at 4 % work scale draws a stored 2 % pattern at 0.08 %, which
+    /// used to fall back to 100 % and show the stripes full size.
+    #[test]
+    fn placement_keeps_scales_below_a_tenth_of_a_percent() {
+        let place = Placement::new(Rect::EMPTY, false, (0.0, 0.0), 0.0008, 0.0);
+        let (u, v) = place.map(1.0, 2.0);
+        assert!((u - 1250.0).abs() < 1e-3 && (v - 2500.0).abs() < 1e-3, "{u},{v}");
+        // 1-px dark / light stripes: at 100 % the pixels alternate 0 / 1; at 0.08 % each pixel
+        // covers 1250 of them, so every pixel is their mean.
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        s.fill_rect(Rect::new(0, 0, 8, 8), &[1.0, 1.0, 1.0, 1.0]);
+        for x in (0..8).step_by(2) {
+            s.fill_rect(Rect::new(x, 0, x + 1, 8), &[0.0, 0.0, 0.0, 1.0]);
+        }
+        let t = Tile::new(&Pattern::new("stripes", s, 8, 8)).unwrap();
+        for p in render(&t, &place, Rect::new(0, 0, 8, 1)) {
+            assert!((p[0] - 0.5).abs() < 0.1, "{p:?}");
+        }
+        // 0, negative and non-finite scales still draw at 100 %.
+        for bad in [0.0, -0.5, f32::NAN, f32::INFINITY] {
+            let p = Placement::new(Rect::EMPTY, false, (0.0, 0.0), bad, 0.0);
+            assert_eq!(p.map(3.0, 0.0).0, 3.0, "{bad}");
+        }
     }
 
     #[test]

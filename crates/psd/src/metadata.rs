@@ -27,6 +27,18 @@ pub struct MetadataItem {
 }
 
 impl MetadataItem {
+    /// Typed animation descriptor for `mlst` (sparse layer frame states) or `tmln`
+    /// (layer timeline tracks). Other metadata, including `cust` / XMP, is not interpreted.
+    /// The original item stays unchanged; inheritance and track evaluation belong to the importer.
+    pub fn animation_descriptor(&self) -> Option<Result<crate::VersionedDescriptor>> {
+        matches!(&self.key, b"mlst" | b"tmln").then(|| {
+            if self.signature != *b"8BIM" {
+                return Err(PsdError::InvalidSignature { expected: "8BIM animation metadata", found: self.signature });
+            }
+            crate::animation::parse_descriptor(&self.data)
+        })
+    }
+
     /// A new item; `data` is zero-padded to an even length as Photoshop writes it.
     pub fn new(key: [u8; 4], mut data: Vec<u8>) -> Self {
         if data.len() % 2 == 1 {

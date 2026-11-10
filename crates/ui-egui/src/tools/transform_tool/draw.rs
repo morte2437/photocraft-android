@@ -1,11 +1,12 @@
 use super::begin::warps_type;
+use super::cylinder::draw_cylinder;
 use super::drag_modes::{HandleIndicator, handle_indicator};
 use super::options_bar::{quad_scale, readout};
-use super::pointer::{Hit, handle_at, rotate_dir, rotation_degrees};
+use super::pointer::{Hit, handle_at, rotation_degrees};
 use super::warp::{on_section_edge, quick_split_kind, single_patch};
 use super::{
-    BezierMesh, Color32, DocId, HANDLE_PX, Homography, LayerId, PhotocraftApp, Pos2, SplitTool, Stroke, TransformPreview, TransformSession, ViewXform, Warp,
-    WarpDrag, WarpStyle, corners, pos2, vec2,
+    BezierMesh, Color32, DocId, Homography, LayerId, PhotocraftApp, Pos2, SplitTool, Stroke, TransformPreview, TransformSession, ViewXform, Warp, WarpDrag,
+    WarpStyle, corners, pos2, vec2,
 };
 
 /// The distort or skew pointer at screen point `at`, where [`super::cursor`] hid the system
@@ -179,7 +180,8 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // The same keys as `cursor`, sticky ones included, so the guide matches the pointer.
         let mods = crate::workspace_ui::sticky_mods(app, painter.ctx().input(|i| i.modifiers));
         let alt = mods.alt || mods.command;
-        let guide = at.filter(|_| !warps_type(app)).and_then(|p| {
+        // No splits on type (#3004) or a cylinder (#4112).
+        let guide = at.filter(|_| !warps_type(app) && w.style != WarpStyle::Cylinder).and_then(|p| {
             let tool = pv.split_tool.or_else(|| {
                 (alt || pv.split_quick).then(|| {
                     let m = w.to_mesh(1, 1);
@@ -224,14 +226,6 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         painter.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], Stroke::new(1.0, Color32::WHITE));
     }
     if let Some(at) = painter.ctx().pointer_hover_pos().filter(|p| xf.rect.contains(*p)) {
-        let p = xf.to_doc(at);
-        let tol = HANDLE_PX / f64::from(xf.zoom.max(0.01));
-        if let Some(k) = rotate_dir(t, Some(pv), p, tol) {
-            // Through the view, so the arc bends round the corner as it shows under a turned or
-            // flipped view.
-            let toward = xf.to_screen((p[0] + k[0] * 16.0) as f32, (p[1] + k[1] * 16.0) as f32) - at;
-            crate::crop_ui::draw_turn_cursor(painter.ctx(), at, toward);
-        }
         // Preferences › Tools › Show Transformation Values off hides it, as in Photoshop (#204).
         if let Some(r) = live_readout(app).filter(|_| app.session.prefs().tools.show_transformation_values) {
             draw_live_readout(app, painter.ctx(), at, r);
@@ -573,6 +567,12 @@ fn draw_warp_overlay(painter: &egui::Painter, xf: &ViewXform, w: &Warp, pv: &Tra
             })
             .collect()
     };
+    // A cylinder is outlined and cut into a 3 × 2 grid, as the reference draws it, with its own
+    // handles on the lines (#4112, cylinder.rs). It has no split guide.
+    if w.style == WarpStyle::Cylinder {
+        draw_cylinder(painter, w, curve, scr, pv, line);
+        return;
+    }
     // Patch boundaries are the grid. Only Default (one patch) draws the rule-of-thirds guides;
     // a 3×3 preset is three even cells, not those guides repeated inside every cell.
     let thirds = single_patch(&m);

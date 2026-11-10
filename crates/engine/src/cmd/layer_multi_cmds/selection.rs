@@ -49,6 +49,7 @@ pub(crate) fn top_level(doc: &Document, ids: &[LayerId]) -> Vec<LayerId> {
 
 /// Replace the layer selection without a history step (like [`Session::select_layer`]).
 pub fn set_selection(s: &mut Session, ids: Vec<LayerId>, active: Option<LayerId>, anchor: Option<LayerId>) -> Result<()> {
+    let before = s.active_layer_stamp();
     let st = s.active_mut().ok_or(EngineError::NoDocument)?;
     if let Some(bad) = ids.iter().chain(active.iter()).find(|id| st.doc.layer(**id).is_none()) {
         return Err(EngineError::NoLayer(*bad));
@@ -70,6 +71,7 @@ pub fn set_selection(s: &mut Session, ids: Vec<LayerId>, active: Option<LayerId>
         st.saved_revision = st.revision;
     }
     st.last_damage = Some(Rect::EMPTY);
+    s.note_layer_change(before);
     Ok(())
 }
 
@@ -334,16 +336,27 @@ pub(super) fn select_all_layers(s: &mut Session) -> Result<Value> {
     Ok(json!({"selected": n}))
 }
 
+/// Select › Find Layers (#10884): as in Photoshop it filters the Layers panel by Name and leaves the
+/// layer selection alone. The reply's `layerFilter` is the Name filter the app applies (`name` only
+/// when one is given) and `selected` lists the layers it matches: part of the name, trimmed and
+/// ignoring case, as the panel matches: every layer for a blank name, which the panel doesn't filter
+/// by (none without a name).
 pub(super) fn find_layers(s: &mut Session, p: &Value) -> Result<Value> {
-    let needle = p.get("name").and_then(Value::as_str).ok_or_else(|| bad("select.findLayers", "missing `name`"))?.to_lowercase();
+    let name = match p.get("name") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| bad("select.findLayers", "`name` must be a string"))?),
+    };
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    let ids: Vec<LayerId> = d.doc.walk().into_iter().filter(|(_, _, l)| l.name.to_lowercase().contains(&needle)).map(|(_, _, l)| l.id).collect();
-    if ids.is_empty() {
-        return Err(EngineError::Other(format!("no layer name contains \"{needle}\"")));
+    let needle = name.map(|n| n.trim().to_lowercase());
+    let ids: Vec<u64> = match &needle {
+        Some(n) => d.doc.walk().into_iter().filter(|(_, _, l)| l.name.to_lowercase().contains(n.as_str())).map(|(_, _, l)| l.id.0).collect(),
+        None => Vec::new(),
+    };
+    let mut filter = json!({"by": "name"});
+    if let Some(n) = name {
+        filter["name"] = json!(n);
     }
-    let out = ids.iter().map(|l| l.0).collect::<Vec<_>>();
-    set_selection(s, ids, None, None)?;
-    Ok(json!({"selected": out}))
+    Ok(json!({"selected": ids, "layerFilter": filter}))
 }
 
 pub(super) fn select_linked(s: &mut Session) -> Result<Value> {

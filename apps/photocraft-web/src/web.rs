@@ -443,7 +443,15 @@ impl eframe::App for WebShell {
                         Ok(bytes) => {
                             if place {
                                 if let Some(doc) = target_doc {
-                                    place_inbox.lock().unwrap_or_else(PoisonError::into_inner).push((doc, name, bytes));
+                                    let mut queued = place_inbox.lock().unwrap_or_else(PoisonError::into_inner);
+                                    let held = queued.iter().fold(0usize, |sum, (_, _, b)| sum.saturating_add(b.len()));
+                                    // Reads that finish before the next frame drains the inbox are
+                                    // bounded like the app's own drop queue.
+                                    if photocraft_ui_egui::file_open::place_inbox_takes(queued.len(), held, bytes.len()) {
+                                        queued.push((doc, name, bytes));
+                                    } else {
+                                        log::warn!("dropped file {name} wasn't placed: too many dropped files are waiting");
+                                    }
                                 }
                             } else {
                                 inbox.lock().unwrap_or_else(PoisonError::into_inner).push((name, bytes));

@@ -3,7 +3,7 @@ use photocraft_doc::LayerContent;
 use serde_json::json;
 
 use super::*;
-use crate::canvas::tool_event;
+use crate::canvas::{ToolEvent, tool_event};
 
 /// A document whose active layer is a `kind` layer over a white Background.
 fn app_with(kind: Kind) -> PhotocraftApp {
@@ -46,8 +46,10 @@ fn prompt(app: &PhotocraftApp) -> Option<&crate::state::Dialog> {
     app.ui.dialogs.iter().find(|d| owns(&d.fields))
 }
 
+/// #8806: OK on the prompt rasterizes and adds one history state; the held click is not
+/// replayed, and the next click paints with no prompt.
 #[test]
-fn ok_rasterizes_then_paints_as_two_history_states() {
+fn ok_rasterizes_without_replaying_the_click() {
     for kind in Kind::ALL {
         for tool in [Tool::Brush, Tool::Pencil] {
             let mut app = app_with(kind);
@@ -59,12 +61,16 @@ fn ok_rasterizes_then_paints_as_two_history_states() {
             assert_eq!(past(&app), before, "nothing happens until the answer");
             let id = d.id;
             let r = crate::dialogs::confirm(&mut app, id).unwrap();
-            assert_eq!(r["painted"], json!(true), "{kind:?}/{tool:?}");
+            assert!(r.get("rasterized").is_some());
             assert_eq!(active_content(&app), "Pixel");
-            assert_eq!(past(&app), before + 2, "{kind:?}/{tool:?}: rasterize, then paint");
+            assert_eq!(past(&app), before + 1, "{kind:?}/{tool:?}: rasterize only, the held click is not replayed");
+            // The held click left no paint; the next click paints.
             let st = app.session.active().unwrap();
             let c = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().rgba(30, 20);
-            assert!(c[2] > 0.99 && c[0] < 0.01, "{kind:?}/{tool:?}: painted blue at the click: {c:?}");
+            assert!(c[2] < 0.5 || c[0] > 0.5, "{kind:?}/{tool:?}: nothing painted by the held click: {c:?}");
+            click(&mut app, 30.0, 20.0);
+            assert!(prompt(&app).is_none());
+            assert_eq!(past(&app), before + 2, "{kind:?}/{tool:?}: the next click paints");
             // One undo takes the paint back; the layer stays rasterized.
             app.session.undo();
             assert_eq!(active_content(&app), "Pixel");
@@ -127,6 +133,8 @@ fn only_pixel_painting_asks() {
     assert!(app.session.active().unwrap().doc.layers.iter().any(|l| matches!(l.content, LayerContent::Text(_))));
 }
 
+/// A prompt with missing, stale or malformed fields returns an error instead of panicking; a
+/// bad tool or point still just rasterizes.
 #[test]
 fn a_stale_or_bad_prompt_fails_gracefully() {
     let mut app = app_with(Kind::Type);
@@ -141,13 +149,13 @@ fn a_stale_or_bad_prompt_fails_gracefully() {
         let id = app.ui.open_dialog(crate::state::DialogKind::Command, f.as_object().unwrap().clone());
         assert!(crate::dialogs::confirm(&mut app, id).is_err(), "{f}");
     }
-    // A bad tool or point rasterizes without painting.
+    // A bad tool or point still just rasterizes.
     let mut app = app_with(Kind::Fill);
     let layer = app.session.active().unwrap().active_layer.unwrap();
     let id = open(&mut app, Kind::Fill, layer, Tool::Brush, [f64::NAN, 1.0, 1.0]);
     app.ui.dialog_mut(id).unwrap().fields.insert("tool".into(), json!("no such tool"));
     let r = crate::dialogs::confirm(&mut app, id).unwrap();
-    assert_eq!(r["painted"], json!(false));
+    assert!(r.get("rasterized").is_some());
     assert_eq!(active_content(&app), "Pixel");
 }
 

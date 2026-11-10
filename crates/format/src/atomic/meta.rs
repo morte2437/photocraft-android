@@ -274,7 +274,7 @@ pub(crate) fn recover_after_1177(
 /// **A backup name is not optional.** `ReplaceFile` without one deletes the replaced file before
 /// the final rename, and documents `ERROR_UNABLE_TO_MOVE_REPLACEMENT`: "the replaced file no
 /// longer exists and the replacement file exists under its original name" — the user's document
-/// gone, its replacement left under a hidden temporary name. With a backup name the same failure
+/// gone, its replacement left under a temporary name. With a backup name the same failure
 /// leaves both files where they were. So this always passes one, and deletes it on the way out.
 ///
 /// The failures and what each leaves behind (from the `ReplaceFileW` reference):

@@ -72,7 +72,13 @@ fn painting_a_hidden_layer_is_refused_at_the_press() {
         let n = steps(&app);
         tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 30.0, pressure: 1.0 }, egui::Modifiers::NONE);
         assert!(app.drag.is_none() && app.live_stroke.is_none(), "{tool:?}: no stroke started");
-        assert!(app.ui.status.contains("target layer is hidden"), "{tool:?}: {}", app.ui.status);
+        // The Brush says so in its alert (#11898), the other tools in the status bar.
+        let alert = app.ui.dialogs.iter().any(|d| d.fields.get("message").and_then(|m| m.as_str()).is_some_and(|m| m.contains("target layer is hidden")));
+        if tool == Tool::Brush {
+            assert!(alert, "{tool:?}: {:?}", app.ui.dialogs);
+        } else {
+            assert!(app.ui.status.contains("target layer is hidden") && app.ui.dialogs.is_empty(), "{tool:?}: {}", app.ui.status);
+        }
         tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 40.0 }, egui::Modifiers::NONE);
         assert_eq!((bounds(&app, id), steps(&app)), (Rect::new(8, 8, 24, 24), n), "{tool:?}");
         // Shown again, the same press paints.

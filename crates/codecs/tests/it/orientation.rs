@@ -204,10 +204,83 @@ fn png_opens_upright_for_every_orientation() {
         assert_eq!(img.dimensions(), (w as u32, h as u32), "o={o}");
         assert_eq!(img.data(), &up[..], "o={o}");
         assert_eq!(exif_orientation(img.meta.exif.as_deref().unwrap()), 1, "o={o}: metadata says upright");
+        // Decoded in steps and finished by `finish_png_decode`, it is the same image.
+        let stepped = PngDecodeRows::new(file.as_slice(), &Limits::default()).unwrap().step(&mut || true).unwrap().unwrap();
+        assert_eq!(finish_png_decode(stepped, &DecodeOptions::default()).unwrap(), img, "o={o}: stepped");
         // Opting out keeps the stored pixels and the tag.
         let raw = decode_with(&file, &DecodeOptions { keep_orientation: true, ..Default::default() }).unwrap();
         assert_eq!((raw.dimensions(), raw.data()), ((sw as u32, sh as u32), &s[..]), "o={o}");
         assert_eq!(exif_orientation(raw.meta.exif.as_deref().unwrap()), o);
+    }
+}
+
+/// An image turned upright a band of rows at a time is the image `oriented` gives, for every
+/// orientation, pixel size and shape, and takes a call per band.
+#[test]
+fn orient_steps_equal_oriented() {
+    for o in 1..=8u16 {
+        for (layout, sample) in [
+            (ChannelLayout::Gray, SampleType::U8),
+            (ChannelLayout::GrayA, SampleType::U16),
+            (ChannelLayout::Rgb, SampleType::U8),
+            (ChannelLayout::Rgba, SampleType::U16),
+            (ChannelLayout::Rgba, SampleType::F32),
+        ] {
+            for (w, h) in [(1u32, 1u32), (7, 5), (130, 66), (65, 200)] {
+                let len = w as usize * h as usize * layout.channels() * sample.bytes();
+                let data: Vec<u8> = (0..len).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect();
+                let mut img = Image::from_raw(w, h, layout, sample, data).unwrap();
+                img.meta.dpi = Some((100.0, 200.0));
+                img.meta.exif = Some(exif(u32::from(o), false, false));
+                let want = img.clone().oriented(o).unwrap();
+                let mut steps = OrientSteps::new(img, o).unwrap();
+                let mut calls = 0;
+                let got = loop {
+                    calls += 1;
+                    assert!(steps.progress() <= 1.0);
+                    if let Some(img) = steps.step(&mut || false).unwrap() {
+                        break img;
+                    }
+                };
+                assert_eq!(got, want, "o={o} {layout:?} {sample:?} {w}x{h}");
+                let rows = if o >= 5 { w } else { h } as usize;
+                let expected = if (2..=8).contains(&o) { rows.div_ceil(64) } else { 1 };
+                assert_eq!(calls, expected, "o={o} {w}x{h}: one call per band of 64 rows");
+            }
+        }
+    }
+}
+
+/// A PNG turned upright in bands by `begin_png_finish` is the image `decode` gives, for every
+/// orientation, and a band of a tall image is not the whole of it.
+#[test]
+fn png_finishes_upright_in_bands_for_every_orientation() {
+    let (w, h) = (70, 150);
+    let up = upright(w, h, |x, y| (x * 7 + y * 13) as u8);
+    for o in 1..=8u16 {
+        let (s, sw, sh) = stored(&up, w, h, o);
+        let png = encode(&gray(sw, sh, s), Format::Png, &EncodeOptions::default()).unwrap();
+        let file = png_with_exif(&png, &exif(u32::from(o), o % 2 == 0, false));
+        let want = decode(&file).unwrap();
+        let img = PngDecodeRows::new(file.as_slice(), &Limits::default()).unwrap().step(&mut || true).unwrap().unwrap();
+        let got = match begin_png_finish(img, &DecodeOptions::default()).unwrap() {
+            PngFinish::Done(img) => {
+                assert_eq!(o, 1);
+                *img
+            }
+            PngFinish::Orient(mut steps) => {
+                assert!(o > 1);
+                let mut calls = 0;
+                loop {
+                    calls += 1;
+                    if let Some(img) = steps.step(&mut || false).unwrap() {
+                        assert!(calls > 1, "o={o}: more than one band");
+                        break img;
+                    }
+                }
+            }
+        };
+        assert_eq!(got, want, "o={o}");
     }
 }
 

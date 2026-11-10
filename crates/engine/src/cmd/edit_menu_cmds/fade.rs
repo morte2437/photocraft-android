@@ -1,5 +1,5 @@
 use super::{
-    BlendMode, EngineError, FadeTarget, Rect, Result, Session, Surface, Value, bad, blend_from_str, f32_or, from_rgba_into, json, str_or, surface_of,
+    BlendMode, Document, EngineError, FadeTarget, Rect, Result, Session, Surface, Value, bad, blend_from_str, f32_or, from_rgba_into, json, str_or, surface_of,
     surface_of_mut, to_rgba,
 };
 
@@ -67,7 +67,18 @@ pub fn fade_surface(before: &Surface, after: &mut Surface, area: Rect, mode: Ble
     Ok(())
 }
 
-pub(super) fn fade(s: &mut Session, p: &Value) -> Result<Value> {
+/// What Edit › Fade with `p` blends: the layer, mask or channel of the last step, its pixels
+/// before it, the area to blend, the mode and the opacity.
+struct FadeJob {
+    target: FadeTarget,
+    label: String,
+    before: Surface,
+    area: Rect,
+    mode: BlendMode,
+    opacity: f32,
+}
+
+fn fade_job(s: &Session, p: &Value) -> Result<FadeJob> {
     let cmd = "edit.fade";
     let src = s.edit_state.fade.clone().ok_or_else(|| bad(cmd, "nothing to fade"))?;
     let opacity = f32_or(p, "opacity", 100.0).clamp(0.0, 100.0) / 100.0;
@@ -82,12 +93,45 @@ pub(super) fn fade(s: &mut Session, p: &Value) -> Result<Value> {
     // A uniform mask can change every pixel without storing a single tile. In that case
     // the content bounds are empty, but Fade must still blend across the canvas.
     let area = if before.default_pixel() != now.default_pixel() { st.doc.bounds() } else { before.content_bounds().union(&now.content_bounds()) };
-    let label = format!("Fade {}", src.label);
-    s.edit(&label, |doc, _| {
-        let surf = surface_of_mut(doc, src.target).ok_or_else(|| EngineError::Other("the faded layer or channel no longer exists".into()))?;
-        fade_surface(&before, surf, area, mode, opacity)?;
-        surf.prune();
-        Ok(())
-    })?;
-    Ok(json!({"faded": src.label, "opacity": opacity * 100.0, "mode": mode.label()}))
+    Ok(FadeJob { target: src.target, label: src.label, before, area, mode, opacity })
+}
+
+fn apply_fade(doc: &mut Document, j: &FadeJob) -> Result<()> {
+    let surf = surface_of_mut(doc, j.target).ok_or_else(|| EngineError::Other("the faded layer or channel no longer exists".into()))?;
+    fade_surface(&j.before, surf, j.area, j.mode, j.opacity)?;
+    surf.prune();
+    Ok(())
+}
+
+pub(super) fn fade(s: &mut Session, p: &Value) -> Result<Value> {
+    let j = fade_job(s, p)?;
+    let label = format!("Fade {}", j.label);
+    s.edit(&label, |doc, _| apply_fade(doc, &j))?;
+    Ok(json!({"faded": j.label, "opacity": j.opacity * 100.0, "mode": j.mode.label()}))
+}
+
+/// Edit › Fade with given params, captured from the session without a history step: the Fade
+/// dialog's live preview (#8230). [`FadePreview::render`] does the blend and can run off the
+/// session (the preview worker). The document copy shares its tiles with the session's, and
+/// only the tiles in the faded area are blended and rewritten.
+pub struct FadePreview {
+    doc: Document,
+    job: FadeJob,
+}
+
+impl FadePreview {
+    /// The active document as Edit › Fade would leave it.
+    pub fn render(mut self) -> Result<Document> {
+        apply_fade(&mut self.doc, &self.job)?;
+        Ok(self.doc)
+    }
+}
+
+/// What Edit › Fade with `p` would do to the active document. `Err` when Fade isn't available
+/// or `p` is invalid.
+pub fn fade_preview(s: &Session, p: &Value) -> Result<FadePreview> {
+    can_fade(s).map_err(|e| bad("edit.fade", e))?;
+    let job = fade_job(s, p)?;
+    let doc = Document::clone(&s.active().ok_or(EngineError::NoDocument)?.doc);
+    Ok(FadePreview { doc, job })
 }

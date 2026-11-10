@@ -61,6 +61,10 @@ pub const UI_SET_FIELDS: [&str; 49] = [
 /// the same ceiling as the steps of one batch request.
 pub const MAX_CLICKS: u64 = 256;
 
+/// Largest `ui.click` / `ui.move` coordinate, in screen points either way (#9137). Far beyond any
+/// display, yet small enough that egui's pointer delta between two such points stays finite.
+pub const MAX_SCREEN_POINT: f64 = 1e6;
+
 pub(super) fn ok(v: Value) -> Outcome {
     Outcome::Done(json!({"ok": true, "result": v}))
 }

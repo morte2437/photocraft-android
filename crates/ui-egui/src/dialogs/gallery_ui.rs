@@ -840,7 +840,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 }
             }
             if e.filter.uses_colours() {
-                ui.label(egui::RichText::new(tl!("Uses the foreground and background colours.")).color(t.text_faint).size(11.0));
+                ui.label(egui::RichText::new(tl!("Uses the foreground and background colors.")).color(t.text_faint).size(11.0));
             }
         });
         // Effect layers (top of the list = applied last).

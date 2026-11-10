@@ -242,4 +242,20 @@ mod tests {
         assert_eq!(s.active().unwrap().doc, before);
         assert_eq!(s.active().unwrap().history.past_len(), history);
     }
+
+    /// Add to Sample / Subtract from Sample (#6280) are RGB samples: with Lab bounds they are
+    /// refused, as `points` are, and the document is left as it was.
+    #[test]
+    fn lab_bounds_refuse_subtracted_samples_and_click_order() {
+        for extra in [serde_json::json!({"subtractPoints": [[1, 1]]}), serde_json::json!({"order": ["+", "-"]}), serde_json::json!({"subtractPoints": []})] {
+            let mut s = Session::new();
+            s.execute("file.new", serde_json::json!({"width": 4, "height": 2})).unwrap();
+            let before = s.active().unwrap().doc.clone();
+            let mut p = serde_json::json!({"labMinimum": [0, -10, -10], "labMaximum": [100, 10, 10], "lightness": 50});
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let err = s.execute(CMD, p).unwrap_err().to_string();
+            assert!(err.contains("Lab bounds cannot be combined"), "{extra}: {err}");
+            assert_eq!(s.active().unwrap().doc, before, "{extra}");
+        }
+    }
 }

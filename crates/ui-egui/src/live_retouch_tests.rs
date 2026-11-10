@@ -119,14 +119,15 @@ fn background_eraser_draws_live_and_commits_what_it_showed() {
 fn a_refused_background_eraser_stroke_shows_nothing_and_reports_on_release() {
     let mut app = app(8, Tool::BackgroundEraser);
     app.run("layer.new.layer", json!({})).unwrap();
-    app.run("layer.setProps", json!({"locks": {"transparency": true}})).unwrap();
+    // Lock image pixels refuses (Lock transparent pixels does not, #11905).
+    app.run("layer.setProps", json!({"locks": {"pixels": true}})).unwrap();
     let steps = app.session.active().unwrap().history.past_len();
     let m = Modifiers::NONE;
     tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, m);
     tool_event(&mut app, ToolEvent::Move { x: 40.0, y: 20.0, pressure: 1.0 }, m);
     assert!(app.live_stroke.is_none(), "the engine refuses the stroke, so nothing is drawn live");
     tool_event(&mut app, ToolEvent::Up { x: 40.0, y: 20.0 }, m);
-    assert!(app.ui.status_error && app.ui.status.contains("transparency"), "{}", app.ui.status);
+    assert!(app.ui.status_error && app.ui.status.contains("is locked"), "{}", app.ui.status);
     assert_eq!(app.session.active().unwrap().history.past_len(), steps);
 }
 

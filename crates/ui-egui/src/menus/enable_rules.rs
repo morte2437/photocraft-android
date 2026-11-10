@@ -16,8 +16,10 @@ fn background_blocks(id: &str, has_selection: bool) -> bool {
         // Global Light and Hide All Effects are document-wide.
         return !matches!(id, "layer.layerStyle.globalLight" | "layer.layerStyle.hideAllEffects" | "layer.layerStyle.copyLayerStyle");
     }
-    // Transforms need a selection on the Background (they then move the selected pixels).
-    if !has_selection && (id == "edit.freeTransform" || (id.starts_with("edit.transform.") && id != "edit.transform.again")) {
+    // Transforms and Content-Aware Scale need a selection on the Background (they then move the
+    // selected pixels).
+    if !has_selection && (matches!(id, "edit.freeTransform" | "edit.contentAwareScale") || (id.starts_with("edit.transform.") && id != "edit.transform.again"))
+    {
         return true;
     }
     matches!(
@@ -27,7 +29,6 @@ fn background_blocks(id: &str, has_selection: bool) -> bool {
             | "layer.mergeDown"
             | "layer.lockLayers"
             | "layer.maskAllObjects"
-            | "edit.contentAwareScale"
             | "edit.puppetWarp"
             | "edit.perspectiveWarp"
     )
@@ -126,8 +127,9 @@ pub fn disabled(app: &crate::PhotocraftApp, id: &str) -> bool {
     if transform && (target.is_object() || target == "quickMask") {
         return false;
     }
-    // Several layers selected: one box moves them all, the Background left out (#6501). It doesn't
-    // warp, and doesn't distort while editable type is among them.
+    // Several layers selected: one box moves them all (#6501); with the Background among them it
+    // refuses as locked when it opens (#11101). It doesn't warp, and doesn't distort while
+    // editable type is among them.
     if transform {
         let targets = photocraft_engine::transform_cmds::selection_targets(st);
         // Judged on the layers the box moves, linked ones included (#11217): one linked layer
@@ -216,6 +218,24 @@ mod tests {
         s.execute("channel.target", json!({"channel": 0})).unwrap();
         let app = crate::PhotocraftApp::new(s, crate::Services::default());
         assert!(!disabled(&app, "edit.freeTransform") && !disabled(&app, "edit.transform.flipHorizontal"));
+    }
+
+    /// Photoshop treats Content-Aware Scale like Free Transform: on the Background it needs a
+    /// selection, and then scales the selected pixels.
+    #[test]
+    fn content_aware_scale_on_the_background_needs_a_selection() {
+        let mut s = session();
+        assert!(off(&s, "edit.contentAwareScale"));
+        s.execute("select.all", json!({})).unwrap();
+        assert!(!off(&s, "edit.contentAwareScale"));
+        let mut app = crate::PhotocraftApp::new(s, crate::Services::default());
+        assert!(!disabled(&app, "edit.contentAwareScale"));
+        let r = app.session.execute("edit.contentAwareScale", json!({"scaleX": 70})).unwrap();
+        assert_eq!(r["to"], json!([14, 20]));
+        // A normal layer takes it without a selection.
+        app.session.execute("select.deselect", json!({})).unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        assert!(!disabled(&app, "edit.contentAwareScale"));
     }
 
     /// With several layers selected, Rasterize is judged by the whole selection, not by the layer

@@ -352,8 +352,8 @@ pub(crate) fn alerts(app: &mut PhotocraftApp, ui: &mut egui::Ui, col: Rect, rgb:
     let background = app.ui.color_panel.background;
     let mut y = col.top() + CHIPS_W + 2.0;
     let warnings = [
-        (out_of_gamut(rgb), "Out of gamut for printing: click for the nearest printable colour", false),
-        (if web { not_web_safe(rgb) } else { None }, "Not a web colour: click for the nearest web colour", true),
+        (out_of_gamut(rgb), "Out of gamut for printing: click for the nearest printable color", false),
+        (if web { not_web_safe(rgb) } else { None }, "Not a web color: click for the nearest web color", true),
     ];
     for (slot, (near, tip, cube)) in warnings.into_iter().enumerate() {
         let Some(near) = near else { continue };

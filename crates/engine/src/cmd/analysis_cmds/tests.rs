@@ -231,10 +231,13 @@ fn straighten_layer_and_image() {
     assert_eq!(s.active().unwrap().history.past_len(), before + 1, "one history step");
     assert_eq!(d(&s).size.width, 80);
     assert!(d(&s).measurement.ruler.is_none());
-    // The Background: rotate the canvas and crop to the image.
+    // The Background used to rotate the canvas and crop it to the image; #12033 greys that state
+    // out, so the same crop now happens on a layer and only when it is asked for.
     let mut s = session(80, 60, 16);
     s.execute("image.analysis.rulerTool", json!({"start": [0, 0], "end": [40, 40]})).unwrap();
-    let r = s.execute("image.analysis.straightenLayer", json!({})).unwrap();
+    assert!(!s.is_enabled("image.analysis.straightenLayer"), "the Background is greyed out (#12033)");
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let r = s.execute("image.analysis.straightenLayer", json!({"crop": true})).unwrap();
     assert_eq!(r["cropped"], true);
     assert_eq!(r["angle"].as_f64().unwrap().abs(), 45.0);
     let nd = d(&s);

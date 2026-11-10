@@ -3,8 +3,8 @@
 //! picks one effect kind (#10880), Mode picks one blend mode, Attribute one layer attribute or
 //! its opposite (#10881), Color one layer colour label (#5898), Smart Object toggles linked,
 //! missing and embedded smart objects, Artboard lists only the artboards that hold the selected
-//! layers. The criteria live in `UiState` (`layer_filter*`), so the control channel can read and
-//! set them.
+//! layers, Group every group with its contents (#10883). The criteria live in `UiState`
+//! (`layer_filter*`), so the control channel can read and set them.
 
 use std::collections::HashSet;
 
@@ -28,6 +28,7 @@ pub enum FilterBy {
     Color,
     SmartObject,
     Artboard,
+    Group,
 }
 
 /// The filter criteria, copied out of `UiState` for one frame of the Layers panel.
@@ -46,7 +47,8 @@ pub struct Filter {
     /// The linked files the Smart Object filter's Missing toggle lists
     /// ([`photocraft_engine::Session::missing_links`]).
     pub missing: HashSet<String>,
-    /// The rows the Artboard filter lists ([`board_rows`]); empty lists every row.
+    /// The rows the Artboard filter ([`board_rows`]) or the Group filter ([`group::listed`])
+    /// lists; empty lists every row under Artboard and none under Group.
     pub board_rows: HashSet<LayerId>,
     /// The empty layers the Attribute filter's Empty and Not Empty use
     /// ([`attribute::empty_layers`]); `None` reads each layer's pixels.
@@ -83,6 +85,9 @@ impl Filter {
         if f.by == FilterBy::Artboard {
             f.board_rows = board_rows(doc, selection);
         }
+        if f.by == FilterBy::Group {
+            f.board_rows = group::listed(doc);
+        }
         if f.by == FilterBy::Attribute {
             f.empty = attribute::empty_layers(app, f.attribute);
         }
@@ -99,7 +104,7 @@ impl Filter {
     }
 
     /// Whether the panel is filtered. Like Photoshop, Effect, Mode, Attribute and Color always
-    /// filter (by Bevel & Emboss, by Normal, by Visible and by no colour at first); Kind, Name and
+    /// filter (by Bevel & Emboss, by Normal, by Visible and by no colour at first), and so does Group; Kind, Name and
     /// Smart Object only once a toggle is on or some text is typed; Artboard only while some layers
     /// are selected and each of them is in an artboard.
     pub fn active(&self) -> bool {
@@ -109,7 +114,14 @@ impl Filter {
             FilterBy::Effect | FilterBy::Mode | FilterBy::Attribute | FilterBy::Color => true,
             FilterBy::SmartObject => !self.smart.is_empty(),
             FilterBy::Artboard => !self.board_rows.is_empty(),
+            FilterBy::Group => true,
         }
+    }
+
+    /// Whether the panel lists the contents of closed groups: while it is filtered, except by
+    /// Group, which lists whole groups and keeps each one open or closed as it is (#10883).
+    pub fn show_all(&self) -> bool {
+        self.active() && self.by != FilterBy::Group
     }
 
     /// Whether `l` is listed under this filter.
@@ -133,6 +145,7 @@ impl Filter {
                 })
             }
             FilterBy::Artboard => self.board_rows.contains(&l.id),
+            FilterBy::Group => self.board_rows.contains(&l.id),
         }
     }
 }
@@ -180,12 +193,12 @@ pub const SMART: [&str; 3] = ["linked", "missing", "embedded"];
 
 /// `ui.set {layerFilter: {by?, kinds?, name?, effect?, mode?, attribute?, color?, smart?}}`:
 /// `current` with the given fields replaced, or an error naming the bad field (nothing changes
-/// then). `by` is `kind`, `name`, `effect`, `mode`, `attribute`, `color`, `smartObject` or
-/// `artboard`; `kinds` a list of [`KINDS`]; `effect` an [`effect::EffectKind`] id; `mode` one of
+/// then). `by` is `kind`, `name`, `effect`, `mode`, `attribute`, `color`, `smartObject`,
+/// `artboard` or `group`; `kinds` a list of [`KINDS`]; `effect` an [`effect::EffectKind`] id; `mode` one of
 /// the layer blend modes such as `Multiply` (not Pass Through, which the Mode list doesn't offer,
 /// #10878); `attribute` an [`attribute::Attribute`] id; `color` a label colour id (`none`, `red`,
 /// … `gray`, [`LabelColor::id`]); `smart` a list of [`SMART`]. Artboard has no criteria of its
-/// own: the selected layers pick the artboards.
+/// own: the selected layers pick the artboards; nor has Group.
 pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, String> {
     let Some(o) = v.as_object() else { return Err("layerFilter must be an object".into()) };
     if let Some(k) = o.keys().find(|k| !["by", "kinds", "name", "effect", "mode", "attribute", "color", "smart"].contains(&k.as_str())) {
@@ -194,7 +207,7 @@ pub fn patched(current: &UiState, v: &serde_json::Value) -> Result<Filter, Strin
     let mut f = Filter::of(current);
     if let Some(by) = o.get("by") {
         f.by = serde_json::from_value(by.clone())
-            .map_err(|_| "layerFilter.by must be kind, name, effect, mode, attribute, color, smartObject or artboard".to_string())?;
+            .map_err(|_| "layerFilter.by must be kind, name, effect, mode, attribute, color, smartObject, artboard or group".to_string())?;
     }
     if let Some(kinds) = o.get("kinds") {
         let list = kinds.as_array().ok_or("layerFilter.kinds must be a list")?;
@@ -287,6 +300,7 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             (FilterBy::Color, tl!("Color")),
             (FilterBy::SmartObject, tl!("Smart Object")),
             (FilterBy::Artboard, tl!("Artboard")),
+            (FilterBy::Group, tl!("Group")),
         ];
         widgets::dropdown(ui, "layer-filter-by", tl!("Kind"), &mut app.ui.layer_filter_by, &by, 64.0);
         ui.add_space(4.0);
@@ -309,10 +323,7 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     }
                 }
             }
-            FilterBy::Name => {
-                let width = ui.available_width().max(48.0);
-                widgets::text_field(ui, ui.scope_id().with("layer-filter-name"), &mut app.ui.layer_filter_name, tl!("Search"), width, false);
-            }
+            FilterBy::Name => find::name_field(app, ui),
             FilterBy::Effect => effect::controls(app, ui),
             FilterBy::Mode => {
                 // The 27 layer modes, without Pass Through: a group set to Pass Through is never
@@ -347,12 +358,16 @@ pub fn bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             // Artboard has no controls: the selected layers pick the artboards ([`board_rows`]).
             FilterBy::Artboard => {}
+            // Group has no controls either: it lists every group ([`group::listed`]).
+            FilterBy::Group => {}
         }
     });
     selection::follow(app, ui.ctx());
 }
 
 pub mod effect;
+pub mod find;
+mod group;
 pub mod selection;
 
 #[cfg(test)]
@@ -363,9 +378,14 @@ pub mod attribute;
 #[cfg(test)]
 mod attribute_tests;
 #[cfg(test)]
+mod find_tests;
+#[cfg(test)]
 mod selection_tests;
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod kind_mode_tests;
+
+#[cfg(test)]
+mod group_tests;

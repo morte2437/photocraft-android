@@ -209,7 +209,7 @@ fn damage_between_previews_is_the_text_layer_only() {
     // The canvas asks through `damage_since`, with the display's key folded into what it cached.
     let doc = app.session.active().unwrap().doc.clone();
     let dk = crate::canvas::canvas_display(&app, &doc, None).1;
-    let since = |seen: u64, now: u64| crate::canvas::damage_since(&app, 0, (revision, seen ^ dk), (revision, now), dk, None);
+    let since = |seen: u64, now: u64| crate::canvas::damage_since(&app, 0, (revision, seen ^ dk), (revision, now), dk, (revision, None));
     assert_eq!(since(red, blue), Some(bounds), "the canvas refreshes only the text layer between colours");
     assert_eq!(since(blue, 0), Some(bounds), "and on Cancel");
 }
@@ -260,7 +260,7 @@ fn ok_counts_the_previewed_canvas_as_the_document_so_only_the_layer_is_redrawn()
         assert_eq!(seen.1, dk, "gradient={gradient}: OK's edit is what the canvas already shows");
         // So the commit's own damage is all the canvas refreshes, not the whole document.
         let edit = photocraft_geom::Rect::new(1, 2, 3, 4);
-        let damage = crate::canvas::damage_since(&app, 0, seen, (revision, 0), dk, Some(edit));
+        let damage = crate::canvas::damage_since(&app, 0, seen, (revision, 0), dk, (revision - 1, Some(edit)));
         assert_eq!(damage, Some(edit), "gradient={gradient}");
     }
 }

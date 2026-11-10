@@ -200,6 +200,16 @@ mod tests {
         assert_eq!(gradient.angle, 90.0);
         assert!(gradient.reverse);
         assert_eq!(gradient.scale, 0.75);
+        // The offset (#10763) is geometry too: a fraction of the layer's bounds, left alone by
+        // junk and clamped.
+        overlay(&mut gradient, &mut source, &json!({"offset": [0.25, -0.1]}));
+        assert_eq!(gradient.offset, (0.25, -0.1));
+        assert_eq!(gradient.stops, expected);
+        overlay(&mut gradient, &mut source, &json!({"offset": "far"}));
+        overlay(&mut gradient, &mut source, &json!({"offset": [f64::NAN, 0.0]}));
+        assert_eq!(gradient.offset, (0.25, -0.1));
+        overlay(&mut gradient, &mut source, &json!({"offset": [100.0, -100.0]}));
+        assert_eq!(gradient.offset, (4.0, -4.0));
     }
 
     #[test]

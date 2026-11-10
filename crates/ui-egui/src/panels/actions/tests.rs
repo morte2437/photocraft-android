@@ -2036,6 +2036,37 @@ fn a_dialog_toggled_step_pauses_playback_and_resumes_on_ok() {
     assert!(v.get("paused").is_none());
 }
 
+#[test]
+fn equalize_step_with_a_selection_opens_its_choices() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 16, "height": 8})).unwrap();
+    app.run("edit.fill", json!({"color": [0.4, 0.4, 0.4]})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 8, "width": 16, "height": 8})).unwrap();
+    app.run("edit.fill", json!({"color": [0.5, 0.5, 0.5]})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 16})).unwrap();
+    let mut action = Action::new("Equalize", vec![(crate::equalize_ui::COMMAND.into(), json!({}))]);
+    action.dialogs.insert(0);
+    app.session.actions.list.push(action);
+    let gray = |app: &PhotocraftApp, x: i32, y: i32| {
+        let st = app.session.active().unwrap();
+        st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().pixel(x, y)[0]
+    };
+
+    let result = play(&mut app, &json!({"action": "Equalize"})).unwrap();
+    let id = result["paused"]["dialog"].as_u64().unwrap();
+    let fields = &app.ui.dialog_mut(id).unwrap().fields;
+    assert!(crate::equalize_ui::owns(fields));
+    assert_eq!(fields["selectedAreaOnly"], true);
+    assert!((gray(&app, 12, 1) - 0.4).abs() < 0.01, "nothing changes before OK");
+
+    // OK with the entire image chosen maps the pixels outside the selection too.
+    app.ui.dialog_mut(id).unwrap().fields.insert("selectedAreaOnly".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert!(gray(&app, 12, 1) < 0.05 && gray(&app, 12, 12) > 0.95, "outside the selection too");
+}
+
 /// An 8×6 document, a Child action whose first step (a blur) shows its dialog and whose
 /// second step adds a "Suffix" layer, and recording into Owner started.
 fn recording_with_dialog_child() -> PhotocraftApp {

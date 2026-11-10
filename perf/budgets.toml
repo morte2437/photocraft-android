@@ -856,3 +856,29 @@ bench = "flat_open_bench"
 row = "open 36 MP JPEG RGB8: editable"
 budget_ms = 500
 enforce = false  # new; no baseline yet
+
+# ---- #9329: redraw area of property and order changes (track only) ----------------------------
+
+[[scenario]]
+id = "P87"
+title = "Toggle a masked adjustment mid-stack in the layered document + refresh"
+issue = 9329
+bench = "perf_scenarios"
+row = "toggle a masked adjustment mid-stack in the layered document + refresh"
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P88"
+title = "Bring forward / send backward a small layer in the many-layer document + refresh"
+issue = 9329
+bench = "perf_scenarios"
+row = "bring forward / send backward a small layer in the many-layer document + refresh"
+enforce = false  # new; no baseline yet
+
+[[scenario]]
+id = "P89"
+title = "App frame after Paste Into on 24 MP (CPU canvas)"
+issue = 9329
+bench = "perf_scenarios"
+row = "app frame after Paste Into on 24 MP (CPU canvas)"
+enforce = false  # new; no baseline yet

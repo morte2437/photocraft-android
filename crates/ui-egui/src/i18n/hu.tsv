@@ -34,7 +34,7 @@
 
 # Adjustments and filters
 
-# Camera Raw and camera data
+# RAW Develop and camera data
 
 # Dialogs, preferences and file formats
 
@@ -158,6 +158,10 @@
 	Clipboard	Vágólap
 	Close All	Összes bezárása
 	Close Others	Többi bezárása
+	New Document…	Új dokumentum…
+	Open Document…	Megnyitás…
+	Consolidate All to Here	Összes ide
+	Move to New Window	Áthelyezés új ablakba
 	Color Balance…	Színegyensúly…
 	Color Lookup Tables…	Színleképezési táblák…
 	Color Lookup…	Színleképezés…
@@ -190,6 +194,8 @@
 	Edit	Szerkesztés
 	Enhanced Controls…	Bővített vezérlők…
 	Equalize	Kiegyenlítés
+	Equalize Entire Image Based On Selected Area	A teljes kép kiegyenlítése a kijelölt terület alapján
+	Equalize Selected Area Only	Csak a kijelölt terület kiegyenlítése
 	Exit	Kilépés
 	Export As…	Exportálás másként…
 	Export Preferences…	Beállítások exportálása…
@@ -257,6 +263,7 @@
 	Place Linked…	Csatolt elhelyezése…
 	Place Scale Marker…	Méretarány-jelölő elhelyezése…
 	Plug-ins…	Bővítmények…
+	Plugins…	Bővítmények…
 	Posterize…	Poszterizálás…
 	Preferences	Beállítások
 	Preset Manager…	Előbeállítás-kezelő…
@@ -342,6 +349,8 @@
 	Combine Shapes	Alakzatok kombinálása
 	Contract…	Szűkítés…
 	Convert to Embedded	Átalakítás beágyazottá
+	Embed Linked	Csatolt beágyazása
+	Embed All Linked	Összes csatolt beágyazása
 	Convert to Layers	Átalakítás rétegekké
 	Convert to Linked…	Átalakítás csatolttá…
 	Convert to Smart Object	Átalakítás intelligens objektummá
@@ -393,7 +402,6 @@
 	Insert Blank Frame	Üres képkocka beszúrása
 	Interpret Footage…	Videoanyag értelmezése…
 	Intersect Shape Areas	Alakzatterületek metszete
-	Inverse Selection	Kijelölés megfordítása
 	Invert…	Invertálás…
 	Isolate Layers	Rétegek elkülönítése
 	Kurtosis	Csúcsosság
@@ -401,8 +409,8 @@
 	Layer Content Options…	Rétegtartalom beállításai…
 	Layer from Background…	Réteg a háttérből…
 	Layer Style	Rétegstílus
-	Layer via Copy	Réteg másolással
-	Layer via Cut	Réteg kivágással
+	Layer Via Copy	Réteg másolással
+	Layer Via Cut	Réteg kivágással
 	Layer…	Réteg…
 	Left Edges	Bal szélek
 	Link Layer Mask	Rétegmaszk összekapcsolása
@@ -536,7 +544,7 @@
 	Brush Settings	Ecsetbeállítások
 	Brushes	Ecsetek
 	brushes	ecsetek
-	Camera Raw Filter…	Camera Raw szűrő…
+	RAW Develop Filter…	RAW-előhívás szűrő…
 	Canvas Guides	Vászon-segédvonalak
 	Cascade	Lépcsőzetes
 	Change Panel Group	Panelcsoport váltása
@@ -550,6 +558,7 @@
 	Clear Canvas Guides	Vászon-segédvonalak törlése
 	Clear Guides	Segédvonalak törlése
 	Clear Recent Files	Legutóbbi fájlok listájának törlése
+	Clear Recent File List	Legutóbbi fájlok listájának törlése
 	Clear Selected Artboard Guides	Kijelölt rajztábla segédvonalainak törlése
 	Clear Slices	Szeletek törlése
 	Clipping Mask	Vágómaszk
@@ -558,8 +567,8 @@
 	Close Panel	Panel bezárása
 	Close Window	Ablak bezárása
 	Clouds	Felhők
-	Color Blindness — Deuteranopia-type	Színtévesztés — deuteranópia típusú
-	Color Blindness — Protanopia-type	Színtévesztés — protanópia típusú
+	Color Blindness - Deuteranopia-type	Színtévesztés - deuteranópia típusú
+	Color Blindness - Protanopia-type	Színtévesztés - protanópia típusú
 	Color Halftone…	Színes féltónus…
 	Color Lookup Tables	Színleképezési táblák
 	Color Picker (Custom Canvas Color)	Színválasztó (egyéni vászonszín)
@@ -681,7 +690,7 @@
 	Info	Információ
 	Install Plug-in	Bővítmény telepítése
 	Install Plug-in…	Bővítmény telepítése…
-	Internet Standard RGB	Internetes szabványos RGB
+	Internet Standard RGB (sRGB)	Internetes szabványos RGB (sRGB)
 	Inverse	Megfordítás
 	Iris Blur…	Íriszelmosás…
 	Join the ArtCraft Discord	Csatlakozás az ArtCraft Discordhoz
@@ -698,7 +707,7 @@
 	Layer From Background…	Réteg a háttérből…
 	Layers	Rétegek
 	Layers to Files	Rétegek fájlokba
-	Legacy Macintosh RGB	Régi Macintosh RGB
+	Legacy Macintosh RGB (Gamma 1.8)	Régi Macintosh RGB (Gamma 1.8)
 	Lens Blur…	Objektívelmosás…
 	Lens Flare…	Lencsecsillanás…
 	Light gray	Világosszürke
@@ -746,7 +755,6 @@
 	New Type Layer	Új szövegréteg
 	New Video Layer	Új videoréteg
 	New Window	Új ablak
-	New Window for Document	Új ablak a dokumentumhoz
 	New Workspace…	Új munkaterület…
 	Next Appearance Mode	Következő megjelenési mód
 	Next Document	Következő dokumentum
@@ -791,6 +799,7 @@
 	Pixel Grid	Pixelrács
 	Pixelate	Pixelesítés
 	Plug-ins	Bővítmények
+	Plugins	Bővítmények
 	Pointillize…	Pontozás…
 	Polar Coordinates…	Polárkoordináták…
 	Preferences…	Beállítások…
@@ -803,7 +812,6 @@
 	Proof Colors	Színpróba
 	Proof Setup	Színpróba beállítása
 	Properties	Tulajdonságok
-	Quick Export As PNG	Gyors exportálás PNG-be
 	Quit	Kilépés
 	Quit {app}	Kilépés: {app}
 	Radial Blur…	Sugárirányú elmosás…
@@ -854,6 +862,7 @@
 	Show All	Összes megjelenítése
 	Show Extras Options…	Segédelemek beállításai…
 	Show in Explorer	Megjelenítés az Intézőben
+	Reveal in Explorer	Megjelenítés az Intézőben
 	Show in Folder	Megjelenítés mappában
 	Show menu colors	Menüszínek megjelenítése
 	Show/Hide All Panels	Összes panel megjelenítése/elrejtése
@@ -899,6 +908,12 @@
 	Titling Alternates	Címbetű-változatok
 	Tool Presets	Eszköz-előbeállítások
 	Tools	Eszközök
+	Contextual Task Bar	Környezetfüggő feladatsáv
+	Hide bar	Sáv elrejtése
+	Reset bar position	Sáv helyzetének visszaállítása
+	Pin bar position	Sáv helyzetének rögzítése
+	Move bar	Sáv áthelyezése
+	More options	További beállítások
 	Trace Contour…	Kontúrkövetés…
 	Transform Symmetry	Szimmetria alakítása
 	Tree…	Fa…
@@ -919,7 +934,7 @@
 	Windows LCD	Windows LCD
 	Wind…	Szél…
 	Working Black Plate	Fekete munkalemez
-	Working CMY Plate	CMY munkalemezek
+	Working CMY Plates	CMY munkalemezek
 	Working CMYK	Munka-CMYK
 	Working Cyan Plate	Cián munkalemez
 	Working Magenta Plate	Magenta munkalemez
@@ -1020,7 +1035,7 @@
 	Catch-up on Stroke End	Utolérés a vonás végén
 	Center	Középen
 	Center text	Szöveg középre igazítása
-	Centre the gradient (offset 0, 0)	Színátmenet középre helyezése (eltolás: 0, 0)
+	Center the gradient (offset 0, 0)	Színátmenet középre helyezése (eltolás: 0, 0)
 	Change	Cserél
 	Change All	Mindet cserél
 	Change To:	Csere erre:
@@ -1033,7 +1048,7 @@
 	Click to add a point, right-click to remove	Kattintással pontot adhatsz hozzá, jobb kattintással eltávolíthatod
 	Click to apply, {key}-click to clear overrides, double-click for Style Options	Kattintással alkalmazhatod, {key}+kattintással törölheted a felülbírálásokat, dupla kattintással megnyithatod a stílusbeállításokat
 	Click to edit the gradient	Kattints a színátmenet szerkesztéséhez
-	Click to sample the foreground colour  ·  {key}-click for background	Kattintás: mintavétel az előtérszínhez  ·  {key}+kattintás: a háttérszínhez
+	Click to sample the foreground color  ·  {key}-click for background	Kattintás: mintavétel az előtérszínhez  ·  {key}+kattintás: a háttérszínhez
 	Clone source set at {x}, {y}	Klónozási forrás beállítva: {x}, {y}
 	Clone Stamp	Klónozó bélyegző
 	Close Style Options	Stílusbeállítások bezárása
@@ -1058,6 +1073,7 @@
 	Control:	Vezérlés:
 	Corners	Sarkok
 	Could not complete the Free Transform command because the layer is locked.	A szabad alakítás nem hajtható végre, mert a réteg zárolva van.
+	Could not transform because the layer is locked.	Az alakítás nem hajtható végre, mert a réteg zárolva van.
 	Could not transform: the layer is empty	Az alakítás nem hajtható végre: a réteg üres
 	Could not use Puppet Warp: no opaque pixels	A bábtorzítás nem használható: nincsenek átlátszatlan pixelek
 	Could not use Puppet Warp: the layer is empty	A bábtorzítás nem használható: a réteg üres
@@ -1808,7 +1824,7 @@ layerLabel	Magenta	Bíbor
 	Change Screen Mode  (F)	Képernyőmód váltása  (F)
 	Click the first point or press {key} to close · Esc cancels	Lezárás: kattintás az első pontra vagy {key} · Esc: megszakítás
 	Click the first point or press {key} to close · {del} removes a point · Esc cancels	Lezárás: kattintás az első pontra vagy {key} · {del}: pont eltávolítása · Esc: megszakítás
-	Click to fill similar colours	Kattintással kitöltheted a hasonló színeket
+	Click to fill similar colors	Kattintással kitöltheted a hasonló színeket
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Kattintás: nagyítás  ·  {key}+kattintás: kicsinyítés  ·  húzás jobbra/balra: nagyítás/kicsinyítés
 	Click, then move along an edge · click to fasten a point · {alt}-click for a straight segment · double-click to close	Kattints, majd haladj végig egy élen · kattintás: pont rögzítése · {alt}+kattintás: egyenes szakasz · dupla kattintás: lezárás
 	Clip to layer below	Vágás az alatta lévő réteghez
@@ -1837,7 +1853,7 @@ layerLabel	Magenta	Bíbor
 	Dark	Sötét
 	Data Set: {name}  ({index}/{total})	Adatkészlet: {name}  ({index}/{total})
 	Data Sets	Adatkészletek
-	Default colours (D)	Alapértelmezett színek (D)
+	Default Foreground and Background Colors (D)	Alapértelmezett előtér- és háttérszín (D)
 	Define	Megadás
 	Define at least one variable first.	Előbb adj meg legalább egy változót.
 	Delete Cropped Pixels	Levágott pixelek törlése
@@ -1850,8 +1866,8 @@ layerLabel	Magenta	Bíbor
 	Discord	Discord
 	Doc: {w} × {h} px	Dok.: {w} × {h} px
 	Drag a box or click four corners · drag the corners onto the edges of a skewed shape · {commit} commits · Esc cancels	Húzz egy keretet, vagy kattints a négy sarokra · húzd a sarkokat a ferde alakzat éleire · {commit}: véglegesítés · Esc: megszakítás
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Húzz egy körbevágási keretet · belül húzva mozgatod · az élekkel átméretezed ({ratio}: arány, {centre}: középről) · Space: mozgatás rajzolás közben · nyilak: léptetés · X: tájolás cseréje · {commit}: véglegesítés · Esc: megszakítás
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	A középpont körül húzva forgatod a nézetet  ·  Shift: 15°-os lépések
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Húzz egy körbevágási keretet · belül húzva mozgatod · az élekkel átméretezed ({ratio}: arány, {centre}: középről) · Space: mozgatás rajzolás közben · nyilak: léptetés · X: tájolás cseréje · {commit}: véglegesítés · Esc: megszakítás
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	A középpont körül húzva forgatod a nézetet  ·  Shift: 15°-os lépések
 	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Húzz, vagy kattints sokszögpontokat · lasszózás közben Alt: egyenes szakaszok · {add}: hozzáadás · {sub} rajzolás előtt: kivonás
 	Drag to draw a gradient	Húzással rajzolhatsz színátmenetet
 	Drag to move the active layer	Húzással mozgathatod az aktív réteget
@@ -1983,7 +1999,7 @@ layerLabel	Magenta	Bíbor
 	Source: {name}	Forrás: {name}
 	Style	Stílus
 	Subtract from selection  ({key})	Kivonás a kijelölésből  ({key})
-	Swap colours (X)	Színek cseréje (X)
+	Switch Foreground and Background Colors (X)	Előtér- és háttérszín cseréje (X)
 	System title bar	Rendszer címsora
 	Text Replacement	Szövegcsere
 	Thumbnail size (smallest: list)	Bélyegképméret (a legkisebb: lista)
@@ -1998,7 +2014,7 @@ layerLabel	Magenta	Bíbor
 	Working…	Feldolgozás…
 	Workspaces	Munkaterületek
 	Zoom	Nagyító
-	{label} is writing the file and can no longer be cancelled	{label}: a fájl írása folyamatban, már nem szakítható meg
+	{label} is writing the file and can no longer be canceled	{label}: a fájl írása folyamatban, már nem szakítható meg
 	{message} (notes: {n}; {warning})	{message} (megjegyzések: {n}; {warning})
 	{mode} Color · {bits} bit	Színmód: {mode} · {bits} bit
 	{name} Properties	Tulajdonságok: {name}
@@ -2321,7 +2337,7 @@ navigator	Zoom	Nagyítás mértéke
 	One Flame Along Path	Egy láng az útvonal mentén
 	Opacity Threshold	Átlátszatlansági küszöb
 	Open	Megnyitás
-	Open a document to select a colour range.	Színtartomány kijelöléséhez nyiss meg egy dokumentumot.
+	Open a document to select a color range.	Színtartomány kijelöléséhez nyiss meg egy dokumentumot.
 	Orange	Narancs
 	Out Black	Kimeneti fekete
 	Out From Center	Középponttól kifelé
@@ -2406,7 +2422,7 @@ navigator	Zoom	Nagyítás mértéke
 	Roses	Rózsák
 	Rough Pastels	Durva pasztell
 	Ruler	Vonalzó
-	Sample: foreground colour	Minta: előtérszín
+	Sample: foreground color	Minta: előtérszín
 	Sampled Colors	Mintavételezett színek
 	Sandstone	Homokkő
 	Saturation	Telítettség
@@ -2514,7 +2530,6 @@ navigator	Zoom	Nagyítás mértéke
 	Use Measurement Scale	Mérési méretarány használata
 	Use Selection In Source	Kijelölés használata a forrásban
 	Use Selection In Target	Kijelölés használata a célban
-	Uses the foreground and background colours.	Az előtér- és a háttérszínt használja.
 	Vertical Only	Csak függőleges
 	Vibrance	Élénkség
 	View Options	Nézetbeállítások
@@ -2558,12 +2573,12 @@ navigator	Zoom	Nagyítás mértéke
 	Balance	Egyensúly
 	Before (Y)	Előtte (Y)
 	Blending	Keverés
-	Camera Raw	Camera Raw
-	Camera Raw ({name})	Camera Raw ({name})
-	Camera Raw Filter	Camera Raw szűrő
-	Camera Raw Filter ({layer})	Camera Raw szűrő ({layer})
-	Camera Raw isn't open	A Camera Raw nincs megnyitva
-	Cancelled opening {name}	Megnyitás megszakítva: {name}
+	RAW Develop	RAW-előhívás
+	RAW Develop ({name})	RAW-előhívás ({name})
+	RAW Develop Filter	RAW-előhívás szűrő
+	RAW Develop Filter ({layer})	RAW-előhívás szűrő ({layer})
+	RAW Develop isn't open	A RAW-előhívás nincs megnyitva
+	Canceled opening {name}	Megnyitás megszakítva: {name}
 	Damaged Photoshop document	Sérült Photoshop-dokumentum
 	The document “{name}” may be damaged.	A(z) „{name}” dokumentum sérült lehet.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Egyes rétegeket, képpontokat vagy maszkokat nem sikerült beolvasni. Folytatod a megnyitást?
@@ -2571,7 +2586,7 @@ navigator	Zoom	Nagyítás mértéke
 	The document “{name}” does not have an embedded {mode} profile.	Nincs beágyazott profil ({mode}) ebben a dokumentumban: „{name}”
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	A dokumentum beágyazott színprofilja nem egyezik az aktuális munkaszíntérrel ({mode}): „{name}”
 	Working: {working}	Munkaszíntér: {working}
-	Cancelled {label}	Megszakítva: {label}
+	Canceled {label}	Megszakítva: {label}
 	Clarity	Tisztaság
 	Color Detail	Színrészletesség
 	Color Grading	Színtónusozás
@@ -2615,7 +2630,6 @@ navigator	Zoom	Nagyítás mértéke
 	Noise Luminance	Zajcsökkentés: luminancia
 	Noise Luminance Detail	Zajcsökkentés: luminancia-részletesség
 	Noise Reduction	Zajcsökkentés
-	Open in camera raw	Megnyitás a Camera Raw-ban
 	Paint Overlay	Ráfestés
 	Previous	Előző
 	Purple	Lila
@@ -2715,6 +2729,7 @@ cameraRaw	Yellow	Sárga
 	All Slices	Összes szelet
 	All User Slices	Összes felhasználói szelet
 	Always create smart objects when placing	Elhelyezéskor mindig intelligens objektum létrehozása
+	Skip transform when placing	Alakítás kihagyása elhelyezéskor
 	Answer the unsaved-changes prompt first	Előbb válaszolj a nem mentett módosításokra vonatkozó kérdésre
 	Appearance Settings…	Megjelenési beállítások…
 	Apple Watch 45mm	Apple Watch 45 mm
@@ -2751,7 +2766,7 @@ cameraRaw	Yellow	Sárga
 	Centimeters	Centiméter
 	Clear	Kiürít
 	Clear Existing Guides	Meglévő segédvonalak törlése
-	Click to restore the current colour	Kattints a jelenlegi szín visszaállításához
+	Click to restore the current color	Kattints a jelenlegi szín visszaállításához
 	Cmd	Cmd
 	CMYK Color	CMYK-szín
 	Coated CMYK	Mázolt papíros CMYK
@@ -2932,7 +2947,7 @@ cameraRaw	Yellow	Sárga
 	No model credits were built into this copy.	Ez a példány nem tartalmaz adatokat a modellek készítőiről.
 	No presets of this type.	Ilyen típusú előbeállítás nincs.
 	No saved presets yet.	Még nincs mentett előbeállítás.
-	Not a web colour: click for the nearest web colour	Nem webes szín: kattints a legközelebbi webes színért
+	Not a web color: click for the nearest web color	Nem webes szín: kattints a legközelebbi webes színért
 	Notification Duration (seconds)	Értesítés időtartama (másodperc)
 	Bundle Arrow-Key Nudges	Nyílbillentyűs mozgatások összevonása
 	Nudge Bundle Pause (ms)	Összevonási szünet (ms)
@@ -2943,7 +2958,7 @@ cameraRaw	Yellow	Sárga
 	OpenGL	OpenGL
 	Optimized	Optimalizált
 	Original	Eredeti
-	Out of gamut for printing: click for the nearest printable colour	Nyomtatási színtartományon kívül: kattints a legközelebbi nyomtatható színért
+	Out of gamut for printing: click for the nearest printable color	Nyomtatási színtartományon kívül: kattints a legközelebbi nyomtatható színért
 	Out of memory	Elfogyott a memória
 	Package	Csomagolás
 	Percent	Százalék
@@ -3022,7 +3037,7 @@ cameraRaw	Yellow	Sárga
 	Rulers & Grids	Vonalzók és rácsok
 	Save a Copy	Másolat mentése
 	Save as PDF	Mentés PDF-ként
-	Save cancelled	Mentés megszakítva
+	Save canceled	Mentés megszakítva
 	Save failed: {error}	A mentés nem sikerült: {error}
 	Save for Web (Legacy)	Mentés webre (régi)
 	Save HTML and Images	HTML és képek mentése
@@ -3074,7 +3089,7 @@ cameraRaw	Yellow	Sárga
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	A folytatáshoz a kitöltőréteget raszterizálni kell. A kitöltés tartalma ezután nem lesz szerkeszthető. Raszterizálod a réteget?
 	This layer must be rasterized before proceeding.	A folytatáshoz a réteget raszterizálni kell.
 	This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?	A folytatáshoz az alakzatréteget raszterizálni kell. Ezután alakzatként nem lesz szerkeszthető. Raszterizálod az alakzatot?
-	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	A folytatáshoz az intelligens objektumot raszterizálni kell. A tartalma ezután nem lesz szerkeszthető. Raszterizálod az intelligens objektumot?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	A folytatáshoz az intelligens objektumot raszterizálni kell. A tartalma ezután nem lesz szerkeszthető. Raszterizálod az intelligens objektumot?
 	This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?	A folytatáshoz a szövegréteget raszterizálni kell. A szöveg ezután nem lesz szerkeszthető. Raszterizálod a szöveget?
 	TIFF Options	TIFF-beállítások
 	Top:	Felső:
@@ -3172,8 +3187,8 @@ cameraRaw	Yellow	Sárga
 	Cache levels	Gyorsítótár-szintek
 	Cache tile size	Gyorsítótár csempemérete
 	Camera Data	Fényképezőgép adatai
-	Camera Raw Defaults	Camera Raw-alapértékek
-	Camera Raw…	Camera Raw…
+	RAW Defaults	RAW-alapértékek
+	RAW Defaults…	RAW-alapértékek…
 	Cancel opening	Megnyitás megszakítása
 	Canvas border	Vászonszegély
 	Canvas extension color:	Vászonbővítés színe:
@@ -3290,7 +3305,6 @@ cameraRaw	Yellow	Sárga
 	Ellipse Tool	Ellipszis
 	Elliptical Marquee Tool	Ellipszis-kijelölés
 	Enable	Bekapcsolás
-	Enable animations	Animációk engedélyezése
 	Enable flick panning	Lendítéses pásztázás engedélyezése
 	Enable floating document window docking	Lebegő dokumentumablakok dokkolásának engedélyezése
 	Enable narrow options bar	Keskeny beállítósáv engedélyezése
@@ -3435,6 +3449,7 @@ cameraRaw	Yellow	Sárga
 	Magnetic Lasso	Mágneses lasszó
 	Magnetic Lasso Tool	Mágneses lasszó
 	Make Selection	Kijelölés készítése
+	Make Shape	Alakzat készítése
 	Make work path from selection	Munkaútvonal készítése a kijelölésből
 	Manual	Kézi
 	manual	kézi
@@ -3630,6 +3645,11 @@ cameraRaw	Yellow	Sárga
 	Show canvas dots	Vászonpontok megjelenítése
 	Clip thumbnails to layer bounds	Bélyegképek levágása a réteg határaira
 	Clip Thumbnails to Layer Bounds	Bélyegképek levágása a réteg határaira
+	No Thumbnails	Nincs bélyegkép
+	Small Thumbnails	Kis bélyegképek
+	Medium Thumbnails	Közepes bélyegképek
+	Large Thumbnails	Nagy bélyegképek
+	Clip Thumbnails to Document Bounds	Bélyegképek levágása a dokumentum határaira
 	Show channels in color	Csatornák megjelenítése színesen
 	Show crosshair in brush tip	Szálkereszt az ecsethegyben
 	Show extension panels	Bővítménypanelek megjelenítése
@@ -3758,9 +3778,6 @@ cameraRaw	Yellow	Sárga
 	Add to selection  (⇧)	Hozzáadás a kijelöléshez  (⇧)
 	Adds grain to the soft edges of the brush tip.	Szemcsézettséget ad az ecsethegy lágy széleihez.
 	Adjustment Layers	Korrekciós rétegek
-	Adobe Every-line Composer	Adobe többsoros szedőmotor
-	Adobe PDF Presets…	Adobe PDF-előbeállítások…
-	Adobe Single-line Composer	Adobe egysoros szedőmotor
 	Advanced Controls	Speciális vezérlők
 	After (X)	Utána (X)
 	Airbrush: keeps painting while the pointer rests.	Festékszóró: a festés akkor is folytatódik, amikor a mutató áll.
@@ -4172,12 +4189,12 @@ cameraRaw	Yellow	Sárga
 	Load Settings…	Beállítások betöltése…
 	Save these settings as a Camera Raw .xmp file	A beállítások mentése Camera Raw .xmp-fájlként
 	Load settings from a Camera Raw .xmp file	Beállítások betöltése Camera Raw .xmp-fájlból
-	Loaded Camera Raw settings from {file}	Camera Raw-beállítások betöltve innen: {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw-beállítások betöltve innen: {file} ({n} nem támogatott)
+	Loaded RAW Develop settings from {file}	RAW-előhívás-beállítások betöltve innen: {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	RAW-előhívás-beállítások betöltve innen: {file} ({n} nem támogatott)
 	Auto Add/Delete	Automatikus hozzáadás/törlés
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	A nyomtatási beállításokban ne jelöld be a tükrözést is: a két tükrözés kioltja egymást.
 	Print Settings…	Nyomtatási beállítások…
-	Remember to turn off the printer's own colour management in Print Settings…	Ne felejtsd el kikapcsolni a nyomtató saját színkezelését a nyomtatási beállításokban…
+	Remember to turn off the printer's own color management in Print Settings…	Ne felejtsd el kikapcsolni a nyomtató saját színkezelését a nyomtatási beállításokban…
 	Sent to {printer}	Elküldve ide: {printer}
 	set in Print Settings…	a nyomtatási beállításokban adható meg…
 	ICO is limited to 256 × 256 pixels	Az ICO legfeljebb 256 × 256 képpont lehet
@@ -4334,12 +4351,12 @@ cameraRaw	Yellow	Sárga
 	Decrease Brush Hardness	Ecsetkeménység csökkentése
 	Increase Brush Hardness	Ecsetkeménység növelése
 	Demosaic	Demozaikolás
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hogyan tölti ki a program a kamera színszűrő-mozaikját. A fájl megnyitásakor érvényesül; az előnézet a megnyitáskor használt módszert mutatja.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Hogyan tölti ki a program a kamera színszűrő-mozaikját. A fájl megnyitásakor érvényesül; az előnézet a megnyitáskor használt módszert mutatja.
 	AHD (adaptive homogeneity)	AHD (adaptív homogenitás)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: a legtisztább élek és a legkevesebb színes szegély, a leglassabb.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradienskorrigált interpoláció: éles és gyors, apró részleteken némi színes szegéllyel.
-	The fastest and the softest, with colour fringing on fine detail.	A leggyorsabb és a leglágyabb, apró részleteken színes szegéllyel.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: a legtisztább élek és a legkevesebb színes szegély, a leglassabb.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Gradienskorrigált interpoláció: éles és gyors, apró részleteken némi színes szegéllyel.
+	The fastest and the softest, with color fringing on fine detail.	A leggyorsabb és a leglágyabb, apró részleteken színes szegéllyel.
 	“{name}” already exists. Replace it?	„{name}” már létezik. Lecseréli?
 	The name in the save dialog was “{name}”.	A mentési párbeszédpanelen megadott név: „{name}”.
 	Previous Brush	Előző ecset
@@ -4405,8 +4422,10 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Grayscale Ramp	Szürkeárnyalatos sáv
 	Current Colors	Aktuális színek
 	Make Ramp Web Safe	Sáv korlátozása webes színekre
+	Scroll All Windows	Összes ablak görgetése
 	The path was kept as the Work Path	Az útvonal munkaútvonalként megmaradt
 	The path was discarded	Az útvonal el lett vetve
+# Art History Brush (#213).
 	Art History Brush Tool	Művészi előzményecset eszköz
 	Tight Short	Szoros, rövid
 	Tight Medium	Szoros, közepes
@@ -4484,3 +4503,35 @@ smartSvg	AI/PDF/EPS contents will be edited as SVG. Saving replaces the embedded
 	Replace Image…	Kép cseréje…
 	The frame is locked	A keret zárolva van
 	The frame is unavailable	A keret nem érhető el
+
+# Channels panel menu (#11451)
+	Channel Options…	Csatornabeállítások…
+	Specify Channels:	Csatornák megadása:
+	Not enough grayscale documents for this mode.	Nincs elég szürkeárnyalatos dokumentum ehhez a módhoz.
+	Pick a different document for each channel.	Minden csatornához másik dokumentumot válasszon.
+	A picked document is no longer open.	Az egyik kiválasztott dokumentum már nincs megnyitva.
+	A picked document is no longer a grayscale document of the same size.	Az egyik kiválasztott dokumentum már nem azonos méretű szürkeárnyalatos dokumentum.
+	Netscape Gray	Netscape-szürke
+# Move tool options bar (#11381)
+	Align top edges	Felső szélek igazítása
+	Align vertical centers	Függőleges középpontok igazítása
+	Align bottom edges	Alsó szélek igazítása
+	Distribute vertically	Egyenletes elosztás függőlegesen
+	Distribute horizontally	Egyenletes elosztás vízszintesen
+	Show layer bounds on hover	Réteghatárok megjelenítése rámutatáskor
+	Expand layer group on click	Rétegcsoport kibontása kattintásra
+	Show hover bounds from Layers	Határok megjelenítése a Rétegek panelről rámutatáskor
+	Saved RAW Develop settings to {file}	RAW-előhívás-beállítások mentve ide: {file}
+	Save the settings to each raw's sidecar without opening it	A beállítások mentése minden raw kísérőfájljába megnyitás nélkül
+	No settings saved: these raws can't keep a sidecar here	Nincs mentve semmi: ezek a raw fájlok itt nem kaphatnak kísérőfájlt
+	Some settings could not be saved; the raws stay open	Néhány beállítást nem sikerült menteni; a raw fájlok nyitva maradnak
+	Nothing to save: these raws are at their default settings	Nincs mit menteni: ezek a raw fájlok alapértelmezett beállításokon vannak
+# Artboard tool options bar (#11385)
+	Distribute Widths	Szélességek elosztása
+	Distribute Heights	Magasságok elosztása
+	Auto-nest Layers	Rétegek automatikus beágyazása
+	Auto-size Canvas	Vászonméret automatikus módosítása
+	Keep Relative Position During Layer Reordering	Relatív pozíció megtartása a rétegek átrendezésekor
+	Shrinkwrap Canvas on Save	Vászon összehúzása a tartalomra mentéskor
+	Move Toolbar to the Right	Eszköztár áthelyezése jobbra
+	Move Toolbar to the Left	Eszköztár áthelyezése balra

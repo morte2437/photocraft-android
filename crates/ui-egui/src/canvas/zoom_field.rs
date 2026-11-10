@@ -439,7 +439,15 @@ fn drop_taken_text(ctx: &Context) {
         ctx.data_mut(|d| d.remove_temp::<(char, u64)>(taken_key_id()));
         return;
     }
-    let same = |t: &str| t.chars().eq(c.to_lowercase()) || t.chars().eq(c.to_uppercase());
+    let same = |t: &str| {
+        if c == 'I' {
+            // The consumed logical I key may emit either Turkic letter on the active keyboard,
+            // whatever the interface language (an English UI on a Turkish keyboard emits `ı`).
+            matches!(t, "I" | "i" | "İ" | "ı")
+        } else {
+            t.chars().eq(c.to_lowercase()) || t.chars().eq(c.to_uppercase())
+        }
+    };
     let found = ctx.input_mut(|i| {
         let at = i.events.iter().position(|e| matches!(e, egui::Event::Text(t) if same(t)));
         at.map(|at| i.events.remove(at)).is_some()
@@ -557,6 +565,37 @@ fn on_pasteboard(app: &crate::PhotocraftApp, ctx: &Context, pos: egui::Pos2) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `text` survives `drop_taken_text` after the menu took the logical key `key`.
+    fn text_survives(key: char, text: &str) -> bool {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::Text(text.into())], ..Default::default() });
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|d| d.insert_temp(taken_key_id(), (key, pass)));
+        drop_taken_text(&ctx);
+        let survives = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
+        ctx.end_pass().textures_delta.clear();
+        survives
+    }
+
+    /// A menu mnemonic consumes the text emitted by the same logical key on Turkic keyboards. The
+    /// keyboard layout is not the interface language: an English UI on a Turkish keyboard too.
+    #[test]
+    fn menu_i_key_does_not_leak_dotless_text_into_zoom_in_any_ui_language() {
+        for code in ["az", "tr", "en", "de"] {
+            let lang = crate::i18n::Lang::from_code(code).unwrap();
+            crate::i18n::with_language(lang, || {
+                for text in ["I", "i", "İ", "ı"] {
+                    assert!(!text_survives('I', text), "{code}: {text} leaked after the I key");
+                }
+                // Only the I key folds the Turkic letters; another key's text is not taken.
+                for text in ["İ", "ı", "j"] {
+                    assert!(text_survives('K', text), "{code}: {text} was taken for the K key");
+                }
+                assert!(!text_survives('K', "k"), "{code}: k leaked after the K key");
+            });
+        }
+    }
 
     #[test]
     fn enter_reads_one_separator_and_the_number_before_a_second_one() {

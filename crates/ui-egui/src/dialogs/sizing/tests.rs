@@ -50,6 +50,30 @@ fn dialog_maps_to_engine_command() {
     assert_eq!(app.session.active().unwrap().doc.size, photocraft_doc::Size::new(120, 50));
 }
 
+/// #9260: OK with a new Width resizes a document whose own resolution is outside the range
+/// the command accepts (an imported PNG's pHYs of 1 px/m is 0.0254 ppi); the dialog sends that
+/// resolution back unchanged.
+#[test]
+fn ok_resizes_a_document_with_an_imported_resolution_out_of_range() {
+    for own in [0.0254_f32, 40_000.0] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 200, "height": 100, "resolution": 72})).unwrap();
+        app.session
+            .edit("ppi", |doc, _| {
+                doc.resolution_dpi = own;
+                Ok(())
+            })
+            .unwrap();
+        let id = open(&mut app, "image.imageSize").unwrap();
+        let d = app.ui.dialog_mut(id).unwrap();
+        d.fields.insert("width".into(), json!(100));
+        d.fields.insert("height".into(), json!(50));
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        let doc = &app.session.active().unwrap().doc;
+        assert_eq!((doc.size, doc.resolution_dpi), (photocraft_doc::Size::new(100, 50), own), "{own}");
+    }
+}
+
 #[test]
 fn alt_reset_restores_open_dimensions() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

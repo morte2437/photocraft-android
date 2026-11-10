@@ -476,8 +476,9 @@ fn system_printers(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- PDF ----------
 
-/// Paper sizes in points (portrait).
-pub const PAPERS: [(&str, f64, f64); 8] = [
+/// Paper sizes in points (portrait). The original list keeps its order and sizes; the Japanese
+/// photo, postcard and JIS sizes follow it (millimetres × 72/25.4).
+pub const PAPERS: &[(&str, f64, f64)] = &[
     ("letter", 612.0, 792.0),
     ("legal", 612.0, 1008.0),
     ("tabloid", 792.0, 1224.0),
@@ -486,7 +487,75 @@ pub const PAPERS: [(&str, f64, f64); 8] = [
     ("a5", 419.53, 595.28),
     ("4x6", 288.0, 432.0),
     ("5x7", 360.0, 504.0),
+    // Japanese postcards (はがき and 往復はがき), the JIS B series that Japanese printing and
+    // Excel use (B5 182×257, B4 257×364 mm), A6 and the photo sizes L判, 2L判, KG判, 六切, 四切.
+    ("postcard", 283.46, 419.53),
+    ("double-postcard", 419.53, 566.93),
+    ("b5", 515.91, 728.50),
+    ("b4", 728.50, 1031.81),
+    ("a6", 297.64, 419.53),
+    ("l", 252.28, 360.00),
+    ("2l", 360.00, 504.57),
+    ("kg", 289.13, 430.87),
+    ("6cut", 575.43, 720.00),
+    ("4cut", 720.00, 864.57),
 ];
+
+/// Japanese customary names and other spellings for the papers in [`PAPERS`], matched after
+/// [`normalize_paper`]: `はがき` is `postcard`, `L判` is `l`, `JIS B5` is `b5`, and so on.
+const PAPER_ALIASES: &[(&str, &str)] = &[
+    ("はがき", "postcard"),
+    ("ハガキ", "postcard"),
+    ("葉書", "postcard"),
+    ("ポストカード", "postcard"),
+    ("往復はがき", "double-postcard"),
+    ("往復ハガキ", "double-postcard"),
+    ("JIS B5", "b5"),
+    ("B5 (JIS)", "b5"),
+    ("JIS B4", "b4"),
+    ("B4 (JIS)", "b4"),
+    ("L判", "l"),
+    ("Lサイズ", "l"),
+    ("L-size", "l"),
+    ("2L判", "2l"),
+    ("2Lサイズ", "2l"),
+    ("KG判", "kg"),
+    ("KGサイズ", "kg"),
+    ("六切", "6cut"),
+    ("6切", "6cut"),
+    ("四切", "4cut"),
+    ("4切", "4cut"),
+];
+
+/// The form [`paper_size`] matches names in: lower case, with whitespace and punctuation ignored
+/// and `×`/`*` read as `x`, so `L判`, `l-size` and `l` are one name, `4 × 6` is `4x6`, and
+/// `B5（JIS）` and `JIS B5.` are `b5`.
+fn normalize_paper(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '×' | '*' => 'x',
+            c => c,
+        })
+        .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !matches!(c, '（' | '）' | '、' | '。' | '，' | '．'))
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// The portrait size in points of a named paper, `None` for unknown names. Case, spaces and
+/// punctuation don't matter, and the Japanese customary names (`はがき`, `L判`, `六切`, …) and the
+/// JIS spelling (`JIS B5`) are aliases of the papers above.
+pub fn paper_size(name: &str) -> Option<(f64, f64)> {
+    let n = normalize_paper(name);
+    if n.is_empty() {
+        return None;
+    }
+    let canonical = PAPERS
+        .iter()
+        .find(|p| normalize_paper(p.0) == n)
+        .map(|p| p.0)
+        .or_else(|| PAPER_ALIASES.iter().find(|(alias, _)| normalize_paper(alias) == n).map(|(_, name)| *name))?;
+    PAPERS.iter().find(|p| p.0 == canonical).map(|p| (p.1, p.2))
+}
 
 /// The image placed on a print page.
 pub struct PrintImage {
@@ -770,11 +839,9 @@ fn print_image(doc: &Document, p: &Value, cmd: &str) -> Result<(PrintImage, Valu
 fn paper(p: &Value, cmd: &str) -> Result<(f64, f64)> {
     let (w, h) = match p.get("paper") {
         None => (612.0, 792.0),
-        Some(Value::String(name)) => PAPERS
-            .iter()
-            .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, w, h)| (*w, *h))
-            .ok_or_else(|| bad(cmd, format!("unknown paper `{name}` ({})", PAPERS.map(|p| p.0).join("|"))))?,
+        Some(Value::String(name)) => {
+            paper_size(name).ok_or_else(|| bad(cmd, format!("unknown paper `{name}` ({})", PAPERS.iter().map(|p| p.0).collect::<Vec<_>>().join("|"))))?
+        }
         Some(Value::Array(a)) if a.len() == 2 => (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)),
         _ => return Err(bad(cmd, "paper is a name or [width, height] in points")),
     };

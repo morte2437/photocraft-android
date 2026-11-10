@@ -56,7 +56,7 @@ impl CameraRawPreviewState {
 
 /// Validate with the rest of the Camera Raw request before changing anything.
 pub(crate) fn prepare(current: CameraRawPreviewState, value: &Value) -> Result<CameraRawPreviewState, String> {
-    let obj = value.as_object().ok_or("Camera Raw view must be an object")?;
+    let obj = value.as_object().ok_or("RAW Develop view must be an object")?;
     let mut next = current;
     for (key, value) in obj {
         match key.as_str() {
@@ -65,22 +65,22 @@ pub(crate) fn prepare(current: CameraRawPreviewState, value: &Value) -> Result<C
                 let z = value
                     .as_f64()
                     .filter(|z| z.is_finite() && (MIN_ZOOM as f64..=MAX_ZOOM as f64).contains(z))
-                    .ok_or("Camera Raw zoom must be 'fit' or 0.0001–16 (1 = 100%)")?;
+                    .ok_or("RAW Develop zoom must be 'fit' or 0.0001–16 (1 = 100%)")?;
                 next.zoom = Some(z as f32);
             }
             "center" => {
-                let a = value.as_array().filter(|a| a.len() == 2).ok_or("Camera Raw center must be [u,v]")?;
+                let a = value.as_array().filter(|a| a.len() == 2).ok_or("RAW Develop center must be [u,v]")?;
                 let coordinate = |i| {
                     a.get(i)
                         .and_then(Value::as_f64)
                         .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
                         .map(|v| v as f32)
-                        .ok_or("Camera Raw center must be finite coordinates in 0–1")
+                        .ok_or("RAW Develop center must be finite coordinates in 0–1")
                 };
                 next.center = [coordinate(0)?, coordinate(1)?];
             }
-            "hand" => next.hand = value.as_bool().ok_or("Camera Raw hand must be a boolean")?,
-            _ => return Err(format!("unknown Camera Raw view property {key}")),
+            "hand" => next.hand = value.as_bool().ok_or("RAW Develop hand must be a boolean")?,
+            _ => return Err(format!("unknown RAW Develop view property {key}")),
         }
     }
     if obj.get("zoom").and_then(Value::as_str) == Some("fit") {

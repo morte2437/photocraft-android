@@ -44,6 +44,7 @@ pub mod layer_row_ui;
 pub(super) mod layer_transfer;
 pub mod layer_tree_ui;
 mod layers;
+mod layers_empty_menu;
 pub mod layers_panel_ui;
 pub(super) mod mask_props_ui;
 pub mod mask_thumbs_ui;
@@ -60,7 +61,7 @@ pub mod swatches_ui;
 pub(super) mod timeline_ui;
 pub(crate) mod title_bar;
 pub(super) mod titlebar;
-mod toolbar;
+pub(crate) mod toolbar;
 pub mod type_panels_ui;
 pub(super) mod variables_ui;
 
@@ -71,13 +72,18 @@ pub(crate) use color::{color_field, color_field_fill_id, field_chips, field_hsva
 pub(crate) use color::{hsva_color32, hsva_srgb, srgb_bytes};
 #[cfg(test)]
 pub(crate) use dock::DOCK_MIN_WIDTH;
+#[cfg(test)]
+pub(crate) use dock::dock_panel_width;
 pub(crate) use dock::{canvas_panel, dock_body, dock_width_id, dock_width_range};
-pub use dock::{dock_area, request_dock_width};
+pub(crate) use dock::{clear_dock_edge_drag, dock_edge_drag_active};
+pub use dock::{dock_area, dock_panel, request_dock_width};
 #[cfg(test)]
 use history::history;
 #[cfg(test)]
 pub(crate) use history::select_snapshot;
 pub(crate) use history::selected_snapshot;
+#[cfg(test)]
+pub(crate) use history::step_icon as history_step_icon;
 #[cfg(test)]
 use info::info_panel;
 pub(crate) use info::{SamplerReadouts, sampler_readouts};
@@ -103,6 +109,7 @@ use options_bar::options_bar_height;
 pub(crate) use options_bar::{FIXED_SIZE_MAX_PX, opt_label};
 pub use panel_state::{migrate_panel_state, panel_state_id, remember_panel_state};
 pub use properties::properties_window;
+pub(crate) use properties::selection_mode_buttons;
 #[cfg(test)]
 use properties::{adjustments_grid, properties_body};
 pub use status_bar::{status_bar, status_bar_heights};
@@ -111,7 +118,8 @@ use title_bar::title_x;
 pub use title_bar::{sync_window_title, system_title_bar, title_bar, window_title};
 #[cfg(test)]
 use toolbar::{
-    STUDIO_CHIP, TOOL_SECTIONS, chips_height, color_chips, next_slot_tool, tool_flyout_drag_open, tool_flyout_release, toolbar_icon_size, visible_sections,
+    STUDIO_CHIP, TOOL_SECTIONS, chips_height, color_chips, next_slot_tool, slot_tool, tool_flyout_drag_open, tool_flyout_release, toolbar_icon_size,
+    visible_sections,
 };
 pub use toolbar::{paint_toolbar_flyout_indicator, toolbar};
 
@@ -260,6 +268,13 @@ mod title_tests {
         super::sync_window_title(&mut app, &ctx);
         assert_eq!(app.last_window_title, "foo.psd \u{2014} PhotoCraft");
     }
+}
+
+/// Whether blend mode `m` starts one of the groups Photoshop's blend mode lists draw a line above:
+/// Normal, Dissolve (and Pass Through, Clear) | darken | lighten | contrast | difference | colour
+/// (#5532). The first mode of a list never gets a line.
+pub(crate) fn starts_blend_group(m: BlendMode) -> bool {
+    matches!(m, BlendMode::Darken | BlendMode::Lighten | BlendMode::Overlay | BlendMode::Difference | BlendMode::Hue)
 }
 
 fn label(ui: &mut egui::Ui, s: &str) {
@@ -822,7 +837,7 @@ mod snapshot_row_tests {
         let p = trash(&h);
         click(&mut h, p);
         let st = h.state().session.active().unwrap();
-        assert_eq!(st.snapshots.len(), 1, "the trash deleted the snapshot (the first snapshot stays)");
+        assert_eq!(st.snapshots.len(), 1, "the trash deleted the snapshot, leaving the first one");
         assert_eq!(st.history.entries().len(), steps, "and left the states alone");
 
         // An edit after the click deselects the snapshot: the trash deletes the state.
@@ -836,7 +851,7 @@ mod snapshot_row_tests {
         let p = trash(&h);
         click(&mut h, p);
         let st = h.state().session.active().unwrap();
-        assert_eq!(st.snapshots.len(), 2, "the snapshot is kept");
+        assert_eq!(st.snapshots.len(), 2, "the snapshot is kept, after the first one");
         assert_eq!(st.history.entries().len(), steps - 1, "the current state is deleted");
     }
 
@@ -849,7 +864,7 @@ mod snapshot_row_tests {
         let to = trash(&h);
         drag(&mut h, egui::pos2(row.x, row.y), to);
         let st = h.state().session.active().unwrap();
-        assert_eq!(st.snapshots.len(), 1, "the dragged snapshot is deleted (the first snapshot stays)");
+        assert_eq!(st.snapshots.len(), 1, "the dragged snapshot is deleted, leaving the first one");
         assert_eq!(st.history.entries().len(), steps, "no state is");
 
         // The second-to-last state: it and the state after it go, as with Delete.
@@ -862,7 +877,7 @@ mod snapshot_row_tests {
         drag(&mut h, egui::pos2(row.x, row.y), to);
         let st = h.state().session.active().unwrap();
         assert_eq!(st.history.entries().len(), 1, "the dragged state and the ones after it are deleted");
-        assert_eq!(st.snapshots.len(), 2, "the snapshot is kept");
+        assert_eq!(st.snapshots.len(), 2, "the snapshot is kept, after the first one");
     }
 
     /// With Allow Non-Linear History and only the oldest state current, a click on the trash has
@@ -999,6 +1014,73 @@ mod snapshot_row_tests {
         assert_eq!(snap.name, "Red layer only");
         assert_eq!(snap.doc.layers.len(), 1, "only the current layer");
         assert!(h.state().ui.dialogs.is_empty());
+    }
+
+    /// History Options › Show New Snapshot Dialog by Default (#2966): a plain click on the camera
+    /// opens New Snapshot as ⌥-click does, and ⌥-click still opens it (Photoshop's button always
+    /// prompts with the option on). Off, a plain click takes the snapshot at once.
+    #[test]
+    fn show_new_snapshot_dialog_by_default_makes_a_click_open_the_dialog() {
+        for (dialog_by_default, modifiers) in [(true, egui::Modifiers::NONE), (true, egui::Modifiers::ALT), (false, egui::Modifiers::NONE)] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+            app.run("history.options", json!({"showNewSnapshotDialogByDefault": dialog_by_default})).unwrap();
+            let mut h = Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+                |ui, app: &mut PhotocraftApp| {
+                    let ctx = ui.ctx().clone();
+                    if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                        return;
+                    }
+                    history(app, ui);
+                    crate::dialogs::show(app, &ctx);
+                },
+                app,
+            );
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ProMedium);
+            h.state_mut().ui.theme = crate::theme::ThemeKind::ProMedium;
+            h.run_steps(4);
+            let mut buttons: Vec<Rect> = h
+                .ctx
+                .viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, w)| w.iter()).filter(|w| w.rect.size() == vec2(26.0, 26.0)).map(|w| w.rect).collect());
+            buttons.sort_by(|a, b| b.center().x.total_cmp(&a.center().x));
+            let camera = buttons[1].center();
+            h.event(egui::Event::ModifiersChanged(modifiers));
+            h.event(egui::Event::PointerMoved(camera));
+            h.run_steps(1);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton { pos: camera, button: egui::PointerButton::Primary, pressed, modifiers });
+                h.run_steps(1);
+            }
+            h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+            h.run_steps(3);
+            let snaps = h.state().session.active().unwrap().snapshots.len();
+            let dialog = h.state().ui.dialogs.last().is_some_and(|d| crate::snapshot_dialog::owns(&d.fields));
+            if dialog_by_default {
+                assert!(dialog, "{modifiers:?}: the dialog opens");
+                assert_eq!(snaps, 1, "{modifiers:?}: no snapshot until OK");
+                h.get_by_label("OK").click();
+                h.run_steps(3);
+                assert_eq!(h.state().session.active().unwrap().snapshots.last().unwrap().name, "Snapshot 1");
+            } else {
+                assert!(!dialog, "off: no dialog");
+                assert_eq!(snaps, 2, "off: the click takes the snapshot");
+            }
+        }
+    }
+
+    /// History Options › Automatically Create First Snapshot: on, the panel's top row is a
+    /// snapshot named after the document; off, there is none above the opening state.
+    #[test]
+    fn the_first_snapshot_row_follows_the_option() {
+        for first in [true, false] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("history.options", json!({"automaticallyCreateFirstSnapshot": first})).unwrap();
+            app.run("file.new", json!({"width": 200, "height": 150})).unwrap();
+            let name = app.session.active().unwrap().doc.name.clone();
+            let mut h = Harness::builder().with_size(vec2(300.0, 400.0)).build_ui_state(|ui, app: &mut PhotocraftApp| history(app, ui), app);
+            h.run_steps(3);
+            assert_eq!(h.query_by_label(&name).is_some(), first, "a snapshot row named after the document: {first}");
+        }
     }
 
     /// Snapshot thumbnails belong to the snapshot's document (#6087): closing a document drops

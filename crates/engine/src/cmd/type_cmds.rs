@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use photocraft_color::{Color, PixelFormat};
+use photocraft_color::{Color, ColorMode, PixelFormat};
 use photocraft_doc::text::{
     AntiAlias, Caps, CharStyle, FontBaseline, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection,
     TextRun, TextShape,
@@ -937,6 +937,56 @@ pub(crate) fn new_text_layer(s: &Session, p: &Value, cmd: &str) -> Result<TextLa
     Ok(t)
 }
 
+/// The name of the history state a new type layer makes: what `type.create` records, and what the
+/// Type tool's commit keeps in the modes [`commits_as_selection`] names (#12041).
+pub const NEW_TYPE_LAYER_LABEL: &str = "New Type Layer";
+
+/// Whether committing Type-tool text `t` in colour mode `mode` leaves no type layer, but a
+/// selection in the shape of its glyphs, as Photoshop does in its Indexed Color and Bitmap
+/// documents (#12041).
+///
+/// Both halves of the answer come from the issue:
+/// - the modes: Indexed Color and Bitmap are the two documents that keep no type layer;
+/// - the text: only the horizontal point text the measurement describes - the tool "still lets you
+///   click and type" and the commit leaves "a selection in the shape of the typed glyphs". Paragraph
+///   (box) text and vertical type are on its *Not measured* list, whose rule is that an unmeasured
+///   case keeps today's behaviour - and today's behaviour is the outcome that makes sense here
+///   anyway: a coverage mask cannot give back a box that reflows or a column of stacked lines, so
+///   the selection would end the editability the layer exists for. The Type Mask tools keep turning
+///   both into the selection, as they do today: there the user asked for one.
+///
+/// The check belongs to the Type tool's commit (the Type Mask tools' `type.createSelection` with
+/// `removeLayer`, which it already runs for `ed.mask`) and *not* to the `type.create` command, even
+/// though a colour-mode check there is what looks simplest:
+/// - `type.create` is the primitive the tools build the layer they edit and show on canvas with
+///   (`pointer_up` in `ui-egui`), and Preferences > Type > "Fill new type layers with placeholder
+///   text" (on by default) already gives that first call non-empty text. Branching there would make
+///   the click produce a selection and no layer, so there would be nothing to type into - while the
+///   reference application still lets you click and type in these modes and shows the text while
+///   editing. Only its commit differs.
+/// - `type.create` is also what automation, actions and a script's new text layer go through, and
+///   the measured difference is the tool's.
+pub fn commits_as_selection(mode: ColorMode, t: &TextLayer) -> bool {
+    let measured = matches!(t.shape, TextShape::Point) && t.orientation == Orientation::Horizontal;
+    measured && matches!(mode, ColorMode::Indexed | ColorMode::Bitmap)
+}
+
+/// Name the step the Type tool's commit made in such a document (#12041). The commit runs the Type
+/// Mask tools' `type.createSelection` with `removeLayer` - the same conversion, coalesced into the
+/// one step of the typing session - and that command names the step "Type Mask", while Photoshop's
+/// history state here is the type layer's own name.
+///
+/// An edit that does not carry the session's `coalesce` key (the Alt+arrow kerning step, which is
+/// deliberately one state per press) ends the session's step, exactly as it does for the Type Mask
+/// tools and for the plain type layer's rename on commit; the conversion is then a state of its own
+/// and takes this name too. Photoshop repeats a state name whenever the same thing happens again,
+/// so the two states read as the two type-layer steps they are.
+pub fn name_selection_commit(s: &mut Session) {
+    if let Some(st) = s.active_mut() {
+        st.history.set_current_label(NEW_TYPE_LAYER_LABEL);
+    }
+}
+
 const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","baseline":"normal|superscript|subscript","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -953,7 +1003,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut t = new_text_layer(s, p, "type.create")?;
                 let given = p.get("name").and_then(Value::as_str).map(str::to_string);
                 let name = given.clone().unwrap_or_else(|| layer_name(&t.text));
-                let id = s.edit("New Type Layer", |doc, active| {
+                let id = s.edit(NEW_TYPE_LAYER_LABEL, |doc, active| {
                     refresh(doc, &mut t);
                     let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Text(t)), crate::layer_place::Place::AutoEditable);
                     *active = Some(id);

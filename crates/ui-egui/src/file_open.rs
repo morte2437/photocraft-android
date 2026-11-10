@@ -81,6 +81,13 @@ fn queue_takes_drop(queued: usize, bytes: usize, incoming: usize) -> bool {
     queued < MAX_QUEUED_DROPS && bytes.saturating_add(incoming) <= MAX_QUEUED_DROP_BYTES
 }
 
+/// Whether the shell's place inbox, holding `files` files of `bytes` bytes together, takes one more
+/// of `incoming` bytes: the limits of the drop queue it is drained into, so browser reads that
+/// finish between two frames can't hold more than the queue itself would.
+pub fn place_inbox_takes(files: usize, bytes: usize, incoming: usize) -> bool {
+    queue_takes_drop(files, bytes, incoming)
+}
+
 /// `warnings` from an import, plus one for each font family the active document's type uses that
 /// isn't installed (#4559): Photoshop warns about missing fonts as a file opens, and the CLI and
 /// automation already report them; the type would otherwise silently render in a fallback face.
@@ -327,16 +334,22 @@ impl PhotocraftApp {
         }
     }
 
+    /// The pointer position, from the OS cursor service when available, falling back to egui's
+    /// last-known pointer position (e.g. on Wayland).
+    pub(crate) fn cursor_pos(&mut self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        self.services.cursor_pos.as_mut().and_then(|f| f(ctx)).or_else(|| ctx.input(|i| i.pointer.latest_pos()))
+    }
+
     /// Which of the files called `names`, dropped onto the window just now, are placed on the
     /// active document's canvas rather than opened, for a shell that reads dropped files itself
     /// (the browser reads them asynchronously, so the web shell can't hand them to
     /// [`open_dropped`](Self::open_dropped)). It delivers those through
     /// [`Services::place_inbox`](crate::Services::place_inbox) and the rest through
     /// [`Services::inbox`](crate::Services::inbox). The pointer comes from
-    /// [`Services::cursor_pos`](crate::Services::cursor_pos). As with a desktop canvas drop, a Free
+    /// [`cursor_pos`](Self::cursor_pos). As with a desktop canvas drop, a Free
     /// Transform still open is applied first (#4833).
     pub fn dropped_on_canvas(&mut self, ctx: &egui::Context, names: &[String]) -> Vec<bool> {
-        let at = self.services.cursor_pos.as_mut().and_then(|f| f(ctx));
+        let at = self.cursor_pos(ctx);
         let canvas = self.drop_target(ctx, at) == DropTarget::Canvas;
         let places: Vec<bool> = names.iter().map(|n| canvas && !crate::preset_files_ui::is_preset_file(n)).collect();
         if places.contains(&true) {
@@ -385,8 +398,9 @@ impl PhotocraftApp {
 
     /// Place the next file dropped on the canvas and start Free Transform on it, once no other
     /// transform is in progress (so several files are placed and transformed one after another).
-    /// With background jobs on, a file is placed by a job: the next one waits until that job has
-    /// landed and its Free Transform has been applied (see `jobs_ui::finish_place`).
+    /// With background jobs on (or a session that steps its jobs, as on the web), a file is placed
+    /// by a job: the next one waits until that job has landed and its Free Transform has been
+    /// applied (see `jobs_ui::finish_place`).
     ///
     /// Each file goes into the document it was dropped on, never into whichever one is active now:
     /// files dropped on a document in another tab wait until it is back in view, and are discarded
@@ -401,7 +415,9 @@ impl PhotocraftApp {
             }
             return;
         }
-        while self.ui.transform.is_none() && self.jobs.place.is_none() && self.session.active_job().is_none() {
+        // A box still preparing (or its canceled job not yet handled) holds the queue too: the
+        // next place would lock the document before a canceled place could be taken back.
+        while self.ui.transform.is_none() && self.transform_preparing.is_none() && self.jobs.place.is_none() && self.session.active_job().is_none() {
             let Some(active) = self.session.active().map(|st| st.doc.id) else { return };
             let Some((_, next)) = self.drop_places.iter().position(|(doc, _)| *doc == active).and_then(|i| self.drop_places.remove(i)) else {
                 return;
@@ -502,8 +518,10 @@ impl PhotocraftApp {
         self.place_bytes_with(name, bytes, linked, &serde_json::json!({}))
     }
 
+    /// [`PhotocraftApp::place_bytes`] with the command's `params` (a frame to fill): a job where
+    /// places run in the background, else synchronously.
     fn place_bytes_with(&mut self, name: &str, bytes: Vec<u8>, linked: Option<String>, params: &serde_json::Value) -> Result<serde_json::Value, String> {
-        let r = if self.background_jobs {
+        let r = if crate::jobs_ui::place_in_background(self) {
             crate::jobs_ui::start_place_bytes(self, name, bytes, linked, params)
         } else {
             photocraft_engine::file_cmds::place_bytes(&mut self.session, name, bytes, linked, params).map_err(|e| e.to_string())
@@ -584,12 +602,12 @@ fn digit_run(it: &mut std::iter::Peekable<std::str::Chars>) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn absolute(p: &str) -> String {
+pub(crate) fn absolute(p: &str) -> String {
     std::path::absolute(p).map(|a| a.to_string_lossy().to_string()).unwrap_or_else(|_| p.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
-fn absolute(p: &str) -> String {
+pub(crate) fn absolute(p: &str) -> String {
     p.to_string()
 }
 

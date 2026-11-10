@@ -137,7 +137,7 @@ fn a_camera_raw_filter_copies_and_its_copy_opens_on_the_target() {
     h.state_mut().run("layer.select", json!({"layer": a})).unwrap();
     h.state_mut().run("filter.cameraRaw", json!({"exposure": 1.0, "contrast": 20})).unwrap();
     h.run_steps(4);
-    let (from, to) = (at(&h, "Camera Raw Filter"), at(&h, "Smart B"));
+    let (from, to) = (at(&h, "RAW Develop Filter"), at(&h, "Smart B"));
     drag(&mut h, from, to, Modifiers::ALT);
     let raw = |h: &egui_kittest::Harness<'static, PhotocraftApp>, id: u64| match &h.state().session.active().unwrap().doc.layer(LayerId(id)).unwrap().content {
         LayerContent::Smart(sm) => sm.smart_filters.iter().find(|f| f.command == "filter.cameraRaw").map(|f| f.params.clone()),
@@ -147,7 +147,7 @@ fn a_camera_raw_filter_copies_and_its_copy_opens_on_the_target() {
     assert_eq!(raw(&h, b).unwrap()["exposure"], 1.0);
     // B is above A in the panel, so its copy is the upper of the two Camera Raw rows.
     let copy = h
-        .query_all_by_label("Camera Raw Filter")
+        .query_all_by_label("RAW Develop Filter")
         .filter(|n| n.accesskit_node().role() == Role::Button)
         .map(|n| n.rect().center())
         .min_by(|p, q| p.y.total_cmp(&q.y))
@@ -160,7 +160,7 @@ fn a_camera_raw_filter_copies_and_its_copy_opens_on_the_target() {
         h.run_steps(1);
     }
     h.run_steps(3);
-    let dialog = h.state().camera_raw.as_ref().expect("Camera Raw opened");
+    let dialog = h.state().camera_raw.as_ref().expect("RAW Develop opened");
     assert_eq!(dialog.layer, LayerId(b));
 }
 

@@ -79,12 +79,16 @@ fn attach_memory_error_details(obj: &mut Value, err: &AutomationError) {
                 }
             }
         }
-        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit })
-        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, .. }) => {
+        AutomationError::Import(photocraft_io::IoError::PsdImportBudget { required, limit, free_memory })
+        | AutomationError::Engine(photocraft_engine::EngineError::PsdHardBudget { required, limit, free_memory, .. }) => {
             if let Some(m) = obj.as_object_mut() {
                 m.insert("required".into(), json!(required));
                 m.insert("hard".into(), json!(limit));
                 m.insert("hardLimit".into(), json!(limit));
+                if let Some(free) = free_memory {
+                    m.insert("available".into(), json!(free));
+                    m.insert("availableRam".into(), json!(free));
+                }
             }
         }
         _ => {}
@@ -180,6 +184,9 @@ impl Headless {
                 let tiff_bool = |key| photocraft_engine::file_cmds::tiff_bool_param(&p, key, "doc.save").map_err(|e| bad(e.to_string()));
                 opts.tiff_transparency = tiff_bool("tiffTransparency")?;
                 opts.encode.tiff_pyramid = tiff_bool("tiffPyramid")?.unwrap_or(false);
+                if let Some(maximize) = photocraft_engine::file_cmds::maximize_compatibility_param(&p, "doc.save").map_err(|e| bad(e.to_string()))? {
+                    opts.psd_maximize_compatibility = maximize;
+                }
                 match p.get("quality") {
                     None | Some(Value::Null) => {}
                     Some(v) => {

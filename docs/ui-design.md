@@ -218,6 +218,7 @@ Languages shipped (`complete_menus` marks a catalog that covers every menu strin
 - French (`fr`), complete, with two plural forms (0 and 1 use the singular).
 - Czech (`cs`), complete, with three plural forms.
 - Indonesian (`id`), complete, with one plural form.
+- Azerbaijani (`az`, Latin script), complete, with two integer plural forms (1 / other).
 
 - `tr(lang, s)` plain strings; `tr_ctx` when one English word needs different translations;
   `tr_id(lang, command_id, label)` for menu items (keyed by command id, English label as the

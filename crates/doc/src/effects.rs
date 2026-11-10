@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::adjust::CurvePoint;
 
+/// The range of a style's pattern scale as a fraction (1 = 100 %): Pattern Overlay, a pattern
+/// Stroke and the Bevel & Emboss Texture all take 1..1000 % in the Layer Style dialog.
+pub const PATTERN_SCALE_RANGE: (f32, f32) = (0.01, 10.0);
+
 /// Gradient geometry (fill layers, gradient overlays, gradient strokes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GradientStyle {

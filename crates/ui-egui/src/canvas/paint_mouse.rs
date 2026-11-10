@@ -41,6 +41,9 @@ pub fn sync_tool_brush(app: &mut PhotocraftApp) {
         // in Normal mode: each tool's Mode starts at Normal, so a Multiply Brush doesn't make the
         // first Clone Stamp stroke multiply (or give Healing a mode its menu doesn't have).
         // The Art History Brush also starts at full opacity (#10263): its Opacity is its own.
+        // The Background Eraser, the Healing Brush and the Burn tool start with their own measured
+        // tips instead, as the whole brush Reset Tool gives them (#11911, #12099, #12671).
+        None if matches!(tool, Tool::BackgroundEraser | Tool::Healing | Tool::Burn) => fresh_brush(tool, &current),
         None => {
             let opacity = if tool == Tool::ArtHistoryBrush { BrushSettings::default().opacity } else { current.opacity };
             BrushSettings { smoothing: first_smoothing(), mode: photocraft_color::BlendMode::Normal, opacity, ..current }
@@ -67,10 +70,31 @@ fn session_fields(current: &BrushSettings, brush: &BrushSettings) -> BrushSettin
     BrushSettings { color: current.color, background: current.background, erase: current.erase, seed: current.seed, ..brush.clone() }
 }
 
-/// A tool's brush as it starts out (Reset Tool, #2825): the default brush at Photoshop's
-/// smoothing, with the session's own fields of `current`.
-pub(crate) fn fresh_brush(current: &BrushSettings) -> BrushSettings {
-    session_fields(current, &BrushSettings { smoothing: first_smoothing(), ..BrushSettings::default() })
+/// The Brush tool's tip after Reset Tool, as the reference measures it (#11810): size, hardness
+/// and spacing of a 13 px soft round at 25 % spacing.
+const BRUSH_TOOL_TIP: (f32, f32, f32) = (13.0, 0.0, 0.25);
+/// The Background Eraser's tip after Reset Tool (#11911): a 13 px hard round at 25 % spacing.
+const BACKGROUND_ERASER_TIP: (f32, f32, f32) = (13.0, 1.0, 0.25);
+/// The Healing Brush's tip after Reset Tool (#12099): a 19 px hard round at 25 % spacing.
+const HEALING_BRUSH_TIP: (f32, f32, f32) = (19.0, 1.0, 0.25);
+/// The Burn tool's tip after Reset Tool (#12671): a 65 px soft round at 25 % spacing.
+const BURN_TOOL_TIP: (f32, f32, f32) = (65.0, 0.0, 0.25);
+
+/// `tool`'s brush as it starts out (Reset Tool, #2825): the default brush at Photoshop's
+/// smoothing, with the session's own fields of `current`. The Brush tool's tip is
+/// [`BRUSH_TOOL_TIP`], the Background Eraser's [`BACKGROUND_ERASER_TIP`], the Healing Brush's
+/// [`HEALING_BRUSH_TIP`], the Burn tool's [`BURN_TOOL_TIP`]; the other tools keep the default
+/// tip.
+pub(crate) fn fresh_brush(tool: Tool, current: &BrushSettings) -> BrushSettings {
+    let mut brush = BrushSettings { smoothing: first_smoothing(), ..BrushSettings::default() };
+    match tool {
+        Tool::Brush => (brush.size, brush.hardness, brush.spacing) = BRUSH_TOOL_TIP,
+        Tool::BackgroundEraser => (brush.size, brush.hardness, brush.spacing) = BACKGROUND_ERASER_TIP,
+        Tool::Healing => (brush.size, brush.hardness, brush.spacing) = HEALING_BRUSH_TIP,
+        Tool::Burn => (brush.size, brush.hardness, brush.spacing) = BURN_TOOL_TIP,
+        _ => {}
+    }
+    session_fields(current, &brush)
 }
 
 /// Photoshop's 10 % stroke smoothing, what a tool's brush starts at.
@@ -339,7 +363,8 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     // ⌘/Ctrl+right-click lists the layers under the pointer instead (layer_pick_ui.rs, #307).
     let layer_menu = crate::layer_pick_ui::is_gesture(tool, mods);
     // Decided by the modifiers held when the button went down, not by those of the release frame that reports the click.
-    let mode_menu = crate::brush_mode_menu::is_gesture(tool, crate::workspace_ui::sticky_mods(app, crate::brush_mode_menu::gesture_mods(&response.ctx, mods)));
+    let mode_menu =
+        crate::brush_mode_menu::opens_on(app, tool, crate::workspace_ui::sticky_mods(app, crate::brush_mode_menu::gesture_mods(&response.ctx, mods)));
     if mode_menu && !resizing && app.drag.is_none() {
         app.secondary_erase = false;
         if let Some(p) = right_click_at(response) {
@@ -416,7 +441,7 @@ pub fn pointer_secondary(app: &mut PhotocraftApp, ctx: &egui::Context, down: boo
         app.brush_resize_armed = down && app.drag.is_none();
         return true;
     }
-    if crate::brush_mode_menu::is_gesture(tool, mods) && app.drag.is_none() && app.brush_resize.is_none() {
+    if crate::brush_mode_menu::opens_on(app, tool, mods) && app.drag.is_none() && app.brush_resize.is_none() {
         app.secondary_erase = false;
         if down {
             crate::brush_mode_menu::open(app, ctx, at);
@@ -437,14 +462,22 @@ pub fn pointer_secondary(app: &mut PhotocraftApp, ctx: &egui::Context, down: boo
 /// edits the session brush like the Brushes panel; a press outside, Escape, Enter or a
 /// double-click on a preset closes it.
 pub fn show_picker(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    let Some([x, y]) = app.ui.brush_picker else { return };
+    let opened_id = crate::brush_picker::opened_id();
+    let Some([x, y]) = app.ui.brush_picker else {
+        ctx.data_mut(|d| d.remove_temp::<crate::brush_picker::Opened>(opened_id));
+        return;
+    };
     if !has_brush_picker(app.ui.tool) {
         app.ui.brush_picker = None;
+        ctx.data_mut(|d| d.remove_temp::<crate::brush_picker::Opened>(opened_id));
         return;
     }
+    let mut opened = ctx.data_mut(|d| d.get_temp_mut_or_insert_with(opened_id, || crate::brush_picker::Opened::new(&app.session.tools.brush)).clone());
     // Escape and Enter close it once this frame's edits are in (a typed size applies), unless they
-    // end a rename in its rename bar.
-    let key_close = app.ui.brush_picker_list.renaming.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter));
+    // end a rename in its rename bar. Escape then reverts what was typed (#11816).
+    let typing_done = app.ui.brush_picker_list.renaming.is_none();
+    let escape = typing_done && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let key_close = escape || (typing_done && ctx.input(|i| i.key_pressed(egui::Key::Enter)));
     let screen = ctx.content_rect();
     // The picker's content size: the one its grip was dragged to, or the one it last closed with
     // (kept in egui's own memory, which outlives the app's), or the default. The frame's chrome
@@ -464,18 +497,40 @@ pub fn show_picker(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let before = app.session.tools.brush.clone();
         let mut b = before.clone();
         let list = &mut app.ui.brush_picker_list;
-        let frame = egui::Frame::popup(ui.style())
-            .show(ui, |ui| crate::brush_picker::body(ui, &mut b, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), list, content));
+        let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+            // The Background Eraser has its own compact popup, without presets (#11910).
+            if app.ui.tool == Tool::BackgroundEraser {
+                crate::bg_eraser_popup::body(ui, &mut b, &mut app.ui.tool_options.bg_tolerance_control);
+                Vec::new()
+            } else {
+                crate::brush_picker::body(ui, &mut b, &app.session.tools.presets, app.session.tools.current_preset.as_deref(), list, content)
+            }
+        });
         let picks = frame.inner;
         // The corner grip resizes the picker, and the size is remembered across opens.
         if let Some(new) = crate::brush_picker::resize_grip(ui, frame.response.rect, content) {
             app.ui.brush_picker_size = Some([new.x, new.y]);
         }
         crate::brush_panel::commit_gesture(app, ui.ctx(), &before, &b);
+        if b != before {
+            opened.typed(&b);
+        }
         let closes = picks.iter().any(crate::brush_picker::Pick::closes);
+        let picked =
+            picks.iter().any(|p| matches!(p, crate::brush_picker::Pick::List(crate::brushes_tab::Action::Select(_) | crate::brushes_tab::Action::Choose(_))));
         crate::brush_picker::apply(app, ui.ctx(), picks);
+        // A preset picked stays picked, Escape or not.
+        if picked {
+            opened = crate::brush_picker::Opened::new(&app.session.tools.brush);
+        }
         closes
     });
+    ctx.data_mut(|d| d.insert_temp(opened_id, opened.clone()));
+    if escape {
+        let now = app.session.tools.brush.clone();
+        let back = opened.revert(&now);
+        crate::brush_panel::commit_gesture(app, ctx, &now, &back);
+    }
     // Not a press on a menu the picker opened (the gear, a preset's context menu), nor on the
     // options-bar chip, whose click toggles the picker. A menu floats over the picker in the
     // foreground order, so the press is told apart by the layer it lands on, not by any popup

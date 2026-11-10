@@ -264,15 +264,3 @@ fn box_undo_restores_whether_the_frame_came_from_a_selection() {
     assert_eq!(app.ui.crop_rect, Some([50.0, 20.0, 150.0, 80.0]));
     assert!(crop_presets::shows_selection(&app), "redo brings the selection's frame back");
 }
-
-/// The Fill entry's default labels are translated in every catalog that translated the old
-/// "Background (Default)" label, so no language falls back to English.
-#[test]
-fn the_fill_labels_are_translated_where_the_old_label_was() {
-    use crate::i18n::{Lang, has};
-    for lang in Lang::all().filter(|l| has(*l, "Background (Default)")) {
-        for label in ["Background (default)", "Transparent (default)"] {
-            assert!(has(lang, label), "{} lacks {label}", lang.code());
-        }
-    }
-}

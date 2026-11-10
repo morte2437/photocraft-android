@@ -591,6 +591,112 @@ fn background_drops_are_placed_by_a_job_one_after_another() {
     assert!(app.drop_places.is_empty());
 }
 
+/// #10031: where there are no threads (the web build) a dropped file is placed in slices, a few
+/// milliseconds per frame, with `background_jobs` still off. Free Transform starts when the
+/// layer has landed, and the next file waits for it.
+#[test]
+fn a_dropped_file_is_placed_over_several_frames_without_background_jobs() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    assert!(!app.background_jobs);
+    app.session.set_cooperative_jobs(true);
+    // One unit of work per frame, so the number of frames does not depend on the machine.
+    app.session.set_job_step_budget(std::time::Duration::ZERO);
+    let (layers, steps) = (layer_count(&app), history_steps(&app));
+    app.open_dropped(&ctx, vec![dropped("first.png", Ok(png_bytes(40, 40))), dropped("second.png", Ok(png_bytes(8, 8)))], Some(egui::pos2(400.0, 300.0)));
+    app.place_next_dropped(&ctx);
+    let place = app.jobs.place.clone().expect("the first file is being placed");
+    assert_eq!(place.name, "first.png");
+    assert!(app.session.job(place.job).is_some() && app.session.has_jobs());
+    assert!(crate::jobs_ui::keep_polling(&app, &ctx), "frames keep coming while it runs");
+    assert!(app.ui.transform.is_none(), "Free Transform waits for the layer");
+    assert_eq!((layer_count(&app), history_steps(&app)), (layers, steps));
+    // The status bar shows it, and it can be cancelled like any job.
+    assert_eq!(crate::jobs_ui::job_in_view(&app).map(|j| j.id), Some(place.job));
+
+    let mut frames = 0;
+    while app.jobs.place.is_some() {
+        frames += 1;
+        assert!(frames < 10_000, "the place never landed");
+        assert_eq!(layer_count(&app), layers, "nothing lands before the last frame");
+        crate::jobs_ui::tick(&mut app, &ctx);
+        app.place_next_dropped(&ctx);
+    }
+    assert!(frames > 10, "placed in {frames} frames");
+    assert!(!app.background_jobs);
+    assert_eq!(layer_count(&app), layers + 1);
+    assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "first");
+    // The second file waits for the first transform, then is placed the same way.
+    app.place_next_dropped(&ctx);
+    assert!(app.jobs.place.is_none() && app.drop_places.len() == 1);
+    crate::transform_tool::commit(&mut app);
+    app.place_next_dropped(&ctx);
+    assert_eq!(app.jobs.place.as_ref().map(|p| p.name.as_str()), Some("second.png"));
+    tick_until(&mut app, &ctx, |app| app.jobs.place.is_none());
+    crate::transform_tool::commit(&mut app);
+    assert_eq!((layer_count(&app), history_steps(&app)), (layers + 2, steps + 2));
+    assert!(app.drop_places.is_empty());
+}
+
+/// A file dropped from a path, a damaged file and a cancel all end as they do with worker threads.
+#[test]
+fn stepped_places_from_a_path_fail_and_cancel_like_background_ones() {
+    let dir = std::env::temp_dir().join(format!("photocraft-drop-place-steps-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good.png");
+    std::fs::write(&good, png_bytes(30, 30)).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    app.session.set_cooperative_jobs(true);
+    app.session.set_job_step_budget(std::time::Duration::ZERO);
+    let (layers, steps) = (layer_count(&app), history_steps(&app));
+    app.open_dropped(
+        &ctx,
+        vec![dropped(&good, Ok(Vec::new())), dropped("bad.png", Ok(b"bad".to_vec())), dropped("last.png", Ok(png_bytes(4, 4)))],
+        Some(egui::pos2(400.0, 300.0)),
+    );
+    app.place_next_dropped(&ctx);
+    // The first is a path: the `file.placeEmbedded` job, tracked like the others.
+    let first = app.jobs.place.clone().expect("being placed");
+    assert_eq!(first.name, "good.png");
+    assert!(crate::jobs_ui::cancel(&mut app, first.job));
+    crate::jobs_ui::tick(&mut app, &ctx);
+    assert_eq!((layer_count(&app), history_steps(&app)), (layers, steps), "a cancelled place leaves the document alone");
+    assert!(!app.ui.status_error);
+    // The queue went on to the damaged file, which fails by name.
+    assert_eq!(app.jobs.place.as_ref().map(|p| p.name.as_str()), Some("bad.png"));
+    tick_until(&mut app, &ctx, |app| app.ui.notices.iter().any(|n| n.error && n.title.contains("bad.png")));
+    assert_eq!(app.jobs.place.as_ref().map(|p| p.name.as_str()), Some("last.png"));
+    tick_until(&mut app, &ctx, |app| app.jobs.place.is_none());
+    assert_eq!(layer_count(&app), layers + 1);
+    assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cooperative drop from a path completes in slices (the path read and the placement job, not
+/// egui's reader), making its layer once.
+#[test]
+fn a_cooperative_drop_from_a_path_completes_in_slices() {
+    let dir = std::env::temp_dir().join(format!("photocraft-drop-path-slices-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good.png");
+    std::fs::write(&good, png_bytes(30, 30)).unwrap();
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    app.session.set_cooperative_jobs(true);
+    app.session.set_job_step_budget(std::time::Duration::ZERO);
+    let layers = layer_count(&app);
+    app.open_dropped(&ctx, vec![dropped(&good, Ok(Vec::new()))], Some(egui::pos2(400.0, 300.0)));
+    app.place_next_dropped(&ctx);
+    assert_eq!(app.jobs.place.as_ref().map(|p| p.name.as_str()), Some("good.png"));
+    tick_until(&mut app, &ctx, |app| app.jobs.place.is_none());
+    assert_eq!(layer_count(&app), layers + 1);
+    assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A file that can't be decoded is reported by name and the files dropped after it go on.
 #[test]
 fn a_background_place_that_fails_reports_it_and_the_queue_continues() {
@@ -631,6 +737,72 @@ fn cancelling_a_background_place_continues_the_queue() {
     let st = app.session.active().unwrap();
     assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "second");
     assert_eq!(layer_count(&app), layers + 1);
+}
+
+/// #8492: with Skip Transform when Placing on, dropped files still go through the background place
+/// job one at a time, but no Free Transform opens when a layer lands: the next file starts as soon
+/// as the previous one has landed, without waiting for ↩.
+#[test]
+fn skip_transform_when_placing_places_background_drops_without_free_transform() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    app.background_jobs = true;
+    app.session.execute("prefs.set", json!({"path": "general.skipTransformWhenPlacing", "value": true})).unwrap();
+    let (layers, steps) = (layer_count(&app), history_steps(&app));
+    app.open_dropped(&ctx, vec![dropped("first.png", Ok(png_bytes(4, 4))), dropped("second.png", Ok(png_bytes(2, 2)))], Some(egui::pos2(400.0, 300.0)));
+    app.place_next_dropped(&ctx);
+    let first = app.jobs.place.clone().expect("the first file is being placed");
+    assert_eq!(first.name, "first.png");
+    assert!(app.session.job(first.job).is_some(), "as a background job");
+    assert_eq!(app.drop_places.len(), 1, "the second file waits for the first job");
+    tick_until(&mut app, &ctx, |app| app.jobs.place.as_ref().is_some_and(|p| p.name == "second.png"));
+    assert!(app.ui.transform.is_none(), "no Free Transform on the first file");
+    assert_eq!(layer_count(&app), layers + 1);
+    tick_until(&mut app, &ctx, |app| app.jobs.place.is_none());
+    assert!(app.ui.transform.is_none() && app.drop_places.is_empty());
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "second");
+    assert_eq!((layer_count(&app), history_steps(&app)), (layers + 2, steps + 2), "one Place Embedded step each");
+    assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Place Embedded"));
+}
+
+/// #8492: inline (background jobs off, as on the web) the preference places every queued drop
+/// without Free Transform, a file that can't be placed reported on the way.
+#[test]
+fn skip_transform_when_placing_places_inline_drops_without_free_transform() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    app.session.execute("prefs.set", json!({"path": "general.skipTransformWhenPlacing", "value": true})).unwrap();
+    let (layers, steps) = (layer_count(&app), history_steps(&app));
+    app.open_dropped(
+        &ctx,
+        vec![dropped("first.png", Ok(png_bytes(4, 4))), dropped("bad.png", Ok(b"bad".to_vec())), dropped("second.png", Ok(png_bytes(2, 2)))],
+        Some(egui::pos2(400.0, 300.0)),
+    );
+    app.place_next_dropped(&ctx);
+    assert!(app.ui.transform.is_none() && app.drop_places.is_empty());
+    assert_eq!((layer_count(&app), history_steps(&app)), (layers + 2, steps + 2));
+    assert_eq!(app.ui.notices.iter().filter(|n| n.error && n.title.contains("bad.png")).count(), 1);
+}
+
+/// #8492: Skip Transform when Placing only concerns the interactive place. `file.placeEmbedded`
+/// with a `path` (actions, scripts, the control channel, MCP) runs the engine command, which never
+/// opens Free Transform, whatever the preference.
+#[test]
+fn a_scripted_place_never_opens_free_transform() {
+    let dir = std::env::temp_dir().join(format!("pc-scripted-place-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dot.png");
+    std::fs::write(&path, png_bytes(4, 3)).unwrap();
+    let mut app = app_with_canvas();
+    for skip in [false, true] {
+        app.session.execute("prefs.set", json!({"path": "general.skipTransformWhenPlacing", "value": skip})).unwrap();
+        let layers = layer_count(&app);
+        app.run("file.placeEmbedded", json!({"path": path.to_string_lossy()})).unwrap();
+        assert_eq!(layer_count(&app), layers + 1, "skip={skip}");
+        assert!(app.ui.transform.is_none(), "skip={skip}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// Frames with nothing to wait for: jobs applied and the drop queue served.
@@ -778,6 +950,16 @@ fn many_path_drops_all_queue() {
     assert!(!app.ui.status_error, "{}", app.ui.status);
     app.queue_drop(doc, crate::file_open::DropPlace::Bytes("web.png".into(), vec![0]));
     assert_eq!(app.drop_places.len(), n + 1, "path drops don't use up the browser drops' room");
+}
+
+/// The shell's place inbox, which the browser's reads fill between two frames, takes no more than
+/// the drop queue it is drained into.
+#[test]
+fn the_place_inbox_has_the_drop_queues_limits() {
+    use crate::file_open::{MAX_QUEUED_DROP_BYTES, MAX_QUEUED_DROPS, place_inbox_takes};
+    assert!(place_inbox_takes(0, MAX_QUEUED_DROP_BYTES - 1, 1));
+    assert!(!place_inbox_takes(0, MAX_QUEUED_DROP_BYTES, 1), "a read that would pass the byte cap is refused");
+    assert!(!place_inbox_takes(MAX_QUEUED_DROPS, 0, 0), "so is one past the file cap");
 }
 
 /// Closing A while its file is being placed: nothing lands anywhere, and A's next file is dropped.
@@ -1511,4 +1693,44 @@ fn queued_drop_waits_for_an_external_document_job() {
     assert_eq!(layer_count(&app), layers + 1);
     assert_eq!(app.ui.transform.as_ref().and_then(|t| t.made), Some(crate::state::MadeLayer::Place));
     assert!(app.drop_places.is_empty());
+}
+
+/// File › Open as Smart Object… (#11678) asks with File › Open's dialog and opens each chosen
+/// file as its own untitled document holding one embedded smart object.
+#[test]
+fn open_as_smart_object_dialog_opens_one_document_per_selected_file() {
+    let (dir, paths) = files("open-as-so", &["one.png", "two.png", "bad.png"], &png_bytes(8, 6));
+    std::fs::write(&paths[2], b"not an image").unwrap();
+    let (mut app, _) = app_with(vec![Some(FileDialogAnswer::Paths(paths.clone()))]);
+
+    menus::invoke(&mut app, &egui::Context::default(), "file.openAsSmartObject", json!({})).unwrap();
+    assert!(app.file_dialog_open(), "the menu item asks for files first");
+    answer(&mut app);
+
+    assert_eq!(app.session.documents().iter().map(|d| d.doc.name.as_str()).collect::<Vec<_>>(), ["one-1", "two-1"]);
+    assert!(app.session.documents().iter().all(|d| d.path.is_none() && d.doc.layers.len() == 1));
+    assert!(app.ui.notices.iter().any(|n| n.error && n.title.starts_with("Couldn't open bad.png")), "the unreadable file is reported");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// File > Open as Smart Object... runs each file as a tracked background job like File > Open
+/// does: a tab per file, the documents landing in name order, untitled, failures reported.
+#[test]
+fn open_as_smart_object_opens_in_the_background_in_name_order() {
+    let ctx = egui::Context::default();
+    let (dir, paths) = files("open-as-so-bg", &["two.png", "one.png", "bad.png"], &png_bytes(8, 6));
+    std::fs::write(&paths[2], b"not an image").unwrap();
+    let (mut app, _) = app_with(vec![Some(FileDialogAnswer::Paths(paths.clone()))]);
+    app.background_jobs = true;
+
+    menus::invoke(&mut app, &ctx, "file.openAsSmartObject", json!({})).unwrap();
+    answer(&mut app);
+    assert_eq!(app.jobs.opens.len(), 3, "a tab for each file while it opens");
+    assert!(app.session.documents().is_empty(), "nothing is on the UI thread's critical path");
+
+    tick_until(&mut app, &ctx, |app| app.jobs.opens.is_empty());
+    assert_eq!(app.session.documents().iter().map(|d| d.doc.name.as_str()).collect::<Vec<_>>(), ["one-1", "two-1"]);
+    assert!(app.session.documents().iter().all(|d| d.path.is_none() && d.doc.layers.len() == 1));
+    assert!(app.ui.notices.iter().any(|n| n.error && n.title.starts_with("Couldn't open bad.png")), "the unreadable file is reported");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -69,6 +69,142 @@ fn clashes_are_resolved_in_photocrafts_favour() {
     assert!(!file.children.contains(&Node::Standard(Standard::CloseWindow)), "⌘W stays File › Close");
 }
 
+/// Settings saved on ⌘, (a restored profile) while Hide Layers keeps Photoshop's ⌘,: the menu
+/// shows ⌘, once, on Hide Layers, rather than on both.
+#[test]
+fn a_saved_cmd_comma_on_settings_gives_way_to_hide_layers() {
+    let mut a = app(true);
+    // Loaded as saved, not set through Edit › Keyboard Shortcuts (which would clear Hide Layers' row).
+    a.session.prefs.edit(|p| p.shortcuts.insert("edit.preferences.general".into(), "Cmd+,".into()));
+    let l = photocraft_layout(&crate::menus::menu_items(&a), Lang::EN, "auto");
+    let comma: Vec<&str> = l.bar.items().into_iter().filter(|it| it.shortcut.as_deref() == Some("Cmd+,")).map(|it| it.id.as_str()).collect();
+    assert_eq!(comma, ["layer.hideLayers"]);
+    let clash = l.clashes.iter().find(|c| c.shortcut == "Cmd+,").unwrap();
+    assert_eq!((clash.command.as_str(), clash.resolution), ("layer.hideLayers", "Settings has no shortcut"));
+}
+
+/// A saved ⌘, on a command with no menu item: the key press runs that command, so the live
+/// menu bar must not show ⌘, on Settings.
+#[test]
+fn a_saved_cmd_comma_without_a_menu_item_takes_the_key_from_settings() {
+    let mut a = app(true);
+    a.session.prefs.edit(|p| {
+        p.shortcuts.insert("edit.fillForeground".into(), "Cmd+,".into());
+        // Hide Layers' own default is ⌘,: unbind it so the saved key is the only owner.
+        p.shortcuts.insert("layer.hideLayers".into(), String::new());
+    });
+    let items = crate::menus::menu_items(&a);
+    assert!(!items.iter().any(|it| it.id == "edit.fillForeground"), "the test needs a command with no menu item");
+    let comma = crate::shortcuts::parse("Cmd+,");
+    let keys = crate::shortcut_dispatch::bindings(&a);
+    assert_eq!(keys.iter().find(|(_, sc)| Some(*sc) == comma).map(|(id, _)| id.as_str()), Some("edit.fillForeground"));
+    let l = app_layout(&a, &items, Lang::EN, "auto");
+    assert!(l.bar.items().iter().all(|it| it.shortcut.as_deref() != Some("Cmd+,")));
+    assert_eq!(l.clashes.iter().find(|c| c.shortcut == "Cmd+,").map(|c| c.command.as_str()), Some("edit.fillForeground"));
+    // With ⌘, free there is no clash, and Settings keeps Photoshop's ⌘K.
+    let mut free = app(true);
+    free.session.prefs.edit(|p| p.shortcuts.insert("layer.hideLayers".into(), String::new()));
+    let l = app_layout(&free, &crate::menus::menu_items(&free), Lang::EN, "auto");
+    assert!(!l.clashes.iter().any(|c| c.shortcut == "Cmd+,"));
+    assert_eq!(l.bar.find("edit.preferences.general").unwrap().shortcut.as_deref(), Some("Cmd+K"));
+}
+
+#[test]
+fn saved_hide_and_minimize_keys_without_menu_items_reach_dispatch() {
+    for key in ["Cmd+H", "Cmd+M"] {
+        let mut a = app(true);
+        a.session.prefs.edit(|p| p.shortcuts.insert("edit.fillForeground".into(), key.into()));
+        let items = crate::menus::menu_items(&a);
+        assert!(!items.iter().any(|it| it.id == "edit.fillForeground"));
+        let parsed = crate::shortcuts::parse(key);
+        assert_eq!(crate::shortcut_dispatch::bindings(&a).iter().find(|(_, sc)| Some(*sc) == parsed).map(|(id, _)| id.as_str()), Some("edit.fillForeground"));
+        let layout = app_layout(&a, &items, Lang::EN, "auto");
+        assert!(layout.bar.items().iter().all(|it| it.shortcut.as_deref().and_then(crate::shortcuts::parse) != parsed));
+        assert!(!layout.bar.menu(MenuRole::Window).unwrap().children.contains(&Node::Standard(Standard::Minimize)) || key != "Cmd+M");
+    }
+}
+
+#[test]
+fn a_saved_alternate_on_a_visible_command_removes_settings_comma() {
+    let mut a = app(true);
+    a.session.prefs.edit(|p| p.alternate_shortcuts.insert("view.extras".into(), vec!["Cmd+,".into()]));
+    let items = crate::menus::menu_items(&a);
+    assert!(items.iter().any(|it| it.id == "view.extras"));
+    let comma = crate::shortcuts::parse("Cmd+,");
+    assert_eq!(crate::shortcut_dispatch::bindings(&a).iter().find(|(_, sc)| Some(*sc) == comma).map(|(id, _)| id.as_str()), Some("view.extras"));
+    let layout = app_layout(&a, &items, Lang::EN, "auto");
+    assert!(layout.bar.items().iter().all(|it| it.shortcut.as_deref().and_then(crate::shortcuts::parse) != comma));
+    assert_eq!(a.session.prefs.get().alternate_shortcuts["view.extras"], ["Cmd+,"]);
+}
+
+/// The same for an item that moves to the app menu ahead of Settings (About).
+#[test]
+fn a_saved_cmd_comma_on_about_takes_the_key_from_settings() {
+    let mut a = app(true);
+    a.session.prefs.edit(|p| {
+        p.shortcuts.insert("help.about".into(), "Cmd+,".into());
+        // As above: Hide Layers' default ⌘, would be a second owner.
+        p.shortcuts.insert("layer.hideLayers".into(), String::new());
+    });
+    let l = photocraft_layout(&crate::menus::menu_items(&a), Lang::EN, "auto");
+    let comma: Vec<&str> = l.bar.items().into_iter().filter(|it| it.shortcut.as_deref() == Some("Cmd+,")).map(|it| it.id.as_str()).collect();
+    assert_eq!(comma, ["help.about"]);
+    assert_ne!(l.bar.find("edit.preferences.general").unwrap().shortcut.as_deref(), Some("Cmd+,"));
+    assert_eq!(l.clashes.iter().find(|c| c.shortcut == "Cmd+,").map(|c| c.command.as_str()), Some("help.about"));
+}
+
+/// The default bindings are Photoshop's on every platform: the menu fixes change who shows a
+/// key, not which command a key runs.
+#[test]
+fn photoshop_defaults_hold_on_every_platform() {
+    let a = app(true);
+    let keys = crate::shortcut_dispatch::bindings(&a);
+    let binding = |key: &str| keys.iter().find(|(_, sc)| Some(*sc) == crate::shortcuts::parse(key)).map(|(id, _)| id.as_str());
+    assert_eq!(binding("Cmd+K"), Some("edit.preferences.general"));
+    assert_eq!(binding("Cmd+H"), Some("view.extras"));
+    assert_eq!(binding("Cmd+M"), Some("image.adjustments.curves"));
+    assert_eq!(binding("Cmd+,"), Some("layer.hideLayers"));
+    let l = app_layout(&a, &crate::menus::menu_items(&a), Lang::EN, "auto");
+    assert_eq!(l.bar.find(HIDE).unwrap().shortcut.as_deref(), Some("Ctrl+Cmd+H"));
+    assert_eq!(l.bar.find(MINIMIZE).unwrap().shortcut.as_deref(), Some("Ctrl+Cmd+M"));
+    assert_eq!(l.bar.find("edit.preferences.general").unwrap().shortcut.as_deref(), Some("Cmd+K"));
+}
+
+/// A Photoshop `.kys` set imported through Edit › Keyboard Shortcuts moves ⌘M to Levels and gives
+/// Fill ⌘, as its second key: each key runs the imported command, so ⌘M shows on Levels only,
+/// Minimize keeps ⌃⌘M, and Settings drops ⌘, though Fill's row shows its first key. The set's
+/// Hide Photoshop row is not ours and changes nothing.
+#[test]
+fn an_imported_kys_set_owns_the_system_keys_it_binds() {
+    const SET: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<photoshop-keyboard-shortcuts version=\"4\" filename=\"$$$/FileName/Presets/KeyboardCustomization/mine=mine\">
+\t<command kind=\"static\" name=\"Levels...\" id=\"1801\"><shortcut>Cmd+M</shortcut></command>
+\t<command kind=\"static\" name=\"Fill...\" id=\"1020\"><shortcut>Shift+F5</shortcut><shortcut>Cmd+,</shortcut></command>
+\t<command kind=\"static\" name=\"Hide Photoshop\" id=\"7001\"><shortcut>Cmd+H</shortcut></command>
+</photoshop-keyboard-shortcuts>
+";
+    let mut a = app(true);
+    let r = a.session.execute("edit.keyboardShortcuts", json!({"importKys": SET})).unwrap();
+    assert_eq!(r["import"]["unknown"], json!(["Hide Photoshop"]), "{r}");
+    let keys = crate::shortcut_dispatch::bindings(&a);
+    let owner = |key: &str| keys.iter().find(|(_, sc)| Some(*sc) == crate::shortcuts::parse(key)).map(|(id, _)| id.clone());
+    assert_eq!(owner("Cmd+M").as_deref(), Some("image.adjustments.levels"));
+    let fill = owner("Cmd+,").unwrap();
+    assert_eq!(fill, "edit.fill");
+    let l = app_layout(&a, &crate::menus::menu_items(&a), Lang::EN, "auto");
+    let showing = |key: &str| -> Vec<String> {
+        let parsed = crate::shortcuts::parse(key);
+        l.bar.items().into_iter().filter(|it| it.shortcut.as_deref().and_then(crate::shortcuts::parse) == parsed).map(|it| it.id.clone()).collect()
+    };
+    assert_eq!(showing("Cmd+M"), ["image.adjustments.levels"]);
+    assert!(showing("Cmd+,").is_empty(), "{:?}", showing("Cmd+,"));
+    assert_eq!(l.bar.find(&fill).unwrap().shortcut.as_deref(), Some("Shift+F5"));
+    assert_eq!(l.bar.find(MINIMIZE).unwrap().shortcut.as_deref(), Some("Ctrl+Cmd+M"));
+    assert_eq!(l.bar.find(HIDE).unwrap().shortcut.as_deref(), Some("Ctrl+Cmd+H"));
+    assert_eq!(showing("Cmd+H"), ["view.extras"], "Hide Photoshop was not imported");
+    assert!(l.clashes.iter().any(|c| c.shortcut == "Cmd+," && c.command == fill));
+}
+
 /// Themes and the appearance-mode cycle move from Window to the app menu's Appearance.
 #[test]
 fn themes_move_to_the_app_menus_appearance() {

@@ -30,8 +30,9 @@ pub fn applies(tool: Tool) -> bool {
 }
 
 /// Tools that ⇧-click connects to the previous stroke with a straight line.
+/// The Art History Brush paints a separate cluster at the new click instead (#12627).
 pub fn connects(tool: Tool) -> bool {
-    tool.is_brushlike()
+    tool.is_brushlike() && tool != Tool::ArtHistoryBrush
 }
 
 /// The unit direction from `origin` towards `p`, snapped to the nearest multiple of `step`
@@ -278,6 +279,59 @@ mod tests {
         tool_event(&mut app, ToolEvent::Down { x: 20.0, y: 100.0, pressure: 1.0 }, shift);
         tool_event(&mut app, ToolEvent::Up { x: 20.0, y: 100.0 }, shift);
         assert!(alpha(&app, 20, 100) > 0.9 && alpha(&app, 40, 80) > 0.9 && alpha(&app, 90, 30) > 0.9);
+    }
+
+    #[test]
+    fn shift_click_line_ends_at_the_click_with_catch_up_on_stroke_end_off() {
+        // Measured in Photoshop (#11887): smoothing doesn't apply to a ⇧-click line, whatever
+        // Smoothing and Catch-up on Stroke End are set to.
+        let mut app = app();
+        app.ui.tool = Tool::Brush;
+        app.session.tools.brush.smoothing.amount = 0.6;
+        app.session.tools.brush.smoothing.catch_up_on_end = false;
+        let none = egui::Modifiers::NONE;
+        // A plain two-point drag at this smoothing ends short of the release point.
+        tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 60.0, pressure: 1.0 }, none);
+        tool_event(&mut app, ToolEvent::Move { x: 100.0, y: 60.0, pressure: 1.0 }, none);
+        tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 60.0 }, none);
+        assert!(alpha(&app, 100, 60) == 0.0, "a smoothed drag lags");
+        // ⇧-click: the line runs from the drag's release point all the way to the click.
+        let shift = egui::Modifiers::SHIFT;
+        tool_event(&mut app, ToolEvent::Down { x: 100.0, y: 110.0, pressure: 1.0 }, shift);
+        tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 110.0 }, shift);
+        assert_eq!(last_stroke_points(&app), vec![[100.0, 60.0], [100.0, 110.0]]);
+        assert!(alpha(&app, 100, 62) > 0.9 && alpha(&app, 100, 85) > 0.9 && alpha(&app, 100, 110) > 0.9);
+        // The options bar's Smoothing is unchanged.
+        assert_eq!(app.session.tools.brush.smoothing.amount, 0.6);
+    }
+
+    #[test]
+    fn retouch_shift_click_line_ends_at_the_click_with_catch_up_on_stroke_end_off() {
+        // The retouching tools build their brush in the engine (`retouch_cmds::stroke_brush`, or
+        // `resolve_brush` for the Background Eraser), so their lines need the override too (#11887).
+        for tool in [Tool::Burn, Tool::BackgroundEraser] {
+            let mut app = app();
+            app.run("edit.fill", json!({"color": "#808080"})).unwrap();
+            let px = |app: &PhotocraftApp, x, y| app.session.documents()[0].doc.layers[0].surface().unwrap().rgba(x, y);
+            let gray = px(&app, 100, 60);
+            app.ui.tool = tool;
+            // The tool's own brush, which the press would swap in.
+            crate::paint_mouse::sync_tool_brush(&mut app);
+            app.session.tools.brush.smoothing.amount = 0.6;
+            app.session.tools.brush.smoothing.catch_up_on_end = false;
+            let none = egui::Modifiers::NONE;
+            tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 60.0, pressure: 1.0 }, none);
+            tool_event(&mut app, ToolEvent::Move { x: 100.0, y: 60.0, pressure: 1.0 }, none);
+            tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 60.0 }, none);
+            assert_eq!(px(&app, 100, 60), gray, "{tool:?}: a smoothed drag lags");
+            let shift = egui::Modifiers::SHIFT;
+            tool_event(&mut app, ToolEvent::Down { x: 100.0, y: 110.0, pressure: 1.0 }, shift);
+            tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 110.0 }, shift);
+            for y in [62, 85, 110] {
+                assert_ne!(px(&app, 100, y), gray, "{tool:?}: the line reaches (100, {y})");
+            }
+            assert_eq!(app.session.tools.brush.smoothing.amount, 0.6);
+        }
     }
 
     #[test]

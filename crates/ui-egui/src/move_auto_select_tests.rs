@@ -51,10 +51,10 @@ fn drag(app: &mut PhotocraftApp, from: [f64; 2], by: [f64; 2], mods: egui::Modif
 }
 
 #[test]
-fn auto_select_is_on_by_default_with_the_group_target() {
+fn auto_select_is_on_by_default_with_the_layer_target() {
     let o = ToolOptions::default();
     assert!(o.move_auto_select, "Photoshop ships with Auto-Select checked");
-    assert_eq!(o.move_target, "group", "Photoshop defaults Auto-Select to Group (#4056)");
+    assert_eq!(o.move_target, "layer", "Reset Tool in Photoshop gives Auto-Select: Layer (#11380)");
     // A saved tool preset that predates the option gets the default too.
     let mut v = serde_json::to_value(&o).unwrap();
     v.as_object_mut().unwrap().remove("move_auto_select");
@@ -218,6 +218,8 @@ fn every_theme_shows_the_gradient_options() {
     for theme in crate::theme::ThemeKind::ALL {
         let (mut app, _, _) = app();
         app.ui.tool = Tool::Gradient;
+        // The blend Mode and Opacity are the Classic gradient's (#12007).
+        app.ui.tool_options.gradient_classic = true;
         let mut h = Harness::builder().with_size(egui::vec2(1600.0, 60.0)).build_ui_state(
             |ui, app: &mut PhotocraftApp| {
                 if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
@@ -256,4 +258,49 @@ fn shift_click_adds_shape_layers_one_after_another() {
     let mut selected = app.session.active().unwrap().selected_layers();
     selected.sort_by_key(|l| l.0);
     assert_eq!(selected, ids);
+}
+
+/// Opens B's transform controls (Show Transform Controls on) and resizes the box to twice B's
+/// size from its top-left corner, so it covers (40..72)².
+fn resized_box() -> (PhotocraftApp, LayerId, LayerId) {
+    let (mut app, a, b) = app();
+    app.ui.tool_options.move_show_transform = true;
+    crate::transform_tool::begin(&mut app, &egui::Context::default()).unwrap();
+    let t = app.ui.transform.as_mut().unwrap();
+    t.quad[2] = [t.quad[2][0] + 16.0, t.quad[2][1] + 16.0];
+    t.quad[1][0] += 16.0;
+    t.quad[3][1] += 16.0;
+    (app, a, b)
+}
+
+/// A plain click (press and release without moving) at document point `p`.
+fn click(app: &mut PhotocraftApp, p: [f64; 2]) {
+    crate::canvas::tool_event(app, ToolEvent::Down { x: p[0], y: p[1], pressure: 1.0 }, egui::Modifiers::NONE);
+    crate::canvas::tool_event(app, ToolEvent::Up { x: p[0], y: p[1] }, egui::Modifiers::NONE);
+}
+
+/// #8208, #11100, as measured in the reference application: a click outside a resized box on
+/// another layer's pixels commits the resize as one Free Transform step and keeps the transformed
+/// layer selected; the second click on that layer is the one that picks it.
+#[test]
+fn a_click_on_another_layer_accepts_a_resized_box_and_the_next_one_picks_it() {
+    let (mut app, a, b) = resized_box();
+    click(&mut app, [16.0, 16.0]);
+    assert!(app.ui.transform.is_none(), "the click on A accepted the box");
+    assert_eq!(bounds(&app, b), Rect::new(40, 40, 72, 72), "B keeps its resize");
+    let last = app.session.active().unwrap().history.entries().last().map(ToString::to_string);
+    assert_eq!(last.as_deref(), Some("Free Transform"));
+    assert_eq!(active(&app), Some(b), "the accepting click leaves B selected");
+    click(&mut app, [16.0, 16.0]);
+    assert_eq!(active(&app), Some(a), "the second click picks A");
+}
+
+/// #11100: a click outside the box where only the Background has pixels keeps it open, B still
+/// selected.
+#[test]
+fn a_click_on_the_background_alone_keeps_the_resized_box_open() {
+    let (mut app, _, b) = resized_box();
+    click(&mut app, [30.0, 30.0]);
+    assert!(app.ui.transform.is_some(), "the box stays open");
+    assert_eq!(active(&app), Some(b));
 }

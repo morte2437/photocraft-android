@@ -1,0 +1,4774 @@
+# Thai (th) catalog. Columns, separated by a TAB:  context <TAB> source <TAB> translation
+#
+#   context  empty                a plain UI string; `source` is the English text in the code
+#            @id                  a command id (e.g. file.saveAs): wins over the English text for
+#                                 that menu item, so one id can read differently from its twin
+#            @plural              `source` is "one|other" (English forms); the translation lists the
+#                                 language's forms separated by "|" (see `plural` in i18n.rs)
+#            anything else        a disambiguating context passed to `tr_ctx`
+#   escapes  \n  \t  \\  inside a column. `{name}` placeholders must appear in both columns.
+#   lines starting with # and blank lines are ignored.
+#
+# Clean-room: translated from the plain meaning of the English labels using ordinary Thai
+# computing and image-editing vocabulary (เลเยอร์, มาสก์, ฟิลเตอร์, การเลือก ...). No proprietary
+# localisation resource, string table or product UI was consulted or copied; add entries the same
+# way. Product and technology names (PhotoCraft, ArtCraft, OpenType, RGB, CMYK, Lab, PSD, PNG,
+# JPEG, WebP, OpenEXR, AVIF ...) stay in Latin letters; the trailing "…" of dialog commands is kept.
+# Thai has no plural inflection, so plural entries use one form (`plural_none` in i18n.rs).
+# Machine-assisted first draft, reviewed for UI terminology; native-speaker review is welcome.
+# Layer Mask Display Options (the layer mask rubylith's colour and opacity)
+	Mask Options…	ตัวเลือกมาสก์…
+	Layer Mask Display Options…	ตัวเลือกการแสดงเลเยอร์มาสก์…
+
+# Channel Options and New Spot Channel (#3761)
+	Channel Color	สีของช่อง
+	Color Indicates:	สีบ่งบอกถึง:
+	Solidity:	ความแข็งแกร่ง:
+	Ink Characteristics	ลักษณะหมึก
+
+# Menus
+
+# Guide layout dialog
+
+# Custom print paper (#3820)
+	Paper Width	ความกว้างของกระดาษ
+	Paper Height	ความสูงของกระดาษ
+	Rows	แถว
+	Number	หมายเลข
+	Margin	ขอบ
+	Top:	ด้านบน:
+	Left:	ซ้าย:
+	Bottom:	ก้น:
+	Right:	ขวา:
+	Target:	เป้าหมาย:
+	Selected Artboards	อาร์ตบอร์ดที่เลือก
+	Center Columns	คอลัมน์กลาง
+	Clear Existing Guides	ล้างคำแนะนำที่มีอยู่
+	Invalid guide layout	รูปแบบคำแนะนำไม่ถูกต้อง
+	Leave empty for automatic size	เว้นว่างไว้สำหรับขนาดอัตโนมัติ
+	5 Columns, 3 Rows	5 คอลัมน์ 3 แถว
+	8 Columns	8 คอลัมน์
+	12 Columns	12 คอลัมน์
+
+	File	ไฟล์
+	Edit	แก้ไข
+	Image	ภาพ
+	Layer	เลเยอร์
+	Type	ตัวอักษร
+	Select	เลือก
+	Selected	เลือกแล้ว
+	Scope	ขอบเขต
+	Top Left	ซ้ายบน
+	Top Right	ขวาบน
+	Bottom Left	ล่างซ้าย
+	Bottom Right	ล่างขวา
+	Filter	ฟิลเตอร์
+	View	มุมมอง
+	Window	หน้าต่าง
+	Help	ช่วยเหลือ
+
+# File
+	New…	ใหม่…
+	New from Clipboard	ใหม่จากคลิปบอร์ด
+	New	ใหม่
+	Open…	เปิด…
+	Open	เปิด
+	Open As…	เปิดเป็น…
+	Open EXR Parts…	เปิดอะไหล่ EXR…
+	Add beauty precomp from the AOVs	เพิ่มความสวยงามพรีคอมพ์จาก AOVs
+	Both	ทั้งสองอย่าง
+	Left	ซ้าย
+	Right	ถูกต้อง
+	Open Recent	เปิดล่าสุด
+	Clear Recent Files	ล้างไฟล์ล่าสุด
+	Remove from Recent	ลบออกจากล่าสุด
+	Remove {name} from Recent	ลบ {name} ออกจากล่าสุด
+	Close	ปิด
+	Minimize	ย่อเล็กสุด
+	Maximize	ขยายใหญ่สุด
+	Restore	คืนค่า
+	Close All	ปิดทั้งหมด
+	Close Others	ปิดเอกสารอื่น
+	Save	บันทึก
+	Save As…	บันทึกเป็น…
+	Save a Copy…	บันทึกสำเนา…
+	{name} can't keep everything in this document	{name} ไม่สามารถเก็บทุกอย่างไว้ในเอกสารนี้ได้
+	Choose a format that keeps it, such as Photoshop (PSD), or save a copy.	เลือกรูปแบบที่จะเก็บไว้ เช่น Photoshop (PSD) หรือบันทึกสำเนา
+	Save…	บันทึก…
+	Revert	ย้อนกลับ
+	Import	นำเข้า
+	Import Presets	นำเข้าค่าที่ตั้งล่วงหน้า
+	Export As…	ส่งออกเป็น…
+	Export	ส่งออก
+	Export…	ส่งออก…
+	Quick Export As PNG	ส่งออกอย่างรวดเร็วเป็น PNG
+	Quick Export as PNG	ส่งออกเป็น PNG อย่างรวดเร็ว
+	Place Embedded…	วางที่ฝัง…
+	Place Linked…	สถานที่ที่เชื่อมโยง…
+	Package…	แพ็คเกจ…
+	Save for Web (Legacy)…	บันทึกสำหรับเว็บ (ดั้งเดิม)…
+	Generate	สร้าง
+	Image Assets	เนื้อหาภาพ
+
+# Edit
+	Undo	เลิกทำ
+	Redo	ทำซ้ำ
+	Fade…	จางลง…
+	Cut	ตัด
+	Copy	คัดลอก
+	Copy Merged	คัดลอกรวม
+	Paste	วาง
+	Paste Special	วางแบบพิเศษ
+	Paste Into	วางลงใน
+	Paste Outside	วางด้านนอก
+	Paste in Place	วางในตำแหน่งเดิม
+	Clear	ล้าง
+	Search	ค้นหา
+	Search…	ค้นหา…
+	Check Spelling…	ตรวจสอบการสะกด…
+	Fill…	เติม…
+	Stroke…	เส้นขอบ…
+	Content-Aware Fill…	เติมอย่างชาญฉลาด…
+	Delete and Fill Selection	ลบและเติมส่วนที่เลือก
+	Define Brush Preset…	กำหนดพรีเซ็ตแปรง…
+	Define Pattern…	กำหนดลวดลาย…
+	Define Custom Shape…	กำหนดรูปร่างที่กำหนดเอง…
+	Purge	ล้างข้อมูล
+
+# Image
+	Image Size…	ขนาดภาพ…
+	Image Size	ขนาดภาพ
+	Canvas Size…	ขนาดผ้าใบ…
+	Image Rotation	การหมุนภาพ
+	Rotate 90° Clockwise	หมุน 90° ตามเข็มนาฬิกา
+	Rotate 90° Counter Clockwise	หมุน 90° ทวนเข็มนาฬิกา
+	Rotate 180°	หมุน 180°
+	Flip Canvas Horizontal	พลิกผ้าใบแนวนอน
+	Flip Canvas Vertical	พลิกผ้าใบแนวตั้ง
+	Crop	ครอป
+	Crop and Straighten Photos	ครอบตัดและปรับภาพให้ตรง
+	Trim…	ตัดขอบ…
+	Reveal All	แสดงทั้งหมด
+	Hide Selection	ซ่อนการเลือก
+	Auto Tone	โทนอัตโนมัติ
+	Auto Contrast	คอนทราสต์อัตโนมัติ
+	Auto Color	สีอัตโนมัติ
+	Adjustments	การปรับแต่ง
+	16 Bits/Channel	16 บิต/ช่อง
+	32 Bits/Channel	32 บิต/ช่อง
+	8 Bits/Channel	8 บิต/ช่อง
+	8 bit	8 บิต
+	Integer	จำนวนเต็ม
+	16 bit	16 บิต
+	32 bit (float)	32 บิต (โฟลต)
+	Floating point	จุดลอยตัว
+	Mode	โหมด
+	Grayscale	โทนสีเทา
+	RGB Color	สี RGB
+	CMYK Color	สี CMYK
+	Lab Color	สี Lab
+	Indexed Color	สีแบบจัดดัชนี
+	Multichannel	หลายช่องสัญญาณ
+	Bitmap…	บิตแมป…
+	Bitmap	บิตแมป
+	Duotone…	ดูโอโทน…
+	Duotone	ดูโอโทน
+	Trap…	กับดัก…
+
+# Layer
+	Layer Via Copy	เลเยอร์ผ่านการคัดลอก
+	Layer Via Cut	เลเยอร์ผ่านการตัด
+	Duplicate Layer…	ทำซ้ำเลเยอร์…
+	Duplicate…	ทำสำเนา…
+	Delete	ลบ
+	Delete Layer	ลบเลเยอร์
+	Delete Layers	ลบเลเยอร์
+	Rename Layer	เปลี่ยนชื่อเลเยอร์
+	Layer From Background…	เลเยอร์จากพื้นหลัง…
+	Layer from Background…	เลเยอร์จากพื้นหลัง…
+	Background from Layer	พื้นหลังจากเลเยอร์
+	Background From Layer	พื้นหลังจากเลเยอร์
+	Group Layers	จัดกลุ่มเลเยอร์
+	Group…	กลุ่ม…
+	Ungroup Layers	แยกกลุ่มเลเยอร์
+	Group from Layers…	จัดกลุ่มจากเลเยอร์…
+	New Group from Layers…	กลุ่มใหม่จากเลเยอร์…
+	Hide Layers	ซ่อนเลเยอร์
+	Arrange	จัดเรียง
+	Bring to Front	นำมาไว้ข้างหน้า
+	Bring Forward	นำไปข้างหน้า
+	Send Backward	ส่งกลับ
+	Send to Back	ส่งกลับ
+	Convert to Smart Object	แปลงเป็นวัตถุอัจฉริยะ
+	Convert for Smart Filters	แปลงสำหรับสมาร์ตฟิลเตอร์
+	New Smart Object via Copy	สมาร์ตออบเจกต์ใหม่ผ่านการคัดลอก
+	Edit Contents	แก้ไขเนื้อหา
+	Replace Contents…	แทนที่เนื้อหา…
+	Export Contents…	ส่งออกเนื้อหา…
+	Rasterize	แรสเตอร์ไรซ์
+	Rasterize Type	แรสเตอร์ไรซ์ตัวอักษร
+	Rasterize Shape	แปลงรูปร่างเป็นแรสเตอร์
+	Rasterize Layer	แรสเตอร์เลเยอร์
+	Rasterize Layers	แรสเตอร์เลเยอร์
+	New Adjustment Layer	เลเยอร์ปรับแต่งใหม่
+	New Fill Layer	เลเยอร์เติมสีใหม่
+	Layer Mask	มาสก์เลเยอร์
+	Add Layer Mask	เพิ่มเลเยอร์มาสก์
+	Delete Layer Mask	ลบเลเยอร์มาสก์
+	Enable Layer Mask	เปิดใช้งานเลเยอร์มาสก์
+	Disable Layer Mask	ปิดการใช้งานเลเยอร์มาสก์
+	Apply Layer Mask	ใช้เลเยอร์มาสก์
+	Add Mask to Selection	เพิ่มมาสก์ลงในส่วนที่เลือก
+	Subtract Mask from Selection	ลบมาสก์ออกจากส่วนที่เลือก
+	Intersect Mask with Selection	ตัดกันมาสก์กับส่วนที่เลือก
+	Link Layer Mask	ลิงค์เลเยอร์มาสก์
+	Unlink Layer Mask	ยกเลิกการเชื่อมโยงเลเยอร์มาสก์
+	Vector Mask	มาสก์เวกเตอร์
+	Add Vector Mask	เพิ่มเวกเตอร์มาสก์
+	Delete Vector Mask	ลบเวกเตอร์มาสก์
+	Enable Vector Mask	เปิดใช้งานเวกเตอร์มาสก์
+	Link Vector Mask	ลิงค์เว็กเตอร์มาสก์
+	Create Clipping Mask	สร้างมาสก์ตัด
+	Release Clipping Mask	ปล่อยมาสก์ตัด
+	New Shape Layer	เลเยอร์รูปร่างใหม่
+	New Type Layer	เลเยอร์ตัวอักษรใหม่
+	New Video Layer from File…	เลเยอร์วิดีโอใหม่จากไฟล์…
+	New Blank Video Layer	เลเยอร์วิดีโอเปล่าใหม่
+	Smart Filters	ฟิลเตอร์อัจฉริยะ
+	Delete Smart Filters	ลบฟิลเตอร์อัจฉริยะ
+	Enable Smart Filters	เปิดใช้งานฟิลเตอร์อัจฉริยะ
+	Disable Smart Filters	ปิดการใช้งานฟิลเตอร์อัจฉริยะ
+	Clear Smart Filters	ล้างฟิลเตอร์อัจฉริยะ
+	Delete Filter Mask	ลบมาสก์ฟิลเตอร์
+	Disable Filter Mask	ปิดการใช้งานฟิลเตอร์มาสก์
+	New Layer Based Slice	สไลซ์ใหม่ที่อ้างอิงเลเยอร์
+	Layer Style	สไตล์เลเยอร์
+	Blending Options…	ตัวเลือกการผสม…
+	Blending Options	ตัวเลือกการผสม
+	Drop Shadow…	วางเงา…
+	Inner Shadow…	เงาภายใน…
+	Outer Glow…	ภายนอกเรืองแสง…
+	Inner Glow…	เปล่งประกายภายใน…
+	Bevel & Emboss…	เอียงและนูน…
+	Use Global Light	ใช้แสงสากล
+	Overprint	พิมพ์ทับ
+	Satin…	ผ้าซาติน…
+	Color Overlay…	การซ้อนทับสี…
+	Gradient Overlay…	การซ้อนทับแบบไล่ระดับสี…
+	Pattern Overlay…	การซ้อนทับรูปแบบ…
+	Bevel & Emboss	เอียงและนูน
+	Inner Shadow	เงาภายใน
+	Inner Glow	เรืองแสงภายใน
+	Satin	ผ้าซาติน
+	Color Overlay	การซ้อนทับสี
+	Gradient Overlay	การซ้อนทับแบบไล่ระดับสี
+	Pattern Overlay	การซ้อนทับรูปแบบ
+	Outer Glow	เรืองแสงด้านนอก
+	Drop Shadow	วางเงา
+	Copy Layer Style	คัดลอกสไตล์เลเยอร์
+	Paste Layer Style	วางสไตล์เลเยอร์
+	Clear Layer Style	ล้างสไตล์เลเยอร์
+	Layer Content Options…	ตัวเลือกเนื้อหาเลเยอร์…
+	Scale Effects…	สเกลเอฟเฟกต์…
+	New Layer…	เลเยอร์ใหม่…
+	Delete Layer…	ลบเลเยอร์…
+
+# Type
+	Font	แบบอักษร
+	Font Preview Size	ขนาดตัวอย่างแบบอักษร
+	Orientation	ปฐมนิเทศ
+	Horizontal	แนวนอน
+	Vertical	แนวตั้ง
+	Rasterize Type Layer	แรสเตอร์ไรซ์เลเยอร์ตัวอักษร
+	Create Work Path	สร้างเส้นทางการทำงาน
+	Convert to Shape	แปลงเป็นรูปร่าง
+	Convert to Paragraph Text	แปลงเป็นข้อความย่อหน้า
+	Convert to Point Text	แปลงเป็นจุดข้อความ
+	Warp Text…	ข้อความวาร์ป…
+	Character Panel	แผงตัวละคร
+	Paragraph Panel	แผงย่อหน้า
+	Check Spelling	ตรวจสอบการสะกด
+	Language Options	ตัวเลือกภาษา
+	Find and Replace Text…	ค้นหาและแทนที่ข้อความ…
+	Add to Dictionary	เพิ่มลงในพจนานุกรม
+	No Spelling Suggestions	ไม่มีคำแนะนำการสะกดคำ
+	Paste Lorem Ipsum	วาง Lorem Ipsum
+	Glyphs Panel	แผงร่ายมนตร์
+	Type Styles	สไตล์ตัวอักษร
+	Character Styles	ลักษณะตัวละคร
+	Paragraph Styles	ลักษณะย่อหน้า
+	Load Default Type Styles	โหลดสไตล์ตัวอักษรเริ่มต้น
+	Save Default Type Styles	บันทึกสไตล์ตัวอักษรเริ่มต้น
+	Type…	ตัวอักษร…
+
+# Select
+	All	ทั้งหมด
+	Deselect	ยกเลิกการเลือก
+	Reselect	เลือกใหม่
+	Inverse Selection	การเลือกแบบผกผัน
+	Inverse	กลับด้าน
+	Color Range…	ช่วงสี…
+	Select and Mask…	เลือกและมาสก์…
+# Select and Mask dialog labels
+	Smart Radius	รัศมีอัจฉริยะ
+	Shift Edge	เลื่อนขอบ
+	Decontaminate	ฆ่าเชื้อ
+	Output	เอาท์พุต
+	Refine Edge	ปรับแต่งขอบ
+	Select Subject	เลือกตัวแบบ
+	Sky	ท้องฟ้า
+	Focus Area…	พื้นที่โฟกัส…
+	Subject	เรื่อง
+	Color Range	ช่วงสี
+	Similar	คล้ายกัน
+	Grow	ขยาย
+	Select Similar Colors	เลือกสีที่คล้ายกัน
+	Load Selection…	โหลดการเลือก…
+	Save Selection…	บันทึกการเลือก…
+	New Selection	การคัดเลือกใหม่
+	Select All	เลือกทั้งหมด
+	Deselect All	ยกเลิกการเลือกทั้งหมด
+	Deselect Layers	ยกเลิกการเลือกเลเยอร์
+	Find Layers	ค้นหาเลเยอร์
+	Isolate Layers	แยกเลเยอร์
+	Select Linked Layers	เลือกเลเยอร์ที่เชื่อมโยง
+	All Layers	ทุกเลเยอร์
+	Current & Below	ปัจจุบันและต่ำกว่า
+	Current Layer	เลเยอร์ปัจจุบัน
+	Refine Strokes	ปรับแต่งจังหวะ
+	Edits	แก้ไข
+
+# Filter
+	Last Filter	ฟิลเตอร์ล่าสุด
+	Filter Gallery…	แกลเลอรีฟิลเตอร์…
+	Liquify…	ทำให้เหลว…
+	RAW Develop Filter…	ฟิลเตอร์ การปรับแต่ง RAW…
+	Adaptive Wide Angle…	มุมกว้างแบบปรับได้…
+	Lens Correction…	การแก้ไขเลนส์…
+	Vanishing Point…	จุดลับสายตา…
+	Oil Paint…	สีน้ำมัน…
+	Blur Gallery	แกลเลอรี่เบลอ
+	Field Blur…	ฟิลด์เบลอ…
+# Field Blur pins (#3373)
+	No pin selected	ไม่ได้เลือกพิน
+	Click the image to add a pin; drag a pin to move it, or its ring to change its blur. Delete removes the selected pin.	คลิกที่ภาพเพื่อเพิ่มหมุด ลากหมุดเพื่อย้าย หรือลากวงแหวนเพื่อเปลี่ยนความเบลอ ลบ ลบพินที่เลือก
+	Drag the handles on the outline to resize and turn it, the square to round its corners, and the dots inside to set where the blur starts.	ลากขอบจับบนโครงร่างเพื่อปรับขนาดและหมุน ลากสี่เหลี่ยมเพื่อปัดเศษมุม และลากจุดด้านในเพื่อกำหนดจุดเริ่มต้นของการเบลอ
+	Drag the pin to move the band, or its ring to change its blur. Drag the solid lines to widen the sharp band, the dashed lines to set the transition, and the dots to turn it.	ลากหมุดเพื่อย้ายสายรัด หรือลากวงแหวนเพื่อเปลี่ยนความเบลอ ลากเส้นทึบเพื่อขยายแถบคม เส้นประเพื่อกำหนดการเปลี่ยนภาพ และลากจุดเพื่อหมุน
+	Drag the handles on the outline to resize and turn it; the ring sets the blur angle.	ลากขอบจับบนโครงร่างเพื่อปรับขนาดและหมุน วงแหวนจะกำหนดมุมเบลอ
+	Blur Angle	มุมเบลอ
+	Iris Blur…	ไอริสเบลอ…
+	Tilt-Shift…	เอียง-Shift…
+	Path Blur…	เส้นทางเบลอ…
+	Spin Blur…	หมุนเบลอ…
+	Auto-Align Layers…	ปรับแนวเลเยอร์อัตโนมัติ…
+	Auto-Blend Layers…	ผสมผสานเลเยอร์อัตโนมัติ…
+	Photomerge…	รวมภาพ…
+	Content-Aware Scale	ปรับขนาดอย่างชาญฉลาด
+	Adaptive Wide Angle	มุมกว้างแบบปรับได้
+	Apply Image…	ใช้ภาพ…
+	Calculations…	การคำนวณ…
+	Crystallize…	ตกผลึก…
+	Facet	ด้าน
+	Fragment	แฟรกเมนต์
+	Mosaic…	โมเสก…
+	Pointillize…	เล็ง…
+	Chalk & Charcoal	ชอล์กและถ่าน
+	Charcoal	ถ่าน
+	Chrome	โครเมียม
+	Conté Crayon	คอนเต้ เครยอน
+	Graphic Pen	ปากกากราฟฟิค
+	Halftone Pattern	รูปแบบฮาล์ฟโทน
+	Note Paper	กระดาษโน๊ต
+	Photocopy	ถ่ายเอกสาร
+	Plaster	พลาสเตอร์
+	Reticulation	การกำหนดซ้ำ
+	Stamp	แสตมป์
+	Torn Edges	ขอบฉีกขาด
+	Water Paper	กระดาษน้ำ
+	Clouds	เมฆ
+	Difference Clouds	ความแตกต่างเมฆ
+	Fibers…	เส้นใย…
+	Lens Flare…	เลนส์แฟลร์…
+	Picture Frame…	กรอบรูป…
+	Tree…	ต้นไม้…
+	Flame…	เปลวไฟ…
+	Sharpen Edges	ปรับขอบให้คมขึ้น
+	Dust & Scratches…	ฝุ่นและรอยขีดข่วน…
+	Noise	สัญญาณรบกวน
+	Add Noise…	เพิ่มเสียงรบกวน…
+	Reduce Noise…	ลดเสียงรบกวน…
+	Despeckle	เดสเปคเคิล
+	Median…	ค่ามัธยฐาน…
+	Median	ค่ามัธยฐาน
+	Maximum…	สูงสุด…
+	Maximum	สูงสุด
+	Minimum…	ขั้นต่ำ…
+	Minimum	ขั้นต่ำ
+	Custom…	กำหนดเอง…
+	High Pass…	ผ่านสูง…
+	Emboss…	ลายนูน…
+	Extrude…	ขับไล่…
+	Find Edges	ค้นหาขอบ
+	Solarize	แสงอาทิตย์
+	Tiles…	กระเบื้อง…
+	Trace Contour…	ติดตาม Contour…
+	Wind…	ลม…
+	Offset…	ออฟเซ็ต…
+	Pinch…	หยิก…
+	Polar Coordinates…	พิกัดเชิงขั้ว…
+	Ripple…	ระลอกคลื่น…
+	Shear…	แรงเฉือน…
+	Spherize…	ทรงกลม…
+	Twirl…	หมุน…
+	Wave…	คลื่น…
+	ZigZag…	ซิกแซก…
+	Average	เฉลี่ย
+	Blur More	เบลอมากขึ้น
+	Box Blur…	กล่องเบลอ…
+	Gaussian Blur…	เบลอแบบเกาส์เซียน…
+	Motion Blur…	โมชั่นเบลอ…
+	Radial Blur…	เรเดียลเบลอ…
+	Shape Blur…	รูปร่างเบลอ…
+	Smart Blur…	สมาร์ทเบลอ…
+	Surface Blur…	พื้นผิวเบลอ…
+	Sharpen	ทำให้คมชัด
+	Sharpen More	ทำให้คมชัดมากขึ้น
+	Unsharp Mask…	มาสก์ปรับความคมชัด…
+	Smart Sharpen…	ทำให้คมชัดอัจฉริยะ…
+	Diffuse…	กระจาย…
+	Mezzotint…	เมซโซตินต์…
+	Color Halftone…	ฮาล์ฟโทนสี…
+	Layer…	เลเยอร์…
+
+# View
+	Proof Setup	การตั้งค่าการพิสูจน์
+	Proof Colors	สีหลักฐาน
+	Pixel Aspect Ratio	อัตราส่วนพิกเซล
+	Pixel Aspect Ratio Correction	การแก้ไขอัตราส่วนพิกเซล
+	Zoom In	ซูมเข้า
+	Zoom Out	ซูมออก
+	Fit on Screen	พอดีหน้าจอ
+	100%	100%
+	105%	105%
+	110%	110%
+	115%	115%
+	120%	120%
+	200%	200%
+	75%	75%
+	80%	80%
+	85%	85%
+	90%	90%
+	95%	95%
+	125%	125%
+	150%	150%
+	175%	175%
+	250%	250%
+	300%	300%
+	Print Size	ขนาดการพิมพ์
+	Screen Mode	โหมดหน้าจอ
+	Standard Screen Mode	โหมดหน้าจอมาตรฐาน
+	Full Screen Mode With Menu Bar	โหมดเต็มหน้าจอพร้อมแถบเมนู
+	Full Screen Mode	โหมดเต็มหน้าจอ
+	Extras	บริการพิเศษ
+	Show	แสดง
+	Rulers	ไม้บรรทัด
+	Grid	ตาราง
+	Guides	เส้นไกด์
+	Slices	ชิ้น
+	Snap	ดูดติด
+	Snap To	สแน็ปไปที่
+	Lock Guides	ล็อคคำแนะนำ
+	Clear Guides	ล้างคำแนะนำ
+	New Guide…	คู่มือใหม่…
+	Lock Slices	ล็อคชิ้น
+	Clear Slices	ล้างชิ้น
+	New Guide Layout…	เค้าโครงคำแนะนำใหม่…
+	New Guides From Shape	คำแนะนำใหม่จาก Shape
+	Canvas rotation	การหมุนผืนผ้าใบ
+	Zoom in	ซูมเข้า
+	Zoom out	ซูมออก
+
+# Window
+	Cascade	น้ำตก
+	Tile	กระเบื้อง
+	2-up Horizontal	แนวนอน 2 อัพ
+	3-up Horizontal	แนวนอน 3 อัพ
+	2-up Vertical	แนวตั้ง 2 ขึ้นไป
+	3-up Vertical	แนวตั้ง 3 ขึ้นไป
+	3-up Stacked	3-up ซ้อนกัน
+	4-up	4 อัพ
+	6-up	6 อัพ
+	Consolidate All to Tabs	รวมทั้งหมดไว้ในแท็บ
+	Match Zoom	จับคู่ซูม
+	Match Location	จับคู่ตำแหน่ง
+	Match Rotation	การหมุนการแข่งขัน
+	Match All	ตรงทั้งหมด
+	New Window for Document	หน้าต่างใหม่สำหรับเอกสาร
+	Workspace	พื้นที่ทำงาน
+	Extensions	ส่วนขยาย
+	Panels	แผง
+	Actions	การดำเนินการ
+	Brush Settings	การตั้งค่าแปรง
+	Brushes	แปรง
+	Channels	ช่อง
+	Character	ตัวละคร
+	Clone Source	แหล่งที่มาของโคลน
+	Color Mixer	เครื่องผสมสี
+	Glyphs	ร่ายมนตร์
+	Gradients	การไล่ระดับสี
+	Histogram	ฮิสโตแกรม
+	History	ประวัติศาสตร์
+	Info	ข้อมูล
+	Layer Comps	คอมพ์เลเยอร์
+	Layers	เลเยอร์
+	Measurement Log	บันทึกการวัด
+	Notes	หมายเหตุ
+	Navigator	นาวิเกเตอร์
+	Paragraph	ย่อหน้า
+	Paths	เส้นทาง
+	Patterns	รูปแบบ
+	Properties	คุณสมบัติ
+	Styles	สไตล์
+	Swatches	สวอตช์
+	Timeline	ไทม์ไลน์
+	Tool Presets	ค่าที่ตั้งไว้ล่วงหน้าของเครื่องมือ
+	Tools	เครื่องมือ
+	Libraries	ห้องสมุด
+	3D	3D
+	Toolbars	แถบเครื่องมือ
+	Hide All	ซ่อนทั้งหมด
+
+# Help
+	About PhotoCraft	เกี่ยวกับ PhotoCraft
+	PhotoCraft Website	เว็บไซต์PhotoCraft
+	PhotoCraft on GitHub	PhotoCraftบน GitHub
+	Report an Issue…	รายงานปัญหา…
+	ArtCraft Website	เว็บไซต์อาร์ตคราฟต์
+	Join the ArtCraft Discord…	เข้าร่วม ArtCraft Discord…
+	System Info…	ข้อมูลระบบ…
+
+# Tools and options bar
+	Move	ย้าย
+	Marquee	กระโจม
+	Lasso	ลาสโซ
+	Wand	ไม้กายสิทธิ์
+	Eyedropper	ยาหยอดตา
+	Brush	แปรง
+	Block	บล็อก
+	Pencil	ดินสอ
+	Eraser	ยางลบ
+	Clone Stamp	โคลนแสตมป์
+	Healing	การรักษา
+	Blur	เบลอ
+	Dodge	ดอดจ์
+	Burn	เผา
+	Gradient	การไล่ระดับสี
+	Shape	รูปร่าง
+	Pen	ปากกา
+	Hand	มือ
+	Zoom	ซูม
+	Sampler	เครื่องเก็บตัวอย่าง
+	Ruler Tool	เครื่องมือไม้บรรทัด
+	Count Tool	เครื่องมือนับ
+	Note tool	เครื่องมือบันทึก
+	Quick Selection	การเลือกอย่างรวดเร็ว
+	Magnetic Lasso	บ่วงแม่เหล็ก
+	Mixer Brush	แปรงมิกเซอร์
+	Mixer Brush Tool	เครื่องมือแปรงมิกเซอร์
+	Color Replacement Tool	เครื่องมือเปลี่ยนสี
+	History Brush	แปรงประวัติศาสตร์
+	Art History Brush	แปรงประวัติศาสตร์ศิลปะ
+	Pattern Stamp	แสตมป์รูปแบบ
+	Spot Healing	การรักษาเฉพาะจุด
+	Red Eye	ตาแดง
+	Patch	แพทช์
+	Content-Aware Move	การเคลื่อนไหวแบบรับรู้เนื้อหา
+	Rotate View	หมุนมุมมอง
+	Perspective Crop	ครอบตัดเปอร์สเปคทีฟ
+	Color Replacement	การเปลี่ยนสี
+	Dodge/Burn	ดอดจ์/เบิร์น
+	Foreground	เบื้องหน้า
+	Background	พื้นหลัง
+	Set foreground color	ตั้งค่าสีพื้นหน้า
+	Set background color	ตั้งค่าสีพื้นหลัง
+	Swap colours (X)	สลับสี (X)
+	Default colours (D)	สีเริ่มต้น (D)
+	Brush Tool Options	ตัวเลือกเครื่องมือแปรง
+	Opacity	ความทึบ
+	Flow	ไหล
+	Smoothing	ปรับให้เรียบ
+	Size	ขนาด
+	Hardness	ความแข็ง
+	Angle:	มุม:
+	Roundness:	ความกลม:
+	Spacing	ระยะห่าง
+	Dynamics	ไดนามิกส์
+	Pressure	ความกดดัน
+	Tilt	เอียง
+	Rotation	การหมุน
+	Align	จัดตำแหน่ง
+	Aligned	จัดตำแหน่ง
+
+# Panels, dialogs and common widgets
+	OK	ตกลง
+	Cancel	ยกเลิก
+	Cancel (Esc)	ยกเลิก (Esc)
+	Manage submitted jobs in the system print queue	จัดการงานที่ส่งในคิวการพิมพ์ของระบบ
+	Done	เสร็จสิ้น
+	Apply	นำไปใช้
+	Reset	รีเซ็ต
+	Reset Section	รีเซ็ตส่วน
+	Reset All to Defaults	รีเซ็ตทั้งหมดเป็นค่าเริ่มต้น
+	Import Shortcuts…	นำเข้าทางลัด…
+	Load a keyboard shortcut set saved as .kys	โหลดชุดแป้นพิมพ์ลัดที่บันทึกเป็น .kys
+	Imported {n} shortcuts from {file}. Click OK to keep them.	นำเข้าทางลัด {n} จาก {file} คลิกตกลงเพื่อเก็บไว้
+	{n} commands are not in PhotoCraft.	คำสั่ง {n} ไม่ได้อยู่ใน PhotoCraft
+	Keyboard shortcuts imported	นำเข้าแป้นพิมพ์ลัดแล้ว
+	Your keyboard shortcut set {set} is in use here: {n} shortcuts differ from the defaults. Edit › Keyboard Shortcuts shows them; Reset All to Defaults undoes this.	ชุดแป้นพิมพ์ลัดของคุณ {set} ใช้งานอยู่ที่นี่: แป้นพิมพ์ลัด {n} แตกต่างจากค่าเริ่มต้น แก้ไข › แป้นพิมพ์ลัดจะแสดงข้อมูลเหล่านั้น รีเซ็ตทั้งหมดเป็นค่าเริ่มต้นจะเลิกทำสิ่งนี้
+	Import keyboard shortcuts?	นำเข้าแป้นพิมพ์ลัดใช่ไหม
+	PhotoCraft found your keyboard shortcut set {set} from another image editor on this computer: {n} of its shortcuts differ from PhotoCraft's. Import it?	PhotoCraft พบชุดแป้นพิมพ์ลัดของคุณ {set} จากโปรแกรมแก้ไขภาพอื่นบนคอมพิวเตอร์เครื่องนี้: ทางลัด {n} แตกต่างจากของ PhotoCraft นำเข้าเหรอ?
+	Edit › Keyboard Shortcuts › Reset All to Defaults undoes an import.	แก้ไข › แป้นพิมพ์ลัด › รีเซ็ตทั้งหมดเป็นค่าเริ่มต้น ยกเลิกการนำเข้า
+	Don't Import	อย่านำเข้า
+	The keyboard shortcut set was not imported: {error}	ไม่ได้นำเข้าชุดแป้นพิมพ์ลัด: {error}
+	Defaults restored.	คืนค่าเริ่มต้นแล้ว
+	Restore Defaults	คืนค่าเริ่มต้น
+	Restore original size	คืนขนาดเดิม
+	Use Default	ใช้ค่าเริ่มต้น
+	Dismiss	ยกเลิก
+	Preview	ดูตัวอย่าง
+	Options	ตัวเลือก
+	Settings…	การตั้งค่า…
+	Rename…	เปลี่ยนชื่อ…
+	Load…	โหลด…
+	Define…	กำหนด…
+	Custom	กำหนดเอง
+	Default	ค่าเริ่มต้น
+	None	ไม่มี
+	Add	เพิ่ม
+	Remove	ลบ
+	Remove Background	ลบพื้นหลัง
+	Rename	เปลี่ยนชื่อ
+	Ignore	ไม่สนใจ
+	Ignore All	ละเว้นทั้งหมด
+	Change	เปลี่ยน
+	Change All	เปลี่ยนทั้งหมด
+	Next frame	เฟรมถัดไป
+	Previous frame	เฟรมก่อนหน้า
+	Play	เล่น
+	Pause	หยุดชั่วคราว
+	Stop	หยุด
+	Begin recording	เริ่มการบันทึก
+	Stop playing/recording	หยุดเล่น/บันทึก
+	Record ● a sequence of edits, then play ▶ it on any document.	บันทึก ● ลำดับการแก้ไข จากนั้นเล่น ▶ บนเอกสารใดก็ได้
+	Create new action	สร้างการกระทำใหม่
+	Play selection	เลือกเล่น
+	Create new set	สร้างชุดใหม่
+	Export selected measurements (CSV)	ส่งออกการวัดที่เลือก (CSV)
+	Record Measurements	บันทึกการวัด
+	Delete selected measurements	ลบการวัดที่เลือก
+	Select Data Points…	เลือกจุดข้อมูล…
+	Set Measurement Scale…	ตั้งค่าสเกลการวัด…
+	Use Measurement Scale	ใช้มาตราส่วนการวัด
+
+# Preferences dialog
+	Preferences	การตั้งค่า
+	General…	ทั่วไป…
+	Interface…	อินเทอร์เฟซ…
+	File Handling…	การจัดการไฟล์…
+	Performance…	ประสิทธิภาพ…
+	Cursors…	เคอร์เซอร์…
+	Transparency & Gamut…	ความโปร่งใสและขอบเขต…
+	Units & Rulers…	หน่วยและผู้ปกครอง…
+	Guides, Grid & Slices…	เส้นบอกแนว ตาราง และสไลซ์…
+	Plug-ins…	ปลั๊กอิน…
+	Technology Previews	ตัวอย่างเทคโนโลยี
+	Scratch Disks…	รอยขีดข่วนดิสก์…
+	Export Preferences…	การตั้งค่าการส่งออก…
+	Keyboard Shortcuts…	แป้นพิมพ์ลัด…
+	Menus…	เมนู…
+	Export/Import Presets…	ส่งออก/นำเข้าค่าที่ตั้งล่วงหน้า…
+	Additional plugins folder	โฟลเดอร์ปลั๊กอินเพิ่มเติม
+	Install Plug-in…	ติดตั้งปลั๊กอิน…
+	Export Presets	ส่งออกค่าที่ตั้งล่วงหน้า
+	Import brushes (.abr)	นำเข้าแปรง (.abr)
+	Migrate Presets	ย้ายค่าที่ตั้งล่วงหน้า
+	Thumbnail size (smallest: list)	ขนาดรูปขนาดย่อ (เล็กที่สุด: รายการ)
+	Reset GPU Backend	รีเซ็ตแบ็กเอนด์ GPU
+	Applies at next launch.	นำไปใช้ในการเปิดตัวครั้งถัดไป
+
+# Document and canvas status bar
+	Untitled	ไม่มีชื่อ
+	Untitled-1	ไม่มีชื่อ-1
+	Doc: {flat}/{layered}	เอกสาร: {flat}/{layered}
+	Scratch: {size}	Scratch: {size}
+	Efficiency: 100%	ประสิทธิภาพ: 100%
+	Dimensions:	ขนาด:
+	Width	ความกว้าง
+	Slant	เอียง
+	Height	ความสูง
+	Width:	ความกว้าง:
+	Height:	ส่วนสูง:
+	Resolution	ความละเอียด
+	Resolution:	ความละเอียด:
+	Resolution: {dpi} pixels/inch	ความละเอียด: {dpi} พิกเซล/นิ้ว
+	{w} px x {h} px ({ppi} ppi)	{w} พิกเซล x {h} พิกเซล ({ppi} ppi)
+	{w} {unit} x {h} {unit} ({ppi} ppi)	{w} {unit} x {h} {unit} ({ppi} ppi)
+	Pixels:	พิกเซล:
+	Pixel Length:	ความยาวพิกเซล:
+	Logical Length:	ความยาวลอจิก:
+	Logical Units:	หน่วยลอจิคัล:
+	Length:	ความยาว:
+	Interpolation:	การแก้ไข:
+	Resample	ตัวอย่าง
+	Constrain proportions	จำกัดสัดส่วน
+	Link width and height	ความกว้างและความสูงของลิงค์
+	Maintain aspect ratio	รักษาอัตราส่วนภาพ
+	Current Size	ขนาดปัจจุบัน
+	New Size	ขนาดใหม่
+	Fit	พอดี
+	Percent	เปอร์เซ็นต์
+	Pixels/Inch	พิกเซล/นิ้ว
+	Pixels/Centimeter	พิกเซล/เซนติเมตร
+	Relative	ญาติ
+	Canvas extension color:	สีส่วนขยายของผ้าใบ:
+	Anchor:	สมอ:
+	Both Axes	ขวานทั้งสอง
+	Horizontally	แนวนอน
+	Vertically	ในแนวตั้ง
+
+# Layers panel
+	Layers to Files…	เลเยอร์เป็นไฟล์…
+	Duplicate Layers…	ทำซ้ำเลเยอร์…
+	Group name	ชื่อกลุ่ม
+	New Group	กลุ่มใหม่
+	Layer Comp	คอมพ์เลเยอร์
+	Create new layer	สร้างเลเยอร์ใหม่
+	Create new group	สร้างกลุ่มใหม่
+	Create new channel	สร้างช่องใหม่
+	Create new path	สร้างเส้นทางใหม่
+	Toggle visibility	สลับการมองเห็น
+	Clipped	ตัดแล้ว
+	Group · {n} layer	กลุ่ม · {n} เลเยอร์
+	Lock: keep these settings when picking another preset	ล็อค: เก็บการตั้งค่าเหล่านี้ไว้เมื่อเลือกค่าที่ตั้งไว้ล่วงหน้าอื่น
+	Unlock: picking a preset replaces these settings	ปลดล็อค: การเลือกค่าที่ตั้งล่วงหน้าจะแทนที่การตั้งค่าเหล่านี้
+	Show the layer's effects  ({key}-click: all layers)	แสดงเอฟเฟกต์ของเลเยอร์ ({key}-click: ทุกเลเยอร์)
+	Hide the layer's effects  ({key}-click: all layers)	ซ่อนเอฟเฟกต์ของเลเยอร์ ({key}-click: ทุกเลเยอร์)
+	Expand group  ({key}-click: all groups)	ขยายกลุ่ม ({key}-คลิก: ทุกกลุ่ม)
+	Collapse group  ({key}-click: all groups)	ยุบกลุ่ม ({key}-คลิก: ทุกกลุ่ม)
+	Effects	ผลกระทบ
+	Blending	การผสม
+	Blend If	ผสมผสานถ้า
+	General Blend	ส่วนผสมทั่วไป
+	Advanced Blending	การผสมขั้นสูง
+	Opacity:	ความทึบ:
+	Fill:	กรอก:
+	Lock:	ล็อค:
+	Smart Filter	ฟิลเตอร์อัจฉริยะ
+	Fill Content	เติมเนื้อหา
+	Adjustment Preview	ดูตัวอย่างการปรับ
+
+# Channels panel
+	Channel:	ช่องทาง:
+	Channel Mixer…	ผสมช่องสัญญาณ…
+	Output Channel:	ช่องสัญญาณออก:
+	RGB	RGB
+	Red	สีแดง
+	Green	สีเขียว
+	Blue	สีฟ้า
+	Alpha	อัลฟ่า
+	Load channel as selection	โหลดช่องเป็นตัวเลือก
+	Save selection as channel	บันทึกการเลือกเป็นช่อง
+	Delete current channel	ลบช่องปัจจุบัน
+	Spot Channel	ช่องสปอต
+	Mask All	มาสก์ทั้งหมด
+	Mask All Objects	ปิดบังวัตถุทั้งหมด
+
+# Color picker and swatches
+	Color	สี
+	Color:	สี:
+	Colors	สี
+	HSB/HSL	HSB/HSL
+	No Color	ไม่มีสี
+	Set shape fill type	กำหนดประเภทการเติมรูปร่าง
+	Set shape stroke type	กำหนดประเภทเส้นโครงร่าง
+	Set the text color	ตั้งค่าสีข้อความ
+	Create warped text	สร้างข้อความบิดเบี้ยว
+	Only Web Colors	เฉพาะสีเว็บเท่านั้น
+	Overlay Color	สีซ้อนทับ
+	Overlay Opacity	ความทึบของการซ้อนทับ
+	Glow Color	สีเรืองแสง
+	Web Snap	เว็บสแนป
+
+# Filters and adjustments dialogs
+	Brightness	ความสว่าง
+	Contrast	คอนทราสต์
+	Brightness/Contrast…	ความสว่าง/คอนทราสต์…
+	Levels…	ระดับ…
+	Curves…	เส้นโค้ง…
+	Curve	เส้นโค้ง
+	Exposure…	การรับแสง…
+	Exposure	การเปิดรับแสง
+	Vibrance…	ความสดใส…
+	Vibrance	ความมีชีวิตชีวา
+	Hue/Saturation…	สี/ความอิ่มตัว…
+	Hue	สี
+	Saturation	ความอิ่มตัว
+	Lightness	ความเบา
+	Color Balance…	สมดุลสี…
+	Black & White…	ขาวดำ…
+	Photo Filter…	ฟิลเตอร์ภาพถ่าย…
+	Color Lookup…	ค้นหาสี…
+	Color Lookup Tables…	ตารางค้นหาสี…
+	3D LUT File	ไฟล์ 3D LUT
+	Load 3D LUT…	โหลด 3D LUT…
+	Invert…	กลับด้าน…
+	Invert	กลับสี
+	Invert has no settings.	Invert ไม่มีการตั้งค่า
+	Threshold…	ขีดจำกัด…
+	Threshold Level	ระดับเกณฑ์
+	Posterize…	โพสเตอร์ไรซ์…
+	Gradient Map…	แมปไล่ระดับ…
+	Selective Color…	เลือกสี…
+	Match Color…	จับคู่สี…
+	Replace Color…	แทนที่สี…
+	Equalize	ปรับให้เท่ากัน
+	HDR Toning…	โทน HDR…
+	Shadows/Highlights…	เงา/ไฮไลต์…
+	Amount	จำนวน
+	Radius	รัศมี
+	Radius:	รัศมี:
+	Tolerance:	ความอดทน:
+	Density	ความหนาแน่น
+	Density:	ความหนาแน่น:
+	Feather	ขนนก
+	Feather…	ขอบฟุ้ง…
+	Anti-alias	ต่อต้านนามแฝง
+	Anti-Alias	ต่อต้านนามแฝง
+	Contiguous	ติดกัน
+	Sample All Layers	ตัวอย่างเลเยอร์ทั้งหมด
+	Protect Foreground Color	ปกป้องสีพื้นหน้า
+	Matte	แมท
+	Matting	เครื่องปูลาด
+	Color Decontaminate…	ขจัดคราบสี…
+	Remove Black Matte	ลบสีดำด้าน
+	Remove White Matte	ลบไวท์แมตต์
+	Defringe…	กำลังละลาย…
+	Source	แหล่งที่มา
+	Working CMYK	การทำงานของ CMYK
+	Working Cyan Plate	แผงสีฟ้าทำงาน
+	Working Magenta Plate	แผงสีม่วงแดงทำงาน
+	Working Yellow Plate	จานเหลืองทำงาน
+	Working Black Plate	จานดำทำงาน
+	Working Gray Plate	แผ่นสีเทาทำงาน
+
+# RAW Develop and lens dialogs
+	Basic	ขั้นพื้นฐาน
+	Detail	รายละเอียด
+	HSL/Grayscale	HSL/ระดับสีเทา
+	Tone Curve	โทนสีโค้ง
+	Split Toning	แยกโทนนิ่ง
+	Lens Corrections	การแก้ไขเลนส์
+	Camera Calibration	การปรับเทียบกล้อง
+	Presets	ค่าที่ตั้งล่วงหน้า
+	Snapshots	สแนปชอต
+	Temperature	อุณหภูมิ
+	Tint	โทนสี
+	Exposure:	การสัมผัส:
+	Recovery	การกู้คืน
+	Fill Light	เติมแสง
+	Blacks	คนผิวดำ
+	Clarity	ความชัดเจน
+	Convert to Grayscale	แปลงเป็นระดับสีเทา
+	Auto	อัตโนมัติ
+	Auto collapse icon panels	แผงไอคอนยุบอัตโนมัติ
+	Auto show hidden panels	แสดงแผงที่ซ่อนอยู่โดยอัตโนมัติ
+	Auto show home screen	แสดงหน้าจอหลักอัตโนมัติ
+	Sharpness	ความคม
+	Noise Reduction	ลดเสียงรบกวน
+	Color Noise Reduction	การลดสัญญาณรบกวนสี
+	Luminance Detail	รายละเอียดความสว่าง
+	Color Detail	รายละเอียดสี
+	Luminance Smoothness	ความนุ่มนวลของความสว่าง
+	Vignetting	วิกเนต
+	White Balance: As Shot	สมดุลแสงขาว: เท่าที่ถูกถ่าย
+	RAW Defaults…	ค่าเริ่มต้น RAW…
+	RAW Develop isn't open	การปรับแต่ง RAW ไม่เปิด
+	Dehaze	ลดหมอกควัน
+	Texture	พื้นผิว
+	Focal Length	ทางยาวโฟกัส
+	Make	ทำ
+	Model	รุ่น
+	Lens	เลนส์
+	F	เอฟ
+	ISO	ไอเอสโอ
+	Focal Length35mm	ทางยาวโฟกัส 35 มม
+	Aspect Ratio	อัตราส่วนภาพ
+	Time	เวลา
+	Artist	ศิลปิน
+	Copyright	ลิขสิทธิ์
+	Enter description…	ป้อนคำอธิบาย…
+	Adobe RGB (1998) compatible	รองรับ Adobe RGB (1998)
+	Gray Gamma 2.2	แกมมาสีเทา 2.2
+	ColorSync	ColorSync
+	ProPhoto	โปรโฟโต้
+	sRGB	sRGB
+	ACES	เอซ
+	Industry Standard	มาตรฐานอุตสาหกรรม
+	Web	เว็บ
+	Internet Standard RGB	RGB มาตรฐานอินเทอร์เน็ต
+	Legacy Macintosh RGB	Macintosh RGB รุ่นเก่า
+	Monitor RGB	ตรวจสอบ RGB
+	Windows LCD	วินโดว์จอแอลซีดี
+	Coated CMYK	เคลือบสี CMYK
+	Uncoated CMYK	CMYK ที่ไม่เคลือบ
+	Newspaper	หนังสือพิมพ์
+	Working Spaces	พื้นที่ทำงาน
+	Color Management Policies	นโยบายการจัดการสี
+	Assign working space	กำหนดพื้นที่ทำงาน
+	Leave as is (don't color manage)	ปล่อยไว้เหมือนเดิม (อย่าจัดการสี)
+	Discard the embedded profile (don't color manage)	ละทิ้งโปรไฟล์ที่ฝังไว้ (อย่าจัดการสี)
+	Embed Color Profile	ฝังโปรไฟล์สี
+	Assign Profile…	กำหนดโปรไฟล์…
+	Convert to Profile…	แปลงเป็นโปรไฟล์…
+	PhotoCraft Manages Colors	PhotoCraft จัดการสี
+	Printer Manages Colors	เครื่องพิมพ์จัดการสี
+	(print to the printer)	(พิมพ์ไปยังเครื่องพิมพ์)
+	Absolute Colorimetric	การวัดสีแบบสัมบูรณ์
+	Relative Colorimetric	การวัดสีสัมพัทธ์
+	Perceptual	การรับรู้
+	Black Point Compensation	การชดเชยจุดดำ
+	Use Legacy	ใช้มรดก
+	Dither	ดิเธอร์
+	No Dither	ไม่มีดิเธอร์
+	Diffusion	การแพร่กระจาย
+	Pattern	รูปแบบ
+	Fuzziness:	ความคลุมเครือ:
+	Range:	ช่วง:
+	Select:	เลือก:
+	Detect Faces	ตรวจจับใบหน้า
+	Localize Color Clusters	แปลคลัสเตอร์สี
+	Sample:	ตัวอย่าง:
+	Add to Sample	เพิ่มลงในตัวอย่าง
+	Subtract from Sample	ลบออกจากตัวอย่าง
+	Selections	การเลือก
+	Duplicated selection name	ชื่อการเลือกซ้ำกัน
+	Operation	การดำเนินงาน
+	New channel only	ช่องใหม่เท่านั้น
+	Masked Areas	พื้นที่สวมมาสก์
+	Selected Areas	พื้นที่ที่เลือก
+	Spot Color	สีเฉพาะจุด
+	Color indicates	สีบ่งบอกถึง
+
+# Adjustments panel
+	Curves	เส้นโค้ง
+	Levels	ระดับ
+	Color Balance	ความสมดุลของสี
+	Black & White	ขาวดำ
+	Photo Filter	ฟิลเตอร์ภาพถ่าย
+	Color Lookup	การค้นหาสี
+	Threshold	เกณฑ์
+	Posterize	โปสเตอร์
+	Brightness/Contrast	ความสว่าง/คอนทราสต์
+	Channel Mixer	มิกเซอร์ช่อง
+	Gradient Map	แผนที่ไล่ระดับสี
+	Selective Color	เลือกสี
+
+# History panel
+	History Log…	บันทึกประวัติ…
+	Create Snapshot	สร้างสแนปชอต
+	Delete Snapshot	ลบสแนปชอต
+	New Snapshot	สแนปชอตใหม่
+	Snapshot 1	ภาพรวม 1
+	Step Forward	ก้าวไปข้างหน้า
+	Step Backward	ก้าวถอยหลัง
+	Histories	ประวัติศาสตร์
+	Nonlinear History	ประวัติศาสตร์ไม่เชิงเส้น
+	Set New Snapshot as Default	ตั้งค่าสแนปชอตใหม่เป็นค่าเริ่มต้น
+	Automatically Create First Snapshot	สร้างสแนปชอตแรกโดยอัตโนมัติ
+	Automatically Create New Snapshot When Saving	สร้างสแนปชอตใหม่โดยอัตโนมัติเมื่อบันทึก
+	Show New Snapshot Dialog by Default	แสดงกล่องโต้ตอบสแนปชอตใหม่ตามค่าเริ่มต้น
+	Clear History	ล้างประวัติ
+
+# Navigator panel
+	Panel Options…	ตัวเลือกแผง…
+	View menu	เมนูมุมมอง
+	Keep view in sync	ให้มุมมองตรงกัน
+	{zoom}%	{zoom}%
+
+# Brush Settings panel
+	Brush name	ชื่อแปรง
+	Brush Preview	ดูตัวอย่างแปรง
+	Brush Tip Shape	รูปร่างปลายแปรง
+	Shape Dynamics	ไดนามิกส์ของรูปร่าง
+	Scattering	กระจัดกระจาย
+	Dual Brush	แปรงคู่
+	Color Dynamics	ไดนามิกของสี
+	Transfer	โอน
+	Brush Pose	แปรงโพสท่า
+	Mouse Controls	การควบคุมเมาส์
+	Wet Edges	ขอบเปียก
+	Build-up	สร้างขึ้น
+	Protect Texture	ปกป้องพื้นผิว
+	Blend Mode	โหมดผสมผสาน
+	Size Jitter	ขนาดกระวนกระวายใจ
+	Minimum Diameter	เส้นผ่านศูนย์กลางขั้นต่ำ
+	Tilt Scale	สเกลเอียง
+	Angle Jitter	มุมกระวนกระวายใจ
+	Roundness Jitter	ความกลมกระวนกระวายใจ
+	Minimum Roundness	ความกลมขั้นต่ำ
+	Flip X Jitter	พลิก X กระวนกระวายใจ
+	Flip Y Jitter	พลิกและกระวนกระวายใจ
+	Brush Projection	การฉายภาพด้วยแปรง
+	Control:	การควบคุม:
+	Off: the speed of the pointer sets the spacing	ปิด: ความเร็วของตัวชี้จะกำหนดระยะห่าง
+	Fade steps	ขั้นตอนจางลง
+	Pen Pressure	แรงกดของปากกา
+	Pen Tilt	ปากกาเอียง
+	Stylus Wheel	ล้อสไตลัส
+	Initial Direction of Stroke	ทิศทางเริ่มต้นของโรคหลอดเลือดสมอง
+	Direction of Stroke	ทิศทางของโรคหลอดเลือดสมอง
+	Opacity Jitter	ความทึบ กระวนกระวายใจ
+	Flow Jitter	กระแสกระวนกระวายใจ
+	Humidity	ความชื้น
+	Load	โหลด
+	Mix	ผสม
+	Auto Clean Brush	แปรงทำความสะอาดอัตโนมัติ
+	Wet	เปียก
+	Current Brush Load	โหลดแปรงปัจจุบัน
+	Load Brush	โหลดแปรง
+	Clean Brush	แปรงทำความสะอาด
+	Load the brush after each stroke	ใส่แปรงหลังการปัดแต่ละครั้ง
+	Clean the brush after each stroke	ทำความสะอาดแปรงหลังการแปรงแต่ละครั้ง
+	Rate	อัตรา
+	Airbrush: keeps depositing paint while the pointer rests.	พู่กัน: เก็บสีไว้ในขณะที่ตัวชี้วางอยู่
+	Pulled String Mode	โหมดสายดึง
+	Catch-up on Stroke End	ติดตามเรื่อง Stroke End
+	Adjust for Zoom	ปรับเพื่อซูม
+	Apply Per Tip	ใช้ต่อเคล็ดลับ
+	Hardness:	ความแข็ง:
+	Spacing:	ระยะห่าง:
+	Size:	ขนาด:
+	Flip X	พลิก X
+	Flip Y	พลิก Y
+	Brush Tip	ปลายแปรง
+	Diameter:	เส้นผ่านศูนย์กลาง:
+	New Layer from Brush	เลเยอร์ใหม่จากแปรง
+	Rename Brush…	เปลี่ยนชื่อแปรง…
+	Delete Brush	ลบแปรง
+	Import Brushes…	นำเข้าแปรง…
+	Import Brushes… (.abr or image)	นำเข้าแปรง… (.abr หรือภาพ)
+	Import Brush from Image…	นำเข้าแปรงจากภาพ…
+	Gradient Preset Options	ตัวเลือกการไล่ระดับสีล่วงหน้า
+	Import .GRD	นำเข้า .GRD
+	Choose a gradient file (.grd).	เลือกไฟล์ไล่ระดับสี (.grd)
+	Brush Name	ชื่อแปรง
+	Brush Stroke	แปรงจังหวะ
+	New Brush Preset…	พรีเซ็ตแปรงใหม่…
+	Capture Brush Size in Preset	จับขนาดแปรงในการตั้งค่าล่วงหน้า
+	Include Tool Settings	รวมการตั้งค่าเครื่องมือ
+	Include Color	รวมสี
+	Enter a name for the brush preset	ป้อนชื่อสำหรับการตั้งค่าแปรงล่วงหน้า
+	A brush preset with this name already exists	มีแปรงที่ตั้งไว้ล่วงหน้าด้วยชื่อนี้อยู่แล้ว
+	Brush Preset Options	ตัวเลือกพรีเซ็ตแปรง
+	New Brush	แปรงใหม่
+	Create new brush from these settings	สร้างแปรงใหม่จากการตั้งค่าเหล่านี้
+	Update the current brush with these settings	อัปเดตแปรงปัจจุบันด้วยการตั้งค่าเหล่านี้
+	Reset the brush to the defaults	รีเซ็ตแปรงเป็นค่าเริ่มต้น
+	No brush presets	ไม่มีการตั้งค่าแปรงล่วงหน้า
+	Override Pressure	แทนที่ความดัน
+	Override Tilt	แทนที่การเอียง
+	Override Tilt X	แทนที่การเอียง X
+	Override Tilt Y	แทนที่การเอียง Y
+	Override Rotation	แทนที่การหมุน
+	Apply the pen's tilt and rotation to the tip shape	ใช้การเอียงและหมุนของปากกากับรูปร่างปลาย
+
+# Tool presets
+	Preset Type	ประเภทพรีเซ็ต
+	Preset Manager…	ผู้จัดการที่ตั้งไว้ล่วงหน้า…
+	Rename Tool Preset…	เปลี่ยนชื่อเครื่องมือที่ตั้งไว้ล่วงหน้า…
+	Delete Tool Preset	ลบเครื่องมือที่ตั้งไว้ล่วงหน้า
+	New Tool Preset	พรีเซ็ตเครื่องมือใหม่
+	Create new tool preset	สร้างพรีเซ็ตเครื่องมือใหม่
+	Current Tool Only	เครื่องมือปัจจุบันเท่านั้น
+	No tool presets.	ไม่มีการตั้งค่าเครื่องมือล่วงหน้า
+	No presets for the current tool.	ไม่มีการตั้งค่าล่วงหน้าสำหรับเครื่องมือปัจจุบัน
+	No presets of this type.	ไม่มีการตั้งค่าล่วงหน้าประเภทนี้
+	Preset:	ที่ตั้งไว้ล่วงหน้า:
+	Preset	ที่ตั้งไว้ล่วงหน้า
+	Presets:	ค่าที่ตั้งล่วงหน้า:
+
+# Paragraph and character panels
+	Font Size:	ขนาดตัวอักษร:
+	Font size	ขนาดตัวอักษร
+	Type:	ตัวอักษร:
+	Style	สไตล์
+	Style: Normal	สไตล์: ปกติ
+	Tracking	การติดตาม
+	Kerning	การจัดช่องไฟ
+	Leading	เป็นผู้นำ
+	Auto-Leading	อัตโนมัติเลเยอร์นำ
+	Scale Horizontally	มาตราส่วนในแนวนอน
+	Scale Vertically	ปรับขนาดในแนวตั้ง
+	Baseline Shift	การเปลี่ยนแปลงพื้นฐาน
+	Language	ภาษา
+	Anti-aliasing method	วิธีการต่อต้านนามแฝง
+	Sharp	ชาร์ป
+	Crisp	กรอบ
+	Strong	แข็งแรง
+	Smooth	เรียบเนียน
+	Mac LCD	แมคแอลซีดี
+	Mac Sharp	แม็ก ชาร์ป
+	Mac Crisp	แม็ก คริสป์
+	Mac Strong	แม็ก สตรอง
+	Mac Smooth	แม็ก สมูท
+	Faux Bold	ตัวหนาเทียม
+	Faux Italic	ตัวเอียงเทียม
+	All Caps	ตัวพิมพ์ใหญ่ทั้งหมด
+	Small Caps	หมวกเล็ก
+	Superscript	ตัวยก
+	Subscript	ตัวห้อย
+	Underline	ขีดเส้นใต้
+	Strikethrough	ขีดทับ
+	Oldstyle	แบบเก่า
+	Ligature	มัด
+	Alternative	ทางเลือก
+	Hyphenate	ยัติภังค์
+	Roman	โรมัน
+	Italic	ตัวเอียง
+	Bold	ตัวหนา
+	Bold Italic	ตัวหนาตัวเอียง
+	Light	เบา
+	Medium	ปานกลาง
+	Black	ดำ
+	Thin	บาง
+	Ultra Light	อัลตร้าไลท์
+	Extra Light	แสงพิเศษ
+	Semi Bold	กึ่งหนา
+	Extra Bold	ตัวหนาเป็นพิเศษ
+	Ultra Bold	ตัวหนาเป็นพิเศษ
+	Condensed	อัดแน่น
+	Left align text	จัดข้อความชิดซ้าย
+	Center text	ข้อความตรงกลาง
+	Right align text	จัดข้อความชิดขวา
+	Justify last left	จัดชิดขอบซ้ายสุดท้าย
+	Justify last centered	จัดชิดขอบสุดท้ายให้อยู่กึ่งกลาง
+	Justify last right	ชิดขวาสุดท้าย
+	Justify all	ให้เหตุผลทั้งหมด
+	Indent Left	เยื้องซ้าย
+	Indent Right	เยื้องขวา
+	First Line Indent	เยื้องบรรทัดแรก
+	Space Before	พื้นที่ก่อน
+	Space After	อวกาศหลังจาก
+	Hanging Punctuation	เครื่องหมายวรรคตอนแขวน
+	Roman Hanging Punctuation	เครื่องหมายวรรคตอนแขวนโรมัน
+	Avoid Widows/Orphans	หลีกเลี่ยงแม่ม่าย/เด็กกำพร้า
+	Compose	เขียน
+	Justification	การให้เหตุผล
+	Word Spacing	การเว้นวรรคคำ
+	Letter Spacing	การเว้นวรรคจดหมาย
+	Glyph Scaling	การปรับขนาดสัญลักษณ์
+	Auto-leading %	% นำอัตโนมัติ
+	Single Word Justification	การให้เหตุผลคำเดียว
+	Alignment	การจัดตำแหน่ง
+	Indent First	เยื้องก่อน
+	Center	ศูนย์
+	Justify	จัดชิดขอบ
+
+# Glyphs panel
+	Glyph	สัญลักษณ์
+	Select a type layer or click into text to insert glyphs	เลือกเลเยอร์ตัวอักษรหรือคลิกในข้อความเพื่อแทรกอักขระ
+	Entire Font	แบบอักษรทั้งหมด
+	Alternates for Current Selection	ทางเลือกสำหรับการเลือกปัจจุบัน
+	Recently Used	ใช้ล่าสุด
+	Digits	ตัวเลข
+	Symbols	สัญลักษณ์
+	Punctuation	เครื่องหมายวรรคตอน
+	OpenType	OpenType
+	Standard Ligatures	ลิเกเจอร์มาตรฐาน
+	Discretionary Ligatures	ดุลยพินิจผูกมัด
+	Contextual Alternates	ทางเลือกตามบริบท
+	Swash	หวด
+	Titling Alternates	การตั้งชื่อทางเลือก
+	Ornaments	เครื่องประดับ
+	Fractions	เศษส่วน
+	Ordinals	ลำดับ
+	East Asian Features	คุณสมบัติของเอเชียตะวันออก
+	Middle Eastern Features	คุณสมบัติของตะวันออกกลาง
+
+# Paths panel
+	Path	เส้นทาง
+	Path:	เส้นทาง:
+	Work Path	เส้นทางการทำงาน
+	Path to Illustrator…	เส้นทางสู่นักวาดภาพประกอบ…
+	Make Work Path	สร้างเส้นทางการทำงาน
+	Make Selection	ทำการเลือก
+	Fill Path	เติมเส้นทาง
+	Stroke Path	เส้นทางโรคหลอดเลือดสมอง
+	Clipping Path	เส้นทางการตัด
+	New Path	เส้นทางใหม่
+	Duplicate Path	เส้นทางที่ซ้ำกัน
+	Rename Path…	เปลี่ยนชื่อเส้นทาง…
+	Delete Path	ลบเส้นทาง
+	Current Path	เส้นทางปัจจุบัน
+	Vector Mask from Current Path	เว็กเตอร์มาสก์จากเส้นทางปัจจุบัน
+	Create new shape from the current path	สร้างรูปร่างใหม่จากเส้นทางปัจจุบัน
+	Drag to move the active shape's path or the Work Path	ลากเพื่อย้ายเส้นทางของรูปร่างที่ใช้งานอยู่หรือเส้นทางการทำงาน
+	Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath	คลิก: เลือกจุดยึด · ลาก: ย้ายจุดยึด จุดจับ หรือส่วน · {shift}-คลิก: เพิ่ม · {alt}-คลิก: เส้นทางย่อยทั้งหมด
+	Draw with the Pen tool (P) or make a work path from a selection.	วาดด้วยเครื่องมือปากกา (P) หรือสร้างเส้นทางการทำงานจากส่วนที่เลือก
+
+# Clone Source panel
+	Source: not set ({key}-click with Clone Stamp)	ที่มา: ไม่ได้ตั้งค่า ({key}-คลิกพร้อม Clone Stamp)
+	Clone source {n} ({key}-click with Clone Stamp to set)	แหล่งที่มาของโคลน {n} ({key} คลิกพร้อมกับ Clone Stamp เพื่อตั้งค่า)
+	{key}-click to set the source	{key}-คลิกเพื่อตั้งค่าแหล่งที่มา
+	Option-click to define a source point to clone from	คลิกตัวเลือกเพื่อกำหนดจุดต้นทางที่จะโคลน
+	Show Overlay	แสดงภาพซ้อนทับ
+	Auto-Hide	ซ่อนอัตโนมัติ
+	W	ว
+	H	ฮ
+	Angle	มุม
+	Scale	ปรับขนาด
+	X	เอ็กซ์
+	Y	ย
+	Offset	ออฟเซ็ต
+	Reset Transform	รีเซ็ตการแปลง
+	Rotate	หมุน
+	Set horizontal skew	ตั้งค่าการเอียงแนวนอน
+	Set vertical skew	ตั้งค่าการเอียงแนวตั้ง
+	Flip Horizontal	พลิกแนวนอน
+	Flip Vertical	พลิกแนวตั้ง
+	Frame Sync	เฟรมซิงค์
+	Quick Sync	ซิงค์ด่วน
+	Enabled	เปิดใช้งานแล้ว
+
+# Timeline panel
+	Create Video Timeline	สร้างไทม์ไลน์วิดีโอ
+	Open a document to use the timeline.	เปิดเอกสารเพื่อใช้ไทม์ไลน์
+	Video Layers	เลเยอร์วิดีโอ
+	Video	วีดีโอ
+	Audio	เสียง
+	Frame Duration	ระยะเวลาของเฟรม
+	30 frames @ 30 fps	30 เฟรมที่ 30 เฟรมต่อวินาที
+	Loop	วนซ้ำ
+	Render Video…	เรนเดอร์วิดีโอ…
+	Split at Playhead	แยกที่ Playhead
+	Delete Timeline	ลบไทม์ไลน์
+	Reload Frame	โหลดเฟรมอีกครั้ง
+	Restore Frame	คืนค่าเฟรม
+	Insert Blank Frame	ใส่กรอบเปล่า
+	Duplicate Frame	เฟรมที่ซ้ำกัน
+	Delete Frame	ลบเฟรม
+	Restore All Frames	คืนค่าเฟรมทั้งหมด
+	Flatten Frames Into Clips	แผ่เฟรมออกเป็นคลิป
+	Flatten Frames Into Layers	แผ่เฟรมออกเป็นเลเยอร์ๆ
+	Convert Frames > Video Layers	แปลงเฟรม > เลเยอร์วิดีโอ
+	New Video Layer	เลเยอร์วิดีโอใหม่
+	New Video Group	กลุ่มวิดีโอใหม่
+	Interpret Footage…	ตีความภาพ…
+	Replace Footage…	แทนที่ฟุตเทจ…
+	Show Altered Video	แสดงวิดีโอที่เปลี่ยนแปลง
+	Limit Playback	จำกัดการเล่น
+	Enable Timeline Quick Config	เปิดใช้งานการกำหนดค่าด่วนของไทม์ไลน์
+	Set Start Timecode…	ตั้งรหัสเวลาเริ่มต้น…
+	Timecode	รหัสเวลา
+	30 fps	30 เฟรมต่อวินาที
+	25 fps	25 เฟรมต่อวินาที
+	24 fps	24 เฟรมต่อวินาที
+	15 fps	15 เฟรมต่อวินาที
+	10 fps	10 เฟรมต่อวินาที
+	Current Time	เวลาปัจจุบัน
+	Out	ออก
+	In	ใน
+	Duration	ระยะเวลา
+	Repeat	ทำซ้ำ
+	Play Once	เล่นครั้งเดียว
+	Video Cache	แคชวิดีโอ
+
+# Info panel
+	Info Options…	ตัวเลือกข้อมูล…
+	First Color Readout	การอ่านค่าสีครั้งแรก
+	Second Color Readout	การอ่านค่าสีที่สอง
+	Actual Color	สีจริง
+	Grayscale Slider	ตัวเลื่อนระดับสีเทา
+	Web Color	สีเว็บ
+	HSB Color	สี HSB
+	Total Ink	หมึกทั้งหมด
+	Opacity Mask	มาสก์ทึบแสง
+	Ruler	ไม้บรรทัด
+	Current Tool	เครื่องมือปัจจุบัน
+	Document Size	ขนาดเอกสาร
+	Document Profile	โปรไฟล์เอกสาร
+	Document Dimensions	ขนาดเอกสาร
+	Scratch Sizes	ขนาดรอยขีดข่วน
+	Efficiency	ประสิทธิภาพ
+	Timing	เวลา
+	Status Information	ข้อมูลสถานะ
+	Saved Multichannel	บันทึกหลายช่องแล้ว
+	Mouse Coordinates	พิกัดเมาส์
+	Ruler Units	หน่วยไม้บรรทัด
+	Hide	ซ่อน
+
+# Layer Comps panel
+	Layer Comps to Files…	เลเยอร์ Comps เป็นไฟล์…
+	Apply next selected layer comp	ใช้คอมพ์เลเยอร์ที่เลือกถัดไป
+	Apply previous selected layer comp	ใช้คอมพ์เลเยอร์ที่เลือกก่อนหน้า
+	Update layer comp (visibility, position and appearance)	อัปเดตเลเยอร์คอมพ์ (การมองเห็น ตำแหน่ง และรูปลักษณ์)
+	New Layer Comp	คอมพ์เลเยอร์ใหม่
+	Duplicate Layer Comp	คอมพ์เลเยอร์ซ้ำ
+	Delete layer comp	ลบเลเยอร์คอมพ์
+	Rename Layer Comp	เปลี่ยนชื่อเลเยอร์คอมพ์
+	Create new layer comp	สร้างคอมพ์เลเยอร์ใหม่
+	Capture the visibility, position and style of every layer with + below, then switch between versions.	จับภาพการมองเห็น ตำแหน่ง และสไตล์ของทุกเลเยอร์ด้วยเครื่องหมาย + ด้านล่าง จากนั้นสลับระหว่างเวอร์ชันต่างๆ
+	Apply Layer Comp	ใช้เลเยอร์คอมพ์
+	Update Layer Comp	อัปเดตเลเยอร์คอมพ์
+	Restore last viewed comp	คืนค่าคอมพ์ที่ดูล่าสุด
+	Last Document State	สถานะเอกสารล่าสุด
+	Visibility	การมองเห็น
+	Position	ตำแหน่ง
+	Appearance (Layer Style)	ลักษณะที่ปรากฏ (สไตล์เลเยอร์)
+
+# Analysis and variables
+	Analysis	การวิเคราะห์
+	Variables	ตัวแปร
+	Variable Data Sets…	ชุดข้อมูลตัวแปร…
+	Data Sets…	ชุดข้อมูล…
+	Data Sets	ชุดข้อมูล
+	Data Sets as Files…	ชุดข้อมูลเป็นไฟล์…
+	Apply Data Set…	ใช้ชุดข้อมูล…
+	Define	กำหนด
+	+ Add variable	+ เพิ่มตัวแปร
+	Remove variable	ลบตัวแปร
+	Define at least one variable first.	กำหนดตัวแปรอย่างน้อยหนึ่งตัวก่อน
+	Open a document to define variables.	เปิดเอกสารเพื่อกำหนดตัวแปร
+	Variables bind a layer's visibility, text or pixels to a named data slot.	ตัวแปรจะผูกการมองเห็น ข้อความ หรือพิกเซลของเลเยอร์เข้ากับช่องข้อมูลที่มีชื่อ
+	Pixel Replacement	การเปลี่ยนพิกเซล
+	Text Replacement	การแทนที่ข้อความ
+	Name	ชื่อ
+	Method	วิธีการ
+	Select All Layers	เลือกเลเยอร์ทั้งหมด
+	Fill	เติม
+	Keep proportions	รักษาสัดส่วน
+	Interpolation	การแก้ไข
+	Author:	ผู้เขียน:
+	Author	ผู้เขียน
+	Name:	ชื่อ:
+	Caption	คำบรรยายภาพ
+	Caption Credits	เครดิตคำบรรยาย
+	Description	คำอธิบาย
+	Keywords	คำหลัก
+	Copyright Info URL	URL ข้อมูลลิขสิทธิ์
+	Copyright Status	สถานะลิขสิทธิ์
+	Copyright Notice	ประกาศเกี่ยวกับลิขสิทธิ์
+	Document Title	ชื่อเอกสาร
+	Copyrighted	มีลิขสิทธิ์
+	Public Domain	โดเมนสาธารณะ
+	Unknown	ไม่ทราบ
+	Copyright and Contact Info	ลิขสิทธิ์และข้อมูลการติดต่อ
+	Credit	เครดิต
+	Transmission Reference	การอ้างอิงการส่ง
+	Urgency	ความเร่งด่วน
+	High	สูง
+	Normal	ปกติ
+	Lossless	ไม่มีการสูญเสีย
+	Low	ต่ำ
+	Category	หมวดหมู่
+	Supplemental Categories	หมวดหมู่เสริม
+	Object Name / Title	ชื่อวัตถุ / ชื่อเรื่อง
+	Date Created	วันที่สร้าง
+	City	เมือง
+	Location	ที่ตั้ง
+	Province / State	จังหวัด/รัฐ
+	Country	ประเทศ
+	Byline	ทางสายย่อย
+	Byline Title	ชื่อทางสายย่อย
+	Phone	โทรศัพท์
+	Email	อีเมล
+	URLs	URL
+	Last Modified	แก้ไขครั้งล่าสุด
+	EXIF	EXIF
+	GPS	จีพีเอส
+	Camera Data	ข้อมูลกล้อง
+	Camera Model	รุ่นกล้อง
+	Camera Make	ยี่ห้อกล้อง
+	EXIF Version	เวอร์ชัน EXIF
+	Exposure Program	โปรแกรมการสัมผัส
+	Aperture	รูรับแสง
+	Shutter Speed	ความเร็วชัตเตอร์
+	Metering Mode	โหมดการวัดแสง
+	Light Source	แหล่งกำเนิดแสง
+	Flash	แฟลช
+	Lens Info	ข้อมูลเลนส์
+	ISO Speed	ความไวแสง ISO
+	Subject Distance	ระยะห่างของเรื่อง
+	DateTime Original	วันที่และเวลา ต้นฉบับ
+	Create Date	สร้างวันที่
+	Modify Date	แก้ไขวันที่
+	Software	ซอฟต์แวร์
+	Raw Data	ข้อมูลดิบ
+	Version {version}	Version {version}
+	Advanced	ขั้นสูง
+	Import…	นำเข้า…
+
+# Automate
+	Automate	อัตโนมัติ
+	Batch…	แบทช์…
+	Create Droplet…	สร้างหยด…
+	Create Droplet	สร้างหยด
+	PDF Presentation…	การนำเสนอ PDF…
+	Create Multiple Picture Packages	สร้างแพ็คเกจภาพหลายชุด
+	Contact Sheet II	เอกสารการติดต่อ II
+	Contact Sheet II…	เอกสารการติดต่อ II…
+	Conditional Mode Change…	การเปลี่ยนโหมดตามเงื่อนไข…
+	Fit Image…	พอดีภาพ…
+	Picture Package…	ภาพแพ็คเกจ…
+	Web Photo Gallery…	เว็บแกลเลอรี่ภาพ…
+	Merge to HDR Pro…	ผสานเป็น HDR Pro…
+	Load Files into Stack…	โหลดไฟล์ลงในสแต็ก…
+	Scripts	สคริปต์
+	Script Events Manager…	ผู้จัดการกิจกรรมสคริปต์…
+	Image Processor…	โปรเซสเซอร์ภาพ…
+	Destination	จุดหมายปลายทาง
+	Choose…	เลือก…
+	Select Folder…	เลือกโฟลเดอร์…
+	Override Action "Save" Commands	แทนที่คำสั่ง "บันทึก" ของการดำเนินการ
+	Compatibility	ความเข้ากันได้
+	Windows	หน้าต่าง
+	Mac OS	แมคโอเอส
+	Unix	ยูนิกซ์
+	Include ICC Profile	รวมโปรไฟล์ ICC
+	Error File	ไฟล์ข้อผิดพลาด
+	Stop For Errors	หยุดเพื่อหาข้อผิดพลาด
+	Log Errors To File	บันทึกข้อผิดพลาดไปยังไฟล์
+	Errors	ข้อผิดพลาด
+
+# Color Settings dialog
+	Color Settings…	การตั้งค่าสี…
+	Settings	การตั้งค่า
+	Settings:	การตั้งค่า:
+	Working Space	พื้นที่ทำงาน
+	RGB:	RGB:
+	CMYK:	สี CMYK:
+	Gray:	สีเทา:
+	Spot:	จุด:
+	Advanced Controls	การควบคุมขั้นสูง
+	Desaturate Monitor Colors By	ลดความอิ่มตัวของสีของจอภาพ By
+	Blend RGB Colors Using Gamma 1.0	ผสมผสานสี RGB โดยใช้ Gamma 1.0
+	Profile Mismatches: Ask When Opening	โปรไฟล์ไม่ตรงกัน: ถามเมื่อเปิด
+	Ask When Pasting	ถามเมื่อวาง
+	Missing Profiles: Ask When Opening	โปรไฟล์ที่หายไป: ถามเมื่อเปิด
+	Embed profiles	ฝังโปรไฟล์
+	Ask Before Saving Saved Embedded	ถามก่อนบันทึกการฝังที่บันทึกไว้
+	Coerce to sRGB	บังคับ sRGB
+	sRGB IEC61966-2.1	sRGB IEC61966-2.1
+	Adobe RGB (1998)	อะโดบี RGB (1998)
+	ProPhoto RGB	โปรโฟโต้ RGB
+	ColorMatch RGB	การจับคู่สี RGB
+	Wide Gamut RGB	ขอบเขตสีกว้าง RGB
+	Apple RGB	แอปเปิ้ล RGB
+	NTSC (1953)	เอ็นทีเอสซี (1953)
+	PAL/SECAM	ระบบ PAL/SECAM
+	SMPTE C	พีทีอี ซี
+	HDTV (Rec. 709)	HDTV (Rec. 709)
+	CIE RGB	CIE RGB
+
+# Themes
+	Theme	ธีม
+	Switch theme	สลับธีม
+	Next Theme	ธีมถัดไป
+	Classic Theme	ธีมคลาสสิก
+	Solarized dark	แสงอาทิตย์มืด
+	Solarized Dark Theme	ธีมมืดแสงอาทิตย์
+	Breeze dark	สายลมมืด
+	Breeze Dark Theme	ธีมสายลมมืด
+	Breeze light	สายลมเบาๆ
+	Breeze Light Theme	ธีมบรีซไลท์
+	Soft dark	เข้มนุ่ม
+	Soft light	แสงนุ่มนวล
+	Soft Dark Theme	ธีมสีเข้มอ่อน
+	Soft Light Theme	ธีมแสงนุ่มนวล
+	Studio Theme	ธีมสตูดิโอ
+	Studio Light Theme	ธีมแสงสตูดิโอ
+	Adwaita Light Theme	ธีม Adwaita Light
+	Adwaita Dark Theme	ธีม Adwaita Dark
+	Pro Theme	ธีมโปร
+	Pro Medium Gray Theme	ธีม Pro สีเทากลาง
+	Pro Light Gray Theme	ธีม Pro สีเทาอ่อน
+	Pro Light Theme	ธีมแสงโปร
+
+# Workspaces
+	Workspace…	พื้นที่ทำงาน…
+	Essentials	สิ่งจำเป็น
+	New Workspace…	พื้นที่ทำงานใหม่…
+	Delete Workspace…	ลบพื้นที่ทำงาน…
+	Reset Workspace	รีเซ็ตพื้นที่ทำงาน
+	Reset Tool	รีเซ็ตเครื่องมือ
+	Reset All Tools	รีเซ็ตเครื่องมือทั้งหมด
+	Reset all tools to their default settings?	รีเซ็ตเครื่องมือทั้งหมดเป็นการตั้งค่าเริ่มต้นหรือไม่
+	Lock Workspace	ล็อคพื้นที่ทำงาน
+	Photography	การถ่ายภาพ
+	Graphic and web	กราฟิกและเว็บ
+	Painting	จิตรกรรม
+	Motion	การเคลื่อนไหว
+	Minimalistic	เรียบง่าย
+	Panel locations are saved in the workspace. Keyboard shortcuts, menus and toolbar are optional.	ตำแหน่งแผงจะถูกบันทึกไว้ในพื้นที่ทำงาน แป้นพิมพ์ลัด เมนู และแถบเครื่องมือเป็นทางเลือก
+	Keyboard Shortcuts	แป้นพิมพ์ลัด
+	Keyboard Shortcuts and Menus	แป้นพิมพ์ลัดและเมนู
+	Menus	เมนู
+	More panels	แผงเพิ่มเติม
+	More documents	เอกสารเพิ่มเติม
+	Collapse All Groups	ยุบกลุ่มทั้งหมด
+	Expand All Groups	ขยายกลุ่มทั้งหมด
+	Collapse	ยุบ
+	Expand	ขยาย
+	Collapse Panel Group	ยุบกลุ่มแผง
+	Expand Panel Group	ขยายกลุ่มแผง
+	Close Tab Group	ปิดกลุ่มแท็บ
+
+# New Document dialog
+	PRESET DETAILS	รายละเอียดที่ตั้งไว้ล่วงหน้า
+	BLANK DOCUMENT PRESETS ({n})	การตั้งค่าเอกสารเปล่า ({n})
+	Create a new document or open an existing file.	สร้างเอกสารใหม่หรือเปิดไฟล์ที่มีอยู่
+	Drop an image or PSD anywhere to open it.	วางภาพหรือ PSD ที่ใดก็ได้เพื่อเปิด
+	Use File › Open, or paste a copied image with {paste}.	ใช้ไฟล์ › เปิดหรือวางภาพที่คัดลอกด้วย {paste}
+	Native file drag-and-drop is unavailable	การลากและวางไฟล์เนทิฟไม่พร้อมใช้งาน
+	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or copy the image in your file manager and paste it with {paste}.	Wayland ยังไม่รองรับการลากและวางไฟล์เนทิฟ ใช้ไฟล์ › เปิดหรือคัดลอกภาพในตัวจัดการไฟล์ของคุณแล้ววางด้วย {paste}
+	To drop files, start PhotoCraft under XWayland: `{command}`	หากต้องการวางไฟล์ ให้เริ่ม PhotoCraft ภายใต้ XWayland: `{command}`
+	Or set Preferences › Performance › Linux display server to X11: PhotoCraft then always starts under XWayland.	หรือตั้งค่า Preferences > Performance > Linux display server เป็น X11: PhotoCraft จะเริ่มทำงานภายใต้ XWayland เสมอ
+	Edit › Paste	แก้ไข › วาง
+	Photo	ภาพ
+	Print	พิมพ์
+	Art & Illustration	ศิลปะและภาพประกอบ
+	Mobile	มือถือ
+	Film & Video	ภาพยนตร์และวิดีโอ
+	Default PhotoCraft Size	ขนาด PhotoCraft เริ่มต้น
+	Clipboard	คลิปบอร์ด
+	Photo (2 × 3 in)	ภาพ (2 × 3 นิ้ว)
+	Photo (4 × 6 in)	ภาพ (4 × 6 นิ้ว)
+	Photo (5 × 7 in)	ภาพ (5 × 7 นิ้ว)
+	Photo (8 × 10 in)	ภาพ (8 × 10 นิ้ว)
+	Landscape	ภูมิทัศน์
+	Portrait	แนวตั้ง
+	Recent Items	รายการล่าสุด
+	Save Preset…	บันทึกค่าที่ตั้งล่วงหน้า…
+	Delete Preset…	ลบค่าที่ตั้งล่วงหน้า…
+	Preset Name:	ชื่อที่ตั้งไว้ล่วงหน้า:
+	Width and Height	ความกว้างและความสูง
+	Background Contents	เนื้อหาพื้นหลัง
+	Custom background color	สีพื้นหลังที่กำหนดเอง
+	White	ขาว
+	Background Color	สีพื้นหลัง
+	Transparent	โปร่งใส
+	Color Mode	โหมดสี
+	Depth	ความลึก
+	Color Profile	โปรไฟล์สี
+	Create	สร้าง
+	Document	เอกสาร
+	Units	หน่วย
+	Pixels	พิกเซล
+	Inches	นิ้ว
+	Centimeters	เซนติเมตร
+	Millimeters	มิลลิเมตร
+	Points	คะแนน
+	Picas	ปิกัส
+	Columns	คอลัมน์
+
+# Placeholders, tooltips, status and keyboard hints
+	{name} options	{name} options
+	Align {what}	Align {what}
+	Untagged {mode}	Untagged {mode}
+	Invalid {mode} profile	โปรไฟล์ {mode} ไม่ถูกต้อง
+	Unnamed {mode} profile	โปรไฟล์ {mode} ที่ไม่มีชื่อ
+	Constraints ({n})	ข้อจำกัด ({n})
+	Count: {n}	นับ: {n}
+	Click to add a point · drag off or {key}-click or Delete to remove	คลิกเพื่อเพิ่มจุด · ลากออก หรือ {key}-คลิก หรือ ลบ เพื่อลบ
+	Click to apply, {key}-click to clear overrides, double-click for Style Options	คลิกเพื่อใช้ {key}-คลิกเพื่อล้างการแทนที่ ดับเบิลคลิกเพื่อดูตัวเลือกสไตล์
+	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	คลิก: มุม · ลาก: ราบรื่น · คลิกจุดแรก: ปิด · {key} เสร็จสิ้น · ยกเลิก Esc
+	Click: corner · Drag: smooth · {alt}-drag: break handle · Click or drag first point: close · {key} finish · Esc cancel	คลิก: มุม · ลาก: ราบรื่น · {alt}-drag: ตัวแบ่ง · คลิกหรือลากจุดแรก: ปิด · {key} เสร็จสิ้น · ยกเลิก Esc
+	Commit Perspective Warp ({key})	คอมมิต Perspective Warp ({key})
+	Commit Puppet Warp ({key})	กระทำ Puppet Warp ({key})
+	Commit any current edits ({key})	ยืนยันการแก้ไขปัจจุบัน ({key})
+	Commit transform ({key})	ยอมรับการแปลง ({key})
+	Commit warp ({key})	คอมมิตวิปริต ({key})
+	Cancel any current edits (Esc)	ยกเลิกการแก้ไขปัจจุบัน (Esc)
+	Cancel transform (Esc)	ยกเลิกการแปลง (Esc)
+	Cancel warp (Esc)	ยกเลิกการวาร์ป (Esc)
+	Do you want to save the changes you made to “{name}” before closing?	คุณต้องการบันทึกการเปลี่ยนแปลงที่คุณทำกับ “{name}” ก่อนปิดหรือไม่
+	Revert “{name}” to the last saved version? Your changes will be lost.	เปลี่ยนกลับ “{name}” เป็นเวอร์ชันที่บันทึกไว้ล่าสุดหรือไม่ การเปลี่ยนแปลงของคุณจะหายไป
+	{key} to subtract	{key} ที่จะลบ
+	↑↓ navigate   {key} run   esc close	↑↓ นำทาง {key} วิ่ง esc ปิด
+	Click to restore the current colour	คลิกเพื่อคืนค่าสีปัจจุบัน
+	Click with the Note tool to add a note.	คลิกด้วยเครื่องมือ Note เพื่อเพิ่มบันทึก
+	Drag a rectangle around the object	ลากสี่เหลี่ยมรอบๆ วัตถุ
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	ลากบนภาพเพื่อเพิ่มข้อจำกัด เลื่อนแนวนอน/แนวตั้ง; คลิกขวาที่ข้อจำกัดเพื่อเปลี่ยนแปลงหรือลบ
+	Drag the arrow to set the angle, the dots to set the roundness	ลากลูกศรเพื่อกำหนดมุม ลากจุดเพื่อกำหนดความกลม
+	Create new pattern from the selection	สร้างรูปแบบใหม่จากส่วนที่เลือก
+	Create new gradient	สร้างการไล่ระดับสีใหม่
+	Create new count group	สร้างกลุ่มการนับใหม่
+	Search commands, tools and panels…	ค้นหาคำสั่ง เครื่องมือ และพาเนล…
+	Search Brushes	ค้นหาแปรง
+	Search fonts	ค้นหาแบบอักษร
+	No matching commands	ไม่มีคำสั่งที่ตรงกัน
+	No document	ไม่มีเอกสาร
+	Pixel Layer	เลเยอร์พิกเซล
+	Type Layer	เลเยอร์ตัวอักษร
+	Shape Layer	เลเยอร์รูปร่าง
+	Group Layer	เลเยอร์กลุ่ม
+	Fill Layer	เติมเลเยอร์
+	Smart Object Layer	เลเยอร์วัตถุอัจฉริยะ
+	Adjustment Layer	เลเยอร์ปรับแต่ง
+	{name} Properties	{name} Properties
+	Move Tool	เครื่องมือย้าย
+	Could not use the move tool because the layer is locked.	ไม่สามารถใช้เครื่องมือย้ายได้เนื่องจากเลเยอร์ถูกล็อค
+	Could not complete the Free Transform command because the layer is locked.	ไม่สามารถดำเนินการคำสั่ง Free Transform ได้เนื่องจากเลเยอร์ถูกล็อก
+	Rectangular Marquee Tool	เครื่องมือปะรำสี่เหลี่ยม
+	Elliptical Marquee Tool	เครื่องมือปะรำวงรี
+	Single Row Marquee Tool	เครื่องมือปะรำแถวเดียว
+	Single Column Marquee Tool	เครื่องมือปะรำคอลัมน์เดียว
+	Brush Tool	เครื่องมือแปรง
+	Pencil Tool	เครื่องมือดินสอ
+	Eraser Tool	เครื่องมือยางลบ
+	Background Eraser Tool	เครื่องมือยางลบพื้นหลัง
+	Magic Eraser Tool	เครื่องมือยางลบวิเศษ
+	Eyedropper Tool	เครื่องมือหยดสี
+	Note Tool	เครื่องมือหมายเหตุ
+	Lasso Tool	เครื่องมือบ่วง
+	Polygonal Lasso Tool	เครื่องมือ Lasso เหลี่ยม
+	Magic Wand Tool	เครื่องมือไม้กายสิทธิ์
+	Crop Tool	เครื่องมือครอป
+	Slice Tool	เครื่องมือชิ้น
+	Slice Select Tool	เครื่องมือเลือกชิ้น
+	Gradient Tool	เครื่องมือไล่ระดับสี
+	Paint Bucket Tool	เครื่องมือถังสี
+	Horizontal Type Tool	เครื่องมือตัวอักษรแนวนอน
+	Horizontal Type Mask Tool	เครื่องมือมาสก์ตัวอักษรแนวนอน
+	Vertical Type Mask Tool	เครื่องมือมาสก์ตัวอักษรแนวตั้ง
+	Hand Tool	เครื่องมือมือ
+	Zoom Tool	เครื่องมือซูม
+	Spot Healing Brush Tool	เครื่องมือแปรงรักษาเฉพาะจุด
+	Healing Brush Tool	เครื่องมือแปรงรักษา
+	Clone Stamp Tool	เครื่องมือแสตมป์โคลน
+	History Brush Tool	เครื่องมือแปรงประวัติศาสตร์
+	Blur Tool	เครื่องมือเบลอ
+	Sharpen Tool	เครื่องมือลับคม
+	Smudge Tool	เครื่องมือรอยเปื้อน
+	Dodge Tool	เครื่องมือดอดจ์
+	Burn Tool	เครื่องมือเบิร์น
+	Sponge Tool	เครื่องมือฟองน้ำ
+	Quick Selection Tool	เครื่องมือการเลือกด่วน
+	Object Selection Tool	เครื่องมือเลือกวัตถุ
+	Pen Tool	เครื่องมือปากกา
+	Convert Point Tool	แปลงเครื่องมือจุด
+	Path Selection Tool	เครื่องมือเลือกเส้นทาง
+	Direct Selection Tool	เครื่องมือการเลือกโดยตรง
+	Add Anchor Point Tool	เพิ่มเครื่องมือจุดยึด
+	Delete Anchor Point Tool	ลบเครื่องมือจุดยึด
+	Click a segment to add an anchor point · {alt}-click an anchor to delete it	คลิกส่วนเพื่อเพิ่มจุดยึด · {alt}-คลิกจุดยึดเพื่อลบ
+	Click an anchor point to delete it · {alt}-click a segment to add one	คลิกจุดยึดเพื่อลบ · {alt}-คลิกส่วนที่ต้องการเพิ่ม
+	Rectangle Tool	เครื่องมือสี่เหลี่ยมผืนผ้า
+	Ellipse Tool	เครื่องมือวงรี
+	Triangle Tool	เครื่องมือสามเหลี่ยม
+	Polygon Tool	เครื่องมือรูปหลายเหลี่ยม
+	Line Tool	เครื่องมือเส้น
+	Custom Shape Tool	เครื่องมือรูปร่างแบบกำหนดเอง
+	Pixel	พิกเซล
+	Group	กลุ่ม
+	Adjustment	การปรับ
+	Smart Object	สมาร์ตออบเจกต์
+	Drag to move the active layer	ลากเพื่อย้ายเลเยอร์ที่ใช้งานอยู่
+	Drag to pan  ·  hold Space with any tool	ลากเพื่อเลื่อน · กด Space ด้วยเครื่องมือใดก็ได้
+	Drag to draw a gradient	ลากเพื่อวาดการไล่ระดับสี
+	Click to fill similar colours	คลิกเพื่อเติมสีที่คล้ายกัน
+	Click to add text	คลิกเพื่อเพิ่มข้อความ
+	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	ลากกล่องครอบตัด · ลากเข้าไปข้างในเพื่อย้าย · ปรับขนาดขอบ (อัตราส่วน {ratio}, กึ่งกลาง {centre}) · เคลื่อนที่ในอวกาศขณะวาด · ลูกศรดัน · การวางแนว X สลับ · คอมมิต {commit} · ยกเลิก Esc
+	{mode} Color · {bits} bit	{mode} Color · {bits} bit
+	Drag to move the layer	ลากเพื่อย้ายเลเยอร์
+	Fit Screen	พอดีกับหน้าจอ
+	Fill Screen	เติมหน้าจอ
+	Scrubby Zoom	สครับบี้ซูม
+	Auto Erase	ลบอัตโนมัติ
+	Color Adaptation	การปรับสี
+	Preserve Transparency	รักษาความโปร่งใส
+	Reverse	ย้อนกลับ
+	Align with layer	จัดแนวกับเลเยอร์
+	Join us on Discord	เข้าร่วมกับเราบน Discord
+	PhotoCraft website	เว็บไซต์PhotoCraft
+	ArtCraft	อาร์ตคราฟต์
+	GitHub	GitHub
+	No character style	ไม่มีสไตล์ตัวละคร
+	No author	ไม่มีผู้เขียน
+	Not in Dictionary:	ไม่ได้อยู่ในพจนานุกรม:
+	Suggestions:	คำแนะนำ:
+	Spell check complete.	ตรวจตัวสะกดเสร็จแล้ว
+	Check All Layers	ตรวจสอบทุกเลเยอร์
+	Select a type layer to edit its character and paragraph settings.	เลือกเลเยอร์ตัวอักษรเพื่อแก้ไขการตั้งค่าอักขระและย่อหน้า
+	Select text to apply a character style	เลือกข้อความเพื่อใช้ลักษณะอักขระ
+	Redefine style by current selection	กำหนดสไตล์ใหม่โดยการเลือกปัจจุบัน
+	Duplicate style	สไตล์ที่ซ้ำกัน
+	Delete style	ลบสไตล์
+	Style Options	ตัวเลือกสไตล์
+	Style Options…	ตัวเลือกสไตล์…
+	Close Style Options	ปิดตัวเลือกสไตล์
+	Appearance	ลักษณะที่ปรากฏ
+	Text Position:	ตำแหน่งข้อความ:
+	Text color	สีข้อความ
+	Uses the foreground and background colours.	ใช้สีพื้นหน้าและพื้นหลัง
+	Answer the unsaved-changes prompt first	ตอบคำถามการเปลี่ยนแปลงที่ไม่ได้บันทึกก่อน
+	Unsaved changes	การเปลี่ยนแปลงที่ไม่ได้บันทึก
+	Don't Save	อย่าบันทึก
+	No	ไม่
+	Yes	ใช่
+	These settings aren't available in PhotoCraft yet.	การตั้งค่าเหล่านี้ยังไม่มีใน PhotoCraft
+	Shortcut removed.	ลบทางลัดแล้ว
+	All shortcuts reset to PhotoCraft defaults.	ทางลัดทั้งหมดรีเซ็ตเป็นค่าเริ่มต้นของ PhotoCraft
+	Add Shortcut	เพิ่มทางลัด
+	Delete Shortcut	ลบทางลัด
+	Press keys…	กดปุ่ม…
+	shortcut	ทางลัด
+	command or shortcut	คำสั่งหรือทางลัด
+	current	ปัจจุบัน
+	image file path	เส้นทางไฟล์ภาพ
+	modified	แก้ไข
+	name	ชื่อ
+	new	ใหม่
+	Go to Layer	ไปที่เลเยอร์
+	Open a document to select a colour range.	เปิดเอกสารเพื่อเลือกช่วงสี
+	Saved	บันทึกแล้ว
+	Reveal in Finder	เปิดเผยใน Finder
+	Show in Explorer	แสดงใน Explorer
+	Show in Folder	แสดงในโฟลเดอร์
+	Before (Y)	ก่อน (ญ)
+	Save Settings…	บันทึกการตั้งค่า…
+	Load Settings…	โหลดการตั้งค่า…
+	Save these settings as a Camera Raw .xmp file	บันทึกการตั้งค่าเหล่านี้เป็นไฟล์ Camera Raw .xmp
+	Load settings from a Camera Raw .xmp file	โหลดการตั้งค่าจากไฟล์ Camera Raw .xmp
+	Loaded RAW Develop settings from {file}	โหลดการตั้งค่า การปรับแต่ง RAW จาก {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	โหลดการตั้งค่า การปรับแต่ง RAW จาก {file} (ไม่รองรับ {n})
+	After (X)	หลัง (เอ็กซ์)
+	Original	ต้นฉบับ
+	Current	ปัจจุบัน
+	{added}, {removed} subtracted	{added}, {removed} ลบแล้ว
+	Filter:	ฟิลเตอร์:
+
+# Transform / warp overlays
+	Free Transform	แปลงอิสระ
+	Free Transform a Copy	แปลงสำเนาฟรี
+	Transform	แปลงร่าง
+	Transform Selection	แปลงการเลือก
+	Switch between free transform and warp modes	สลับระหว่างโหมดการแปลงอิสระและโหมดวาร์ป
+	Perspective	เปอร์สเปกทีฟ
+	Skew	เอียง
+	Distort	บิดเบี้ยว
+	Rotate:	หมุน:
+	Flip	พลิก
+	Warp:	วาร์ป:
+	Warp	บิด
+	Bend:	โค้งงอ:
+	Reference point location	ตำแหน่งจุดอ้างอิง
+	Toggle reference point	สลับจุดอ้างอิง
+	Free	ฟรี
+	Arc	อาร์ค
+	Arch	อาร์ค
+	Bulge	นูน
+	Shell Lower	เชลล์ตัวล่าง
+	Shell Upper	เชลล์ตอนบน
+	Flag	ธง
+	Fish	ปลา
+	Wave	คลื่น
+	Rise	ลุกขึ้น
+	Fisheye	ฟิชอาย
+	Inflate	พองตัว
+	Twist	บิด
+	Squeeze	บีบ
+	Corner radius	รัศมีมุม
+	Split Warp Crosswise	แยก Warp ตามขวาง
+	Split Warp Horizontally	แยก Warp ในแนวนอน
+	Split Warp Vertically	แยก Warp ในแนวตั้ง
+	Remove Warp Split	ลบ Warp Split
+	Puppet Warp	บิดภาพ
+	Puppet Warp is not active	Puppet Warp ไม่ทำงาน
+	Perspective Warp	บิดภาพเปอร์สเปกทีฟ
+	Perspective Warp is not active	Perspective Warp ไม่ทำงาน
+	Perspective Warp: draw planes along the image's perspective, then switch to Warp	การบิดงอเปอร์สเปคทีฟ: วาดระนาบตามเปอร์สเปคทีฟของภาพ จากนั้นสลับไปที่การบิดงอ
+	Remove Planes	ลบระนาบ
+	Edit Pins	แก้ไขพิน
+	Add Pins	เพิ่มพิน
+	Delete Pins	ลบพิน
+	Remove All Pins	ลบพินทั้งหมด
+	Remove Tool	ลบเครื่องมือ
+	Pin Depth:	ความลึกของพิน:
+	Bring the selected pin forward	นำพินที่เลือกไปข้างหน้า
+	Send the selected pin backward	ส่งพินที่เลือกไปข้างหลัง
+	Rotate Auto	หมุนอัตโนมัติ
+	Rotate Fixed	หมุนคงที่
+	Adaptive Wide Angle isn't open	มุมกว้างแบบปรับอัตโนมัติไม่ได้เปิดอยู่
+	Liquify is not open	ของเหลวไม่เปิด
+
+# Vanishing Point
+	Create Plane	สร้างระนาบ
+	Edit Plane	แก้ไขระนาบ
+	Select Plane	เลือกระนาบ
+	Measure	วัด
+	Heal	รักษา
+	Off	ปิด
+	Symmetry Off	ปิดสมมาตร
+	Heal Off	ปิดการรักษา
+	Heal On	รักษาต่อ
+	Heal Auto	ฮีลออโต้
+	Blend	ผสมผสาน
+	Brush Size	ขนาดแปรง
+	Heal Color	สีรักษา
+
+# Misc dialog strings
+	Mask	มาสก์
+	Channel	ช่อง
+	Rectangle	สี่เหลี่ยมผืนผ้า
+	Subtract	ลบ
+	Multiply	คูณ
+	Divide	แบ่ง
+	Result	ผลลัพธ์
+	New Document	เอกสารใหม่
+	New Document With Mask	เอกสารใหม่พร้อมมาสก์
+	New Layer With Mask	เลเยอร์ใหม่พร้อมมาสก์
+	New Layer	เลเยอร์ใหม่
+	Preset Name	ชื่อที่ตั้งไว้ล่วงหน้า
+	No saved presets yet.	ยังไม่มีค่าที่ตั้งไว้ล่วงหน้าที่บันทึกไว้
+	New Channel	ช่องใหม่
+	Selection	การคัดเลือก
+	Save Selection	บันทึกการเลือก
+	Load Selection	การเลือกโหลด
+	Duplicate	ทำซ้ำ
+	Fast	รวดเร็ว
+	Accurate	แม่นยำ
+	Add to	เพิ่มไปที่
+	Subtract from	ลบออกจาก
+	Intersect with	ตัดกับ
+
+# Blend modes
+	Pass Through	ผ่าน
+	Dissolve	ละลาย
+	Darken	ทำให้มืดลง
+	Color Burn	ทับสี
+	Linear Burn	การเผาไหม้เชิงเส้น
+	Darker Color	สีเข้มขึ้น
+	Lighten	ทำให้สว่างขึ้น
+	Screen	สกรีน
+	Color Dodge	ทับแสงสี
+	Linear Dodge (Add)	ลิเนียร์ดอดจ์ (เพิ่ม)
+	Lighter Color	สีอ่อนกว่า
+	Overlay	โอเวอร์เลย์
+	Soft Light	แสงนุ่ม
+	Hard Light	แสงแข็ง
+	Vivid Light	แสงสดใส
+	Linear Light	แสงเชิงเส้น
+	Pin Light	พินไลท์
+	Hard Mix	ฮาร์ดมิกซ์
+	Difference	แตกต่าง
+	Exclusion	ยกเว้น
+	Luminosity	ความสว่าง
+
+# Saved views and other bits
+	Capture Comp	จับภาพคอมพ์
+	No Layer Comps	ไม่มีเลเยอร์ Comps
+
+# Plurals
+@plural	{n} item|{n} items	{n} รายการ
+@plural	{n} Layer|{n} Layers	{n} เลเยอร์
+@plural	{n} layer|{n} layers	{n} เลเยอร์
+@plural	Group · {n} layer|Group · {n} layers	กลุ่ม · {n} เลเยอร์
+@plural	{n} sample|{n} samples	{n} ตัวอย่าง
+
+# Remaining menu strings (second pass)
+	180°	180°
+	32-bit Preview Options…	ตัวเลือกการแสดงตัวอย่าง 32 บิต…
+	90° Clockwise	90° ตามเข็มนาฬิกา
+	90° Counter Clockwise	90° ทวนเข็มนาฬิกา
+	AI Integrations…	การบูรณาการ AI…
+	Again	อีกครั้ง
+	Transform Again on a Copy	แปลงร่างอีกครั้งด้วยการคัดลอก
+	Anamorphic 2:1 (2)	อนามอร์ฟิก 2:1 (2)
+	Arbitrary…	กำหนดเอง…
+	Artboard Guides	คำแนะนำอาร์ตบอร์ด
+	Artboard from Group…	อาร์ตบอร์ดจากกลุ่ม…
+	Artboard from Layers…	อาร์ตบอร์ดจากเลเยอร์…
+	Artboards to Files…	อาร์ตบอร์ดเป็นไฟล์…
+	Artboards to PDF…	อาร์ตบอร์ดเป็น PDF…
+	Artboard…	อาร์ตบอร์ด…
+	Border…	ขอบ…
+	Bottom Edges	ขอบล่าง
+	Browse…	เรียกดู…
+	Source Files	ไฟล์ต้นฉบับ
+	Use:	ใช้:
+	Files	ไฟล์
+	Folder	โฟลเดอร์
+	Add Open Files	เพิ่มไฟล์เปิด
+	Sort By Name	เรียงตามชื่อ
+	Attempt to Automatically Align Source Images	พยายามจัดแนวภาพต้นฉบับโดยอัตโนมัติ
+	Create Smart Object after Loading Layers	สร้าง Smart Object หลังจากโหลดเลเยอร์
+	Canvas Guides	คู่มือผ้าใบ
+	Character Styles Panel	แผงสไตล์ตัวละคร
+	Clear Canvas Guides	คำแนะนำผ้าใบที่ชัดเจน
+	Clear Selected Artboard Guides	ล้างคำแนะนำ Artboard ที่เลือก
+	Color Blindness — Deuteranopia-type	ตาบอดสี - ประเภท Deuteranopia
+	Color Blindness — Protanopia-type	ตาบอดสี — ประเภท Protanopia
+	Color Table…	ตารางสี…
+	Combine Shapes	รวมรูปร่าง
+	Contract…	หด…
+	Convert to Embedded	แปลงเป็นแบบฝัง
+	Convert to Layers	แปลงเป็นเลเยอร์
+	Convert to Linked…	แปลงเป็นลิงก์…
+	Count	นับ
+	Create Layer	สร้างเลเยอร์
+	Custom Pixel Aspect Ratio…	อัตราส่วนพิกเซลแบบกำหนดเอง…
+	Cycle Screen Mode	โหมดหน้าจอวงจร
+	D1/DV NTSC (0.91)	D1/DV NTSC (0.91)
+	D1/DV NTSC Widescreen (1.21)	D1/DV NTSC ไวด์สกรีน (1.21)
+	D1/DV PAL (1.09)	D1/DV PAL (1.09)
+	D1/DV PAL Widescreen (1.46)	จอไวด์สกรีน D1/DV PAL (1.46)
+	DVCPRO HD 1080/HDV 1080 (1.5)	ดีวีซีโปร HD 1080/HDV 1080 (1.5)
+	De-Interlace…	ดีอินเทอร์เลซ…
+	Default Features	คุณสมบัติเริ่มต้น
+	Delete All Empty Layers	ลบเลเยอร์ว่างทั้งหมด
+	Desaturate	ลดความอิ่มตัว
+	Displace…	แทนที่…
+	Distribute	แจกจ่าย
+	Document Bounds	ขอบเขตเอกสาร
+	Edit in Quick Mask Mode	แก้ไขในโหมด Quick Mask
+	Enhanced Controls…	การควบคุมที่ได้รับการปรับปรุง…
+	Entropy	เอนโทรปี
+	Exclude Overlapping Shapes	ไม่รวมรูปร่างที่ทับซ้อนกัน
+	Exit	ออก
+	Expand…	ขยาย…
+	Extra Large	ใหญ่พิเศษ
+	File Info…	ข้อมูลไฟล์…
+	Fit Artboard on Screen	ติดตั้ง Artboard บนหน้าจอ
+	Fit Layer(s) on Screen	พอดีเลเยอร์บนหน้าจอ
+	Flatten All Layer Effects	ทำให้เอฟเฟ็กต์เลเยอร์ทั้งหมดเรียบขึ้น
+	Flatten All Masks	ทำให้มาสก์ทั้งหมดเรียบขึ้น
+	Flatten Image	แบนภาพ
+	Float All in Windows	ลอยทั้งหมดใน Windows
+	Float in Window	ลอยอยู่ในหน้าต่าง
+	Frame from Layers	กรอบจากเลเยอร์
+	From Transparency	จากความโปร่งใส
+	Gamut Warning	คำเตือนขอบเขต
+	Global Light…	โกลบอลไลท์…
+	Gradient…	ไล่ระดับสี…
+	Graphic and Web	กราฟิกและเว็บ
+	HDV 1080/DVCPRO HD 720 (1.33)	HDV 1080/DVCPRO HD 720 (1.33)
+	Hidden Layers	เลเยอร์ที่ซ่อนอยู่
+	Hide All Effects	ซ่อนเอฟเฟกต์ทั้งหมด
+	Horizontal Centers	ศูนย์แนวนอน
+	Huge	ใหญ่โต
+	Indexed Color…	สีที่จัดทำดัชนี…
+	Integrations…	บูรณาการ…
+	Intersect Shape Areas	ตัดกันพื้นที่รูปร่าง
+	Kurtosis	เคิร์ตโทซิส
+	Large	ใหญ่
+	Layer Edges	ขอบเลเยอร์
+	Left Edges	ขอบซ้าย
+	Lens Blur…	เลนส์เบลอ…
+	Lighting Effects…	เอฟเฟกต์แสง…
+	Link Layers	ลิงค์เลเยอร์
+	Lock Layers…	ล็อคเลเยอร์…
+	Mean	หมายถึง
+	Merge Down	รวมลง
+	Merge Group	รวมกลุ่ม
+	Merge Layers	รวมเลเยอร์
+	Merge Shape Components	ผสานส่วนประกอบรูปร่าง
+	Merge Visible	รวมเลเยอร์ที่มองเห็น
+	Stamp Visible	มองเห็นแสตมป์ได้
+	Select Layer Above	เลือกเลเยอร์ด้านบน
+	Select Layer Below	เลือกเลเยอร์ด้านล่าง
+	Select Top Layer	เลือกเลเยอร์บนสุด
+	Select Bottom Layer	เลือกเลเยอร์ล่างสุด
+	Add Layer Above to Selection	เพิ่มเลเยอร์ด้านบนให้กับส่วนที่เลือก
+	Add Layer Below to Selection	เพิ่มเลเยอร์ด้านล่างลงในส่วนที่เลือก
+	Stamp Down	ประทับตราลง
+	Mesh	ตาข่าย
+	Middle Eastern & South Asian Composer	นักแต่งเพลงชาวตะวันออกกลางและเอเชียใต้
+	Modifier Keys	คีย์ตัวปรับแต่ง
+	Modify	แก้ไข
+	NTSC Colors	สี NTSC
+	Notes…	หมายเหตุ…
+	Other	อื่นๆ
+	Other…	อื่นๆ…
+	Paragraph Styles Panel	แผงสไตล์ย่อหน้า
+	Paths to Illustrator…	เส้นทางสู่ Illustrator…
+	Pattern Preview	ดูตัวอย่างรูปแบบ
+	Pattern…	รูปแบบ…
+	Pixel Art	ศิลปะพิกเซล
+	Pixel Art Preview	การแสดงตัวอย่างศิลปะพิกเซล
+	Pixel Grid	ตารางพิกเซล
+	Pixelate	พิกเซลเลต
+	Place Scale Marker…	วางเครื่องหมายมาตราส่วน…
+	Plug-ins	ปลั๊กอิน
+	Print One Copy	พิมพ์หนึ่งสำเนา
+	Print…	พิมพ์…
+	Range	พิสัย
+	Raw Defaults…	ค่าเริ่มต้นดิบ…
+	Relink to File…	เชื่อมโยงไปยังไฟล์…
+	Relight…	รีไลท์…
+	Render	เรนเดอร์
+	Replace All Missing Fonts	แทนที่แบบอักษรที่หายไปทั้งหมด
+	Resolve Missing Fonts…	แก้ไขแบบอักษรที่หายไป…
+	Reveal Selection	เปิดเผยการคัดเลือก
+	Right Edges	ขอบขวา
+	Selection Edges	ขอบการเลือก
+	Shapes	รูปร่าง
+	Show Extras Options…	แสดงตัวเลือกพิเศษ…
+	Skewness	ความเบ้
+	Small	เล็ก
+	Smart Guides	ไกด์อัจฉริยะ
+	Smart Objects	สมาร์ตออบเจกต์
+	Smooth…	ปรับเรียบ…
+	Solid Color…	สีทึบ…
+	Square	สี่เหลี่ยมจัตุรัส
+	Stack Mode	โหมดสแต็ค
+	Choose Stack Mode:	เลือกโหมดสแต็ก:
+	Standard Deviation	ส่วนเบี่ยงเบนมาตรฐาน
+	Statistics…	สถิติ…
+	Stylistic Alternates	โวหารสำรอง
+	Stylize	จัดสไตล์
+	Subtract Front Shape	ลบรูปร่างด้านหน้า
+	Summation	การสรุป
+	Target Path	เส้นทางเป้าหมาย
+	Tile All Horizontally	เรียงต่อกันในแนวนอนทั้งหมด
+	Tile All Vertically	เรียงต่อกันในแนวตั้งทั้งหมด
+	Toggle Last State	สลับสถานะสุดท้าย
+	Toolbar…	แถบเครื่องมือ…
+	Tools…	เครื่องมือ…
+	Top Edges	ขอบด้านบน
+	Unite Shapes	รวมรูปร่าง
+	Update All Modified Content	อัปเดตเนื้อหาที่แก้ไขทั้งหมด
+	Update All Text Layers	อัปเดตเลเยอร์ข้อความทั้งหมด
+	Update Modified Content	อัปเดตเนื้อหาที่แก้ไข
+	Variance	ความแปรปรวน
+	Vertical Centers	ศูนย์แนวตั้ง
+	Video Frames to Layers…	เฟรมวิดีโอเป็นเลเยอร์…
+	WIA Support…	การสนับสนุน WIA…
+	Working CMY Plate	แผ่น CMY ทำงาน
+
+# tl! literals (third pass)
+	Absolute	แน่นอน
+	Action	การดำเนินการ
+	Adaptive	ปรับตัว
+	Add Stop	เพิ่มหยุด
+	Add disk	เพิ่มดิสก์
+	Align and Distribute	จัดตำแหน่งและกระจาย
+	All Slices	ชิ้นทั้งหมด
+	All User Slices	ส่วนผู้ใช้ทั้งหมด
+	Alt	Alt
+	Artboard	อาร์ตบอร์ด
+	Artboard Background Color	สีพื้นหลังอาร์ตบอร์ด
+	Auto Hide	ซ่อนอัตโนมัติ
+	Automatically level near-horizontal line segments	ปรับระดับส่วนของเส้นตรงใกล้แนวนอนโดยอัตโนมัติ
+	Automatically straighten and level	ยืดและปรับระดับอัตโนมัติ
+	Automatically straighten near-vertical line segments	ปรับส่วนของเส้นตรงใกล้แนวตั้งให้ตรงโดยอัตโนมัติ
+	Balance	ยอดคงเหลือ
+	Baseline	พื้นฐาน
+	Bicubic	ไบคิวบิค
+	Bicubic (smooth gradients)	Bicubic (การไล่ระดับสีเรียบ)
+	Automatic	อัตโนมัติ
+	Bicubic Smoother (enlargement)	Bicubic Smoother (ขยาย)
+	Bicubic Sharper (reduction)	เครื่องลับ Bicubic (ลด)
+	Bilinear	ไบลิเนียร์
+	Black, White	ดำขาว
+	Blue, Red, Yellow	น้ำเงินแดงเหลือง
+	Bottom	ก้น
+	Brightness Jitter	ความสว่างกระวนกระวายใจ
+	Brush Reconstruct Options	ตัวเลือกการสร้างแปรงใหม่
+	Cache Level:	ระดับแคช:
+	Canvas	ผ้าใบ
+	Capture	จับภาพ
+	Center Crop Marks	เครื่องหมายครอบตัดตรงกลาง
+	Centre the gradient (offset 0, 0)	จัดกึ่งกลางการไล่ระดับสี (ออฟเซ็ต 0, 0)
+	Change Screen Mode  (F)	เปลี่ยนโหมดหน้าจอ (F)
+	Change To:	เปลี่ยนเป็น:
+	Clear All	ล้างทั้งหมด
+	Clear Override	ล้างการแทนที่
+	Clear Samples	ล้างตัวอย่าง
+	Cmd	คำสั่ง
+	Color Grading	การจัดระดับสี
+	Color Management	การจัดการสี
+	Color Priority	ลำดับความสำคัญของสี
+	Color Range preview	การแสดงตัวอย่างช่วงสี
+	Colorize	ปรับสี
+	Constant	ค่าคงที่
+	Content-Aware	การรับรู้เนื้อหา
+	Convert to sRGB	แปลงเป็น sRGB
+	Copies	สำเนา
+	Copper	ทองแดง
+	Corner Crop Marks	เครื่องหมายครอบตัดมุม
+	Correction	การแก้ไข
+	Count Jitter	นับกระวนกระวายใจ
+	Create Texture	สร้างพื้นผิว
+	Create a new count group	สร้างกลุ่มการตรวจนับใหม่
+	Crop Factor	ครอบตัดปัจจัย
+	Ctrl	กดปุ่ม Ctrl
+	Custom Shapes	รูปร่างที่กำหนดเอง
+	Cyan	สีฟ้า
+	Cyan  ·  Red	สีฟ้า · สีแดง
+	Darks	ความมืด
+	Default printer	เครื่องพิมพ์เริ่มต้น
+	Default restored.	กู้คืนค่าเริ่มต้นแล้ว
+	Delete Group	ลบกลุ่ม
+	Delete count group	ลบกลุ่มการนับ
+	Delete effect layer	ลบเลเยอร์เอฟเฟกต์
+	Delete note	ลบบันทึก
+	Delete tool preset	ลบการตั้งค่าล่วงหน้าของเครื่องมือ
+	Depth Jitter	กระวนกระวายใจความลึก
+	Discontiguous	ไม่ต่อเนื่องกัน
+	Discord	ความไม่ลงรอยกัน
+	Display P3	แสดงผล P3
+	Display Text	ข้อความที่แสดง
+	Divide…	แบ่ง…
+	Do you want to save the changes you made to “{name}” before quitting?	คุณต้องการบันทึกการเปลี่ยนแปลงที่คุณทำกับ “{name}” ก่อนที่จะออกหรือไม่
+	Edit Toolbar…	แก้ไขแถบเครื่องมือ…
+	Edit in Quick Mask Mode  (Q)	แก้ไขในโหมด Quick Mask (Q)
+	Edit in Standard Mode  (Q)	แก้ไขในโหมดมาตรฐาน (Q)
+	Embedded Profile Mismatch	โปรไฟล์ที่ฝังไม่ตรงกัน
+	Enhance Edge	ปรับปรุงขอบ
+	Exact	แน่นอน
+	Expansion:	การขยายตัว:
+	Exposure and Gamma	การเปิดรับแสงและแกมมา
+	Factor:	ปัจจัย:
+	Fewer Points	คะแนนน้อยลง
+	File Settings	การตั้งค่าไฟล์
+	Finger Painting	ลายนิ้วมือ
+	Fit in View	พอดีในมุมมอง
+	Fixed	แก้ไขแล้ว
+	Foreground to Background	เบื้องหน้าเป็นเบื้องหลัง
+	Foreground/Background Jitter	กระวนกระวายใจเบื้องหน้า/พื้นหลัง
+	Format	รูปแบบ
+	Frame from Layers…	เฟรมจากเลเยอร์…
+	Full Spherical	ทรงกลมเต็ม
+	Gamma Correction	การแก้ไขแกมมา
+	Gamma:	แกมมา:
+	Global	ทั่วโลก
+	Grain	ธัญพืช
+	Graphics	กราฟิก
+	Gray	สีเทา
+	Heart	หัวใจ
+	Hide Auto Slices	ซ่อนชิ้นอัตโนมัติ
+	Highlight Compression	ไฮไลท์การบีบอัด
+	Highlight Priority	เน้นลำดับความสำคัญ
+	Highlights	ไฮไลท์
+	Home	บ้าน
+	Hue Jitter	เว้ จิตเตอร์
+	Image Size:	ขนาดภาพ:
+	Imported	นำเข้า
+	Input:	อินพุต:
+	Interlaced	อินเทอร์เลซ
+	Invert All	สลับกลับทั้งหมด
+	Label Size	ขนาดฉลาก
+	Labels	ป้ายกำกับ
+	Lanczos (sharp)	Lanczos (คม)
+	Level	ระดับ
+	Lights	ไฟ
+	Limits:	ขีดจำกัด:
+	Link the mask to the layer	เชื่อมโยงมาสก์กับเลเยอร์
+	Localized Color Clusters	กลุ่มสีที่มีการแปล
+	Luminance	ความสว่าง
+	Magenta	สีม่วงแดง
+	Magenta  ·  Green	สีม่วงแดง · สีเขียว
+	Marker Size	ขนาดเครื่องหมาย
+	Mask Options	ตัวเลือกมาสก์
+	Masking	การกำบัง
+	Master	อาจารย์
+	Mean:	หมายถึง:
+	Median:	ค่ามัธยฐาน:
+	Mesh Size	ขนาดตาข่าย
+	Metadata	ข้อมูลเมตา
+	Midpoint	จุดกึ่งกลาง
+	Midtones	มิดโทน
+	Midtones from:	มิดโทนจาก:
+	Midtones to:	มิดโทนถึง:
+	Minimum Depth	ความลึกขั้นต่ำ
+	Mix Jitter	ผสมกระวนกระวายใจ
+	Mode:	โหมด:
+	Monochrome	ขาวดำ
+	More Points	คะแนนเพิ่มเติม
+	Move Group Down	ย้ายกลุ่มลง
+	Move Group Up	ย้ายกลุ่มขึ้น
+	Move effect layer down	ย้ายเลเยอร์เอฟเฟกต์ลง
+	Move effect layer up	ย้ายเลเยอร์เอฟเฟกต์ขึ้น
+	Move to	ย้ายไปที่
+	Nearest Neighbor	เพื่อนบ้านที่ใกล้ที่สุด
+	Nearest Neighbor (hard edges)	เพื่อนบ้านที่ใกล้ที่สุด (ขอบแข็ง)
+	New effect layer	เลเยอร์เอฟเฟกต์ใหม่
+	Next note	หมายเหตุถัดไป
+	No Color Management	ไม่มีการจัดการสี
+	Optimized	ปรับให้เหมาะสม
+	Output Levels:	ระดับเอาท์พุท:
+	Output:	เอาท์พุท:
+	Paint Overlay	การทาสีทับซ้อน
+	Pattern Size	ขนาดรูปแบบ
+	PhotoCraft	PhotoCraft
+	PhotoCraft — an open-source, native image editor written in Rust.	PhotoCraft — โปรแกรมแก้ไขภาพแบบโอเพ่นซอร์สที่เขียนด้วยภาษา Rust
+	Position and Size	ตำแหน่งและขนาด
+	Preserve Details	เก็บรายละเอียด
+	Preserve Luminosity	รักษาความส่องสว่าง
+	Previous note	บันทึกก่อนหน้า
+	Printer	เครื่องพิมพ์
+	Printer Setup	การตั้งค่าเครื่องพิมพ์
+	Printing Marks	เครื่องหมายการพิมพ์
+	Progressive	ก้าวหน้า
+	Promote	โปรโมท
+	Protect Detail	ปกป้องรายละเอียด
+	Protect Tones	ปกป้องโทนเสียง
+	Proximity Match	การจับคู่ความใกล้ชิด
+	Purity	ความบริสุทธิ์
+	Quality	คุณภาพ
+	Recent	ล่าสุด
+	Reconstruct	สร้างใหม่
+	Refine	ปรับแต่ง
+	Registration Marks	เครื่องหมายทะเบียน
+	Regular	ปกติ
+	Remove stop	ลบหยุด
+	Rename Group…	เปลี่ยนชื่อกลุ่ม…
+	Rename Layer…	เปลี่ยนชื่อเลเยอร์…
+	Restore All	คืนค่าทั้งหมด
+	Restrictive (Web)	จำกัด (เว็บ)
+	Rigid	แข็ง
+	Roughness	ความหยาบ
+	Roundness	ความกลม
+	Rulers & Grids	ไม้บรรทัดและกริด
+	Sample: foreground colour	ตัวอย่าง: สีพื้นหน้า
+	Sampling: Background Swatch	การสุ่มตัวอย่าง: สวอตช์พื้นหลัง
+	Sampling: Continuous	การสุ่มตัวอย่าง: ต่อเนื่อง
+	Sampling: Once	การสุ่มตัวอย่าง: ครั้งเดียว
+	Saturate	อิ่มตัว
+	Saturation Jitter	ความอิ่มตัวของสี กระวนกระวายใจ
+	Save HTML and Images	บันทึก HTML และภาพ
+	Save as PDF	บันทึกเป็น PDF
+	Scale to Fit Media	ปรับขนาดให้พอดีกับสื่อ
+	Scatter	กระจาย
+	Scratch disks	รอยขีดข่วนดิสก์
+	Selective	คัดเลือก
+	Shadows	เงา
+	Shape:	รูปร่าง:
+	Sharpening	การลับคม
+	Shift	กะ
+	Show All Menu Items	แสดงรายการเมนูทั้งหมด
+	Show Backdrop	แสดงฉากหลัง
+	Show Mask	โชว์มาสก์
+	Show Mesh	แสดงตาข่าย
+	Show or hide the Notes panel	แสดงหรือซ่อนแผงบันทึกย่อ
+	Show the layer mask as an overlay	แสดงเลเยอร์มาสก์เป็นภาพซ้อนทับ
+	Show:	แสดง:
+	Sides	ด้านข้าง
+	Sides:	ด้านข้าง:
+	Slice Options…	ตัวเลือกชิ้น…
+	Slices From Guides	ชิ้นจากคำแนะนำ
+	Slices are locked (View › Lock Slices)	ชิ้นถูกล็อค (ดู › ล็อคชิ้น)
+	Split:	แยก:
+	Star ratio	อัตราส่วนดาว
+	Std Dev:	มาตรฐานการพัฒนา:
+	Straighten	ยืดตรง
+	Straighten Layer	ปรับเลเยอร์ให้ตรง
+	Strength:	ความแข็งแกร่ง:
+	Stroke	โรคหลอดเลือดสมอง
+	Stroke Catch-up	จังหวะจับขึ้น
+	Stroke:	โรคหลอดเลือดสมอง:
+	Location:	ที่ตั้ง:
+	Inside	ข้างใน
+	Outside	ภายนอก
+	Tetrahedral	จัตุรมุข
+	Texture Each Tip	พื้นผิวแต่ละเคล็ดลับ
+# Gradient Editor window, opened from the options bar's gradient swatch.
+	Gradient Editor	ตัวแก้ไขการไล่ระดับสี
+	Gradient picker	ตัวเลือกการไล่ระดับสี
+	Save As Preset	บันทึกเป็นค่าที่ตั้งล่วงหน้า
+	The gradient the Gradient tool paints with	การไล่ระดับสีที่เครื่องมือไล่ระดับสีใช้
+	Adds the current gradient to the Gradients panel	เพิ่มการไล่ระดับสีปัจจุบันให้กับแผงการไล่ระดับสี
+	Gradient stops	การไล่ระดับสีหยุด
+	Click to edit the gradient	คลิกเพื่อแก้ไขการไล่ระดับสี
+	Tilt X	เอียง X
+	Tilt Y	เอียง Y
+	Toggle count group visibility	สลับการเปิดเผยกลุ่มการนับ
+	Toggle text orientation	สลับการวางแนวข้อความ
+	Tone:	โทนเสียง:
+	Toolbar	แถบเครื่องมือ
+	Top	ด้านบน
+	Total:	รวม:
+	Transparency	ความโปร่งใส
+	Trilinear	ไตรลิเนียร์
+	Unlink the mask from the layer	ยกเลิกการเชื่อมโยงมาสก์ออกจากเลเยอร์
+	View Options	ตัวเลือกมุมมอง
+	Violet, Orange	สีม่วง,สีส้ม
+	Visible	มองเห็นได้
+	Weight	น้ำหนัก
+	Weight:	น้ำหนัก:
+	Wetness Jitter	ความเปียกชื้น กระวนกระวายใจ
+	Whites	คนผิวขาว
+	Yellow	สีเหลือง
+	Yellow  ·  Blue	สีเหลือง · สีฟ้า
+
+# Preference dialog: generated setting labels and dropdown choices
+	Adobe	อะโดบี
+	Adobe rgb	อะโดบี RGB
+	Allow agent control	อนุญาตให้ตัวแทนควบคุม
+	Allow scripts to connect	อนุญาตให้สคริปต์เชื่อมต่อ
+	Always	เสมอ
+	Always create smart objects when placing	สร้างวัตถุอัจฉริยะเสมอเมื่อวาง
+	Animated zoom	ซูมภาพเคลื่อนไหว
+	Apply auto tone	ใช้โทนเสียงอัตโนมัติ
+	Ask	ถาม
+	Ask before saving layered tiff	ถามก่อนที่จะบันทึก TIFF แบบเลเยอร์
+	Autosave	บันทึกอัตโนมัติ
+	Autosave minutes	บันทึกนาทีอัตโนมัติ
+	Beep when done	ส่งเสียงบี๊บเมื่อเสร็จแล้ว
+	Bicubic automatic	ไบคิวบิคอัตโนมัติ
+	Bicubic sharper	Bicubic คมชัดยิ่งขึ้น
+	Bicubic smoother	Bicubic เรียบเนียนยิ่งขึ้น
+	Bit depth	ความลึกบิต
+	Brush picker	ตัวเลือกแปรง
+	Brush preview color	สีตัวอย่างแปรง
+	CPU (no GPU acceleration)	CPU (ไม่มีการเร่งความเร็ว GPU)
+	Cache levels	ระดับแคช
+	Cache tile size	ขนาดไทล์แคช
+	RAW Defaults	ค่าเริ่มต้น RAW
+	Canvas border	ขอบผ้าใบ
+	Show canvas dots	แสดงจุดผ้าใบ
+	Clip thumbnails to layer bounds	คลิปภาพขนาดย่อให้เป็นขอบเขตของเลเยอร์
+	Clip Thumbnails to Layer Bounds	คลิปรูปขนาดย่อไปที่ Layer Bounds
+	Canvas color	สีแคนวาส
+	Canvas custom color	ผ้าใบสีตามสั่ง
+	Classic	คลาสสิค
+	Color picker	ตัวเลือกสี
+	Color space	พื้นที่สี
+	Column width	ความกว้างของคอลัมน์
+	Concise	กระชับ
+	Control port	พอร์ตควบคุม
+	Convert to srgb	แปลงเป็น srgb
+	Cursors	เคอร์เซอร์
+	Custom dark	มืดแบบกำหนดเอง
+	Custom light	แสงที่กำหนดเอง
+	Dark	มืด
+	Dark gray	สีเทาเข้ม
+	Dashed lines	เส้นประ
+	Detailed	รายละเอียด
+	DirectX 12	ไดเร็คเอ็กซ์ 12
+	Disks	ดิสก์
+	Display p3	แสดงผล p3
+	Dots	จุด
+	Double click layer mask launches select and mask	ดับเบิลคลิกเลเยอร์มาสก์เปิดตัวเลือกและมาสก์
+	Drop shadow	เงาตก
+	Dynamic color sliders	แถบเลื่อนสีแบบไดนามิก
+	East asian	เอเชียตะวันออก
+	Effect cache mb	เอฟเฟกต์แคช mb
+	Enable flick panning	เปิดใช้งานการเลื่อนแบบสะบัด
+	Enable floating document window docking	เปิดใช้งานการเชื่อมต่อหน้าต่างเอกสารแบบลอย
+	Enable narrow options bar	เปิดใช้งานแถบตัวเลือกแบบแคบ
+	Enhanced Controls	การควบคุมที่ได้รับการปรับปรุง
+	Erase	ลบ
+	Export clipboard	ส่งออกคลิปบอร์ด
+	Extra large	ใหญ่พิเศษ
+	File Handling	การจัดการไฟล์
+	File path	เส้นทางไฟล์
+	Fill new type layers with placeholder	เติมเลเยอร์ตัวอักษรใหม่ด้วยตัวยึดตำแหน่ง
+	Font preview	การแสดงตัวอย่างแบบอักษร
+	Full size tip	ทิปขนาดเต็ม
+	GPU backend	แบ็กเอนด์ GPU
+	Linux display server	เซิร์ฟเวอร์แสดงผลลินุกซ์
+	X11	X11
+	Gamut warning color	สีคำเตือนขอบเขต
+	Gamut warning opacity	ความทึบของคำเตือน Gamut
+	General	ทั่วไป
+	Enable Generator	เปิดใช้งานเครื่องกำเนิดไฟฟ้า
+	Gif	กิฟ
+	Glossy	มันเงา
+	Grid color	สีตาราง
+	Grid colors	สีตาราง
+	Grid size	ขนาดตาราง
+	Grid style	สไตล์กริด
+	Grid unit	หน่วยกริด
+	Gridline every	เส้นตารางทุกๆ
+	Guide color	สีไกด์
+	Guide style	สไตล์ไกด์
+	Guides, Grid & Slices	เส้นบอกแนว กริด และสไลซ์
+	Gutter	รางน้ำ
+	History Log	บันทึกประวัติศาสตร์
+	History states	รัฐประวัติศาสตร์
+	Ignore exif profile tag	ละเว้นแท็กโปรไฟล์ EXIF
+	Image interpolation	การแก้ไขภาพ
+	Image previews	ตัวอย่างภาพ
+	Integrations	บูรณาการ
+	Interface	อินเทอร์เฟซ
+	Jpeg quality	คุณภาพของเจเพ็ก
+	Jpg	JPG
+	Large tabs	แท็บขนาดใหญ่
+	Legacy compositing	การผสมผสานแบบเดิม
+	Light gray	สีเทาอ่อน
+	Line	เส้น
+	Lines	เส้น
+	Lowercase extension	ส่วนขยายตัวพิมพ์เล็ก
+	Maximize psd compatibility	เพิ่มความเข้ากันได้ของ PSD ให้สูงสุด
+	Medium gray	สีเทากลาง
+	Memory usage mb	การใช้หน่วยความจำ เมกะไบต์
+	Low resolution previews	ตัวอย่างความละเอียดต่ำ
+	Metal	โลหะ
+	Missing glyph protection	การป้องกันสัญลักษณ์หายไป
+	Modern	ทันสมัย
+	Nearest neighbor	เพื่อนบ้านที่ใกล้ที่สุด
+	Never	ไม่เคย
+	Normal tip	ทิปปกติ
+	Open as smart object	เปิดเป็นวัตถุอัจฉริยะ
+	Open documents as tabs	เปิดเอกสารเป็นแท็บ
+	OpenGL	OpenGL
+	Orange	ส้ม
+	Overscroll	โอเวอร์สโครล
+	Performance	ประสิทธิภาพ
+	Png	PNG
+	Point size	ขนาดพอยต์
+	PostScript (72 points/inch)	PostScript (72 จุด/นิ้ว)
+	Precise	แม่นยำ
+	Preserve details	เก็บรายละเอียด
+	Print resolution	ความละเอียดในการพิมพ์
+	Pro	โปร
+	Pro light	โปรไลท์
+	Pro light gray	โปรสีเทาอ่อน
+	Pro medium	โปรกลาง
+	Pro photo	ภาพโปร
+	Purple	สีม่วง
+	Quick export format	รูปแบบการส่งออกด่วน
+	Quick export location	สถานที่ส่งออกด่วน
+	Recent file count	จำนวนไฟล์ล่าสุด
+	LUT folder	โฟลเดอร์ LUT
+	Recent files	ไฟล์ล่าสุด
+	Recent fonts	แบบอักษรล่าสุด
+	Recover on launch	กู้คืนเมื่อเปิดตัว
+	Remember workspace changes	จำการเปลี่ยนแปลงพื้นที่ทำงาน
+	Resize image during place	ปรับขนาดภาพระหว่างสถานที่
+	Right click with painting tools	คลิกขวาด้วยเครื่องมือวาดภาพ
+	Rotate view with trackpad	หมุนมุมมองด้วยแทร็กแพด
+	Same folder	โฟลเดอร์เดียวกัน
+	Save in background	บันทึกในพื้นหลัง
+	Scratch Disks	รอยขีดข่วนดิสก์
+	Screen resolution	ความละเอียดหน้าจอ
+	Scrubby slider acceleration	การเร่งความเร็วของตัวเลื่อนแบบสครับ
+	Sessions only	เซสชันเท่านั้น
+	Sharpen for	ลับคมเพื่อ
+	Show channels in color	แสดงช่องเป็นสี
+	Show crosshair in brush tip	แสดงเป้าเล็งที่ปลายแปรง
+	Show extension panels	แสดงแผงส่วนขยาย
+	Show font names in english	แสดงชื่อแบบอักษรเป็นภาษาอังกฤษ
+	Show menu colors	แสดงสีเมนู
+	Show only crosshair while painting	แสดงเฉพาะเป้าเล็งขณะวาดภาพ
+	Show slice numbers	แสดงหมายเลขชิ้น
+	Show tooltips	แสดงคำแนะนำเครื่องมือ
+	Enable animations	เปิดใช้งานภาพเคลื่อนไหว
+	Show highlight on rollover	แสดงไฮไลท์เมื่อโรลโอเวอร์
+	Show bounding box when dragging layer	แสดงกรอบขอบเมื่อลากเลเยอร์
+	System title bar	แถบหัวเรื่องของระบบ
+	Show transformation values	แสดงค่าการแปลง
+	Slice color	สีชิ้น
+	Smart guide color	สีไกด์อัจฉริยะ
+	Smart quotes	คำพูดที่ชาญฉลาด
+	Snap vector tools and transforms to pixel grid	ถ่ายภาพเครื่องมือเวกเตอร์และแปลงเป็นตารางพิกเซล
+	Srgb	สร
+	Standard	มาตรฐาน
+	Studio	สตูดิโอ
+	Studio light	ไฟสตูดิโอ
+	Adwaita	แอดเวตา
+	Adwaita dark	แอดไวตามืด
+	Subdivisions	เขตการปกครอง
+	System	ระบบ
+	Text engine	เอ็นจิ้นข้อความ
+	Text file	ไฟล์ข้อความ
+	Tiny	จิ๋ว
+	Touch gestures	ท่าทางสัมผัส
+	Traditional (72.27 points/inch)	แบบดั้งเดิม (72.27 จุด/นิ้ว)
+	Transparency & Gamut	ความโปร่งใสและขอบเขต
+	Type units	หน่วยตัวอักษร
+	UI font size	ขนาดตัวอักษรของ UI
+	UI scale	ขนาด UI
+	Units & Rulers	หน่วยและผู้ปกครอง
+	Use additional plugins folder	ใช้โฟลเดอร์ปลั๊กอินเพิ่มเติม
+	Use esc to commit	ใช้ esc เพื่อคอมมิต
+	Use gpu	ใช้จีพียู
+	Use legacy free transform	ใช้การแปลงแบบฟรีแบบเดิม
+	Use shift key for tool switch	ใช้ปุ่ม Shift สำหรับสวิตช์เครื่องมือ
+	Use tablet pressure	ใช้แรงกดแท็บเล็ต
+	Vary round brush hardness on hud	ความแข็งของแปรงกลมแปรผันบนฮัด
+	Vulkan	วัลแคน
+	Webp	เว็บพี
+	World ready	โลกพร้อมแล้ว
+	Zoom clicked point to center	ซูมคลิกชี้ไปที่กึ่งกลาง
+	Zoom resizes windows	ซูมปรับขนาดหน้าต่าง
+	Zoom with scroll wheel	ซูมด้วยล้อเลื่อน
+	Zoom with trackpad pinch	ซูมด้วยการบีบแทร็กแพด
+	Alt-click to define a source point to clone from	คลิก Alt เพื่อกำหนดจุดต้นทางที่จะโคลน
+	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	ไม่มีเส้นทางให้เลือก: วาดเส้นทางด้วยเครื่องมือปากกา หรือเลือกเส้นทางในแผงเส้นทาง
+	Cancel opening	ยกเลิกการเปิด
+	Cancelled opening {name}	ยกเลิกการเปิด {name}
+	Damaged Photoshop document	เอกสาร Photoshop ที่เสียหาย
+	The document “{name}” may be damaged.	เอกสาร “{name}” อาจเสียหาย
+	Some layers, pixels or masks could not be read. Do you want to continue opening it?	ไม่สามารถอ่านเลเยอร์ พิกเซล หรือมาสก์บางเลเยอร์ได้ คุณต้องการเปิดมันต่อหรือไม่?
+	If you continue, saving over the original may permanently discard unreadable data. Save a copy to keep the original.	หากคุณดำเนินการต่อ การบันทึกทับข้อมูลต้นฉบับอาจละทิ้งข้อมูลที่อ่านไม่ได้อย่างถาวร บันทึกสำเนาเพื่อเก็บต้นฉบับ
+	Continue	ดำเนินการต่อ
+	The document “{name}” does not have an embedded {mode} profile.	เอกสาร “{name}” ไม่มีโปรไฟล์ {mode} ที่ฝังอยู่
+	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	เอกสาร “{name}” มีโปรไฟล์สีฝังอยู่ซึ่งไม่ตรงกับพื้นที่ทำงาน {mode} ปัจจุบัน
+	Working: {working}	Working: {working}
+	Developing {name}	กำลังพัฒนา {name}
+	Cancelled {label}	ยกเลิก {label}
+	Esc to cancel	Esc เพื่อยกเลิก
+	Opened {name}	Opened {name}
+	Opening {name}	Opening {name}
+	Saved {name}	Saved {name}
+	Saving {name}	กำลังบันทึก {name}
+	Saving {percent}	Saving {percent}
+	A save to {name} is still running; try again when it finishes	การบันทึกไปยัง {name} ยังคงทำงานอยู่ ลองอีกครั้งเมื่อเสร็จสิ้น
+	{label} is writing the file and can no longer be cancelled	{label} กำลังเขียนไฟล์และไม่สามารถยกเลิกได้อีกต่อไป
+	Opening {name}…	กำลังเปิด {name}…
+	Opening…	กำลังเปิด…
+	Reading…	กำลังอ่าน…
+	Working…	กำลังทำงาน…
+	3 x 3	3x3
+	4 x 4	4x4
+	5 x 5	5x5
+	Grid:	ตาราง:
+# Rendering mode and recovery
+	Rendering Mode	โหมดการเรนเดอร์
+	Automatic (recommended)	อัตโนมัติ (แนะนำ)
+	CPU / Compatibility	ซีพียู / ความเข้ากันได้
+	Automatic uses GPU acceleration when available and falls back to CPU rendering on errors.	อัตโนมัติใช้การเร่งความเร็ว GPU เมื่อพร้อมใช้งานและถอยกลับไปที่การเรนเดอร์ CPU เมื่อมีข้อผิดพลาด
+	Switched to CPU rendering	เปลี่ยนไปใช้การเรนเดอร์ CPU
+	GPU acceleration could not continue. Your documents are unchanged.	การเร่งความเร็ว GPU ไม่สามารถดำเนินการต่อได้ เอกสารของคุณไม่มีการเปลี่ยนแปลง
+	PhotoCraft is using the CPU image compositor. The window may still use your graphics adapter.	PhotoCraft กำลังใช้ตัวแต่งภาพ CPU หน้าต่างอาจยังคงใช้อะแดปเตอร์กราฟิกของคุณ
+	Retry GPU requires a restart. Save your work first.	ลอง GPU อีกครั้งต้องรีสตาร์ท บันทึกงานของคุณก่อน
+	Retry GPU tries the graphics processor again now.	ลองอีกครั้ง GPU ลองใช้โปรเซสเซอร์กราฟิกอีกครั้งทันที
+	GPU acceleration resumed.	การเร่งความเร็ว GPU กลับมาทำงานอีกครั้ง
+	Keep Using CPU	ใช้ CPU ต่อไป
+	Retry GPU	ลอง GPU อีกครั้ง
+	GPU Backend	แบ็กเอนด์ GPU
+	Details	รายละเอียด
+	GPU	จีพียู
+	Rendering mode	โหมดการเรนเดอร์
+	Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)	ตรึง Lasso: ลากเพื่อตรึงพื้นที่ กด Alt แล้วลากเพื่อละลาย (L)
+	Shadow Clipping Warning (U)	คำเตือนเงาตัด (U)
+	Highlight Clipping Warning (O)	คำเตือนการตัดไฮไลท์ (O)
+	Show Lab Color Readouts	แสดงการอ่านค่าสีของแล็บ
+	Show Vectorscope	แสดงเวคเตอร์สโคป
+	Show Red at 3 o'clock	โชว์สีแดงเวลา 3 นาฬิกา
+	Show Skin Tone Indicator	แสดงตัวบ่งชี้สีผิว
+	Tone Histogram	โทนฮิสโตแกรม
+	Show Selected Region	แสดงภูมิภาคที่เลือก
+cameraRaw	Light	เบา
+# RAW Develop: contextual controls and window title
+	RAW Develop Filter ({layer})	ฟิลเตอร์ การปรับแต่ง RAW ({layer})
+	RAW Develop ({name})	การปรับแต่ง RAW ({name})
+	Aqua	อควา
+cameraRaw	Amount	จำนวน
+cameraRaw	Blacks	คนผิวดำ
+cameraRaw	Vibrance	ความมีชีวิตชีวา
+cameraRaw	Color Grading	การจัดระดับสี
+cameraRaw	Lights	ไฟ
+cameraRaw	Darks	ความมืด
+cameraRaw	Global	ทั่วโลก
+cameraRaw	Red	สีแดง
+cameraRaw	Orange	ส้ม
+cameraRaw	Yellow	สีเหลือง
+cameraRaw	Green	สีเขียว
+cameraRaw	Aqua	อควา
+cameraRaw	Blue	สีฟ้า
+cameraRaw	Purple	สีม่วง
+cameraRaw	Magenta	สีม่วงแดง
+cameraRaw	Hue	สี
+cameraRaw	Blending	การผสม
+cameraRaw	Luminance Detail	รายละเอียดความสว่าง
+cameraRaw	Color Detail	รายละเอียดสี
+cameraRaw	Roughness	ความหยาบ
+	Patch Tool	เครื่องมือแก้ไข
+	Patch:	แพทช์:
+	Lasso around an area, then drag the selection	เชือกรอบๆ พื้นที่ จากนั้นลากส่วนที่เลือก
+	Transform On Drop	แปลงร่างเมื่อหล่น
+	Scale or rotate the moved area, then press {key}	ปรับขนาดหรือหมุนพื้นที่ที่ถูกย้าย จากนั้นกด {key}
+	Now drag the selection onto another area	ตอนนี้ลากส่วนที่เลือกไปยังพื้นที่อื่น
+	Edit Type	แก้ไขตัวอักษร
+
+	New Style…	รูปแบบใหม่…
+	Style {name} saved	บันทึกสไตล์ {name} แล้ว
+
+	Create new style (from the selected type)	สร้างสไตล์ใหม่ (จากประเภทที่เลือก)
+	Create new style from the selected layer	สร้างสไตล์ใหม่จากเลเยอร์ที่เลือก
+
+	Make Default	ทำให้เป็นค่าเริ่มต้น
+	Reset to Default	รีเซ็ตเป็นค่าเริ่มต้น
+	Full-resolution preview unavailable	ไม่สามารถแสดงตัวอย่างแบบเต็มความละเอียดได้
+	No patterns	ไม่มีลวดลาย
+	Enable {name}	Enable {name}
+	Hold Alt while drawing for straight segments	กด Alt ค้างไว้ขณะวาดส่วนที่เป็นเส้นตรง
+	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts	Drag or click polygon points · hold Alt during lasso for straight segments · {add} add · {sub} before drawing subtracts
+	Extend	ขยาย
+	Structure:	โครงสร้าง:
+	Content-Aware Move Tool	เครื่องมือย้ายเนื้อหา Aware
+	TIFF Options	ตัวเลือก TIFF
+	Targa Options	ตัวเลือกทาร์กา
+	JPEG Options	ตัวเลือก JPEG
+	Image Options	ตัวเลือกภาพ
+	Format Options	ตัวเลือกรูปแบบ
+	Baseline ("Standard")	พื้นฐาน ("มาตรฐาน")
+	Baseline Optimized	ปรับให้เหมาะสมพื้นฐานแล้ว
+	24 bits/pixel	24 บิต/พิกเซล
+	32 bits/pixel	32 บิต/พิกเซล
+	Including layers will increase file size.	รวมเลเยอร์จะทำให้ขนาดไฟล์เพิ่มขึ้น
+	Discard Layers and Save a Copy	ละทิ้งเลเยอร์และบันทึกสำเนา
+	Don't show again	อย่าแสดงอีก
+	Save failed: {error}	บันทึกล้มเหลว: {error}
+	Save cancelled	บันทึกถูกยกเลิก
+	Couldn't place {name}: {error}	ไม่สามารถวาง {name}: {error}
+	Magnetic Lasso Tool	เครื่องมือ Lasso แม่เหล็ก
+	Frequency	ความถี่
+	Use tablet pressure to change pen width	ใช้แรงกดของแท็บเล็ตเพื่อเปลี่ยนความกว้างของปากกา
+
+# About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
+	About	เกี่ยวกับ
+	Contributors	ผู้ร่วมให้ข้อมูล
+	Models	โมเดล
+	Sort	จัดเรียง
+	Username	ชื่อผู้ใช้
+	Display name	ชื่อที่แสดง
+	Real name	ชื่อจริง
+	Reverse the order	ย้อนกลับคำสั่งซื้อ
+	Grab bag	หยิบกระเป๋า
+	Table	ตาราง
+	Name (A–Z)	ชื่อ (ก-ฮ)
+	Merged PRs	รวมประชาสัมพันธ์
+	Commits	มุ่งมั่น
+	Lines added	เพิ่มบรรทัดแล้ว
+	Lines deleted	ลบบรรทัดแล้ว
+	Line delta	เส้นเดลต้า
+	Binary assets added	เพิ่มสินทรัพย์ไบนารีแล้ว
+	Binary assets removed	ลบเนื้อหาไบนารีแล้ว
+	First commit	กระทำครั้งแรก
+	First	อันดับแรก
+	Last commit	กระทำครั้งสุดท้าย
+	Last	สุดท้าย
+	Contributors: {contributors} · Commits: {commits}	Contributors: {contributors} · Commits: {commits}
+	No contributor data was built into this copy.	ไม่มีข้อมูลผู้ร่วมสร้างไว้ในสำเนานี้
+	No model credits were built into this copy.	ไม่มีการสร้างเครดิตแบบจำลองในสำเนานี้
+	Company	บริษัท
+	Version	เวอร์ชัน
+	% of all commits	% ของการกระทำทั้งหมด
+	Lines +/−	เส้น +/−
+	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PRs, {commits} คอมมิต, +{added} / −{deleted} บรรทัด (Δ {delta}), +{binAdded} / −{binDeleted} สินทรัพย์ไบนารี, {first} – {last}
+
+# Swatches panel
+	Create new swatch	สร้างตัวอย่างใหม่
+	New Swatch…	สวอตช์ใหม่…
+	New Swatch Group…	กลุ่มสวอตช์ใหม่…
+	Import Swatches…	นำเข้าตัวอย่าง…
+	Replace Swatches…	แทนที่ Swatches…
+	Export Swatches…	ส่งออกตัวอย่าง…
+	Export Swatches for Exchange…	ส่งออก Swatches เพื่อการแลกเปลี่ยน…
+	Reset Swatches	รีเซ็ต Swatches
+	Add to Swatches	เพิ่มลงในสวอตช์
+# Layer Style > Blending Options (Advanced Blending)
+	Blend If:	ผสมผสานหาก:
+	Channels:	ช่องทาง:
+	Knockout	น็อคเอาท์
+	Apply At Canvas Bounds	สมัครได้ที่ Canvas Bounds
+
+# Shared screen eyedropper and text Color Picker (#1128).
+	Color Picker (Text Color)	เครื่องมือเลือกสี (สีข้อความ)
+	Color Picker ({name})	เครื่องมือเลือกสี ({name})
+	Color Picker (Fill Color)	เครื่องมือเลือกสี (เติมสี)
+	Fill color	เติมสี
+	Color Picker (Stroke Color)	เครื่องมือเลือกสี (สีเส้น)
+	Stroke color	สีเส้นขีด
+	Pick screen color	เลือกสีหน้าจอ
+	Sample a pixel anywhere on the screen	ตัวอย่างพิกเซลที่ใดก็ได้บนหน้าจอ
+	Click to pick · Esc to cancel	คลิกเพื่อเลือก · Esc เพื่อยกเลิก
+	Pick a screen pixel or press Esc to cancel	เลือกพิกเซลของหน้าจอหรือกด Esc เพื่อยกเลิก
+	Scroll to zoom	เลื่อนเพื่อซูม
+	Drag to pan · Scroll to zoom · Double-click to fit	ลากเพื่อเลื่อน · เลื่อนเพื่อซูม · ดับเบิลคลิกเพื่อให้พอดี
+	Show/Hide All Panels	แสดง/ซ่อนแผงทั้งหมด
+	Show/Hide Panels	แสดง/ซ่อนแผง
+	Could not open	ไม่สามารถเปิดได้
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: เส้นทางไม่ถูกต้อง Unicode; เปลี่ยนชื่อไฟล์แล้วเปิดอีกครั้ง
+
+# Fill dialog, layer style contours and Image Size
+	Contents:	สารบัญ:
+	Custom Pattern:	รูปแบบที่กำหนดเอง:
+	Foreground Color	สีพื้นหน้า
+	Color…	สี…
+	50% Gray	50% สีเทา
+	{size} (was {old})	{size} (เป็น {old})
+	Cone	กรวย
+	Cone (Inverted)	กรวย (คว่ำ)
+	Domed	ทรงโดม
+	Domed (Inverted)	ทรงโดม (กลับหัว)
+	Diagonal (Descending)	เส้นทแยงมุม (จากมากไปน้อย)
+	Contour Editor	ตัวแก้ไขรูปร่าง
+	Anti-aliased	ต่อต้านนามแฝง
+	Corner	มุม
+	Gloss Contour	คอนทัวร์แบบเงา
+	Contour	คอนทัวร์
+	Cone - Inverted	กรวย - คว่ำ
+	Cove - Deep	โคฟ - ลึก
+	Cove - Shallow	โคฟ - ตื้น
+	Gaussian	เกาส์เซียน
+	Half Round	ครึ่งรอบ
+	Ring	แหวน
+	Ring - Double	แหวน-คู่
+	Rolling Slope - Descending	เนินลาด - จากมากไปน้อย
+	Rounded Steps	ขั้นตอนที่โค้งมน
+	Sawtooth 1	ฟันเลื่อย 1
+	Linear	เชิงเส้น
+
+	Red Eye Tool	เครื่องมือตาแดง
+	Pupil Size	ขนาดรูม่านตา
+	Darken Amount	ทำให้ปริมาณเข้มขึ้น
+	Click a red pupil to neutralize it	คลิกที่รูม่านตาสีแดงเพื่อทำให้เป็นกลาง
+	open source	โอเพ่นซอร์ส
+	…and {n} more	…และอีก {n} รายการ
+
+	Eyedroppers:	ยาหยอดตา:
+	Set Black Point	ตั้งค่าจุดดำ
+	Set Neutral Gray Point	ตั้งค่าจุดสีเทากลาง
+	Set White Point	ตั้งค่าจุดขาว
+	Unavailable in this color mode	ไม่พร้อมใช้งานในโหมดสีนี้
+	Selection Preview:	ดูตัวอย่างการเลือก:
+	Black Matte	สีดำด้าน
+	White Matte	สีขาวแมท
+	Quick Mask	มาสก์ด่วน
+
+# Layer colour labels.
+	Seafoam	ซีโฟม
+	Indigo	สีคราม
+	Fuchsia	บานเย็น
+	Violet	สีม่วง
+	Large document: redrawing on the CPU	เอกสารขนาดใหญ่: วาดใหม่บน CPU
+	Redrawing	วาดใหม่
+	This redraw took {seconds} s on the CPU.	การวาดใหม่นี้ใช้เวลา {seconds} วินาทีบน CPU
+	Edits that change the whole document, such as a layer's blend mode, opacity or visibility, redraw all of it.	การแก้ไขที่เปลี่ยนแปลงทั้งเอกสาร เช่น โหมดผสมผสานของเลเยอร์ ความทึบ หรือการมองเห็น ให้วาดใหม่ทั้งหมด
+	The GPU compositor wasn't used: {reason}	ไม่ได้ใช้ตัวแต่ง GPU: {reason}
+fontWeight	Thin	บาง
+fontWeight	ExtraLight	เอ็กซ์ตร้าไลท์
+fontWeight	Light	เบา
+fontWeight	Regular	ปกติ
+fontWeight	Medium	ปานกลาง
+fontWeight	SemiBold	กึ่งหนา
+fontWeight	Bold	ตัวหนา
+fontWeight	ExtraBold	โดดเด่นเป็นพิเศษ
+fontWeight	Black	ดำ
+fontWeight	Italic	ตัวเอียง
+
+# Pattern Stamp tool
+	Pattern Stamp Tool	เครื่องมือประทับตรารูปแบบ
+	Impressionist	อิมเพรสชั่นนิสต์
+	Rotate View Tool	เครื่องมือหมุนมุมมอง
+	Reset View	รีเซ็ตมุมมอง
+	Drag around the centre to rotate the view  ·  Shift constrains to 15°	ลากไปรอบๆ ศูนย์กลางเพื่อหมุนมุมมอง · Shift จำกัดไว้ที่ 15°
+
+# Painting symmetry presets.
+	Dual Axis	แกนคู่
+	Diagonal	เส้นทแยงมุม
+	Transform Symmetry	แปลงสมมาตร
+	Set painting symmetry options	ตั้งค่าตัวเลือกสมมาตรของการวาดภาพ
+
+# Eyedropper Sample Size and Sample (#1649).
+	Point Sample	ตัวอย่างจุด
+	3 by 3 Average	เฉลี่ย 3 x 3
+	5 by 5 Average	เฉลี่ย 5 x 5
+	11 by 11 Average	เฉลี่ย 11 x 11
+	31 by 31 Average	31 x 31 เฉลี่ย
+	51 by 51 Average	51 x 51 เฉลี่ย
+	101 by 101 Average	เฉลี่ย 101 x 101
+	Sample Size:	ขนาดตัวอย่าง:
+	All Layers No Adjustments	ทุกเลเยอร์ไม่มีการปรับเปลี่ยน
+	Current & Below No Adjustments	ปัจจุบันและต่ำกว่าไม่มีการปรับเปลี่ยน
+	Show Sampling Ring	แสดงแหวนเก็บตัวอย่าง
+	Click to sample the foreground colour  ·  {key}-click for background	คลิกเพื่อดูตัวอย่างสีพื้นหน้า · {key}-คลิกเพื่อดูพื้นหลัง
+
+# Color Picker warnings
+	Out of gamut for printing: click for the nearest printable colour	อยู่นอกช่วงการพิมพ์: คลิกเพื่อดูสีที่ใกล้ที่สุดที่สามารถพิมพ์ได้
+	Not a web colour: click for the nearest web colour	ไม่ใช่สีเว็บ: คลิกเพื่อดูสีเว็บที่ใกล้ที่สุด
+	Color to Alpha…	สีเป็นอัลฟ่า…
+	Transparency Threshold	เกณฑ์ความโปร่งใส
+	Opacity Threshold	เกณฑ์ความทึบ
+	PhotoCraft — Screen Color Picker	PhotoCraft — ตัวเลือกสีของหน้าจอ
+
+	Rasterize svg groups deeper than	แรสเตอร์กลุ่ม svg ให้ลึกกว่า
+	0 turns this threshold off; SVG groups nested deeper than 100 levels are always rasterized.	0 ปิดเกณฑ์นี้ กลุ่ม SVG ที่ซ้อนกันลึกกว่า 100 ระดับจะถูกแรสเตอร์เสมอ
+	Rule of Thirds	กฎข้อที่สาม
+	Triangle	สามเหลี่ยม
+	Golden Ratio	อัตราส่วนทองคำ
+	Golden Spiral	เกลียวทอง
+	Auto Show Overlay	การแสดงภาพซ้อนทับอัตโนมัติ
+	Always Show Overlay	แสดงภาพซ้อนทับเสมอ
+	Never Show Overlay	ไม่ต้องแสดงภาพซ้อนทับ
+	Cycle Overlay	การซ้อนทับวงจร
+	Cycle Orientation	การวางแนววงจร
+	Set the overlay options for the Crop tool	ตั้งค่าตัวเลือกการซ้อนทับสำหรับเครื่องมือครอบตัด
+	Alt-click went to the desktop, which moves windows with Alt-drag. Set its window-move key to Super, or latch Alt in Window › Modifier Keys.	คลิก Alt ไปที่เดสก์ท็อป ซึ่งย้ายหน้าต่างด้วย Alt-drag ตั้งค่าปุ่มย้ายหน้าต่างเป็น Super หรือล็อค Alt ใน Window › Modifier Keys
+
+# Shared Layer Style color picker
+	Color Picker (Layer Style Color)	เครื่องมือเลือกสี (สีสไตล์เลเยอร์)
+	Auto Hide Notifications	ซ่อนการแจ้งเตือนอัตโนมัติ
+	Notification Duration (seconds)	ระยะเวลาการแจ้งเตือน (วินาที)
+	Bundle Arrow-Key Nudges	มัดปุ่มลูกศรแบบมัด
+	Nudge Bundle Pause (ms)	เขยิบ Bundle หยุดชั่วคราว (มิลลิวินาที)
+	Appearance Mode	โหมดรูปลักษณ์
+	Dark Theme	ธีมสีเข้ม
+	Light Theme	ธีมแสง
+	Pro Medium	โปรมีเดียม
+	Studio Light	ไฟสตูดิโอ
+	Next Appearance Mode	โหมดรูปลักษณ์ถัดไป
+	Sync with system	ซิงค์กับระบบ
+	Active	ใช้งานอยู่
+	Color Picker (Solid Color)	เครื่องมือเลือกสี (สีทึบ)
+	Straighten the image by drawing a line on it	ปรับภาพให้ตรงโดยลากเส้นลงไป
+	Set additional Crop options	ตั้งค่าตัวเลือกการครอบตัดเพิ่มเติม
+	Show Cropped Area	แสดงพื้นที่ครอบตัด
+	Enable Crop Shield	เปิดใช้งานครอบตัดโล่
+	Match Canvas	จับคู่ผ้าใบ
+	Auto Adjust Opacity	ปรับความทึบอัตโนมัติ
+	Crop Shield color	สีของครอบตัดโล่
+	Color Picker (Crop Shield Color)	ตัวเลือกสี (สีโล่ครอบตัด)
+	From Center	จากศูนย์
+	Link radii	รัศมีลิงก์
+	Star Ratio:	อัตราส่วนดาว:
+	Create Rectangle	สร้างสี่เหลี่ยมผืนผ้า
+	Create Ellipse	สร้างวงรี
+	Create Triangle	สร้างรูปสามเหลี่ยม
+	Create Polygon	สร้างรูปหลายเหลี่ยม
+	Pressure curve	เส้นโค้งความดัน
+	Click to add a point, right-click to remove	คลิกเพื่อเพิ่มจุด คลิกขวาเพื่อลบ
+	Soft	นุ่มนวล
+	Hard	ยาก
+	Some brush presets could not be loaded	ไม่สามารถโหลดค่าที่ตั้งไว้ล่วงหน้าของแปรงบางค่าได้
+	Retry saving presets	ลองบันทึกค่าที่ตั้งไว้ล่วงหน้าอีกครั้ง
+	Brush preset changes are not saved: {error}	การเปลี่ยนแปลงที่ตั้งไว้ล่วงหน้าของแปรงจะไม่ถูกบันทึก: {error}
+	Keep this tab open to retain your brushes.	เปิดแท็บนี้ไว้เพื่อรักษาแปรงของคุณ
+	Browser storage is unavailable; brushes are session-only. Keep this tab open to retain them.	พื้นที่เก็บข้อมูลเบราว์เซอร์ไม่พร้อมใช้งาน แปรงเป็นแบบเซสชันเท่านั้น เปิดแท็บนี้ไว้เพื่อเก็บไว้
+	Saving brush presets… Keep this tab open until saving finishes.	กำลังบันทึกค่าที่ตั้งล่วงหน้าของแปรง... เปิดแท็บนี้ไว้จนกว่าการบันทึกจะเสร็จสิ้น
+	Reflect	ไตร่ตรอง
+	Glow	เรืองแสง
+	Negation	การปฏิเสธ
+	XOR	แฮคเกอร์
+	Color Burn (Paint.NET)	เบิร์นสี (Paint.NET)
+	Color Dodge (Paint.NET)	ดอดจ์สี (Paint.NET)
+	Stroke Options	ตัวเลือกจังหวะ
+	Solid	แข็ง
+	Dashed	ประ
+	Dotted	ลายจุด
+	Caps	หมวก
+	Butt / Flat	ก้น/แบน
+	Corners	มุม
+	Miter	ตุ้มปี่
+	Round	รอบ
+	Bevel	เบเวล
+	Miter limit	ขีด จำกัด ตุ้มปี่
+	Dashed line	เส้นประ
+	Dash	แดช
+	Gap	ช่องว่าง
+	Dash / gap lengths × stroke width	เส้นประ / ความยาวช่องว่าง × ความกว้างเส้นขีด
+	Add pair	เพิ่มคู่
+	Remove pair	ถอดคู่ออก
+	Dash offset	แดชออฟเซ็ต
+	Open paths use centered strokes	เส้นทางที่เปิดใช้จังหวะที่กึ่งกลาง
+	Use finite lengths and a positive pattern total	ใช้ความยาวจำกัดและรูปแบบผลรวมที่เป็นบวก
+	No subject found — try Object Selection or the Lasso	ไม่พบหัวเรื่อง — ลองใช้ Object Selection หรือ Lasso
+	Quick Selection found nothing there	Quick Selection ไม่พบสิ่งใดที่นั่น
+	Object Selection found nothing there — try a tighter rectangle	การเลือกวัตถุไม่พบสิ่งใดเลย ลองใช้สี่เหลี่ยมแคบกว่านี้
+	No subject found — try a rectangle around the object	ไม่พบวัตถุ — ลองใช้สี่เหลี่ยมรอบๆ วัตถุ
+
+# Layers-panel trash confirmation
+	Delete layer ‘{name}’?	ลบเลเยอร์ '{name}' หรือไม่
+	Delete {count} layers? {names}	Delete {count} layers? {names}
+	Delete layer?	ลบเลเยอร์ใช่ไหม
+	The document is closed	เอกสารถูกปิด
+	The document or selected layers changed. Please request deletion again.	เอกสารหรือเลเยอร์ที่เลือกมีการเปลี่ยนแปลง กรุณาขอลบอีกครั้ง
+	Missing delete command	คำสั่งลบหายไป
+	Invalid delete command	คำสั่งลบไม่ถูกต้อง
+	Layer deleted, but confirmation preference could not be saved: {error}	ลบเลเยอร์แล้ว แต่ไม่สามารถบันทึกการตั้งค่าการยืนยันได้: {error}
+	Add a layer style	เพิ่มสไตล์เลเยอร์
+	Add a mask  (from the selection; {key} inverts)	เพิ่มมาสก์ (จากส่วนที่เลือก; {key} กลับด้าน)
+	Add an adjustment	เพิ่มการปรับ
+	Add to selection  ({key})	เพิ่มไปยังส่วนที่เลือก ({key})
+	Adjustment visible	มองเห็นการปรับแล้ว
+	Align and distribute	จัดตำแหน่งและกระจาย
+	Align horizontal centers	จัดกึ่งกลางแนวนอน
+	Align left edges	จัดแนวขอบด้านซ้าย
+	Align right edges	จัดขอบด้านขวา
+	Always use pressure for opacity	ใช้แรงกดเพื่อความทึบเสมอ
+	Always use pressure for size	ใช้แรงกดเพื่อขนาดเสมอ
+	Angle Gradient	การไล่ระดับมุม
+	Auto-Select:	เลือกอัตโนมัติ:
+	Brush Preset picker	เครื่องมือเลือกแปรงที่ตั้งไว้ล่วงหน้า
+	Cancel current crop operation  (Esc)	ยกเลิกการดำเนินการครอบตัดปัจจุบัน (Esc)
+	Click the first point or press {key} to close · Esc cancels	คลิกจุดแรกหรือกด {key} เพื่อปิด · ยกเลิก Esc
+	Click the first point or press {key} to close · {del} removes a point · Esc cancels	คลิกจุดแรกหรือกด {key} เพื่อปิด · {del} ลบจุด · Esc ยกเลิก
+	Click, then move along an edge · click to fasten a point · {alt}-click for a straight segment · double-click to close	คลิก จากนั้นเลื่อนไปตามขอบ · คลิกเพื่อยึดจุด · {alt}-คลิกเพื่อดูส่วนตรง · ดับเบิลคลิกเพื่อปิด
+	Clip to layer below	คลิปลงเลเยอร์ด้านล่าง
+	Color & Swatches	สีและตัวอย่าง
+	Commit current crop operation  ({key})	ยอมรับการดำเนินการครอบตัดปัจจุบัน ({key})
+	Create a new group	สร้างกลุ่มใหม่
+	Create a new layer	สร้างเลเยอร์ใหม่
+	Create new document from current state	สร้างเอกสารใหม่จากสถานะปัจจุบัน
+	Create new fill or adjustment layer	สร้างเลเยอร์การเติมหรือการปรับใหม่
+	Create new snapshot	สร้างสแนปชอตใหม่
+	From:	จาก:
+	Full Document	เอกสารฉบับเต็ม
+	Merged Layers	เลเยอร์ที่ผสาน
+	Delete Cropped Pixels	ลบพิกเซลที่ครอบตัด
+	Delete current state	ลบสถานะปัจจุบัน
+	Delete layer	ลบเลเยอร์
+	Diamond Gradient	ไล่ระดับเพชร
+	Doc: {w} × {h} px	เอกสาร: {w} × {h} พิกเซล
+	Enable airbrush-style build-up effects	เปิดใช้งานเอฟเฟกต์การสร้างแบบแอร์บรัช
+	Filter for adjustment layers	ฟิลเตอร์เลเยอร์การปรับ
+	Filter for pixel layers	ฟิลเตอร์เลเยอร์พิกเซล
+	Filter for shape layers	ฟิลเตอร์เลเยอร์รูปร่าง
+	Filter for smart objects	ฟิลเตอร์สำหรับวัตถุอัจฉริยะ
+	Filter for type layers	ฟิลเตอร์สำหรับเลเยอร์ตัวอักษร
+	Fixed Ratio	อัตราส่วนคงที่
+	Fixed Size	ขนาดคงที่
+	Follows only edges this close to the pointer ([ and ] change it)	ติดตามเฉพาะขอบใกล้กับตัวชี้เท่านั้น ([ และ ] เปลี่ยน)
+	Hide Properties	ซ่อนคุณสมบัติ
+	Higher values follow only edges that contrast sharply with their surroundings	ค่าที่สูงกว่าจะติดตามเฉพาะขอบที่ตัดกันอย่างมากกับสภาพแวดล้อมเท่านั้น
+	How often fastening points are placed by themselves	มีการวางจุดยึดด้วยตัวเองบ่อยเพียงใด
+	Hue/Saturation	ฮิว/ความอิ่มตัว
+	Intersect with selection  ({key})	ตัดกับส่วนที่เลือก ({key})
+	Kind	ชนิด
+	Linear Gradient	การไล่ระดับสีเชิงเส้น
+	Link layers	ลิงค์เลเยอร์
+	Lock	ล็อก
+	Lock all	ล็อคทั้งหมด
+	Lock image pixels	ล็อคพิกเซลภาพ
+	Lock layer	ล็อคเลเยอร์
+	Lock position	ตำแหน่งล็อค
+	Lock transparent pixels	ล็อคพิกเซลโปร่งใส
+	New selection	การคัดเลือกใหม่
+	No properties	ไม่มีคุณสมบัติ
+	Pressure for Opacity	ความกดดันสำหรับความทึบ
+	Pressure for Size	ความดันสำหรับขนาด
+	Prevent auto-nesting in and out of Artboards and Frames	ป้องกันการซ้อนเข้าและออกจากอาร์ตบอร์ดและเฟรมโดยอัตโนมัติ
+	Radial Gradient	การไล่ระดับสีแบบเรเดียล
+	Reflected Gradient	ไล่ระดับสีสะท้อน
+	Reset to defaults	รีเซ็ตเป็นค่าเริ่มต้น
+	Set additional smoothing options	ตั้งค่าตัวเลือกการปรับให้เรียบเพิ่มเติม
+	Show Transform Controls	แสดงการควบคุมการแปลง
+	Subtract from selection  ({key})	ลบออกจากส่วนที่เลือก ({key})
+	Swaps height and width	สลับความสูงและความกว้าง
+	Tolerance	ความอดทน
+	Add vector mask	เพิ่มมาสก์เวกเตอร์
+	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	คลิกเพื่อซูมเข้า · {key}-คลิกเพื่อซูมออก · ลากไปทางขวา/ซ้ายเพื่อซูมเข้า/ออก
+	Appearance Settings…	การตั้งค่าลักษณะที่ปรากฏ…
+	Add to favorites	เพิ่มในรายการโปรด
+	Remove from favorites	ลบออกจากรายการโปรด
+# File Info ▸ Camera Data (read-only EXIF fields; "Make" is the camera maker, not the verb).
+cameraData	Make	ทำ
+cameraData	Model	รุ่น
+cameraData	Date Taken	วันที่ถ่าย
+cameraData	Exposure	การเปิดรับแสง
+cameraData	F-Stop	F-หยุด
+cameraData	ISO Speed	ความไวแสง ISO
+cameraData	Focal Length	ทางยาวโฟกัส
+cameraData	Focal Length (35 mm)	ทางยาวโฟกัส (35 มม.)
+cameraData	Lens	เลนส์
+# Shared panel docking
+	Activate Panel	เปิดใช้งานแผง
+	Change Panel Group	เปลี่ยนกลุ่มแผง
+	Change Panel Layout	เปลี่ยนเค้าโครงแผง
+	Close Panel	ปิดแผง
+	Dock Panel	แผงท่าเรือ
+	Float Panel	แผงลอย
+	Move Panel	ย้ายแผง
+	Group with	กลุ่มด้วย
+	Panel menu	เมนูแผง
+	Resize panel window	ปรับขนาดหน้าต่างแผง
+	Resize panels	ปรับขนาดแผง
+	Use Classic Mode	ใช้โหมดคลาสสิก
+	Auto Center Preview	ดูตัวอย่างศูนย์อัตโนมัติ
+	Next Document	เอกสารถัดไป
+	Previous Document	เอกสารก่อนหน้า
+	W x H x Resolution	กว้าง x สูง x ความละเอียด
+	Front Image	ภาพด้านหน้า
+	Frame Tool	เครื่องมือเฟรม
+	Create a new rectangular frame	สร้างกรอบสี่เหลี่ยมใหม่
+	Create a new elliptical frame	สร้างกรอบรูปวงรีใหม่
+	Include in playback	รวมไว้ในการเล่น
+	Perspective Crop Tool	เครื่องมือครอบตัดมุมมอง
+	Show Grid	แสดงกริด
+	Drag a box or click four corners · drag the corners onto the edges of a skewed shape · {commit} commits · Esc cancels	Drag a box or click four corners · drag the corners onto the edges of a skewed shape · {commit} commits · Esc cancels
+	Artboard Tool	เครื่องมืออาร์ตบอร์ด
+	Make Portrait	สร้างภาพบุคคล
+	Make Landscape	ทำภูมิทัศน์
+	Add New Artboard	เพิ่มอาร์ตบอร์ดใหม่
+	Freeform Pen Tool	เครื่องมือปากการูปแบบอิสระ
+	Curvature Pen Tool	เครื่องมือปากกาโค้ง
+	Curve Fit:	ความโค้งพอดี:
+	Drag: draw freehand · {alt}-click: straight segment · Release on the start point: close	ลาก: วาดด้วยมือเปล่า · {alt}-คลิก: ส่วนตรง · ปล่อยที่จุดเริ่มต้น: ปิด
+	Click: smooth point · Double-click: corner · Drag a point: move · Click first point: close · {key} finish	คลิก: จุดที่ราบรื่น · ดับเบิลคลิก: มุม · ลากจุด: ย้าย · คลิกจุดแรก: ปิด · {key} เสร็จสิ้น
+	Scale:	ขนาด:
+	Snap to Origin	สแน็ปไปที่จุดเริ่มต้น
+	Link with Layer	เชื่อมโยงกับเลเยอร์
+	Rasterize Layer Style	แรสเตอร์สไตล์เลเยอร์
+	Search settings…	การตั้งค่าการค้นหา…
+	No matching settings	ไม่มีการตั้งค่าที่ตรงกัน
+# Edit › Content-Aware Fill workspace
+	Sampling Brush Tool	เครื่องมือแปรงสุ่มตัวอย่าง
+	Sampling Area Overlay	การซ้อนทับพื้นที่สุ่มตัวอย่าง
+	Show Sampling Area	แสดงพื้นที่สุ่มตัวอย่าง
+	Indicates	บ่งชี้
+	Sampling Area	พื้นที่สุ่มตัวอย่าง
+	Excluded Area	พื้นที่ยกเว้น
+	Sampling Area Options	ตัวเลือกพื้นที่สุ่มตัวอย่าง
+	Rectangular	สี่เหลี่ยม
+	Fill Settings	กรอกการตั้งค่า
+	Rotation Adaptation	การปรับตัวแบบหมุน
+	Very High	สูงมาก
+	Full	เต็ม
+	Mirror	กระจกเงา
+	Output Settings	การตั้งค่าเอาท์พุต
+	Output To	ส่งออกไปที่
+	Duplicate Layer	เลเยอร์ซ้ำ
+	Contract	สัญญา
+
+	Animation Options	ตัวเลือกภาพเคลื่อนไหว
+	Entire Document	เอกสารทั้งหมด
+	Filter Options	ตัวเลือกฟิลเตอร์
+	Layer Bounds	ขอบเขตของเลเยอร์
+	Layers Panel Options	ตัวเลือกแผงเลเยอร์
+	Lock Layers	ล็อคเลเยอร์
+	New Artboard…	อาร์ตบอร์ดใหม่…
+	New Group…	กลุ่มใหม่…
+	Prevent Auto-Nesting	ป้องกันการซ้อนอัตโนมัติ
+	Show Layers	แสดงเลเยอร์
+	Thumbnail Contents	เนื้อหาภาพขนาดย่อ
+	Thumbnail Size	ขนาดรูปขนาดย่อ
+	Use Default Masks on Fill Layers	ใช้มาสก์เริ่มต้นในการเติมเลเยอร์
+	Expand New Effects	ขยายเอฟเฟกต์ใหม่
+	Add “copy” to Copied Layers and Groups	เพิ่ม "คัดลอก" ลงในเลเยอร์และกลุ่มที่คัดลอก
+	Preview on canvas when reordering layers	ดูตัวอย่างบนผืนผ้าใบเมื่อเรียงลำดับเลเยอร์ใหม่
+	Show layer mask badges	แสดงป้ายเลเยอร์มาสก์
+
+# Smart Filter editors
+	Blending Options ({filter})	ตัวเลือกการผสม ({filter})
+	Hide the layer's effects and Smart Filters  ({key}-click: all layers)	ซ่อนเอฟเฟกต์ของเลเยอร์และฟิลเตอร์อัจฉริยะ ({key}-click: ทุกเลเยอร์)
+	Show the layer's effects and Smart Filters  ({key}-click: all layers)	แสดงเอฟเฟกต์ของเลเยอร์และฟิลเตอร์อัจฉริยะ ({key}-click: ทุกเลเยอร์)
+	Wait for the current job to finish.	รอให้งานปัจจุบันเสร็จสิ้น
+	The document or Smart Filter changed. Reopen its dialog.	เอกสารหรือฟิลเตอร์อัจฉริยะมีการเปลี่ยนแปลง เปิดกล่องโต้ตอบอีกครั้ง
+	Opacity must be between 0% and 100%.	ความทึบต้องอยู่ระหว่าง 0% ถึง 100%
+	Dissolve is approximated: it blends without Photoshop's dither.	การละลายเป็นการประมาณ: มันผสมกันโดยไม่ต้องใช้ไดเทอร์ของ Photoshop
+	Loading fonts…	กำลังโหลดแบบอักษร…
+	Response curve	เส้นโค้งการตอบสนอง
+	Tool	เครื่องมือ
+	Simulate Pressure	จำลองความดัน
+	Stroke Path…	เส้นทางโรคหลอดเลือดสมอง…
+	Background Eraser	ยางลบพื้นหลัง
+	Healing Brush	แปรงรักษา
+	Spot Healing Brush	แปรงรักษาเฉพาะจุด
+	Smudge	รอยเปื้อน
+	Sponge	ฟองน้ำ
+	Amount:	จำนวน:
+	Protect:	ป้องกัน:
+	Protect skin tones	ปกป้องสีผิว
+	Edit points to modify the curve	แก้ไขจุดเพื่อปรับเปลี่ยนเส้นโค้ง
+	Draw to modify the curve	วาดเพื่อปรับเปลี่ยนเส้นโค้ง
+curves	Smooth	เรียบเนียน
+	Smooth the curve values	ปรับค่าเส้นโค้งให้เรียบ
+	Drag to draw the curve · {key}-click draws a straight line	ลากเพื่อวาดเส้นโค้ง · {key}-คลิก วาดเส้นตรง
+	Grid Size:	ขนาดตาราง:
+	Vanishing Point: click four corners to create a plane	จุดที่หายไป: คลิกมุมทั้งสี่เพื่อสร้างระนาบ
+	Vanishing Point is not active	Vanishing Point ใช้งานไม่ได้
+	Apply Vanishing Point ({key})	ใช้ Vanishing Point ({key})
+	Fix the red plane first: its corners must form a convex quad	แก้ไขระนาบสีแดงก่อน: มุมของมันจะต้องเป็นรูปสี่เหลี่ยมนูน
+	Alt-click a plane to set the clone source	คลิก Alt บนระนาบเพื่อตั้งค่าแหล่งที่มาของโคลน
+	Too many clone strokes: apply Vanishing Point first	มีจังหวะโคลนมากเกินไป: ใช้ Vanishing Point ก่อน
+# Select and Mask view modes (#1754)
+	Onion Skin	ผิวหัวหอม
+	Marching Ants	มดเดินขบวน
+	On Black	บนสีดำ
+	On White	บนสีขาว
+	On Layers	บนเลเยอร์
+	Show Edge	แสดงขอบ
+	Show Original	แสดงต้นฉบับ
+	F cycles the views; hold X to see the image	F วนรอบมุมมอง; กด X ค้างไว้เพื่อดูภาพ
+# Select and Mask Refine Edge Brush (#2972)
+	Refine Edge Brush (R)	ปรับแต่งแปรงขอบ (R)
+	Expand Detection Area	ขยายพื้นที่การตรวจจับ
+	Restore Original Edge	คืนค่าขอบดั้งเดิม
+	Paint over hair or fur on the image; Alt paints the other mode	ทาสีทับผมหรือขนสัตว์บนภาพ Alt วาดภาพโหมดอื่น
+	Clear Brush Strokes	ล้างจังหวะแปรง
+	Show rulers	แสดงผู้ปกครอง
+	New Crop Preset…	ใหม่ Crop Preset…
+	Delete Crop Preset…	ลบค่าที่ตั้งไว้ครอบตัด…
+	Select the crop presets to delete:	เลือกค่าที่ตั้งไว้ครอบตัดที่จะลบ:
+	Select the crop presets to delete	เลือกค่าที่ตั้งไว้ครอบตัดที่จะลบ
+	Enter a name for the crop preset	ป้อนชื่อสำหรับค่าที่ตั้งไว้ครอบตัด
+	There is no crop size or ratio to save	ไม่มีขนาดหรืออัตราส่วนการครอบตัดที่จะบันทึก
+	Presentation	การนำเสนอ
+
+# Color Sampler (added with the i18n coverage repair)
+	Click to place · Alt-click or drag off-canvas to remove	คลิกเพื่อวาง · คลิก Alt หรือลากนอกแคนวาสเพื่อลบ
+	No document open	ไม่มีการเปิดเอกสาร
+	{n} of {max} sample points	จุดตัวอย่าง {n} จาก {max}
+
+# History panel menu (#2966)
+	New Snapshot…	สแนปชอตใหม่…
+	History Options…	ตัวเลือกประวัติ…
+# History panel › History Options… (#2966)
+	Allow Non-Linear History	อนุญาตประวัติที่ไม่ใช่เชิงเส้น
+	Make Layer Visibility Changes Undoable	ทำให้การเปลี่ยนแปลงการมองเห็นเลเยอร์ไม่สามารถยกเลิกได้
+# Print dialog (#2697)
+	Emulsion Down	อิมัลชันลง
+	Functions	ฟังก์ชั่น
+	Print Resolution:	ความละเอียดในการพิมพ์:
+	Use Previous Layer to Create Clipping Mask	ใช้เลเยอร์ก่อนหน้าเพื่อสร้างรูปแบบการตัด
+	Fill with {mode}-neutral color (white)	เติมด้วย {mode} - สีที่เป็นกลาง (สีขาว)
+	Fill with {mode}-neutral color (black)	เติมด้วย {mode} - สีที่เป็นกลาง (สีดำ)
+	Fill with {mode}-neutral color (50% gray)	เติมด้วย {mode} - สีที่เป็นกลาง (สีเทา 50%)
+	(No neutral color exists for {mode} mode.)	(ไม่มีสีที่เป็นกลางสำหรับโหมด {mode})
+	Apply mask to layer before removing?	ทามาสก์เป็นเลเยอร์ก่อนถอด?
+	The layer or its mask changed. Drag the mask onto the Trash again.	เลเยอร์หรือมาสก์เปลี่ยนไป ลากมาสก์ไปที่ถังขยะอีกครั้ง
+	Delete the vector mask?	ลบเวกเตอร์มาสก์ใช่ไหม
+# Counted status messages and labels (#3454; adapted from PR #3821)
+@plural	Exported {n} swatch to {file}|Exported {n} swatches to {file}	ส่งออก {n} ตัวอย่างไปยัง {file}
+@plural	Imported {n} brush from {group}|Imported {n} brushes from {group}	นำเข้า {n} แปรงจาก {group}
+@plural	Imported {n} swatch from {file}|Imported {n} swatches from {file}	นำเข้า {n} ตัวอย่างจาก {file}
+@plural	Played {n} step|Played {n} steps	เล่นไปแล้ว {n} ก้าว
+@plural	Updated {n} linked smart object changed on disk|Updated {n} linked smart objects changed on disk	อัปเดตวัตถุอัจฉริยะที่เชื่อมโยง {n} เปลี่ยนแปลงบนดิสก์
+@plural	Saved for Web: {n} file|Saved for Web: {n} files	บันทึกสำหรับเว็บ: {n} ไฟล์
+@plural	{n} layer recorded by this comp was deleted. Update the comp, or clear the warning.|{n} layers recorded by this comp were deleted. Update the comp, or clear the warning.	{n} เลเยอร์ที่บันทึกโดยคอมพ์นี้ถูกลบแล้ว อัปเดตคอมพ์หรือล้างคำเตือน
+@plural	{n} plane|{n} planes	{n} ระนาบ
+@plural	{n} preset|{n} presets	{n} ที่ตั้งไว้ล่วงหน้า
+@plural	{n} sample point removed|{n} sample points removed	{n} คะแนนตัวอย่างถูกลบออก
+@plural	{n} slice|{n} slices	{n} ชิ้น
+@plural	{n} step|{n} steps	{n} ขั้นตอน
+@plural	{warning} (+{n} more brush preset warning)|{warning} (+{n} more brush preset warnings)	{warning} (+{n} คำเตือนที่ตั้งไว้ล่วงหน้าของแปรงเพิ่มเติม)
+@plural	{what} with {n} warning|{what} with {n} warnings	{what} with {n} warnings
+# View › Guides › New Guide… › Color
+	Light Blue	ฟ้าอ่อน
+	Light Red	สีแดงอ่อน
+	Medium Blue	ฟ้ากลาง
+	Light Gray	สีเทาอ่อน
+	Object Finder	ตัวค้นหาวัตถุ
+	No object found there — drag a rectangle around it	ไม่พบวัตถุตรงนั้น ให้ลากสี่เหลี่ยมรอบๆ สิ่งนั้น
+	The active layer has no pixels here — turn on Sample All Layers or select a layer with pixels	เลเยอร์ที่ใช้งานอยู่ไม่มีพิกเซลที่นี่ - เปิดตัวอย่างเลเยอร์ทั้งหมดหรือเลือกเลเยอร์ที่มีพิกเซล
+	Remove after each stroke	ลบออกหลังจากแต่ละจังหวะ
+	Apply the removal ({key})	ใช้การลบ ({key})
+	Strokes to remove: {n} (Enter applies, Esc cancels)	จังหวะที่จะลบ: {n} (Enter ใช้, Esc ยกเลิก)
+	Load Contours…	โหลดรูปทรง…
+	Replace Contours…	แทนที่รูปทรง…
+	Save Contours…	บันทึกรูปทรง…
+	Delete Contour	ลบคอนทัวร์
+	Loaded contours from {file}	โหลดรูปทรงจาก {file}
+	Saved contours to {file}	รูปทรงที่บันทึกไว้ใน {file}
+	Show home recent files	แสดงไฟล์ล่าสุดที่บ้าน
+	Clear Brush Controls	ล้างการควบคุมแปรง
+	Reset All Locked Settings	รีเซ็ตการตั้งค่าที่ถูกล็อคทั้งหมด
+	Copy Texture to Other Tools	คัดลอกพื้นผิวไปยังเครื่องมืออื่น ๆ
+
+# Actions panel: Load/Save Actions (.atn) and kept Photoshop steps
+	Load Actions…	โหลดการดำเนินการ…
+	Save Actions…	บันทึกการดำเนินการ…
+	New Action…	แอคชั่นใหม่…
+	Start Recording	เริ่มการบันทึก
+	Stop Recording	หยุดการบันทึก
+	{name} (Photoshop)	{name} (Photoshop)
+	{message} ({note})	{message} ({note})
+@plural	Loaded {n} action from {file}|Loaded {n} actions from {file}	โหลดการกระทำ {n} รายการจาก {file}
+@plural	{n} step has no PhotoCraft equivalent yet|{n} steps have no PhotoCraft equivalent yet	{n} ขั้นตอนยังไม่มีเทียบเท่ากับ PhotoCraft
+@plural	Saved {n} action to {file}|Saved {n} actions to {file}	บันทึกการกระทำ {n} ลงใน {file}
+@plural	{n} step with no Photoshop equivalent left out|{n} steps with no Photoshop equivalent left out	{n} ขั้นตอนที่ไม่มี Photoshop เทียบเท่าเหลืออยู่
+
+	File Naming	การตั้งชื่อไฟล์
+	Starting serial	กำลังเริ่มซีเรียส
+# Actions panel: set folders, dialog toggle, Insert Stop
+	Insert Stop…	แทรกหยุด…
+	Save Set…	บันทึกชุด…
+	Message:	ข้อความ:
+	Allow Continue	อนุญาตให้ดำเนินการต่อ
+	Show dialog during playback	แสดงกล่องโต้ตอบระหว่างการเล่น
+	Select an action first	เลือกการกระทำก่อน
+	Action playback stopped	การเล่นแอ็คชั่นหยุดลง
+	Step {step} is waiting for its dialog	ขั้นตอนที่ {step} กำลังรอกล่องโต้ตอบ
+@plural	{n} action|{n} actions	{n} การกระทำ
+	Background (Default)	พื้นหลัง (ค่าเริ่มต้น)
+	Content-Aware Fill	การเติมการรับรู้เนื้อหา
+# Batch / Image Processor
+	Include All Subfolders	รวมโฟลเดอร์ย่อยทั้งหมด
+	Auto Add/Delete	เพิ่ม/ลบอัตโนมัติ
+
+# Native Windows printing qualification
+	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	อย่าทำเครื่องหมายที่ Mirror Image ในการตั้งค่าการพิมพ์…: การพลิกทั้งสองครั้งจะถูกยกเลิก
+	Print Settings…	การตั้งค่าการพิมพ์…
+	Remember to turn off the printer's own colour management in Print Settings…	อย่าลืมปิดการจัดการสีของเครื่องพิมพ์ในการตั้งค่าการพิมพ์…
+	Sent to {printer}	Sent to {printer}
+	set in Print Settings…	ตั้งค่าไว้ในการตั้งค่าการพิมพ์…
+	ICO is limited to 256 × 256 pixels	ICO จำกัดขนาดไว้ที่ 256 × 256 พิกเซล
+	Calibration	การสอบเทียบ
+	Red Primary	ประถมสีแดง
+	Green Primary	ประถมศึกษาสีเขียว
+	Blue Primary	ประถมศึกษาสีน้ำเงิน
+	Write xmp sidecars	เขียน xmp sidecars
+	Set the tone sliders from the image	ตั้งค่าแถบเลื่อนโทนสีจากภาพ
+	Settings from {name}	การตั้งค่าจาก {name}
+	Settings from {name}; {count} not supported: {names}	การตั้งค่าจาก {name}; ไม่รองรับ {count}: {names}
+	Could not write {name}: {error}	ไม่สามารถเขียน {name}: {error}
+	Kept {name}: written by another application	เก็บ {name}: เขียนโดยแอปพลิเคชันอื่น
+	Shadow Tint	เฉดสีเงา
+# History panel › History Brush source (#2966)
+	Paints from the History panel's source state	สีจากสถานะแหล่งที่มาของแผงประวัติ
+	Sets the source for the history brush	ตั้งค่าแหล่งที่มาสำหรับแปรงประวัติ
+
+# Dynamic selection context menu and appearance favorites
+	Select Inverse	เลือก ผกผัน
+	Pro (Light)	โปร (เบา)
+	Pro (Light Gray)	Pro (สีเทาอ่อน)
+
+# Measurement Log column headers (analysis_cmds::COLUMNS)
+	Label	ป้ายกำกับ
+	Date and Time	วันที่และเวลา
+	Scale Units	หน่วยสเกล
+	Scale Factor	สเกลแฟคเตอร์
+	Area	พื้นที่
+	Perimeter	เส้นรอบวง
+	Circularity	ความเป็นวงกลม
+	Gray Value (Minimum)	ค่าสีเทา (ขั้นต่ำ)
+	Gray Value (Maximum)	ค่าสีเทา (สูงสุด)
+	Gray Value (Mean)	ค่าสีเทา (ค่าเฉลี่ย)
+	Gray Value (Median)	ค่าสีเทา (ค่ามัธยฐาน)
+	Integrated Density	ความหนาแน่นรวม
+	Length	ความยาว
+	Show Favorite Fonts	แสดงแบบอักษรโปรด
+	No favorite fonts yet: click the star beside a font to add it.	ยังไม่มีแบบอักษรโปรด: คลิกดาวข้างแบบอักษรเพื่อเพิ่ม
+	Favorite fonts	แบบอักษรที่ชื่นชอบ
+	Add to Favorites	เพิ่มในรายการโปรด
+	Remove from Favorites	ลบออกจากรายการโปรด
+	Show All Fonts	แสดงแบบอักษรทั้งหมด
+	All Classes	ทุกเลเยอร์เรียน
+	Blackletter	จดหมายสีดำ
+	Decorative	ตกแต่ง
+	Font preview:	ตัวอย่างแบบอักษร:
+	Handwritten	เขียนด้วยลายมือ
+	Hide Font Classes	ซ่อนคลาสแบบอักษร
+	Hide Styles	ซ่อนสไตล์
+	Monospace	โมโนสเปซ
+	No fonts match these filters.	ไม่มีแบบอักษรที่ตรงกับฟิลเตอร์เหล่านี้
+	No similar fonts: the current font doesn't say what it looks like.	ไม่มีแบบอักษรที่คล้ายกัน: แบบอักษรปัจจุบันไม่ได้บอกว่ามีลักษณะอย่างไร
+	OpenType font	แบบอักษร OpenType
+	Sans Serif	แซนเซอริฟ
+	Script	สคริปต์
+	Serif	เซริฟ
+	Show Font Classes	แสดงคลาสแบบอักษร
+	Show Similar Fonts	แสดงแบบอักษรที่คล้ายกัน
+	Show Styles	แสดงสไตล์
+	Show Variable Fonts	แสดงแบบอักษรตัวแปร
+	Slab Serif	แผ่นพื้น Serif
+	TrueType font	ฟอนต์ TrueType
+	Variable font	แบบอักษรที่เปลี่ยนแปลงได้
+# Bevel & Emboss shading controls.
+	Highlight Mode	โหมดไฮไลท์
+	Highlight Color	ไฮไลท์สี
+	Highlight Opacity	ไฮไลท์ความทึบ
+	Shadow Mode	โหมดเงา
+	Shadow Color	สีเงา
+	Shadow Opacity	ความทึบของเงา
+# PhotoCraft release checks.
+	Check for Updates…	ตรวจสอบการอัปเดต…
+	PhotoCraft Updates	อัพเดตPhotoCraft
+	Checking for updates…	กำลังตรวจสอบการอัปเดต…
+	Open the release page to choose an installer for your system.	เปิดหน้าเผยแพร่เพื่อเลือกตัวติดตั้งสำหรับระบบของคุณ
+	Open Download Page	เปิดหน้าดาวน์โหลด
+	PhotoCraft is up to date.	PhotoCraft เป็นเวอร์ชันล่าสุดแล้ว
+	Could not check for updates.	ไม่สามารถตรวจสอบการอัปเดตได้
+	Updates have not been checked yet.	ยังไม่ได้ตรวจสอบการอัปเดต
+	Check Again	ตรวจสอบอีกครั้ง
+	Automatically Check for Updates	ตรวจสอบการอัปเดตโดยอัตโนมัติ
+	Installed version: {version}	เวอร์ชันที่ติดตั้ง: {version}
+	PhotoCraft {version} is available.	PhotoCraft {version} พร้อมใช้งานแล้ว
+# Embedded Profile Mismatch: profile names beside the choices, Remember this choice
+	Use the embedded profile ({profile})	ใช้โปรไฟล์แบบฝัง ({profile})
+	Convert to the working space ({profile})	แปลงเป็นพื้นที่ทำงาน ({profile})
+	Remember this choice for future images	จำตัวเลือกนี้ไว้สำหรับภาพในอนาคต
+	Turn the prompt back on with Ask On Mismatch in Edit › Color Settings.	เปิดพรอมต์อีกครั้งด้วย Ask On Mismatch ในแก้ไข > การตั้งค่าสี
+	Button Mode	โหมดปุ่ม
+	Button Mode On	ปุ่มเปิดโหมด
+
+# Darken / Lighten Interface (⇧⌘F1 / ⇧⌘F2)
+	Darken Interface	อินเทอร์เฟซมืดลง
+	Lighten Interface	เบาลงอินเทอร์เฟซ
+# Bevel & Emboss Technique.
+	Technique	เทคนิค
+	Chisel Hard	สิ่วฮาร์ด
+	Chisel Soft	สิ่วซอฟท์
+	Open color-less EXR as ACEScg	เปิด EXR ไร้สีเป็น ACEScg
+	Do not append "copy" to filename when saving a copy	อย่าเพิ่ม "สำเนา" ต่อท้ายชื่อไฟล์เมื่อบันทึกสำเนา
+
+# View › Guides › right-click a guide
+	Edit Selected Guides	แก้ไขคำแนะนำที่เลือก
+	Clear Selected Guides	ล้างคำแนะนำที่เลือก
+	Bicubic Automatic	ไบคิวบิกอัตโนมัติ
+	Bicubic Smoother	Bicubic เรียบเนียนยิ่งขึ้น
+	Bicubic Sharper	เครื่องลับ Bicubic
+	Pasting from other apps is unavailable	ไม่สามารถวางจากแอปอื่นได้
+	PhotoCraft can't reach the system clipboard in this session. On Wayland, a Flatpak sandbox hides the protocol that images from other apps are read through.	PhotoCraft ไม่สามารถเข้าถึงคลิปบอร์ดของระบบในเซสชันนี้ บน Wayland แซนด์บ็อกซ์ Flatpak จะซ่อนโปรโตคอลที่ภาพจากแอปอื่นถูกอ่านผ่าน
+	To paste from other apps, start PhotoCraft under XWayland: `{command}`	หากต้องการวางจากแอปอื่น ให้เริ่ม PhotoCraft ภายใต้ XWayland: `{command}`
+	Nothing to paste: PhotoCraft can't read the system clipboard here	ไม่มีสิ่งใดที่จะวาง: PhotoCraft ไม่สามารถอ่านคลิปบอร์ดของระบบได้ที่นี่
+	Delete this set	ลบชุดนี้
+	New Set…	ชุดใหม่…
+	PhotoCraft Defaults	ค่าเริ่มต้นของ PhotoCraft
+	Save a list of these shortcuts as a web page	บันทึกรายการทางลัดเหล่านี้เป็นหน้าเว็บ
+	Save the changes to this set	บันทึกการเปลี่ยนแปลงในชุดนี้
+	Save these shortcuts as a .kys file	บันทึกทางลัดเหล่านี้เป็นไฟล์ .kys
+	Save these shortcuts as a new set	บันทึกทางลัดเหล่านี้เป็นชุดใหม่
+	Set deleted.	ลบชุดแล้ว
+	Set saved.	บันทึกชุดแล้ว
+	Set:	ชุด:
+	Summarize…	สรุป…
+	There are too many sets: delete one first.	มีชุดมากเกินไป โปรดลบออกหนึ่งชุดก่อน
+	set name	ตั้งชื่อ
+	{set} (modified)	{set} (แก้ไขแล้ว)
+	Random	สุ่ม
+	Show file name in title	แสดงชื่อไฟล์ในชื่อเรื่อง
+
+# Image › Mode › Bitmap (#5559)
+	50% Threshold	เกณฑ์ 50%
+	Pattern Dither	รูปแบบ Dither
+	Diffusion Dither	การแพร่กระจาย Dither
+	Halftone Screen	หน้าจอฮาล์ฟโทน
+	Custom Pattern	รูปแบบที่กำหนดเอง
+	Frequency:	ความถี่:
+	Lines/Inch	เส้น/นิ้ว
+	Lines/Centimeter	เส้น/เซนติเมตร
+	Ellipse	วงรี
+	Diamond	เพชร
+	Cross	ข้าม
+	Accept and Go to Conflict	ยอมรับและไปสู่ความขัดแย้ง
+	Changes undone.	ยกเลิกการเปลี่ยนแปลงแล้ว
+	Choose a new shortcut for this command, or leave it without one.	เลือกทางลัดใหม่สำหรับคำสั่งนี้ หรือปล่อยไว้โดยไม่มีคำสั่งใดเลย
+	Put this command's shortcuts back as they were	นำทางลัดของคำสั่งนี้กลับมาเหมือนเดิม
+	Take the shortcut from the other command and select it	ใช้ทางลัดจากคำสั่งอื่นแล้วเลือก
+	Undo Changes	เลิกทำการเปลี่ยนแปลง
+	{shortcut} is reserved by the system and can't be assigned.	{shortcut} ถูกสงวนไว้โดยระบบและไม่สามารถกำหนดได้
+	Low-Latency Drawing (vsync off, applies at next launch)	การวาดเวลาแฝงต่ำ (ปิด vsync มีผลในการเปิดตัวครั้งถัดไป)
+# Free Transform: a new layer while the box is open (#5859)
+	Free Transform is still being applied; try again when it has finished.	ยังคงมีการใช้ Free Transform อยู่ ลองอีกครั้งเมื่อเสร็จแล้ว
+	The transform couldn't be applied.	ไม่สามารถใช้การแปลงได้
+# Preferences › Performance › GPU Memory; the status bar and slow-redraw notice
+	Its layers need {needed} of GPU memory; the budget leaves them {budget}.	เลเยอร์ของมันต้องการหน่วยความจำ GPU {needed} งบประมาณเหลือไว้ {budget}
+	Set GPU Memory in Preferences › Performance to what your graphics card can hold, at most 3/8 of its memory. Automatic follows Memory Usage, within a quarter of this computer's memory and 3/8 of the card's, and doesn't count the document against a card whose memory is known. The status bar shows GPU Memory Full while they don't fit.	ตั้งค่าหน่วยความจำ GPU ในการตั้งค่า > ประสิทธิภาพตามที่การ์ดกราฟิกของคุณสามารถเก็บได้ สูงสุด 3/8 ของหน่วยความจำ อัตโนมัติจะติดตามการใช้หน่วยความจำ ภายในหนึ่งในสี่ของหน่วยความจำของคอมพิวเตอร์เครื่องนี้และ 3/8 ของการ์ด และไม่นับเอกสารกับการ์ดที่รู้จักหน่วยความจำ แถบสถานะแสดงหน่วยความจำ GPU เต็มในขณะที่ไม่พอดี
+	GPU Memory Full	หน่วยความจำ GPU เต็ม
+	The layers need {needed} of GPU memory and may hold {budget}, so edits that redraw the whole document do it on the CPU. Click to set GPU Memory.	เลเยอร์ต้องการหน่วยความจำ GPU {needed} และอาจเก็บ {budget} ดังนั้นการแก้ไขที่วาดทั้งเอกสารใหม่จึงดำเนินการบน CPU คลิกเพื่อตั้งค่าหน่วยความจำ GPU
+	GPU memory budget: {budget}	งบประมาณหน่วยความจำ GPU: {budget}
+	Graphics memory: {size}	Graphics memory: {size}
+	This document's layers: {needed} of {budget} for layers	เลเยอร์ของเอกสารนี้: {needed} จาก {budget} สำหรับเลเยอร์
+	This document's layers need {needed} but may hold {budget}: whole-document redraws use the CPU	เลเยอร์ของเอกสารนี้จำเป็นต้องมี {needed} แต่อาจเก็บ {budget} ได้: การวาดทั้งเอกสารใหม่ใช้ CPU
+	GPU Memory (MB, 0 = Automatic)	หน่วยความจำ GPU (MB, 0 = อัตโนมัติ)
+	{path}: the path is not valid Unicode; save under another name.	{path}: เส้นทางไม่ถูกต้อง Unicode; บันทึกภายใต้ชื่ออื่น
+	Replace	แทนที่
+	{name} was changed by another app after it was opened or saved here.	{name} ถูกเปลี่ยนโดยแอปอื่นหลังจากเปิดหรือบันทึกที่นี่
+	Replace it with this document, or cancel and use File › Save As to keep both.	แทนที่ด้วยเอกสารนี้ หรือยกเลิกและใช้ไฟล์ › บันทึกเป็นเพื่อเก็บทั้งสองอย่าง
+
+# Dynamic UI labels (fourth pass): filter and adjustment parameters, RAW Develop panels,
+# lighting, History/Layers/paths/channels menus, metadata, System Info, status templates and
+# dialog text that other catalogs already carry. Written from the meaning of the English labels
+# in the ordinary Russian graphics-editor vocabulary; no proprietary resource consulted.
+	(coming soon)	(เร็ว ๆ นี้)
+	(none)	(ไม่มี)
+	32-bit Preview Options	ตัวเลือกการแสดงตัวอย่าง 32 บิต
+	3D…	3 มิติ…
+	A:	ตอบ:
+	AI Integrations	บูรณาการ AI
+	About {app}	About {app}
+	Accented Edges	ขอบเน้น
+	Action playback failed: {error}	การเล่นการกระทำล้มเหลว: {error}
+	Actual Pixels	พิกเซลจริง
+	Add Mask	เพิ่มมาสก์
+	Add Noise	เพิ่มเสียงรบกวน
+	Add a mask  (from the selection; ⌥ inverts)	เพิ่มมาสก์ (จากตัวเลือก; ⌥ กลับด้าน)
+	Add space after paragraph	เพิ่มช่องว่างหลังย่อหน้า
+	Add space before paragraph	เพิ่มช่องว่างก่อนย่อหน้า
+	Add to selection  (⇧)	เพิ่มไปยังส่วนที่เลือก (⇧)
+	Added swatch {name}	เพิ่มตัวอย่าง {name}
+	Adds grain to the soft edges of the brush tip.	เพิ่มเกรนที่ขอบนุ่มของปลายแปรง
+	Adjust Interval For Loops	ปรับช่วงเวลาสำหรับลูป
+	Adjustment Layers	เลเยอร์ปรับแต่ง
+	Adjustment Properties	คุณสมบัติการปรับ
+	Adjustment layers have nothing to transform	เลเยอร์การปรับแต่งไม่มีอะไรจะเปลี่ยนแปลง
+	Adobe-rgb-compat	Adobe-rgb-compat
+	Adwaita (Dark)	แอดเวตา (ความมืด)
+	Adwaita (Light)	อัดเวตา (ธาตุเบา)
+	After	หลังจากนั้น
+	Airbrush: keeps painting while the pointer rests.	พู่กัน: คงการวาดภาพในขณะที่ตัวชี้วางอยู่
+	Altitude	ระดับความสูง
+	Ambience	บรรยากาศ
+	Ambient	สิ่งแวดล้อม
+	Amplitude Max	แอมพลิจูดสูงสุด
+	Amplitude Min	แอมพลิจูดต่ำสุด
+	Android 1080p	แอนดรอยด์ 1080p
+	Angled Strokes	จังหวะมุม
+	Anisotropic	แอนไอโซทรอปิก
+	Any	อะไรก็ได้
+	Apple Watch 45mm	แอปเปิ้ลวอช 45มม
+	Apply Data Set	ใช้ชุดข้อมูล
+	Apply Image	ใช้ภาพ
+	Apply Mask	ใช้มาสก์
+	Apply to All	นำไปใช้กับทั้งหมด
+	Apply {option}: {state}	ใช้ {option}: {state}
+	Arbitrary	โดยพลการ
+	Arc Lower	อาร์คล่าง
+	Arc Upper	อาร์คตอนบน
+	Are you sure you want to quit?	คุณแน่ใจหรือว่าต้องการเลิก?
+	Are you sure?	คุณแน่ใจเหรอ?
+	Around Center	รอบศูนย์
+	Arrangement	การจัด
+	Arrows	ลูกศร
+	Artboard from Group	อาร์ตบอร์ดจากกลุ่ม
+	Artboard from Layers	อาร์ตบอร์ดจากเลเยอร์
+	Artboards	อาร์ตบอร์ด
+	Artboards to Files	อาร์ตบอร์ดเป็นไฟล์
+	Artboards to PDF	อาร์ตบอร์ดเป็น PDF
+	Artistic	เชิงศิลปะ
+	Ask On Mismatch	ถามเรื่องไม่ตรงกัน
+	Ask On Missing	ถามเมื่อหายไป
+	Ask On Paste	ถามเกี่ยวกับการวาง
+	Assign Profile	กำหนดโปรไฟล์
+	At	ณ
+	Author Title	ชื่อผู้แต่ง
+	Auto Scale	ปรับขนาดอัตโนมัติ
+	Auto-Align Layers	จัดตำแหน่งเลเยอร์อัตโนมัติ
+	Auto-Blend Layers	ผสมผสานเลเยอร์อัตโนมัติ
+	Autosave failed: {error}	บันทึกอัตโนมัติล้มเหลว: {error}
+	Back	กลับ
+	Backend: {backend} ({type})	Backend: {backend} ({type})
+	Background Level	ระดับพื้นหลัง
+	Bamboo	ไม้ไผ่
+	Bas Relief	บาสรีลีฟ
+	Base Tree Type	ประเภทฐานต้นไม้
+	Based On	ขึ้นอยู่กับ
+	Baseline shift	การเปลี่ยนแปลงพื้นฐาน
+	Basic Latin	ภาษาละตินขั้นพื้นฐาน
+	Batch	แบทช์
+	Before	ก่อน
+	Bend	โค้งงอ
+	Berries	เบอร์รี่
+	Best	ดีที่สุด
+	Black Clip	คลิปดำ
+	Black Intensity	ความเข้มของสีดำ
+	Blade Curvature	ความโค้งของใบมีด
+	Blast	ระเบิด
+	Bleach Bypass	สารฟอกขาวบายพาส
+	Blend Clipped Layers as Group	ผสมผสานเลเยอร์ที่ตัดเป็นกลุ่ม
+	Blend Interior Effects as Group	ผสมผสานเอฟเฟกต์ภายในเป็นกลุ่ม
+	Blend Text Gamma	ผสมผสานแกมมาข้อความ
+	Blending Mode	โหมดการผสม
+	Bloat	บวม
+	Blocks	บล็อก
+	Blue Yellow	ฟ้าเหลือง
+	Blues	บลูส์
+	Border	ชายแดน
+	Border Thickness	ความหนาของเส้นขอบ
+	Box Blur	กล่องเบลอ
+	Bpc	บีพีซี
+	Branches Color	สีกิ่ง
+	Branches Height	ความสูงของสาขา
+	Branches Thickness	ความหนาของสาขา
+	Breeze Dark	บรีส ดาร์ก
+	Breeze Light	บรีซไลท์
+	Brick	อิฐ
+	Bristle Detail	รายละเอียดขนแปรง
+	Browse	เรียกดู
+	Brush Detail	รายละเอียดแปรง
+	Brush Settings…  (F5): every option of this brush	Brush Settings… (F5): ทุกตัวเลือกของแปรงนี้
+	Brush Strokes	แปรงจังหวะ
+	Brush Type	ประเภทแปรง
+	Burlap	ผ้ากระสอบ
+	Calculations	การคำนวณ
+	RAW Develop	การปรับแต่ง RAW
+	RAW Develop Filter	ฟิลเตอร์ การปรับแต่ง RAW
+	Cancel transform	ยกเลิกการแปลง
+	Candle Light	แสงเทียน
+	Canvas Size	ขนาดผ้าใบ
+	Case Sensitive	คำนึงถึงขนาดตัวพิมพ์
+	Ccw	ตามเข็มนาฬิกา
+	Cell Size	ขนาดเซลล์
+	Center X	เซ็นเตอร์เอ็กซ์
+	Center Y	เซ็นเตอร์ วาย
+	Chalk Area	พื้นที่ชอล์ก
+	Change Find	เปลี่ยนการค้นหา
+	Changes Saved	บันทึกการเปลี่ยนแปลงแล้ว
+	Changes have not been saved.	ยังไม่ได้บันทึกการเปลี่ยนแปลง
+	Change…	เปลี่ยน…
+	Channel1	ช่อง1
+	Channel2	ช่อง2
+	Channel3	ช่อง3
+	Channel4	ช่อง 4
+	Charcoal Area	พื้นที่ถ่าน
+	Charcoal Thickness	ความหนาของถ่าน
+	Check for Updates	ตรวจสอบการอัปเดต
+	Checkerboard	กระดานหมากรุก
+	Choke	สำลัก
+	Choose Folder	เลือกโฟลเดอร์
+	Circle	วงกลม
+	Cleanliness	ความสะอาด
+	Clear Amount	ล้างจำนวนเงิน
+	Clear Selection	ล้างการเลือก
+	Click sets foreground · right-click sets background	คลิกตั้งค่าเบื้องหน้า · คลิกขวาตั้งค่าพื้นหลัง
+	Click the first point or press ↵ to close · Esc cancels	คลิกจุดแรกหรือกด ↵ เพื่อปิด · ยกเลิก Esc
+	Click to add a point · drag off or ⌘/Ctrl-click or Delete to remove	คลิกเพื่อเพิ่มจุด · ลากออก หรือ ⌘/Ctrl คลิก หรือ Delete เพื่อลบ
+	Click to apply, ⌥-click to clear overrides, double-click for Style Options	คลิกเพื่อใช้ ⌥ คลิกเพื่อล้างการแทนที่ ดับเบิลคลิกเพื่อดูตัวเลือกสไตล์
+	Click to zoom in  ·  ⌥-click to zoom out	คลิกเพื่อซูมเข้า · ⌥-คลิกเพื่อซูมออก
+	Click: corner · Drag: smooth · Click first point: close · ↩ finish · Esc cancel	คลิก: มุม · ลาก: ราบรื่น · คลิกจุดแรก: ปิด · ↩ เสร็จสิ้น · ยกเลิก Esc
+	Clipping Mask	คลิปปิ้งมาสก์
+	Clipping Path…	เส้นทางการตัด…
+	Clone	โคลน
+	Clone source set at {x}, {y}	แหล่งโคลนตั้งไว้ที่ {x}, {y}
+	Close Window	ปิดหน้าต่าง
+	Clumped	รวมตัวกันเป็นก้อน
+	Cmyk	ซีเอ็มวายเค
+	Coarse Dots	จุดหยาบ
+	Coated-cmyk	เคลือบ-cmyk
+	Collapse group  (⌥-click: all groups)	ยุบกลุ่ม (⌥-คลิก: ทุกกลุ่ม)
+	Color Decontaminate	ฆ่าเชื้อสี
+	Color Halftone	ฮาล์ฟโทนสี
+	Color Indicates Masked Areas	สีแสดงถึงบริเวณที่ปิดบัง
+	Color Indicates Selected Areas	สีบ่งบอกถึงพื้นที่ที่เลือก
+	Color Lookup Tables	ตารางค้นหาสี
+	Color Picker	ตัวเลือกสี
+	Color Picker (Background Color)	เครื่องมือเลือกสี (สีพื้นหลัง)
+	Color Picker (Custom Canvas Color)	ตัวเลือกสี (สีผ้าใบที่กำหนดเอง)
+	Color Picker (Foreground Color)	เครื่องมือเลือกสี (สีพื้นหน้า)
+	Color Sampler Tool	เครื่องมือเก็บตัวอย่างสี
+	Color Settings	การตั้งค่าสี
+	Color Swatches	ตัวอย่างสี
+	Color Table	ตารางสี
+	Color management: {error}	Color management: {error}
+	Colored Pencil	ดินสอสี
+	Comic Book	หนังสือการ์ตูน
+	Commit Perspective Warp (↩)	คอมมิตเปอร์สเปคทีฟวาร์ป (↩)
+	Commit Puppet Warp (↩)	กระทำการวาร์ปหุ่นเชิด (↩)
+	Commit any current edits (⌘↩)	ยืนยันการแก้ไขปัจจุบัน (⌘↩)
+	Commit current crop operation  (↵)	ยอมรับการดำเนินการครอบตัดปัจจุบัน (↵)
+	Commit transform	ยอมรับการเปลี่ยนแปลง
+	Commit transform (↩)	ยอมรับการแปลง (↩)
+	Commit warp (↩)	คอมมิตวาร์ป (↩)
+	Compare	เปรียบเทียบ
+	Conditional Mode Change	การเปลี่ยนแปลงโหมดตามเงื่อนไข
+	Confirm	ยืนยัน
+	Conform	สอดคล้อง
+	Constraints	ข้อจำกัด
+	Content-Aware Fill needs a selection on a pixel layer	Content-Aware Fill จำเป็นต้องเลือกบนเลเยอร์พิกเซล
+	Contrasty	คอนทราสต์
+	Convert	แปลง
+	Convert to Alpha Channel	แปลงเป็นช่องอัลฟ่า
+	Convert to Linked	แปลงเป็นลิงค์
+	Convert to Profile	แปลงเป็นโปรไฟล์
+	Cool	เจ๋ง
+	Cooling L B B	ระบายความร้อน L B B
+	Cooling80	คูลลิ่ง80
+	Cooling82	คูลลิ่ง82
+	Copy Complete Stroke	คัดลอกจังหวะที่สมบูรณ์
+	Copy Fill	คัดลอกเติม
+	Copyright Url	URL ลิขสิทธิ์
+	Correct C A	ถูกต้อง C A
+	Correct Distortion	การบิดเบือนที่ถูกต้อง
+	Correct Vignette	วิกเน็ตต์ที่ถูกต้อง
+	Could not rename the action: {error}	ไม่สามารถเปลี่ยนชื่อการดำเนินการ: {error}
+	Could not transform: the layer is empty	ไม่สามารถแปลง: เลเยอร์ว่างเปล่า
+	Could not use Perspective Warp: the layer is empty	ไม่สามารถใช้ Perspective Warp ได้: เลเยอร์ว่างเปล่า
+	Could not use Puppet Warp: no opaque pixels	ไม่สามารถใช้ Puppet Warp: ไม่มีพิกเซลทึบแสง
+	Could not use Puppet Warp: the layer is empty	ไม่สามารถใช้ Puppet Warp ได้: เลเยอร์ว่างเปล่า
+	Couldn't open {name}: {error}	ไม่สามารถเปิด {name}: {error}
+	Couldn't save preferences: {error}. Retrying…	ไม่สามารถบันทึกการตั้งค่า: {error} กำลังลองอีกครั้ง…
+	Crack Brightness	แตกความสว่าง
+	Crack Depth	ความลึกของรอยแตก
+	Crack Spacing	ระยะห่างของรอยแตก
+	Craquelure	คราเกวร์
+	Create By	สร้างโดย
+	Create Vector Mask	สร้างมาสก์เวกเตอร์
+	Create Warped Text	สร้างข้อความบิดเบี้ยว
+	Create a new layer  (⇧⌘N)	สร้างเลเยอร์ใหม่ (⇧⌘N)
+	Create new brush from the current settings	สร้างแปรงใหม่จากการตั้งค่าปัจจุบัน
+	Create new brush preset from the current settings	สร้างแปรงที่ตั้งไว้ล่วงหน้าใหม่จากการตั้งค่าปัจจุบัน
+	Create…	สร้าง…
+	Cross Process	ข้ามกระบวนการ
+	Crosshatch	ครอสแฮทช์
+	Crosswise	ขวาง
+	Crystallize	ตกผลึก
+	Currency	สกุลเงิน
+	Curve Darks	เส้นโค้งความมืด
+	Curve Highlights	จุดเด่นของเส้นโค้ง
+	Curve Lights	ไฟโค้ง
+	Curve Shadows	เงาโค้ง
+	Curve Splits	การแยกส่วนโค้ง
+	Custom Branch Color	สีสาขาที่กำหนดเอง
+	Custom Pixel Aspect Ratio	อัตราส่วนพิกเซลแบบกำหนดเอง
+	Custom pattern	รูปแบบที่กำหนดเอง
+	Cutout	คัตเอาท์
+	Cw	ตาม
+	Cyans	สีฟ้า
+	Cyrillic	ซีริลลิก
+	Daisies	ดอกเดซี่
+	Dark Gray	สีเทาเข้ม
+	Dark Intensity	ความเข้มของความมืด
+	Dark Rough	เข้มหยาบ
+	Dark Strokes	จังหวะมืด
+	Darken Only	เข้มขึ้นเท่านั้น
+	Darkness	ความมืด
+	Data	ข้อมูล
+	Data Set: {name}  ({index}/{total})	ชุดข้อมูล: {name} ({index}/{total})
+	Data Sets as Files	ชุดข้อมูลเป็นไฟล์
+	Date	วันที่
+	Day For Night	วันคืน
+	De-Interlace	เดอ-อินเทอร์เลซ
+	Decrease Brush Hardness	ลดความแข็งของแปรง
+	Decrease Brush Size	ลดขนาดแปรง
+	Decrease Type Size	ลดขนาดตัวอักษร
+	Decrease Type Size by 10	ลดขนาดตัวอักษรลง 10
+	Deep	ลึก
+	Deep Blue	ดีพบลู
+	Deep Emerald	มรกตลึก
+	Deep Red	สีแดงเข้ม
+	Deep Yellow	สีเหลืองเข้ม
+	Default Foreground and Background Colors	สีพื้นหน้าและพื้นหลังเริ่มต้น
+	Default Leaves	ใบเริ่มต้น
+	Defaults	ค่าเริ่มต้น
+	Define Brush Preset	กำหนดพรีเซ็ตแปรง
+	Define Custom Shape	กำหนดรูปร่างที่กำหนดเอง
+	Define Pattern	กำหนดรูปแบบ
+	Definition	คำนิยาม
+	Defringe	ละลาย
+	Degrees	องศา
+	Delete Channel	ลบช่อง
+	Delete Mask	ลบมาสก์
+	Delete Workspace	ลบพื้นที่ทำงาน
+	Delete brush	ลบแปรง
+	Delete path	ลบเส้นทาง
+	Delete vector mask	ลบมาสก์เวกเตอร์
+	Delete…	ลบ…
+	Depth Map	แผนที่ความลึก
+	Depth Mode	โหมดความลึก
+	Diameter	เส้นผ่านศูนย์กลาง
+	Diffuse	กระจาย
+	Diffuse Glow	กระจายแสง
+	Direction	ทิศทาง
+	Direction Balance	ทิศทางสมดุล
+	Disable	ปิดการใช้งาน
+	Disable Mask	ปิดการใช้งานมาสก์
+	Disable Symmetry Path	ปิดการใช้งานเส้นทางสมมาตร
+	Disabled	ปิดการใช้งาน
+	Discard Changes	ยกเลิกการเปลี่ยนแปลง
+	Displace	แทนที่
+	Display	จอแสดงผล
+	Display profile not used	ไม่ได้ใช้โปรไฟล์การแสดง
+	Display profiles: {reason}	แสดงโปรไฟล์: {reason}
+	Display-p3	จอแสดงผล-p3
+	Distance	ระยะทาง
+	Distortion	การบิดเบือน
+	Distribution	การกระจายสินค้า
+	Do you want to save you made to “{name}” before quitting?	คุณต้องการที่จะบันทึกสิ่งที่คุณทำกับ “{name}” ก่อนที่จะเลิกหรือไม่?
+	Document Sizes	ขนาดเอกสาร
+	Documentation	เอกสารประกอบ
+	Documents	เอกสาร
+	Dont Enlarge	อย่าขยาย
+	Dot	จุด
+	Double Line	เส้นคู่
+	Down	ลง
+	Draft	ร่าง
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels
+	Drag: draw freehand · Release on the start point: close	ลาก: วาดด้วยมือเปล่า · ปล่อยที่จุดเริ่มต้น: ปิด
+	Driver: {driver}	Driver: {driver}
+	Dry Brush	แปรงแห้ง
+	Duplicate Channel	ช่องที่ซ้ำกัน
+	Duplicate Layers	ทำซ้ำเลเยอร์
+	Duplication	การทำสำเนา
+	Dust & Scratches	ฝุ่นและรอยขีดข่วน
+	Edge	ขอบ
+	Edge Brightness	ความสว่างของขอบ
+	Edge Extension	ส่วนขยายขอบ
+	Edge Fidelity	ความเที่ยงตรงของขอบ
+	Edge Intensity	ความเข้มของขอบ
+	Edge Only	ขอบเท่านั้น
+	Edge Simplicity	ความเรียบง่ายแบบขอบ
+	Edge Thickness	ความหนาของขอบ
+	Edge Width	ความกว้างของขอบ
+	Edit Toolbar	แก้ไขแถบเครื่องมือ
+	Edit…	แก้ไข…
+	Elevation	ระดับความสูง
+	Eliminate	กำจัด
+	Emboss	ลายนูน
+	Enable	เปิดใช้งาน
+	Enable Mask	เปิดใช้งานมาสก์
+	End X	สิ้นสุด X
+	End Y	จบ Y
+	Enlarged	ขยายใหญ่ขึ้น
+	Erase with Brush or Pencil (hold)	ลบด้วยแปรงหรือดินสอ (กดค้างไว้)
+	Error	เกิดข้อผิดพลาด
+	Even Fields	แม้กระทั่งฟิลด์
+	Exit Quick Mask	ออกจาก Quick Mask
+	Expand group  (⌥-click: all groups)	ขยายกลุ่ม (⌥-คลิก: ทุกกลุ่ม)
+	Export As	ส่งออกเป็น
+	Export As: {name}	ส่งออกเป็น: {name}
+	Export Contents	ส่งออกเนื้อหา
+	Export Image	ส่งออกภาพ
+	Export Options	ตัวเลือกการส่งออก
+	Export Preferences	การตั้งค่าการส่งออก
+	Export Settings	การตั้งค่าการส่งออก
+	Export to	ส่งออกไปที่
+	Export/Import Presets	ส่งออก/นำเข้าค่าที่ตั้งล่วงหน้า
+	Exported contents to {path}	เนื้อหาที่ส่งออกไปยัง {path}
+	Exported presets to {path}	ส่งออกค่าที่กำหนดล่วงหน้าไปยัง {path}
+	Exported {path}	ส่งออก {path} แล้ว
+	Exported {path} ({size})	ส่งออก {path} ({size})
+	Exporting…	กำลังส่งออก…
+	ExtraBold	โดดเด่นเป็นพิเศษ
+	ExtraLight	เอ็กซ์ตร้าไลท์
+	Extrude	ขับไล่
+	Fade	จางลง
+	Faded Film	ฟิล์มซีด
+	Failed	ล้มเหลว
+	Failed to open file	ไม่สามารถเปิดไฟล์ได้
+	Failed to save file	ไม่สามารถบันทึกไฟล์ได้
+	Fallback: {reason}	Fallback: {reason}
+	Feather Radius	รัศมีขนนก
+	Fiber Length	ความยาวไฟเบอร์
+	Fibers	เส้นใย
+	Field Blur	สนามเบลอ
+	File Format	รูปแบบไฟล์
+	File Info	ข้อมูลไฟล์
+	File Name	ชื่อไฟล์
+	File Size	ขนาดไฟล์
+	File not found	ไม่พบไฟล์
+	Filename	ชื่อไฟล์
+	Fill Color	เติมสี
+	Fill Opacity	เติมความทึบ
+	Fill Path…	เติมเส้นทาง…
+	Fill path with foreground color	เติมเส้นทางด้วยสีพื้นหน้า
+	Fill with Background Color	เติมสีพื้นหลัง
+	Fill with Background Color, Preserve Transparency	เติมสีพื้นหลัง คงความโปร่งใส
+	Fill with Foreground Color	เติมสีพื้นหน้า
+	Fill with Foreground Color, Preserve Transparency	เติมสีพื้นหน้า รักษาความโปร่งใส
+	Film Grain	เนื้อฟิล์ม
+	Filter Gallery	แกลเลอรีฟิลเตอร์
+	Find	ค้นหา
+	Find and Replace Text	ค้นหาและแทนที่ข้อความ
+	Fine	ก็ได้
+	Fine Dots	จุดละเอียด
+	Finish	เสร็จสิ้น
+	Fit Image	พอดีภาพ
+	Fit to Window	พอดีกับหน้าต่าง
+	Flame	เปลวไฟ
+	Flame Bottom Alignment	การจัดตำแหน่งด้านล่างของเปลวไฟ
+	Flame Lines	เส้นเปลวไฟ
+	Flame Shape	รูปร่างเปลวไฟ
+	Flame Style	สไตล์เปลวไฟ
+	Flame Type	ประเภทเปลวไฟ
+	Flat	แบน
+	Flat Shading	การแรเงาแบบแบน
+	Flower Color	สีดอกไม้
+	Focal Distance	ระยะโฟกัส
+	Focus	โฟกัส
+	Focus Area	พื้นที่โฟกัส
+	Foreground Level	ระดับเบื้องหน้า
+	Forward	ไปข้างหน้า
+	Forward Warp	วาร์ปไปข้างหน้า
+	Frame	กรอบ
+	Frame {current} / {total}	Frame {current} / {total}
+	Free Transform Path	เส้นทางการแปลงอิสระ
+	Freeze Lasso	ตรึง Lasso
+	Freeze Mask	แช่แข็งมาสก์
+	Fresco	ปูนเปียก
+	From	จาก
+	From Left	จากซ้าย
+	From Right	จากขวา
+	Frosted	ฝ้า
+	Full Screen	เต็มจอ
+	Fullscreen	เต็มจอ
+	Fuzziness	ความคลุมเครือ
+	GPU backend preference: {backend}	GPU backend preference: {backend}
+	GPU device was lost; using the CPU renderer.	อุปกรณ์ GPU สูญหาย โดยใช้ตัวเรนเดอร์ CPU
+	GPU error; using the CPU renderer.	ข้อผิดพลาดของ GPU; โดยใช้ตัวเรนเดอร์ CPU
+	GPU retry scheduled	กำหนดเวลาลอง GPU อีกครั้ง
+	Gamma	แกมมา
+	Gaussian Blur	เกาส์เซียนเบลอ
+	General Blending	การผสมทั่วไป
+	General Brushes	แปรงทั่วไป
+	Generators	เครื่องกำเนิดไฟฟ้า
+	Generic	ทั่วไป
+	Glass	แก้ว
+	Global Light	โกลบอลไลท์
+	Gloss	เงา
+	Glow Amount	ปริมาณเรืองแสง
+	Glow Brightness	ความสว่างสดใส
+	Glow Size	ขนาดเรืองแสง
+	Glowing Edges	ขอบเรืองแสง
+	Good	ดี
+	Grade Balance	เกรดคงเหลือ
+	Grade Blending	การผสมเกรด
+	Grade Global	เกรดระดับโลก
+	Grade Highlights	จุดเด่นของเกรด
+	Grade Midtones	เกรดมิดโทน
+	Grade Shadows	เกรดเงา
+	Gradient Options	ตัวเลือกการไล่ระดับสี
+	Grain Amount	ปริมาณเมล็ดพืช
+	Grain Roughness	ความหยาบของเมล็ดข้าว
+	Grain Size	ขนาดเกรน
+	Grain Type	ประเภทเกรน
+	Graininess	ความหยาบ
+	Grainy Dots	จุดหยาบ
+	Graphics adapter	อะแดปเตอร์กราฟิก
+	Graphics adapter: {adapter}	Graphics adapter: {adapter}
+	Gray-gamma-2.2	สีเทาแกมมา-2.2
+	Greek	ภาษากรีก
+	Greens	ผักใบเขียว
+	Grid  (⌘')	ตาราง (⌘')
+	Grid view	มุมมองตาราง
+	Group from Layers	จัดกลุ่มจากเลเยอร์
+	Groups	กลุ่ม
+	Grout Width	ความกว้างของยาแนว
+	Guide Layout…	เค้าโครงคำแนะนำ…
+	HDR Toning	การปรับสี HDR
+	Hand Tool (hold)	เครื่องมือช่าง (กดค้างไว้)
+	Hearts	หัวใจ
+	Heptagon	เจ็ดเหลี่ยม
+	Hexagon	หกเหลี่ยม
+	Hidden	ซ่อนเร้น
+	Hide Grid	ซ่อนกริด
+	Hide Others	ซ่อนผู้อื่น
+	Hide the layer's effects  (⌥-click: all layers)	ซ่อนเอฟเฟกต์ของเลเยอร์ (⌥-คลิก: ทุกเลเยอร์)
+	Hide {app}	Hide {app}
+	High Pass	ผ่านสูง
+	Highlight	ไฮไลท์
+	Highlight Amount	เน้นจำนวนเงิน
+	Highlight Area	พื้นที่ไฮไลท์
+	Highlight Radius	เน้นรัศมี
+	Highlight Strength	ไฮไลท์ความแกร่ง
+	Highlight Tone	ไฮไลท์โทน
+	Highlights from:	ไฮไลท์จาก:
+	Horizontal Distortion	การบิดเบือนแนวนอน
+	Horizontal Only	แนวนอนเท่านั้น
+	Horizontal scale	ขนาดแนวนอน
+	Horizontal type	ประเภทแนวนอน
+	Hotspot	ฮอตสปอต
+	Hsb	ฮสบ
+	Hsl	HSL
+	Hsl Hue	Hsl เว้
+	Hsl Lum	ซล ลัม
+	Hsl Sat	วันเสาร์
+	Image Balance	ความสมดุลของภาพ
+	Image Processor	หน่วยประมวลผลภาพ
+	Image compositor: {processor}	Image compositor: {processor}
+	Import Brushes	นำเข้าแปรง
+	Import Brushes… (.abr)	นำเข้าแปรง… (.abr)
+	Import Image	นำเข้าภาพ
+	Import Options	ตัวเลือกการนำเข้า
+	Import Photoshop brushes (.abr)	นำเข้าแปรง Photoshop (.abr)
+	Import Settings	นำเข้าการตั้งค่า
+	Importing {what} from {file}…	กำลังนำเข้า {what} จาก {file}…
+	Importing…	กำลังนำเข้า…
+	In Black	สีดำ
+	In White	ในสีขาว
+	Increase Brush Hardness	เพิ่มความแข็งของแปรง
+	Demosaic	เดโมซาอิก
+	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	วิธีการเติมโมเสกฟิลเตอร์สีของกล้อง จะถูกนำไปใช้เมื่อไฟล์เปิดขึ้น การแสดงตัวอย่างจะแสดงวิธีการเปิดด้วย
+	AHD (adaptive homogeneity)	AHD (ความสม่ำเสมอแบบปรับตัว)
+	Malvar–He–Cutler	มัลวาร์–เฮ–คัทเลอร์
+	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	ฮิราคาวะ–สวนสาธารณะ: ขอบที่สะอาดที่สุดและมีขอบสีน้อยที่สุดคือช้าที่สุด
+	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	การประมาณค่าแบบแก้ไขด้วยการไล่ระดับสี: คมชัดและรวดเร็ว โดยมีขอบสีบางส่วนในรายละเอียดที่ละเอียด
+	The fastest and the softest, with colour fringing on fine detail.	เร็วที่สุดและนุ่มนวลที่สุด พร้อมการไล่สีในรายละเอียดที่ละเอียด
+	“{name}” already exists. Replace it?	“{name}” มีอยู่แล้ว แทนที่มัน?
+	The name in the save dialog was “{name}”.	ชื่อในกล่องโต้ตอบบันทึกคือ “{name}”
+	Move Up	เลื่อนขึ้น
+	Move Down	เลื่อนลง
+	Previous Brush	แปรงก่อนหน้า
+	Next Brush	แปรงถัดไป
+	First Brush	แปรงครั้งแรก
+	Last Brush	แปรงสุดท้าย
+	Preview size	ขนาดตัวอย่าง
+	Memory Usage	การใช้หน่วยความจำ
+	Per-document RAM limit (MB)	ขีดจำกัด RAM ต่อเอกสาร (MB)
+	Installed RAM: {ram} MB; this limit: {percent}%	RAM ที่ติดตั้ง: {ram} MB; ขีดจำกัดนี้: {percent}%
+	Limits each open document's pixels plus History. Oldest undo states are discarded when the limit is exceeded.	จำกัดพิกเซลของเอกสารที่เปิดอยู่แต่ละรายการพร้อมประวัติ สถานะการเลิกทำที่เก่าที่สุดจะถูกละทิ้งเมื่อเกินขีดจำกัด
+	Applies immediately when saved. Memory is not reserved in advance.	นำไปใช้ทันทีเมื่อบันทึก หน่วยความจำไม่ได้ถูกจองล่วงหน้า
+	With GPU Memory set to Automatic, this also limits the GPU layer budget. That budget is capped at one quarter of installed RAM and, when known, three eighths of the graphics card's memory, with a 512 MB minimum. Raising this limit beyond those caps does not increase the GPU budget.	เมื่อตั้งค่าหน่วยความจำ GPU เป็นอัตโนมัติ จะเป็นการจำกัดงบประมาณเลเยอร์ GPU ด้วย งบประมาณดังกล่าวถูกจำกัดไว้ที่หนึ่งในสี่ของ RAM ที่ติดตั้ง และเมื่อทราบแล้ว ก็คือสามในแปดของหน่วยความจำของกราฟิกการ์ด โดยมีขั้นต่ำ 512 MB การเพิ่มขีดจำกัดนี้เกินขีดจำกัดจะไม่เพิ่มงบประมาณ GPU
+	Command	คำสั่ง
+	Use	ใช้
+	In Front	ข้างหน้า
+	Behind	ด้านหลัง
+
+# DDS Options (#1327)
+	DDS Options	ตัวเลือก ท.บ
+	Compression	การบีบอัด
+	Generate Mipmaps	สร้าง Mipmap
+
+# Color Table (.act) dialog
+	There is no color table to save.	ไม่มีตารางสีให้บันทึก
+@plural	Saved {n} color to {file}|Saved {n} colors to {file}	บันทึก {n} สีลงใน {file}
+
+# Graphics Adapter preference (#1885)
+	GPU adapter	อะแดปเตอร์จีพียู
+
+# Styles panel: Import / Export Styles (.asl)
+	Import Styles…	นำเข้าสไตล์…
+	Export Selected Styles…	ส่งออกสไตล์ที่เลือก…
+	Export Styles…	ส่งออกรูปแบบ…
+	{file} is not a style library (.asl)	{file} ไม่ใช่ไลบรารีสไตล์ (.asl)
+@plural	Imported {n} style from {file}|Imported {n} styles from {file}	นำเข้า {n} สไตล์จาก {file}
+@plural	Exported {n} style to {file}|Exported {n} styles to {file}	ส่งออก {n} สไตล์ไปยัง {file}
+# Actions: a step dialog holds a suspended recording (#7365)
+	Confirm or cancel the open action step dialog first	ยืนยันหรือยกเลิกกล่องโต้ตอบขั้นตอนการดำเนินการที่เปิดอยู่ก่อน
+	Pro Medium Gray	โปรมีเดียมเกรย์
+	Solarized	แสงอาทิตย์
+	Breeze	สายลม
+	Pro Light Gray	โปร เทาอ่อน
+	Pro Light	โปร ไลท์
+	Resize Windows to Fit	ปรับขนาด Windows ให้พอดี
+	EXR	อีเอ็กซ์อาร์
+	Increase Brush Size	เพิ่มขนาดแปรง
+	Increase Type Size	เพิ่มขนาดตัวอักษร
+	Increase Type Size by 10	เพิ่มขนาดตัวอักษร 10
+	Indent first line	เยื้องบรรทัดแรก
+	Indent left margin	เยื้องขอบด้านซ้าย
+	Indent right margin	เยื้องระยะขอบขวา
+	Indexed	จัดทำดัชนีแล้ว
+	Infinite	อนันต์
+	Information	ข้อมูล
+	Initial Direction	ทิศทางเริ่มต้น
+	Ink Outlines	โครงร่างหมึก
+	Inner Bevel	เอียงด้านใน
+	Input	อินพุต
+	Input Levels	ระดับอินพุต
+	Input Mode	โหมดอินพุต
+	Install Plug-in	ติดตั้งปลั๊กอิน
+	Intensity	ความเข้ม
+	Intent	เจตนา
+	Interpret Footage	ตีความภาพ
+	Intersect with selection  (⇧⌥)	ตัดกับส่วนที่เลือก (⇧⌥)
+	Interval	ช่วงเวลา
+	Invalid panel layout; restored the default dock	เค้าโครงแผงไม่ถูกต้อง คืนค่าท่าเรือเริ่มต้น
+	Invert Mask	กลับด้านมาสก์
+	Invert Selection	สลับการเลือก
+	Iris Blur	ไอริสเบลอ
+	Ivy	ไอวี่
+	Jag	จ๋า
+	Join the ArtCraft Discord	เข้าร่วม ArtCraft Discord
+	Join the ArtCraft Discord ({url})	เข้าร่วม ArtCraft Discord ({url})
+	Keeps the current texture when switching presets.	คงพื้นผิวปัจจุบันไว้เมื่อเปลี่ยนค่าที่ตั้งล่วงหน้า
+	Kernel	เคอร์เนล
+	Kerning: Metrics, Optical or a value in 1/1000 em (Alt+←/→ at the caret)	การจัดช่องไฟ: เมตริก ออปติคัล หรือค่าในหน่วย 1/1000 em (Alt+←/→ ที่เครื่องหมายรูปหมวก)
+	Keyboard	คีย์บอร์ด
+	Lab	แล็บ
+	Landscape, 10 x 8	แนวนอน 10 x 8
+	Landscape, 6 x 4	แนวนอน 6 x 4
+	Landscape, 7 x 5	แนวนอน 7 x 5
+	Latin 1	ละติน 1
+	Latin Extended-A	ละตินขยาย-A
+	Latin Extended-B	ละตินขยาย-B
+	Layer Comps to Files	เลเยอร์ Comps เป็นไฟล์
+	Layer Content Options	ตัวเลือกเนื้อหาเลเยอร์
+	Layer Count	จำนวนเลเยอร์
+	Layer From Background	เลเยอร์จากพื้นหลัง
+	Layer Knocks Out Drop Shadow	เลเยอร์ทำให้ Drop Shadow หลุดออกมา
+	Layer Mask Hides Effects	Layer Mask ซ่อนเอฟเฟกต์
+	Layer Properties	คุณสมบัติของเลเยอร์
+	Layer Styles	สไตล์เลเยอร์
+	Layer from Background	เลเยอร์จากพื้นหลัง
+	Layers to Files	เลเยอร์เป็นไฟล์
+	Layout	เค้าโครง
+	Leading (set to the font size × auto-leading when Auto)	นำหน้า (ตั้งค่าเป็นขนาดตัวอักษร × นำหน้าอัตโนมัติเมื่ออัตโนมัติ)
+	Leaf Color	สีใบ
+	Learn More	เรียนรู้เพิ่มเติม
+	Leaves Amount	จำนวนใบ
+	Leaves Color	สีใบ
+	Leaves Size	ขนาดใบ
+	Left Diagonal	เส้นทแยงมุมซ้าย
+	Legacy	มรดก
+	Legal	กฎหมาย
+	Lens Blur	เลนส์เบลอ
+	Lens Correction	การแก้ไขเลนส์
+	Lens Flare	เลนส์แฟลร์
+	Less	น้อยลง
+	Letter	จดหมาย
+	Level Based	ตามระดับ
+	Library	ห้องสมุด
+	Light Dark Balance	สมดุลแสงมืด
+	Light Direction	ทิศทางแสง
+	Light Intensity	ความเข้มของแสง
+	Light Rough	หยาบเบา
+	Light Type	ประเภทแสง
+	Light X	ไลท์ เอ็กซ์
+	Light Y	ไลท์ วาย
+	Light Z	ไลท์ ซี
+	Lighten Grout	ยาแนวเบาลง
+	Lighten Only	เบาลงเท่านั้น
+	Lighting	แสงสว่าง
+	Lighting Effects	เอฟเฟกต์แสง
+	Linear Dodge	ลิเนียร์ดอดจ์
+	Linear Height	ความสูงเชิงเส้น
+	Linear-srgb	Linear-srgb
+	Link	ลิงค์
+	Liquify	ทำให้เป็นของเหลว
+	List	รายการ
+	List view	มุมมองรายการ
+	Live Preview	ดูตัวอย่างสด
+	Load 3D LUT	โหลด 3D LUT
+	Load Files into Stack	โหลดไฟล์ลงในสแต็ก
+	Load path as a selection	โหลดเส้นทางเป็นตัวเลือก
+	Loading…	กำลังโหลด…
+	Lock All	ล็อคทั้งหมด
+	Lock Image Pixels	ล็อคพิกเซลภาพ
+	Lock Position	ตำแหน่งล็อค
+	Lock Transparent Pixels	ล็อคพิกเซลโปร่งใส
+	Locked	ล็อคแล้ว
+	Long Lines	เส้นยาว
+	Long Strokes	จังหวะยาว
+	Lorem Ipsum	ลอเรม อิปซัม
+	Lower	ล่าง
+	Lum	ลุม
+	Lut	ลุต
+	Magentas	สีม่วงแดง
+	Make Selection from Path	ทำการเลือกจากเส้นทาง
+	Make Selection…	ทำการเลือก…
+	Make Symmetry Path	สร้างเส้นทางสมมาตร
+	Make Work Path…	สร้างเส้นทางการทำงาน…
+	Make work path from selection	สร้างเส้นทางการทำงานจากการคัดเลือก
+	Manual	คู่มือ
+	Map Document	เอกสารแผนที่
+	Map Layer	เลเยอร์แผนที่
+	Map Path	เส้นทางแผนที่
+	Mask Channel	ช่องมาสก์
+	Mask Incomplete Blocks	มาสก์บล็อกที่ไม่สมบูรณ์
+	Mask None	มาสก์ ไม่มี
+	Masks	มาสก์
+	Match Color	จับคู่สี
+	Math Symbols	สัญลักษณ์ทางคณิตศาสตร์
+	Max Offset	แม็กซ์ออฟเซ็ต
+	Max Radius	รัศมีสูงสุด
+	Measurement Scale	สเกลการวัด
+	Measurement Scale Marker	เครื่องหมายมาตราส่วนการวัด
+	Medium Dots	จุดกลาง
+	Medium Gray	สีเทากลาง
+	Medium Lines	เส้นกลาง
+	Medium Strokes	จังหวะปานกลาง
+	Merge Channels…	รวมช่อง…
+	Merge Spot Channel	รวมช่องสปอต
+	Merge to HDR Pro	ผสานเป็น HDR Pro
+	Metallic	เมทัลลิค
+	Metrics	เมตริก
+	Mezzotint	เมซโซตินท์
+	Middle	กลาง
+	Midtone	มิดโทน
+	Monitor Profile	ตรวจสอบโปรไฟล์
+	Monitor profile in use on {display}: {profile}	ตรวจสอบโปรไฟล์ที่ใช้งานบน {display}: {profile}
+	Monitor profile in use: {profile}	ตรวจสอบโปรไฟล์ที่ใช้งานอยู่: {profile}
+	Monitor profile on {display} (main window): {profile}	ตรวจสอบโปรไฟล์บน {display} (หน้าต่างหลัก): {profile}
+	Monitor profile on {display}: {profile}	ตรวจสอบโปรไฟล์บน {display}: {profile}
+	Monitor profile: {profile}	ตรวจสอบโปรไฟล์: {profile}
+	Mono Contrast	คอนทราสต์โมโน
+	Monochromatic	สีเดียว
+	More	เพิ่มเติม
+	Mosaic	โมเสก
+	Mosaic Tiles	กระเบื้องโมเสก
+	Motion Blur	โมชั่นเบลอ
+	Mouse	เม้าส์
+	Move Layer	ย้ายเลเยอร์
+	Movie Prime	หนังไพร์ม
+	Multiple Flames Along Path	เปลวไฟหลายลูกตามเส้นทาง
+	Multiple Flames One Direction	เปลวไฟหลายดวงในทิศทางเดียว
+	Multiple Flames Path Directions	ทิศทางเส้นทางเปลวไฟหลายจุด
+	Multiple Flames Various Length	เปลวไฟหลายลูก ความยาวหลากหลาย
+	My Brushes	แปรงของฉัน
+	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or run PhotoCraft under XWayland with `WAYLAND_DISPLAY= photocraft`.	Wayland ยังไม่รองรับการลากและวางไฟล์เนทิฟ ใช้ไฟล์ › เปิดหรือเรียกใช้ PhotoCraft ภายใต้ XWayland ด้วย `WAYLAND_DISPLAY= photocraft`
+	Nearest	ใกล้ที่สุด
+	Neon Glow	นีออนโกลว์
+	Neutralize	ทำให้เป็นกลาง
+	Neutrals	ความเป็นกลาง
+	New Brush Preset	พรีเซ็ตแปรงใหม่
+	New Channel…	ช่องใหม่…
+	New Guide	คู่มือใหม่
+	New Guide Layout	เค้าโครงคำแนะนำใหม่
+	New Spot Channel…	ช่องสปอตใหม่…
+	New Video Layer from File	เลเยอร์วิดีโอใหม่จากไฟล์
+	New Window	หน้าต่างใหม่
+	New Workspace	พื้นที่ทำงานใหม่
+	New document	เอกสารใหม่
+	New document…	เอกสารใหม่…
+	New document…     ⌘N	เอกสารใหม่… ⌘N
+	Next	ถัดไป
+	No Document	ไม่มีเอกสาร
+	No Image	ไม่มีภาพ
+	No Layers	ไม่มีเลเยอร์
+	No Results	ไม่มีผลลัพธ์
+	No Results Found	ไม่พบผลลัพธ์
+	No Selection	ไม่มีการคัดเลือก
+	No custom shape "{name}": pick one in the options bar or Window › Shapes	ไม่มีรูปร่างที่กำหนดเอง "{name}": เลือกหนึ่งรูปร่างในแถบตัวเลือกหรือหน้าต่าง › รูปร่าง
+	No layers	ไม่มีเลเยอร์
+	No recent files	ไม่มีไฟล์ล่าสุด
+	No selection	ไม่มีการเลือก
+	Noise Color	เสียงรบกวนสี
+	Noise Color Detail	รายละเอียดสีเสียงรบกวน
+	Noise Luminance	ความสว่างของสัญญาณรบกวน
+	Noise Luminance Detail	รายละเอียดความสว่างของสัญญาณรบกวน
+	Nothing to Redo	ไม่มีอะไรจะทำซ้ำ
+	Nothing to Undo	ไม่มีอะไรจะเลิกทำ
+	Nothing to paste: the clipboard holds no image	ไม่มีอะไรจะวาง: คลิปบอร์ดไม่มีภาพ
+	Number Of Levels	จำนวนระดับ
+	Numbers	ตัวเลข
+	Ocean Ripple	ระลอกคลื่นมหาสมุทร
+	Octagon	แปดเหลี่ยม
+	Odd Fields	สนามคี่
+	Oil Paint	สีน้ำมัน
+	On	เปิด
+	One Flame Along Path	เปลวไฟหนึ่งดวงตามเส้นทาง
+	Open As	เปิดเป็น
+	Open File	เปิดไฟล์
+	Open Folder	เปิดโฟลเดอร์
+	Open Image	เปิดภาพ
+	Open Recent is unavailable on the web	เปิดล่าสุดไม่พร้อมใช้งานบนเว็บ
+	Opened {url}	เปิดแล้ว {url}
+	Opening	กำลังเปิด
+	Open…     ⌘O	เปิด… ⌘O
+	Operation canceled	การดำเนินการถูกยกเลิก
+	Operation cancelled	การดำเนินการถูกยกเลิก
+	Operation completed	การดำเนินการเสร็จสมบูรณ์
+	Operation failed	การดำเนินการล้มเหลว
+	Optical	ออปติคัล
+	Original Ratio	อัตราส่วนเดิม
+	Out Black	ออกสีดำ
+	Out From Center	ออกจากศูนย์
+	Out Of Gamut	ออกจากขอบเขต
+	Out White	ออกขาว
+	Out of memory	หน่วยความจำไม่เพียงพอ
+	Outer Bevel	เอียงด้านนอก
+	Output Levels	ระดับเอาท์พุท
+	Oval	วงรี
+	Overlay Edge	ขอบซ้อนทับ
+	Overlay: Rule of Thirds	ภาพซ้อนทับ: กฎสามส่วน
+	PSD	พีเอสดี
+	Package	แพ็คเกจ
+	Page Setup…	การตั้งค่าหน้า…
+	Paint Daubs	ทาสีแต้ม
+	Paints from the document's opening state	สีจากสถานะเปิดเอกสาร
+	Palette Knife	มีดแผงสี
+	Panel	แผง
+	Paper	กระดาษ
+	Paper Brightness	ความสว่างของกระดาษ
+	Parallel	ขนาน
+	Paste Complete Stroke	วางจังหวะที่สมบูรณ์
+	Paste Fill	วางเติม
+	Patchwork	การเย็บปะติดปะต่อกัน
+	Path Blur	เส้นทางเบลอ
+	Paths to Illustrator	เส้นทางสู่ Illustrator
+	Pattern Fill…	เติมลวดลาย…
+	Pattern Type	ประเภทรูปแบบ
+	Pencil Width	ความกว้างของดินสอ
+	Pentagon	เพนตากอน
+	Percentage	เปอร์เซ็นต์
+	Permission denied	การอนุญาตถูกปฏิเสธ
+	PhotoCraft keeps retrying; until a save succeeds, preference changes are lost when it closes.	PhotoCraft พยายามอีกครั้ง จนกว่าการบันทึกจะสำเร็จ การเปลี่ยนแปลงการตั้งค่าจะสูญหายไปเมื่อปิด
+	Photomerge	ผสานภาพ
+	Pick Color From Image	เลือกสีจากภาพ
+	Picture Frame	กรอบรูป
+	Pillow Emboss	หมอนลายนูน
+	Pinch	หยิก
+	Pins	หมุด
+	Place Embedded	สถานที่ฝังตัว
+	Place Linked	สถานที่ที่เชื่อมโยง
+	Place Scale Marker	วางเครื่องหมายมาตราส่วน
+	Plane	ระนาบ
+	Planes	ระนาบ
+	Plastic Wrap	พลาสติกห่อ
+	Platform: {os} {arch}	แพลตฟอร์ม: {os} {arch}
+	Please wait…	กรุณารอสักครู่…
+	Point	จุด
+	Point Curve	เส้นโค้งจุด
+	Point Curve Blue	จุดโค้งสีน้ำเงิน
+	Point Curve Green	จุดโค้งสีเขียว
+	Point Curve Red	จุดโค้งสีแดง
+	Pointed	ชี้
+	Pointillize	ชี้นิ้ว
+	Polar Coordinates	พิกัดเชิงขั้ว
+	Polar To Rectangular	ขั้วเป็นสี่เหลี่ยม
+	Policy Cmyk	นโยบาย CMYK
+	Policy Gray	นโยบายสีเทา
+	Policy Rgb	นโยบาย RGB
+	Pond Ripples	ระลอกคลื่น
+	Portrait, 4 x 6	แนวตั้ง, 4 x 6
+	Portrait, 5 x 7	แนวตั้ง 5 x 7
+	Postcard	โปสการ์ด
+	Poster	โปสเตอร์
+	Poster Edges	ขอบโปสเตอร์
+	Posterization	การทำโปสเตอร์
+	Preferences can't be saved	ไม่สามารถบันทึกการตั้งค่าได้
+	Preferences saved	บันทึกการตั้งค่าแล้ว
+	Preferences were reset: {error}	ค่ากำหนดถูกรีเซ็ต: {error}
+	Preferences…	การตั้งค่า…
+	Preserve	อนุรักษ์
+	Preset Manager	ผู้จัดการที่ตั้งไว้ล่วงหน้า
+	Press keys	กดปุ่ม
+	Preview Image	ดูตัวอย่างภาพ
+	Previous	ก่อนหน้า
+	Prime105	ไพรม์105
+	Prime35	ไพรม์35
+	Printed to {path}	พิมพ์ไปที่ {path}
+	Pro (Dark)	โปร (มืด)
+	Pro (Medium Gray)	Pro (สีเทากลาง)
+	Processing…	กำลังประมวลผล…
+	Profile	โปรไฟล์
+	Proof Setup…	การตั้งค่าการพิสูจน์…
+	Prophoto-compat	Prophoto-เข้ากันได้
+	Pucker	รอยย่น
+	Push Left	กดซ้าย
+	Pyramids	ปิรามิด
+	Quick Actions	การดำเนินการด่วน
+	Quit	เลิก
+	Quit PhotoCraft	ออกจากPhotoCraft
+	Quit {app}	Quit {app}
+	R G B	อาร์ จี บี
+	R g b	อาร์ จี บี
+	Radial	เรเดียล
+	Radial Blur	เรเดียลเบลอ
+	Radius X	รัศมี X
+	Radius Y	รัศมี Y
+	Ran script {name}	รันสคริปต์ {name}
+	Randomize Length	สุ่มความยาว
+	Randomize Shapes	สุ่มรูปร่าง
+	Rasterize Fill Content	เติมเนื้อหาแบบแรสเตอร์
+	Rasterize Smart Object	แรสเตอร์วัตถุอัจฉริยะ
+	Ratio	อัตราส่วน
+	Raw Defaults	ค่าเริ่มต้นดิบ
+	Reading	การอ่าน
+	Ready	พร้อม
+	Rec2020	Rec2020
+	Recent Files	ไฟล์ล่าสุด
+	Reconstruct All	สร้างใหม่ทั้งหมด
+	Recovered {name}	กู้คืน {name} แล้ว
+	Rectangular Selection	การเลือกสี่เหลี่ยม
+	Rectangular To Polar	สี่เหลี่ยมถึงขั้ว
+	Red Cyan	แดง ฟ้า
+	Reds	สีแดง
+	Reduce Color Noise	ลดสัญญาณรบกวนสี
+	Reduce Noise	ลดเสียงรบกวน
+	Reflected	สะท้อนออกมา
+	Relief	บรรเทา
+	Relink to File	เชื่อมโยงไปยังไฟล์
+	Remove All	ลบทั้งหมด
+	Remove Jpeg Artifact	ลบสิ่งประดิษฐ์ Jpeg
+	Rename Brush	เปลี่ยนชื่อแปรง
+	Rename Channel…	เปลี่ยนชื่อช่อง…
+	Rename Group	เปลี่ยนชื่อกลุ่ม
+	Rename Tool Preset	เปลี่ยนชื่อเครื่องมือที่ตั้งไว้ล่วงหน้า
+	Render Video	เรนเดอร์วิดีโอ
+	Rendering…	กำลังแสดงผล…
+	Reorder Layer	เรียงลำดับเลเยอร์ใหม่
+	Replace Color	เปลี่ยนสี
+	Replace Contents	แทนที่เนื้อหา
+	Replace Footage	แทนที่ภาพ
+	Report a Bug	รายงานข้อผิดพลาด
+	Report an Issue	รายงานปัญหา
+	Reset Alignment	รีเซ็ตการจัดตำแหน่ง
+	Reset All	รีเซ็ตทั้งหมด
+	Reset Preferences	รีเซ็ตการตั้งค่า
+	Resolve Missing Fonts	แก้ไขแบบอักษรที่หายไป
+	Restart	รีสตาร์ท
+	Restart Required	จำเป็นต้องรีสตาร์ท
+	Resume	ดำเนินการต่อ
+	Retry	ลองอีกครั้ง
+	Rgb	RGB
+	Ridges	สันเขา
+	Right Diagonal	เส้นทแยงมุมขวา
+	Ripple	ระลอกคลื่น
+	Ripple Magnitude	ขนาดระลอกคลื่น
+	Ripple Size	ขนาดระลอกคลื่น
+	Rope	เชือก
+	Roses	กุหลาบ
+	Rough Pastels	สีพาสเทลหยาบ
+	Row Order	ลำดับแถว
+	Rulers  (⌘R)	ผู้ปกครอง (⌘R)
+	Sample Size	ขนาดตัวอย่าง
+	Sampled Colors	สีตัวอย่าง
+	Sandstone	หินทราย
+	Sat	ส
+	Save As	บันทึกเป็น
+	Save Changes	บันทึกการเปลี่ยนแปลง
+	Save File	บันทึกไฟล์
+	Save Image	บันทึกภาพ
+	Save Path	บันทึกเส้นทาง
+	Save Pixel Aspect Ratio	บันทึกอัตราส่วนพิกเซล
+	Save a Copy	บันทึกสำเนา
+	Save before closing?	บันทึกก่อนปิด?
+	Save for Web (Legacy)	บันทึกสำหรับเว็บ (ดั้งเดิม)
+	Save your work and restart PhotoCraft to retry GPU acceleration. CPU rendering remains active for this session.	บันทึกงานของคุณและรีสตาร์ท PhotoCraft เพื่อลองเร่งความเร็ว GPU อีกครั้ง การเรนเดอร์ CPU ยังคงทำงานอยู่สำหรับเซสชันนี้
+	Saved a copy as {path}	บันทึกสำเนาเป็น {path}
+	Saved {path}; image assets: {n} in {dir}	Saved {path}; image assets: {n} in {dir}
+	Saving…	กำลังบันทึก…
+	Scale Effects	สเกลเอฟเฟกต์
+	Scaling	การปรับขนาด
+	Scallops	หอยเชลล์
+	Script Events Manager	ผู้จัดการกิจกรรมสคริปต์
+	Scroll menu down	เลื่อนเมนูลง
+	Scroll menu up	เลื่อนเมนูขึ้น
+	Search commands	คำสั่งค้นหา
+	Search commands (⌘K)	คำสั่งค้นหา (⌘K)
+	Search commands, tools and panels	ค้นหาคำสั่ง เครื่องมือ และแผงควบคุม
+	Search menus	เมนูค้นหา
+	Seed	เมล็ดพันธุ์
+	Select Custom Color…	เลือกสีที่กำหนดเอง…
+	Select Data Points	เลือกจุดข้อมูล
+	Select Layer	เลือกเลเยอร์
+	Select and Mask	เลือกและมาสก์
+	Color Aware	การรับรู้สี
+	Decontaminate Colors	กำจัดสีที่ปนเปื้อน
+	Edge Detection	การตรวจจับขอบ
+	Global Refinements	การปรับแต่งระดับโลก
+	High Quality Preview	ดูตัวอย่างคุณภาพสูง
+	Object Aware	วัตถุรับรู้
+	Object Aware needs a segmentation model, which isn't available yet	Object Aware จำเป็นต้องมีโมเดลการแบ่งส่วน ซึ่งยังไม่มีให้บริการ
+	Real-Time Refinement	การปรับแต่งแบบเรียลไทม์
+	Refine Edge Brush Tool	ปรับแต่งเครื่องมือแปรงขอบ
+	Refine Hair	ปรับแต่งเส้นผม
+	Refine Hair needs hair detection, which isn't available yet	Refine Hair จำเป็นต้องมีการตรวจจับเส้นผม ซึ่งยังไม่มีให้บริการ
+	Refine Mode	โหมดปรับแต่ง
+	Select and Mask was closed: another layer was selected	ปิดเลือกและมาสก์แล้ว: มีการเลือกเลเยอร์อื่น
+	Select and Mask was closed: its document is no longer the active one	ปิดเลือกและมาสก์แล้ว: เอกสารนั้นไม่ใช่เอกสารที่ใช้งานอยู่
+	View Mode	โหมดมุมมอง
+	Selected at launch: {backend}	เลือกเมื่อเปิดตัว: {backend}
+	SemiBold	กึ่งหนา
+	Sensitivity	ความไว
+	Sent to the printer ({spooler})	ส่งไปยังเครื่องพิมพ์ ({spooler})
+	Sepia	ซีเปีย
+	Services	บริการ
+	Set Colors	ตั้งค่าสี
+	Set Measurement Scale	ตั้งค่ามาตราส่วนการวัด
+	Sgray	สเกรย์
+	Shadow	เงา
+	Shadow Amount	ปริมาณเงา
+	Shadow Intensity	ความเข้มของเงา
+	Shadow Radius	รัศมีเงา
+	Shadow Tone	โทนสีเงา
+	Shadows up to:	เงาสูงสุด:
+	Shadows/Highlights	เงา/ไฮไลท์
+	Shallow	ตื้น
+	Shape Blur	รูปร่างเบลอ
+	Sharpen Amount	เพิ่มความคมชัด
+	Sharpen Detail	คมชัดรายละเอียด
+	Sharpen Details	คมชัดรายละเอียด
+	Sharpen Masking	เหลามาสกิ้ง
+	Sharpen Radius	เพิ่มรัศมี
+	Shear	เฉือน
+	Shine	ส่องแสง
+	Short Lines	เส้นสั้น
+	Short Strokes	จังหวะสั้น
+	Shortcut	ทางลัด
+	Shortcuts	ทางลัด
+	Show All	แสดงทั้งหมด
+	Show Extras Options	แสดงตัวเลือกพิเศษ
+	Show Guides	แสดงคำแนะนำ
+	Show Guides  (⌘;)	แสดงคำแนะนำ (⌘;)
+	Show Rulers	แสดงผู้ปกครอง
+	Show the layer's effects  (⌥-click: all layers)	แสดงเอฟเฟกต์ของเลเยอร์ (⌥-คลิก: ทุกเลเยอร์)
+	Simple	เรียบง่าย
+	Simulate Paper	จำลองกระดาษ
+	Sine	ไซน์
+	Sketch	ร่าง
+	Skip	ข้าม
+	Slice Options	ตัวเลือกชิ้น
+	Smart Blur	สมาร์ทเบลอ
+	Smart Sharpen	สมาร์ทคมชัด
+	Smoothness	ความเรียบเนียน
+	Smudge Stick	รอยเปื้อนสติ๊ก
+	Snap to Grid	จัดชิดไปที่กริด
+	Snowflakes	เกล็ดหิมะ
+	Soften	นุ่มลง
+	Softness	ความนุ่มนวล
+	Software adapter	อะแดปเตอร์ซอฟต์แวร์
+	Solarized Dark	แสงอาทิตย์มืด
+	Solid Color	สีทึบ
+	Solid Front Faces	ใบหน้าด้านหน้าแข็ง
+	Source Channel	ช่องทางต้นทาง
+	Source Invert	แหล่งที่มากลับด้าน
+	Source Layer	เลเยอร์แหล่งที่มา
+	Source1 Channel	ที่มา1ช่อง
+	Source1 Invert	แหล่งที่มา 1 ผกผัน
+	Source2 Channel	ที่มา2ช่อง
+	Source2 Invert	Source2 ผกผัน
+	Source: set	ที่มา: set
+	Space	อวกาศ
+	Sparkle	สปาร์คเคิล
+	Spatter	โปรยลงมา
+	Speckle	จุด
+	Speed	ความเร็ว
+	Spherize	ทรงกลม
+	Spin	สปิน
+	Spin Blur	หมุนเบลอ
+	Split Channels	แยกช่อง
+	Spot	สปอต
+	Spray Radius	รัศมีสเปรย์
+	Sprayed Strokes	พ่นจังหวะ
+	Spread	การแพร่กระจาย
+	Sprinkles	โรย
+	Square Size	ขนาดสี่เหลี่ยมจัตุรัส
+	Square, 12 x 12	สี่เหลี่ยมจัตุรัส 12 x 12
+	Square, 5 x 5	สี่เหลี่ยมจัตุรัส 5 x 5
+	Squareness	ความเหลี่ยม
+	Stagger	โซเซ
+	Stained Glass	กระจกสี
+	Star	ดาว
+	Stars	ดาว
+	Start X	เริ่ม X
+	Start Y	เริ่ม Y
+	Statistics	สถิติ
+	Step {step} ({id}) failed: {error}	ขั้นตอนที่ {step} ({id}) ล้มเหลว: {error}
+	Stippled	แต้ม
+	Stops	หยุด
+	Strength	ความแข็งแกร่ง
+	Stretch	ยืดกล้ามเนื้อ
+	Stroke Color	สีเส้นโครงร่าง
+	Stroke Detail	รายละเอียดจังหวะ
+	Stroke Direction	ทิศทางจังหวะ
+	Stroke Length	ความยาวช่วงชัก
+	Stroke Pressure	ความดันโรคหลอดเลือดสมอง
+	Stroke Size	ขนาดจังหวะ
+	Stroke Width	ความกว้างของเส้นขีด
+	Stroke path with brush	เส้นทางสโตรกด้วยแปรง
+	Strokes	จังหวะ
+	Studio (Dark)	สตูดิโอ (มืด)
+	Studio (Light)	สตูดิโอ (ไลท์)
+	Stylization	การจัดสไตล์
+	Subtract Shapes at Overlap	ลบรูปร่างที่ทับซ้อนกัน
+	Subtract from selection  (⌥)	ลบออกจากส่วนที่เลือก (⌥)
+	Sumi-e	ซูมิ-อี
+	Surface Blur	พื้นผิวเบลอ
+	Switch Foreground and Background Colors	สลับสีพื้นหน้าและพื้นหลัง
+	System Info	ข้อมูลระบบ
+	Tablet	แท็บเล็ต
+	Tabloid	แท็บลอยด์
+	Taper	เรียว
+	Target	เป้าหมาย
+	Target Channel 3	เป้าหมายช่อง 3
+	Target Channel 4	เป้าหมายช่อง 4
+	Target Channel 5	เป้าหมายช่อง 5
+	Target Channel 6	เป้าหมายช่อง 6
+	Target Channel 7	เป้าช่อง7
+	Target Channel 8	เป้าช่อง8
+	Target Channel 9	เป้าช่อง 9
+	Target Composite Channel	เป้าหมายช่องทางคอมโพสิต
+	Target X	เป้าหมาย X
+	Target Y	เป้าหมาย Y
+	Teal Orange	น้าส้ม
+	Technology Previews…	ตัวอย่างเทคโนโลยี…
+	Temporary	ชั่วคราว
+	Text Layer	เลเยอร์ข้อความ
+	Texture Coverage	ความครอบคลุมของพื้นผิว
+	Texturizer	Texturizer
+	Thaw Mask	ละลายมาสก์
+	The canvas is shown as sRGB. Choose a monitor profile in Edit › Color Settings.	แคนวาสจะแสดงเป็น sRGB เลือกโปรไฟล์จอภาพใน แก้ไข > การตั้งค่าสี
+	The canvas on {display} is shown as sRGB. Choose a monitor profile in Edit › Color Settings.	ผืนผ้าใบบน {display} แสดงเป็น sRGB เลือกโปรไฟล์จอภาพใน แก้ไข > การตั้งค่าสี
+	The current gradient (pick one in Window › Gradients)	การไล่ระดับสีปัจจุบัน (เลือกหนึ่งในหน้าต่าง › การไล่ระดับสี)
+	The document does not have an embedded colour profile. Working space: {working}.	The document does not have an embedded colour profile. Working space: {working}.
+	The document has an embedded colour profile that does not match the working space.\nEmbedded: {embedded}\nWorking: {working}	เอกสารมีโปรไฟล์สีฝังอยู่ซึ่งไม่ตรงกับพื้นที่ทำงาน \n ฝังอยู่: {embedded} \n ทำงาน: {working}
+	The file could not be opened.	ไม่สามารถเปิดไฟล์ได้
+	The file could not be saved.	ไม่สามารถบันทึกไฟล์ได้
+	Thickness	ความหนา
+	This Layer:	เลเยอร์นี้:
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	สมาร์ทออบเจ็กต์นี้ต้องได้รับการแรสเตอร์ก่อนดำเนินการต่อ เนื้อหาจะไม่สามารถแก้ไขได้อีกต่อไป แรสเตอร์วัตถุอัจฉริยะหรือไม่
+	This adjustment ({key}) is kept as imported and can't be edited yet.	การปรับเปลี่ยนนี้ ({key}) ถูกเก็บไว้เป็นการนำเข้าและยังไม่สามารถแก้ไขได้
+	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	เลเยอร์เติมนี้จะต้องถูกแรสเตอร์ก่อนดำเนินการต่อ เนื้อหาที่กรอกจะไม่สามารถแก้ไขได้อีกต่อไป แรสเตอร์เลเยอร์หรือไม่?
+	This layer must be rasterized before proceeding.	เลเยอร์นี้จะต้องถูกแรสเตอร์ก่อนดำเนินการต่อ
+	This session: {reason}	เซสชั่นนี้: {reason}
+	This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?	เลเยอร์รูปร่างนี้จะต้องถูกแรสเตอร์ก่อนดำเนินการต่อ จะไม่สามารถแก้ไขได้ในรูปแบบรูปร่างอีกต่อไป เปลี่ยนรูปร่างใหม่หรือไม่?
+	This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?	เลเยอร์ตัวอักษรนี้ต้องได้รับการแรสเตอร์ก่อนดำเนินการต่อ ข้อความจะไม่สามารถแก้ไขได้อีกต่อไป แรสเตอร์ประเภทหรือไม่
+	Tile Size	ขนาดกระเบื้อง
+	Tiles	กระเบื้อง
+	Tilt-Shift	เอียง-Shift
+	Tint Color	สีอ่อน
+	Tiny Lens	เลนส์จิ๋ว
+	Title	ชื่อเรื่อง
+	To	ถึง
+	To Center	สู่ศูนย์
+	Toggle Layer Mask Overlay	สลับการซ้อนทับเลเยอร์มาสก์
+	Toggle the Brush Settings panel	สลับแผงการตั้งค่าแปรง
+	Toggle the Brush Settings panel  (F5)	สลับแผงการตั้งค่าแปรง (F5)
+	Tool Options	ตัวเลือกเครื่องมือ
+	Trace Contour	ติดตามรูปร่าง
+	Tracking (1/1000 em)	การติดตาม (1/1000 em)
+	Transformation	การเปลี่ยนแปลง
+	Transition	การเปลี่ยนแปลง
+	Transparency Shapes Layer	เลเยอร์รูปร่างโปร่งใส
+	Trap	ดักสี
+	Tree	ต้นไม้
+	Trim	ตัดแต่ง
+	Turbulent	วุ่นวาย
+	Twirl	หมุนวน
+	Twirl Clockwise	หมุนตามเข็มนาฬิกา
+	Twirl Counterclockwise	หมุนทวนเข็มนาฬิกา
+	Type Options	ตัวเลือกตัวอักษร
+	Unaltered	ไม่เปลี่ยนแปลง
+	Undefined Areas	พื้นที่ที่ไม่ได้กำหนด
+	Underlying Layer:	เลเยอร์พื้นฐาน:
+	Underpainting	การทาสีด้านล่าง
+	Underwater	ใต้น้ำ
+	Ungroup	ยกเลิกการจัดกลุ่ม
+	Uniform	เครื่องแบบ
+	Unite Shapes at Overlap	รวมรูปร่างที่ทับซ้อนกัน
+	Unlink	ยกเลิกการเชื่อมโยง
+	Unlock	ปลดล็อค
+	Unlocked	ปลดล็อคแล้ว
+	Unsaved Changes	การเปลี่ยนแปลงที่ไม่ได้บันทึก
+	Unsharp Mask	มาสก์ที่ไม่คมชัด
+	Unsupported file format	รูปแบบไฟล์ที่ไม่รองรับ
+	Unsupported format	รูปแบบที่ไม่รองรับ
+	Up	ขึ้น
+	Update	อัปเดต
+	Updates	อัพเดท
+	Upper	บน
+	Use Custom Color	ใช้สีที่กำหนดเอง
+	Use File › Open to open an image.	ใช้ไฟล์ › เปิดเพื่อเปิดภาพ
+	Use Selection In Source	ใช้การเลือกในแหล่งที่มา
+	Use Selection In Target	ใช้การเลือกในเป้าหมาย
+	Uses the foreground and background colors.	ใช้สีพื้นหน้าและพื้นหลัง
+	Vanishing Point	จุดที่หายไป
+	Variable Data Sets	ชุดข้อมูลตัวแปร
+	Vector Mask Hides Effects	เวกเตอร์มาสก์ซ่อนเอฟเฟกต์
+	Vertical Distortion	การบิดเบือนแนวตั้ง
+	Vertical Only	แนวตั้งเท่านั้น
+	Vertical Type Tool	เครื่องมือตัวอักษรแนวตั้ง
+	Vertical scale	สเกลแนวตั้ง
+	Vertical type	ประเภทแนวตั้ง
+	Video Frames to Layers	เฟรมวิดีโอเป็นเลเยอร์
+	Vignette Amount	จำนวนบทความสั้น
+	Vignette Feather	ขนนกวิกเน็ตต์
+	Vignette Highlights	ไฮไลท์บทความสั้น
+	Vignette Midpoint	วิกเน็ตต์จุดกึ่งกลาง
+	Vignette Roundness	วิกเน็ตต์ ความกลม
+	Vignette Style	สไตล์วิกเน็ตต์
+	Vine Color	สีเถาวัลย์
+	Vine With Flowers	เถาวัลย์กับดอกไม้
+	Vine With Leaves	เถาวัลย์กับใบไม้
+	Violent	รุนแรง
+	W:	ว:
+	WIA Support	การสนับสนุน WIA
+	Warm	อบอุ่น
+	Warming Filter (85)	แผ่นฟิลเตอร์ความร้อน (85)
+	Warming L B A	อุ่นเครื่อง L B A
+	Warming81	ภาวะโลกร้อน81
+	Warming85	อุ่นเครื่อง85
+	Warmth	ความอบอุ่น
+	Warning	คำเตือน
+	Warp Text	ข้อความวาร์ป
+	Watercolor	สีน้ำ
+	Watercolour look: lighter interior, darker rims.	รูปลักษณ์แบบสีน้ำ: ภายในสีสว่างกว่า ขอบล้อสีเข้มกว่า
+	Wavelength Max	ความยาวคลื่นสูงสุด
+	Wavelength Min	ความยาวคลื่นต่ำสุด
+	Waves	คลื่น
+	Web Large	เว็บใหญ่
+	Web Minimum	เว็บขั้นต่ำ
+	Web Most Common	เว็บที่พบบ่อยที่สุด
+	WebP (lossless)	WebP (แบบไม่สูญเสีย)
+	Wetness	ความเปียกชื้น
+	White Clip	คลิปขาว
+	White Intensity	ความเข้มของสีขาว
+	White Is High	สีขาวอยู่สูง
+	Whole Word	ทั้งคำ
+	Wide Blurry	กว้าง เบลอ
+	Wide Sharp	กว้างคม
+	Wind	ลม
+	Window renderer: {renderer}	ตัวแสดงผลหน้าต่าง: {renderer}
+	Working	ทำงาน
+	Working Cmyk	การทำงานของ Cmyk
+	Working Gray	ทำงานสีเทา
+	Working Rgb	RGB ทำงาน
+	Working-cmyk	การทำงาน-cmyk
+	Workspaces	พื้นที่ทำงาน
+	Wrap	ห่อ
+	Yellows	สีเหลือง
+	ZigZag	ซิกแซก
+	Zigzag	ซิกแซก
+	Zoom In (hold, drag to scrub)	ซูมเข้า (กดค้าง ลากเพื่อขัด)
+	Zoom Out (hold)	ซูมออก (กดค้างไว้)
+	auto	อัตโนมัติ
+	blue	สีน้ำเงิน
+	brushes	แปรง
+	fallback	ทางเลือก
+	gradients	การไล่ระดับสี
+	gray	สีเทา
+	green	สีเขียว
+	layer mask	มาสก์เลเยอร์
+	manual	คู่มือ
+	none	ไม่มี
+	off	ปิด
+	on	บน
+	orange	สีส้ม
+	previous reading kept; the last re-read failed: {reason}	การอ่านครั้งก่อนเก็บไว้; การอ่านซ้ำครั้งล่าสุดล้มเหลว: {reason}
+	red	สีแดง
+	unknown	ไม่ทราบ
+	unknown type	ประเภทที่ไม่รู้จัก
+	vector mask	มาสก์เวกเตอร์
+	violet	สีม่วง
+	yellow	สีเหลือง
+	{index} of {total}	{index} of {total}
+	{label} is not available: {reason}	{label} ไม่พร้อมใช้งาน: {reason}
+	{message} (notes: {n}; {warning})	{message} (notes: {n}; {warning})
+	{shortcut} assigned.	มอบหมาย {shortcut} แล้ว
+	{shortcut} is already in use by {commands} and will be removed from it when you click OK.	{shortcut} ถูกใช้แล้วโดย {commands} และจะถูกลบออกจากมันเมื่อคุณคลิกตกลง
+	{verb} {mask} {layer}	{verb} {mask} {layer}
+	↑↓ navigate   ↵ run   esc close	↑↓ นำทาง ↵ วิ่ง esc ปิด
+	✓ Color Indicates Masked Areas	✓ สีหมายถึงบริเวณที่ถูกปิดบัง
+	✓ Color Indicates Selected Areas	✓ สีบ่งบอกถึงพื้นที่ที่เลือก
+# Dynamic command-id, plural, and contextual labels (fourth pass).
+@id	edit.clear	ชัดเจน
+@id	edit.purge.undo	เลิกทำ
+@id	edit.stroke	โรคหลอดเลือดสมอง
+@id	edit.transform.scale	สเกล
+@id	file.close	ปิด
+@id	filter.sharpen.sharpen	ลับคม
+@id	layer.layerMask.apply	สมัคร
+@id	select.all	เลือกทั้งหมด
+@plural	Imported {n} brush from {file}|Imported {n} brushes from {file}	นำเข้า {n} แปรงจาก {file}
+@plural	Imported {n} gradient from {file}|Imported {n} gradients from {file}	นำเข้า {n} การไล่ระดับสีจาก {file}
+@plural	Imported {n} pattern from {file}|Imported {n} patterns from {file}	นำเข้า {n} รูปแบบจาก {file}
+cameraRaw	Balance	ยอดคงเหลือ
+cameraRaw	Clarity	ความชัดเจน
+cameraRaw	Color	สี
+cameraRaw	Color Mixer	เครื่องผสมสี
+cameraRaw	Contrast	คอนทราสต์
+cameraRaw	Curve	เส้นโค้ง
+cameraRaw	Dehaze	ลดหมอกควัน
+cameraRaw	Detail	รายละเอียด
+cameraRaw	Effects	ผลกระทบ
+cameraRaw	Exposure	การเปิดรับแสง
+cameraRaw	Feather	ขนนก
+cameraRaw	Highlights	ไฮไลท์
+cameraRaw	Luminance	ความสว่าง
+cameraRaw	Masking	การกำบัง
+cameraRaw	Midpoint	จุดกึ่งกลาง
+cameraRaw	Midtones	มิดโทน
+cameraRaw	Radius	รัศมี
+cameraRaw	Roundness	ความกลม
+cameraRaw	Saturation	ความอิ่มตัว
+cameraRaw	Shadows	เงา
+cameraRaw	Size	ขนาด
+cameraRaw	Temperature	อุณหภูมิ
+cameraRaw	Texture	พื้นผิว
+cameraRaw	Tint	โทนสี
+cameraRaw	Whites	คนผิวขาว
+colorRange	Invert	กลับสี
+document	Orientation	ปฐมนิเทศ
+layerLabel	Magenta	สีม่วงแดง
+layerLabel	No Color	ไม่มีสี
+layerLabel	Red	สีแดง
+layers	Fill	เติม
+layers	Fill:	กรอก:
+navigator	Zoom	ซูม
+shape	Appearance	ลักษณะที่ปรากฏ
+# Paragraph direction (TYPE-218-2)
+	Automatic paragraph direction	ทิศทางของย่อหน้าอัตโนมัติ
+	Left-to-right paragraph direction	ทิศทางของย่อหน้าจากซ้ายไปขวา
+	Right-to-left paragraph direction	ทิศทางของย่อหน้าจากขวาไปซ้าย
+	Not rendered: this adjustment ({key}) is kept as imported.	ไม่แสดงผล: การปรับนี้ ({key}) จะถูกเก็บไว้เป็นการนำเข้า
+# Print preview image (#8236)
+	Print preview image	ภาพตัวอย่างก่อนพิมพ์
+# Color panel menu: modes, copy commands and colour ramps (#6000)
+	Hue Cube	เว้ คิวบ์
+	Brightness Cube	ลูกบาศก์ความสว่าง
+	Color Wheel	วงล้อสี
+	RGB Sliders	แถบเลื่อน RGB
+	HSB Sliders	สไลเดอร์ HSB
+	CMYK Sliders	แถบเลื่อน CMYK
+	Lab Sliders	แล็บสไลเดอร์
+	Web Color Sliders	ตัวเลื่อนสีของเว็บ
+	Copy Color as HTML	คัดลอกสีเป็น HTML
+	Copy Color's Hex Code	คัดลอกรหัสเลขฐานสิบหกของสี
+	RGB Spectrum	สเปกตรัม RGB
+	CMYK Spectrum	สเปกตรัม CMYK
+	Grayscale Ramp	ทางลาดระดับสีเทา
+	Current Colors	สีปัจจุบัน
+	Make Ramp Web Safe	ทำให้ทางลาดเว็บปลอดภัย
+# Art History Brush (#213).
+	Art History Brush Tool	เครื่องมือแปรงประวัติศาสตร์ศิลปะ
+	Tight Short	สั้นแน่น
+	Tight Medium	แน่นปานกลาง
+	Tight Long	แน่นยาว
+	Loose Medium	หลวมปานกลาง
+	Loose Long	ยาวหลวม
+	Dab	ตบเบาๆ
+	Tight Curl	หยิกแน่น
+	Loose Curl	ลอนหลวม
+	Stylized dabs from a history state	แต้มเก๋ๆ จากสถานะประวัติศาสตร์
+	Font size presets	ตั้งค่าขนาดตัวอักษรล่วงหน้า
+	Leading presets	ค่าที่ตั้งล่วงหน้าเลเยอร์นำ
+	Tracking presets	ติดตามที่ตั้งไว้ล่วงหน้า
+
+# Recent labels (histogram statistics, self-update, Artboards and others)
+	CPU Rendering	การเรนเดอร์ซีพียู
+	Calculating…	กำลังคำนวณ…
+	Click to refresh histogram with uncached data	คลิกเพื่อรีเฟรชฮิสโตแกรมด้วยข้อมูลที่ไม่ได้แคช
+	Convert to Shape…	แปลงเป็นรูปร่าง…
+	Cooling Filter (80)	ฟิลเตอร์ความเย็น (80)
+	Cooling Filter (82)	ฟิลเตอร์ความเย็น (82)
+	Cooling Filter (LBB)	ฟิลเตอร์ความเย็น (LBB)
+	Count:	จำนวน:
+	Delete Hidden Layers	ลบเลเยอร์ที่ซ่อนอยู่
+	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click to delete.	ลากบนภาพเพื่อเพิ่มข้อจำกัด เลื่อนแนวนอน/แนวตั้ง; คลิกขวาเพื่อลบ
+	Drawn on the CPU: {reason}. Click for System Info.	วาดบน CPU: {reason} คลิกเพื่อดูข้อมูลระบบ
+	Exported {n} files	ส่งออก {n} ไฟล์แล้ว
+	Fit Layer on Screen	พอดีเลเยอร์บนหน้าจอ
+	Flow:	การไหล:
+	Level:	ระดับ:
+	Percentile:	เปอร์เซ็นไทล์:
+	Refine Edge…	ปรับขอบ…
+	Release Notes	บันทึกประจำรุ่น
+	Remember Settings	จำการตั้งค่า
+	Reset Essentials	รีเซ็ตสิ่งจำเป็น
+	Rounded Rectangle Tool	เครื่องมือสี่เหลี่ยมผืนผ้าโค้งมน
+	Show Channels in Color	แสดงช่องเป็นสี
+	Show Statistics	แสดงสถิติ
+	Source:	ที่มา:
+	Status Bar	แถบสถานะ
+	Tile Horizontally	กระเบื้องแนวนอน
+	Tile Vertically	ปูกระเบื้องในแนวตั้ง
+	Uncached Refresh	รีเฟรชที่ไม่ถูกแคช
+	Update and Restart	อัปเดตและรีสตาร์ท
+	Warming Filter (81)	แผ่นฟิลเตอร์ความร้อน (81)
+	Warming Filter (LBA)	แผ่นฟิลเตอร์ความร้อน (LBA)
+@plural	{n} document|{n} documents	{n} เอกสาร
+@plural	{n} pixel|{n} pixels	{n} พิกเซล
+cameraRaw	Before (Y)	ก่อน (ญ)
+cameraRaw	RAW Develop ({name})	การปรับแต่ง RAW ({name})
+cameraRaw	RAW Develop Filter ({layer})	ฟิลเตอร์ การปรับแต่ง RAW ({layer})
+cameraRaw	RAW Develop isn't open	การปรับแต่ง RAW ไม่เปิด
+cameraRaw	Cancel	ยกเลิก
+cameraRaw	Cancelled opening {name}	ยกเลิกการเปิด {name}
+cameraRaw	Cancelled {label}	ยกเลิก {label}
+cameraRaw	Color Priority	ลำดับความสำคัญของสี
+cameraRaw	Developing {name}	กำลังพัฒนา {name}
+cameraRaw	Full-resolution preview unavailable	ไม่สามารถแสดงตัวอย่างแบบเต็มความละเอียดได้
+cameraRaw	Grain	ธัญพืช
+cameraRaw	Highlight Clipping Warning (O)	คำเตือนการตัดไฮไลท์ (O)
+cameraRaw	Highlight Priority	เน้นลำดับความสำคัญ
+cameraRaw	Load Settings…	โหลดการตั้งค่า…
+cameraRaw	Load settings from a Camera Raw .xmp file	โหลดการตั้งค่าจากไฟล์ Camera Raw .xmp
+cameraRaw	Loaded RAW Develop settings from {file}	โหลดการตั้งค่า การปรับแต่ง RAW จาก {file}
+cameraRaw	Noise Reduction	ลดเสียงรบกวน
+cameraRaw	OK	ตกลง
+cameraRaw	Open	เปิด
+cameraRaw	Opened {name}	Opened {name}
+cameraRaw	Paint Overlay	การทาสีทับซ้อน
+cameraRaw	Save Settings…	บันทึกการตั้งค่า…
+cameraRaw	Save these settings as a Camera Raw .xmp file	บันทึกการตั้งค่าเหล่านี้เป็นไฟล์ Camera Raw .xmp
+cameraRaw	Shadow Clipping Warning (U)	คำเตือนเงาตัด (U)
+cameraRaw	Sharpening	การลับคม
+cameraRaw	Show Lab Color Readouts	แสดงการอ่านค่าสีของแล็บ
+cameraRaw	Show Red at 3 o'clock	โชว์สีแดงเวลา 3 นาฬิกา
+cameraRaw	Show Selected Region	แสดงภูมิภาคที่เลือก
+cameraRaw	Show Skin Tone Indicator	แสดงตัวบ่งชี้สีผิว
+cameraRaw	Show Vectorscope	แสดงเวคเตอร์สโคป
+cameraRaw	Tone Histogram	โทนฮิสโตแกรม
+cameraRaw	Vignetting	วิกเนต
+cameraRaw	White Balance: As Shot	สมดุลแสงขาว: เท่าที่ถูกถ่าย
+
+# Strings main added after this catalog was written (integration batch 20).
+	Background (default)	พื้นหลัง (ค่าเริ่มต้น)
+	Transparent (default)	โปร่งใส (ค่าเริ่มต้น)
+	The path was kept as the Work Path	เก็บเส้นทางไว้เป็นเส้นทางการทำงานแล้ว
+	The path was discarded	ทิ้งเส้นทางแล้ว
+	Move Toolbar to the Right	ย้ายแถบเครื่องมือไปทางขวา
+	Move Toolbar to the Left	ย้ายแถบเครื่องมือไปทางซ้าย
+
+# RAW Develop feature labels
+	Saved RAW Develop settings to {file}	บันทึกการตั้งค่าการปรับแต่ง RAW ไปยัง {file} แล้ว

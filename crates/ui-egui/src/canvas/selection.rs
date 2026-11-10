@@ -11,7 +11,8 @@ pub enum SelCursor {
     Cut,
     /// Arrow with a second arrow: ⌥ lifts a copy of them instead.
     Copy,
-    /// Plain arrow: a floating piece, moved again by a plain drag until it is dropped.
+    /// Plain arrow: a floating piece, moved again by the Move tool (⌘ with a marquee) until it is
+    /// dropped.
     Piece,
     /// Hollow arrowhead: the selected pixels are being dragged.
     Dragging,
@@ -96,7 +97,7 @@ pub(super) fn finish_selection_drag(app: &mut PhotocraftApp, floating: bool, sta
         (false, true) if app.session.is_enabled("select.deselect") => app.run("select.deselect", json!({})),
         (false, true) => return,
         (true, false) => app.run("select.float", json!({"dx": dx, "dy": dy})),
-        (false, false) => app.run("select.transformSelection", json!({"dx": dx, "dy": dy})),
+        (false, false) => app.run("select.transformSelection", json!({"dx": dx, "dy": dy, "stepName": "Move Selection"})),
     };
     if let Err(e) = r {
         app.ui.status = e;

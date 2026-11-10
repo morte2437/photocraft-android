@@ -100,6 +100,9 @@ exports. All integers are `i32` unless noted; pointers are offsets into the modu
 - `name`: the menu label (1–64 printable characters). Any script works, but control characters and
   Unicode format characters (bidi overrides and marks, zero-width spaces, soft hyphens) are rejected,
   except the zero-width joiner and non-joiner, and at least one character must be visible.
+  Invisible padding at the ends (white space, joiners, Hangul fillers, blank Braille and other
+  default-ignorable blanks, and variation selectors cut off by them) is removed before these checks,
+  so it does not count towards the limit; marks that belong to a kept character stay.
   `kind`: `"filter"` (the only kind in v1).
 - `params`: in dialog order. Names are `[A-Za-z0-9_]`, not starting with `_`, not `id`/`layer`.
   The host validates the user's values before calling: missing values take the default, numbers are

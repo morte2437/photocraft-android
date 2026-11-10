@@ -5,7 +5,8 @@
 //! lossless JPEG (T.81 process 14) whose decoded sample sequence fills the
 //! sensor image in vertical slices: the private tag 0xC640 gives the slice
 //! count, slice width and last slice width; slice 0 is filled row by row,
-//! then slice 1, and so on. sRAW/mRAW (subsampled YCbCr) is not supported.
+//! then slice 1, and so on. sRAW / mRAW (subsampled YCbCr) is decoded to
+//! camera RGB by `sraw.rs`.
 //!
 //! Sensor geometry and the as-shot white balance come from the Canon maker
 //! note (an IFD at the MakerNote offset, values relative to the TIFF header):
@@ -45,7 +46,7 @@
 use crate::error::{RawError, Result};
 use crate::sensor::{BlackLevels, Cfa, Rect, Sensor};
 use crate::tiff::{Ifd, Tiff, tag};
-use crate::{Limits, RawFormat, ljpeg};
+use crate::{Limits, RawFormat, ljpeg, sraw};
 
 const CANON_SENSOR_INFO: u16 = 0x00E0;
 const CANON_COLOR_DATA: u16 = 0x4001;
@@ -115,26 +116,38 @@ pub(crate) fn maker_note(t: &Tiff, ifds: &[Ifd]) -> Option<Ifd> {
 
 /// As-shot white-balance multipliers (R, G, B) from ColorData.
 fn as_shot_wb(t: &Tiff, mn: &Ifd) -> Option<[f64; 3]> {
-    let e = mn.get(CANON_COLOR_DATA)?;
-    // The entry is UNDEFINED: its bytes are a table of 16-bit words (file byte order), and the
-    // offsets below count words, not bytes. Reads stay inside the entry's own byte count.
-    let bytes = e.unit().checked_mul(e.count as usize)?;
-    let word = |off: usize| {
-        let at = off.checked_mul(2)?.checked_add(e.at)?;
-        (at.checked_add(2)? <= e.at.checked_add(bytes)?).then(|| t.u16_at(at)).flatten().map(f64::from)
-    };
     // Word offsets of WB_RGGBLevelsAsShot used by the ColorData versions.
-    for off in [0x3F, 0x47, 0x19, 0x22] {
-        let (Some(r), Some(g1), Some(g2), Some(b)) = (word(off), word(off + 1), word(off + 2), word(off + 3)) else {
-            continue;
-        };
-        let g = (g1 + g2) / 2.0;
-        let plausible = (256.0..16384.0).contains(&g) && (g1 - g2).abs() <= g * 0.05 && (0.25..8.0).contains(&(r / g)) && (0.25..8.0).contains(&(b / g));
-        if plausible {
-            return Some([r / g, 1.0, b / g]);
-        }
-    }
-    None
+    [0x3F, 0x47, 0x19, 0x22].into_iter().find_map(|off| color_data_rggb(t, mn, off))
+}
+
+/// Word `off` of ColorData. The entry is UNDEFINED: its bytes are a table of 16-bit words (file
+/// byte order), and the offsets count words, not bytes. Reads stay inside the entry's own byte
+/// count.
+fn color_data_word(t: &Tiff, mn: &Ifd, off: usize) -> Option<u16> {
+    let e = mn.get(CANON_COLOR_DATA)?;
+    let bytes = e.unit().checked_mul(e.count as usize)?;
+    let at = off.checked_mul(2)?.checked_add(e.at)?;
+    (at.checked_add(2)? <= e.at.checked_add(bytes)?).then(|| t.u16_at(at)).flatten()
+}
+
+/// RGGB levels at ColorData word `off` as multipliers relative to green, when plausible.
+fn color_data_rggb(t: &Tiff, mn: &Ifd, off: usize) -> Option<[f64; 3]> {
+    let word = |k: usize| color_data_word(t, mn, off.checked_add(k)?).map(f64::from);
+    let (r, g1, g2, b) = (word(0)?, word(1)?, word(2)?, word(3)?);
+    let g = (g1 + g2) / 2.0;
+    let plausible = (256.0..16384.0).contains(&g) && (g1 - g2).abs() <= g * 0.05 && (0.25..8.0).contains(&(r / g)) && (0.25..8.0).contains(&(b / g));
+    plausible.then(|| [r / g, 1.0, b / g])
+}
+
+/// ColorData versions whose sRAW gains (see `sraw.rs`) sit at a word offset we observed:
+/// version 15 (EOS 6D Mark II, 77D, 200D, 800D) at 0x80, just before the daylight preset.
+const SRAW_GAINS: [(u16, usize); 1] = [(15, 0x80)];
+
+/// The per-shot gains an sRAW's stored RGB was divided by, relative to green.
+fn sraw_gains(t: &Tiff, mn: &Ifd) -> Option<[f64; 3]> {
+    let version = color_data_word(t, mn, 0)?;
+    let (_, off) = SRAW_GAINS.iter().find(|(v, _)| *v == version)?;
+    color_data_rggb(t, mn, *off)
 }
 
 /// The white (clipping) level: the largest value when a meaningful share of
@@ -181,6 +194,86 @@ pub(crate) fn masked_black(data: &[u16], width: usize, area: Rect) -> Option<[f3
     Some([0, 1, 2, 3].map(|k| sum[k] as f32 / n[k] as f32))
 }
 
+/// The slice widths of CR2 tag 0xC640 (count, width, last width), in samples. The tag is SHORT:
+/// larger values (a LONG in a damaged file) are refused, which also bounds the sum.
+fn slice_widths(tag: &[u32]) -> Option<Vec<usize>> {
+    let short = 1..=u32::from(u16::MAX);
+    match tag {
+        [n, w, last] if *n < 64 && short.contains(w) && short.contains(last) => {
+            let mut ws = vec![*w as usize; *n as usize];
+            ws.push(*last as usize);
+            Some(ws)
+        }
+        _ => None,
+    }
+}
+
+/// The image area inside `full` from the maker note's SensorInfo ([1] width, [2] height, [5]
+/// left, [6] top, [7] right, [8] bottom border, inclusive); `full` when absent or empty.
+fn image_area(t: &Tiff, mn: Option<&Ifd>, full: Rect) -> Rect {
+    let info = mn.map(|m| t.tag_uints(m, CANON_SENSOR_INFO)).unwrap_or_default();
+    let active = match info.get(5..9) {
+        Some(&[l, tp, r, b]) if r > l && b > tp => Rect::new(l as usize, tp as usize, (r - l + 1) as usize, (b - tp + 1) as usize).intersect(&full),
+        _ => full,
+    };
+    if active.is_empty() { full } else { active }
+}
+
+/// sRAW / mRAW: subsampled YCbCr, developed as three-sample camera RGB (see `sraw.rs`).
+fn decode_sraw(t: &Tiff, ifds: &[Ifd], ifd0: &Ifd, slices: &[u32], src: &[u8], frame: ljpeg::Frame, limits: &Limits) -> Result<Sensor> {
+    let per_mcu = frame.h * frame.v + 2;
+    let total = frame.samples().ok_or_else(|| RawError::malformed("CR2 frame too large"))?;
+    let widths = slice_widths(slices).unwrap_or_else(|| vec![frame.width / frame.h * per_mcu]);
+    let row: usize = widths.iter().sum();
+    if row == 0 || !row.is_multiple_of(per_mcu) || !total.is_multiple_of(row) {
+        return Err(RawError::malformed("CR2 sRAW slices do not match the JPEG frame"));
+    }
+    let (width, height) = (row / per_mcu * frame.h, total / row * frame.v);
+    // The RGB output: three u16 per pixel.
+    limits.check(width as u64, height as u64, 6)?;
+    let (_, samples) = ljpeg::decode_subsampled(src, total)?;
+    let planes = sraw::planes(&frame, &samples, &widths)?;
+    drop(samples);
+
+    let mut warnings = Vec::new();
+    let mn = maker_note(t, ifds);
+    let camera_wb = mn.as_ref().and_then(|m| as_shot_wb(t, m));
+    let gains = mn.as_ref().and_then(|m| sraw_gains(t, m));
+    if gains.is_none() {
+        warnings.push("the sRAW colour gains of this camera are not known; colours rely on the look fitted to the camera's JPEG".to_string());
+    }
+    let offset = (1u32 << (frame.precision - 1)) as f32;
+    let data = sraw::camera_rgb(&planes, offset, gains.unwrap_or([1.0; 3]));
+    drop(planes);
+    let full = Rect::new(0, 0, width, height);
+    let active = image_area(t, mn.as_ref(), full);
+    let white = [0, 1, 2].map(|k| sraw::clip_level(&data, k, sraw::FULL_SCALE));
+    Ok(Sensor {
+        format: RawFormat::Cr2,
+        make: t.tag_ascii(ifd0, tag::MAKE),
+        model: t.tag_ascii(ifd0, tag::MODEL),
+        width,
+        height,
+        samples: 3,
+        data,
+        cfa: None,
+        linearization: None,
+        // Y is stored black-subtracted.
+        black: BlackLevels::uniform(0.0),
+        white,
+        active,
+        crop: active,
+        color: Default::default(),
+        camera_wb,
+        orientation: crate::tiff::orientation(t.tag_uint(ifd0, tag::ORIENTATION)),
+        baseline_exposure: 0.0,
+        gain_maps: Vec::new(),
+        tone_curve: Vec::new(),
+        black_point: 0.0,
+        warnings,
+    })
+}
+
 pub(crate) fn decode(t: &Tiff, limits: &Limits) -> Result<Sensor> {
     let ifds = t.all_ifds();
     let ifd0 = t.ifd_at(t.first_ifd, 0).ok_or_else(|| RawError::malformed("CR2 has no IFD0"))?;
@@ -191,23 +284,16 @@ pub(crate) fn decode(t: &Tiff, limits: &Limits) -> Result<Sensor> {
     let src = t.bytes(off, len).or_else(|| t.data.get(off..)).ok_or_else(|| RawError::malformed("CR2 raw data lies outside the file"))?;
 
     let frame = ljpeg::frame(src).map_err(|e| match e {
-        RawError::Unsupported(m) if m.contains("subsampled") => RawError::unsupported("Canon sRAW / mRAW"),
+        RawError::Unsupported(m) if m.contains("subsampled") => RawError::unsupported("this Canon sRAW / mRAW layout"),
         e => e,
     })?;
     let total = frame.samples().ok_or_else(|| RawError::malformed("CR2 frame too large"))?;
     let slices = t.tag_uints(&raw, tag::CR2_SLICE);
-    let (width, widths) = match slices.as_slice() {
-        [n, w, last] if *n < 64 && *w > 0 && *last > 0 => {
-            let (n, w, last) = (*n as usize, *w as usize, *last as usize);
-            let mut ws = vec![w; n];
-            ws.push(last);
-            (n * w + last, ws)
-        }
-        _ => {
-            let w = frame.width * frame.components;
-            (w, vec![w])
-        }
-    };
+    if frame.is_subsampled() {
+        return decode_sraw(t, &ifds, &ifd0, &slices, src, frame, limits);
+    }
+    let widths = slice_widths(&slices).unwrap_or_else(|| vec![frame.width * frame.components]);
+    let width: usize = widths.iter().sum();
     if width == 0 || total % width != 0 {
         return Err(RawError::malformed("CR2 slices do not match the JPEG frame"));
     }
@@ -231,13 +317,7 @@ pub(crate) fn decode(t: &Tiff, limits: &Limits) -> Result<Sensor> {
     let mut warnings = Vec::new();
     let mn = maker_note(t, &ifds);
     let full = Rect::new(0, 0, width, height);
-    // SensorInfo: [1] width, [2] height, [5] left, [6] top, [7] right, [8] bottom border (inclusive).
-    let info = mn.as_ref().map(|m| t.tag_uints(m, CANON_SENSOR_INFO)).unwrap_or_default();
-    let active = match info.get(5..9) {
-        Some(&[l, tp, r, b]) if r > l && b > tp => Rect::new(l as usize, tp as usize, (r - l + 1) as usize, (b - tp + 1) as usize).intersect(&full),
-        _ => full,
-    };
-    let active = if active.is_empty() { full } else { active };
+    let active = image_area(t, mn.as_ref(), full);
     // Black: the masked columns left of the image (skipping a few edge columns).
     let black = if active.x >= 16 {
         // Only the outer half: the columns next to the image area can be partly exposed.

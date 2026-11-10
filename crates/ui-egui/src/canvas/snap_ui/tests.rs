@@ -93,6 +93,77 @@ fn drawing_a_new_crop_snaps_its_corner_not_the_default_frame() {
     }
 }
 
+/// A straighten line drawn inside an upright, edited frame levels the frame on the line as
+/// drawn: it isn't shifted by the offset that would snap the frame if the press moved it. The
+/// default mode moves the image there, which never shifted the line; it stays as it was.
+#[test]
+fn a_straighten_line_inside_the_frame_is_not_snapped_as_a_frame_move() {
+    let mac_cmd = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
+    for (classic, armed, m) in [(true, true, egui::Modifiers::NONE), (true, false, mac_cmd), (false, true, egui::Modifiers::NONE)] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+        app.sync_views();
+        app.ui.views[0].zoom = 1.0;
+        app.ui.views[0].fit_pending = false;
+        app.ui.tool = Tool::Crop;
+        app.ui.tool_options.crop_shield.classic_mode = classic;
+        app.ui.extras.snap = true;
+        app.ui.view.show.smart_guides = true;
+        crate::crop_ui::ensure_frame(&mut app);
+        app.ui.crop_rect = Some([20.0, 20.0, 120.0, 70.0]);
+        app.crop.default_frame = false;
+        if classic {
+            // Without Straighten the press moves the frame and snaps its edges, as on main.
+            crate::snap_ui::begin(&mut app, [30.0, 30.0], egui::Modifiers::NONE);
+            let gesture = app.prefs_rt.snap.take().map(|s| s.gesture);
+            assert_eq!(gesture, Some(Gesture::Move { rect: [20.0, 20.0, 120.0, 70.0] }));
+        }
+        app.crop.straighten.armed = armed;
+        // Moving the frame by the line's (100, 8) would bring its centre 3 px from the
+        // document's: that offset must not reach the line. Both ends are clear of every target.
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 30.0, pressure: 1.0 }, m);
+        crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 130.0, y: 38.0, pressure: 1.0 }, m);
+        crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 130.0, y: 38.0 }, m);
+        let want = crate::crop_straighten::frame_angle([30.0, 30.0], [130.0, 38.0], 0.0).unwrap();
+        let got = crate::crop_ui::angle(&app);
+        assert!((got - want).abs() < 1e-9, "Classic Mode {classic}, armed {armed}: {got} vs {want}");
+    }
+}
+
+/// Windows Ctrl both starts a straighten line and is held while drawing it, which turns
+/// snapping off: the press stays where it was too, so the frame levels on the line as drawn,
+/// inside an edited frame, outside it and in the untouched default frame. ⌘ on the Mac is not
+/// the override: both ends snap.
+#[test]
+fn a_windows_ctrl_straighten_line_does_not_snap_its_start_either() {
+    let win_ctrl = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+    let mac_cmd = egui::Modifiers { mac_cmd: true, command: true, ..Default::default() };
+    for frame in [Some([20.0, 20.0, 120.0, 70.0]), Some([130.0, 20.0, 190.0, 70.0]), None] {
+        for (m, start) in [(win_ctrl, [97.0, 30.0]), (mac_cmd, [100.0, 30.0])] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+            app.sync_views();
+            app.ui.views[0].zoom = 1.0;
+            app.ui.views[0].fit_pending = false;
+            app.ui.tool = Tool::Crop;
+            app.ui.tool_options.crop_shield.classic_mode = true;
+            app.ui.extras.snap = true;
+            crate::crop_ui::ensure_frame(&mut app);
+            if let Some(r) = frame {
+                app.ui.crop_rect = Some(r);
+                app.crop.default_frame = false;
+            }
+            // The press is 3 px from the document's centre line; the end is clear of every target.
+            crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 97.0, y: 30.0, pressure: 1.0 }, m);
+            crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 180.0, y: 38.0, pressure: 1.0 }, m);
+            crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 180.0, y: 38.0 }, m);
+            let want = crate::crop_straighten::frame_angle(start, [180.0, 38.0], 0.0).unwrap();
+            let got = crate::crop_ui::angle(&app);
+            assert!((got - want).abs() < 1e-9, "frame {frame:?}, {m:?}: {got} vs {want}");
+        }
+    }
+}
+
 #[test]
 fn move_tool_snaps_to_other_layer_edges_with_smart_guides() {
     let mut app = app_with_box();
@@ -876,7 +947,7 @@ fn alt_over_the_box_shows_the_reference_point_pointer() {
     for p in [[55.0, 52.0], [30.0, 30.0], [200.0, 200.0]] {
         assert_eq!(crate::transform_tool::cursor(&app, &xf, p, alt), Some(egui::CursorIcon::Crosshair), "{p:?}");
     }
-    assert_eq!(crate::transform_tool::cursor(&app, &xf, [55.0, 52.0], egui::Modifiers::NONE), Some(egui::CursorIcon::Move));
+    assert_eq!(crate::transform_tool::cursor(&app, &xf, [55.0, 52.0], egui::Modifiers::NONE), Some(egui::CursorIcon::Default));
     assert_ne!(crate::transform_tool::cursor(&app, &xf, [40.0, 40.0], alt), Some(egui::CursorIcon::Crosshair), "a corner handle stays a handle");
 }
 

@@ -115,7 +115,8 @@ fn contiguous_limits_skip_a_matching_island_that_discontiguous_recolours() {
 /// 8 (the live stroke keeps its working pixels in the layer's depth between dabs).
 #[test]
 fn a_stroke_is_drawn_live_and_is_one_history_step() {
-    for depth in [8, 32] {
+    // Color Replacement refuses 32-bit RGB documents, as the reference application does (#11923).
+    for depth in [8, 16] {
         live_stroke_at(depth);
     }
 }
@@ -147,7 +148,7 @@ fn live_stroke_at(depth: u32) {
     }
     let st = app.session.active().unwrap();
     assert_eq!(st.history.past_len(), steps + 1, "one History step");
-    assert_eq!(st.history.entries().last().map(|e| e.to_string()).as_deref(), Some("Color Replacement"));
+    assert_eq!(st.history.entries().last().map(|e| e.to_string()).as_deref(), Some("Color Replacement Tool"));
     app.run("edit.undo", json!({})).unwrap();
     assert_eq!(rgba(&app, 20, 20), before, "one undo restores the pixels");
     app.run("edit.redo", json!({})).unwrap();

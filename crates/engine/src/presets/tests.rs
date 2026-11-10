@@ -612,6 +612,61 @@ fn tool_presets_save_filter_select() {
     assert!(s.execute("tool.presets.new", json!({"name": "x"})).is_err());
 }
 
+#[test]
+fn tool_presets_reject_invalid_colors_before_applying_the_brush() {
+    let mut invalid = vec![
+        json!(null),
+        json!(true),
+        json!(7),
+        json!("red"),
+        json!({}),
+        json!([]),
+        json!([1]),
+        json!([1, 0]),
+        json!([1, 0, 0, 1, 0]),
+        json!([null, 0.4, 0.6]),
+    ];
+    for channel in 0..4 {
+        for bad_channel in [json!(1e100), json!(-1e100), json!(null), json!("red"), json!(true), json!({}), json!([])] {
+            let mut values = json!([0.2, 0.4, 0.6, 0.8]);
+            values[channel] = bad_channel;
+            invalid.push(values);
+        }
+    }
+    for values in invalid {
+        let mut s = Session::new();
+        s.execute("tools.setColors", json!({"foreground": [0.2, 0.4, 0.6, 0.8]})).unwrap();
+        let color = s.tools.foreground;
+        let brush = s.tools.brush.clone();
+        let brush_rev = s.tools.brush_rev;
+        s.execute(
+            "tool.presets.new",
+            json!({
+                "name": "Invalid", "tool": "brush", "options": {"brush": {"size": 77}, "foreground": values}
+            }),
+        )
+        .unwrap();
+        assert!(s.execute("tool.presets.select", json!({"preset": "Invalid"})).is_err(), "{values}");
+        assert_eq!(s.tools.foreground, color, "{values}");
+        assert_eq!(s.tools.brush, brush, "{values}");
+        assert_eq!(s.tools.brush_rev, brush_rev, "{values}");
+    }
+}
+
+#[test]
+fn tool_presets_keep_finite_hdr_colors_and_leave_absent_colors_unchanged() {
+    let mut s = Session::new();
+    for (options, expected) in [
+        (json!({"foreground": [1.5, -0.1, 0.6, 0.8]}), [1.5, -0.1, 0.6, 0.8]),
+        (json!({"foreground": [0.2, 0.4, 0.6]}), [0.2, 0.4, 0.6, 1.0]),
+        (json!({}), [0.2, 0.4, 0.6, 1.0]),
+    ] {
+        let preset = s.execute("tool.presets.new", json!({"tool": "move", "options": options})).unwrap();
+        s.execute("tool.presets.select", json!({"preset": preset["name"]})).unwrap();
+        assert_eq!(s.tools.foreground, expected);
+    }
+}
+
 /// An Art History Brush preset captures the brush's opacity and selecting it restores it.
 #[test]
 fn art_history_brush_preset_carries_the_opacity() {

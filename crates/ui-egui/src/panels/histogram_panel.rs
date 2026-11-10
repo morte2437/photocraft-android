@@ -406,18 +406,19 @@ pub fn update(app: &mut PhotocraftApp, ctx: &egui::Context) {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
-    // A revision that changed no pixels (selecting a layer, say) keeps the histogram of the one
-    // before (#125), and an Uncached Refresh with it.
-    if let Some(st) = app.session.active()
-        && tone::view_only(st)
-    {
+    // Revisions that changed no pixels since the histogram's (selecting a layer, say) keep it
+    // (#125), and an Uncached Refresh with it.
+    if let Some(st) = app.session.active() {
         let (doc, rev) = (st.doc.id, st.revision);
-        if app.hist_uncached == Some((doc, rev.wrapping_sub(1))) {
+        if let Some((d, r)) = app.hist_uncached
+            && d == doc
+            && tone::pixels_kept_since(st, r)
+        {
             app.hist_uncached = Some((doc, rev));
         }
         if let Some(e) = app.doc_hist.as_mut()
             && e.key.doc == doc
-            && e.key.revision.wrapping_add(1) == rev
+            && tone::pixels_kept_since(st, e.key.revision)
         {
             e.key.revision = rev;
         }

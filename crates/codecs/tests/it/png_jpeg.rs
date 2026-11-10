@@ -196,6 +196,279 @@ fn tiff_f32_output_matches_oracle() {
 }
 
 // ---------------------------------------------------------------------------
+// PNG decoded in steps (PngDecodeRows)
+// ---------------------------------------------------------------------------
+
+/// Decodes `bytes` with [`PngDecodeRows`], going on for `per_call` rows per call (0: unlimited);
+/// returns the image and how many calls it took.
+fn decode_in_steps(bytes: &[u8], per_call: usize) -> Result<(Image, usize), CodecError> {
+    let mut rows = PngDecodeRows::new(bytes, &Limits::default())?;
+    let mut calls = 0;
+    loop {
+        calls += 1;
+        let mut left = per_call;
+        let mut more = || {
+            left = left.wrapping_sub(1);
+            per_call == 0 || left > 0
+        };
+        if let Some(img) = rows.step(&mut more)? {
+            return Ok((img, calls));
+        }
+        assert!(calls < 100_000, "the decoder never finished");
+    }
+}
+
+fn assert_steps_equal_decode(bytes: &[u8], what: &str) {
+    let whole = decode(bytes);
+    for per_call in [1, 7, 0] {
+        // `decode` also takes the resolution from EXIF or XMP and turns the image upright;
+        // `finish_png_decode` does that for a stepped decode, as the stepped import does.
+        let stepped = decode_in_steps(bytes, per_call).and_then(|(img, calls)| Ok((finish_png_decode(img, &DecodeOptions::default())?, calls)));
+        match (&whole, stepped) {
+            (Ok(a), Ok((b, _))) => assert_eq!(a, &b, "{what}, {per_call} rows per call"),
+            (Err(_), Err(_)) => {}
+            (a, b) => panic!("{what}, {per_call} rows per call: decode {:?}, steps {:?}", a.as_ref().map(|_| ()), b.map(|_| ())),
+        }
+    }
+}
+
+#[test]
+fn png_rows_equal_decode_in_every_layout_and_depth() {
+    for layout in [ChannelLayout::Gray, ChannelLayout::GrayA, ChannelLayout::Rgb, ChannelLayout::Rgba] {
+        for sample in [SampleType::U8, SampleType::U16] {
+            let mut img = synth(41, 29, layout, sample, 77, 0.3).with_icc(Some(sample_icc(400)));
+            img.meta.text.push(("Comment".into(), "stepped".into()));
+            img.meta.dpi = Some((300.0, 300.0));
+            for interlaced in [false, true] {
+                let bytes = encode(&img, Format::Png, &EncodeOptions { png_interlaced: interlaced, ..Default::default() }).unwrap();
+                assert_steps_equal_decode(&bytes, &format!("{layout:?} {sample:?} interlaced={interlaced}"));
+            }
+        }
+    }
+}
+
+#[test]
+fn png_rows_equal_decode_for_palette_and_transparency() {
+    let pal = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [9, 9, 9]];
+    let idx: Vec<u8> = (0..50 * 20).map(|i| (i % 4) as u8).collect();
+    let bytes = encode_png_indexed(50, 20, &idx, &pal, Some(3), None, None).unwrap();
+    assert_steps_equal_decode(&bytes, "palette with a transparent entry");
+}
+
+#[test]
+fn png_rows_take_one_call_per_row_and_report_progress() {
+    let bytes = encode(&synth(16, 40, ChannelLayout::Rgb, SampleType::U8, 5, 0.2), Format::Png, &EncodeOptions::default()).unwrap();
+    let mut rows = PngDecodeRows::new(bytes.as_slice(), &Limits::default()).unwrap();
+    assert_eq!(rows.size(), (16, 40));
+    assert_eq!(rows.progress(), 0.0);
+    let mut seen = Vec::new();
+    let img = loop {
+        if let Some(img) = rows.step(&mut || false).unwrap() {
+            break img;
+        }
+        seen.push(rows.progress());
+    };
+    assert_eq!(seen.len(), 39, "one call per row but the last, which also finishes the file");
+    assert!(seen.windows(2).all(|w| w[0] < w[1]));
+    assert_eq!(rows.progress(), 1.0);
+    assert_eq!(img, decode(&bytes).unwrap());
+    // A decoder that has finished says so instead of decoding again.
+    assert!(rows.step(&mut || true).is_err());
+}
+
+#[test]
+fn png_rows_share_their_bytes_without_copying_them() {
+    let bytes = std::sync::Arc::new(encode(&synth(20, 20, ChannelLayout::Rgba, SampleType::U8, 3, 0.2), Format::Png, &EncodeOptions::default()).unwrap());
+    let mut rows = PngDecodeRows::new(SharedBytes(bytes.clone()), &Limits::default()).unwrap();
+    let img = rows.step(&mut || true).unwrap().unwrap();
+    assert_eq!(img, decode(&bytes).unwrap());
+    drop(rows);
+    assert_eq!(std::sync::Arc::strong_count(&bytes), 1, "the decoder let go of the bytes");
+}
+
+/// A CRC-valid PNG chunk.
+fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut crc = flate2::Crc::new();
+    crc.update(kind);
+    crc.update(data);
+    let mut out = u32::try_from(data.len()).unwrap().to_be_bytes().to_vec();
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    out.extend_from_slice(&crc.sum().to_be_bytes());
+    out
+}
+
+fn zlib(text: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(text).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// A `zTXt` chunk (`deflated`) or a compressed `iTXt` one (`!deflated`) with `text` as its value.
+fn png_text_chunk(kind: &[u8; 4], keyword: &[u8], text: &[u8]) -> Vec<u8> {
+    let mut data = keyword.to_vec();
+    data.push(0);
+    if kind == b"zTXt" {
+        data.push(0);
+    } else {
+        data.extend_from_slice(&[1, 0, 0, 0]);
+    }
+    data.extend_from_slice(&zlib(text));
+    png_chunk(kind, &data)
+}
+
+/// `png` with `chunks` between the image data and `IEND` (the text-after-IDAT case).
+fn with_chunks_before_iend(png: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
+    let mut at = 8;
+    loop {
+        let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+        if &png[at + 4..at + 8] == b"IEND" {
+            let mut out = png[..at].to_vec();
+            for c in chunks {
+                out.extend_from_slice(c);
+            }
+            out.extend_from_slice(&png[at..]);
+            return out;
+        }
+        at += len + 12;
+    }
+}
+
+#[test]
+fn png_rows_read_compressed_text_in_bounded_batches() {
+    let img = synth(19, 23, ChannelLayout::Rgba, SampleType::U8, 9, 0.4);
+    let base = encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+    let text = "A".repeat(150_000);
+    for kind in [b"zTXt", b"iTXt"] {
+        let bytes = with_chunks_before_iend(&base, &[png_text_chunk(kind, b"Comment", text.as_bytes())]);
+        let mut rows = PngDecodeRows::new(bytes.as_slice(), &Limits::default()).unwrap();
+        let mut calls = 0;
+        // An empty budget: every step reads one bounded batch and stops.
+        let stepped = loop {
+            calls += 1;
+            if let Some(img) = rows.step(&mut || false).unwrap() {
+                break img;
+            }
+            assert!(calls < 100_000, "the decoder never finished");
+        };
+        assert_eq!(stepped, decode(&bytes).unwrap(), "{kind:?}");
+        assert_eq!(stepped.meta.text, vec![("Comment".into(), text.clone())], "{kind:?}: the whole value is kept");
+        assert!(calls > 20, "{kind:?}: {calls} bounded calls, not one blocking pass");
+        assert_steps_equal_decode(&bytes, &format!("compressed {kind:?} text"));
+    }
+}
+
+/// An Adam7 image whose compressed text needs many metadata yields: the pixels are decoded
+/// once, before the first yield, and later steps only read text.
+#[test]
+fn png_rows_finish_adam7_text_in_bounded_batches() {
+    let img = synth(19, 23, ChannelLayout::Rgba, SampleType::U8, 9, 0.4);
+    let base = encode(&img, Format::Png, &EncodeOptions { png_interlaced: true, ..Default::default() }).unwrap();
+    let text = "A".repeat(150_000);
+    for kind in [b"zTXt", b"iTXt"] {
+        let bytes = with_chunks_before_iend(&base, &[png_text_chunk(kind, b"Comment", text.as_bytes())]);
+        let mut rows = PngDecodeRows::new(bytes.as_slice(), &Limits::default()).unwrap();
+        let mut calls = 0;
+        let stepped = loop {
+            calls += 1;
+            if let Some(img) = rows.step(&mut || false).unwrap() {
+                break img;
+            }
+            assert!(calls < 100_000, "the decoder never finished");
+        };
+        assert_eq!(stepped, decode(&bytes).unwrap(), "{kind:?}");
+        assert_eq!(stepped.meta.text, vec![("Comment".into(), text.clone())], "{kind:?}: the whole value is kept");
+        assert!(calls > 20, "{kind:?}: {calls} bounded calls after the one Adam7 pass");
+    }
+}
+
+/// An uncompressed `iTXt` chunk (`value` is its text, so its CRC covers the whole value).
+fn png_itxt_uncompressed(keyword: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut data = keyword.to_vec();
+    data.push(0);
+    data.extend_from_slice(&[0, 0, 0, 0]);
+    data.extend_from_slice(value);
+    png_chunk(b"iTXt", &data)
+}
+
+/// The CRC of a large text chunk takes bounded batches too, before any of its value is read.
+#[test]
+fn png_rows_read_a_large_text_crc_in_bounded_batches() {
+    let img = synth(5, 5, ChannelLayout::Rgb, SampleType::U8, 3, 0.2);
+    let base = encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+    let text: String = (0..300_000u32).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let bytes = with_chunks_before_iend(&base, &[png_itxt_uncompressed(b"Comment", text.as_bytes())]);
+    let mut rows = PngDecodeRows::new(bytes.as_slice(), &Limits::default()).unwrap();
+    let mut calls = 0;
+    let stepped = loop {
+        calls += 1;
+        if let Some(img) = rows.step(&mut || false).unwrap() {
+            break img;
+        }
+        assert!(calls < 100_000, "the decoder never finished");
+    };
+    assert_eq!(stepped.meta.text, vec![("Comment".into(), text)]);
+    assert!(calls > 60, "{calls} calls: the CRC and the value each take bounded batches");
+}
+
+/// A text chunk whose CRC does not match is still dropped after its bounded CRC batches.
+#[test]
+fn png_rows_drop_a_corrupt_text_crc() {
+    let img = synth(5, 5, ChannelLayout::Rgb, SampleType::U8, 3, 0.2);
+    let base = encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+    let mut chunk = png_itxt_uncompressed(b"Comment", b"not accepted");
+    let at = chunk.len() - 5;
+    chunk[at] ^= 0xFF;
+    let bytes = with_chunks_before_iend(&base, &[chunk]);
+    let stepped = decode_in_steps(&bytes, 0).unwrap().0;
+    assert!(stepped.meta.text.is_empty(), "a broken CRC drops the text");
+    assert_eq!(stepped, decode(&bytes).unwrap(), "the one-pass decode drops it too");
+}
+
+/// An uncompressed iTXt value that is not UTF-8 is dropped without charging its bytes against
+/// the budget, even when it is larger than all of it: the previous reader checked UTF-8 first.
+#[test]
+fn png_rows_drop_invalid_uncompressed_text_before_charging_the_budget() {
+    let img = synth(4, 4, ChannelLayout::Rgb, SampleType::U8, 3, 0.2);
+    let base = encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+    let mut value = vec![b'A'; 12_000];
+    value[11_999] = 0xFF;
+    let bytes = with_chunks_before_iend(&base, &[png_itxt_uncompressed(b"Comment", &value)]);
+    let opts = DecodeOptions { limits: Limits { max_alloc: 200, ..Default::default() }, ..Default::default() };
+    let mut rows = PngDecodeRows::new(bytes.as_slice(), &opts.limits).unwrap();
+    let stepped = rows.step(&mut || true).unwrap().unwrap();
+    let stepped = finish_png_decode(stepped, &opts).unwrap();
+    assert!(stepped.meta.text.is_empty(), "invalid UTF-8 is skipped, not a budget failure");
+    let whole = decode_with(&bytes, &opts).unwrap();
+    assert!(whole.meta.text.is_empty(), "the one-pass decode skips it too");
+}
+
+#[test]
+fn png_rows_fail_like_decode_on_damaged_files() {
+    let img = synth(64, 64, ChannelLayout::Rgb, SampleType::U8, 11, 1.0);
+    for interlaced in [false, true] {
+        let bytes = encode(&img, Format::Png, &EncodeOptions { png_interlaced: interlaced, ..Default::default() }).unwrap();
+        // Cuts inside the signature, the IHDR chunk or the next chunk header leave no complete image.
+        for cut in [8, 20, 40] {
+            let truncated = bytes.get(..cut).unwrap();
+            assert!(decode(truncated).is_err(), "cut at {cut} interlaced={interlaced}");
+            assert!(decode_in_steps(truncated, 1).is_err(), "cut at {cut} interlaced={interlaced}");
+        }
+        for cut in [bytes.len() / 3, bytes.len() / 2, bytes.len() - 20] {
+            assert_steps_equal_decode(bytes.get(..cut).unwrap(), &format!("cut at {cut} interlaced={interlaced}"));
+        }
+        // A flipped byte in the middle of the compressed data.
+        let mut bad = bytes.clone();
+        let mid = bad.len() / 2;
+        bad[mid] ^= 0xFF;
+        assert_steps_equal_decode(&bad, "a damaged byte");
+    }
+    assert!(decode_in_steps(&[], 1).is_err());
+    assert!(decode_in_steps(b"not a png at all, just some text bytes", 1).is_err());
+}
+
+// ---------------------------------------------------------------------------
 // PngSuite corpus (repo-root corpus/pngsuite/*.png; feature `corpus`, fetched by
 // `cargo xtask corpus --all`; missing = failure)
 // ---------------------------------------------------------------------------
@@ -226,6 +499,39 @@ fn pngsuite_corpus_matches_oracle() {
         }
     }
     eprintln!("pngsuite: {checked} files compared");
+    assert!(checked > 100, "{}: only {checked} PNGs compared: run `cargo xtask corpus --all`", dir.display());
+}
+
+/// The preflight charges the decoded layout's bytes per pixel: a 1000×1000 Gray8 PNG (1 MB) fits a
+/// 1.5 MB budget, which the old worst-case RGBA16 preflight (8 MB) refused.
+#[test]
+fn png_preflight_uses_the_output_layout() {
+    let img = synth(1000, 1000, ChannelLayout::Gray, SampleType::U8, 7, 0.5);
+    let bytes = encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+    let opts = DecodeOptions { limits: Limits { max_alloc: 1_500_000, ..Limits::none() }, ..Default::default() };
+    let got = decode_with(&bytes, &opts).expect("a Gray8 image is charged 1 byte per pixel");
+    assert_eq!(got.data(), img.data());
+    let tight = DecodeOptions { limits: Limits { max_alloc: 900_000, ..Limits::none() }, ..Default::default() };
+    assert!(decode_with(&bytes, &tight).is_err(), "the actual pixel budget still applies");
+}
+
+#[cfg(feature = "corpus")]
+#[test]
+fn png_rows_equal_decode_on_the_pngsuite_corpus() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/pngsuite");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        panic!("{} is missing: run `cargo xtask corpus --all`", dir.display());
+    };
+    let mut checked = 0;
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("png") {
+            continue;
+        }
+        let bytes = std::fs::read(&p).unwrap();
+        assert_steps_equal_decode(&bytes, &p.display().to_string());
+        checked += 1;
+    }
     assert!(checked > 100, "{}: only {checked} PNGs compared: run `cargo xtask corpus --all`", dir.display());
 }
 
@@ -287,4 +593,54 @@ fn pngsuite_corpus_rows_match_the_whole_decode() {
     }
     eprintln!("pngsuite: {streamed} streamed, {refused} refused (interlaced), {skipped} skipped (not detected as PNG)");
     assert!(streamed > 100, "only {streamed} PNGs streamed: run `cargo xtask corpus --all`");
+}
+
+/// Streaming a PNG's rows a group at a time gives the pixels and metadata `decode` gives, holds
+/// only a group at a time, and stops between rows when asked.
+#[test]
+fn step_stream_gives_the_pixels_and_extras_of_decode() {
+    for (layout, sample) in [(ChannelLayout::Gray, SampleType::U8), (ChannelLayout::Rgb, SampleType::U16), (ChannelLayout::Rgba, SampleType::U8)] {
+        let (w, h) = (23u32, 19u32);
+        let len = w as usize * h as usize * layout.channels() * sample.bytes();
+        let mut img = Image::from_raw(w, h, layout, sample, (0..len).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect()).unwrap();
+        img.meta.dpi = Some((144.0, 144.0));
+        img.meta.text.push(("Comment".into(), "streamed".into()));
+        img.icc = Some(vec![7; 40]);
+        let bytes = encode(&img, Format::Png, &EncodeOptions::default()).unwrap();
+        let want = decode(&bytes).unwrap();
+        for group in [0u32, 1, 4, 19, 64] {
+            let mut dec = PngDecodeRows::new_streaming(bytes.as_slice(), &Limits::default()).unwrap();
+            assert!(dec.streamable());
+            assert_eq!(dec.header(), PngHeader { width: w, height: h, layout, sample });
+            let (mut data, mut next, mut calls) = (Vec::new(), 0u32, 0);
+            let extras = loop {
+                calls += 1;
+                let mut sink = |y0: u32, rows: &[u8]| -> Result<(), CodecError> {
+                    assert_eq!(y0, next, "{layout:?} group {group}");
+                    assert!(rows.len() <= group.max(1) as usize * dec_line(w, layout, sample), "a group at most");
+                    next += (rows.len() / dec_line(w, layout, sample)) as u32;
+                    data.extend_from_slice(rows);
+                    Ok(())
+                };
+                if let Some(extras) = dec.step_stream(group, &mut || false, &mut sink).unwrap() {
+                    break extras;
+                }
+                assert!(calls < 10_000);
+            };
+            assert!(calls > 1, "{layout:?}: stopped between rows");
+            assert_eq!(data, want.data(), "{layout:?} group {group}: pixels");
+            assert_eq!((extras.icc.as_deref(), extras.meta.dpi, &extras.meta.text), (want.icc.as_deref(), want.meta.dpi, &want.meta.text));
+            assert_eq!(extras.orientation, 1);
+            assert!(dec.step_stream::<CodecError>(group, &mut || true, &mut |_, _| Ok(())).is_err(), "spent");
+        }
+    }
+    // An interlaced file doesn't stream.
+    let img = Image::from_raw(9, 9, ChannelLayout::Gray, SampleType::U8, vec![1; 81]).unwrap();
+    let bytes = encode(&img, Format::Png, &EncodeOptions { png_interlaced: true, ..Default::default() }).unwrap();
+    assert!(!PngDecodeRows::new_streaming(bytes.as_slice(), &Limits::default()).unwrap().streamable());
+}
+
+/// Bytes per row of `w` pixels.
+fn dec_line(w: u32, layout: ChannelLayout, sample: SampleType) -> usize {
+    w as usize * layout.channels() * sample.bytes()
 }

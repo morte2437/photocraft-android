@@ -473,3 +473,71 @@ fn unlocked_or_position_locked_smart_objects_take_distortions() {
         }
     }
 }
+
+#[test]
+fn a_stored_puppet_mesh_is_drawn_while_its_pins_hold() {
+    // A Photoshop file's Puppet Warp carries its solved mesh: it is drawn as it is (here a whole
+    // move by (2, 1), although one pin alone would move the block by (6, 4)), until the pins
+    // change; then the pins are solved.
+    let surf = active_surface(&session(8));
+    let canvas = Rect::new(0, 0, 80, 60);
+    let pins = json!([{"src": [30, 25], "dst": [36, 29]}]);
+    let verts = [[8.0, 8.0], [62.0, 8.0], [62.0, 42.0], [8.0, 42.0]];
+    let moved: Vec<[f64; 2]> = verts.iter().map(|v| [v[0] + 2.0, v[1] + 1.0]).collect();
+    let mesh = json!({"pins": pins, "verts": verts, "deformed": moved, "tris": [[0, 1, 2], [0, 2, 3]]});
+    let shifted = |dx, dy| photocraft_algo::resample::translate_surface(&surf, dx, dy);
+    let p = json!({"pins": pins, "interpolation": "bilinear", "mesh": mesh});
+    let out = apply_to_surface(PUPPET_SMART, &p, &surf, canvas).unwrap();
+    assert_eq!(out.content_bounds(), Rect::new(12, 11, 62, 41));
+    assert!(worst(&out, &shifted(2, 1), Rect::new(12, 11, 62, 41)) <= 1.0 / 255.0);
+    // Pins edited after import: the stored mesh no longer applies.
+    let mut edited = p.clone();
+    edited["mesh"]["pins"][0]["dst"] = json!([40, 29]);
+    let out = apply_to_surface(PUPPET_SMART, &edited, &surf, canvas).unwrap();
+    assert_eq!(out.content_bounds(), Rect::new(16, 14, 66, 44));
+    // So does a solver setting set after import (imported params set none).
+    for (k, v) in [("mode", json!("rigid")), ("density", json!("more")), ("expansion", json!(2.0))] {
+        let mut q = p.clone();
+        q[k] = v;
+        let out = apply_to_surface(PUPPET_SMART, &q, &surf, canvas).unwrap();
+        assert_eq!(out.content_bounds(), Rect::new(16, 14, 66, 44), "{k}");
+    }
+    // A malformed mesh is ignored the same way.
+    for bad in [
+        json!({"pins": pins, "verts": verts, "deformed": [[0, 0]], "tris": [[0, 1, 2]]}),
+        json!({"pins": pins, "verts": verts, "deformed": moved, "tris": [[0, 1, 9]]}),
+    ] {
+        let mut q = p.clone();
+        q["mesh"] = bad;
+        let out = apply_to_surface(PUPPET_SMART, &q, &surf, canvas).unwrap();
+        assert_eq!(out.content_bounds(), Rect::new(16, 14, 66, 44));
+    }
+}
+
+#[test]
+fn a_stored_puppet_mesh_is_drawn_only_on_the_placement_it_was_made_for() {
+    // The mesh sits in document pixels where the layer was on import (`mesh.placement`); once the
+    // smart object is moved, transformed or warped, its pins are solved instead.
+    let surf = active_surface(&session(8));
+    let canvas = Rect::new(0, 0, 80, 60);
+    let pins = json!([{"src": [30, 25], "dst": [36, 29]}]);
+    let verts = [[8.0, 8.0], [62.0, 8.0], [62.0, 42.0], [8.0, 42.0]];
+    let moved: Vec<[f64; 2]> = verts.iter().map(|v| [v[0] + 2.0, v[1] + 1.0]).collect();
+    let src = photocraft_doc::SmartSource::Linked { path: "x.png".into() };
+    let mut sm = photocraft_doc::SmartObject::new(src, photocraft_geom::Affine::IDENTITY, None);
+    let mesh = json!({"pins": pins, "verts": verts, "deformed": moved, "tris": [[0, 1, 2], [0, 2, 3]], "placement": sm.placement_json()});
+    let params = json!({"pins": pins, "interpolation": "bilinear", "mesh": mesh});
+    sm.smart_filters.push(SmartFilter { command: PUPPET_SMART.into(), params, blend: photocraft_color::BlendMode::Normal, opacity: 1.0, visible: true });
+    let render = |sm: &photocraft_doc::SmartObject| crate::smart_cmds::apply_smart_filters(&surf, sm, canvas).unwrap().content_bounds();
+    assert_eq!(render(&sm), Rect::new(12, 11, 62, 41), "the stored mesh");
+    let mut placed = sm.clone();
+    placed.transform = photocraft_geom::Affine { m: [1.0, 0.0, 0.0, 1.0, 4.0, 0.0] };
+    assert_eq!(render(&placed), Rect::new(16, 14, 66, 44), "moved: solved");
+    let mut warped = sm.clone();
+    warped.warp = Some(photocraft_geom::warp::Warp::preset(photocraft_geom::warp::WarpStyle::Arc, 10.0, [0.0, 0.0, 50.0, 30.0]));
+    assert_eq!(render(&warped), Rect::new(16, 14, 66, 44), "warped: solved");
+    // A mesh with no placement recorded is treated the same way.
+    let mut bare = sm.clone();
+    bare.smart_filters[0].params["mesh"].as_object_mut().unwrap().remove("placement");
+    assert_eq!(render(&bare), Rect::new(16, 14, 66, 44), "no placement: solved");
+}

@@ -87,6 +87,7 @@
 	Right	Oikea
 	Open Recent	Viimeksi avatut
 	Clear Recent Files	Tyhjennä viimeisimmät tiedostot
+	Clear Recent File List	Tyhjennä viimeisimmät tiedostot
 	Remove from Recent	Poista viimeisimmistä
 	Remove {name} from Recent	Poista {name} viimeisimmistä
 	Close	Sulje
@@ -95,6 +96,10 @@
 	Restore	Palauta
 	Close All	Sulje kaikki
 	Close Others	Sulje muut
+	New Document…	Uusi asiakirja…
+	Open Document…	Avaa…
+	Consolidate All to Here	Kokoa kaikki tähän
+	Move to New Window	Siirrä uuteen ikkunaan
 	Save	Tallenna
 	Save As…	Tallenna nimellä…
 	Save a Copy…	Tallenna kopio…
@@ -107,7 +112,6 @@
 	Export As…	Vie nimellä…
 	Export	Vie
 	Export…	Vie…
-	Quick Export As PNG	Pikavienti PNG-muodossa
 	Quick Export as PNG	Pikavienti PNG-muotoon
 	Place Embedded…	Sijoita upotettuna…
 	Place Linked…	Sijoita linkitettynä…
@@ -182,8 +186,8 @@
 	Trap…	Trappaus…
 
 # Layer
-	Layer via Copy	Taso kopioimalla
-	Layer via Cut	Taso leikkaamalla
+	Layer Via Copy	Taso kopioimalla
+	Layer Via Cut	Taso leikkaamalla
 	Duplicate Layer…	Monista taso…
 	Duplicate…	Monista…
 	Delete	Poista
@@ -311,7 +315,6 @@
 	All	Kaikki
 	Deselect	Poista valinta
 	Reselect	Valitse uudelleen
-	Inverse Selection	Käänteinen valinta
 	Inverse	Käännä valinta
 	Color Range…	Värialue…
 	Select and Mask…	Valitse ja maskaa…
@@ -348,7 +351,7 @@
 	Last Filter	Viimeisin suodatin
 	Filter Gallery…	Suodatingalleria…
 	Liquify…	Nesteytä…
-	Camera Raw Filter…	Camera Raw -suodatin…
+	RAW Develop Filter…	RAW-kehitys -suodatin…
 	Adaptive Wide Angle…	Mukautuva laajakulma…
 	Lens Correction…	Objektiivin korjaus…
 	Vanishing Point…	Pakopiste…
@@ -509,7 +512,6 @@
 	Match Location	Täsmäytä sijainti
 	Match Rotation	Täsmäytä kierto
 	Match All	Täsmäytä kaikki
-	New Window for Document	Uusi ikkuna asiakirjalle
 	Workspace	Työtila
 	Extensions	Laajennukset
 	Panels	Paneelit
@@ -539,6 +541,12 @@
 	Timeline	Aikajana
 	Tool Presets	Työkalujen esiasetukset
 	Tools	Työkalut
+	Contextual Task Bar	Kontekstuaalinen tehtäväpalkki
+	Hide bar	Piilota palkki
+	Reset bar position	Palauta palkin sijainti
+	Pin bar position	Kiinnitä palkin sijainti
+	Move bar	Siirrä palkkia
+	More options	Lisää vaihtoehtoja
 	Libraries	Kirjastot
 	3D	3D
 	Toolbars	Työkalurivit
@@ -597,8 +605,8 @@
 	Background	Tausta
 	Set foreground color	Aseta edustaväri
 	Set background color	Aseta taustaväri
-	Swap colours (X)	Vaihda värit (X)
-	Default colours (D)	Oletusvärit (D)
+	Switch Foreground and Background Colors (X)	Vaihda edusta- ja taustaväri keskenään (X)
+	Default Foreground and Background Colors (D)	Oletusarvoiset edusta- ja taustavärit (D)
 	Brush Tool Options	Sivellintyökalun asetukset
 	Opacity	Peittävyys
 	Flow	Virtaus
@@ -687,6 +695,7 @@
 	Units & Rulers…	Yksiköt ja viivaimet…
 	Guides, Grid & Slices…	Apuviivat, ruudukko ja viipaleet…
 	Plug-ins…	Laajennukset…
+	Plugins…	Laajennukset…
 	Technology Previews	Teknologian esikatselut
 	Scratch Disks…	Työlevyt…
 	Export Preferences…	Vientiasetukset…
@@ -867,7 +876,7 @@
 	Working Black Plate	Työ-mustalevy
 	Working Gray Plate	Harmaa työlevy
 
-# Camera Raw and lens dialogs
+# RAW Develop and lens dialogs
 	Basic	Perusasetukset
 	Detail	Yksityiskohdat
 	HSL/Grayscale	HSL/harmaasävy
@@ -897,8 +906,8 @@
 	Luminance Smoothness	Luminanssin tasaisuus
 	Vignetting	Vinjetointi
 	White Balance: As Shot	Valkotasapaino: kuvauksen mukainen
-	Camera Raw…	Camera Raw…
-	Camera Raw isn't open	Camera Raw ei ole auki
+	RAW Defaults…	RAW-oletukset…
+	RAW Develop isn't open	RAW-kehitys ei ole auki
 	Dehaze	Usvanpoisto
 	Texture	Tekstuuri
 	Focal Length	Polttoväli
@@ -921,8 +930,8 @@
 	ACES	ACES
 	Industry Standard	Alan standardi
 	Web	Verkko
-	Internet Standard RGB	Internetin standardi-RGB
-	Legacy Macintosh RGB	Vanha Macintosh RGB
+	Internet Standard RGB (sRGB)	Internetin standardi-RGB (sRGB)
+	Legacy Macintosh RGB (Gamma 1.8)	Vanha Macintosh RGB (Gamma 1.8)
 	Monitor RGB	Näytön RGB
 	Windows LCD	Windows LCD
 	Coated CMYK	CMYK, päällystetty paperi
@@ -1169,8 +1178,6 @@
 	Roman Hanging Punctuation	Latinalainen riippuva välimerkitys
 	Avoid Widows/Orphans	Vältä leski- ja orporivejä
 	Compose	Sommittele
-	Adobe Single-line Composer	Adobe yksirivinen asettelija
-	Adobe Every-line Composer	Adobe kaikkien rivien asettelija
 	Justification	Tasaus
 	Word Spacing	Sanaväli
 	Letter Spacing	Merkkiväli
@@ -1210,6 +1217,7 @@
 	Path to Illustrator…	Polku Illustratoriin…
 	Make Work Path	Luo työpolku
 	Make Selection	Luo valinta
+	Make Shape	Luo muoto
 	Fill Path	Täytä polku
 	Stroke Path	Piirrä polun reunaviiva
 	Clipping Path	Leikkauspolku
@@ -1603,7 +1611,7 @@
 	Revert “{name}” to the last saved version? Your changes will be lost.	Palautetaanko ”{name}” viimeksi tallennettuun versioon? Muutokset menetetään.
 	{key} to subtract	{key}: vähennä
 	↑↓ navigate   {key} run   esc close	↑↓ siirry   {key} suorita   esc sulje
-	Click to restore the current colour	Palauta nykyinen väri napsauttamalla
+	Click to restore the current color	Palauta nykyinen väri napsauttamalla
 	Click with the Note tool to add a note.	Lisää muistiinpano napsauttamalla Muistiinpano-työkalulla.
 	Drag a rectangle around the object	Vedä suorakulmio kohteen ympärille
 	Drag on the image to add a constraint; Shift for horizontal/vertical; right-click a constraint to change or delete it.	Lisää rajoite vetämällä kuvassa; Shift vaaka-/pystysuunnalle; muuta tai poista rajoite napsauttamalla sitä hiiren kakkospainikkeella.
@@ -1627,6 +1635,7 @@
 	Move Tool	Siirtotyökalu
 	Could not use the move tool because the layer is locked.	Siirtotyökalua ei voitu käyttää, koska taso on lukittu.
 	Could not complete the Free Transform command because the layer is locked.	Vapaa muunnos -komentoa ei voitu suorittaa, koska taso on lukittu.
+	Could not transform because the layer is locked.	Muuntaminen ei onnistunut, koska taso on lukittu.
 	Rectangular Marquee Tool	Suorakulmainen valintakehys
 	Elliptical Marquee Tool	Elliptinen valintakehys
 	Single Row Marquee Tool	Yhden rivin valintakehys
@@ -1684,10 +1693,10 @@
 	Drag to move the active layer	Siirrä aktiivista tasoa vetämällä
 	Drag to pan  ·  hold Space with any tool	Panoroi vetämällä  ·  tai pidä Välilyöntiä painettuna millä tahansa työkalulla
 	Drag to draw a gradient	Piirrä liukuväri vetämällä
-	Click to fill similar colours	Täytä samankaltaiset värit napsauttamalla
+	Click to fill similar colors	Täytä samankaltaiset värit napsauttamalla
 	Click to add text	Lisää teksti napsauttamalla
 	Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract	Vedä (lasso) tai napsauta pisteitä (monikulmio) · {add} lisää · {sub} vähennä
-	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Vedä rajauslaatikko · siirrä vetämällä sisältä · reunat muuttavat kokoa ({ratio} suhde, {centre} keskeltä) · Välilyönti siirtää piirrettäessä · nuolet siirtävät · X vaihtaa suunnan · {commit} vahvistaa · Esc peruuttaa
+	Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} center) · Space moves while drawing · arrows nudge · X swaps orientation · {commit} commits · Esc cancels	Vedä rajauslaatikko · siirrä vetämällä sisältä · reunat muuttavat kokoa ({ratio} suhde, {centre} keskeltä) · Välilyönti siirtää piirrettäessä · nuolet siirtävät · X vaihtaa suunnan · {commit} vahvistaa · Esc peruuttaa
 	{mode} Color · {bits} bit	{mode}-väri · {bits}-bittinen
 	Drag to move the layer	Siirrä tasoa vetämällä
 	Fit Screen	Sovita näyttöön
@@ -1719,7 +1728,7 @@
 	Appearance	Ulkoasu
 	Text Position:	Tekstin sijainti:
 	Text color	Tekstin väri
-	Uses the foreground and background colours.	Käyttää edusta- ja taustaväriä.
+	Uses the foreground and background colors.	Käyttää edusta- ja taustaväriä.
 	Answer the unsaved-changes prompt first	Vastaa ensin tallentamattomien muutosten kyselyyn
 	Unsaved changes	Tallentamattomat muutokset
 	Don't Save	Älä tallenna
@@ -1739,18 +1748,19 @@
 	name	nimi
 	new	uusi
 	Go to Layer	Siirry tasoon
-	Open a document to select a colour range.	Avaa asiakirja valitaksesi värialueen.
+	Open a document to select a color range.	Avaa asiakirja valitaksesi värialueen.
 	Saved	Tallennettu
 	Reveal in Finder	Näytä Finderissa
 	Show in Explorer	Näytä Resurssienhallinnassa
+	Reveal in Explorer	Näytä Resurssienhallinnassa
 	Show in Folder	Näytä kansiossa
 	Before (Y)	Ennen (Y)
 	Save Settings…	Tallenna asetukset…
 	Load Settings…	Lataa asetukset…
 	Save these settings as a Camera Raw .xmp file	Tallenna nämä asetukset Camera Raw .xmp -tiedostona
 	Load settings from a Camera Raw .xmp file	Lataa asetukset Camera Raw .xmp -tiedostosta
-	Loaded Camera Raw settings from {file}	Camera Raw -asetukset ladattu tiedostosta {file}
-	Loaded Camera Raw settings from {file} ({n} not supported)	Camera Raw -asetukset ladattu tiedostosta {file} ({n} tukematonta)
+	Loaded RAW Develop settings from {file}	RAW-kehitys -asetukset ladattu tiedostosta {file}
+	Loaded RAW Develop settings from {file} ({n} not supported)	RAW-kehitys -asetukset ladattu tiedostosta {file} ({n} tukematonta)
 	After (X)	Jälkeen (X)
 	Original	Alkuperäinen
 	Current	Nykyinen
@@ -1916,12 +1926,14 @@
 	Character Styles Panel	Merkkityylipaneeli
 	Clear Canvas Guides	Poista kankaan apuviivat
 	Clear Selected Artboard Guides	Poista valitun piirtoalustan apuviivat
-	Color Blindness — Deuteranopia-type	Värisokeus — deuteranopia
-	Color Blindness — Protanopia-type	Värisokeus — protanopia
+	Color Blindness - Deuteranopia-type	Värisokeus — deuteranopia
+	Color Blindness - Protanopia-type	Värisokeus — protanopia
 	Color Table…	Väritaulukko…
 	Combine Shapes	Yhdistä muodot
 	Contract…	Supista…
 	Convert to Embedded	Muunna upotetuksi
+	Embed Linked	Upota linkitetty
+	Embed All Linked	Upota kaikki linkitetyt
 	Convert to Layers	Muunna tasoiksi
 	Convert to Linked…	Muunna linkitetyksi…
 	Count	Laskuri
@@ -2009,6 +2021,7 @@
 	Pixelate	Pikselöinti
 	Place Scale Marker…	Sijoita mittakaavamerkki…
 	Plug-ins	Laajennukset
+	Plugins	Laajennukset
 	Print One Copy	Tulosta yksi kopio
 	Print…	Tulosta…
 	Range	Alue
@@ -2053,7 +2066,7 @@
 	Vertical Centers	Pystykeskikohdat
 	Video Frames to Layers…	Videoruudut tasoiksi…
 	WIA Support…	WIA-tuki…
-	Working CMY Plate	Työ-CMY-levy
+	Working CMY Plates	Työ-CMY-levyt
 
 # tl! literals (third pass)
 	Absolute	Absoluuttinen
@@ -2088,7 +2101,7 @@
 	Canvas	Kangas
 	Capture	Kaappaa
 	Center Crop Marks	Keskikohdan rajausmerkit
-	Centre the gradient (offset 0, 0)	Keskitä liukuväri (siirtymä 0, 0)
+	Center the gradient (offset 0, 0)	Keskitä liukuväri (siirtymä 0, 0)
 	Change Screen Mode  (F)	Vaihda näyttötilaa  (F)
 	Change To:	Muuta muotoon:
 	Clear All	Tyhjennä kaikki
@@ -2240,7 +2253,7 @@
 	Roughness	Karheus
 	Roundness	Pyöreys
 	Rulers & Grids	Viivaimet ja ruudukot
-	Sample: foreground colour	Näyte: edustaväri
+	Sample: foreground color	Näyte: edustaväri
 	Sampling: Background Swatch	Näytteistys: taustan värimalli
 	Sampling: Continuous	Näytteistys: jatkuva
 	Sampling: Once	Näytteistys: kerran
@@ -2334,11 +2347,16 @@
 	CPU (no GPU acceleration)	CPU (ei GPU-kiihdytystä)
 	Cache levels	Välimuistitasot
 	Cache tile size	Välimuistin laatan koko
-	Camera Raw Defaults	Camera Raw -oletukset
+	RAW Defaults	RAW-oletukset
 	Canvas border	Kankaan reunus
 	Show canvas dots	Näytä kankaan pisteet
 	Clip thumbnails to layer bounds	Rajaa pikkukuvat tason rajoihin
 	Clip Thumbnails to Layer Bounds	Rajaa pikkukuvat tason rajoihin
+	No Thumbnails	Ei pikkukuvia
+	Small Thumbnails	Pienet pikkukuvat
+	Medium Thumbnails	Keskikokoiset pikkukuvat
+	Large Thumbnails	Suuret pikkukuvat
+	Clip Thumbnails to Document Bounds	Rajaa pikkukuvat asiakirjan rajoihin
 	Canvas color	Kankaan väri
 	Canvas custom color	Kankaan mukautettu väri
 	Classic	Klassinen
@@ -2421,7 +2439,6 @@
 	Never	Ei koskaan
 	Normal tip	Normaali kärki
 	Open as smart object	Avaa älykkäänä objektina
-	Open in camera raw	Avaa Camera Raw'ssa
 	Open documents as tabs	Avaa asiakirjat välilehtinä
 	OpenGL	OpenGL
 	Orange	Oranssi
@@ -2465,7 +2482,6 @@
 	Show only crosshair while painting	Näytä vain hiusristikko maalattaessa
 	Show slice numbers	Näytä viipaleiden numerot
 	Show tooltips	Näytä työkaluvihjeet
-	Enable animations	Ota animaatiot käyttöön
 	Show highlight on rollover	Korosta kohde osoittimen alla
 	Show bounding box when dragging layer	Näytä rajauslaatikko tasoa vedettäessä
 	System title bar	Järjestelmän otsikkorivi
@@ -2509,7 +2525,7 @@
 	Alt-click to define a source point to clone from	Määritä kloonauksen lähdepiste Alt-napsautuksella
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Ei polkua, josta luoda valinta: piirrä polku kynätyökalulla tai valitse polku Polut-paneelissa.
 	Cancel opening	Peruuta avaaminen
-	Cancelled opening {name}	Tiedoston {name} avaaminen peruutettu
+	Canceled opening {name}	Tiedoston {name} avaaminen peruutettu
 	Damaged Photoshop document	Vioittunut Photoshop-asiakirja
 	The document “{name}” may be damaged.	Asiakirja ”{name}” saattaa olla vioittunut.
 	Some layers, pixels or masks could not be read. Do you want to continue opening it?	Joitakin tasoja, pikseleitä tai maskeja ei voitu lukea. Haluatko jatkaa avaamista?
@@ -2519,7 +2535,7 @@
 	The document “{name}” has an embedded color profile that does not match the current {mode} working space.	Asiakirjassa ”{name}” on upotettu väriprofiili, joka ei vastaa nykyistä {mode}-työavaruutta.
 	Working: {working}	Työavaruus: {working}
 	Developing {name}	Kehitetään tiedostoa {name}
-	Cancelled {label}	Peruutettu: {label}
+	Canceled {label}	Peruutettu: {label}
 	Esc to cancel	Peruuta painamalla Esc
 	Opened {name}	Avattu {name}
 	Opening {name}	Avataan tiedostoa {name}
@@ -2527,7 +2543,7 @@
 	Saving {name}	Tallennetaan tiedostoa {name}
 	Saving {percent}	Tallennetaan {percent}
 	A save to {name} is still running; try again when it finishes	Tallennus tiedostoon {name} on vielä käynnissä; yritä uudelleen sen päätyttyä
-	{label} is writing the file and can no longer be cancelled	{label}: tiedostoa kirjoitetaan, eikä toimintoa voi enää peruuttaa
+	{label} is writing the file and can no longer be canceled	{label}: tiedostoa kirjoitetaan, eikä toimintoa voi enää peruuttaa
 	Opening {name}…	Avataan tiedostoa {name}…
 	Opening…	Avataan…
 	Reading…	Luetaan…
@@ -2563,9 +2579,9 @@
 	Tone Histogram	Sävyhistogrammi
 	Show Selected Region	Näytä valittu alue
 cameraRaw	Light	Valo
-# Camera Raw: contextual controls and window title
-	Camera Raw Filter ({layer})	Camera Raw -suodatin ({layer})
-	Camera Raw ({name})	Camera Raw ({name})
+# RAW Develop: contextual controls and window title
+	RAW Develop Filter ({layer})	RAW-kehitys -suodatin ({layer})
+	RAW Develop ({name})	RAW-kehitys ({name})
 	Aqua	Turkoosi
 cameraRaw	Amount	Määrä
 cameraRaw	Blacks	Mustat
@@ -2624,7 +2640,7 @@ cameraRaw	Roughness	Karheus
 	Discard Layers and Save a Copy	Hylkää tasot ja tallenna kopio
 	Don't show again	Älä näytä uudelleen
 	Save failed: {error}	Tallennus epäonnistui: {error}
-	Save cancelled	Tallennus peruutettu
+	Save canceled	Tallennus peruutettu
 	Couldn't place {name}: {error}	Kohteen {name} sijoittaminen epäonnistui: {error}
 	Magnetic Lasso Tool	Magneettinen lassotyökalu
 	Frequency	Taajuus
@@ -2768,7 +2784,7 @@ fontWeight	Italic	Kursivoitu
 	Impressionist	Impressionistinen
 	Rotate View Tool	Näkymän kiertotyökalu
 	Reset View	Palauta näkymä
-	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Kierrä näkymää vetämällä keskipisteen ympäri  ·  Shift rajoittaa 15°:n välein
+	Drag around the center to rotate the view  ·  Shift constrains to 15°	Kierrä näkymää vetämällä keskipisteen ympäri  ·  Shift rajoittaa 15°:n välein
 
 # Painting symmetry presets.
 	Dual Axis	Kaksi akselia
@@ -2788,11 +2804,11 @@ fontWeight	Italic	Kursivoitu
 	All Layers No Adjustments	Kaikki tasot ilman säätöjä
 	Current & Below No Adjustments	Nykyinen ja alemmat ilman säätöjä
 	Show Sampling Ring	Näytä näytteenottorengas
-	Click to sample the foreground colour  ·  {key}-click for background	Ota edustavärin näyte napsauttamalla  ·  {key}-napsautus taustavärille
+	Click to sample the foreground color  ·  {key}-click for background	Ota edustavärin näyte napsauttamalla  ·  {key}-napsautus taustavärille
 
 # Color Picker warnings
-	Out of gamut for printing: click for the nearest printable colour	Tulostusvärialueen ulkopuolella: napsauta valitaksesi lähimmän tulostettavan värin
-	Not a web colour: click for the nearest web colour	Ei verkkoväri: napsauta valitaksesi lähimmän verkkovärin
+	Out of gamut for printing: click for the nearest printable color	Tulostusvärialueen ulkopuolella: napsauta valitaksesi lähimmän tulostettavan värin
+	Not a web color: click for the nearest web color	Ei verkkoväri: napsauta valitaksesi lähimmän verkkovärin
 	Color to Alpha…	Väri alfaksi…
 	Transparency Threshold	Läpinäkyvyyskynnys
 	Opacity Threshold	Peittävyyskynnys
@@ -3210,7 +3226,7 @@ curves	Smooth	Tasoita
 # Native Windows printing qualification
 	Don't also tick Mirror Image in Print Settings…: the two flips cancel out.	Älä valitse myös Peilikuva-asetusta kohdassa Tulostusasetukset…: kaksi peilausta kumoaa toisensa.
 	Print Settings…	Tulostusasetukset…
-	Remember to turn off the printer's own colour management in Print Settings…	Muista poistaa tulostimen oma värinhallinta käytöstä kohdassa Tulostusasetukset…
+	Remember to turn off the printer's own color management in Print Settings…	Muista poistaa tulostimen oma värinhallinta käytöstä kohdassa Tulostusasetukset…
 	Sent to {printer}	Lähetetty tulostimelle {printer}
 	set in Print Settings…	asetetaan kohdassa Tulostusasetukset…
 	ICO is limited to 256 × 256 pixels	ICO-tiedosto on rajoitettu kokoon 256 × 256 pikseliä
@@ -3370,7 +3386,7 @@ curves	Smooth	Tasoita
 	{name} was changed by another app after it was opened or saved here.	Toinen ohjelma on muuttanut tiedostoa {name} sen jälkeen, kun se avattiin tai tallennettiin täällä.
 	Replace it with this document, or cancel and use File › Save As to keep both.	Korvaa se tällä asiakirjalla, tai peruuta ja käytä komentoa Tiedosto › Tallenna nimellä, jos haluat säilyttää molemmat.
 
-# Dynamic UI labels (fourth pass): filter and adjustment parameters, Camera Raw panels,
+# Dynamic UI labels (fourth pass): filter and adjustment parameters, RAW Develop panels,
 # lighting, History/Layers/paths/channels menus, metadata, System Info, status templates and
 # dialog text that other catalogs already carry. Written from the meaning of the English labels
 # in the ordinary Russian graphics-editor vocabulary; no proprietary resource consulted.
@@ -3396,13 +3412,11 @@ curves	Smooth	Tasoita
 	Adjustment Layers	Säätötasot
 	Adjustment Properties	Säädön ominaisuudet
 	Adjustment layers have nothing to transform	Säätötasoilla ei ole mitään muunnettavaa
-	Adobe PDF Presets…	Adobe PDF -esiasetukset…
 	Adobe-rgb-compat	Adobe RGB -yhteensopiva
 	Adwaita (Dark)	Adwaita (tumma)
 	Adwaita (Light)	Adwaita (vaalea)
 	After	Jälkeen
 	Airbrush: keeps painting while the pointer rests.	Ilmasivellin: maalaa edelleen, kun osoitin on paikallaan.
-	All shortcuts reset to Photoshop defaults.	Kaikki pikanäppäimet palautettu Photoshopin oletuksiin.
 	Altitude	Korkeus
 	Ambience	Ympäristövalo
 	Ambient	Ympäristö
@@ -3487,8 +3501,8 @@ curves	Smooth	Tasoita
 	Brush Type	Siveltimen tyyppi
 	Burlap	Juuttikangas
 	Calculations	Laskutoimitukset
-	Camera Raw	Camera Raw
-	Camera Raw Filter	Camera Raw -suodatin
+	RAW Develop	RAW-kehitys
+	RAW Develop Filter	RAW-kehitys -suodatin
 	Cancel transform	Peruuta muunnos
 	Candle Light	Kynttilänvalo
 	Canvas Size	Kankaan koko
@@ -3635,7 +3649,6 @@ curves	Smooth	Tasoita
 	Deep Yellow	Syvä keltainen
 	Default Foreground and Background Colors	Oletusarvoiset edusta- ja taustavärit
 	Default Leaves	Oletuslehdet
-	Default Photoshop Size	Photoshopin oletuskoko
 	Defaults	Oletukset
 	Define Brush Preset	Määritä siveltimen esiasetus
 	Define Custom Shape	Määritä mukautettu muoto
@@ -3874,12 +3887,12 @@ curves	Smooth	Tasoita
 	In White	Tulon valkoinen
 	Increase Brush Hardness	Lisää siveltimen kovuutta
 	Demosaic	Mosaiikin purku
-	How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Miten kameran värisuodatinmosaiikki täydennetään. Menetelmä otetaan käyttöön tiedostoa avattaessa; esikatselu näyttää menetelmän, jolla tiedosto avattiin.
+	How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with.	Miten kameran värisuodatinmosaiikki täydennetään. Menetelmä otetaan käyttöön tiedostoa avattaessa; esikatselu näyttää menetelmän, jolla tiedosto avattiin.
 	AHD (adaptive homogeneity)	AHD (adaptiivinen homogeenisuus)
 	Malvar–He–Cutler	Malvar–He–Cutler
-	Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest.	Hirakawa–Parks: siisteimmät reunat ja vähiten värireunuksia, hitain.
-	Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail.	Gradienttikorjattu interpolointi: terävä ja nopea, hienoissa yksityiskohdissa jonkin verran värireunuksia.
-	The fastest and the softest, with colour fringing on fine detail.	Nopein ja pehmein, hienoissa yksityiskohdissa värireunuksia.
+	Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest.	Hirakawa–Parks: siisteimmät reunat ja vähiten värireunuksia, hitain.
+	Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail.	Gradienttikorjattu interpolointi: terävä ja nopea, hienoissa yksityiskohdissa jonkin verran värireunuksia.
+	The fastest and the softest, with color fringing on fine detail.	Nopein ja pehmein, hienoissa yksityiskohdissa värireunuksia.
 	“{name}” already exists. Replace it?	”{name}” on jo olemassa. Korvataanko se?
 	The name in the save dialog was “{name}”.	Tallennusikkunassa nimi oli ”{name}”.
 	Move Up	Siirrä ylös
@@ -4475,7 +4488,7 @@ curves	Smooth	Tasoita
 	The file could not be saved.	Tiedostoa ei voitu tallentaa.
 	Thickness	Paksuus
 	This Layer:	Tämä taso:
-	This Smart Object must be rasterized before proceeding. Its contents will no longer be editable. Rasterize the Smart Object?	Tämä älykäs objekti on rasteroitava ennen jatkamista. Sen sisältöä ei voi enää muokata. Rasteroidaanko älykäs objekti?
+	This smart object must be rasterized before proceeding. Edit Contents will no longer be available. Rasterize the smart object?	Tämä älykäs objekti on rasteroitava ennen jatkamista. Sen sisältöä ei voi enää muokata. Rasteroidaanko älykäs objekti?
 	This adjustment ({key}) is kept as imported and can't be edited yet.	Tämä säätö ({key}) säilytetään tuotuna, eikä sitä voi vielä muokata.
 	This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?	Tämä täyttötaso on rasteroitava ennen jatkamista. Sen täyttösisältöä ei voi enää muokata. Rasteroidaanko taso?
 	This layer must be rasterized before proceeding.	Tämä taso on rasteroitava ennen jatkamista.
@@ -4530,7 +4543,6 @@ curves	Smooth	Tasoita
 	Use File › Open to open an image.	Avaa kuva komennolla Tiedosto › Avaa.
 	Use Selection In Source	Käytä valintaa lähteessä
 	Use Selection In Target	Käytä valintaa kohteessa
-	Uses the foreground and background colors.	Käyttää edusta- ja taustaväriä.
 	Vanishing Point	Pakopiste
 	Variable Data Sets	Muuttuvat tietojoukot
 	Vector Mask Hides Effects	Vektorimaski piilottaa tehosteet
@@ -4688,6 +4700,7 @@ shape	Appearance	Ulkoasu
 	Grayscale Ramp	Harmaasävyliukuma
 	Current Colors	Nykyiset värit
 	Make Ramp Web Safe	Rajoita liukuma verkkoturvallisiin väreihin
+	Scroll All Windows	Vieritä kaikkia ikkunoita
 # Art History Brush (#213).
 	Art History Brush Tool	Taidehistoriasivellintyökalu
 	Tight Short	Tiivis lyhyt
@@ -4736,12 +4749,12 @@ shape	Appearance	Ulkoasu
 @plural	{n} document|{n} documents	{n} asiakirja|{n} asiakirjaa
 @plural	{n} pixel|{n} pixels	{n} pikseli|{n} pikseliä
 cameraRaw	Before (Y)	Ennen (Y)
-cameraRaw	Camera Raw ({name})	Camera Raw ({name})
-cameraRaw	Camera Raw Filter ({layer})	Camera Raw -suodatin ({layer})
-cameraRaw	Camera Raw isn't open	Camera Raw ei ole auki
+cameraRaw	RAW Develop ({name})	RAW-kehitys ({name})
+cameraRaw	RAW Develop Filter ({layer})	RAW-kehitys -suodatin ({layer})
+cameraRaw	RAW Develop isn't open	RAW-kehitys ei ole auki
 cameraRaw	Cancel	Peruuta
-cameraRaw	Cancelled opening {name}	Tiedoston {name} avaaminen peruutettu
-cameraRaw	Cancelled {label}	Peruutettu: {label}
+cameraRaw	Canceled opening {name}	Tiedoston {name} avaaminen peruutettu
+cameraRaw	Canceled {label}	Peruutettu: {label}
 cameraRaw	Color Priority	Väriprioriteetti
 cameraRaw	Developing {name}	Kehitetään tiedostoa {name}
 cameraRaw	Full-resolution preview unavailable	Täyden resoluution esikatselu ei ole käytettävissä
@@ -4750,7 +4763,7 @@ cameraRaw	Highlight Clipping Warning (O)	Korostusten leikkautumisvaroitus (O)
 cameraRaw	Highlight Priority	Korostusten prioriteetti
 cameraRaw	Load Settings…	Lataa asetukset…
 cameraRaw	Load settings from a Camera Raw .xmp file	Lataa asetukset Camera Raw .xmp -tiedostosta
-cameraRaw	Loaded Camera Raw settings from {file}	Camera Raw -asetukset ladattu tiedostosta {file}
+cameraRaw	Loaded RAW Develop settings from {file}	RAW-kehitys -asetukset ladattu tiedostosta {file}
 cameraRaw	Noise Reduction	Kohinan vaimennus
 cameraRaw	OK	OK
 cameraRaw	Open	Avaa
@@ -4788,3 +4801,33 @@ cameraRaw	White Balance: As Shot	Valkotasapaino: kuvauksen mukainen
 	Pause For	Tauko
 	seconds	sekuntia
 	Create a single history state	Luo yksi historiatila
+
+# Channels panel menu (#11451)
+	Channel Options…	Kanavan asetukset…
+	Specify Channels:	Määritä kanavat:
+	Not enough grayscale documents for this mode.	Harmaasävyasiakirjoja ei ole tarpeeksi tähän tilaan.
+	Pick a different document for each channel.	Valitse jokaiselle kanavalle eri asiakirja.
+	A picked document is no longer open.	Yksi valituista asiakirjoista ei ole enää auki.
+	A picked document is no longer a grayscale document of the same size.	Yksi valituista asiakirjoista ei ole enää samankokoinen harmaasävyasiakirja.
+	Netscape Gray	Netscape-harmaa
+# Move tool options bar (#11381)
+	Align top edges	Tasaa yläreunat
+	Align vertical centers	Tasaa pystykeskikohdat
+	Align bottom edges	Tasaa alareunat
+	Distribute vertically	Jaa pystysuunnassa
+	Distribute horizontally	Jaa vaakasuunnassa
+	Show layer bounds on hover	Näytä tason rajat osoitettaessa
+	Expand layer group on click	Laajenna tasoryhmä napsautuksella
+	Show hover bounds from Layers	Näytä rajat osoitettaessa Tasot-paneelista
+# Artboard tool options bar (#11385)
+	Distribute Widths	Jaa leveydet tasaisesti
+	Distribute Heights	Jaa korkeudet tasaisesti
+	Auto-nest Layers	Sisäkkäistä tasot automaattisesti
+	Auto-size Canvas	Muuta kankaan kokoa automaattisesti
+	Keep Relative Position During Layer Reordering	Säilytä suhteellinen sijainti tasojen järjestystä muutettaessa
+	Shrinkwrap Canvas on Save	Pienennä kangas sisältöön tallennettaessa
+	Move Toolbar to the Right	Siirrä työkalupalkki oikealle
+	Move Toolbar to the Left	Siirrä työkalupalkki vasemmalle
+
+# RAW Develop feature labels
+	Saved RAW Develop settings to {file}	RAW-kehityksen asetukset tallennettu tiedostoon {file}

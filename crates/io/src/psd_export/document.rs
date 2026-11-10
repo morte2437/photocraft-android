@@ -235,6 +235,7 @@ fn export_supported_document(
     if let Some(data) = crate::annotations_map::fresh_scale_resource(doc) {
         resources.push(ImageResource::new(crate::annotations_map::MEASUREMENT_SCALE, data));
     }
+    resources.extend(crate::annotations_map::fresh_count_resource(doc, &mut ex.warnings));
     if let Some(Some(data)) = comps_resource {
         resources.push(ImageResource::new(crate::comps_map::LAYER_COMPS, data));
     }

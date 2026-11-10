@@ -17,7 +17,7 @@ use clap::parser::ValueSource;
 use clap::{ArgAction, ArgGroup, ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use photocraft_automation::args::{AutomationArgs, ControlArgs, blank_env_is_unset, conflict, control_port, name_env_vars};
 use photocraft_codecs::{JpegFormat, TiffCompression};
-use photocraft_io::{DdsCompression, DpxBits, TgaBits};
+use photocraft_io::{DdsCompression, DpxBits, TgaBits, XmpEmbed};
 use serde_json::Value;
 
 /// photocraft-cli: headless PhotoCraft
@@ -87,6 +87,18 @@ pub(crate) struct ExportArgs {
     /// composite/full.png; it may be omitted. Check the manifest's full_composite member.
     #[arg(long)]
     pub(crate) pcraft_full_composite: bool,
+    /// A layered PSD/PSB stores Photoshop's white placeholder instead of the merged image
+    /// (Maximize Compatibility off): a smaller file and a faster save, but readers that show only
+    /// the merged image see white. Bitmap, Indexed Color and Duotone documents still write the
+    /// real image
+    #[arg(long)]
+    pub(crate) no_maximize_compatibility: bool,
+    /// The document metadata a flat export embeds: all (the default) keeps the document's XMP
+    /// packet and free-form text where the format holds them, as Save As does; none leaves them
+    /// out, as Export As's Metadata: None. Nothing else changes: the ICC profile, EXIF and
+    /// resolution are written as they are without it. PSD, PSB and .pcraft always keep the XMP
+    #[arg(long, value_name = "none|all", value_parser = metadata)]
+    pub(crate) metadata: Option<XmpEmbed>,
 }
 
 /// Convert between formats (.pcraft, .psd, .png, .jpg, .tif, .webp, .exr, …)
@@ -107,6 +119,16 @@ pub(crate) struct ConvertArgs {
     /// Explicitly approve high-memory PSD/PSB imports within the hard memory budget
     #[arg(long)]
     pub(crate) approve_high_memory: bool,
+    /// PDF import resolution in DPI (default 300)
+    #[arg(long, value_name = "DPI", value_parser = pdf_dpi)]
+    pub(crate) pdf_dpi: Option<f32>,
+    /// PDF pages to import, 1-based: "3" or "2-7" (default all)
+    #[arg(long)]
+    pub(crate) pdf_pages: Option<String>,
+    /// Import PDF paths and embedded-font text as editable layers (experimental; unsupported
+    /// pages fall back to raster, and embedded fonts may change when edited or reopened)
+    #[arg(long)]
+    pub(crate) pdf_editable: bool,
     #[command(flatten)]
     pub(crate) gpu: GpuArgs,
     #[command(flatten)]
@@ -306,8 +328,12 @@ enum ValueError {
     TiffCompression,
     #[error("expected baseline, optimized or progressive")]
     JpegFormat,
+    #[error("expected none or all")]
+    Metadata,
     #[error("expected on or off")]
     OnOff,
+    #[error("expected a positive number")]
+    PdfDpi,
     /// Why a `--bridge` value, or a PHOTOCRAFT_CONTROL_PORT value for `mcp`, is refused.
     #[error("expected a port, 0-65535 (--bridge also takes 127.0.0.1:<PORT>)")]
     Bridge,
@@ -376,8 +402,22 @@ fn on_off(s: &str) -> Result<bool, ValueError> {
     }
 }
 
+/// A PDF import DPI: a finite number greater than zero. The importer's fallback to 300 DPI is
+/// for absent preferences, not for a mistyped flag.
+fn pdf_dpi(s: &str) -> Result<f32, ValueError> {
+    s.parse::<f32>().ok().filter(|dpi| dpi.is_finite() && *dpi > 0.0).ok_or(ValueError::PdfDpi)
+}
+
 fn jpeg_format(s: &str) -> Result<JpegFormat, ValueError> {
     JpegFormat::parse(s).ok_or(ValueError::JpegFormat)
+}
+
+fn metadata(s: &str) -> Result<XmpEmbed, ValueError> {
+    match s {
+        "none" => Ok(XmpEmbed::None),
+        "all" => Ok(XmpEmbed::All),
+        _ => Err(ValueError::Metadata),
+    }
 }
 
 /// Where `mcp --bridge` connects. Shown as the address: `127.0.0.1:<PORT>` for a port.
@@ -525,4 +565,20 @@ fn check_server(sub: &mut clap::Command, m: &ArgMatches, has_transport: bool, tr
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--pdf-dpi` only takes a positive finite number: a mistyped value is refused at parse time
+    /// instead of silently becoming the importer's 300 DPI fallback.
+    #[test]
+    fn pdf_dpi_rejects_non_positive_and_non_finite_values() {
+        assert!(pdf_dpi("300").is_ok());
+        assert!(pdf_dpi("0.5").is_ok());
+        for bad in ["0", "-1", "nan", "inf", "-inf", "abc"] {
+            assert!(pdf_dpi(bad).is_err(), "{bad} should be refused");
+        }
+    }
 }

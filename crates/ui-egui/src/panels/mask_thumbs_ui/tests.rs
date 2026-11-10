@@ -844,28 +844,225 @@ fn selecting_an_adjustment_layer_from_another_layer_targets_its_mask() {
     // The reference application: an adjustment layer picked by its name targets its mask; a
     // masked pixel layer targets its contents; the content thumbnail still targets contents.
     for command in ["layer.newAdjustmentLayer.hueSaturation", "layer.newAdjustmentLayer.curves"] {
-        let (mut s, masked, other) = session();
-        s.execute(command, json!({})).unwrap();
-        let id = s.active().unwrap().active_layer.unwrap().0;
-        let mut h = harness(s, 0, 1.0, 360.0);
-        assert!(layer(&h, id).mask.is_some(), "{command}: the adjustment layer has a mask");
-        let name_of =
-            |h: &Harness<'_, PhotocraftApp>, l: u64| crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == l).unwrap().name.unwrap().center();
-        let at = name_of(&h, other);
-        click_with(&mut h, at, Modifiers::NONE);
-        let at = name_of(&h, id);
-        click_with(&mut h, at, Modifiers::NONE);
-        assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
-        assert!(h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command}: a name click targets the mask");
-        assert_eq!(crate::canvas::paint_target(h.state()), json!("mask"));
-        // The content thumbnail targets the contents.
-        let thumb = layer_thumb_center(&h, id);
-        click_with(&mut h, thumb, Modifiers::NONE);
-        assert!(!h.state().ui.mask_target, "{command}: the content thumbnail targets contents");
-        // A masked pixel layer picked by its name targets its contents.
-        let at = name_of(&h, masked);
-        click_with(&mut h, at, Modifiers::NONE);
-        assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, masked);
-        assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command}: a pixel layer targets its contents");
+        for ppp in [1.0, 2.0] {
+            let (mut s, masked, other) = session();
+            s.execute(command, json!({})).unwrap();
+            let id = s.active().unwrap().active_layer.unwrap().0;
+            let path = json!({"subpaths": [{"knots": [[20, 10], [120, 10], [120, 90], [20, 90]]}]});
+            s.execute("layer.vectorMask.add", json!({"layer": id, "path": path})).unwrap();
+            let mut h = harness(s, 0, ppp, 360.0);
+            assert!(layer(&h, id).mask.is_some(), "{command}: the adjustment layer has a mask");
+            let name_of = |h: &Harness<'_, PhotocraftApp>, l: u64| {
+                crate::layer_row_ui::recorded(&h.ctx).into_iter().find(|r| r.layer == l).unwrap().name.unwrap().center()
+            };
+            // Each mask thumbnail targets its own mask.
+            for kind in [MaskKind::Pixel, MaskKind::Vector] {
+                let at = mask_rect(&h, id, kind).center();
+                click_with(&mut h, at, Modifiers::NONE);
+                assert_eq!(h.state().ui.mask_target, kind == MaskKind::Pixel, "{command} @{ppp}x {kind:?}");
+                assert_eq!(h.state().ui.vector_mask_target, kind == MaskKind::Vector, "{command} @{ppp}x {kind:?}");
+            }
+            let at = name_of(&h, other);
+            click_with(&mut h, at, Modifiers::NONE);
+            let at = name_of(&h, id);
+            click_with(&mut h, at, Modifiers::NONE);
+            assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, id);
+            assert!(h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x: a name click targets the mask");
+            assert_eq!(crate::canvas::paint_target(h.state()), json!("mask"));
+            // Fill goes to the mask and leaves the adjustment as it is.
+            let content = layer(&h, id).content;
+            h.state_mut().run("edit.fill", json!({"contents": "black"})).unwrap();
+            assert_eq!(layer(&h, id).content, content, "{command} @{ppp}x: filling must preserve the adjustment");
+            assert_eq!(layer(&h, id).mask.unwrap().surface.sample_channel(50, 50, 0), 0.0, "{command} @{ppp}x: Fill edits the mask");
+            // The content thumbnail targets the contents.
+            let thumb = layer_thumb_center(&h, id);
+            click_with(&mut h, thumb, Modifiers::NONE);
+            assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x: the content thumbnail targets contents");
+            // A masked pixel layer picked by its name targets its contents.
+            let at = name_of(&h, masked);
+            click_with(&mut h, at, Modifiers::NONE);
+            assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, masked);
+            assert!(!h.state().ui.mask_target && !h.state().ui.vector_mask_target, "{command} @{ppp}x: a pixel layer targets its contents");
+        }
     }
+}
+
+/// #10485: dragging the layer mask's thumbnail onto a group's row moves the mask to the group, and
+/// ⌥ copies it, as in Photoshop. It had no effect.
+#[test]
+fn dragging_the_mask_thumbnail_onto_a_group_moves_or_copies_it() {
+    for copy in [false, true] {
+        let (mut s, masked, shape) = session();
+        let group = s.execute("layer.groupLayers", json!({"layer": shape, "name": "Grp"})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("layer.select", json!({"layer": masked})).unwrap();
+        let mut h = harness(s, 0, 1.0, 290.0);
+        let from = mask_rect(&h, masked, MaskKind::Pixel).center();
+        let to = h.get_by_label("Grp").rect().center();
+        let modifiers = if copy { Modifiers::ALT } else { Modifiers::NONE };
+        h.hover_at(from);
+        h.event(egui::Event::ModifiersChanged(modifiers));
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers });
+        h.run_steps(1);
+        for k in 1..=8 {
+            h.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 8.0)));
+            h.run_steps(1);
+        }
+        h.event(egui::Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(3);
+        assert!(layer(&h, group).mask.is_some(), "copy: {copy}: the group has the mask");
+        assert_eq!(layer(&h, masked).mask.is_some(), copy, "copy: {copy}: the original stays only with ⌥");
+    }
+}
+
+/// #10485: a layer mask's thumbnail dropped on a row that has a layer mask already (with or
+/// without ⌥), or back on its own row, does nothing: no command runs, so no error, no history step,
+/// and both masks stay as they were. Photoshop asks before replacing a mask; the panel doesn't offer
+/// the drop at all.
+#[test]
+fn dropping_a_mask_thumbnail_on_a_masked_row_or_its_own_row_does_nothing() {
+    for (target, copy) in [("Badge", false), ("Badge", true), ("Masked", false), ("Masked", true)] {
+        let (mut s, masked, shape) = session();
+        s.execute("layer.layerMask.hideAll", json!({"layer": shape})).unwrap();
+        s.execute("layer.select", json!({"layer": masked})).unwrap();
+        let mut h = harness(s, 0, 1.0, 290.0);
+        let doc = h.state().session.active().unwrap().doc.clone();
+        let history = h.state().session.active().unwrap().history.entries();
+        let (mask_masked, mask_shape) = (layer(&h, masked).mask, layer(&h, shape).mask);
+        let from = mask_rect(&h, masked, MaskKind::Pixel).center();
+        let to = h.get_by_label(target).rect().center();
+        let modifiers = if copy { Modifiers::ALT } else { Modifiers::NONE };
+        h.hover_at(from);
+        h.event(egui::Event::ModifiersChanged(modifiers));
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers });
+        h.run_steps(1);
+        // Out of the thumbnail and back onto the target, so the drop on its own row is a drag.
+        let away = from + vec2(0.0, 40.0);
+        for k in 1..=4 {
+            h.event(egui::Event::PointerMoved(from + (away - from) * (k as f32 / 4.0)));
+            h.run_steps(1);
+        }
+        for k in 1..=8 {
+            h.event(egui::Event::PointerMoved(away + (to - away) * (k as f32 / 8.0)));
+            h.run_steps(1);
+        }
+        h.event(egui::Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers });
+        h.run_steps(3);
+        let case = format!("onto {target}, copy: {copy}");
+        assert!(!h.state().ui.status_error, "{case}: no refused command: {}", h.state().ui.status);
+        assert_eq!(layer(&h, masked).mask, mask_masked, "{case}: the dragged mask stays");
+        assert_eq!(layer(&h, shape).mask, mask_shape, "{case}: the target keeps its own mask");
+        let st = h.state().session.active().unwrap();
+        assert!(st.doc == doc, "{case}: the document is unchanged");
+        assert_eq!(st.history.entries(), history, "{case}: no history step");
+    }
+}
+
+/// #10485: a layer mask dragged to the Layers list's bottom edge scrolls the list, as a layer
+/// drag does, so it can be dropped on a layer scrolled out of view. The list stayed put.
+#[test]
+fn dragging_a_mask_to_the_list_edge_scrolls_to_rows_out_of_view() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    let target = s.execute("layer.new.layer", json!({"name": "Target"})).unwrap()["layer"].as_u64().unwrap();
+    for i in 0..40 {
+        s.execute("layer.new.layer", json!({"name": format!("Filler {i}")})).unwrap();
+    }
+    let masked = s.execute("layer.new.layer", json!({"name": "Masked"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.layerMask.revealAll", json!({"layer": masked})).unwrap();
+    let mut h = harness(s, 0, 1.0, 290.0);
+    let window_bottom = h.ctx.content_rect().bottom();
+    assert!(h.get_by_label("Target").rect().top() > window_bottom, "the target starts out of view");
+    let from = mask_rect(&h, masked, MaskKind::Pixel).center();
+    let start = h.get_by_label("Masked").rect();
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerMoved(from + vec2(0.0, 12.0)));
+    h.run_steps(2);
+    // Held at the bottom of the window, below the list's last visible row.
+    let bottom = pos2(from.x, window_bottom - 2.0);
+    for _ in 0..240 {
+        h.event(egui::Event::PointerMoved(bottom));
+        h.run_steps(1);
+    }
+    let moved = h.get_by_label("Masked").rect();
+    assert!(moved.top() < start.top() - 1.0, "the list scrolled down: {start:?} → {moved:?}");
+    let to = h.get_by_label("Target").rect().center();
+    assert!(to.y < window_bottom, "the target scrolled into view: {to:?}");
+    for k in 1..=4 {
+        h.event(egui::Event::PointerMoved(bottom + (to - bottom) * (k as f32 / 4.0)));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    assert!(layer(&h, target).mask.is_some(), "the target has the mask");
+    assert!(layer(&h, masked).mask.is_none(), "moved, not copied");
+}
+
+/// #10485: a layer mask dropped outside the Layers list, over the panel's header, doesn't land on
+/// the row scrolled out of view underneath it. The rows take drops only where the list shows them.
+#[test]
+fn dropping_a_mask_over_the_panel_header_skips_rows_scrolled_out_of_view() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    let masked = s.execute("layer.new.layer", json!({"name": "Masked"})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.layerMask.revealAll", json!({"layer": masked})).unwrap();
+    for i in 0..40 {
+        s.execute("layer.new.layer", json!({"name": format!("Filler {i}")})).unwrap();
+    }
+    s.execute("layer.select", json!({"layer": masked})).unwrap();
+    let mut h = harness(s, 0, 1.0, 290.0);
+    // Scrolled to the bottom: "Masked" shows, the top rows went up under the header.
+    h.hover_at(h.get_by_label("Filler 39").rect().center());
+    h.run_steps(2);
+    for _ in 0..80 {
+        h.event(egui::Event::MouseWheel {
+            source: egui::MouseWheelSource::Unknown,
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        });
+        h.run_steps(1);
+    }
+    h.run_steps(10);
+    let window = h.ctx.content_rect();
+    let fill = h.get_all_by_label("Fill").next().unwrap().rect();
+    let from = mask_rect(&h, masked, MaskKind::Pixel).center();
+    assert!(from.y > fill.bottom() && from.y < window.bottom(), "the masked row shows: {from:?}");
+    // The empty header space between Blend Mode and Opacity, over a row scrolled out of view.
+    let (blend, opacity) = (h.get_by_label("Blend Mode").rect(), h.get_all_by_label("Opacity").next().unwrap().rect());
+    let over = pos2((blend.right() + opacity.left()) / 2.0, blend.center().y);
+    let (target, row) = (0..40)
+        .map(|i| format!("Filler {i}"))
+        .map(|name| {
+            let rect = h.get_by_label(&name).rect();
+            (name, rect)
+        })
+        .find(|(_, rect)| rect.contains(over))
+        .expect("a row lies under the header");
+    assert!(row.bottom() <= fill.bottom(), "{target} is scrolled out of the list: {row:?}");
+    let target = h.state().session.active().unwrap().doc.layers.iter().find(|l| l.name == target).unwrap().id.0;
+    let doc = h.state().session.active().unwrap().doc.clone();
+    let history = h.state().session.active().unwrap().history.entries();
+    h.hover_at(from);
+    h.event(egui::Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    // Up through the list, clear of its edges (which scroll it), then out over the header and
+    // released there at once.
+    let inside = pos2(from.x, fill.bottom() + 48.0);
+    for k in 1..=8 {
+        h.event(egui::Event::PointerMoved(from + (inside - from) * (k as f32 / 8.0)));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerMoved(over));
+    h.event(egui::Event::PointerButton { pos: over, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(3);
+    assert!(layer(&h, target).mask.is_none(), "the row under the header took no mask");
+    assert!(layer(&h, masked).mask.is_some(), "the mask stays where it was");
+    let st = h.state().session.active().unwrap();
+    assert!(st.doc == doc, "the document is unchanged");
+    assert_eq!(st.history.entries(), history, "no history step");
 }

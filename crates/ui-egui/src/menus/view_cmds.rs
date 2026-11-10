@@ -18,7 +18,7 @@ mod dialogs;
 mod dispatch;
 mod options;
 
-pub use arrange::cells;
+pub use arrange::{Border, borders, cells, drag_border};
 pub(crate) use arrange::{document_is_floating, float_window};
 pub(crate) use dialogs::write_copy;
 #[cfg(test)]
@@ -106,6 +106,9 @@ pub struct ViewOptions {
     pub pixel_art_preview: bool,
     /// Window › Arrange layout of the document area: "tabs" or a tile/n-up layout id.
     pub arrange: String,
+    /// Where the borders between arranged documents were dragged (#10101): fractions of the
+    /// area, column borders then row borders; empty (or not fitting the layout) is even cells.
+    pub arrange_splits: Vec<f32>,
     /// Type › Font Preview Size: "small" | "medium" | "large" | "extraLarge" | "huge".
     pub font_preview_size: String,
     /// Type › Language Options: "defaultFeatures" | "eastAsianFeatures" | "middleEasternFeatures",
@@ -138,6 +141,7 @@ impl Default for ViewOptions {
             pattern_preview: false,
             pixel_art_preview: false,
             arrange: "tabs".into(),
+            arrange_splits: Vec::new(),
             font_preview_size: "medium".into(),
             language_features: "defaultFeatures".into(),
             middle_eastern_composer: false,

@@ -4,10 +4,12 @@
 //!
 //! Like Photoshop, both turn a Background layer into a normal layer ("Layer 0") first, since the
 //! Background can't hold transparency. The Magic Eraser paints the background colour on other
-//! layers with locked transparency; the Background Eraser refuses them. Both respect the selection,
-//! work in the layer's own colour model and depth, and are one undo step per click / stroke.
+//! layers with locked transparency; the Background Eraser erases them to transparency and leaves
+//! the lock on. Both respect the selection, work in the layer's own colour model and depth, and are
+//! one undo step per click / stroke.
 
 use photocraft_algo::selection as sel;
+use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, LayerId};
 use photocraft_geom::Rect;
 use photocraft_paint::Stroke;
@@ -105,7 +107,10 @@ fn magic_eraser(s: &mut Session, p: &Value) -> Result<Value> {
         let surf = d.doc.layer(id).and_then(Layer::surface).ok_or(EngineError::NoLayer(id))?;
         (d.doc.bounds(), sel::rgba8_image(surf, d.doc.bounds()))
     };
-    let region = sel::wand_region(&img, area, (x, y), tolerance, contiguous, anti_alias);
+    // The reference's colour distance is measured for 8-bit RGB only (#11995).
+    let rgb8 = s.active().is_some_and(|d| d.doc.mode == ColorMode::Rgb && d.doc.depth == SampleType::U8);
+    let distance = if rgb8 { sel::ColorDistance::Spread } else { sel::ColorDistance::LargestChannel };
+    let region = sel::wand_region_by(&img, area, (x, y), tolerance, contiguous, anti_alias, None, distance);
     drop(img);
     let Some(region) = region else { return Ok(damage(s, Rect::EMPTY, false)) };
     let bg = s.tools.background;
@@ -137,22 +142,25 @@ fn background_eraser_setup(s: &Session, p: &Value) -> Result<(Stroke, BgEraseSet
         return Err(bad(CMD, "`points` must be finite canvas coordinates"));
     }
     let brush = crate::brush_cmds::resolve_brush(s, p, CMD)?;
+    // The inks a colour was picked as, for a CMYK document (#12352).
+    let picked = |c: [f32; 4]| s.tools.picked_cmyk([c[0], c[1], c[2]]).map(|k| ([c[0], c[1], c[2]], k));
     let bs = BgEraseSettings {
         sampling: enum_param(p, CMD, "sampling", Sampling::Continuous, "continuous|once|backgroundSwatch")?,
         limits: enum_param(p, CMD, "limits", Limits::Contiguous, "discontiguous|contiguous|findEdges")?,
-        tolerance: number(p, CMD, "tolerance", 50.0, 0.0..=100.0)? as f32 / 100.0,
+        tolerance: number(p, CMD, "tolerance", 50.0, 1.0..=100.0)? as f32 / 100.0,
         protect_foreground: flag(p, "protectForegroundColor", false),
         foreground: s.tools.foreground,
         background: s.tools.background,
+        foreground_cmyk: picked(s.tools.foreground),
+        background_cmyk: picked(s.tools.background),
     };
     let id = active_pixel_layer(s, p, CMD)?;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    // Lock transparent pixels is no refusal: the reference application erases to transparency
+    // anyway and leaves the lock on.
     if let Some(e) = pixels_locked(&d.doc, l) {
         return Err(e);
-    }
-    if d.doc.effective_locks(id).transparency && !d.doc.is_background(id) && crate::color_channels::target(s, p)?.is_none() {
-        return Err(EngineError::Other(format!("Could not use the Background Eraser because the transparency of layer \"{}\" is locked", l.name)));
     }
     Ok((Stroke { brush, points: pts }, bs, id))
 }
@@ -234,19 +242,27 @@ pub fn live_background_eraser(s: &Session, p: &Value) -> Result<crate::retouch_c
     if colors.is_none() {
         crate::extra_cmds::background_to_layer(&mut doc, id);
     }
-    let stroke = background_eraser_stroke(&stroke);
+    let mut stroke = background_eraser_stroke(&stroke);
+    // The commit mixes back without the transparency lock (a locked layer is erased too, and a
+    // channel target leaves alpha alone), so the preview does as well; the points go in once the
+    // lock is off.
+    let points = std::mem::take(&mut stroke.points);
     if let Some(colors) = colors {
-        return crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({"target":colors.params()}), stroke, Some(id), 0, |pre| {
+        let mut live = crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({"target":colors.params()}), stroke, Some(id), 0, |pre| {
             selected_background_effect(pre, &bs, colors, bg)
         })?
-        .with_tail_preview();
+        .unlocked();
+        live.push(&points)?;
+        return live.with_tail_preview();
     }
-    crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({}), stroke, Some(id), 0, |pre| match background_eraser_effect(pre, &bs) {
+    let mut live = crate::retouch_cmds::LiveDab::with_effect_on(doc, CMD, &json!({}), stroke, Some(id), 0, |pre| match background_eraser_effect(pre, &bs) {
         Some(effect) => Box::new(effect),
         // No alpha: the commit erases nothing either.
         None => Box::new(|_: &mut photocraft_paint::retouch::Region, _: &photocraft_paint::retouch::Footprint| {}),
     })?
-    .with_tail_preview()
+    .unlocked();
+    live.push(&points)?;
+    live.with_tail_preview()
 }
 
 /// Eraser-group command specs.
@@ -267,7 +283,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Background Eraser",
             menu: &[],
             shortcut: None,
-            params: r##"{"points":[[x,y,pressure?],…],"size":px?,"hardness":0..1?,"brush":{…}?,"preset":name?,"sampling":"continuous|once|backgroundSwatch"="continuous","limits":"discontiguous|contiguous|findEdges"="contiguous","tolerance":0..100=50,"protectForegroundColor":bool=false,"seed":u64?}"##,
+            params: r##"{"points":[[x,y,pressure?],…],"size":px?,"hardness":0..1?,"brush":{…}?,"preset":name?,"sampling":"continuous|once|backgroundSwatch"="continuous","limits":"discontiguous|contiguous|findEdges"="contiguous","tolerance":1..100=50,"protectForegroundColor":bool=false,"seed":u64?}"##,
             enabled: has_pixel_layer,
             run: background_eraser,
             journal: true,
@@ -276,4 +292,9 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+mod magic_eraser_tolerance_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "background_eraser_transparency_lock_tests.rs"]
+mod transparency_lock_tests;
