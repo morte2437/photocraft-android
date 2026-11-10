@@ -107,6 +107,7 @@ public class PhotoCraftActivity extends GameActivity {
                 checkQuit();
                 checkUpdateRequest();
                 checkClipboard();
+                checkStatusBar();
             } catch (Exception e) {
                 Log.e(TAG, "bridge", e);
             }
@@ -135,7 +136,7 @@ public class PhotoCraftActivity extends GameActivity {
             pendingId = state.getLong("pendingId", -1);
             pendingName = state.getString("pendingName", "");
         }
-        hideSystemBars();
+        applySystemBars();
         // Draw under a front camera's cutout on every Android version, as Android 15 does for
         // apps targeting it; the menu and options bars split around the camera instead (#21).
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
@@ -151,9 +152,28 @@ public class PhotoCraftActivity extends GameActivity {
         decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
             WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(decor);
             int ime = insets == null ? 0 : insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            // The status bar while it shows: the app moves down below it (#34).
+            int top = statusBarShown && insets != null ? insets.getInsets(WindowInsetsCompat.Type.statusBars()).top : 0;
+            if (top != topInset) {
+                topInset = top;
+                android.view.View content = findViewById(android.R.id.content);
+                if (content != null) {
+                    content.setPadding(0, top, 0, 0);
+                }
+                lastCutout = null;
+                lastCorners = null;
+            }
             // A front camera's cutout (a punch hole or notch): the bars split around it.
             androidx.core.view.DisplayCutoutCompat dc = insets == null ? null : insets.getDisplayCutout();
-            List<android.graphics.Rect> cut = dc == null ? new ArrayList<>() : dc.getBoundingRects();
+            // In the app's coordinates; one inside the status bar is no longer in the app's way.
+            List<android.graphics.Rect> cut = new ArrayList<>();
+            for (android.graphics.Rect r : dc == null ? new ArrayList<android.graphics.Rect>() : dc.getBoundingRects()) {
+                if (r.bottom > top) {
+                    android.graphics.Rect moved = new android.graphics.Rect(r);
+                    moved.offset(0, -top);
+                    cut.add(moved);
+                }
+            }
             if (!cut.equals(lastCutout)) {
                 lastCutout = cut;
                 android.graphics.Rect a = cut.size() > 0 ? cut.get(0) : new android.graphics.Rect();
@@ -175,7 +195,7 @@ public class PhotoCraftActivity extends GameActivity {
                     if (rc != null) {
                         c[3 * i] = rc.getRadius();
                         c[3 * i + 1] = rc.getCenter().x;
-                        c[3 * i + 2] = rc.getCenter().y;
+                        c[3 * i + 2] = rc.getCenter().y - top;
                     }
                 }
                 if (!java.util.Arrays.equals(c, lastCorners)) {
@@ -206,7 +226,7 @@ public class PhotoCraftActivity extends GameActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        hideSystemBars();
+        applySystemBars();
         handler.removeCallbacks(poll);
         handler.post(poll);
         updater.resumePendingInstall();
@@ -278,10 +298,58 @@ public class PhotoCraftActivity extends GameActivity {
         handleSentDocument(intent);
     }
 
-    private void hideSystemBars() {
+    /** Android's status bar shows above the app (Window › Layout › Show Android Status Bar, #34);
+     * otherwise the app is full screen. The navigation bar stays hidden either way. */
+    private boolean statusBarShown = true;
+
+    /** The app's choice, in files/status-bar.txt (written by src/layout.rs): shown unless "hide". */
+    private boolean statusBarWanted() {
+        File f = new File(getFilesDir(), "status-bar.txt");
+        try {
+            return !f.isFile() || !"hide".equals(readText(f).trim());
+        } catch (IOException e) {
+            return true;
+        }
+    }
+
+    private void applySystemBars() {
+        statusBarShown = statusBarWanted();
+        // The app draws the whole window and keeps clear of the bar itself (see the layout listener).
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        // An older full-screen flag would keep the status bar hidden whatever the controller says.
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
         WindowInsetsControllerCompat c = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
-        c.hide(WindowInsetsCompat.Type.systemBars());
+        c.hide(WindowInsetsCompat.Type.navigationBars());
+        if (statusBarShown) {
+            c.show(WindowInsetsCompat.Type.statusBars());
+            // Light icons on the dark strip behind them.
+            c.setAppearanceLightStatusBars(false);
+        } else {
+            c.hide(WindowInsetsCompat.Type.statusBars());
+        }
         c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        getWindow().getDecorView().setBackgroundColor(android.graphics.Color.BLACK);
+    }
+
+    /** The menu changed the status bar choice. */
+    private void checkStatusBar() {
+        if (statusBarWanted() != statusBarShown) {
+            applySystemBars();
+        }
+    }
+
+    /** How far the app sits below the top of the window (px): the status bar's height while it shows. */
+    private int topInset = 0;
+
+    /** `e` in the app's own coordinates (below the status bar), for the native hooks. Recycle it
+     * when it isn't `e`. */
+    private MotionEvent inApp(MotionEvent e) {
+        if (topInset == 0) {
+            return e;
+        }
+        MotionEvent m = MotionEvent.obtain(e);
+        m.offsetLocation(0, -topInset);
+        return m;
     }
 
     // ---- Pen ------------------------------------------------------------------------------
@@ -311,9 +379,13 @@ public class PhotoCraftActivity extends GameActivity {
                 // The library isn't loaded: every pointer counts as a finger.
             }
         }
-        inkEvent(e);
-        forwardPen(e);
-        followPointerIcon(e);
+        MotionEvent local = inApp(e);
+        inkEvent(local);
+        forwardPen(local);
+        followPointerIcon(local);
+        if (local != e) {
+            local.recycle();
+        }
         return super.dispatchTouchEvent(e);
     }
 
@@ -463,14 +535,18 @@ public class PhotoCraftActivity extends GameActivity {
         if (e.getActionMasked() == MotionEvent.ACTION_SCROLL) {
             // A mouse wheel or trackpad scroll: winit drops it, so it goes to the native side here.
             try {
-                nativeScroll(e.getX(), e.getY(), e.getAxisValue(MotionEvent.AXIS_HSCROLL), e.getAxisValue(MotionEvent.AXIS_VSCROLL));
+                nativeScroll(e.getX(), e.getY() - topInset, e.getAxisValue(MotionEvent.AXIS_HSCROLL), e.getAxisValue(MotionEvent.AXIS_VSCROLL));
             } catch (UnsatisfiedLinkError err) {
                 // The library isn't loaded.
             }
             return true;
         }
-        forwardPen(e);
-        followPointerIcon(e);
+        MotionEvent local = inApp(e);
+        forwardPen(local);
+        followPointerIcon(local);
+        if (local != e) {
+            local.recycle();
+        }
         return super.dispatchGenericMotionEvent(e);
     }
 

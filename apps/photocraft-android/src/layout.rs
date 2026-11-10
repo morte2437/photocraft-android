@@ -5,6 +5,10 @@
 //! The phone layout ([`photocraft_ui_egui::PhotocraftApp::compact_layout`]) makes Auto interface
 //! scale smaller, dialogs as wide as the window (scrolling when taller), and the Shortcut Pad
 //! slimmer.
+//!
+//! **Window › Layout › Show Android Status Bar** (on by default, #34): the app sits below
+//! Android's status bar; off, it goes full screen over it. Saved in `status-bar.txt`, which the
+//! Activity reads (it shows or hides the bar and moves the app down).
 
 use photocraft_ui_egui::menus::MenuItem;
 use photocraft_ui_egui::platform_menu::PlatformMenu;
@@ -22,6 +26,10 @@ const KEYBOARD_MENU: &[&str] = &["Window", "On-Screen Keyboard"];
 /// Window › On-Screen Keyboard: the app moves up above it, or it covers the bottom of the app.
 const KEYBOARD_SHRINK: &str = "android.keyboard.shrink";
 const KEYBOARD_COVER: &str = "android.keyboard.cover";
+/// Window › Layout › Show Android Status Bar.
+const STATUS_BAR: &str = "android.layout.statusBar";
+/// The status bar choice's file in the app's files directory, read by `PhotoCraftActivity`.
+pub const STATUS_BAR_FILE: &str = "status-bar.txt";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LayoutMode {
@@ -70,6 +78,9 @@ struct Shared {
     /// The on-screen keyboard covers the bottom of the app instead of the app shrinking above it.
     keyboard_covers: bool,
     keyboard_path: PathBuf,
+    /// Android's status bar shows above the app (off: full screen).
+    status_bar: bool,
+    status_path: PathBuf,
 }
 
 pub struct Layout {
@@ -82,7 +93,9 @@ impl Layout {
         let mode = std::fs::read_to_string(&path).ok().and_then(|t| LayoutMode::from_key(&t)).unwrap_or_default();
         let keyboard_path = files_dir.join("keyboard.txt");
         let keyboard_covers = std::fs::read_to_string(&keyboard_path).is_ok_and(|t| t.trim() == "cover");
-        Self { shared: Rc::new(RefCell::new(Shared { mode, path, keyboard_covers, keyboard_path })) }
+        let status_path = files_dir.join(STATUS_BAR_FILE);
+        let status_bar = std::fs::read_to_string(&status_path).map_or(true, |t| t.trim() != "hide");
+        Self { shared: Rc::new(RefCell::new(Shared { mode, path, keyboard_covers, keyboard_path, status_bar, status_path })) }
     }
 
     /// Whether the on-screen keyboard covers the bottom of the app (Window › On-Screen Keyboard ›
@@ -105,9 +118,9 @@ impl Layout {
         let (read, write) = (self.shared.clone(), self.shared.clone());
         PlatformMenu {
             items: Box::new(move || {
-                let (mode, covers) = {
+                let (mode, covers, status_bar) = {
                     let s = read.borrow();
-                    (s.mode, s.keyboard_covers)
+                    (s.mode, s.keyboard_covers, s.status_bar)
                 };
                 let row = |id: String, label: &str, path: &[&str], checked: bool| MenuItem {
                     id,
@@ -119,11 +132,21 @@ impl Layout {
                     color: None,
                 };
                 let mut rows: Vec<MenuItem> = LayoutMode::ALL.iter().map(|m| row(format!("{PREFIX}{}", m.key()), m.label(), MENU, mode == *m)).collect();
+                rows.push(row(STATUS_BAR.into(), "Show Android Status Bar", MENU, status_bar));
                 rows.push(row(KEYBOARD_SHRINK.into(), "Shrink the Screen to Fit", KEYBOARD_MENU, !covers));
                 rows.push(row(KEYBOARD_COVER.into(), "Cover the Screen", KEYBOARD_MENU, covers));
                 rows
             }),
             run: Box::new(move |id| {
+                if id == STATUS_BAR {
+                    let mut s = write.borrow_mut();
+                    s.status_bar = !s.status_bar;
+                    let key: &[u8] = if s.status_bar { b"show" } else { b"hide" };
+                    if let Err(e) = photocraft_format::atomic_write(&s.status_path, key) {
+                        log::warn!("couldn't save the status bar choice: {e}");
+                    }
+                    return Ok(Value::Null);
+                }
                 if id == KEYBOARD_SHRINK || id == KEYBOARD_COVER {
                     let mut s = write.borrow_mut();
                     s.keyboard_covers = id == KEYBOARD_COVER;
@@ -172,6 +195,14 @@ mod tests {
         assert!(l.keyboard_covers() && Layout::new(&dir).keyboard_covers());
         (l.menu().run)("android.keyboard.shrink").unwrap();
         assert!(!Layout::new(&dir).keyboard_covers());
+        // The status bar: shown until turned off, and the file the Activity reads says so.
+        let shown = |l: &Layout| ((l.menu().items)().iter().find(|r| r.id == STATUS_BAR).and_then(|r| r.checked)).unwrap();
+        assert!(shown(&l));
+        (l.menu().run)(STATUS_BAR).unwrap();
+        assert!(!shown(&Layout::new(&dir)));
+        assert_eq!(std::fs::read_to_string(dir.join(STATUS_BAR_FILE)).unwrap(), "hide");
+        (l.menu().run)(STATUS_BAR).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(STATUS_BAR_FILE)).unwrap(), "show");
         std::fs::remove_dir_all(dir).ok();
     }
 }
