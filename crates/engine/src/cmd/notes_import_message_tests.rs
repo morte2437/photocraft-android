@@ -1,13 +1,13 @@
 //! #13915: File › Import › Notes… from a source that gives no notes fails as Photoshop does, with
 //! "No notes were imported.", no history step and the document unmodified. A file that cannot be
-//! read at all keeps its "<file>: <why>" error.
+//! read at all, or one this machine has no memory for, keeps its own error.
 
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Note, Size};
 use serde_json::json;
 
-use super::{NO_NOTES_IMPORTED, import_notes_from};
-use crate::Session;
+use super::{NO_NOTES_IMPORTED, import_notes_from, source_error};
+use crate::{EngineError, Session};
 
 fn session() -> Session {
     let mut s = Session::new();
@@ -76,6 +76,27 @@ fn a_file_with_notes_still_imports() {
         assert_eq!(s.active().unwrap().doc.notes.len(), 2, "{name}");
         assert_eq!(s.active().unwrap().history.past_len(), past + 1, "{name}");
     }
+}
+
+#[test]
+fn a_memory_refusal_keeps_its_own_message() {
+    // A pixel buffer the decoder could not allocate: the file may be fine.
+    let e = source_error("big.psd", photocraft_io::IoError::OutOfMemory("not enough memory to interleave PSD pixels".into())).to_string();
+    assert_eq!(e, "big.psd: not enough memory: not enough memory to interleave PSD pixels");
+    let e = source_error("big.psd", photocraft_io::IoError::PsdImportBudget { required: 9000, limit: 4000, free_memory: None });
+    assert!(matches!(e, EngineError::PsdHardBudget { .. }), "{e:?}");
+    let e = source_error("big.psd", photocraft_io::IoError::PsdApprovalRequired { required: 9000, soft_limit: 2000, hard_limit: 4000, available_ram: None });
+    assert!(matches!(e, EngineError::PsdApprovalRequired { .. }), "{e:?}");
+    // Not a memory problem: no notes.
+    assert_eq!(source_error("x.txt", photocraft_io::IoError::UnknownFormat("x.txt".into())).to_string(), NO_NOTES_IMPORTED);
+    // The allocation checkpoint before decoding keeps its message too, and changes nothing.
+    let (mut s, bytes) = (session(), pcraft(2));
+    let past = s.active().unwrap().history.past_len();
+    crate::allocation::fail_next_for_test();
+    let e = import_notes_from(&mut s, "a.pcraft", &bytes).unwrap_err().to_string();
+    assert!(e.starts_with("not enough memory for importing document"), "{e}");
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    assert!(s.active().unwrap().doc.notes.is_empty());
 }
 
 #[cfg(not(target_arch = "wasm32"))]

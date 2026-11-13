@@ -194,15 +194,22 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
 /// notes source (#13915).
 pub const NO_NOTES_IMPORTED: &str = "No notes were imported.";
 
+/// The error for a source the import could not read. A memory refusal says what the user can do
+/// about it and keeps its own (typed) message; anything else (not an image, damaged, truncated)
+/// gave no notes (#13915).
+fn source_error(name: &str, error: photocraft_io::IoError) -> EngineError {
+    use photocraft_io::IoError;
+    match error {
+        IoError::OutOfMemory(_) | IoError::PsdApprovalRequired { .. } | IoError::PsdImportBudget { .. } => crate::error::io_open_error(name, error),
+        _ => EngineError::Other(NO_NOTES_IMPORTED.into()),
+    }
+}
+
 /// File › Import › Notes… from file bytes (what a file picker returns).
 pub fn import_notes_from(s: &mut Session, name: &str, bytes: &[u8]) -> Result<Value> {
-    let src = match crate::file_cmds::import(name, bytes) {
-        Ok(src) => src,
-        // A memory refusal says what the user can do about it; keep it.
-        Err(e @ (EngineError::PsdApprovalRequired { .. } | EngineError::PsdHardBudget { .. })) => return Err(e),
-        // Not an image, damaged or truncated: no notes came out of it (#13915).
-        Err(_) => return Err(EngineError::Other(NO_NOTES_IMPORTED.into())),
-    };
+    // The steps of `file_cmds::import`, with the io error still typed for `source_error`.
+    crate::allocation::checkpoint("importing document")?;
+    let src = photocraft_io::import_for_open(name, bytes, &photocraft_io::ImportOptions::default()).map_err(|e| source_error(name, e))?.0.document;
     if src.notes.is_empty() {
         return Err(EngineError::Other(NO_NOTES_IMPORTED.into()));
     }
