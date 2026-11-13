@@ -549,6 +549,7 @@ pub fn tool_presets_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
 
 // ------------------------------------------------------------------ Clone Source
 
+/// Display source identity and edit the resolved pairing/transform through engine commands.
 pub fn clone_source_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let cs = app.session.presets.clone.clone();
@@ -596,14 +597,14 @@ pub fn clone_source_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let label = ui.add_sized(vec2(18.0, 18.0), egui::Label::new(egui::RichText::new(s).color(t.text_dim).size(11.5)));
         crate::widgets::scrub_option_label(ui, &label);
     };
-    let off = slot.offset().unwrap_or([0.0, 0.0]);
+    let off = super::clone_offset_readout(app).unwrap_or([0.0, 0.0]);
     let (mut ox, mut oy) = (off[0] as f32, off[1] as f32);
     let (mut w, mut h) = (slot.scale[0] as f32, slot.scale[1] as f32);
     let mut rot = slot.rotation as f32;
     egui::Grid::new("clone-src-grid").num_columns(5).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
         lbl(ui, "X:");
-        if crate::widgets::value_field(ui, &mut ox, -30000.0..=30000.0, "px", 72.0).changed() && slot.source.is_some() {
-            action = Some(json!({"offset": [ox, oy]}));
+        if crate::widgets::value_field(ui, &mut ox, -30000.0..=30000.0, "px", 72.0).accessible_name(tl!("Clone Source X Offset")).changed() {
+            action = super::clone_offset_edit(app, [f64::from(ox), f64::from(oy)]);
         }
         lbl(ui, "W:");
         if crate::widgets::value_field(ui, &mut w, -1000.0..=1000.0, "%", 64.0).changed() {
@@ -616,8 +617,8 @@ pub fn clone_source_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
         ui.end_row();
         lbl(ui, "Y:");
-        if crate::widgets::value_field(ui, &mut oy, -30000.0..=30000.0, "px", 72.0).changed() && slot.source.is_some() {
-            action = Some(json!({"offset": [ox, oy]}));
+        if crate::widgets::value_field(ui, &mut oy, -30000.0..=30000.0, "px", 72.0).accessible_name(tl!("Clone Source Y Offset")).changed() {
+            action = super::clone_offset_edit(app, [f64::from(ox), f64::from(oy)]);
         }
         lbl(ui, "H:");
         if crate::widgets::value_field(ui, &mut h, -1000.0..=1000.0, "%", 64.0).changed() {
@@ -677,23 +678,5 @@ pub fn clone_source_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             "cloneSource.overlay",
             json!({"show": o.show, "opacity": o.opacity, "clipped": o.clipped, "autoHide": o.auto_hide, "invert": o.invert, "blend": o.blend}),
         );
-    }
-}
-
-/// Where the active clone source samples for document point `at` (for the canvas marker).
-/// The first stroke anchors at its press, so the marker follows before the stroke commits.
-pub fn clone_sample_point(app: &PhotocraftApp, at: Option<[f64; 2]>) -> Option<[f64; 2]> {
-    use photocraft_engine::presets::clone_source::{Mapping, transform_matrix};
-    let s = app.session.presets.clone.active();
-    let src = s.source?;
-    let stroking = app.drag.as_ref().filter(|d| matches!(d.tool, Tool::CloneStamp | Tool::Healing)).map(|d| d.start);
-    let anchor = if app.ui.tool_options.clone_aligned { s.anchor.or(stroking) } else { stroking };
-    match (anchor, at) {
-        (Some(a), Some(h)) => {
-            let m = Mapping { source: (src[0], src[1]), anchor: (a[0], a[1]), m: transform_matrix(s.scale, s.rotation, s.flip_h, s.flip_v), document: None };
-            let (x, y) = m.map(h[0], h[1]);
-            Some([x, y])
-        }
-        _ => Some(src),
     }
 }

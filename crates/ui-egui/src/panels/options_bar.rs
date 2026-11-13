@@ -148,19 +148,30 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                                 // Its list has Behind, greyed on the Background (#12879).
                                 opt_label(ui, tl!("Mode"));
                                 let behind = crate::brush_mode_menu::enabled(app, crate::brush_mode_menu::Item::Behind);
-                                super::brush_controls::pattern_stamp_mode_dropdown(ui, "retouch-mode", &mut brush, behind);
+                                // An Indexed Color document names Normal "Threshold" (#12887); the other
+                                // entries weren't measured there.
+                                let threshold = app.session.active().is_some_and(|st| st.doc.mode == photocraft_doc::ColorMode::Indexed);
+                                super::brush_controls::pattern_stamp_mode_dropdown(ui, "retouch-mode", &mut brush, behind, threshold);
                             } else if let Some(modes) = crate::blend_keys::tool_modes(tool) {
                                 opt_label(ui, tl!("Mode"));
-                                if let Some(Some(m)) =
-                                    tool_mode_dropdown(ui, "retouch-mode", &modes, Some(crate::blend_keys::brush_tool_mode(tool, brush.mode)))
-                                {
+                                let mode = crate::blend_keys::brush_tool_mode(tool, brush.mode);
+                                // Indexed Color names Normal "Threshold"; the other modes weren't measured.
+                                let threshold = crate::retouch_ui::clone_stamp_indexed(app);
+                                if let Some(Some(m)) = tool_mode_dropdown(ui, "retouch-mode", &modes, Some(mode), threshold) {
                                     brush.mode = m;
                                 }
                             }
-                            if matches!(tool, Tool::CloneStamp | Tool::HistoryBrush) {
+                            if matches!(tool, Tool::CloneStamp | Tool::PatternStamp | Tool::HistoryBrush) {
                                 let width = if t.pro { 62.0 } else { 66.0 };
-                                percent_field(ui, tl!("Opacity"), &mut brush.opacity, 1.0..=100.0, width);
-                                percent_field(ui, tl!("Flow"), &mut brush.flow, 1.0..=100.0, width);
+                                // The Pattern Stamp's are whole percents as measured; the Brush's tooltips (#12616).
+                                let pattern = tool == Tool::PatternStamp;
+                                let field = if pattern { whole_percent_field } else { percent_field };
+                                let opacity = field(ui, tl!("Opacity"), &mut brush.opacity, 1.0..=100.0, width);
+                                let flow = field(ui, tl!("Flow"), &mut brush.flow, 1.0..=100.0, width);
+                                if pattern {
+                                    opacity.on_hover_text(tl!("Set opacity for stroke"));
+                                    flow.on_hover_text(tl!("Set flow rate for stroke"));
+                                }
                             }
                             // Art History has no Mode (the engine paints Normal) and no Flow.
                             if tool == Tool::ArtHistoryBrush {
@@ -518,7 +529,7 @@ fn selection_specific_options(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: 
             if let Some(modes) = crate::blend_keys::tool_modes(tool) {
                 let o = &mut app.ui.tool_options;
                 let current = if o.bucket_clear { None } else { Some(o.bucket_blend_mode) };
-                if let Some(m) = tool_mode_dropdown(ui, "bucket-mode", &modes, current) {
+                if let Some(m) = tool_mode_dropdown(ui, "bucket-mode", &modes, current, false) {
                     o.bucket_clear = m.is_none();
                     if let Some(m) = m {
                         o.bucket_blend_mode = m;
@@ -1014,7 +1025,7 @@ fn eraser_percent(ui: &mut egui::Ui, label: &str, value: &mut f32) -> bool {
 }
 
 /// Shows one of the range alerts as a modal with OK, once even if more than one pass asks.
-fn range_alert(ui_state: &mut crate::state::UiState, text: &str) {
+pub(crate) fn range_alert(ui_state: &mut crate::state::UiState, text: &str) {
     let message = tl!(text).to_owned();
     let shown =
         ui_state.dialogs.iter().any(|d| d.kind == crate::state::DialogKind::Error && d.fields.get("message").and_then(|m| m.as_str()) == Some(&message));
@@ -1055,3 +1066,7 @@ mod sharpen_strength_alert_tests;
 #[cfg(test)]
 #[path = "../smudge_strength_alert_tests.rs"]
 mod smudge_strength_alert_tests;
+
+#[cfg(test)]
+#[path = "../pattern_stamp_opacity_flow_tests.rs"]
+mod pattern_stamp_opacity_flow_tests;

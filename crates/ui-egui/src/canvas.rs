@@ -1021,7 +1021,7 @@ fn handle_primary_canvas_input(app: &mut PhotocraftApp, ui: &mut egui::Ui, view:
     // Tools follow the left button; the right one opens the Brush Preset picker or erases
     // (Preferences › Tools, `paint_mouse`).
     crate::paint_mouse::sync_tool_brush(app);
-    let mut buttons = crate::paint_mouse::canvas_buttons(app, response, tool);
+    let mut buttons = crate::paint_mouse::canvas_buttons(app, response, tool, xf);
     if input.menu_dismiss_press {
         // Navigation and drags read `buttons` directly (zoom holds and drags, Rotate View):
         // starve them. The release click stays armed, so the click handling below consumes
@@ -1276,6 +1276,7 @@ fn handle_canvas_tool_stroke(
     if press_stroke || (strokes_live(tool) && (app.alt_sampling || app.mixer_sampling)) {
         buttons.started = false;
     }
+    let transform_press = transform_press_moves(app, ui, input, mods, buttons);
     if buttons.started
         && !input.menu_dismiss_press
         && let Some(p) = ui.input(|i| i.pointer.press_origin()).filter(|p| rect.contains(*p)).or(response.interact_pointer_pos())
@@ -1412,6 +1413,90 @@ fn handle_canvas_tool_stroke(
     }
     if press_stroke && (app.drag.is_none() || !ui.input(|i| i.pointer.primary_down())) {
         app.press_stroke = false;
+    }
+    if transform_press {
+        transform_press_release(app, ui, input, mods, buttons);
+    }
+}
+
+/// Marks a Free Transform drag started on the press (`transform_press_moves`).
+fn transform_press_id(ctx: &egui::Context) -> egui::Id {
+    egui::Id::unique(("free-transform-press", ctx.viewport_id()))
+}
+
+/// An open Free Transform box follows the pointer from the press (#11103): the press goes to the
+/// box at once and every move before egui recognises a drag (past its click distance) moves it,
+/// so the box doesn't sit still and then jump to catch up. Warp keeps its own gesture. Returns
+/// whether the current press started this way; the drag egui recognises later continues it.
+fn transform_press_moves(
+    app: &mut PhotocraftApp,
+    ui: &egui::Ui,
+    input: &CanvasToolInput<'_>,
+    mods: egui::Modifiers,
+    buttons: &mut crate::paint_mouse::Buttons,
+) -> bool {
+    let ctx = input.ctx;
+    let id = transform_press_id(ctx);
+    let view = Some(tool_input::ToolViewContext::new(input.xf, Some(ctx.viewport_id())));
+    let open = input.transform_owns_pointer && app.ui.transform.as_ref().is_some_and(|t| t.warp.is_none());
+    if open
+        && !input.menu_dismiss_press
+        && !input.under_dialog
+        && input.response.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && let Some(p) = ui.input(|i| i.pointer.press_origin()).filter(|p| input.rect.contains(*p))
+    {
+        let d = input.xf.to_doc(p);
+        let press_mods = ui.input(|i| pointer_button_modifiers(&i.events, PointerButton::Primary)).unwrap_or(mods);
+        tool_input::tool_event_with_view(app, ToolEvent::Down { x: d[0], y: d[1], pressure: app.stylus.pressure() }, press_mods, view);
+        ctx.data_mut(|m| m.insert_temp(id, true));
+    }
+    let pressed = ctx.data(|m| m.get_temp::<bool>(id)).unwrap_or(false);
+    if !pressed {
+        return false;
+    }
+    // The press already went to the box: the recognised drag continues it, it doesn't start over.
+    buttons.started = false;
+    let moved = ui.input(|i| i.pointer.primary_down() && i.pointer.delta() != egui::Vec2::ZERO);
+    if moved
+        && !buttons.dragged
+        && !buttons.stopped
+        && let Some(p) = ui.input(|i| i.pointer.latest_pos())
+    {
+        let d = input.xf.to_doc(p);
+        tool_input::tool_event_with_view(app, ToolEvent::Move { x: d[0], y: d[1], pressure: app.stylus.pressure() }, mods, view);
+    }
+    true
+}
+
+/// Ends a Free Transform press that egui never recognised as a drag: its release is the gesture's
+/// `Up` (a click outside the box still accepts or keeps it), not a second click-sized `Down`/`Up`.
+fn transform_press_release(
+    app: &mut PhotocraftApp,
+    ui: &egui::Ui,
+    input: &CanvasToolInput<'_>,
+    mods: egui::Modifiers,
+    buttons: &mut crate::paint_mouse::Buttons,
+) {
+    let ctx = input.ctx;
+    if !buttons.stopped && ui.input(|i| i.pointer.primary_released()) {
+        buttons.clicked = false;
+        if app.ui.transform.is_some()
+            && let Some(p) = input.response.interact_pointer_pos().or(ui.input(|i| i.pointer.latest_pos()))
+        {
+            let d = input.xf.to_doc(p);
+            tool_input::tool_event_with_view(
+                app,
+                ToolEvent::Up { x: d[0], y: d[1] },
+                mods,
+                Some(tool_input::ToolViewContext::new(input.xf, Some(ctx.viewport_id()))),
+            );
+        }
+    }
+    if app.ui.transform.is_none() || !ui.input(|i| i.pointer.primary_down()) {
+        // The id first: reading the viewport inside `data_mut` would wait on its own lock.
+        let id = transform_press_id(ctx);
+        ctx.data_mut(|m| m.remove::<bool>(id));
     }
 }
 
@@ -1948,6 +2033,9 @@ fn draw_default_tool_cursor(app: &mut PhotocraftApp, ui: &mut egui::Ui, input: &
                         let size = if block { crate::eraser_ui::block_size(app) } else { brush.size };
                         pencil_outline_cursor(painter, xf, p, size, block, cur.show_crosshair_in_brush_tip)
                     }
+                    // The Healing Brush's ⌥ (source point): the reference's fixed target at any tip
+                    // size (#12113). Unmeasured cases keep the tip with its centre mark below.
+                    PaintingCursor::NormalTip if tool == Tool::Healing && (alt || app.ui.shell.sticky_alt) => cursors::sample_target_cursor(painter, p),
                     // A shaped tip (sampled bitmap, or a rotated/flattened round tip)
                     // traces its outline, turned and flipped with the view; a plain round
                     // tip keeps the circle.
@@ -2144,6 +2232,13 @@ fn finish_canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, view: &mut Vie
     if primary {
         app.perf.span("scrollbars", crate::gpu_canvas::now_ms() - t0);
         app.hover_doc = response.hover_pos().map(|p| xf.to_doc(p));
+        // A focused document window can remain primary after another document becomes active.
+        if let Some(at) = app.hover_doc
+            && app.session.active().is_some_and(|st| st.doc.id == doc.id)
+            && crate::preset_panels::remember_clone_cursor(app, at)
+        {
+            ctx.request_repaint();
+        }
     }
     if primary && app.ui.extras.rulers {
         let before = app.guide_drag;

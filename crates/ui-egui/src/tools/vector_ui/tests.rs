@@ -491,7 +491,7 @@ fn shape_drag_creates_layers_with_modifiers() {
     finish_shape(&mut app, Tool::Rectangle, [10.0, 10.0], [60.0, 30.0], egui::Modifiers::SHIFT);
     let st = app.session.active().unwrap();
     let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
-    assert_eq!((b.width(), b.height()), (50, 50), "shift = square");
+    assert_eq!((b.width(), b.height()), (20, 20), "shift = square of the shorter side (#13222)");
     finish_shape(&mut app, Tool::EllipseShape, [100.0, 100.0], [120.0, 110.0], egui::Modifiers::ALT);
     let st = app.session.active().unwrap();
     let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
@@ -694,9 +694,9 @@ fn shift_pressed_during_a_shape_drag_constrains_it() {
         let l = st.doc.layer(st.active_layer.unwrap()).unwrap();
         assert!(matches!(l.content, LayerContent::Shape(_)), "{tool:?} ({sides} sides): a shape layer");
         let b = l.surface().unwrap().content_bounds();
-        // The drag is 60 × 30; constrained, the shape's box is 60 × 60 (a hexagon is narrower
-        // than its box, so the height tells).
-        assert!(b.height().abs_diff(60) <= 1 && b.width() <= 61, "{tool:?}: ⇧ mid-drag keeps proportions: {b:?}");
+        // The drag is 60 × 30; constrained, the shape's box is 30 × 30, the shorter side (#13222)
+        // (a hexagon is narrower than its box, so the height tells).
+        assert!(b.height().abs_diff(30) <= 1 && b.width() <= 31, "{tool:?}: ⇧ mid-drag keeps proportions: {b:?}");
     }
 }
 

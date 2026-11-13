@@ -288,6 +288,10 @@ pub enum ContentM {
         /// Older PhotoCraft versions ignore this optional field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arrow_live: Option<LiveShape>,
+        /// A live triangle, stored apart from `live` because builds from before the kind cannot
+        /// read it there; they ignore this field and open the shape as its saved path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        triangle_live: Option<LiveShape>,
         /// The path's density as the fill's mask; older files have none (100 %).
         #[serde(default = "full_density")]
         density: f32,

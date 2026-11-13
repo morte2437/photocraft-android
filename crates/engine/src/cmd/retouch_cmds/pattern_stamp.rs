@@ -9,7 +9,7 @@
 //! Impressionist was not measured: those strokes lay their dabs over the pixels in Normal, as
 //! they did before Behind existed.
 
-use photocraft_color::{BlendMode, PixelFormat};
+use photocraft_color::{BlendMode, ColorMode, PixelFormat};
 use photocraft_compose::pattern::{Placement, Tile, render};
 use photocraft_doc::{LayerId, Pattern};
 use photocraft_geom::Rect;
@@ -19,10 +19,29 @@ use photocraft_raster::{Surface, from_rgba_into, to_rgba};
 use serde_json::{Value, json};
 
 use super::{bad, blend_param, damage_json, flag, has_pixel_layer, parse_brush, reject_huge_stroke};
-use crate::{Result, Session};
+use crate::{EngineError, Result, Session};
 
 const STREAM_PHASE_X: u64 = 101;
 const STREAM_PHASE_Y: u64 = 102;
+
+/// The reference's alert for a Pattern Stamp stroke in an Indexed Color document (#12887).
+pub const INDEXED_REFUSAL: &str = "Could not fill because the pattern and image have different color modes.";
+
+/// The reference refuses every pattern in an Indexed Color document before painting: RGB,
+/// Grayscale, CMYK, Lab and Indexed ones from another image. It paints only a pattern with the
+/// document's own colour table, which PhotoCraft can't tell apart, so that one is refused too.
+/// Bitmap, Duotone and Multichannel documents weren't measured and paint as before.
+fn mode_refusal(s: &Session) -> Result<()> {
+    if s.active().is_some_and(|st| st.doc.mode == ColorMode::Indexed) { Err(EngineError::Other(INDEXED_REFUSAL.into())) } else { Ok(()) }
+}
+
+/// [`mode_refusal`] for a press with the stroke's `p`, so the canvas can alert before the stroke
+/// starts: `None` when the pattern paints, or when `p` names no pattern (the stroke reports that).
+pub fn press_refusal(s: &Session, p: &Value) -> Option<String> {
+    mode_refusal(s).err()?;
+    crate::pattern_cmds::resolve_param(s, "paint.patternStamp", p).ok()?;
+    Some(INDEXED_REFUSAL.into())
+}
 
 pub(super) fn enabled(s: &Session) -> std::result::Result<(), String> {
     has_pixel_layer(s)?;
@@ -58,6 +77,7 @@ impl Setup {
         let aligned = flag(p, "aligned", true);
         let impressionist = flag(p, "impressionist", false);
         let pat = crate::pattern_cmds::resolve_param(s, CMD, p)?;
+        mode_refusal(s)?;
         if pat.is_empty() {
             return Err(bad(CMD, "the pattern is empty"));
         }
@@ -366,3 +386,7 @@ mod tests {
         assert!(reject_huge_stroke("t", &stroke(&[(0.0, 0.0), (9000.0, 9000.0)], 100.0)).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "pattern_stamp_indexed_tests.rs"]
+mod pattern_stamp_indexed_tests;

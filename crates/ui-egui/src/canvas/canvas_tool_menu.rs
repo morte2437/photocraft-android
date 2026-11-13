@@ -1190,7 +1190,9 @@ pub fn open_pasteboard(app: &mut PhotocraftApp, ctx: &Context, tool: Tool, pos: 
         transform: false,
         pasteboard: true,
         anchor: None,
-        under: None,
+        // Space's Hand keeps the menu over the selected tool (#11271); a held zoom key's goes with
+        // the key, as before.
+        under: (tool == Tool::Hand && tool != app.ui.tool).then_some(app.ui.tool),
         text: false,
         type_layer: false,
         type_shape: None,

@@ -20,6 +20,9 @@ sync_github_name = true
 [people.brianblakely]
 sync_github_name = true
 
+[people.mlo0352]
+sync_github_name = true
+
 [people.abdul-karim-mia]
 real_name = "Abdul karim mia"
 sync_github_name = false
@@ -346,3 +349,6 @@ sync_github_name = false
 [people.se343r]
 display_name = "Tsieg"
 sync_github_name = true
+
+[people.slafebre]
+real_name = "Sven Lafebre"

@@ -38,13 +38,14 @@ fn mode_tool_name(tool: Tool) -> Option<&'static str> {
 }
 
 /// The tool's name in the alerts, for the tools whose wording was measured: the Brush, the
-/// Sharpen tool (#12952), the Sponge (#13030) and the Classic gradient (the live Gradient makes a
-/// fill layer and isn't measured, #12017).
+/// Sharpen tool (#12952), the Sponge (#13030), the Smudge tool (#12965) and the Classic gradient
+/// (the live Gradient makes a fill layer and isn't measured, #12017).
 pub fn tool_name(app: &PhotocraftApp, tool: Tool) -> Option<&'static str> {
     match tool {
         Tool::Brush => Some(tl!("brush tool")),
         Tool::Sharpen => Some(tl!("sharpen tool")),
         Tool::Sponge => Some(tl!("sponge tool")),
+        Tool::Smudge => Some(tl!("smudge tool")),
         Tool::Gradient if app.ui.tool_options.gradient_classic => Some(tl!("gradient tool")),
         _ => None,
     }
@@ -53,8 +54,15 @@ pub fn tool_name(app: &PhotocraftApp, tool: Tool) -> Option<&'static str> {
 /// The alert a press with `tool` gets, if any. `hidden` is the press-time hidden-target refusal
 /// (`canvas::tool_input`), which this only words; the lock and the group are checked here. Lock
 /// transparent pixels is no refusal, and a group's targeted mask paints. A tool with a
-/// [`mode_tool_name`] gets its colour-mode alert first, in an Indexed Color or Bitmap document.
+/// [`mode_tool_name`] gets its colour-mode alert first, in an Indexed Color or Bitmap document; the
+/// Pattern Stamp only the engine's, for any pattern in an Indexed Color document.
 pub fn alert(app: &PhotocraftApp, tool: Tool, hidden: bool) -> Option<String> {
+    // The Pattern Stamp's colour-mode alert depends on its pattern too (#12887).
+    if tool == Tool::PatternStamp {
+        use photocraft_engine::retouch_cmds::{PATTERN_STAMP_INDEXED_REFUSAL, pattern_stamp_press_refusal};
+        let p = crate::retouch_ui::pattern_stamp_params(app, &[]);
+        return pattern_stamp_press_refusal(&app.session, &p).is_some().then(|| tl!(PATTERN_STAMP_INDEXED_REFUSAL).to_owned());
+    }
     if let Some(name) = mode_tool_name(tool)
         && let Some(template) = match app.session.active()?.doc.mode {
             photocraft_doc::ColorMode::Indexed => Some(INDEXED),
@@ -91,10 +99,10 @@ fn layer_refusal(app: &PhotocraftApp, tool: Tool) -> Option<&'static str> {
     }
 }
 
-/// Whether `locks` refuse `tool`: Lock All, and for the Sharpen and Sponge tools Lock Image Pixels
-/// as well (measured for them; the Brush keeps today's behaviour there).
+/// Whether `locks` refuse `tool`: Lock All, and for the Sharpen, Sponge and Smudge tools Lock Image
+/// Pixels as well (measured for them; the Brush keeps today's behaviour there).
 fn locked(locks: photocraft_doc::Locks, tool: Tool) -> bool {
-    locks.all || (matches!(tool, Tool::Sharpen | Tool::Sponge) && locks.pixels)
+    locks.all || (matches!(tool, Tool::Sharpen | Tool::Sponge | Tool::Smudge) && locks.pixels)
 }
 
 /// Opens the alert: ordinary dialog state, listed by `ui.inspect` and closed by `ui.dialog.confirm`.
@@ -119,9 +127,17 @@ mod sponge_refusal_alert_tests;
 mod retouch_mode_refusal_alert_tests;
 
 #[cfg(test)]
+#[path = "../smudge_refusal_alert_tests.rs"]
+mod smudge_refusal_alert_tests;
+
+#[cfg(test)]
 #[path = "../bucket_bitmap_alert_tests.rs"]
 mod bucket_bitmap_alert_tests;
 
 #[cfg(test)]
 #[path = "remove_locked_alert_tests.rs"]
 mod remove_locked_alert_tests;
+
+#[cfg(test)]
+#[path = "remove_hidden_layer_tests.rs"]
+mod remove_hidden_layer_tests;

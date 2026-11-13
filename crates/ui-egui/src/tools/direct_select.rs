@@ -282,9 +282,10 @@ pub enum Edit {
 }
 
 impl Edit {
-    /// The drag's end with ⇧ held: moving anchors locks to multiples of 45°, as in Photoshop (#5475).
+    /// The drag's end with ⇧ held: moving anchors locks to multiples of 45°, as in Photoshop (#5475),
+    /// with the measured (+60, -25) drag kept on the axis (#13207).
     fn constrain(&self, start: [f64; 2], p: [f64; 2], shift: bool) -> [f64; 2] {
-        if shift && matches!(self, Edit::Anchors(_)) { crate::stroke_constraint::snap45(start, p) } else { p }
+        if shift && matches!(self, Edit::Anchors(_)) { crate::stroke_constraint::snap45_anchor(start, p) } else { p }
     }
 
     /// The edit for a drag from `start` to `end`, as a command and its params (without target).
@@ -319,9 +320,11 @@ impl Edit {
 }
 
 /// Is Direct Selection what the pointer does now: its own tool, or a Pen (the Pen, Freeform Pen
-/// or Curvature Pen), an anchor point tool or Convert Point with ⌘/Ctrl held.
+/// or Curvature Pen), an anchor point tool or Convert Point with ⌘/Ctrl held, or Path Selection
+/// with ⌘/Ctrl alone (#13284; with ⌥ or ⇧ too, the reference was not measured, so as today).
 fn direct(tool: Tool, mods: Modifiers) -> bool {
     tool == Tool::DirectSelection
+        || (tool == Tool::PathSelection && mods.command && !mods.alt && !mods.shift)
         || (matches!(tool, Tool::Pen | Tool::FreeformPen | Tool::CurvaturePen | Tool::AddAnchorPoint | Tool::DeleteAnchorPoint | Tool::ConvertPoint)
             && mods.command)
 }
@@ -654,6 +657,7 @@ fn press(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers, convert: bool) -
         let _ = app.run("layer.select", json!({"layer": id}));
     }
     let owner = Owner::current(app);
+    let tool_is_path_selection = app.ui.tool == Tool::PathSelection;
     let ds = &mut app.ui.direct_selection;
     if ds.target.as_ref() != Some(&target) {
         *ds = DirectSelection { target: Some(target), ..Default::default() };
@@ -700,7 +704,9 @@ fn press(app: &mut PhotocraftApp, p: [f64; 2], mods: Modifiers, convert: bool) -
                     return true;
                 }
                 ds.anchors.push(k);
-            } else if !ds.anchors.contains(&k) {
+            } else if !ds.anchors.contains(&k) || tool_is_path_selection {
+                // Path Selection's ⌘/Ctrl moves the anchor pressed alone, not the selected
+                // component it belongs to (#13284).
                 ds.anchors = vec![k];
             }
             Edit::Anchors(ds.anchors.clone())
@@ -1000,6 +1006,9 @@ mod convert_point_tolerance_tests;
 
 #[cfg(test)]
 mod convert_point_drag_segment_tests;
+
+#[cfg(test)]
+mod shift_angle_tests;
 
 #[cfg(test)]
 mod freeform_command_tests {

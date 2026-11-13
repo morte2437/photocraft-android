@@ -68,11 +68,12 @@ fn value_field_alerting_in(
     let draft = ui.ctx().data(|d| d.get_temp::<(f32, f32, Option<egui::Id>)>(draft_id));
     let draft = draft.filter(|(_, stored, field)| *stored == *value && field.is_some_and(|f| ui.ctx().memory(|m| m.has_focus(f))));
     let mut typed = draft.map_or(*value, |(typed, _, _)| typed);
-    // Read before the field: it consumes the arrow keys it steps with, and the wheel it steps
-    // with while focused never shows in the scroll delta. A step past the ends is no typing.
-    let stepped = ui.input(|i| i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowDown)) || crate::field_wheel::focused_field_wheeled(ui.ctx());
     // The field's own range is wide, so the typed value reaches here unclamped.
     let r = value_field_named(ui, name, &mut typed, -1.0e9..=1.0e9, suffix, width);
+    // A step past the ends is no typed value (#13304). Only a step the field took counts: a wheel
+    // event that moves less than a notch (or not at all) steps nothing, and must not drop what was
+    // typed.
+    let stepped = stepped_this_pass(ui.ctx(), r.id);
     let out_id = r.id.with("out-of-range");
     if r.gained_focus() {
         ui.ctx().data_mut(|d| d.remove_temp::<bool>(out_id));
@@ -350,12 +351,25 @@ fn value_field_box(
             // The text stays selected, as in Photoshop: typing after a step replaces the value.
             crate::field_tab::select_all(ui.ctx(), resp.id, &if fine { fmt_num2(f64::from(*value)) } else { fmt_num(f64::from(*value)) });
         }
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.data_mut(|d| d.insert_temp(stepped_id(resp.id), pass));
         resp.mark_changed();
     }
     if ui.memory(|m| m.has_focus(resp.id)) {
         crate::field_wheel::set_focused(ui.ctx(), resp.id, slot.id);
     }
     (resp, rect)
+}
+
+/// Where a value field records the pass in which an arrow key or wheel notch last stepped it.
+fn stepped_id(field: egui::Id) -> egui::Id {
+    field.with("stepped-pass")
+}
+
+/// Whether the value field `field` was stepped this pass by an arrow key or a wheel notch.
+fn stepped_this_pass(ctx: &egui::Context, field: egui::Id) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|d| d.get_temp::<u64>(stepped_id(field))) == Some(pass)
 }
 
 /// Width of the ▾ that opens a [`popup_value_field`]'s slider, inside the field's box.

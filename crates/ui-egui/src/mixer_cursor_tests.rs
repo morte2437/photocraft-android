@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::PhotocraftApp;
 use crate::state::Tool;
 
-fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
+pub(super) fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
     app.run("layer.new.layer", json!({})).unwrap();
@@ -39,15 +39,15 @@ fn harness(tool: Tool) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn has_fonts(h: &Harness<'static, PhotocraftApp>) -> bool {
+pub(super) fn has_fonts(h: &Harness<'static, PhotocraftApp>) -> bool {
     h.ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into())))
 }
 
-fn centre(h: &Harness<'static, PhotocraftApp>) -> Pos2 {
+pub(super) fn centre(h: &Harness<'static, PhotocraftApp>) -> Pos2 {
     h.state().last_canvas_rect.center()
 }
 
-fn hover(h: &mut Harness<'static, PhotocraftApp>, m: Modifiers) {
+pub(super) fn hover(h: &mut Harness<'static, PhotocraftApp>, m: Modifiers) {
     h.event(egui::Event::ModifiersChanged(m));
     let p = centre(h);
     h.hover_at(p);
@@ -59,9 +59,19 @@ fn pipette_shown(h: &Harness<'static, PhotocraftApp>) -> bool {
     crate::tool_cursor::pipette_shown(&h.ctx, &h.output().platform_output)
 }
 
+/// An OS cursor bitmap's size, hotspot and alpha channel.
+pub(super) type Bitmap = ([u16; 2], [u16; 2], Vec<u8>);
+
 /// The OS cursor bitmap's size, hotspot and alpha channel.
-fn bitmap(h: &Harness<'static, PhotocraftApp>) -> Option<([u16; 2], [u16; 2], Vec<u8>)> {
+pub(super) fn bitmap(h: &Harness<'static, PhotocraftApp>) -> Option<Bitmap> {
     h.output().platform_output.cursor_image.as_ref().map(|i| (i.size, i.hotspot, i.rgba.as_chunks::<4>().0.iter().map(|p| p[3]).collect()))
+}
+
+/// Whether a line passes through the hotspot: its pixel or the one to its left, as a 1 px line
+/// centred on the hotspot may land on either at an even scale.
+pub(super) fn hotspot_drawn((size, hotspot, alpha): &Bitmap) -> bool {
+    let (w, hx, hy) = (usize::from(size[0]), usize::from(hotspot[0]), usize::from(hotspot[1]));
+    alpha[hy * w + hx] > 0 || alpha[hy * w + hx.saturating_sub(1)] > 0
 }
 
 /// The share of pixels whose alpha differs (by more than a quarter) from the pixel `mirror` maps
@@ -92,7 +102,7 @@ fn ring_drawn(h: &Harness<'static, PhotocraftApp>) -> bool {
     h.output().shapes.iter().any(|c| ring(&c.shape))
 }
 
-fn assert_centred(size: [u16; 2], hotspot: [u16; 2], what: &str) {
+pub(super) fn assert_centred(size: [u16; 2], hotspot: [u16; 2], what: &str) {
     for k in 0..2 {
         assert!((f32::from(hotspot[k]) - f32::from(size[k]) / 2.0).abs() <= 1.0, "{what}: hotspot {hotspot:?} in a {size:?} bitmap");
     }
@@ -106,14 +116,13 @@ fn alt_shows_the_sample_target_and_no_ring_while_held() {
     }
     hover(&mut h, Modifiers::ALT);
     assert!(!pipette_shown(&h), "no pipette");
-    let (size, hotspot, alpha) = bitmap(&h).expect("the sample target is an OS cursor bitmap");
-    assert_centred(size, hotspot, "sample target");
+    let target = bitmap(&h).expect("the sample target is an OS cursor bitmap");
+    let (size, hotspot, alpha) = &target;
+    assert_centred(*size, *hotspot, "sample target");
     let w = usize::from(size[0]);
-    assert!(asymmetry(size, &alpha, |x, y| (w - 1 - x, y)) < 0.02, "the target is symmetric left to right");
-    // The crosshair runs through the hotspot.
-    let (hx, hy) = (usize::from(hotspot[0]), usize::from(hotspot[1]));
-    assert!(alpha[hy * w + hx] > 0 || alpha[hy * w + hx.saturating_sub(1)] > 0, "the crosshair passes through the hotspot");
-    let target = bitmap(&h);
+    assert!(asymmetry(*size, alpha, |x, y| (w - 1 - x, y)) < 0.02, "the target is symmetric left to right");
+    assert!(hotspot_drawn(&target), "the crosshair passes through the hotspot");
+    let target = Some(target);
     // An ⌥-click held: still the target, no comparison ring.
     let p = centre(&h);
     h.event(egui::Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::ALT });

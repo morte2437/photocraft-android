@@ -32,10 +32,13 @@ pub struct CloneSource {
     pub source: Option<[f64; 2]>,
     /// Destination point paired with `source` (first aligned stroke after setting it).
     pub anchor: Option<[f64; 2]>,
-    /// Layer the source was set on: the panel's document/layer line, and what Current Layer and
-    /// Current & Below sample when the source is in another document.
+    /// Mapping origin used by the last successful stroke or an explicit offset edit.
+    /// Kept separate so reporting an unaligned stroke does not change aligned sampling.
+    #[serde(default)]
+    pub last_anchor: Option<[f64; 2]>,
+    /// Layer picked with the source; Current Layer sampling reads this layer after switching targets.
     pub layer: Option<u64>,
-    /// Document the source was set in. Painting in another open document samples this one.
+    /// Identity of the document picked with the source; absent in older saved slots.
     #[serde(default)]
     pub document: Option<DocId>,
     /// `document` was closed. Kept apart from the ID, because a document opened later can carry
@@ -59,6 +62,7 @@ impl Default for CloneSource {
         CloneSource {
             source: None,
             anchor: None,
+            last_anchor: None,
             layer: None,
             document: None,
             document_closed: false,
@@ -79,9 +83,10 @@ impl CloneSource {
             && !self.flip_h
             && !self.flip_v
     }
-    /// The panel's Offset X/Y: source − anchor (once a stroke paired them).
+    /// Offset X/Y of the most recently used pairing, in source-minus-destination document pixels.
     pub fn offset(&self) -> Option<[f64; 2]> {
-        Some([self.source?[0] - self.anchor?[0], self.source?[1] - self.anchor?[1]])
+        let anchor = self.last_anchor.or(self.anchor)?;
+        Some([self.source?[0] - anchor[0], self.source?[1] - anchor[1]])
     }
     /// The other document a stroke in document `painting` samples: `None` when the source was
     /// set in `painting` itself (or before slots remembered their document).
@@ -98,7 +103,7 @@ impl CloneSource {
     /// closed or never recorded).
     fn to_json(&self, i: usize, document: Option<usize>) -> Value {
         json!({
-            "index": i, "source": self.source, "anchor": self.anchor, "offset": self.offset(), "layer": self.layer, "document": document,
+            "index": i, "source": self.source, "anchor": self.anchor, "lastAnchor": self.last_anchor, "offset": self.offset(), "layer": self.layer, "document": document, "documentId": self.document,
             "width": self.scale[0], "height": self.scale[1], "linked": self.linked, "rotation": self.rotation, "flipH": self.flip_h, "flipV": self.flip_v,
         })
     }
@@ -206,19 +211,46 @@ pub fn transform_matrix(scale: [f64; 2], rotation_deg: f64, flip_h: bool, flip_v
     [f[3] / det, -f[1] / det, -f[2] / det, f[0] / det]
 }
 
-fn pt(p: &Value, k: &str) -> Option<(f64, f64)> {
-    let a = p.get(k)?.as_array()?;
-    Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+/// Null optional coordinates are omitted. Geometry, sampling and commit metadata must agree
+/// on this decision so an empty optional field cannot switch the source document.
+pub(crate) fn uses_slot(p: &Value) -> bool {
+    ["source", "offset"].into_iter().all(|key| p.get(key).is_none_or(Value::is_null))
 }
 
 /// Resolve a clone stroke's mapping from its params and the active slot. `first` is the
-/// stroke's first point. Remembers nothing: returns the mapping, and the anchor an aligned stroke
-/// from the slot stores, so later strokes keep sampling relative to the original pairing (a live
-/// preview resolves the same mapping the commit will).
+/// stroke's first point. With `"aligned"` strokes the slot remembers the anchor so later
+/// strokes keep sampling relative to the original pairing.
+pub fn mapping(s: &mut Session, p: &Value, first: (f64, f64), cmd: &str) -> Result<Mapping> {
+    let (m, _) = resolve(s, p, first, cmd)?;
+    remember_mapping(s, p, &m);
+    Ok(m)
+}
+
+/// Record a successful slot-based stroke after its pixel edit succeeds. Explicit command sources
+/// never overwrite a picked slot, and unaligned reporting never changes its aligned anchor.
+pub fn remember_mapping(s: &mut Session, p: &Value, map: &Mapping) {
+    if !uses_slot(p) {
+        return;
+    }
+    let slot = s.presets.clone.active_mut();
+    let anchor = [map.anchor.0, map.anchor.1];
+    slot.last_anchor = Some(anchor);
+    if p.get("aligned").and_then(Value::as_bool).unwrap_or(true) {
+        slot.anchor = Some(anchor);
+    }
+}
+
+/// [`mapping`] without remembering anything: the mapping, and the anchor an aligned stroke from
+/// the slot stores (a live preview resolves the same mapping the commit will).
 pub fn resolve(s: &Session, p: &Value, first: (f64, f64), cmd: &str) -> Result<(Mapping, Option<[f64; 2]>)> {
+    // Explicit paint coordinates retain their existing wide range: an in-range far source
+    // clones transparency. Interactive slot edits use the smaller preview range below.
+    let source = input_point(p, "source", cmd)?;
+    let offset = input_point(p, "offset", cmd)?;
+    let anchor_param = input_point(p, "anchor", cmd)?.map(|a| (a[0], a[1]));
     let aligned = p.get("aligned").and_then(Value::as_bool).unwrap_or(true);
     let slot = s.presets.clone.active().clone();
-    let explicit_tf = ["scale", "rotation", "flipH", "flipV"].iter().any(|k| p.get(*k).is_some());
+    let explicit_tf = ["scale", "rotation", "flipH", "flipV"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null()));
     let m = if explicit_tf {
         let sc = p
             .get("scale")
@@ -229,13 +261,12 @@ pub fn resolve(s: &Session, p: &Value, first: (f64, f64), cmd: &str) -> Result<(
     } else {
         transform_matrix(slot.scale, slot.rotation, slot.flip_h, slot.flip_v)
     };
-    let anchor_param = pt(p, "anchor");
-    if let Some(off) = pt(p, "offset") {
+    if let Some([dx, dy]) = offset {
         let a = anchor_param.unwrap_or(first);
-        return Ok((Mapping { source: (a.0 + off.0, a.1 + off.1), anchor: a, m, document: None }, None));
+        return Ok((Mapping { source: (a.0 + dx, a.1 + dy), anchor: a, m, document: None }, None));
     }
-    if let Some(src) = pt(p, "source") {
-        return Ok((Mapping { source: src, anchor: anchor_param.unwrap_or(first), m, document: None }, None));
+    if let Some([sx, sy]) = source {
+        return Ok((Mapping { source: (sx, sy), anchor: anchor_param.unwrap_or(first), m, document: None }, None));
     }
     let Some(src) = slot.source else { return Err(bad(cmd, "missing `source` ([x,y]) or `offset` ([dx,dy]); or set one with cloneSource.set")) };
     let src = (src[0], src[1]);
@@ -275,12 +306,12 @@ pub fn resample(src: &Region, dst: Rect, map: &Mapping, alpha: Option<usize>) ->
     let n = src.ch;
     let mut out = Region::new(dst, n);
     let w = dst.width() as usize;
-    let fetch = |x: i32, y: i32, buf: &mut [f32]| {
-        if x < src.rect.x0 || y < src.rect.y0 || x >= src.rect.x1 || y >= src.rect.y1 {
+    let fetch = |x: f64, y: f64, buf: &mut [f32]| {
+        if x < f64::from(src.rect.x0) || y < f64::from(src.rect.y0) || x >= f64::from(src.rect.x1) || y >= f64::from(src.rect.y1) {
             buf.fill(0.0);
             return;
         }
-        buf.copy_from_slice(src.px(x, y));
+        buf.copy_from_slice(src.px(x as i32, y as i32));
         if let Some(a) = alpha {
             let av = buf[a];
             for (c, v) in buf.iter_mut().enumerate() {
@@ -294,13 +325,20 @@ pub fn resample(src: &Region, dst: Rect, map: &Mapping, alpha: Option<usize>) ->
     for (i, px) in out.data.chunks_exact_mut(n).enumerate() {
         let (x, y) = (dst.x0 + (i % w) as i32, dst.y0 + (i / w) as i32);
         let (sx, sy) = map.map(x as f64 + 0.5, y as f64 + 0.5);
+        // Keep the bilinear neighbours in floating point until the source bounds check:
+        // saturating an off-canvas sample to i32::MAX then adding one used to overflow.
+        // Non-finite mappings have no source pixel and must not introduce NaN alpha.
+        if !sx.is_finite() || !sy.is_finite() {
+            px.fill(0.0);
+            continue;
+        }
         let (fx, fy) = (sx - 0.5, sy - 0.5);
-        let (x0, y0) = (fx.floor() as i32, fy.floor() as i32);
-        let (tx, ty) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = ((fx - x0) as f32, (fy - y0) as f32);
         fetch(x0, y0, &mut q[0]);
-        fetch(x0 + 1, y0, &mut q[1]);
-        fetch(x0, y0 + 1, &mut q[2]);
-        fetch(x0 + 1, y0 + 1, &mut q[3]);
+        fetch(x0 + 1.0, y0, &mut q[1]);
+        fetch(x0, y0 + 1.0, &mut q[2]);
+        fetch(x0 + 1.0, y0 + 1.0, &mut q[3]);
         for c in 0..n {
             let top = q[0][c] + (q[1][c] - q[0][c]) * tx;
             let bot = q[2][c] + (q[3][c] - q[2][c]) * tx;
@@ -321,64 +359,101 @@ pub fn resample(src: &Region, dst: Rect, map: &Mapping, alpha: Option<usize>) ->
 // ------------------------------------------------------------------ commands
 
 fn index(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
-    match p.get("index").and_then(Value::as_u64) {
-        Some(i) if (i as usize) < SLOTS => Ok(i as usize),
-        Some(i) => Err(bad(cmd, format!("index {i} out of range (0..{SLOTS})"))),
-        None => Ok(s.presets.clone.active),
+    let i = match p.get("index") {
+        Some(v) if !v.is_null() => v.as_u64().and_then(|v| usize::try_from(v).ok()).ok_or_else(|| bad(cmd, "index must be a source-slot number"))?,
+        _ => s.presets.clone.active,
+    };
+    if i < SLOTS { Ok(i) } else { Err(bad(cmd, format!("index {i} out of range (0..{SLOTS})"))) }
+}
+
+/// Parse finite coordinate pairs without narrowing the legacy range of explicit paint commands.
+fn input_point(p: &Value, key: &str, cmd: &str) -> Result<Option<[f64; 2]>> {
+    let Some(value) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    let values = value.as_array().filter(|v| v.len() == 2).ok_or_else(|| bad(cmd, format!("{key} must be [x,y]")))?;
+    let point = values.first().and_then(Value::as_f64).zip(values.get(1).and_then(Value::as_f64));
+    match point {
+        Some((x, y)) if x.is_finite() && y.is_finite() => Ok(Some([x, y])),
+        _ => Err(bad(cmd, format!("{key} coordinates must be finite"))),
     }
 }
 
-/// Slot `i` as JSON, its document given as an index among the open documents.
+/// Validate editable pixel coordinates before any slot is changed or an offset is added.
+fn edit_point(p: &Value, key: &str, cmd: &str) -> Result<Option<[f64; 2]>> {
+    let point = input_point(p, key, cmd)?;
+    if point.is_some_and(|p| !valid_point(p)) {
+        return Err(bad(cmd, format!("{key} coordinates exceed the clone preview range")));
+    }
+    Ok(point)
+}
+
+/// Match the preview's coordinate range and reject sums that overflow or leave that range.
+fn valid_point(point: [f64; 2]) -> bool {
+    point.into_iter().all(|v| v.is_finite() && v.abs() < 1_000_000.0)
+}
+
+/// Describe a slot with both its stable document identity and its current open-tab index.
 fn slot_json(s: &Session, i: usize) -> Value {
     let slot = &s.presets.clone.slots[i.min(SLOTS - 1)];
-    let document = slot.open_document().and_then(|id| s.documents().iter().position(|d| d.doc.id == id));
+    let document = slot.open_document().and_then(|id| s.documents().iter().position(|st| st.doc.id == id));
     slot.to_json(i, document)
 }
 
+/// Report all slot geometry and stable identities with their current open-document indexes.
 fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let c = &s.presets.clone;
-    let sources: Vec<Value> = (0..SLOTS).map(|i| slot_json(s, i)).collect();
-    Ok(json!({"active": c.active, "sources": sources, "overlay": serde_json::to_value(&c.overlay).unwrap_or(Value::Null)}))
+    Ok(
+        json!({"active": c.active, "sources": (0..SLOTS).map(|i| slot_json(s, i)).collect::<Vec<_>>(), "overlay": serde_json::to_value(&c.overlay).unwrap_or(Value::Null)}),
+    )
 }
 
+/// Select a validated slot without changing its source, pairing or transform.
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "cloneSource.select";
-    let i = p.get("index").and_then(Value::as_u64).ok_or_else(|| bad(CMD, "missing `index`"))? as usize;
-    if i >= SLOTS {
-        return Err(bad(CMD, format!("index {i} out of range (0..{SLOTS})")));
-    }
+    p.get("index").filter(|v| !v.is_null()).ok_or_else(|| bad(CMD, "missing `index`"))?;
+    let i = index(s, p, CMD)?;
     s.presets.clone.active = i;
     Ok(slot_json(s, i))
 }
 
+/// Validate a source/transform edit atomically, using the displayed reference for numeric offsets.
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "cloneSource.set";
     let i = index(s, p, CMD)?;
-    // The document the sample point is in: the active one (⌥-click), or `document` (an index).
-    let doc = match p.get("document") {
+    let source = edit_point(p, "source", CMD)?;
+    let offset = edit_point(p, "offset", CMD)?;
+    let anchor = edit_point(p, "anchor", CMD)?;
+    if anchor.is_some() && offset.is_none() {
+        return Err(bad(CMD, "anchor requires an offset edit"));
+    }
+    let doc = match p.get("document").filter(|v| !v.is_null()) {
         None => s.active(),
-        Some(v) => {
-            if p.get("source").is_none() {
-                return Err(bad(CMD, "`document` names where a `source` point is: give both"));
+        Some(value) => {
+            if source.is_none() {
+                return Err(bad(CMD, "document requires a source point"));
             }
-            let n = v.as_u64().ok_or_else(|| bad(CMD, "`document` must be a document index"))?;
-            Some(usize::try_from(n).ok().and_then(|n| s.documents().get(n)).ok_or_else(|| bad(CMD, format!("no open document {n}")))?)
+            let index = value.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad(CMD, "document must be an open document index"))?;
+            Some(s.documents().get(index).ok_or_else(|| bad(CMD, "the source document is not open"))?)
         }
     };
-    let (document, doc_layer) = (doc.map(|d| d.doc.id), doc.and_then(|d| d.active_layer).map(|l| l.0));
-    let slot = &mut s.presets.clone.slots[i];
-    if let Some((x, y)) = pt(p, "source") {
+    let (document, active_layer) = (doc.map(|st| st.doc.id), doc.and_then(|st| st.active_layer).map(|id| id.0));
+    // Build the edited slot off to the side so a rejected coordinate or sum is atomic.
+    let mut slot = s.presets.clone.slots[i].clone();
+    if let Some([x, y]) = source {
         // A new sample point re-pairs with the next stroke.
         slot.source = Some([x, y]);
         slot.anchor = None;
-        slot.layer = p.get("layer").and_then(Value::as_u64).or(doc_layer);
+        slot.last_anchor = None;
+        slot.layer = p.get("layer").and_then(Value::as_u64).or(active_layer);
         slot.document = document;
         slot.document_closed = false;
     }
-    if let Some((dx, dy)) = pt(p, "offset") {
-        // Offset X/Y fields: keep the anchor (or the source as anchor) and move the source.
-        let a = slot.anchor.or(slot.source).ok_or_else(|| bad(CMD, "set a `source` before an offset"))?;
+    if let Some([dx, dy]) = offset {
+        // Edit the pairing shown in the panel, including an unaligned stroke or a live preview.
+        // Supplying its anchor does not paint; it makes the requested displacement explicit.
+        slot.source.ok_or_else(|| bad(CMD, "set a `source` before an offset"))?;
+        let a = anchor.or(slot.last_anchor).or(slot.anchor).or(slot.source).ok_or_else(|| bad(CMD, "set a `source` before an offset"))?;
         slot.anchor = Some(a);
+        slot.last_anchor = Some(a);
         slot.source = Some([a[0] + dx, a[1] + dy]);
     }
     if let Some(a) = p.get("scale").and_then(Value::as_array) {
@@ -417,14 +492,19 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         slot.flip_v = b;
     }
     if p.get("clear").and_then(Value::as_bool) == Some(true) {
-        *slot = CloneSource::default();
+        slot = CloneSource::default();
     }
+    if [slot.source, slot.anchor, slot.last_anchor].into_iter().flatten().any(|p| !valid_point(p)) {
+        return Err(bad(CMD, "the edited clone coordinates exceed their range"));
+    }
+    s.presets.clone.slots[i] = slot;
     if p.get("select").and_then(Value::as_bool).unwrap_or(true) {
         s.presets.clone.active = i;
     }
     Ok(slot_json(s, i))
 }
 
+/// Reset scale/rotation/flips while retaining source identity and established pairings.
 fn reset_transform(s: &mut Session, p: &Value) -> Result<Value> {
     let i = index(s, p, "cloneSource.resetTransform")?;
     let slot = &mut s.presets.clone.slots[i];
@@ -432,6 +512,7 @@ fn reset_transform(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(slot_json(s, i))
 }
 
+/// Update transient overlay appearance without editing image pixels or source geometry.
 fn overlay(s: &mut Session, p: &Value) -> Result<Value> {
     let o = &mut s.presets.clone.overlay;
     let flag = |k: &str| p.get(k).and_then(Value::as_bool);
@@ -466,7 +547,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Clone Sources",
             menu: &[],
             shortcut: None,
-            params: "{} → {active,sources:[{index,source,anchor,offset,layer,document,width,height,linked,rotation,flipH,flipV}],overlay}",
+            params: "{} → {active,sources:[{index,source,anchor,lastAnchor,offset,layer,document,documentId,width,height,linked,rotation,flipH,flipV}],overlay}; offset is source minus the last used destination reference in document pixels",
             enabled: always,
             run: list,
             journal: false,
@@ -486,7 +567,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Set Clone Source",
             menu: &[],
             shortcut: None,
-            params: r##"{"index":0..4?=active,"source":[x,y]? (⌥-click; re-pairs with the next stroke),"document":index?=active (the open document `source` is in: painting in another document clones from it),"offset":[dx,dy]?,"width":%?,"height":%?|"scale":[w%,h%]?,"linked":bool? (W/H link: a lone width or height scales the other by the same factor),"rotation":deg?,"flipH":bool?,"flipV":bool?,"layer":id?,"clear":bool?,"select":bool=true}"##,
+            params: r##"{"index":0..4?=active,"source":[x,y]? (⌥-click; re-pairs with the next stroke),"offset":[dx,dy]? (source minus destination in document pixels),"anchor":[x,y]? (with offset: the preview/destination reference being edited; otherwise the last used reference),"width":%?,"height":%?|"scale":[w%,h%]?,"linked":bool? (W/H link: a lone width or height scales the other by the same factor),"rotation":deg?,"flipH":bool?,"flipV":bool?,"layer":id?,"document":open document index?=active (with source),"clear":bool?,"select":bool=true}"##,
             enabled: always,
             run: set,
             journal: true,
@@ -558,5 +639,22 @@ mod tests {
     fn source_rect_normal_case_unchanged() {
         let m = Mapping { source: (200.0, 0.0), anchor: (10.0, 10.0), m: [1.0, 0.0, 0.0, 1.0], document: None };
         assert_eq!(m.source_rect(Rect::new(0, 0, 24, 16)), Rect::new(188, -12, 216, 8));
+    }
+
+    #[test]
+    fn resample_extreme_sources_are_transparent_without_overflow_or_nan() {
+        let mut source = Region::new(Rect::new(0, 0, 2, 2), 4);
+        for px in source.data.as_chunks_mut::<4>().0.iter_mut() {
+            px.copy_from_slice(&[1.0, 0.0, 0.0, 1.0]);
+        }
+        for at in [(3.0e9, 0.0), (0.0, 3.0e9), (-3.0e9, 0.0), (f64::MAX, f64::MAX), (f64::INFINITY, 0.0), (f64::NAN, 0.0)] {
+            let map = Mapping { source: at, anchor: (0.0, 0.0), m: [1.0, 0.0, 0.0, 1.0], document: None };
+            assert_eq!(resample(&source, Rect::new(0, 0, 1, 1), &map, Some(3)).data, vec![0.0; 4]);
+        }
+        // The unrepresentable left neighbour is transparent, while the neighbour at MIN
+        // remains valid. Do not saturate both neighbours onto the same edge pixel.
+        source.rect = Rect::new(i32::MIN, 0, i32::MIN + 2, 2);
+        let map = Mapping { source: (f64::from(i32::MIN) - 0.25, 0.0), anchor: (0.0, 0.0), m: [1.0, 0.0, 0.0, 1.0], document: None };
+        assert_eq!(resample(&source, Rect::new(0, 0, 1, 1), &map, Some(3)).data, vec![1.0, 0.0, 0.0, 0.75]);
     }
 }

@@ -322,8 +322,9 @@ At startup the desktop lists recovery metadata, then decodes one document at a t
 
 `photocraft-cli mcp` serves MCP on stdio using `crates/automation`, which is built on `rmcp`:
 
-- **Headless:** `photocraft-cli mcp --automation-read-root <project> --automation-read-root <library> --automation-write-root <project>`. It drives an in-process engine session with ordered read directories and one write directory.
+- **Headless:** `photocraft-cli mcp --headless --automation-read-root <project> --automation-read-root <library> --automation-write-root <project>`. Use `--headless` in scripts, tests and agent sessions: without it `mcp` works in the open window while the ArtCraft Launcher's agents switch is on, and may start PhotoCraft (When PhotoCraft Is Closed defaults to starting it). It drives an in-process engine session with ordered read directories and one write directory.
 - **Live app:** start `photocraft --control 7878 --control-token-file <private-path> --automation-read-root <project> --automation-read-root <library> --automation-write-root <project>`, then run `photocraft-cli mcp --bridge 127.0.0.1:7878 --control-token-file <private-path>`. The desktop process owns the roots; root flags on the bridging CLI are a usage error. See `docs/control-protocol.md#mcp-bridge`.
+- **Live app, no flags:** with the `AI-MCP` flag, turn on ArtCraft Launcher › Settings › AI agents and add the MCP client there; plain `photocraft-cli mcp` then works in the open window. The app publishes its port and token file in `agent-connection.json` in the settings folder; `mcp` reads it on every call. Without a launcher, a scratch `CRAFT_MCP_DIR` with an `apps.json` naming `photocraft` (the format in storytold/craft-ai-integrations, crate `craft-ai-agents`) turns the switch on for a test. See [MCP conventions](mcp.md#connecting-the-desktop-app-no-terminal). Test it against a scratch settings folder with `PHOTOCRAFT_CONFIG_DIR`, which both the app and the CLI honour.
 
 For headless MCP clients, pass absolute paths to deliberately chosen trusted workspace directories in the launch arguments. Desktop `PHOTOCRAFT_AUTOMATION_READ_ROOT` and `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` environment variables do **not** grant headless CLI access. Omitting a root flag deliberately denies that direction of access.
 
@@ -367,7 +368,7 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
   "mcpServers": {
     "photocraft": {
       "command": "/path/to/photocraft/target/release/photocraft-cli",
-      "args": ["mcp", "--automation-read-root", "/absolute/path/to/trusted/workspace", "--automation-read-root", "/absolute/path/to/reference/library", "--automation-write-root", "/absolute/path/to/trusted/workspace"]
+      "args": ["mcp", "--headless", "--automation-read-root", "/absolute/path/to/trusted/workspace", "--automation-read-root", "/absolute/path/to/reference/library", "--automation-write-root", "/absolute/path/to/trusted/workspace"]
     },
     "photocraft-live": {
       "command": "/path/to/photocraft/target/release/photocraft-cli",
@@ -380,7 +381,7 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
 ```sh
 cargo build --release -p photocraft-cli
 mkdir -p "$PWD/photocraft-work"
-claude mcp add photocraft -- "$PWD/target/release/photocraft-cli" mcp \
+claude mcp add photocraft -- "$PWD/target/release/photocraft-cli" mcp --headless \
   --automation-read-root "$PWD/photocraft-work" \
   --automation-write-root "$PWD/photocraft-work"
 ```

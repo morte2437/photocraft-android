@@ -652,8 +652,8 @@ fn paths_export_as_illustrator_postscript() {
     let ai = r["ai"].as_str().unwrap();
     assert!(ai.starts_with("%!PS-Adobe-2.0 EPSF-1.2"));
     assert!(ai.contains("%%BoundingBox: 0 0 300 150"));
-    assert!(ai.contains("*u\n10.0000 140.0000 m\n100.0000 140.0000 L\n"), "{ai}");
-    assert!(ai.contains("\nn\n") && ai.contains("\nN\n*U\n"));
+    assert!(ai.contains("1 XR\n10.0000 140.0000 m\n100.0000 140.0000 L\n"), "{ai}");
+    assert!(ai.contains("\nn\n*U\n") && ai.contains("\nN\n*U\n"));
     assert!(ai.contains(" C\n"), "curve segment");
     let dir = tmp("ai");
     let r = s.execute("file.export.pathsToIllustrator", json!({"path": format!("{dir}/p.ai"), "paths": "Shapes"})).unwrap();

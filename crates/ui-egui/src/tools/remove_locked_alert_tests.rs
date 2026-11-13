@@ -72,8 +72,8 @@ fn the_brush_keeps_its_wording() {
     refused(&mut app, "Could not use the brush tool because the layer is locked.");
 }
 
-/// Not this alert: a hidden target says so in the status bar, a group keeps its own alert (#10074)
-/// and Lock Image Pixels alone doesn't refuse the press.
+/// Not this alert: a hidden target is quiet (#12554), a group keeps its own alert (#10074) and
+/// Lock Image Pixels alone doesn't refuse the press.
 #[test]
 fn unmeasured_cases_keep_todays_behaviour() {
     let mut app = app(Tool::Remove);
@@ -82,7 +82,7 @@ fn unmeasured_cases_keep_todays_behaviour() {
     app.run("layer.setProps", json!({"layer": id, "visible": false})).unwrap();
     stroke(&mut app);
     assert!(alerts(&app).is_empty(), "hidden: {:?}", alerts(&app));
-    assert_eq!(app.ui.status, photocraft_engine::hidden_target::HIDDEN);
+    assert!(!app.ui.status_error, "hidden: {}", app.ui.status);
     let mut app = self::app(Tool::Remove);
     app.run("layer.new.group", json!({})).unwrap();
     app.run("layer.lockLayers", json!({"all": true})).unwrap();

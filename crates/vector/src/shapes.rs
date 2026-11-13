@@ -111,6 +111,15 @@ pub fn polygon(x: f64, y: f64, w: f64, h: f64, sides: u32, star_ratio: f64) -> P
     Path::new(vec![Subpath::polygon(&pts)])
 }
 
+/// Triangle filling the rectangle: the apex at the centre of the top edge, then the bottom right
+/// and the bottom left corner. A negative size extends from the origin to the left or up, and the
+/// apex stays on top.
+pub fn triangle(x: f64, y: f64, w: f64, h: f64) -> Path {
+    let (x, w) = if w < 0.0 { (x + w, -w) } else { (x, w) };
+    let (y, h) = if h < 0.0 { (y + h, -h) } else { (y, h) };
+    Path::new(vec![Subpath::polygon(&[(x + w / 2.0, y), (x + w, y + h), (x, y + h)])])
+}
+
 /// Does `star_ratio` make [`polygon`] a star (inner points between its outer ones)?
 fn is_star(star_ratio: f64) -> bool {
     star_ratio > 0.0 && star_ratio < 1.0
@@ -235,8 +244,10 @@ pub fn line(a: (f64, f64), b: (f64, f64), weight: f64) -> Path {
 
 /// A filled vector line with optional arrowheads at its endpoints (#6408).
 /// `width` and `length` measure the head in document pixels, independently of the shaft weight.
-/// `concavity` is 0..100 percent: 0 has a flat rear edge, 100 a deep V-shaped notch.
-/// The shaft stops at the notch, so a concave head remains concave after filling.
+/// `concavity` is -50..50 percent of `length`: the middle of the head's rear edge bends that far
+/// toward the tip (positive) or away from it (negative); 0 is flat. Values outside are clamped, so
+/// documents saved with the old 0..100 range still open (#13258). The shaft stops where the bent
+/// rear edge crosses the shaft's edge, so a concave head stays open after filling.
 // The arguments correspond to the stored LiveShape::ArrowLine parameters.
 #[allow(clippy::too_many_arguments)]
 pub fn arrow_line(a: (f64, f64), b: (f64, f64), weight: f64, start: bool, end: bool, width: f64, length: f64, concavity: f64) -> Path {
@@ -256,34 +267,41 @@ pub fn arrow_line(a: (f64, f64), b: (f64, f64), weight: f64, start: bool, end: b
     let (vx, vy) = (-uy, ux);
     let size = (if length.is_finite() { length.max(1.0) } else { 1.0 }).min(distance * if start && end { 0.49 } else { 0.9 });
     let half = (if width.is_finite() { width.max(1.0) } else { 1.0 }) / 2.0;
-    let requested_notch = concavity.clamp(0.0, 100.0) / 100.0;
-    // Preserve 0..50%. Beyond that compress the usable range so the head never collapses.
-    let max_notch = 0.75;
-    let notch = if requested_notch <= 0.5 { requested_notch } else { 0.5 + (requested_notch - 0.5) * (max_notch - 0.5) / 0.5 };
-    // Put the shaft up to the notch, leaving the head's concave edges visible.
-    let inner = size * (1.0 - notch);
+    // The rear edge's bend toward the tip as a fraction of `size` (negative: away from the tip).
+    let notch = if concavity.is_finite() { concavity.clamp(-50.0, 50.0) / 100.0 } else { 0.0 };
+    let hw = weight.max(0.1) / 2.0;
+    // The rear edge runs straight from each outer corner to its bent middle, so where it crosses
+    // the shaft's edge it is bent by `notch` times how far that edge is from the corner; a head no
+    // wider than the shaft meets it at its base. A head bent away from its tip reaches past its
+    // base, so the shaft is capped to never turn inside out.
+    let inner = (size * (1.0 - notch * (1.0 - (hw / half).min(1.0)))).min(if start && end { distance / 2.0 } else { distance });
     let shaft_a = if start { (a.0 + ux * inner, a.1 + uy * inner) } else { a };
     let shaft_b = if end { (b.0 - ux * inner, b.1 - uy * inner) } else { b };
-    let hw = weight.max(0.1) / 2.0;
-    let mut pieces = vec![Subpath::polygon(&[
-        (shaft_a.0 + vx * hw, shaft_a.1 + vy * hw),
-        (shaft_b.0 + vx * hw, shaft_b.1 + vy * hw),
-        (shaft_b.0 - vx * hw, shaft_b.1 - vy * hw),
-        (shaft_a.0 - vx * hw, shaft_a.1 - vy * hw),
-    ])];
-    // The tip, both outer corners of the head and the recessed midpoint.
-    // Positive `sign` points towards the tail of the head (away from its tip).
-    let mut head = |tip: (f64, f64), sign: f64| {
+    let side = |p: (f64, f64), d: f64| (p.0 + vx * d, p.1 + vy * d);
+    // A head's tip, both outer corners and its rear edge's bent middle. Positive `sign` points
+    // toward the tail of the head (away from its tip).
+    let head = |tip: (f64, f64), sign: f64| {
         let base = (tip.0 + ux * sign * size, tip.1 + uy * sign * size);
         let rear_middle = (base.0 - ux * sign * size * notch, base.1 - uy * sign * size * notch);
-        pieces.push(Subpath::polygon(&[tip, (base.0 + vx * half, base.1 + vy * half), rear_middle, (base.0 - vx * half, base.1 - vy * half)]));
+        [tip, side(base, half), rear_middle, side(base, -half)]
     };
-    if start {
-        head(a, 1.0);
-    }
-    if end {
-        head(b, -1.0);
-    }
+    let (start_head, end_head) = (start.then(|| head(a, 1.0)), end.then(|| head(b, -1.0)));
+    // A base bent toward the tip leaves a wedge between the shaft's end and the head that the
+    // reference fills: the shaft's end follows the bent base to its middle, so it fills the wedge
+    // without reaching past the head's flanks. A base bent away lies under the head already.
+    let wedge = |h: [(f64, f64); 4], from: usize, to: usize| -> Vec<(f64, f64)> {
+        if notch <= 0.0 {
+            return Vec::new();
+        }
+        let corners = hw > half;
+        [(corners, h[from]), (true, h[2]), (corners, h[to])].into_iter().filter_map(|(keep, p)| keep.then_some(p)).collect()
+    };
+    let mut shaft = vec![side(shaft_a, hw), side(shaft_b, hw)];
+    shaft.extend(end_head.map_or_else(Vec::new, |h| wedge(h, 1, 3)));
+    shaft.extend([side(shaft_b, -hw), side(shaft_a, -hw)]);
+    shaft.extend(start_head.map_or_else(Vec::new, |h| wedge(h, 3, 1)));
+    let mut pieces = vec![Subpath::polygon(&shaft)];
+    pieces.extend([start_head, end_head].into_iter().flatten().map(|h| Subpath::polygon(&h)));
     // Never return non-finite arrow geometry.
     // Large but valid scaled arrowheads remain unchanged.
     if pieces.iter().flat_map(|sp| &sp.knots).any(|k| !k.anchor.x.is_finite() || !k.anchor.y.is_finite()) {
@@ -300,6 +318,7 @@ pub fn live_path(s: &LiveShape) -> Path {
         LiveShape::Polygon { rect: [x, y, w, h], sides, star_ratio, corner_radius } => {
             round_corners_where(polygon(*x, *y, *w, *h, *sides, *star_ratio), *corner_radius, |i| polygon_rounds_vertex(*star_ratio, i))
         }
+        LiveShape::Triangle { rect: [x, y, w, h], corner_radius } => round_corners(triangle(*x, *y, *w, *h), *corner_radius),
         LiveShape::Line { from, to, weight } => line((from[0], from[1]), (to[0], to[1]), *weight),
         LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
             arrow_line((from[0], from[1]), (to[0], to[1]), *weight, *start, *end, *width, *length, *concavity)
@@ -428,6 +447,14 @@ mod tests {
 #[cfg(test)]
 #[path = "star_outer_corner_radius_tests.rs"]
 mod star_outer_corner_radius_tests;
+
+#[cfg(test)]
+#[path = "triangle_box_geometry_tests.rs"]
+mod triangle_box_geometry_tests;
+
+#[cfg(test)]
+#[path = "line_arrow_concavity_tests.rs"]
+mod line_arrow_concavity_tests;
 
 #[cfg(test)]
 mod line_arrow_6408_tests {

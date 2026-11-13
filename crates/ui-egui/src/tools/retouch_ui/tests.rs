@@ -53,7 +53,7 @@ fn only_clone_stamp_and_healing_brush_wrap_in_pattern_preview() {
             let mut app = app();
             stripes(&mut app, 8, "pixels");
             app.ui.view.pattern_preview = pattern_preview;
-            crate::retouch_ui::set_source(&mut app, 20.0, 30.0);
+            set_source(&mut app, 20.0, 30.0);
             app.ui.tool = tool;
             let m = egui::Modifiers::NONE;
             tool_event(&mut app, ToolEvent::Down { x: 86.0, y: 30.0, pressure: 1.0 }, m);
@@ -75,7 +75,7 @@ fn clone_stamp_in_pattern_preview_wraps_a_dab_across_the_right_edge() {
         crate::paint_mouse::sync_tool_brush(&mut app);
         // A hard tip, so the wrapped part of the dab is fully painted.
         app.run("tools.setBrush", json!({"brush": {"size": 20, "hardness": 1}})).unwrap();
-        crate::retouch_ui::set_source(&mut app, 10.0, 10.0);
+        set_source(&mut app, 10.0, 10.0);
         app.ui.view.pattern_preview = pattern_preview;
         let modifiers = egui::Modifiers::NONE;
         tool_event(&mut app, ToolEvent::Down { x: 98.0, y: 30.0, pressure: 1.0 }, modifiers);
@@ -104,7 +104,7 @@ fn clone_stamp_paints_with_the_brush_hardness() {
         app.run("tools.setBrush", json!({"brush": {"size": 24, "hardness": hardness}})).unwrap();
         app.run("paint.pencil", json!({"points": [[15, 30]], "size": 40, "color": "#ff0000"})).unwrap();
         app.ui.tool = Tool::CloneStamp;
-        crate::retouch_ui::set_source(&mut app, 15.0, 30.0);
+        set_source(&mut app, 15.0, 30.0);
         let m = egui::Modifiers::NONE;
         tool_event(&mut app, ToolEvent::Down { x: 70.0, y: 30.0, pressure: 1.0 }, m);
         tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, m);
@@ -149,7 +149,7 @@ fn clone_stamp_brush_opacity_and_flow_reach_the_painted_pixels() {
     app.run("paint.pencil", json!({"points": [[10, 10]], "size": 16, "color": "#ff0000"})).unwrap();
     app.run("layer.new.layer", json!({})).unwrap();
     app.ui.tool = Tool::CloneStamp;
-    crate::retouch_ui::set_source(&mut app, 10.0, 10.0);
+    set_source(&mut app, 10.0, 10.0);
     app.ui.tool_options.clone_sample = "all".into();
     app.run("tools.setBrush", json!({"brush": {"opacity": 0.5, "flow": 0.5}})).unwrap();
     assert!(finish_stroke(&mut app, Tool::CloneStamp, &[[50.0, 30.0, 1.0]], egui::Modifiers::NONE, false));
@@ -171,7 +171,7 @@ fn healing_brush_heals_in_normal_with_a_mode_outside_its_menu() {
         app.ui.tool = tool;
         crate::paint_mouse::sync_tool_brush(&mut app);
         app.session.tools.brush.mode = photocraft_color::BlendMode::Overlay;
-        crate::retouch_ui::set_source(&mut app, 10.0, 10.0);
+        set_source(&mut app, 10.0, 10.0);
         drag(&mut app, tool);
         let (_, params) = app.session.journal.last().unwrap();
         assert_eq!(params["mode"], want, "{tool:?}");
@@ -192,7 +192,7 @@ fn retouch_mode_reaches_the_command() {
         app.ui.tool = tool;
         crate::paint_mouse::sync_tool_brush(&mut app);
         app.run("tools.setBrush", json!({"brush": {"mode": mode}})).unwrap();
-        crate::retouch_ui::set_source(&mut app, 10.0, 10.0);
+        set_source(&mut app, 10.0, 10.0);
         drag(&mut app, tool);
         let (id, params) = app.session.journal.last().unwrap();
         assert_eq!((id.as_str(), params["mode"].as_str()), (cmd, Some(mode)), "{tool:?}");

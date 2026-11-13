@@ -112,5 +112,13 @@ integrate() {
   done
 }
 
+# `PhotoCraft.AppImage --cli <args>` runs the bundled photocraft-cli: MCP clients start
+# `--cli mcp` this way (the ArtCraft Launcher's app list), since the mount point that holds
+# the CLI changes with every run.
+if [ "${1:-}" = "--cli" ]; then
+  shift
+  exec "$APPDIR/usr/bin/photocraft-cli" "$@"
+fi
+
 integrate
 exec "$APPDIR/usr/bin/photocraft" "$@"

@@ -244,7 +244,7 @@ pub fn bucket_fill_inks(
         return false;
     }
     let img = crate::selection::rgba8_image(s, area);
-    let Some(region) = crate::selection::wand_region(&img, area, seed, tolerance, contiguous, anti_alias) else { return false };
+    let Some(region) = crate::selection::wand_region_bucket(&img, area, seed, tolerance, contiguous, anti_alias) else { return false };
     // Clicked on transparency with Anti-alias on: the wand's fringe gives the partly transparent
     // pixels around the flood no coverage (their alpha is measured against the seed's 0), but the
     // reference application fills each pixel 8-adjacent to the flood at coverage `1 − α`, so the

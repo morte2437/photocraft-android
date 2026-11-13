@@ -66,10 +66,11 @@ fn reset_all_tools_gives_it_19_px_active_or_picked_later() {
     assert_eq!(tip(&mut app), REMOVE_TIP, "picked after the reset");
 }
 
+/// The Pencil resets to its 1 px hard round (#12200).
 #[test]
 fn other_tools_keep_their_reset_sizes() {
     for (tool, want) in
-        [(Tool::Brush, 13.0), (Tool::Pencil, 20.0), (Tool::Eraser, 20.0), (Tool::SpotHealing, 20.0), (Tool::Healing, 19.0), (Tool::CloneStamp, 21.0)]
+        [(Tool::Brush, 13.0), (Tool::Pencil, 1.0), (Tool::Eraser, 20.0), (Tool::SpotHealing, 20.0), (Tool::Healing, 19.0), (Tool::CloneStamp, 21.0)]
     {
         let mut a = app();
         pick(&mut a, tool);

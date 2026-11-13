@@ -215,6 +215,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // Only over the active document, whose selected layers the box frames.
         if st.is_some_and(|s| s.doc.id == doc.id) {
             crate::shape_bounds_box::draw(app, painter, &to_scr, accent);
+            crate::shape_bounds_box::draw_line_controls(app, painter, &to_scr, accent);
         }
         crate::corner_radius::draw(app, painter, &to_scr, accent);
     }

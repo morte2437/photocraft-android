@@ -721,38 +721,45 @@ fn shell_word(s: &str) -> String {
     if s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+:,@".contains(&b)) { s.to_string() } else { format!("'{}'", s.replace('\'', r"'\''")) }
 }
 
-pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
-    let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
-    let clip_unreadable: Rc<Cell<bool>> = Rc::default();
-    let automation_read = automation.clone().map(|workspace| {
+/// What control and MCP requests may read, write and run, through `workspace` (`None`: no
+/// automation, as without `--control` or an agent connection).
+pub fn automation(workspace: Option<photocraft_automation::AuthorizedWorkspace>) -> photocraft_ui_egui::AutomationServices {
+    let read = workspace.clone().map(|workspace| {
         Box::new(move |path: &str| {
             let (bytes, save_path) = workspace.read_with_save_path(path).map_err(|error| error.to_string())?;
             let name = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path).to_string();
             Ok(photocraft_ui_egui::AutomationReadResult { name, bytes, save_path })
         }) as photocraft_ui_egui::AutomationReadFn
     });
-    let automation_write = automation.clone().map(|workspace| {
+    let write = workspace.clone().map(|workspace| {
         Box::new(move |path: &str, bytes: &[u8]| workspace.write(path, bytes).map_err(|error| error.to_string())) as photocraft_ui_egui::AutomationWriteFn
     });
-    let automation_open_pcraft = automation.clone().map(|workspace| {
+    let open_pcraft = workspace.clone().map(|workspace| {
         Box::new(move |path: &str| {
             let name = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path).to_string();
             let opened = crate::crash_guard::guard("Open", || workspace.open_pcraft(path).map_err(|e| e.to_string()))?;
             Ok(opened.map(|doc| (name, doc)))
         }) as photocraft_ui_egui::AutomationOpenPcraftFn
     });
-    let automation_save = automation.clone().map(|workspace| {
+    let save = workspace.clone().map(|workspace| {
         std::sync::Arc::new(move |doc: &Document, path: &str, settings: &photocraft_ui_egui::ExportSettings, ctl: &photocraft_ui_egui::jobs_ui::SaveCtl| {
             save_through(doc, path, settings, ctl, |p, encoded, _| workspace.write_stream(p, &mut |w| encoded.write_to(w)).map_err(|e| e.to_string()))
         }) as photocraft_ui_egui::SaveFileFn
     });
-    let step: fn(&str, &serde_json::Value) -> photocraft_engine::Result<()> = photocraft_automation::workspace::authorize_desktop_engine_step;
-    let automation_authorize = automation.is_some().then_some(step);
-    let automation_command = automation.map(|_| {
+    let step: photocraft_ui_egui::AutomationAuthorizeFn = photocraft_automation::workspace::authorize_desktop_engine_step;
+    let authorize = workspace.is_some().then_some(step);
+    let command = workspace.map(|_| {
         Box::new(|id: &str, params: &serde_json::Value| {
             photocraft_automation::workspace::authorize_desktop_engine_command(id, params).map_err(|error| error.to_string())
         }) as photocraft_ui_egui::AutomationCommandFn
     });
+    photocraft_ui_egui::AutomationServices { read, write, open_pcraft, save, command, authorize }
+}
+
+pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
+    let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
+    let clip_unreadable: Rc<Cell<bool>> = Rc::default();
+    let automation = self::automation(automation);
     Services {
         import: Some(Box::new(|name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions| {
             crate::crash_guard::guard("Open", || {
@@ -772,12 +779,12 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
             Some(photocraft_ui_egui::FileStamp { len: meta.len(), modified: meta.modified().ok() })
         })),
         same_file: Some(Box::new(|a: &str, b: &str| same_entry(Path::new(a), Path::new(b), same_file))),
-        automation_read,
-        automation_write,
-        automation_open_pcraft,
-        automation_save,
-        automation_command,
-        automation_authorize,
+        automation_read: automation.read,
+        automation_write: automation.write,
+        automation_open_pcraft: automation.open_pcraft,
+        automation_save: automation.save,
+        automation_command: automation.command,
+        automation_authorize: automation.authorize,
         encode_png: Some(Box::new(|w, h, rgba| {
             let img = Image::from_u8(w, h, ChannelLayout::Rgba, rgba.to_vec()).map_err(|e| e.to_string())?;
             photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &EncodeOptions::default()).map_err(|e| e.to_string())

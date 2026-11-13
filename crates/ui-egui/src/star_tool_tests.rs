@@ -109,7 +109,7 @@ fn shift_and_alt_constrain_and_centre_the_star_like_the_polygon_tool() {
     app.ui.tool = Tool::Star;
     drag(&mut app, [100.0, 100.0], [140.0, 120.0], Modifiers::SHIFT | Modifiers::ALT);
     match live_shape(&app) {
-        Some(LiveShape::Polygon { rect, .. }) => assert_eq!(rect, [60.0, 60.0, 80.0, 80.0], "a square box drawn from the centre"),
+        Some(LiveShape::Polygon { rect, .. }) => assert_eq!(rect, [80.0, 80.0, 40.0, 40.0], "a square box of the shorter side drawn from the centre (#13222)"),
         other => panic!("a live star shape, got {other:?}"),
     }
 }

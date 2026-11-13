@@ -69,6 +69,26 @@ pub(crate) fn with_doc_sampler<R>(doc: &Document, layer: Option<LayerId>, all_la
     }
 }
 
+/// A flat, opaque image: what Quick Selection reads with a group active and Sample All Layers off.
+struct FlatSampler;
+
+impl Sampler for FlatSampler {
+    fn rgba(&self, r: Rect) -> Vec<[f32; 4]> {
+        vec![[0.0, 0.0, 0.0, 1.0]; r.width() as usize * r.height() as usize]
+    }
+}
+
+/// Runs `f` with Quick Selection's sampler: [`with_sampler`]'s, except that with a group active
+/// and Sample All Layers off it reads a flat area, so a click selects only the brush disc instead
+/// of the composite's shapes, as the reference application does (#12933). Artboards and frames,
+/// groups too but not measured, keep reading the composite.
+fn with_quick_sampler<R>(s: &Session, all_layers: bool, f: impl FnOnce(&dyn Sampler, &Document) -> R) -> Result<R> {
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let plain_group = |l: &Layer| l.frame.is_none() && matches!(&l.content, LayerContent::Group(g) if g.artboard.is_none());
+    let group = d.active_layer.and_then(|id| d.doc.layer(id)).is_some_and(plain_group);
+    if group && !all_layers { Ok(f(&FlatSampler, &d.doc)) } else { with_sampler(s, all_layers, f) }
+}
+
 /// Stores `region` combined with the current selection by `m` as one history step.
 /// Finding nothing never destroys work: the selection (and history) is left alone and the
 /// caller gets `changed: false`, whatever the mode. (Select Subject and Object Selection run
@@ -112,7 +132,7 @@ fn quick_selection(s: &mut Session, p: &Value) -> Result<Value> {
         _ => SelectionMode::Add,
     };
     let enhance = b(p, "enhanceEdge", false);
-    let region = with_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
+    let region = with_quick_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
         let canvas = doc.bounds();
         let Some(r) = quick::quick_select(smp, canvas, &pts, size) else { return Ok(None) };
         let surface = matting::region_surface(&r);
@@ -598,3 +618,5 @@ mod tests;
 
 #[cfg(test)]
 mod object_mode_refusal_tests;
+#[cfg(test)]
+mod quick_group_target_tests;

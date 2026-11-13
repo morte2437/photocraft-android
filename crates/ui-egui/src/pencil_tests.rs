@@ -13,12 +13,11 @@ fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({"width": 120, "height": 80, "background": "transparent"})).unwrap();
     app.run("tools.setColors", json!({"foreground": "#000000", "background": "#ffffff"})).unwrap();
-    app.run("tools.setBrush", json!({"brush": {"size": 3, "hardness": 0.0}})).unwrap();
     // Each tool keeps its own brush (#218): switch first, then set the Pencil's options, as the
-    // options bar does (its first frame takes the Brush's tip at Photoshop's 10 % smoothing).
+    // options bar does.
     app.ui.tool = Tool::Pencil;
     crate::paint_mouse::sync_tool_brush(&mut app);
-    app.run("tools.setBrush", json!({"brush": {"smoothing": {"amount": 0.0}}})).unwrap();
+    app.run("tools.setBrush", json!({"brush": {"size": 3, "hardness": 0.0, "smoothing": {"amount": 0.0}}})).unwrap();
     app
 }
 

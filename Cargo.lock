@@ -1427,6 +1427,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-ai-agents"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-ai-integrations?rev=35e0352666a117407d62230a6c6c2366f3e21a3b#35e0352666a117407d62230a6c6c2366f3e21a3b"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "craft-atomic"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=86d6e8c5b05a4dadc35ff1c8e5d2f992c687ee97#86d6e8c5b05a4dadc35ff1c8e5d2f992c687ee97"
+dependencies = [
+ "rustix 1.1.5",
+]
+
+[[package]]
 name = "craft-docpath"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=6e03f65bf45181db77ba6229716e6624db9eb25b#6e03f65bf45181db77ba6229716e6624db9eb25b"
@@ -1445,6 +1463,16 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=09dcbc225b95232998498a40ca56e24716571d53#09dcbc225b95232998498a40ca56e24716571d53"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "craft-flags"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=86d6e8c5b05a4dadc35ff1c8e5d2f992c687ee97#86d6e8c5b05a4dadc35ff1c8e5d2f992c687ee97"
+dependencies = [
+ "craft-atomic",
+ "dirs",
+ "toml_edit",
 ]
 
 [[package]]
@@ -1839,6 +1867,27 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid 0.10.3",
  "crypto-common 0.2.2",
+]
+
+[[package]]
+name = "dirs"
+version = "7.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5167,6 +5216,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "orbclient"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5440,6 +5495,7 @@ dependencies = [
  "chrono",
  "clap",
  "core-graphics2",
+ "craft-flags",
  "craft-update",
  "dispatch2",
  "eframe",
@@ -5516,6 +5572,8 @@ dependencies = [
  "base64 0.23.1",
  "cap-std",
  "clap",
+ "craft-ai-agents",
+ "craft-flags",
  "craft-psd",
  "getrandom 0.3.4",
  "hmac",
@@ -6639,6 +6697,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "redox_users"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
+dependencies = [
+ "libredox",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -8223,6 +8291,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

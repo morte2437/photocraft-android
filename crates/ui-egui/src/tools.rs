@@ -64,6 +64,9 @@ pub mod zoom_tool;
 mod gradient_mode_greyed_tests;
 
 #[cfg(test)]
+mod line_live_handles_tests;
+
+#[cfg(test)]
 mod object_selection_mode_tests;
 
 #[cfg(test)]
@@ -77,7 +80,12 @@ mod gradient_refusal_messages_tests;
 #[cfg(test)]
 mod line_tool_defaults_tests;
 #[cfg(test)]
+mod path_selection_ctrl_direct_tests;
+#[cfg(test)]
 mod path_selection_shape_over_saved_path_tests;
 
 #[cfg(test)]
 mod remove_default_size_tests;
+
+#[cfg(test)]
+mod ellipse_center_mark_tests;

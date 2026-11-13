@@ -420,7 +420,8 @@ pub fn live_from_vogk(data: &[u8]) -> Option<LiveShape> {
                 // Missing or invalid PSD arrow sizes must not prevent later edits.
                 let width = if width.is_finite() && width >= 1.0 { width } else { 52.0 };
                 let length = if length.is_finite() && length >= 1.0 { length } else { 50.0 };
-                let concavity = if concavity.is_finite() { concavity.clamp(0.0, 100.0) } else { 0.0 };
+                // Photoshop's range is -50..50 % (#13258): keep a negative value.
+                let concavity = if concavity.is_finite() { concavity.clamp(-50.0, 50.0) } else { 0.0 };
                 Some(LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity })
             } else {
                 Some(LiveShape::Line { from, to, weight })
@@ -491,7 +492,7 @@ pub fn vogk_bytes(s: &LiveShape, dpi: f32) -> Option<Vec<u8>> {
                 .with("keyOriginLineArrLngth", Value::Double(*length))
                 .with("keyOriginLineArrConc", Value::Integer(concavity.round() as i32))
         }
-        LiveShape::Polygon { .. } => return None,
+        LiveShape::Polygon { .. } | LiveShape::Triangle { .. } => return None,
     };
     let o = o.with("keyOriginIndex", Value::Integer(0));
     let d = Descriptor::new("null").with("keyDescriptorList", Value::List(vec![Value::Descriptor(o)]));
@@ -745,6 +746,21 @@ mod tests {
             assert_eq!(live_from_vogk(&b), Some(s));
         }
         assert!(vogk_bytes(&LiveShape::Polygon { rect: [0.0; 4], sides: 5, star_ratio: 1.0, corner_radius: 0.0 }, 72.0).is_none());
+    }
+
+    /// A PSD arrow keeps a negative concavity, and one past 50 % opens clamped to 50 (#13258).
+    #[test]
+    fn vogk_arrow_concavity_keeps_negatives_and_clamps_to_fifty() {
+        let arrow =
+            |concavity| LiveShape::ArrowLine { from: [0.0, 10.0], to: [20.0, 0.0], weight: 3.0, start: false, end: true, width: 5.0, length: 10.0, concavity };
+        let read = |c| match live_from_vogk(&vogk_bytes(&arrow(c), 72.0).unwrap()) {
+            Some(LiveShape::ArrowLine { concavity, .. }) => concavity,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(read(-50.0), -50.0);
+        assert_eq!(read(-20.0), -20.0);
+        assert_eq!(read(80.0), 50.0);
+        assert_eq!(read(-90.0), -50.0);
     }
 
     #[test]

@@ -1273,6 +1273,9 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     };
     if let Some(t) = parsed.tool {
         crate::tool_memory::select(app, t);
+        // The tool's own brush now, not at the next frame, so a paint command right after uses
+        // it (the Pencil's 1 px tip, #12200; any tool's remembered brush).
+        crate::paint_mouse::sync_tool_brush(app);
     }
     // Space held: the Crop tool moves the frame being drawn, a marquee, lasso or shape
     // being drawn moves instead of growing (hold_keys.rs). Like a modifier flag, it may be

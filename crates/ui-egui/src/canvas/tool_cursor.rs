@@ -152,7 +152,7 @@ pub(crate) fn count(ctx: &egui::Context, at: Pos2, kind: CountCursor) -> CursorI
     CursorIcon::Default
 }
 
-/// The bucket artwork and its exact fill crosshair move as one native cursor or painted image.
+/// The bucket artwork and the arrow on its fill target move as one native cursor or painted image.
 pub(crate) fn bucket(painter: &Painter, at: Pos2) -> Result<CursorIcon, String> {
     bucket::show(painter, at)
 }

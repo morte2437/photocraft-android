@@ -63,6 +63,12 @@ pub(crate) fn selected(app: &PhotocraftApp) -> Option<(PathRef, Path, Vec<usize>
     (!heads.is_empty()).then_some((r, path, heads))
 }
 
+/// Deselects every component (and anchor), leaving the path itself as it is. Shared with Direct
+/// Selection's Enter (#13208).
+pub(crate) fn deselect_components(app: &mut PhotocraftApp) {
+    app.ui.direct_selection = DirectSelection::default();
+}
+
 /// The operation every selected component has, for the menu's icon; `None` when they differ.
 pub(crate) fn selected_op(app: &PhotocraftApp) -> Option<&'static str> {
     let (_, path, heads) = selected(app)?;
@@ -283,3 +289,7 @@ pub fn handle_keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "path_selection_enter_escape_tests.rs"]
+mod path_selection_enter_escape_tests;

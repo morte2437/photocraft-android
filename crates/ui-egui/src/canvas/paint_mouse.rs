@@ -40,18 +40,27 @@ pub fn sync_tool_brush(app: &mut PhotocraftApp) {
         // A tool seen for the first time takes what the brush has, at Photoshop's smoothing, but
         // in Normal mode: each tool's Mode starts at Normal, so a Multiply Brush doesn't make the
         // first Pattern Stamp stroke multiply (or give Healing a mode its menu doesn't have).
-        // The Art History Brush also starts at full opacity (#10263): its Opacity is its own.
+        // The Art History Brush also starts at full opacity (#10263), and the Pattern Stamp at full
+        // opacity and flow (#12616): those fields are their own.
         // The Background Eraser, the Healing Brush, the Burn, Dodge and Sponge tools, the Clone
         // Stamp and the Smudge tool start with their own measured tips instead, as the whole brush
         // Reset Tool gives them (#11911, #12099, #12671, #12684, #13029, #12601, #12964).
         None if matches!(tool, Tool::BackgroundEraser | Tool::Healing | Tool::Burn | Tool::Dodge | Tool::Sponge | Tool::CloneStamp | Tool::Smudge) => {
             fresh_brush(tool, &current)
         }
+        // The Pencil starts with its own 1 px hard round (#12200) regardless of the Brush, keeping
+        // the outgoing opacity.
+        None if tool == Tool::Pencil => BrushSettings { opacity: current.opacity, ..fresh_brush(tool, &current) },
         None => {
-            let opacity = if tool == Tool::ArtHistoryBrush { BrushSettings::default().opacity } else { current.opacity };
+            let fresh = BrushSettings::default();
+            let (opacity, flow) = match tool {
+                Tool::ArtHistoryBrush => (fresh.opacity, current.flow),
+                Tool::PatternStamp => (fresh.opacity, fresh.flow),
+                _ => (current.opacity, current.flow),
+            };
             // The Remove tool starts at its measured 19 px; the rest is the current brush (#12548).
             let size = if tool == Tool::Remove { REMOVE_TOOL_SIZE } else { current.size };
-            BrushSettings { smoothing: first_smoothing(), mode: photocraft_color::BlendMode::Normal, opacity, size, ..current }
+            BrushSettings { smoothing: first_smoothing(), mode: photocraft_color::BlendMode::Normal, opacity, flow, size, ..current }
         }
     };
     // The picked preset was the outgoing tool's brush: forget it, so Update Brush can't overwrite
@@ -82,6 +91,9 @@ const BRUSH_TOOL_TIP: (f32, f32, f32) = (13.0, 0.0, 0.25);
 const BACKGROUND_ERASER_TIP: (f32, f32, f32) = (13.0, 1.0, 0.25);
 /// The Healing Brush's tip after Reset Tool (#12099): a 19 px hard round at 25 % spacing.
 const HEALING_BRUSH_TIP: (f32, f32, f32) = (19.0, 1.0, 0.25);
+/// The Pencil tool's starting and Reset Tool tip, as the reference measures it (#12200): size,
+/// hardness and spacing of a 1 px hard round at 25 % spacing.
+const PENCIL_TOOL_TIP: (f32, f32, f32) = (1.0, 1.0, 0.25);
 /// The Burn, Dodge and Sponge tools' tip after Reset Tool (#12671, #12684, #13029): a 65 px soft
 /// round at 25 % spacing.
 const TONING_TOOL_TIP: (f32, f32, f32) = (65.0, 0.0, 0.25);
@@ -98,13 +110,15 @@ const SMUDGE_TOOL_TIP: (f32, f32, f32) = (13.0, 0.0, 0.25);
 /// [`BRUSH_TOOL_TIP`], the Background Eraser's [`BACKGROUND_ERASER_TIP`], the Healing Brush's
 /// [`HEALING_BRUSH_TIP`], the Burn, Dodge and Sponge tools' [`TONING_TOOL_TIP`], the Clone Stamp's
 /// [`CLONE_STAMP_TIP`] with no smoothing, the Remove tool's size [`REMOVE_TOOL_SIZE`], the Smudge
-/// tool's [`SMUDGE_TOOL_TIP`]; the other tools keep the default tip.
+/// tool's [`SMUDGE_TOOL_TIP`] and the Pencil's [`PENCIL_TOOL_TIP`]; the other tools keep the
+/// default tip.
 pub(crate) fn fresh_brush(tool: Tool, current: &BrushSettings) -> BrushSettings {
     let mut brush = BrushSettings { smoothing: first_smoothing(), ..BrushSettings::default() };
     match tool {
         Tool::Brush => (brush.size, brush.hardness, brush.spacing) = BRUSH_TOOL_TIP,
         Tool::BackgroundEraser => (brush.size, brush.hardness, brush.spacing) = BACKGROUND_ERASER_TIP,
         Tool::Healing => (brush.size, brush.hardness, brush.spacing) = HEALING_BRUSH_TIP,
+        Tool::Pencil => (brush.size, brush.hardness, brush.spacing) = PENCIL_TOOL_TIP,
         Tool::Burn | Tool::Dodge | Tool::Sponge => (brush.size, brush.hardness, brush.spacing) = TONING_TOOL_TIP,
         Tool::Smudge => (brush.size, brush.hardness, brush.spacing) = SMUDGE_TOOL_TIP,
         Tool::CloneStamp => {
@@ -353,8 +367,9 @@ pub fn track_right_press_view(response: &Response, view: &crate::state::View, fl
 
 /// Route the canvas response's buttons: the left one drives the tool; the right one resizes the
 /// brush with Alt held (#297), erases (Erase preference) or opens the Brush Preset picker. Arms
-/// `secondary_erase` or `brush_resize_armed` for this frame's `Down`.
-pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) -> Buttons {
+/// `secondary_erase` or `brush_resize_armed` for this frame's `Down`. `xf` is this canvas's view,
+/// one cell of a Window › Arrange layout: it places a right-click on the image or the pasteboard.
+pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool, xf: &crate::canvas::ViewXform) -> Buttons {
     if crate::brush_mode_menu::blocks_canvas(app, &response.ctx) {
         app.secondary_erase = false;
         return Buttons::default();
@@ -383,12 +398,13 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool) 
     // ⌘/Ctrl+right-click lists the layers under the pointer instead (layer_pick_ui.rs, #307).
     let layer_menu = crate::layer_pick_ui::is_gesture(tool, mods);
     // Decided by the modifiers held when the button went down, not by those of the release frame that reports the click.
-    let mode_menu =
-        crate::brush_mode_menu::opens_on(app, tool, crate::workspace_ui::sticky_mods(app, crate::brush_mode_menu::gesture_mods(&response.ctx, mods)));
+    let menu_mods = crate::workspace_ui::sticky_mods(app, crate::brush_mode_menu::gesture_mods(&response.ctx, mods));
+    let menu_at = right_click_at(response);
+    let mode_menu = crate::brush_mode_menu::opens_on(app, tool, menu_mods, menu_at.map(|p| xf.to_doc(p)));
     if mode_menu && !resizing && app.drag.is_none() {
         app.secondary_erase = false;
-        if let Some(p) = right_click_at(response) {
-            crate::brush_mode_menu::open(app, &response.ctx, [p.x, p.y]);
+        if let Some(p) = menu_at {
+            crate::brush_mode_menu::open(app, &response.ctx, [p.x, p.y], menu_mods);
         }
         return Buttons {
             started: response.drag_started_by(PointerButton::Primary),
@@ -461,10 +477,11 @@ pub fn pointer_secondary(app: &mut PhotocraftApp, ctx: &egui::Context, down: boo
         app.brush_resize_armed = down && app.drag.is_none();
         return true;
     }
-    if crate::brush_mode_menu::opens_on(app, tool, mods) && app.drag.is_none() && app.brush_resize.is_none() {
+    // The control channel opens the pasteboard menu before it gets here (`secondary_canvas_menu_took`).
+    if crate::brush_mode_menu::opens_on(app, tool, mods, None) && app.drag.is_none() && app.brush_resize.is_none() {
         app.secondary_erase = false;
         if down {
-            crate::brush_mode_menu::open(app, ctx, at);
+            crate::brush_mode_menu::open(app, ctx, at, mods);
         }
         return false;
     }
@@ -565,3 +582,7 @@ pub fn show_picker(app: &mut PhotocraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "../pencil_reset_defaults_tests.rs"]
+mod pencil_reset_defaults_tests;

@@ -1537,16 +1537,16 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
     let dpi = f64::from(doc.resolution_dpi.max(1.0));
     let k = 72.0 / dpi;
     let (w, h) = (f64::from(doc.size.width) * k, f64::from(doc.size.height) * k);
-    let mut chosen: Vec<(String, &photocraft_doc::Path)> = Vec::new();
+    let mut chosen: Vec<&photocraft_doc::Path> = Vec::new();
     match which {
         "all" => {
-            chosen.extend(doc.paths.iter().map(|p| (p.name.clone(), &p.path)));
+            chosen.extend(doc.paths.iter().map(|p| &p.path));
             if let Some(wp) = &doc.work_path {
-                chosen.push(("Work Path".into(), wp));
+                chosen.push(wp);
             }
         }
-        "work" => chosen.extend(doc.work_path.iter().map(|wp| ("Work Path".to_string(), wp))),
-        name => chosen.extend(doc.paths.iter().filter(|p| p.name == name).map(|p| (p.name.clone(), &p.path))),
+        "work" => chosen.extend(doc.work_path.iter()),
+        name => chosen.extend(doc.paths.iter().filter(|p| p.name == name).map(|p| &p.path)),
     }
     let mut s = String::new();
     s.push_str("%!PS-Adobe-2.0 EPSF-1.2\n%%Creator: PhotoCraft\n");
@@ -1559,18 +1559,28 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
     s.push_str("%%DocumentProcessColors: Black\n%%EndComments\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n");
     let pt = |x: f64, y: f64| (x * k, h - y * k);
     let mut n = 0;
-    for (name, path) in &chosen {
+    for path in &chosen {
         let subs: Vec<_> = path.subpaths.iter().filter(|sp| !sp.knots.is_empty()).collect();
         if subs.is_empty() {
             continue;
         }
         n += 1;
-        s.push_str(&format!("%%Note: {}\n", ps_comment_text(name)));
-        let compound = subs.len() > 1;
-        if compound {
-            s.push_str("*u\n");
-        }
+        // One marked block per path, one group per subpath. A `Join` subpath belongs to the
+        // component before it, so it writes that component's note (union when none precedes).
+        s.push_str("%Adobe_Photoshop_Path_Begin:<< /defaultFill false >>\n");
+        let mut component_op = photocraft_doc::PathOp::Combine;
         for sp in subs {
+            if sp.op != photocraft_doc::PathOp::Join {
+                component_op = sp.op;
+            }
+            s.push_str("*u\n");
+            s.push_str(match component_op {
+                photocraft_doc::PathOp::Exclude => "%AI3_Note:<< /operation /xor /defaultFill false >>\n",
+                photocraft_doc::PathOp::Subtract => "%AI3_Note:<< /operation /subtract >>\n",
+                photocraft_doc::PathOp::Intersect => "%AI3_Note:<< /operation /intersect >>\n",
+                photocraft_doc::PathOp::Combine | photocraft_doc::PathOp::Join => "%AI3_Note:<< /operation /union >>\n",
+            });
+            s.push_str("1 XR\n");
             let (x, y) = pt(sp.knots[0].anchor.x, sp.knots[0].anchor.y);
             s.push_str(&format!("{x:.4} {y:.4} m\n"));
             for seg in sp.segments() {
@@ -1587,10 +1597,9 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
             }
             // Unpainted: `n` closes the path, `N` leaves it open.
             s.push_str(if sp.closed { "n\n" } else { "N\n" });
-        }
-        if compound {
             s.push_str("*U\n");
         }
+        s.push_str("%Adobe_Photoshop_Path_End\n");
     }
     s.push_str("%%PageTrailer\n%%Trailer\n%%EOF\n");
     Ok((s, n))
@@ -1691,3 +1700,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "print_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "print_cmds/paths_export_path_blocks_tests.rs"]
+mod paths_export_path_blocks_tests;

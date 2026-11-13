@@ -114,7 +114,7 @@ fn copy_arrow_to_tool_defaults(app: &mut PhotocraftApp, id: photocraft_doc::Laye
                         *end,
                         bounded(*width, 1.0, 4096.0),
                         bounded(*length, 1.0, 4096.0),
-                        bounded(*concavity, 0.0, 100.0),
+                        bounded(*concavity, -50.0, 50.0),
                         bounded(*weight, 1.0, 10000.0),
                     ))
                 }
@@ -224,6 +224,9 @@ mod pen_rubber_band_tests;
 mod paint_tests;
 
 #[cfg(test)]
+mod triangle_box_geometry_tests;
+
+#[cfg(test)]
 mod pen_resume_tests;
 
 #[cfg(test)]
@@ -239,10 +242,16 @@ mod pen_enter_deselects_tests;
 mod line_shift_snap_tests;
 
 #[cfg(test)]
+mod ellipse_shift_circle_tests;
+
+#[cfg(test)]
 mod pen_mode_menu_tests;
 
 #[cfg(test)]
 mod ellipse_path_menus_tests;
+
+#[cfg(test)]
+mod triangle_align_edges_tests;
 
 pub(crate) use pen::freeform_locked_shape;
 #[cfg(test)]

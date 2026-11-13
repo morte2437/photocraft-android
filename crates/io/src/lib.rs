@@ -53,7 +53,7 @@ mod flat;
 pub mod gradient_bake;
 pub mod guides_map;
 mod png_steps;
-pub use gradient_bake::{Method as GradientMethod, bake as bake_gradient};
+pub use gradient_bake::{Method as GradientMethod, bake as bake_gradient, bake_smooth_opacity as bake_gradient_smooth_opacity};
 mod duotone_map;
 mod kra;
 pub mod linked;

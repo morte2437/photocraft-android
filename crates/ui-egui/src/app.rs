@@ -90,6 +90,7 @@ impl PhotocraftApp {
             caps_lock: false,
             opacity_keys: None,
             control_rx: None,
+            agent_link: crate::AgentLinkStatus::default(),
             captures: crate::screenshot::Captures::default(),
             type_ime: type_tool::ImeState::default(),
             input_waiters: Vec::new(),

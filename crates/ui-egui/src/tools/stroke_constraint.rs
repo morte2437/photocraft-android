@@ -105,6 +105,20 @@ pub fn snap45(origin: [f64; 2], p: [f64; 2]) -> [f64; 2] {
     }
 }
 
+/// `snap45` for a Direct Selection anchor drag (#13207). The reference application keeps a
+/// (+60, -25) drag on the horizontal, just past `snap45`'s 22.5° split, so drags up to that slope
+/// (5:12) from an axis stay on it. Where its switch really lies isn't measured; steeper drags
+/// keep `snap45`.
+pub fn snap45_anchor(origin: [f64; 2], p: [f64; 2]) -> [f64; 2] {
+    let (dx, dy) = ((p[0] - origin[0]).abs(), (p[1] - origin[1]).abs());
+    // The measured drag sits exactly on the 5:12 bound, and the f32 screen-to-document mapping
+    // puts ~1e-4 px of noise on it, so the bound gets a small slack.
+    if dx.is_finite() && dy.is_finite() && dx.max(dy) > 0.0 && dx.min(dy) * 12.0 <= dx.max(dy) * 5.0 + 1e-3 {
+        return if dx >= dy { [p[0], origin[1]] } else { [origin[0], p[1]] };
+    }
+    snap45(origin, p)
+}
+
 /// Constrain the pointer at `p` for a drag of `tool` that started at `start` and has reached
 /// `last`. `axis` carries the stroke's lock between events; `zoom` converts the lock distance
 /// to document pixels. The lock follows the tool's [`snap_mode`]: horizontal/vertical for the

@@ -1,6 +1,7 @@
 //! Bounded reads from the repeating document tile used by Pattern Preview.
 
-use super::{BlendMode, BrushSettings, Document, LayerId, Rect, Region, Result, SampleLayers, Stroke, StrokePoint, Surface, alpha_index, apply_coverage, bad};
+use super::clone::apply_clone_coverage;
+use super::{BlendMode, BrushSettings, Document, LayerId, PixelFormat, Rect, Region, Result, SampleLayers, Stroke, StrokePoint, Surface, alpha_index, bad};
 
 /// At most four disjoint rectangles in the document tile. Projecting the dirty area separately
 /// from the stroke bounds avoids scanning the whole document when a small dab crosses a seam.
@@ -35,6 +36,7 @@ pub(super) fn stroke(
     lock: bool,
     mode: BlendMode,
     cmd: &str,
+    paint_format: PixelFormat,
     mut paint: impl FnMut(&Surface, Rect) -> Result<Region>,
 ) -> Result<Rect> {
     let mut renderer = photocraft_paint::StrokeRenderer::new(&stroke.brush, None, 1.0);
@@ -42,7 +44,7 @@ pub(super) fn stroke(
     renderer.finish();
     let before = target.clone();
     let bounds = renderer.bounds();
-    Composite { target, before: &before, tile: pre.bounds(), opacity: stroke.brush.opacity, selection, lock, mode, cmd }.draw(
+    Composite { target, before: &before, tile: pre.bounds(), opacity: stroke.brush.opacity, selection, lock, mode, cmd, paint_format }.draw(
         bounds,
         &stroke.brush,
         &stroke.points,
@@ -63,9 +65,12 @@ pub(super) struct Composite<'a> {
     pub mode: BlendMode,
     /// The command an over-budget stroke's error names.
     pub cmd: &'a str,
+    /// The sampled native channels, including temporary coverage for opaque pixel layers.
+    pub paint_format: PixelFormat,
 }
 
 impl Composite<'_> {
+    /// Fold dabs into bounded destination patches before applying selection, opacity and blending.
     pub fn draw(&mut self, dirty: Rect, brush: &BrushSettings, points: &[StrokePoint], mut paint: impl FnMut(Rect) -> Result<Region>) -> Result<Rect> {
         let ctx = photocraft_paint::BrushContext::new(brush);
         let mut generator = photocraft_paint::dynamics::DabGenerator::new(brush, 1.0);
@@ -96,9 +101,9 @@ impl Composite<'_> {
                 while x < rect.x1 {
                     let x1 = x.saturating_add(64).min(rect.x1);
                     let dst = Rect::new(x, y, x1, y1);
-                    let mut stroke = PatchStroke::new(dst, self.target.channels());
+                    let mut stroke = PatchStroke::new(dst, self.paint_format.channels());
                     let mut dual_stroke = PatchStroke::new(dst, 1);
-                    let alpha = alpha_index(&self.target.format());
+                    let alpha = alpha_index(&self.paint_format);
                     for (dab, bounds) in &primary {
                         if !project(*bounds, self.tile).iter().any(|r| !r.intersect(&dst).is_empty()) {
                             continue;
@@ -127,7 +132,7 @@ impl Composite<'_> {
                         }
                     }
                     self.target.write_region(dst, &self.before.read_region(dst));
-                    apply_coverage(self.target, dst, &stroke.coverage, self.opacity, self.selection, self.lock, &stroke.paint, self.mode);
+                    apply_clone_coverage(self.target, dst, &stroke.coverage, self.opacity, self.selection, self.lock, &stroke.paint, self.mode);
                     damage = damage.union(&dst);
                     x = x1;
                 }
@@ -138,6 +143,7 @@ impl Composite<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Gather one dab's periodic copies using its strongest coverage at each destination pixel.
     fn fold_dab(
         &self,
         ctx: &photocraft_paint::BrushContext,
@@ -148,7 +154,7 @@ impl Composite<'_> {
         paint: &mut impl FnMut(Rect) -> Result<Region>,
         work: &mut u64,
     ) -> Result<PatchStroke> {
-        let mut result = PatchStroke::new(dst, if dual { 1 } else { self.target.channels() });
+        let mut result = PatchStroke::new(dst, if dual { 1 } else { self.paint_format.channels() });
         let (w, h) = (i64::from(self.tile.width()), i64::from(self.tile.height()));
         let nx0 = (i64::from(bounds.x0) - i64::from(dst.x1)).div_euclid(w) + 1;
         let nx1 = (i64::from(bounds.x1) - 1 - i64::from(dst.x0)).div_euclid(w);
@@ -217,6 +223,7 @@ impl PatchStroke {
         Self { coverage: vec![0.0; len], depth: vec![0.0; len], paint: Region::new(rect, channels) }
     }
 
+    /// Accumulate flow-weighted, premultiplied native colours and independent source alpha.
     fn accumulate(&mut self, dab: &photocraft_paint::Dab, footprint: &PatchStroke, alpha: Option<usize>) {
         let rect = self.paint.rect;
         for y in rect.y0..rect.y1 {
@@ -245,6 +252,7 @@ impl PatchStroke {
         }
     }
 
+    /// Recover straight colours while keeping stroke coverage separate from source alpha.
     fn normalize(&mut self, alpha: Option<usize>) {
         let rect = self.paint.rect;
         for y in rect.y0..rect.y1 {
@@ -266,8 +274,7 @@ pub(super) fn sample(pre: &Document, id: Option<LayerId>, surf: &Surface, which:
     sample_with(pre.bounds(), surf.channels(), rect, cmd, |r| Ok(super::sample(pre, id, surf, which, r)))
 }
 
-/// [`sample`] through `read`, which returns `n`-channel pixels of a rectangle inside `tile` (the
-/// bounds of the document the source repeats).
+/// Repeat `read` using the source document's bounds, even when the target is a different size.
 pub(super) fn sample_with(tile: Rect, n: usize, rect: Rect, cmd: &str, mut read: impl FnMut(Rect) -> Result<Region>) -> Result<Region> {
     if tile.is_empty() {
         return Err(bad(cmd, "cannot repeat an empty document"));

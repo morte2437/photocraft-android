@@ -545,7 +545,11 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
     }
     // Color Sampler points (#1046): persistent numbered markers, drawn whatever the active tool is.
     // While one is dragged its marker follows the pointer, and a new one shows the next number
-    // there (#11729), unless the limit is reached and the release cannot place it.
+    // there (#11729), unless the limit is reached and the release cannot place it. View › Extras
+    // off hides the markers but keeps the points and their Info readouts (#11741).
+    if !v.extras {
+        return;
+    }
     let mut samplers = app.session.active().map(|d| d.color_samplers.clone()).unwrap_or_default();
     match app.ui.analysis.drag {
         Some(Drag::Sampler(i, at)) if app.ui.tool == Tool::ColorSampler && i < samplers.len() => samplers[i] = at,
@@ -1133,6 +1137,9 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 mod sampler_drag_tests;
+
+#[cfg(test)]
+mod sampler_extras_tests;
 
 /// Marks the "Delete this note?" alert (#11788).
 const DELETE_NOTE_MARK: &str = "__deleteNote";

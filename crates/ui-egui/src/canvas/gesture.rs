@@ -173,7 +173,7 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
                 if made.is_ok() && d.tool != Tool::Lasso {
                     crate::retouch_ui::patch_hint(app);
                 }
-            } else if app.session.is_enabled("select.deselect") {
+            } else if (d.tool != Tool::Lasso || selection_mode(app, d.modifiers) == "replace") && app.session.is_enabled("select.deselect") {
                 let _ = app.run("select.deselect", json!({}));
             }
         }

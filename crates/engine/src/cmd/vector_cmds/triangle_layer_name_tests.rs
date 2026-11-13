@@ -29,17 +29,17 @@ fn triangles_are_named_triangle_n() {
 }
 
 #[test]
-fn a_triangle_is_a_live_three_sided_polygon() {
+fn a_triangle_is_a_live_triangle_that_ignores_sides_and_star_ratio() {
     let mut s = session();
     // Any `sides` or `starRatio` sent along is ignored: a triangle has 3 sides and no star.
     let p = json!({"kind": "triangle", "rect": [20, 20, 60, 40], "sides": 7, "starRatio": 0.3, "cornerRadius": 4});
     let id = s.execute("shape.create", p.clone()).unwrap()["layer"].as_u64().unwrap();
     let LayerContent::Shape(sh) = &s.active().unwrap().doc.layer(LayerId(id)).unwrap().content else { panic!("not a shape layer") };
-    assert_eq!(sh.live, Some(LiveShape::Polygon { rect: [20.0, 20.0, 60.0, 40.0], sides: 3, star_ratio: 1.0, corner_radius: 4.0 }));
-    // The drag's preview and Path mode draw the same outline.
+    assert_eq!(sh.live, Some(LiveShape::Triangle { rect: [20.0, 20.0, 60.0, 40.0], corner_radius: 4.0 }));
+    // The drag's preview and Path mode draw the same outline, which is not the inscribed 3-sided polygon.
+    assert_eq!(sh.path, shape_path(&p).unwrap());
     let polygon = json!({"kind": "polygon", "rect": [20, 20, 60, 40], "sides": 3, "cornerRadius": 4});
-    assert_eq!(shape_path(&p).unwrap(), shape_path(&polygon).unwrap());
-    assert_eq!(sh.path, shape_path(&polygon).unwrap());
+    assert_ne!(sh.path, shape_path(&polygon).unwrap());
 }
 
 #[test]

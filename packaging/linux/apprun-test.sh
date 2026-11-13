@@ -22,6 +22,8 @@ mkdir -p "$APPDIR/usr/share/icons"
 cp -R "$ROOT/assets/app-icon/hicolor" "$APPDIR/usr/share/icons/"
 printf '#!/bin/sh\necho "stub: $*"\n' >"$APPDIR/usr/bin/photocraft"
 chmod +x "$APPDIR/usr/bin/photocraft"
+printf '#!/bin/sh\necho "cli stub: $*"\n' >"$APPDIR/usr/bin/photocraft-cli"
+chmod +x "$APPDIR/usr/bin/photocraft-cli"
 
 APPIMAGE="$TMP/photocraft test.AppImage" # spaces on purpose: Exec must stay quoted
 : >"$APPIMAGE"
@@ -151,5 +153,11 @@ Icon=%s
 rm -f "$am_desktop"
 "$APPDIR/AppRun" >/dev/null || fail "launch after AM removal exited non-zero"
 [[ -f "$DESKTOP" ]] || fail "no desktop entry after the AM launcher was removed"
+
+# 12. `--cli` runs the bundled CLI (MCP clients start `--cli mcp`), without integrating.
+rm -rf "$XDG_DATA_HOME"
+out="$("$APPDIR/AppRun" --cli mcp --headless)" || fail "--cli exited non-zero"
+[ "$out" = "cli stub: mcp --headless" ] || fail "--cli output: $out"
+[ ! -e "$XDG_DATA_HOME" ] || fail "--cli integrated the desktop entry"
 
 echo "AppRun desktop integration ok"

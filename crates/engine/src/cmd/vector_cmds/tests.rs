@@ -1464,7 +1464,7 @@ fn arrowhead_dimensions_reject_invalid_values_without_mutation() {
     for (key, invalids) in [
         ("arrowWidth", [json!("52"), json!(null), json!([]), json!(0), json!(4097)]),
         ("arrowLength", [json!("50"), json!(null), json!([]), json!(0), json!(4097)]),
-        ("arrowConcavity", [json!("0"), json!(null), json!([]), json!(-1), json!(101)]),
+        ("arrowConcavity", [json!("0"), json!(null), json!([]), json!(-51), json!(51)]),
     ] {
         for invalid in invalids {
             let mut create = json!({
@@ -1484,6 +1484,35 @@ fn arrowhead_dimensions_reject_invalid_values_without_mutation() {
             assert_eq!(s.active().unwrap().history.past_len(), original_history, "{key} edit changed history");
         }
     }
+}
+
+/// Concavity takes -50..50 % (#13258); a shape saved with the old 0..100 range still edits.
+#[test]
+fn arrow_concavity_takes_minus_fifty_to_fifty() {
+    let mut s = session(160, 120, 8);
+    let concavity = |s: &Session, id: u64| match s.active().unwrap().doc.layer(LayerId(id)).map(|l| &l.content) {
+        Some(LayerContent::Shape(sh)) => match sh.live {
+            Some(LiveShape::ArrowLine { concavity, .. }) => concavity,
+            _ => panic!("expected a live arrow"),
+        },
+        _ => panic!("expected a shape layer"),
+    };
+    let created = s.execute("shape.create", json!({"kind": "line", "from": [10, 20], "to": [120, 20], "arrowEnd": true, "arrowConcavity": -50})).unwrap();
+    let id = created["layer"].as_u64().unwrap();
+    assert_eq!(concavity(&s, id), -50.0);
+    s.execute("shape.edit", json!({"layer": id, "arrowConcavity": 50})).unwrap();
+    assert_eq!(concavity(&s, id), 50.0);
+    // Whole percents only, as the fields take them.
+    s.execute("shape.edit", json!({"layer": id, "arrowConcavity": -20.6})).unwrap();
+    assert_eq!(concavity(&s, id), -21.0);
+
+    if let Some(LayerContent::Shape(sh)) = std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).layer_mut(LayerId(id)).map(|l| &mut l.content)
+        && let Some(LiveShape::ArrowLine { concavity, .. }) = &mut sh.live
+    {
+        *concavity = 80.0;
+    }
+    s.execute("shape.edit", json!({"layer": id, "arrowWidth": 12})).unwrap();
+    assert_eq!(concavity(&s, id), 50.0, "an old 0..100 value is clamped, not refused");
 }
 
 #[test]
