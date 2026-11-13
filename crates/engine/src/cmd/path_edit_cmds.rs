@@ -863,6 +863,47 @@ mod tests {
             assert!(s.execute(id, p.clone()).is_err(), "{id} {p}");
         }
         assert_eq!(s.active().unwrap().history.entries().len(), steps);
+        s.execute("path.set", json!({"path": two_squares()})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        for p in [
+            json!({"anchors": [[0, 0], [0, 1], [0, 2], [0, 3], [1, 0]], "move": [1, 1], "duplicate": true}),
+            json!({"anchors": [[2, 0], [2, 1], [2, 2], [2, 3]], "move": [1, 1], "duplicate": true}),
+            json!({"anchors": [[0, 0], [0, 1]], "move": [1, 1], "duplicate": true}),
+            json!({"anchors": [[0, 0], [0, 1], [0, 2], [0, 3]], "move": [1, 1], "duplicate": "yes"}),
+            json!({"anchors": [[0, 0], [0, 1], [0, 2], [0, 3]], "move": [1, 1], "duplicate": 1}),
+        ] {
+            assert!(s.execute("path.moveAnchors", p.clone()).is_err(), "{p}");
+        }
+        assert_eq!(work(&s), before, "the path is unchanged");
+        assert_eq!(s.active().unwrap().history.entries().len(), steps);
+    }
+
+    /// Two closed squares; the second subtracts.
+    fn two_squares() -> serde_json::Value {
+        json!({"subpaths": [
+            {"closed": true, "knots": [[10, 10], [60, 10], [60, 60], [10, 60]]},
+            {"closed": true, "op": "subtract", "knots": [[70, 10], [110, 10], [110, 50], [70, 50]]},
+        ]})
+    }
+
+    /// #13211: a moved copy of one subpath goes last with its operation, in one "Drag Path" step.
+    #[test]
+    fn duplicate_appends_a_moved_copy_of_the_subpath() {
+        let mut s = session();
+        s.execute("path.set", json!({"path": two_squares()})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        s.execute("path.moveAnchors", json!({"anchors": [[1, 0], [1, 1], [1, 2], [1, 3]], "move": [5, -3], "duplicate": true})).unwrap();
+        let after = work(&s);
+        assert_eq!(after.subpaths.len(), 3);
+        assert_eq!(after.subpaths[..2], before.subpaths[..], "the source stays");
+        let copy = &after.subpaths[2];
+        assert_eq!((copy.op, copy.closed), (PathOp::Subtract, true));
+        let anchors: Vec<[f64; 2]> = copy.knots.iter().map(|k| [k.anchor.x, k.anchor.y]).collect();
+        assert_eq!(anchors, vec![[75.0, 7.0], [115.0, 7.0], [115.0, 47.0], [75.0, 47.0]]);
+        assert_eq!(s.active().unwrap().history.entries().len(), steps + 1);
+        assert_eq!(s.active().unwrap().history.undo_label(), Some("Drag Path"));
+        assert!(s.undo());
+        assert_eq!(work(&s), before);
     }
 }
 

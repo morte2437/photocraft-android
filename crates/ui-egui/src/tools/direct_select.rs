@@ -1045,6 +1045,9 @@ mod shift_angle_tests;
 mod options_bar_tests;
 
 #[cfg(test)]
+mod alt_drag_duplicate_tests;
+
+#[cfg(test)]
 mod freeform_command_tests {
     use super::*;
 
