@@ -190,11 +190,21 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     import_notes_from(s, &name, &bytes)
 }
 
+/// Photoshop's alert when a source gives no notes: one without any, or one it cannot read as a
+/// notes source (#13915).
+pub const NO_NOTES_IMPORTED: &str = "No notes were imported.";
+
 /// File › Import › Notes… from file bytes (what a file picker returns).
 pub fn import_notes_from(s: &mut Session, name: &str, bytes: &[u8]) -> Result<Value> {
-    let src = crate::file_cmds::import(name, bytes)?;
+    let src = match crate::file_cmds::import(name, bytes) {
+        Ok(src) => src,
+        // A memory refusal says what the user can do about it; keep it.
+        Err(e @ (EngineError::PsdApprovalRequired { .. } | EngineError::PsdHardBudget { .. })) => return Err(e),
+        // Not an image, damaged or truncated: no notes came out of it (#13915).
+        Err(_) => return Err(EngineError::Other(NO_NOTES_IMPORTED.into())),
+    };
     if src.notes.is_empty() {
-        return Err(EngineError::Other(format!("{name} has no notes")));
+        return Err(EngineError::Other(NO_NOTES_IMPORTED.into()));
     }
     let d = s.active().ok_or(EngineError::NoDocument)?.doc.clone();
     let (w, h) = (f64::from(d.size.width), f64::from(d.size.height));
@@ -269,6 +279,10 @@ pub fn specs() -> Vec<CommandSpec> {
         },
     ]
 }
+
+#[cfg(test)]
+#[path = "notes_import_message_tests.rs"]
+mod notes_import_message_tests;
 
 #[cfg(test)]
 mod tests {
