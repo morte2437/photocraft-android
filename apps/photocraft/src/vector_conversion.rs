@@ -147,9 +147,9 @@ fn export_commands(input: &Path, output: &Path, format: &str) -> Result<[(u8, &'
 fn source_svg(bytes: &[u8], size: Option<(f64, f64)>) -> Result<Vec<u8>, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "Converted SVG is not UTF-8")?;
     photocraft_io::svg::import_svg_bounded_with_work("Artwork.svg", bytes, 96_000_000).map_err(|e| format!("Converted SVG is unsupported: {e}"))?;
-    let doc = roxmltree::Document::parse(text).map_err(|e| format!("Invalid converted SVG: {e}"))?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "svg" {
+    let root = craft_xml::parse(text.as_bytes()).map_err(|e| format!("Invalid converted SVG: {e}"))?;
+    let local_name = root.name.rsplit_once(':').map_or(root.name.as_str(), |(_, l)| l);
+    if local_name != "svg" {
         return Err("VectorCraft did not return SVG".into());
     }
     let Some((w, h)) = size else {
@@ -161,12 +161,12 @@ fn source_svg(bytes: &[u8], size: Option<(f64, f64)>) -> Result<Vec<u8>, String>
     // The nested root keeps its own width/height, so the outer viewBox must use the same CSS
     // pixels: `612pt` is 816 user units at SVG's 96 dpi. Other units are rejected below.
     let dimension = |key| {
-        let value = root.attribute(key)?;
+        let value = root.attr(key)?;
         let (number, scale) = value.strip_suffix("pt").map_or((value, 1.0), |number| (number, 4.0 / 3.0));
         number.parse::<f64>().ok().map(|v| v * scale).filter(|v| v.is_finite() && *v > 0.0)
     };
     let (iw, ih) = dimension("width").zip(dimension("height")).ok_or("Converted SVG has no finite dimensions")?;
-    let inner = text.get(root.range()).ok_or("Invalid SVG root range")?;
+    let inner = root.to_xml();
     let result =
         format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {iw} {ih}" preserveAspectRatio="none">{inner}</svg>"#)
             .into_bytes();

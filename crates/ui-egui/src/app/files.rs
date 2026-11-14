@@ -97,8 +97,9 @@ impl PhotocraftApp {
         // A PSD and a magic-detected TIFF both go through the typed IO path: only it carries
         // `PsdApprovalRequired` (and, for a PSD, the structured damaged flag), so a layered
         // TIFF's high-memory decision can raise its prompt instead of becoming a terminal
-        // string. Every other format keeps the shell's import service.
-        let typed_open = photocraft_io::is_psd(bytes) || photocraft_formats::detect(name, bytes) == Some(photocraft_formats::Format::Tiff);
+        // string. Every other format keeps the shell's import service. `detect` gets no name:
+        // given one it falls back to the extension, and a `.tif` name alone is no TIFF.
+        let typed_open = photocraft_io::is_psd(bytes) || photocraft_formats::detect("", bytes) == Some(photocraft_formats::Format::Tiff);
         let (mut doc, warnings, damaged) = if typed_open {
             // Read PSD damage as structured information in the same decode, not by
             // retrying an error or matching the text of a compatibility warning. A TIFF never

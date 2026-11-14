@@ -40,8 +40,10 @@ MCP or control client
 The current token proves possession of a secret but does not provide general method authorization.
 Filesystem handles and a defensive command-path policy are implemented; explicit non-filesystem
 capabilities, session-memory/command-duration budgets, and audit events remain. Preview and
-reply ceilings do not bound all document operations or desktop screenshot capture. Private token handling, process
-isolation, and least-privileged execution are still practical containment measures.
+reply ceilings do not bound all document operations; desktop screenshots are admission-bounded
+per image and in aggregate, though that admission is far above the reply ceiling. Private token
+handling, process isolation, and least-privileged execution are still practical containment
+measures.
 
 ## Windows UNC write roots
 
