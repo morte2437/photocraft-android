@@ -76,6 +76,29 @@ fn create_makes_a_bitmap_document() {
     assert_eq!((recent[0].mode.as_str(), recent[0].depth, recent[0].background.as_str()), ("bitmap", 1, "black"));
 }
 
+/// An agent can `ui.dialog.set` the mode and confirm before the dialog draws again: Create fits the
+/// depth to the mode as the dialog would, instead of sending one `file.new` refuses.
+#[test]
+fn create_fits_the_depth_without_a_frame_in_between() {
+    let mut a = app();
+    create(&mut a, json!({"width": 8, "height": 8, "mode": "bitmap"})).unwrap();
+    assert_eq!(a.session.active().unwrap().doc.mode, ColorMode::Bitmap, "the dialog's 8 bit became 1 bit");
+
+    let mut a = app();
+    create(&mut a, json!({"width": 8, "height": 8, "mode": "bitmap", "depth": 16})).unwrap();
+    assert_eq!(a.session.active().unwrap().doc.mode, ColorMode::Bitmap);
+
+    let mut a = app();
+    create(&mut a, json!({"width": 8, "height": 8, "mode": "rgb", "depth": 1})).unwrap();
+    let doc = &a.session.active().unwrap().doc;
+    assert_eq!((doc.mode, doc.depth), (ColorMode::Rgb, photocraft_color::SampleType::U8), "leaving Bitmap gives 8 bit back");
+
+    let mut a = app();
+    create(&mut a, json!({"width": 8, "height": 8, "mode": "lab", "depth": 16})).unwrap();
+    let doc = &a.session.active().unwrap().doc;
+    assert_eq!((doc.mode, doc.depth), (ColorMode::Lab, photocraft_color::SampleType::U16), "other modes keep the depth");
+}
+
 #[test]
 fn file_new_takes_bitmap_and_refuses_a_transparent_one() {
     let mut s = photocraft_engine::Session::new();

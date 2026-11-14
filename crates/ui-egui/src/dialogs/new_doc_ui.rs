@@ -293,9 +293,15 @@ fn profile_options(
     v
 }
 
-/// Fields `file.new` takes (drops the dialog's `__` UI keys).
+/// Fields `file.new` takes (drops the dialog's `__` UI keys). The depth is fitted to the mode here
+/// too, not only while the dialog draws: an agent can set the mode and confirm before the next
+/// frame (#14030).
 pub fn command_params(f: &Map<String, Value>) -> Value {
-    Value::Object(f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect())
+    let mut p: Map<String, Value> = f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    if let Some(depth) = p.get("depth").and_then(Value::as_u64) {
+        p.insert("depth".into(), json!(fit_depth(&get_s(f, "mode", "rgb"), depth)));
+    }
+    Value::Object(p)
 }
 
 /// Set the resolution (pixels/inch) the way Photoshop's New Document does (#758): with Width/Height
