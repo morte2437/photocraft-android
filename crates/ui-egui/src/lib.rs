@@ -1034,6 +1034,9 @@ mod view_sync_tests;
 mod stamp_tests;
 
 #[cfg(test)]
+mod new_doc_save_preset_icon_tests;
+
+#[cfg(test)]
 mod alt_click_tests;
 #[cfg(test)]
 mod artboard_first_board_tests;
