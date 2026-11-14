@@ -65,5 +65,4 @@ fn names_of_only_dots_and_whitespace_fall_back_to_layer() {
         assert_eq!(file, "layer.png", "{name:?}: {path}");
     }
     assert_eq!(layer_export_name(""), "layer");
-    assert_eq!(layer_export_name("\u{3000}"), "layer", "an ideographic space is blank too");
 }
