@@ -357,13 +357,15 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         f.insert("width".into(), json!(ow));
         f.insert("height".into(), json!(oh));
     }
-    let (w, h) = (num(f, "width").round(), num(f, "height").round());
+    // The sides the command applies: whole pixels, 1 to 300000 (image.imageSize clamps the same way).
+    let side = |key| num(f, key).round().clamp(1.0, 300_000.0);
+    let (w, h, ow, oh) = (side("width"), side("height"), ow.round(), oh.round());
     // "(was …)" appears only once the pixel dimensions differ from the original (#14768).
     let image_bpp = num(f, "__imageBytesPerPixel").max(0.0);
     // Rows hold whole bytes, so a Bitmap row of w bits takes ceil(w / 8) bytes.
-    let flat = |width: f64, height: f64| (width.max(0.0) * image_bpp).ceil() * height.max(0.0);
+    let flat = |width: f64, height: f64| (width * image_bpp).ceil() * height;
     let (size, old) = (flat(w, h), flat(ow, oh));
-    let readout = if (w, h) == (ow.round(), oh.round()) {
+    let readout = if (w, h) == (ow, oh) {
         image_size_bytes(size)
     } else {
         crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &image_size_bytes(size)), ("old", &image_size_bytes(old))])

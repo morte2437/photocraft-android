@@ -161,3 +161,17 @@ fn a_bitmap_resize_inside_one_byte_still_shows_was() {
     set_size(&mut h, id, 800.0, 300.0);
     assert!(shows(&h, "29.3K (was 14.9K)"), "the padded original");
 }
+
+/// The readout shows the sides the command applies: at least 1 px, at most 300000 px.
+#[test]
+fn out_of_range_sides_read_as_the_command_applies_them() {
+    let (mut h, id) = dialog(json!({"width": 400, "height": 300}));
+    let d = h.state_mut().ui.dialog_mut(id).unwrap();
+    d.fields.insert("__unit".into(), json!("px"));
+    d.fields.insert("__constrain".into(), json!(false));
+    d.fields.insert("width".into(), json!(-5.0));
+    d.fields.insert("height".into(), json!(400_000.0));
+    h.run_steps(3);
+    assert!(shows(&h, "1 px × 300000 px"), "the sides image.imageSize applies");
+    assert!(shows(&h, "878.9K (was 351.6K)"), "1 x 300000 x 3 bytes");
+}
