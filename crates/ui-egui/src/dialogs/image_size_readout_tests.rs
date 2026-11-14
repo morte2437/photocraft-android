@@ -7,8 +7,16 @@ use egui_kittest::kittest::Queryable;
 
 /// An Image Size dialog for a new document made with `new` (file.new params).
 fn dialog(new: Value) -> (egui_kittest::Harness<'static, PhotocraftApp>, u64) {
+    dialog_after(new, &[])
+}
+
+/// An Image Size dialog for a new document made with `new`, after running `commands` on it.
+fn dialog_after(new: Value, commands: &[&str]) -> (egui_kittest::Harness<'static, PhotocraftApp>, u64) {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.session.execute("file.new", new).unwrap();
+    for c in commands {
+        app.session.execute(c, json!({})).unwrap();
+    }
     let mut h = egui_kittest::Harness::builder()
         .with_size(egui::vec2(1400.0, 900.0))
         .build_ui_state(|ui, app: &mut PhotocraftApp| crate::dialogs::show(app, ui.ctx()), app);
@@ -66,6 +74,17 @@ fn colour_channels_follow_the_mode() {
     assert!(shows(&h, "351.6K"), "Lab: 3 channels");
 }
 
+/// Indexed is one index channel and Bitmap one bit per pixel, though both are stored expanded.
+#[test]
+fn indexed_and_bitmap_count_their_own_channel() {
+    let (h, _) = dialog_after(json!({"width": 400, "height": 300}), &["image.mode.indexedColor"]);
+    assert_eq!(h.state().session.active().unwrap().doc.mode, photocraft_color::ColorMode::Indexed);
+    assert!(shows(&h, "117.2K"), "Indexed: 400 x 300 x 1 byte");
+    let (h, _) = dialog_after(json!({"width": 400, "height": 300}), &["image.mode.grayscale", "image.mode.bitmap"]);
+    assert_eq!(h.state().session.active().unwrap().doc.mode, photocraft_color::ColorMode::Bitmap);
+    assert!(shows(&h, "14.6K"), "Bitmap: 400 x 300 bits");
+}
+
 #[test]
 fn tiny_images_read_in_bytes() {
     let (h, _) = dialog(json!({"width": 1, "height": 1}));
@@ -78,6 +97,11 @@ fn tiny_images_read_in_bytes() {
 fn the_formatter_uses_one_decimal_and_the_system_decimal_mark() {
     crate::i18n::with_decimal_separator(None, || {
         assert_eq!(image_size_bytes(3.0), "3 bytes");
+        assert_eq!(image_size_bytes(1.0), "1 byte");
+        assert_eq!(image_size_bytes(1023.6), "1.0K", "1024 whole bytes");
+        assert_eq!(image_size_bytes(1_048_575.0), "1.0M", "not 1024.0K");
+        assert_eq!(image_size_bytes(1024.0 * 1024.0 * 1024.0 - 1.0), "1.0G", "not 1024.0M");
+        assert_eq!(image_size_bytes(f64::NAN), "0 bytes");
         assert_eq!(image_size_bytes(1023.0), "1023 bytes");
         assert_eq!(image_size_bytes(1024.0), "1.0K");
         assert_eq!(image_size_bytes(360_000.0), "351.6K");

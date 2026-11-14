@@ -150,7 +150,14 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         f.insert("__indexed".into(), json!(indexed));
         // The "Image Size:" readout counts the flat image (#14768): the mode's colour channels at
         // the document's depth, no alpha, whatever the first layer's surface stores.
-        f.insert("__imageBytesPerPixel".into(), json!(d.mode.color_channels() * d.depth.bytes()));
+        // An Indexed image is one index channel and a Bitmap one 1-bit channel, though both are
+        // stored expanded for editing.
+        let image_bytes_per_pixel = match d.mode {
+            photocraft_color::ColorMode::Bitmap => 1.0 / 8.0,
+            photocraft_color::ColorMode::Indexed => 1.0,
+            mode => (mode.color_channels() * d.depth.bytes()) as f64,
+        };
+        f.insert("__imageBytesPerPixel".into(), json!(image_bytes_per_pixel));
         f.insert("__constrain".into(), json!(true));
         f.insert("resolution".into(), json!(res));
         f.insert("resample".into(), json!(resample));
@@ -211,16 +218,18 @@ pub fn human_bytes(b: f64) -> String {
 /// The Image Size dialog's "Image Size:" figure (#14768): whole bytes below 1K (`3 bytes`), then
 /// K, M or G (1K = 1024 bytes) with one decimal in the system's decimal mark (`351.6K`, `351,6K`).
 fn image_size_bytes(b: f64) -> String {
-    const K: f64 = 1024.0;
-    let (v, unit) = if b >= K * K * K {
-        (b / (K * K * K), "G")
-    } else if b >= K * K {
-        (b / (K * K), "M")
-    } else if b >= K {
-        (b / K, "K")
-    } else {
-        return crate::i18n::fmt(tl!("{n} bytes"), &[("n", &format!("{:.0}", b.max(0.0)))]);
-    };
+    let n = if b.is_finite() { b.max(0.0).round() } else { 0.0 };
+    if n < 1024.0 {
+        return crate::i18n::trn(crate::i18n::current(), n as u64, "{n} byte", "{n} bytes");
+    }
+    let (mut v, mut unit) = (n / 1024.0, "K");
+    for next in ["M", "G"] {
+        // A figure that would round to 1024.0 reads as 1.0 of the next unit.
+        if (v * 10.0).round() < 10240.0 {
+            break;
+        }
+        (v, unit) = (v / 1024.0, next);
+    }
     let text = format!("{v:.1}{unit}");
     match crate::i18n::decimal_separator() {
         Some(',') => text.replace('.', ","),
@@ -340,7 +349,6 @@ fn set_unit(f: &mut Map<String, Value>, key: &str, unit: &str) {
 fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let (ow, oh) = (num(f, "__origW"), num(f, "__origH"));
-    let bpp = num(f, "__bytesPerPixel").max(1.0);
     let resample = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic").to_string();
     let resampling = resample != "none";
     if !resampling {
@@ -351,7 +359,7 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     }
     let (w, h) = (num(f, "width").round(), num(f, "height").round());
     // "(was …)" appears only once the size differs from the original (#14768).
-    let image_bpp = f.get("__imageBytesPerPixel").and_then(Value::as_f64).unwrap_or(bpp).max(1.0);
+    let image_bpp = num(f, "__imageBytesPerPixel").max(0.0);
     let (size, old) = (w * h * image_bpp, ow * oh * image_bpp);
     let readout = if size == old {
         image_size_bytes(size)
