@@ -1,7 +1,8 @@
 //! Exporting one layer suggests a file name with every character a file name can't hold
 //! (`< > : " / \ | ? *`) turned into `_`, one for one (#14810). Other characters, spaces
-//! included, stay, and names without such characters suggest what they did before. Unmeasured
-//! cases (control characters, very long names) follow what the shared `export_name` does.
+//! included (also at either end), stay, and names without such characters suggest what they did
+//! before. Unmeasured cases (control characters, very long names) follow the multi-layer
+//! export's `export_name`.
 
 use super::*;
 use crate::file_dialog::FileDialogRequest;
@@ -46,4 +47,20 @@ fn other_characters_and_spaces_stay() {
         let (file, path) = suggested_for(name);
         assert_eq!(file, want, "{path}");
     }
+}
+
+/// Spaces at either end are part of the name and stay, as they did before #14810.
+#[test]
+fn boundary_spaces_stay() {
+    let (file, path) = suggested_for(" Artboard 1 ");
+    assert_eq!(file, " Artboard 1 .png", "{path}");
+    let (file, path) = suggested_for(" a/b ");
+    assert_eq!(file, " a_b .png", "{path}");
+}
+
+#[test]
+fn names_of_only_dots_and_spaces_fall_back_to_layer() {
+    assert_eq!(layer_export_name(" . "), "layer");
+    assert_eq!(layer_export_name(""), "layer");
+    assert_eq!(layer_export_name("a/b:c*?"), "a_b_c__");
 }
