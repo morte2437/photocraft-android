@@ -223,7 +223,7 @@ fn image_size_bytes(b: f64) -> String {
         return crate::i18n::trn(crate::i18n::current(), n as u64, "{n} byte", "{n} bytes");
     }
     let (mut v, mut unit) = (n / 1024.0, "K");
-    for next in ["M", "G"] {
+    for next in ["M", "G", "T"] {
         // A figure that would round to 1024.0 reads as 1.0 of the next unit.
         if (v * 10.0).round() < 10240.0 {
             break;
@@ -360,7 +360,9 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let (w, h) = (num(f, "width").round(), num(f, "height").round());
     // "(was …)" appears only once the size differs from the original (#14768).
     let image_bpp = num(f, "__imageBytesPerPixel").max(0.0);
-    let (size, old) = (w * h * image_bpp, ow * oh * image_bpp);
+    // Rows hold whole bytes, so a Bitmap row of w bits takes ceil(w / 8) bytes.
+    let flat = |w: f64, h: f64| (w * image_bpp).ceil() * h;
+    let (size, old) = (flat(w, h), flat(ow, oh));
     let readout = if size == old {
         image_size_bytes(size)
     } else {

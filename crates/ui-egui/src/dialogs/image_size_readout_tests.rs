@@ -107,6 +107,8 @@ fn the_formatter_uses_one_decimal_and_the_system_decimal_mark() {
         assert_eq!(image_size_bytes(360_000.0), "351.6K");
         assert_eq!(image_size_bytes(6016.0 * 6016.0 * 3.0), "103.5M");
         assert_eq!(image_size_bytes(188.6 * 1024.0 * 1024.0 * 1024.0), "188.6G");
+        assert_eq!(image_size_bytes(1.5 * 1024f64.powi(4)), "1.5T");
+        assert_eq!(image_size_bytes(1024f64.powi(4) - 1.0), "1.0T", "not 1024.0G");
     });
     crate::i18n::with_decimal_separator(Some(','), || {
         assert_eq!(image_size_bytes(360_000.0), "351,6K");
@@ -138,4 +140,13 @@ fn canvas_size_and_human_bytes_keep_their_output() {
     open(h.state_mut(), "image.canvasSize").unwrap();
     h.run_steps(3);
     assert!(h.query_all_by_label_contains("469K").next().is_some(), "Canvas Size still reads the layer's bytes (#14582)");
+}
+
+/// Bitmap rows are padded to whole bytes: 401 bits take 51 bytes, and one pixel one byte.
+#[test]
+fn bitmap_rows_round_up_to_whole_bytes() {
+    let (h, _) = dialog_after(json!({"width": 401, "height": 300}), &["image.mode.grayscale", "image.mode.bitmap"]);
+    assert!(shows(&h, "14.9K"), "51 x 300 bytes");
+    let (h, _) = dialog_after(json!({"width": 1, "height": 1}), &["image.mode.grayscale", "image.mode.bitmap"]);
+    assert!(shows(&h, "1 byte"));
 }
