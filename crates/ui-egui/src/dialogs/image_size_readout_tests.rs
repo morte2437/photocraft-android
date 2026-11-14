@@ -175,3 +175,14 @@ fn out_of_range_sides_read_as_the_command_applies_them() {
     assert!(shows(&h, "1 px × 300000 px"), "the sides image.imageSize applies");
     assert!(shows(&h, "878.9K (was 351.6K)"), "1 x 300000 x 3 bytes");
 }
+
+/// A Multichannel image counts its ink channels: four after CMYK, one after Grayscale.
+#[test]
+fn multichannel_counts_its_inks() {
+    let (h, _) = dialog_after(json!({"width": 400, "height": 300, "mode": "cmyk"}), &["image.mode.multichannel"]);
+    assert!(shows(&h, "468.8K"), "CMYK → 4 inks");
+    let (h, _) = dialog_after(json!({"width": 400, "height": 300, "mode": "grayscale"}), &["image.mode.multichannel"]);
+    assert!(shows(&h, "117.2K"), "Grayscale → 1 ink");
+    let (h, _) = dialog_after(json!({"width": 400, "height": 300}), &["image.mode.multichannel"]);
+    assert!(shows(&h, "351.6K"), "RGB → 3 inks");
+}

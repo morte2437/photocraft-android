@@ -155,6 +155,11 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         let image_bytes_per_pixel = match d.mode {
             photocraft_color::ColorMode::Bitmap => 1.0 / 8.0,
             photocraft_color::ColorMode::Indexed => 1.0,
+            // A Multichannel image is its ink (spot) channels, however many it has.
+            photocraft_color::ColorMode::Multichannel => {
+                let inks = d.channels.iter().filter(|c| c.spot.is_some()).count();
+                (if inks == 0 { d.mode.color_channels() } else { inks } * d.depth.bytes()) as f64
+            }
             mode => (mode.color_channels() * d.depth.bytes()) as f64,
         };
         f.insert("__imageBytesPerPixel".into(), json!(image_bytes_per_pixel));
