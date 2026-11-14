@@ -148,6 +148,9 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
             resample = "nearest";
         }
         f.insert("__indexed".into(), json!(indexed));
+        // The "Image Size:" readout counts the flat image (#14768): the mode's colour channels at
+        // the document's depth, no alpha, whatever the first layer's surface stores.
+        f.insert("__imageBytesPerPixel".into(), json!(d.mode.color_channels() * d.depth.bytes()));
         f.insert("__constrain".into(), json!(true));
         f.insert("resolution".into(), json!(res));
         f.insert("resample".into(), json!(resample));
@@ -202,6 +205,26 @@ pub fn human_bytes(b: f64) -> String {
         format!("{:.1}M", b / (1024.0 * 1024.0))
     } else {
         format!("{:.0}K", (b / 1024.0).max(1.0))
+    }
+}
+
+/// The Image Size dialog's "Image Size:" figure (#14768): whole bytes below 1K (`3 bytes`), then
+/// K, M or G (1K = 1024 bytes) with one decimal in the system's decimal mark (`351.6K`, `351,6K`).
+fn image_size_bytes(b: f64) -> String {
+    const K: f64 = 1024.0;
+    let (v, unit) = if b >= K * K * K {
+        (b / (K * K * K), "G")
+    } else if b >= K * K {
+        (b / (K * K), "M")
+    } else if b >= K {
+        (b / K, "K")
+    } else {
+        return crate::i18n::fmt(tl!("{n} bytes"), &[("n", &format!("{:.0}", b.max(0.0)))]);
+    };
+    let text = format!("{v:.1}{unit}");
+    match crate::i18n::decimal_separator() {
+        Some(',') => text.replace('.', ","),
+        _ => text,
     }
 }
 
@@ -327,7 +350,15 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         f.insert("height".into(), json!(oh));
     }
     let (w, h) = (num(f, "width").round(), num(f, "height").round());
-    info_row(ui, tl!("Image Size:"), crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &human_bytes(w * h * bpp)), ("old", &human_bytes(ow * oh * bpp))]));
+    // "(was …)" appears only once the size differs from the original (#14768).
+    let image_bpp = f.get("__imageBytesPerPixel").and_then(Value::as_f64).unwrap_or(bpp).max(1.0);
+    let (size, old) = (w * h * image_bpp, ow * oh * image_bpp);
+    let readout = if size == old {
+        image_size_bytes(size)
+    } else {
+        crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &image_size_bytes(size)), ("old", &image_size_bytes(old))])
+    };
+    info_row(ui, tl!("Image Size:"), readout);
     info_row(ui, tl!("Dimensions:"), format!("{} px × {} px", w as i64, h as i64));
     ui.add_space(6.0);
     // Photoshop keeps width and height linked while Resample is off.
@@ -580,5 +611,8 @@ fn anchor_grid(ui: &mut egui::Ui, current: &str, dw: f64, dh: f64) -> Option<&'s
     picked
 }
 
+#[cfg(test)]
+#[path = "image_size_readout_tests.rs"]
+mod image_size_readout_tests;
 #[cfg(test)]
 mod tests;
