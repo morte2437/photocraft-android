@@ -1005,6 +1005,20 @@ fn has_doc(s: &Session) -> std::result::Result<(), String> {
     s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
+/// Assign Profile is greyed for Lab, Bitmap and Multichannel documents, as in the reference
+/// application, and a script that runs it there fails (#14238). Convert to Profile keeps
+/// [`has_doc`]: it stays enabled for Lab.
+fn assign_profile_enabled(s: &Session) -> std::result::Result<(), String> {
+    let doc = &s.active().ok_or_else(|| "no document open".to_string())?.doc;
+    let mode = match doc.mode {
+        ColorMode::Lab => "Lab",
+        ColorMode::Bitmap => "Bitmap",
+        ColorMode::Multichannel => "Multichannel",
+        _ => return Ok(()),
+    };
+    Err(format!("not available in {mode} mode"))
+}
+
 fn always(_: &Session) -> std::result::Result<(), String> {
     Ok(())
 }
@@ -1335,7 +1349,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Assign Profile…",
             ["Edit"],
             r##"{"profile":"working|srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020|gray-gamma-2.2|sgray|dot-gain-20-compat|lab-d50|coated-cmyk|none" (or a path to an .icc file)}"##,
-            has_doc,
+            assign_profile_enabled,
             assign_profile,
             true
         ),
@@ -1651,6 +1665,10 @@ mod tests {
         eprintln!("6016×6016 RGB8 → CMYK: {} ms", t.elapsed().as_millis());
     }
 }
+
+#[cfg(test)]
+#[path = "assign_profile_enabled_modes_tests.rs"]
+mod assign_profile_enabled_modes_tests;
 
 #[cfg(test)]
 mod settings_tests {
