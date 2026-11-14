@@ -110,3 +110,29 @@ fn next_saved_name_skips_taken_numbers_ignoring_case() {
     }
     assert_eq!(next_saved_name(&s.presets.documents), "Saved 2");
 }
+
+#[test]
+fn ctrl_enter_while_naming_saves_the_preset_instead_of_creating() {
+    let mut h = harness(&[]);
+    open_save(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.dialogs.len(), 1, "Ctrl+Enter keeps the New Document dialog open");
+    let names: Vec<_> = h.state().session.presets.documents.iter().map(|p| p.name.clone()).collect();
+    assert_eq!(names, ["Saved 1"], "Ctrl+Enter saves the preset like Enter");
+}
+
+#[test]
+fn enter_goes_to_a_dialog_stacked_above_the_save_pane() {
+    let mut h = harness(&[]);
+    open_save(&mut h);
+    let mut fields = serde_json::Map::new();
+    fields.insert("message".into(), json!("Something else."));
+    h.state_mut().ui.open_dialog(DialogKind::Error, fields);
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().session.presets.documents.is_empty(), "the covered save pane saves nothing");
+    assert!(h.state().ui.dialogs.iter().all(|d| d.kind != DialogKind::Error), "Enter answers the alert on top");
+    assert_eq!(field(&h, "__savingPreset"), Some(json!(true)), "the save pane stays open under it");
+}

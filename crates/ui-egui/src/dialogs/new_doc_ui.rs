@@ -498,8 +498,9 @@ fn save_preset(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<St
     let t = Tokens::get(ui.ctx());
     ui.label(RichText::new(tl!("SAVE DOCUMENT PRESET")).size(11.0).color(t.text_faint));
     ui.add_space(4.0);
-    // Consume before TextEdit sees Enter, so naming can never confirm the outer dialog.
-    let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    // Consume every Enter, Ctrl+Enter too, before TextEdit sees it, so naming can never confirm the
+    // outer dialog. A dialog stacked above disables this pane and keeps its own Enter.
+    let enter = ui.is_enabled() && ui.input_mut(consume_any_enter);
     let mut name = f.get("__presetName").and_then(Value::as_str).map_or_else(|| next_saved_name(&app.session.presets.documents), str::to_owned);
     let r = ui
         .add(egui::TextEdit::singleline(&mut name).id_salt("document-preset-name").desired_width(250.0).font(egui::FontId::proportional(15.0)).char_limit(255))
@@ -539,6 +540,14 @@ fn save_preset(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<St
         }
     });
     preset_error(ui, f);
+}
+
+/// Takes this frame's Enter presses whatever their modifiers (`consume_key` leaves Ctrl+Enter for
+/// the outer dialog's Create) and says whether there was one.
+fn consume_any_enter(i: &mut egui::InputState) -> bool {
+    let before = i.events.len();
+    i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. }));
+    i.events.len() != before
 }
 
 /// The last failed save or delete of a preset.
