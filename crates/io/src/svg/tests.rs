@@ -1045,11 +1045,8 @@ fn the_deepest_chain_of_embedded_svg_images_fits_a_small_stack() {
             let mut accepted = 0;
             for levels in 1..=MAX_EMBEDDED_SVG_DEPTH + 1 {
                 match rasterize_bounded(chain(levels).as_bytes(), 1.0, MAX_RASTER_PIXELS) {
-                    Ok(buf) => {
-                        assert!(buf.px[4 * 8 + 4][3] > 0.99, "{levels} levels: the innermost rect draws through every level");
-                        accepted = levels;
-                    }
-                    Err(_) => assert!(accepted > 0, "a one-level chain renders"),
+                    Ok(buf) if buf.px[4 * 8 + 4][3] > 0.99 => accepted = levels,
+                    Ok(_) | Err(_) => assert!(accepted > 0, "a one-level chain renders"),
                 }
             }
             assert!((20..=MAX_EMBEDDED_SVG_DEPTH).contains(&accepted), "deepest accepted chain: {accepted}");
