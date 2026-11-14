@@ -21,6 +21,22 @@ API="${ANDROID_API:-26}"
 : "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to the Android NDK (r27 or newer)}"
 command -v cargo-ndk >/dev/null || { echo "error: cargo-ndk not found (cargo install cargo-ndk)" >&2; exit 1; }
 
+# Interface translations: a storytold/craft-i18n checkout at the SHA in craft-i18n.rev. Without
+# one the app is English only, so a checkout beside the repo (../craft-i18n) is used when
+# CRAFT_I18N_DIR isn't set, and a release build stops if there is none.
+if [[ -z "${CRAFT_I18N_DIR:-}" && -d "$ROOT/../craft-i18n" ]]; then
+    CRAFT_I18N_DIR="$(cd "$ROOT/../craft-i18n" && pwd)"
+    # Windows: cargo's build script needs a C:\ path, not Git Bash's /c/.
+    if command -v cygpath >/dev/null; then CRAFT_I18N_DIR="$(cygpath -w "$CRAFT_I18N_DIR")"; fi
+    export CRAFT_I18N_DIR
+fi
+if [[ "${RELEASE_BUILD:-0}" != 0 ]]; then export CRAFT_I18N_REQUIRED=1; fi
+if [[ -n "${CRAFT_I18N_DIR:-}" ]]; then
+    PIN="$(tr -d '[:space:]' < "$ROOT/craft-i18n.rev")"
+    HAVE="$(git -C "$CRAFT_I18N_DIR" rev-parse HEAD 2>/dev/null || true)"
+    if [[ "$HAVE" != "$PIN" ]]; then echo "warning: $CRAFT_I18N_DIR is at ${HAVE:-?}, craft-i18n.rev pins $PIN (git -C \"$CRAFT_I18N_DIR\" fetch && git -C \"$CRAFT_I18N_DIR\" checkout $PIN)" >&2; fi
+fi
+
 FEATURE_ARGS=()
 if [[ -n "${FEATURES:-}" ]]; then FEATURE_ARGS=(--features "$FEATURES"); fi
 
@@ -32,6 +48,7 @@ remap() {
     if command -v cygpath >/dev/null; then printf ' --remap-path-prefix=%s=%s' "$(cygpath -w "$1")" "$2"; fi
 }
 REMAP="$(remap "${CARGO_HOME:-$HOME/.cargo}" /cargo)$(remap "$ROOT" /photocraft)$(remap "${CARGO_TARGET_DIR:-$ROOT/target}" /target)"
+if [[ -n "${CRAFT_I18N_DIR:-}" ]]; then REMAP="$REMAP$(remap "$CRAFT_I18N_DIR" /craft-i18n)"; fi
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-}$REMAP"
 
 cd "$ROOT"
