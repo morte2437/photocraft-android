@@ -1,6 +1,6 @@
 //! #14042: a Web or Mobile preset in File › New turns Artboards on, as in Photoshop; a preset of
-//! the Photo, Print, Art & Illustration or Film & Video tab turns it off. Recent and Saved cards keep
-//! restoring their own settings.
+//! the Photo, Print, Art & Illustration or Film & Video tab turns that back off, and leaves a box
+//! ticked by hand as it is. Recent and Saved cards keep restoring their own settings.
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -43,16 +43,46 @@ fn web_and_mobile_presets_turn_artboards_on() {
     }
 }
 
+const OTHER_TABS: [&str; 4] = ["Photo", "Print", "Art & Illustration", "Film & Video"];
+
 #[test]
-fn presets_of_the_other_tabs_turn_artboards_off() {
-    for tab in ["Photo", "Print", "Art & Illustration", "Film & Video"] {
-        assert!(!presets(tab).is_empty(), "{tab}");
+fn presets_of_the_other_tabs_turn_a_web_or_mobile_presets_artboards_off() {
+    for from in ["Web", "Mobile"] {
+        for tab in OTHER_TABS {
+            assert!(!presets(tab).is_empty(), "{tab}");
+            for p in presets(tab) {
+                let mut f = on_tab(from, false);
+                apply_preset(&mut f, &presets(from)[0], &Default::default());
+                assert!(artboard(&f));
+                f.insert("__category".into(), json!(tab));
+                apply_preset(&mut f, p, &Default::default());
+                assert!(!artboard(&f), "{from} then {tab} › {}", p.0);
+                assert!(command_params(&f).get("artboard").is_none(), "Create makes a plain document: {tab} › {}", p.0);
+            }
+        }
+    }
+}
+
+/// Ticking Artboards by hand and then picking a preset of another tab wasn't measured: the box
+/// keeps the user's choice, as before this change.
+#[test]
+fn presets_of_the_other_tabs_leave_a_box_ticked_by_hand() {
+    for tab in OTHER_TABS {
         for p in presets(tab) {
             let mut f = on_tab(tab, true);
             apply_preset(&mut f, p, &Default::default());
+            assert!(artboard(&f), "{tab} › {}", p.0);
+            assert_eq!(command_params(&f)["artboard"], json!(true), "{tab} › {}", p.0);
+            let mut f = on_tab(tab, false);
+            apply_preset(&mut f, p, &Default::default());
             assert!(!artboard(&f), "{tab} › {}", p.0);
-            assert!(command_params(&f).get("artboard").is_none(), "Create makes a plain document: {tab} › {}", p.0);
         }
+        // Ticked by hand before a Web preset (which keeps it on): still the user's choice.
+        let mut f = on_tab("Web", true);
+        apply_preset(&mut f, &presets("Web")[0], &Default::default());
+        f.insert("__category".into(), json!(tab));
+        apply_preset(&mut f, &presets(tab)[0], &Default::default());
+        assert!(artboard(&f), "Web then {tab}");
     }
 }
 
@@ -163,5 +193,26 @@ mod dialog {
         h.run_steps(3);
         let doc = &h.state().session.active().expect("a new document").doc;
         assert!(doc.artboards().is_empty(), "a plain document");
+    }
+
+    #[test]
+    fn a_photo_preset_keeps_artboards_ticked_by_hand_after_a_web_one() {
+        let mut h = harness();
+        open_tab(&mut h, "Web");
+        click_preset(&mut h, "Web Most Common");
+        assert!(artboards_ticked(&h));
+        // Untick and tick again by hand: the box now holds the user's choice.
+        for _ in 0..2 {
+            h.get_by_label("Artboards").click();
+            h.run_steps(2);
+        }
+        assert!(artboards_ticked(&h));
+        open_tab(&mut h, "Photo");
+        click_preset(&mut h, presets("Photo")[0].0);
+        assert!(artboards_ticked(&h), "a box ticked by hand stays ticked");
+        h.get_by_label("Create").click();
+        h.run_steps(3);
+        let doc = &h.state().session.active().expect("a new document").doc;
+        assert_eq!(doc.artboards().len(), 1, "made as an artboard");
     }
 }

@@ -221,10 +221,15 @@ pub fn at_pref_resolutions(p: &Preset, units: &UnitsAndRulers) -> Preset {
 /// The category tabs whose presets start the document as an artboard, as in Photoshop (#14042).
 const ARTBOARD_CATEGORIES: &[&str] = &["Web", "Mobile"];
 
+/// Set when a Web or Mobile preset ticked Artboards, so a preset of another tab unticks only that
+/// and never a box ticked by hand (#14042).
+const PRESET_ARTBOARD: &str = "__presetArtboard";
+
 /// Apply a built-in preset (at the preference resolutions, see [`at_pref_resolutions`]) to the
 /// dialog fields. A preset of the category tab picked in `__category` also sets Artboards: on for
-/// Web and Mobile, off for the other tabs (#14042). Recent's built-in cards and the Clipboard
-/// preset leave it as it is.
+/// Web and Mobile; the other tabs turn it back off when a Web or Mobile preset turned it on, and
+/// leave a box ticked by hand as it is (#14042). Recent's built-in cards and the Clipboard preset
+/// leave it as it is.
 pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRulers) {
     let (name, w, h, ppi) = at_pref_resolutions(p, units);
     let unit = preset_unit(p, f);
@@ -238,13 +243,17 @@ pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRule
     f.insert("__unit".into(), json!(unit));
     match tab {
         Some((tab, _)) if ARTBOARD_CATEGORIES.contains(tab) => {
-            f.insert("artboard".into(), json!(true));
+            if f.get("artboard").and_then(Value::as_bool) != Some(true) {
+                f.insert("artboard".into(), json!(true));
+                f.insert(PRESET_ARTBOARD.into(), json!(true));
+            }
         }
         // Off is the checkbox's and `file.new`'s default.
-        Some(_) => {
+        Some(_) if f.contains_key(PRESET_ARTBOARD) => {
+            f.remove(PRESET_ARTBOARD);
             f.remove("artboard");
         }
-        None => {}
+        _ => {}
     }
 }
 
@@ -722,6 +731,8 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             let mut artboard = f.get("artboard").and_then(Value::as_bool).unwrap_or(false);
             if widgets::checkbox(ui, &mut artboard, tl!("Artboards")).changed() {
                 f.insert("artboard".into(), json!(artboard));
+                // Now the user's choice: another tab's preset leaves it alone.
+                f.remove(PRESET_ARTBOARD);
             }
             ui.add_space(4.0);
             small_label(ui, tl!("Resolution"));
