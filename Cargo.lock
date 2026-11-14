@@ -5500,15 +5500,15 @@ dependencies = [
 
 [[package]]
 name = "photocraft-android"
-version = "0.20.1"
+version = "0.23.1"
 dependencies = [
  "android_logger",
+ "craft-image-codecs",
  "craft-ui",
  "eframe",
  "egui",
  "log",
  "ndk",
- "photocraft-codecs",
  "photocraft-doc",
  "photocraft-engine",
  "photocraft-format",
