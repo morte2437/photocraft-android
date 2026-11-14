@@ -849,7 +849,10 @@ mod tests {
         let cam: Vec<[f32; 3]> = patches(w, h).iter().map(|p| [0, 1, 2].map(|k| p[k] / WB[k] as f32)).collect();
         let data = crate::testgen::mosaic(&cam, w, [0, 1, 1, 2], 0, 4095);
         let b = crate::testgen::tiff_ep("NIKON CORPORATION", w, h, &data, [0, 1, 1, 2], 12, vec![]);
-        let s = crate::decode(&b, &crate::Limits::default()).unwrap();
+        let mut s = crate::decode(&b, &crate::Limits::default()).unwrap();
+        // The fixture uses a 12-bit encoding scale. craft-raw's NEF reader takes no WhiteLevel
+        // tag and reads the brightest flat, noiseless patch as a saturation plateau.
+        s.white = [4095.0; 3];
         let to_srgb = color::invert(&color::srgb_to_xyz_d50()).unwrap();
         let pro_to_srgb = color::mul(&to_srgb, &color::rgb_to_xyz(color::ROMM, color::D50_XY));
         let f = |x: f64| 1.6 * x / (1.0 + 0.6 * x);

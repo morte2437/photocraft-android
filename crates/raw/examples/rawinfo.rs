@@ -236,11 +236,13 @@ fn write_png(path: &str, dev: &photocraft_raw::Developed) {
             }
         }
     }
-    let Ok(f) = std::fs::File::create(path) else { return eprintln!("{path}: cannot create") };
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), ow as u32, oh as u32);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    if let Err(e) = enc.write_header().and_then(|mut w| w.write_image_data(&out)) {
-        eprintln!("{path}: {e}");
+    let img = photocraft_codecs::Image::from_u8(ow as u32, oh as u32, photocraft_codecs::ChannelLayout::Rgb, out).unwrap();
+    match photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()) {
+        Ok(png) => {
+            if let Err(e) = std::fs::write(path, png) {
+                eprintln!("{path}: {e}");
+            }
+        }
+        Err(e) => eprintln!("{path}: {e}"),
     }
 }

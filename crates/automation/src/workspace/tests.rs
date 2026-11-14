@@ -152,6 +152,32 @@ fn write_stream_seeks_back_and_keeps_the_original_on_failure() {
     assert_eq!(std::fs::read(inside.join("notes.txt")).unwrap(), b"keep");
 }
 
+/// #14355: files PhotoCraft can read but never writes (notes, data, rich text, read-only image
+/// formats such as XPM or DICOM) are not "a kind PhotoCraft writes", by name or by their bytes (#9439).
+#[test]
+fn write_refuses_to_replace_files_photocraft_reads_but_does_not_write() {
+    let (inside, _, workspace) = roots("read-only-kinds");
+    let files: [(&str, &[u8]); 7] = [
+        ("notes.md", b"# keep"),
+        ("data.csv", b"a,b\n1,2\n"),
+        ("letter.rtf", b"{\\rtf1 keep}"),
+        ("README", b"{\\rtf1 keep}"),
+        ("icon.xpm", b"/* XPM */ keep"),
+        ("scan.dcm", b"keep"),
+        ("TODO", b"/* XPM */ keep"),
+    ];
+    let replaced: Vec<&str> = files
+        .into_iter()
+        .filter(|(name, bytes)| {
+            std::fs::write(inside.join(name), bytes).unwrap();
+            workspace.write(name, b"\x89PNG\r\n\x1a\n").is_ok() || std::fs::read(inside.join(name)).unwrap() != *bytes
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert!(replaced.is_empty(), "replaced: {replaced:?}");
+    assert!(temp_files(&inside).is_empty());
+}
+
 /// A writer that panics leaves the original and no temporary file behind.
 #[test]
 fn write_stream_cleans_up_after_a_panicking_writer() {
@@ -1471,6 +1497,22 @@ fn same_root_leaf_link_save_replaces_the_link_without_writing_its_target() {
     assert_eq!(std::fs::read(inside.join("target.txt")).unwrap(), b"target");
     assert_eq!(std::fs::read(inside.join("link.png")).unwrap(), b"replacement");
     assert!(!std::fs::symlink_metadata(inside.join("link.png")).unwrap().file_type().is_symlink());
+}
+
+/// A hardlink inside a root names the outside inode, so it reads that content. Writing over it is
+/// an atomic replace of the directory entry: the other name and its inode keep their bytes.
+#[cfg(unix)]
+#[test]
+fn hardlink_inside_a_root_reads_the_target_but_write_over_replaces_the_link() {
+    let (inside, outside, workspace) = roots("hardlink");
+    let target = outside.join("target.png");
+    std::fs::write(&target, b"outside").unwrap();
+    std::fs::hard_link(&target, inside.join("linked.png")).unwrap();
+
+    assert_eq!(workspace.read("linked.png").unwrap(), b"outside");
+    workspace.write("linked.png", b"replacement").unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"outside", "the outside inode is not modified");
+    assert_eq!(std::fs::read(inside.join("linked.png")).unwrap(), b"replacement");
 }
 
 #[test]
