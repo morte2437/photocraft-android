@@ -1,6 +1,7 @@
 //! The Image Size dialog's "Image Size:" readout (#14768): width × height × the mode's colour
-//! channels × bytes per channel (no alpha), whole bytes below 1K, then K/M/G with one decimal in
-//! the system's decimal mark, and "(was …)" only once the size differs from the original.
+//! channels × bytes per channel (no alpha; Bitmap one bit, rows padded to whole bytes), whole bytes
+//! below 1K, then K/M/G/T with one decimal in the system's decimal mark, and "(was …)" only once
+//! the pixel dimensions differ from the original.
 
 use super::*;
 use egui_kittest::kittest::Queryable;
@@ -149,4 +150,14 @@ fn bitmap_rows_round_up_to_whole_bytes() {
     assert!(shows(&h, "14.9K"), "51 x 300 bytes");
     let (h, _) = dialog_after(json!({"width": 1, "height": 1}), &["image.mode.grayscale", "image.mode.bitmap"]);
     assert!(shows(&h, "1 byte"));
+}
+
+/// "(was …)" follows the pixel dimensions, even when padding keeps the byte count the same.
+#[test]
+fn a_bitmap_resize_inside_one_byte_still_shows_was() {
+    let (mut h, id) = dialog_after(json!({"width": 401, "height": 300}), &["image.mode.grayscale", "image.mode.bitmap"]);
+    set_size(&mut h, id, 402.0, 300.0);
+    assert!(shows(&h, "14.9K (was 14.9K)"));
+    set_size(&mut h, id, 800.0, 300.0);
+    assert!(shows(&h, "29.3K (was 14.9K)"), "the padded original");
 }

@@ -216,7 +216,7 @@ pub fn human_bytes(b: f64) -> String {
 }
 
 /// The Image Size dialog's "Image Size:" figure (#14768): whole bytes below 1K (`3 bytes`), then
-/// K, M or G (1K = 1024 bytes) with one decimal in the system's decimal mark (`351.6K`, `351,6K`).
+/// K, M, G or T (1K = 1024 bytes) with one decimal in the system's decimal mark (`351.6K`, `351,6K`).
 fn image_size_bytes(b: f64) -> String {
     let n = if b.is_finite() { b.max(0.0).round() } else { 0.0 };
     if n < 1024.0 {
@@ -358,12 +358,12 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         f.insert("height".into(), json!(oh));
     }
     let (w, h) = (num(f, "width").round(), num(f, "height").round());
-    // "(was …)" appears only once the size differs from the original (#14768).
+    // "(was …)" appears only once the pixel dimensions differ from the original (#14768).
     let image_bpp = num(f, "__imageBytesPerPixel").max(0.0);
     // Rows hold whole bytes, so a Bitmap row of w bits takes ceil(w / 8) bytes.
-    let flat = |w: f64, h: f64| (w * image_bpp).ceil() * h;
+    let flat = |width: f64, height: f64| (width.max(0.0) * image_bpp).ceil() * height.max(0.0);
     let (size, old) = (flat(w, h), flat(ow, oh));
-    let readout = if size == old {
+    let readout = if (w, h) == (ow.round(), oh.round()) {
         image_size_bytes(size)
     } else {
         crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &image_size_bytes(size)), ("old", &image_size_bytes(old))])
