@@ -12,6 +12,8 @@ use crate::theme::Tokens;
 use crate::{icons, widgets};
 use photocraft_engine::document_preset_cmds::DocumentSettings;
 
+pub mod pixel_aspect;
+
 /// A blank-document preset: (name, width px, height px, ppi).
 pub type Preset = (&'static str, u32, u32, f32);
 
@@ -780,6 +782,17 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                         f.insert("profile".into(), json!(profile));
                     }
                     f.remove("__savedPreset");
+                }
+            }
+            ui.add_space(4.0);
+            // Photoshop's Advanced Options › Pixel Aspect Ratio, under Color Profile (#14034).
+            small_label(ui, tl!("Pixel Aspect Ratio"));
+            {
+                let opts = pixel_aspect::options(&app.ui.shell.custom_pars);
+                let mut par = pixel_aspect::picked(f, &app.ui.shell.custom_pars);
+                let shown: Vec<(String, &str)> = opts.iter().map(|(v, l)| (v.clone(), l.as_str())).collect();
+                if widgets::dropdown_literal(ui, "nd-pixel-aspect", tl!("Pixel Aspect Ratio"), &mut par, &shown, 240.0) {
+                    f.insert(pixel_aspect::FIELD.into(), json!(par));
                 }
             }
             ui.add_space(4.0);
