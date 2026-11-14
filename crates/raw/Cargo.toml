@@ -27,7 +27,7 @@ rayon = { workspace = true }
 [dev-dependencies]
 photocraft-raw = { path = ".", features = ["testgen"] }
 # Writes sRGB PNG previews in the `rawinfo` example.
-png = "0.18"
+photocraft-codecs = { workspace = true }
 # JPEG XL encoder used by legacy test fixtures only.
 zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
 zune-core = "0.5"

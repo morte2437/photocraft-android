@@ -200,7 +200,7 @@ impl IconTheme {
 /// An SVG's coverage (alpha) as a `px` × `px` mask, the drawing fitted and centred. `None` for an
 /// unreadable SVG or an absurd size.
 pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
-    use resvg::{tiny_skia, usvg};
+    use craft_svg::tree::{draw, draw::tiny_skia, usvg};
     // usvg inflates gzip (`.svgz`) input without a decoded-size limit, and icons are plain `.svg`.
     if !(1..=256).contains(&px) || svg.starts_with(&[0x1f, 0x8b]) {
         return None;
@@ -221,8 +221,7 @@ pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
         }
         let s = px as f32 / side;
         let (dx, dy) = ((px as f32 - size.width() * s) / 2.0, (px as f32 - size.height() * s) / 2.0);
-        let mut pixmap = tiny_skia::Pixmap::new(px, px)?;
-        resvg::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), &mut pixmap.as_mut());
+        let pixmap = draw::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), px, px, 0, 64 * 1024 * 1024).ok()?;
         Some(pixmap.data().as_chunks::<4>().0.iter().map(|[_, _, _, a]| *a).collect())
     }))
     .ok()

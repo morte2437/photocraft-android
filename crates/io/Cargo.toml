@@ -64,8 +64,6 @@ kurbo = { version = "0.13", optional = true }
 
 [dev-dependencies]
 lopdf = { version = "0.38", default-features = false }
-# PDF XMP serialization assertions parse output XML in tests.
-roxmltree = "0.21"
 miniz_oxide = "0.9"
 crc32fast = "1.5"
 craft-affinity = { workspace = true, features = ["synth"] }
@@ -77,4 +75,3 @@ proptest = { workspace = true }
 # Lossless JPEG XL encoder for the JPEG XL DNG preview test (tests only), as in photocraft-raw.
 zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
 zune-core = { workspace = true }
-tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }
