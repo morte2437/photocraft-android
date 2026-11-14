@@ -988,6 +988,9 @@ mod blend_dropdown_keys_tests;
 mod warp_text_dialog_tests;
 
 #[cfg(test)]
+mod new_doc_web_artboards_tests;
+
+#[cfg(test)]
 mod blend_dropdown_wheel_tests;
 #[cfg(test)]
 mod paths_scroll_tests;

@@ -218,17 +218,34 @@ pub fn at_pref_resolutions(p: &Preset, units: &UnitsAndRulers) -> Preset {
     (p.0, px(p.1), px(p.2), ppi)
 }
 
+/// The category tabs whose presets start the document as an artboard, as in Photoshop (#14042).
+const ARTBOARD_CATEGORIES: &[&str] = &["Web", "Mobile"];
+
 /// Apply a built-in preset (at the preference resolutions, see [`at_pref_resolutions`]) to the
-/// dialog fields.
+/// dialog fields. A preset of the category tab picked in `__category` also sets Artboards: on for
+/// Web and Mobile, off for the other tabs (#14042). Recent's built-in cards and the Clipboard
+/// preset leave it as it is.
 pub fn apply_preset(f: &mut Map<String, Value>, p: &Preset, units: &UnitsAndRulers) {
     let (name, w, h, ppi) = at_pref_resolutions(p, units);
     let unit = preset_unit(p, f);
+    let cat = get_s(f, "__category", CATEGORIES[0].0);
+    let tab = CATEGORIES.iter().find(|c| c.0 == cat && c.0 != CATEGORIES[0].0 && c.1.iter().any(|q| q.0 == name));
     f.remove("__savedPreset");
     f.insert("width".into(), json!(w));
     f.insert("height".into(), json!(h));
     f.insert("resolution".into(), json!(ppi));
     f.insert("__preset".into(), json!(name));
     f.insert("__unit".into(), json!(unit));
+    match tab {
+        Some((tab, _)) if ARTBOARD_CATEGORIES.contains(tab) => {
+            f.insert("artboard".into(), json!(true));
+        }
+        // Off is the checkbox's and `file.new`'s default.
+        Some(_) => {
+            f.remove("artboard");
+        }
+        None => {}
+    }
 }
 
 /// The colour mode of the dialog's `mode` value.
