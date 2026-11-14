@@ -420,14 +420,18 @@ pub(super) fn shortcuts_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut
                         }
                     });
                 } else {
-                    // Edit › Menus, Keyboard Shortcuts, Preferences, Save and Exit always stay (#5096).
-                    let hideable = photocraft_engine::prefs::MenuCustomization::hideable(id);
-                    let mut visible = !hideable || !hidden.contains(id);
-                    ui.add_enabled_ui(hideable, |ui| crate::widgets::checkbox(ui, &mut visible, tl!("Visible")));
-                    if visible {
-                        hidden.retain(|h| h != id);
-                    } else if !hidden.contains(id) {
-                        hidden.push(id.clone());
+                    // Items that can't be hidden (File › Close, Save…, Edit › Menus…) have no
+                    // visibility control at all, as in the reference application (#14335).
+                    if photocraft_engine::prefs::MenuCustomization::hideable(id) {
+                        let mut visible = !hidden.contains(id);
+                        crate::widgets::checkbox(ui, &mut visible, tl!("Visible"));
+                        if visible {
+                            hidden.retain(|h| h != id);
+                        } else if !hidden.contains(id) {
+                            hidden.push(id.clone());
+                        }
+                    } else {
+                        ui.label("");
                     }
                     let mut col = colors.get(id).cloned().unwrap_or_else(|| "none".into());
                     let opts: Vec<(String, &str)> =

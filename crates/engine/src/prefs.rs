@@ -525,6 +525,8 @@ pub use photocraft_paint::ResponseCurve as PressureCurve;
 mod cmds;
 mod customize;
 mod files;
+#[cfg(test)]
+mod menus_hideable_tests;
 mod shortcuts;
 mod store;
 mod validate;
@@ -1310,10 +1312,12 @@ pub struct MenuCustomization {
 }
 
 impl MenuCustomization {
-    /// False for the items Edit › Menus can't hide (#5096): the way back into this dialog
-    /// (Edit › Menus, Edit › Keyboard Shortcuts), Preferences, Save, Save As and Exit.
+    /// False for the items Edit › Menus can't hide, as measured in the reference application
+    /// (#14335): File › Clear Recent File List, Close, Save, Save As…, Save a Copy… and Exit, and
+    /// Edit › Menus… (the way back into this dialog). Edit › Keyboard Shortcuts…, the Preferences
+    /// pages and the Help items can be hidden; any item can still be coloured.
     pub fn hideable(id: &str) -> bool {
-        !matches!(id, "edit.menus" | "edit.keyboardShortcuts" | "file.save" | "file.saveAs" | "file.exit") && !id.starts_with("edit.preferences")
+        !matches!(id, "file.clearRecent" | "file.close" | "file.save" | "file.saveAs" | "file.saveACopy" | "file.exit" | "edit.menus")
     }
 
     /// Whether the menus leave `id` out. Items that can't be hidden stay shown even when an
