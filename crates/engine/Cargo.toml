@@ -68,7 +68,7 @@ photocraft-io = { workspace = true, features = ["testgen"] }
 # Synthetic camera raw files for the open tests.
 photocraft-raw = { workspace = true, features = ["testgen"] }
 photocraft-testkit = { workspace = true }
+exr = { version = "1.73", default-features = false }
 # WebAssembly text -> binary for plug-in test modules (Apache-2.0 WITH LLVM-exception).
 wat = "1.228"
 # Synthetic multi-part EXR fixtures for the parts-commands tests.
-exr = { version = "1.73", default-features = false }

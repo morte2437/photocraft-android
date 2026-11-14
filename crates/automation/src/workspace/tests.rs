@@ -1499,6 +1499,22 @@ fn same_root_leaf_link_save_replaces_the_link_without_writing_its_target() {
     assert!(!std::fs::symlink_metadata(inside.join("link.png")).unwrap().file_type().is_symlink());
 }
 
+/// A hardlink inside a root names the outside inode, so it reads that content. Writing over it is
+/// an atomic replace of the directory entry: the other name and its inode keep their bytes.
+#[cfg(unix)]
+#[test]
+fn hardlink_inside_a_root_reads_the_target_but_write_over_replaces_the_link() {
+    let (inside, outside, workspace) = roots("hardlink");
+    let target = outside.join("target.png");
+    std::fs::write(&target, b"outside").unwrap();
+    std::fs::hard_link(&target, inside.join("linked.png")).unwrap();
+
+    assert_eq!(workspace.read("linked.png").unwrap(), b"outside");
+    workspace.write("linked.png", b"replacement").unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"outside", "the outside inode is not modified");
+    assert_eq!(std::fs::read(inside.join("linked.png")).unwrap(), b"replacement");
+}
+
 #[test]
 fn directory_pcraft_uses_ordered_roots_without_falling_back_after_selection() {
     let (library, work, _) = roots("pcraft-ordered");

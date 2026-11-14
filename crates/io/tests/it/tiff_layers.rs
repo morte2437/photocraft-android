@@ -412,44 +412,27 @@ fn damaged_layer_data_opens_flattened_part(part: u64) {
 /// the file is retagged MinIsBlack first. The result is then a multiband image of every sample,
 /// which is what libtiff's `TIFFReadScanline` returns and what a RIP walks.
 fn independent_samples(bytes: &[u8]) -> (u16, Vec<u16>, Vec<u16>, u32, Vec<u8>) {
-    let mut tags = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).expect("tiff tags");
-    let spp: u16 = tags.get_tag_unsigned(tiff::tags::Tag::SamplesPerPixel).expect("spp");
-    let bps = tags.get_tag_u16_vec(tiff::tags::Tag::BitsPerSample).expect("bps");
-    let extra = tags.get_tag_u16_vec(tiff::tags::Tag::ExtraSamples).unwrap_or_default();
-    let rows = tags.find_tag_unsigned::<u32>(tiff::tags::Tag::RowsPerStrip).ok().flatten().unwrap_or(0);
-    let patched = photometric_min_is_black(bytes);
-    let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(patched.as_slice())).expect("tiff decode");
-    let tiff::decoder::DecodingResult::U8(samples) = dec.read_image().expect("read image") else {
-        panic!("expected 8-bit samples");
-    };
-    (spp, bps, extra, rows, samples)
-}
-
-/// Classic-TIFF photometric tag 262 → 1 (MinIsBlack), value stored inline in the IFD entry.
-fn photometric_min_is_black(src: &[u8]) -> Vec<u8> {
-    let mut bytes = src.to_vec();
-    let le = bytes.first().copied() == Some(b'I');
-    let ru16 = |b: &[u8], i: usize| -> Option<u16> {
-        let s = b.get(i..i + 2)?;
-        Some(if le { u16::from_le_bytes([s[0], s[1]]) } else { u16::from_be_bytes([s[0], s[1]]) })
-    };
-    let ru32 = |b: &[u8], i: usize| -> Option<u32> {
-        let s = b.get(i..i + 4)?;
-        Some(if le { u32::from_le_bytes(s.try_into().ok()?) } else { u32::from_be_bytes(s.try_into().ok()?) })
-    };
-    let Some(ifd) = ru32(&bytes, 4) else { return bytes };
-    let Some(n) = ru16(&bytes, ifd as usize) else { return bytes };
-    for e in 0..n as usize {
-        let at = ifd as usize + 2 + e * 12;
-        if ru16(&bytes, at) == Some(262) {
-            let value = if le { 1u16.to_le_bytes() } else { 1u16.to_be_bytes() };
-            if let Some(slot) = bytes.get_mut(at + 8..at + 10) {
-                slot.copy_from_slice(&value);
+    use std::io::Read;
+    let tiff = craft_tiff::Tiff::parse(bytes).expect("tiff tags");
+    let ifd = tiff.ifds.first().expect("ifd0");
+    let spp = ifd.u16(craft_tiff::tags::SAMPLES_PER_PIXEL).expect("spp");
+    let bps: Vec<u16> = ifd.value(craft_tiff::tags::BITS_PER_SAMPLE).expect("bps").to_u64_vec().into_iter().map(|v| v as u16).collect();
+    let extra: Vec<u16> = ifd.value(craft_tiff::tags::EXTRA_SAMPLES).map(|v| v.to_u64_vec().into_iter().map(|x| x as u16).collect()).unwrap_or_default();
+    let rows = ifd.u32(craft_tiff::tags::ROWS_PER_STRIP).unwrap_or(0);
+    let info = craft_tiff::image::ImageInfo::from_ifd(ifd).expect("tiff info");
+    let comp = ifd.u16(craft_tiff::tags::COMPRESSION).unwrap_or(1);
+    let mut samples = Vec::new();
+    for chunk in info.chunks(bytes.len() as u64) {
+        let raw = craft_tiff::image::chunk_bytes(bytes, &chunk).expect("chunk bytes");
+        match comp {
+            1 => samples.extend_from_slice(raw),
+            8 | 32946 => {
+                flate2::read::ZlibDecoder::new(raw).read_to_end(&mut samples).expect("deflate");
             }
-            break;
+            other => panic!("unexpected compression {other} in tiff_layers test"),
         }
     }
-    bytes
+    (spp, bps, extra, rows, samples)
 }
 
 fn assert_plane(samples: &[u8], spp: usize, plane: usize, expected: &[u8]) {
@@ -616,8 +599,8 @@ fn transparent_tiff_without_channels_keeps_image_alpha() {
         let img = photocraft_codecs::decode(&r.bytes).unwrap();
         assert!(img.layout().has_alpha(), "{layers}");
         assert!(img.meta.extra_samples.is_empty(), "{layers}");
-        let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(r.bytes.as_slice())).unwrap();
-        let extra = dec.get_tag_u16_vec(tiff::tags::Tag::ExtraSamples).unwrap();
+        let parsed = craft_tiff::Tiff::parse(&r.bytes).unwrap();
+        let extra: Vec<u16> = parsed.ifds[0].value(craft_tiff::tags::EXTRA_SAMPLES).unwrap().to_u64_vec().into_iter().map(|x| x as u16).collect();
         assert_eq!(extra, vec![2], "{layers}");
         assert!(!r.warnings.iter().any(|w| w.contains("Save Transparency")), "{layers}: {:?}", r.warnings);
         if layers {
