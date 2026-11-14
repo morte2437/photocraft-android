@@ -40,6 +40,8 @@ fn lab_greys_assign_but_not_convert() {
     for depth in [8, 16] {
         let mut s = session("lab", depth);
         assert_eq!(mode(&s), ColorMode::Lab);
+        // `file.new` leaves Lab untagged; tag it, so "profile unchanged" compares a real profile.
+        std::sync::Arc::make_mut(&mut s.active_mut().unwrap().doc).icc_profile = Some(Builtin::LabD50.profile().to_bytes());
         assert_refused(&mut s, &format!("Lab {depth}-bit"));
         let e = s.execute(CMD, json!({"profile": "lab-d50"})).unwrap_err();
         assert!(e.to_string().contains("Lab mode"), "the reason names the mode: {e}");
