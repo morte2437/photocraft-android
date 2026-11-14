@@ -190,3 +190,28 @@ fn the_modified_defaults_offer_their_own_copy_name() {
     assert_eq!(field(&h, id, "activeSet"), json!("A"));
     assert_eq!(field(&h, id, "overrides"), json!({"edit.copy": "F9"}));
 }
+
+/// CodeRabbit on #14864: after Yes the name row waits for Create. Choosing another set meanwhile
+/// (and No) replaces that operation, so the name step and its pending switch go: Create would
+/// otherwise save the other set's bindings as "A Copy" and switch to the first target.
+#[test]
+fn another_set_chosen_during_the_name_step_ends_it_and_its_pending_switch() {
+    let (mut h, id) = dialog();
+    // A second set B, saved beside A.
+    h.state_mut().run("edit.keyboardShortcuts", json!({"set": {"edit.cut": "F7"}, "saveSet": "B"})).unwrap();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"useSet": "A"})).unwrap();
+    let sets = h.state().session.prefs().shortcut_sets.clone();
+    set_field(&mut h, id, "sets", json!(sets));
+    set_field(&mut h, id, "activeSet", json!("A"));
+    set_field(&mut h, id, "overrides", json!({"edit.copy": "F8"}));
+    pick_set(&mut h, "PhotoCraft Defaults");
+    click(&mut h, "Yes");
+    assert_eq!(field(&h, id, "newSetName"), json!("A Copy"), "the name step is open");
+    assert_eq!(field(&h, id, "switchAfterSave"), json!(""), "with the defaults as the pending target");
+    pick_set(&mut h, "B");
+    assert!(asking(&h), "another switch question");
+    click(&mut h, "No");
+    assert_eq!(field(&h, id, "activeSet"), json!("B"), "B is in use");
+    assert_eq!(field(&h, id, "newSetName"), Value::Null, "the name step is gone");
+    assert_eq!(field(&h, id, "switchAfterSave"), Value::Null, "and so is its pending switch");
+}

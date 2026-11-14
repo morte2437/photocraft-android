@@ -626,10 +626,15 @@ fn set_row(
                 sets.get(&chosen).cloned().unwrap_or_default().apply(overrides, alternates);
                 active = chosen;
                 message.clear();
+                // This replaces a naming step left open after Yes, and its pending switch.
+                new_name = None;
+                switch_after_save = None;
             }
         }
         if ui.button(tl!("New Set…")).on_hover_text(tl!("Save these shortcuts as a new set")).clicked() {
             new_name = Some(String::new());
+            // A plain new set: no switch follows it.
+            switch_after_save = None;
         }
         if ui.add_enabled(!active.is_empty() && modified, egui::Button::new(tl!("Save"))).on_hover_text(tl!("Save the changes to this set")).clicked() {
             sets.insert(active.clone(), now.clone());
@@ -639,6 +644,8 @@ fn set_row(
         if ui.add_enabled(!active.is_empty(), egui::Button::new(tl!("Delete"))).on_hover_text(tl!("Delete this set")).clicked() {
             sets.remove(&active);
             active.clear();
+            new_name = None;
+            switch_after_save = None;
             *message = tl!("Set deleted.").into();
             *warning = false;
         }
@@ -659,6 +666,9 @@ fn set_row(
                 active = target.clone();
                 switch_to = None;
                 message.clear();
+                // Replaces a naming step left open after an earlier Yes, and its pending switch.
+                new_name = None;
+                switch_after_save = None;
             }
             if ui.button(tl!("Cancel")).clicked() {
                 switch_to = None;
