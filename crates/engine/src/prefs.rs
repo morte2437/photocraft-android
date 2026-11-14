@@ -1334,10 +1334,9 @@ pub struct ToolbarCustomization {
     pub order: Vec<String>,
     /// The toolbar's slots in order, each a group of tools in flyout order. `None` is the
     /// default layout ([`DEFAULT_TOOLBAR`]).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub toolbar: Option<Vec<Vec<String>>>,
-    /// Extra Tools: groups that get no slot of their own.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Extra Tools: groups that get no slot of their own. Like `toolbar`, `null` is the default
+    /// (stored as such, so `prefs.reset` of one path finds its default).
     pub extras: Option<Vec<Vec<String>>>,
 }
 

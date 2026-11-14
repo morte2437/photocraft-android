@@ -170,3 +170,23 @@ fn older_settings_still_load() {
     let back: Preferences = serde_json::from_str(&app.session.prefs_to_json()).unwrap();
     assert_eq!(back.toolbar.layout().toolbar, vec![vec!["Brush".to_string()]]);
 }
+
+/// CodeRabbit on #14811: `prefs.reset` of one layout path works once `edit.toolbar` stored a custom
+/// layout. The default layout used to be left out of the stored JSON, so reset found no default
+/// for `toolbar.toolbar` or `toolbar.extras` and reported an unknown preference.
+#[test]
+fn prefs_reset_brings_back_one_part_of_a_custom_layout() {
+    for path in ["toolbar.toolbar", "toolbar.extras"] {
+        let mut app = app();
+        app.run("edit.toolbar", json!({"toolbar": [["Zoom"], ["Hand"]], "extras": [["Move", "Artboard"]]})).unwrap();
+        app.run("prefs.reset", json!({"path": path})).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let custom = ToolbarCustomization::default();
+        let layout = app.session.prefs().toolbar.layout();
+        if path == "toolbar.toolbar" {
+            assert_ne!(layout.toolbar, vec![vec!["Zoom".to_string()], vec!["Hand".to_string()]], "{path}: back to the default groups");
+            assert_eq!(app.session.prefs().toolbar.toolbar, custom.toolbar, "{path}: the stored layout is the default again");
+        } else {
+            assert_eq!(app.session.prefs().toolbar.extras, custom.extras, "{path}: the stored Extra Tools are the default again");
+        }
+    }
+}
