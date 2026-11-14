@@ -358,14 +358,14 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         f.insert("height".into(), json!(oh));
     }
     // The sides the command applies: whole pixels, 1 to 300000 (image.imageSize clamps the same way).
-    let side = |key| num(f, key).round().clamp(1.0, 300_000.0);
-    let (w, h, ow, oh) = (side("width"), side("height"), ow.round(), oh.round());
+    let side = |key| num(f, key).round().clamp(1.0, f64::from(photocraft_format::MAX_CANVAS_SIDE));
+    let (w, h, orig_w, orig_h) = (side("width"), side("height"), ow.round().max(0.0), oh.round().max(0.0));
     // "(was …)" appears only once the pixel dimensions differ from the original (#14768).
     let image_bpp = num(f, "__imageBytesPerPixel").max(0.0);
     // Rows hold whole bytes, so a Bitmap row of w bits takes ceil(w / 8) bytes.
     let flat = |width: f64, height: f64| (width * image_bpp).ceil() * height;
-    let (size, old) = (flat(w, h), flat(ow, oh));
-    let readout = if (w, h) == (ow, oh) {
+    let (size, old) = (flat(w, h), flat(orig_w, orig_h));
+    let readout = if (w, h) == (orig_w, orig_h) {
         image_size_bytes(size)
     } else {
         crate::i18n::fmt(tl!("{size} (was {old})"), &[("size", &image_size_bytes(size)), ("old", &image_size_bytes(old))])
