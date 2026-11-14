@@ -912,6 +912,9 @@ mod transform_relative_position_tests;
 mod star_tool_tests;
 
 #[cfg(test)]
+mod new_doc_bitmap_mode_tests;
+
+#[cfg(test)]
 mod transform_several_tests;
 
 #[cfg(test)]
