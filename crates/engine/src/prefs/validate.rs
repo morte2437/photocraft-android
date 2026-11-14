@@ -3,7 +3,7 @@ use super::{
     AppearanceMode, Ask, CanvasBorder, CanvasColor, CheckerColors, CheckerSize, ColorPicker, DarkTheme, ExportLocation, ExportMetadata, FontPreview,
     GpuBackend, Interpolation, LightTheme, LineStyle, LinuxDisplayServer, LogDestination, LogDetail, OtherCursor, PaintingCursor, PlaybackPerformance,
     PointSize, PressureCurve, QuickExportFormat, RawColorSpace, RawDemosaic, RawDepth, RawSharpen, RenderingMode, RightClickPaint, TabletInput, TextEngine,
-    Theme, TypeUnit, UiFontSize, UiScale, Unit, Value,
+    Theme, TypeUnit, UiFontSize, UiScale, Unit, Value, WhenAppClosed,
 };
 
 /// Preferences dialog sections in Photoshop's order: (id, title).
@@ -40,8 +40,6 @@ pub const HIDDEN_UNTIL_IMPLEMENTED: &[&str] = &[
     "workspace.autoShowHiddenPanels",
     "workspace.enableFloatingDocumentWindowDocking",
     "performance.legacyCompositing",
-    "unitsAndRulers.columnWidth",
-    "unitsAndRulers.gutter",
     "plugIns.showExtensionPanels",
     "plugIns.allowScriptsToConnect",
     "type.textEngine",
@@ -104,6 +102,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "performance.gpuBackend" => GpuBackend::NAMES,
         "performance.linuxDisplayServer" => LinuxDisplayServer::NAMES,
         "performance.renderingMode" => RenderingMode::NAMES,
+        "integrations.whenAppClosed" => WhenAppClosed::NAMES,
         "actions.performance" => PlaybackPerformance::NAMES,
         _ => return None,
     })

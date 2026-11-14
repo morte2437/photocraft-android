@@ -157,18 +157,32 @@ fn mask_destination(s: &Session, p: &Value) -> Result<LayerId> {
 /// Move a layer's pixels, linked mask and type by whole pixels (vectors move via
 /// `vector_cmds::translate_vectors`).
 pub(crate) fn translate_layer(doc: &Document, l: &mut Layer, dx: i32, dy: i32) {
+    translate_layer_wrapped(doc, l, dx, dy, None);
+}
+
+/// [`translate_layer`], and when `wrap` is the canvas, raster pixels and linked masks that leave
+/// it come back on the opposite edge (View › Pattern Preview). Type, shapes and smart objects
+/// still move in a straight line: their geometry is not a tile of samples, and a linked mask on
+/// those layers follows that raw delta.
+pub(crate) fn translate_layer_wrapped(doc: &Document, l: &mut Layer, dx: i32, dy: i32, wrap: Option<photocraft_geom::Rect>) {
     use crate::layer_multi_cmds::shift_surface as translate_surface;
+    use crate::layer_multi_cmds::wrap_surface;
+    let move_px = |s: &photocraft_raster::Surface, wrap: Option<photocraft_geom::Rect>| match wrap {
+        Some(tile) => wrap_surface(s, dx, dy, tile),
+        None => translate_surface(s, dx, dy),
+    };
     // Linked patterns in the layer's effects move with it.
     if let Some(r) = &mut l.effects.reference {
         *r = (r.0 + f64::from(dx), r.1 + f64::from(dy));
     }
+    let mask_wrap = wrap.filter(|_| crate::layer_multi_cmds::wraps_linked_masks(&l.content));
     if let Some(m) = &mut l.mask
         && m.linked
     {
-        m.surface = translate_surface(&m.surface, dx, dy);
+        m.surface = move_px(&m.surface, mask_wrap);
     }
     match &mut l.content {
-        LayerContent::Raster(s) => *s = translate_surface(s, dx, dy),
+        LayerContent::Raster(s) => *s = move_px(s, wrap),
         LayerContent::Text(t) => {
             t.transform = photocraft_geom::Affine::translate(dx as f64, dy as f64).mul(&t.transform);
             // A whole-pixel move shifts the rendered text and its PSD position as they are.
@@ -190,7 +204,7 @@ pub(crate) fn translate_layer(doc: &Document, l: &mut Layer, dx: i32, dy: i32) {
                 a.rect = a.rect.translate(dx, dy);
             }
             for c in &mut g.children {
-                translate_layer(doc, c, dx, dy);
+                translate_layer_wrapped(doc, c, dx, dy, wrap);
             }
         }
         LayerContent::Smart(sm) => crate::smart_cmds::shift_smart(sm, dx, dy),

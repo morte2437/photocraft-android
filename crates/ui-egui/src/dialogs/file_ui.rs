@@ -100,7 +100,13 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
             app,
             id,
             tl!("Contact Sheet II"),
-            json!({"input": dir, "units": "inches", "width": 8.0, "height": 10.0, "resolution": 300.0, "mode": "rgb", "depth": 8, "columns": 5, "rows": 6, "placeAcrossFirst": true, "autoSpacing": true, "rotateForBestFit": false, "caption": true, "font": photocraft_text::fonts::DEFAULT_FAMILY, "fontSize": 12.0, "flatten": false}),
+            json!({"input": dir, "units": "inches", "width": 8.0, "height": 10.0, "resolution": 300.0, "mode": "rgb", "depth": 8, "columns": 5, "rows": 6, "placeAcrossFirst": true, "autoSpacing": true, "rotateForBestFit": false, "caption": true, "font": photocraft_text::fonts::DEFAULT_FAMILY, "fontSize": 12.0, "flatten": false,
+                // Source Images: the folder, then Include Subfolders (on) and, right below it,
+                // Group Images by Folder (off, greyed while Include Subfolders is off).
+                "includeSubfolders": true, "groupByFolder": false, "__order": ["input", "includeSubfolders", "groupByFolder"],
+                "__labels": {"includeSubfolders": tl!("Include Subfolders"), "groupByFolder": tl!("Group Images by Folder")},
+                "__enabledBy": {"groupByFolder": "includeSubfolders"},
+                "__tooltips": {"groupByFolder": tl!("Images in subfolders will start on a new Contact Sheet")}}),
             json!({"units": ["inches", "cm", "pixels"], "mode": ["rgb", "gray", "cmyk", "lab"]}),
         ),
         "file.automate.createDroplet" => {
@@ -136,14 +142,21 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
         }
         "file.package" => form(app, id, "Package", json!({"dir": dir}), json!({})),
         "file.export.pathsToIllustrator" => {
-            let mut names = vec!["all".to_string()];
-            if let Some(d) = app.session.active() {
+            // Document Bounds comes first; a document without paths offers only it, selected (#13771).
+            let mut names = vec!["documentBounds".to_string()];
+            if let Some(d) = app.session.active().filter(|d| d.doc.work_path.is_some() || !d.doc.paths.is_empty()) {
+                names.push("all".into());
                 if d.doc.work_path.is_some() {
                     names.push("work".into());
                 }
                 names.extend(d.doc.paths.iter().map(|p| p.name.clone()));
             }
-            form(app, id, "Export Paths to File", json!({"path": format!("{dir}/{stem}.ai"), "paths": "all"}), json!({"paths": names}))
+            let fallback = if names.len() > 1 { "all" } else { "documentBounds" };
+            // Opens on the Paths panel's selected row, as the reference application does (#13777).
+            // A shape layer's path ("layer") is not an entry yet, and a row the document no longer
+            // has falls back to All Paths (Document Bounds without paths).
+            let paths = app.ui.selected_path.as_deref().filter(|s| *s != "layer" && names.iter().any(|n| n == s)).unwrap_or(fallback).to_string();
+            form(app, id, "Export Paths to File", json!({"path": format!("{dir}/{stem}.ai"), "paths": paths}), json!({"paths": names}))
         }
         _ => return None,
     }))
@@ -215,10 +228,16 @@ fn b(f: &Map<String, Value>, k: &str, d: bool) -> bool {
 #[path = "file_ui/web_preview.rs"]
 mod web_preview;
 
+/// Draw a compact dropdown whose selected value wraps within its assigned width.
 fn dropdown_str(ui: &mut egui::Ui, id: &str, name: &str, f: &mut Map<String, Value>, key: &str, opts: &[(&str, &str)], w: f32) {
     let mut v = s(f, key, opts.first().map_or("", |o| o.0));
     let o: Vec<(String, &str)> = opts.iter().map(|(k, l)| (k.to_string(), *l)).collect();
-    if crate::widgets::dropdown(ui, id, name, &mut v, &o, w) {
+    let changed = ui.scope(|ui| {
+        ui.set_max_width(w);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        crate::widgets::dropdown(ui, id, name, &mut v, &o, w)
+    });
+    if changed.inner {
         f.insert(key.into(), json!(v));
     }
 }
@@ -241,6 +260,9 @@ fn number(ui: &mut egui::Ui, f: &mut Map<String, Value>, key: &str, label: &str,
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod contact_sheet_subfolders_tests;
 
 #[cfg(test)]
 mod web_playback_tests {

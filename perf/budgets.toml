@@ -303,7 +303,7 @@ bench = "perf_scenarios"
 row = "open 20 MP layered PSD (decode + first composite)"
 budget_ms = 3000
 
-# P20/P63: generated fixtures (`photocraft_psd::fixtures`, #5107); the row checks a pixel, so a
+# P20/P63: generated fixtures (`craft_psd::fixtures`, #5107); the row checks a pixel, so a
 # blank document fails it. No time budget yet: the target is the behaviour (progress, editable).
 [[scenario]]
 id = "P20"
@@ -882,3 +882,31 @@ issue = 9329
 bench = "perf_scenarios"
 row = "app frame after Paste Into on 24 MP (CPU canvas)"
 enforce = false  # new; no baseline yet
+
+# ---- #11103: Free Transform drag stalls -------------------------------------------------------
+
+[[bench]]
+name = "free_transform_bench"
+package = "photocraft-ui-egui"
+args = ["--reps", "9"]
+quick_args = ["--size", "1200x800", "--reps", "3", "--steps", "20"]
+note = "two selected layers on 24 MP: Ctrl+T + first preview frame, and drag updates (pointer move + preview frame) scaling through new mip levels or moving; CPU side, no GPU upload/present"
+
+[[scenario]]
+id = "P90"
+title = "Free Transform begin, 2 layers on 24 MP (Ctrl+T + first preview frame)"
+issue = 11103
+bench = "free_transform_bench"
+row = "Free Transform begin, 2 layers on 24 MP: Ctrl+T + first frame"
+budget_ms = 300
+enforce = true  # #11103: 166 ms p50, 173 ms max (2026-11-11); a regression guard until the press frame is reworked
+
+[[scenario]]
+id = "P91"
+title = "Free Transform drag update, 2 layers on 24 MP (scale through new mip levels)"
+issue = 11103
+bench = "free_transform_bench"
+row = "Free Transform drag update, 2 layers on 24 MP: scale through mip levels"
+metric = "max"
+budget_ms = 16
+enforce = true  # #11103: max 43.2 ms before (a mip level built in the frame), 0.09 ms after (2026-11-11)

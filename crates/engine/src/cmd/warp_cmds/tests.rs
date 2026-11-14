@@ -11,7 +11,7 @@ fn a_warp_box_holding_the_whole_layer_gives_what_compositing_over_the_cleared_la
         let w = Warp::preset(WarpStyle::Flag, 35.0, rect_f(rect));
         // What the warp built before the shortcut: the warp composited over the cleared layer.
         let map = |x: f64, y: f64| w.map(x, y);
-        let warped = warp_mesh_surface_with(&surf, rect, &map, Interp::Bicubic, &Interrupt::NONE).unwrap();
+        let warped = warp_mesh_surface_with(&surf, rect, &map, Fold::IN_PLACE, Interp::Bicubic, &Interrupt::NONE).unwrap();
         let mut want = surf.clone();
         crate::pixels::try_clear_surface(&mut want, rect, None).unwrap();
         crate::transform_cmds::composite_over(&mut want, &warped);
@@ -308,9 +308,8 @@ fn split_cuts_existing_sections_instead_of_replacing_the_grid() {
     let plain = Warp::custom(BezierMesh::identity(b, 1, 1), b);
     let cut = split_warp(&plain, Some([b[0] + 0.25 * 90.0, 30.0]), Split::Vertical).unwrap();
     let m = cut.mesh.unwrap();
-    for u in [0.0, 0.25, 1.0 / 3.0, 2.0 / 3.0, 1.0] {
-        assert!(m.us.iter().any(|k| (k - u).abs() < 1e-6), "default guides stay, cut at 0.25: {:?}", m.us);
-    }
+    assert_eq!(m.us.len(), 3, "the cut at 0.25 replaces the vertical thirds: {:?}", m.us);
+    assert!((m.us[1] - 0.25).abs() < 1e-6, "{:?}", m.us);
     assert_eq!(m.vs, vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]);
     let grid = BezierMesh::identity(b, 3, 3);
     let cut = split_warp(&Warp::custom(grid.clone(), b), Some([45.0, 10.0]), Split::Vertical).unwrap();

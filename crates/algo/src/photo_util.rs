@@ -167,8 +167,8 @@ impl BandChol {
         let n = a.diag.len();
         let mut p = 0;
         for i in 0..n {
-            for k in a.rows[i]..a.rows[i + 1] {
-                p = p.max(i.abs_diff(a.cols[k]));
+            for &col in a.cols.iter().take(a.rows[i + 1]).skip(a.rows[i]) {
+                p = p.max(i.abs_diff(col));
             }
         }
         if n.saturating_mul(p + 1) > 40_000_000 {

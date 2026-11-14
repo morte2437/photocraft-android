@@ -8,7 +8,7 @@
 //! panel menu (the group's "…" button) adds New Swatch, New Group, Import/Replace (`.aco`,
 //! `.act`, `.ase`), Export (`.aco`) and Export for Exchange (`.ase`) and Reset. Every action is a
 //! `swatches.*` engine command; this module only draws and dispatches. Colours are shown in the
-//! RGB working space through `photocraft-cms` (cached per library revision and colour settings).
+//! RGB working space through `craft-cms` (cached per library revision and colour settings).
 
 use std::ffi::OsStr;
 use std::sync::Arc;
@@ -288,7 +288,7 @@ mod tests {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         let mut colors = vec![[10u8, 20, 30]; 256];
         colors[0] = [0, 1, 5];
-        let bytes = photocraft_psd::act::write(&colors, None, None).unwrap();
+        let bytes = craft_psd::act::write(&colors, None, None).unwrap();
         let r = import_bytes(&mut app, "Palette.act", &bytes, true).unwrap();
         assert_eq!((r["format"].as_str(), r["count"].as_u64()), (Some("act"), Some(256)));
     }
@@ -456,9 +456,7 @@ mod tests {
         type Written = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
         let written: Written = Arc::default();
         let w = written.clone();
-        let aco =
-            photocraft_psd::aco::write(&[photocraft_psd::aco::AcoSwatch { name: "Teal".into(), color: photocraft_psd::aco::AcoColor::Rgb([0, 32768, 32768]) }])
-                .unwrap();
+        let aco = craft_psd::aco::write(&[craft_psd::aco::AcoSwatch { name: "Teal".into(), color: craft_psd::aco::AcoColor::Rgb([0, 32768, 32768]) }]).unwrap();
         use crate::file_dialog::FileDialogAnswer;
         let answers = vec![
             Some(FileDialogAnswer::Contents("Ocean.aco".into(), aco.clone())),

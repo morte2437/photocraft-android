@@ -349,3 +349,27 @@ fn preference_folder_is_loaded() {
     registry::remove("test.cmds.folder");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn bitmap_documents_refuse_plugin_filters_but_keep_plugin_management() {
+    // #10484: Photoshop 2025 refuses its filter plug-in modules (Solarize, Clouds, Average) on a
+    // Bitmap document and runs them on a Grayscale one. Installing, listing and removing stay.
+    let id = "test.cmds.bitmap";
+    Session::new().execute("plugin.install", json!({"data": b64(&wat_plugin(id, "{}", GREY))})).unwrap();
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 28, "mode": "grayscale", "background": "white"})).unwrap();
+    s.execute("image.mode.bitmap", json!({"method": "threshold"})).unwrap();
+    let before = pixels(&s);
+    let steps = s.active().unwrap().history.past_len();
+    assert!(!s.is_enabled(RUN), "Filter › Plug-ins is greyed out");
+    let e = s.execute(RUN, json!({"id": id})).unwrap_err().to_string();
+    assert!(e.contains("Bitmap mode"), "{e}");
+    assert_eq!(pixels(&s), before);
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "no undo step");
+    for cmd in ["plugin.list", "plugin.install", "plugin.remove", "plugin.reload"] {
+        assert!(s.is_enabled(cmd), "{cmd}");
+    }
+    let list = s.execute("plugin.list", json!({})).unwrap();
+    assert!(list["plugins"].as_array().unwrap().iter().any(|p| p["id"] == id));
+    s.execute("plugin.remove", json!({"id": id})).unwrap();
+}

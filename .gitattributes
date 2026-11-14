@@ -1,3 +1,6 @@
 # This fork keeps its own front page: on merges from upstream PhotoCraft, our README wins
 # (needs once per clone: git config merge.ours.driver true).
 README.md merge=ours
+
+# The craft-i18n pin: CI and the build read it as one SHA, so it stays LF everywhere (readers trim it too).
+craft-i18n.rev text eol=lf

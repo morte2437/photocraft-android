@@ -3,14 +3,14 @@
 //! Photoshop `.aco` and Adobe Swatch Exchange `.ase` files.
 //!
 //! The library is [`PresetState::swatches`](crate::presets::PresetState) (model and colour
-//! conversions in [`crate::presets::swatches`]); file parsing is `photocraft_psd::{aco, ase}`.
+//! conversions in [`crate::presets::swatches`]); file parsing is `craft_psd::{aco, ase}`.
 //! Swatches are addressed by name (names are kept unique across the library, as for the other
 //! presets), optionally narrowed by `group`, or by `index` (position across all groups, in
 //! panel order). Like the other preset commands they change the preferences document, not a
 //! document's history.
 
-use photocraft_psd::aco::{AcoColor, AcoSwatch};
-use photocraft_psd::ase::{AseColor, AseEntry, AseFile, AseKind, AseSwatch};
+use craft_psd::aco::{AcoColor, AcoSwatch};
+use craft_psd::ase::{AseColor, AseEntry, AseFile, AseKind, AseSwatch};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -473,18 +473,18 @@ fn kind_to_ase(k: SwatchKind) -> AseKind {
 }
 
 /// Colors in an `.act` color table (what the format holds).
-pub const ACT_COLORS: usize = photocraft_psd::act::COLOR_COUNT;
+pub const ACT_COLORS: usize = craft_psd::act::COLOR_COUNT;
 
 /// `.act` bytes as `#rrggbb` colors plus the transparent index, for the Color Table dialog.
 pub fn act_table(bytes: &[u8]) -> std::result::Result<(Vec<String>, Option<u64>), String> {
-    let f = photocraft_psd::act::parse(bytes).map_err(|e| e.to_string())?;
+    let f = craft_psd::act::parse(bytes).map_err(|e| e.to_string())?;
     let hex = |c: &[u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
     Ok((f.used().iter().map(hex).collect(), f.transparent_index().map(|i| i as u64)))
 }
 
 /// Encode colors as `.act` bytes (at most [`ACT_COLORS`]); the transparent index is kept.
 pub fn act_bytes(colors: &[[u8; 3]], transparent: Option<u16>) -> std::result::Result<Vec<u8>, String> {
-    photocraft_psd::act::write(colors, Some(colors.len().min(ACT_COLORS) as u16), transparent).map_err(|e| e.to_string())
+    craft_psd::act::write(colors, Some(colors.len().min(ACT_COLORS) as u16), transparent).map_err(|e| e.to_string())
 }
 
 /// Parse a swatch file into groups (`group` names the group for ungrouped colours).
@@ -494,7 +494,7 @@ pub fn read_file(bytes: &[u8], format: Format, group: &str) -> std::result::Resu
     let fallback = |i: usize, name: &str| if name.trim().is_empty() { format!("Swatch {}", i + 1) } else { clip(name.trim()) };
     match format {
         Format::Aco => {
-            let f = photocraft_psd::aco::parse(bytes).map_err(|e| format!("not a readable .aco swatch file: {e}"))?;
+            let f = craft_psd::aco::parse(bytes).map_err(|e| format!("not a readable .aco swatch file: {e}"))?;
             let books = f.swatches.iter().filter(|s| matches!(s.color, AcoColor::Other { .. })).count();
             if books > 0 {
                 warnings.push(format!(
@@ -510,7 +510,7 @@ pub fn read_file(bytes: &[u8], format: Format, group: &str) -> std::result::Resu
             out.push(Group::new(group, items));
         }
         Format::Act => {
-            let f = photocraft_psd::act::parse(bytes).map_err(|e| format!("not a readable .act color table: {e}"))?;
+            let f = craft_psd::act::parse(bytes).map_err(|e| format!("not a readable .act color table: {e}"))?;
             if let Some(t) = f.transparent_index() {
                 warnings.push(format!("color {} is the table's transparent color; swatches have no transparency so it was kept opaque", t + 1));
             }
@@ -523,7 +523,7 @@ pub fn read_file(bytes: &[u8], format: Format, group: &str) -> std::result::Resu
             out.push(Group::new(group, items));
         }
         Format::Ase => {
-            let f = photocraft_psd::ase::parse(bytes).map_err(|e| format!("not a readable .ase swatch file: {e}"))?;
+            let f = craft_psd::ase::parse(bytes).map_err(|e| format!("not a readable .ase swatch file: {e}"))?;
             let mut skipped = 0;
             let mut n = 0usize;
             let mut conv = |s: &AseSwatch| -> Option<Swatch> {
@@ -542,13 +542,13 @@ pub fn read_file(bytes: &[u8], format: Format, group: &str) -> std::result::Resu
                     AseEntry::Swatch(s) => loose.extend(conv(s)),
                     AseEntry::Group { name, swatches } => {
                         let items: Vec<Swatch> = swatches.iter().filter_map(&mut conv).collect();
-                        let name = if name.trim().is_empty() { group.to_string() } else { clip(name.trim()) };
+                        let name = if name.trim().is_empty() { clip(group) } else { clip(name.trim()) };
                         out.push(Group::new(&name, items));
                     }
                 }
             }
             if !loose.is_empty() || out.is_empty() {
-                out.insert(0, Group::new(group, loose));
+                out.insert(0, Group::new(&clip(group), loose));
             }
             if skipped > 0 {
                 warnings.push(format!("{skipped} swatches in an unknown colour model were skipped"));
@@ -576,7 +576,7 @@ pub fn write_file(groups: &[Group<Swatch>], format: Format) -> std::result::Resu
                 warnings.push(".aco files don't mark spot or global colours; save as .ase to keep them".into());
             }
             let n = swatches.len();
-            let bytes = photocraft_psd::aco::write(&swatches).map_err(|e| e.to_string())?;
+            let bytes = craft_psd::aco::write(&swatches).map_err(|e| e.to_string())?;
             Ok((bytes, n, warnings))
         }
         Format::Act => {
@@ -597,12 +597,12 @@ pub fn write_file(groups: &[Group<Swatch>], format: Format) -> std::result::Resu
             if skipped > 0 {
                 warnings.push(format!("{skipped} non-RGB swatches can't be stored in an .act file and were left out (save as .aco to keep them)"));
             }
-            if triplets.len() > photocraft_psd::act::COLOR_COUNT {
-                warnings.push(format!("only the first {} swatches fit in an .act file", photocraft_psd::act::COLOR_COUNT));
-                triplets.truncate(photocraft_psd::act::COLOR_COUNT);
+            if triplets.len() > craft_psd::act::COLOR_COUNT {
+                warnings.push(format!("only the first {} swatches fit in an .act file", craft_psd::act::COLOR_COUNT));
+                triplets.truncate(craft_psd::act::COLOR_COUNT);
             }
             let n = triplets.len();
-            let bytes = photocraft_psd::act::write(&triplets, Some(n as u16), None).map_err(|e| e.to_string())?;
+            let bytes = craft_psd::act::write(&triplets, Some(n as u16), None).map_err(|e| e.to_string())?;
             Ok((bytes, n, warnings))
         }
         Format::Ase => {
@@ -627,7 +627,7 @@ pub fn write_file(groups: &[Group<Swatch>], format: Format) -> std::result::Resu
             if books > 0 {
                 warnings.push(format!("{books} colour-book swatches can't be stored in an .ase file and were left out (save as .aco to keep them)"));
             }
-            let bytes = photocraft_psd::ase::write(&AseFile { entries }).map_err(|e| e.to_string())?;
+            let bytes = craft_psd::ase::write(&AseFile { entries }).map_err(|e| e.to_string())?;
             Ok((bytes, n, warnings))
         }
     }
@@ -639,12 +639,12 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     // `.act` has no magic: exactly 768/772 bytes. An `.act` whose first colour is `0, 1, x` or
     // `0, 2, x` starts like an `.aco`, and the .aco reader ignores trailing bytes, so at those
     // lengths an .aco header only counts when its sections fill the file exactly.
-    let act_len = bytes.len() == photocraft_psd::act::PALETTE_LEN || bytes.len() == photocraft_psd::act::PALETTE_LEN + photocraft_psd::act::TRAILER_LEN;
+    let act_len = bytes.len() == craft_psd::act::PALETTE_LEN || bytes.len() == craft_psd::act::PALETTE_LEN + craft_psd::act::TRAILER_LEN;
     let format = match str_param(p, "format") {
         Some(f) => Format::parse(f).ok_or_else(|| bad(CMD, format!("unknown format `{f}` (aco|act|ase)")))?,
         None if ext_format(str_param(p, "path")) == Some(Format::Act) => Format::Act,
-        None if bytes.starts_with(photocraft_psd::ase::SIGNATURE) => Format::Ase,
-        None if matches!(bytes.get(..2), Some([0, 1] | [0, 2])) && (!act_len || photocraft_psd::aco::sections_len(&bytes) == Some(bytes.len())) => Format::Aco,
+        None if bytes.starts_with(craft_psd::ase::SIGNATURE) => Format::Ase,
+        None if matches!(bytes.get(..2), Some([0, 1] | [0, 2])) && (!act_len || craft_psd::aco::sections_len(&bytes) == Some(bytes.len())) => Format::Aco,
         None if act_len => Format::Act,
         None => ext_format(str_param(p, "path")).ok_or_else(|| bad(CMD, "not an .aco, .act or .ase swatch file"))?,
     };

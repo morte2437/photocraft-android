@@ -109,7 +109,7 @@ fn stale_orientation_in_document_metadata_is_never_exported() {
     assert_upright(&back, "jpg");
 
     let psd = export(&d, "psd", &ExportOptions::default()).unwrap().bytes;
-    let file = photocraft_psd::PsdFile::from_bytes(&psd).unwrap();
+    let file = craft_psd::PsdFile::from_bytes(&psd).unwrap();
     let e = file.resources.iter().find(|r| r.id == 1058).expect("EXIF resource");
     assert_eq!(exif_orientation(&e.data), 1);
     let x = file.resources.iter().find(|r| r.id == 1060).expect("XMP resource");

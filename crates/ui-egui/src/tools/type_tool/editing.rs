@@ -410,6 +410,8 @@ pub(crate) fn commit_shortcut(app: &mut PhotocraftApp, ctx: &egui::Context) -> b
 /// callers don't change.
 pub fn commit_with(app: &mut PhotocraftApp, _mods: egui::Modifiers) {
     app.ui.type_insertion_style = None;
+    // A box drag in progress keeps the box it reached, as when every move was applied.
+    crate::type_box_preview::flush(app);
     crate::type_font_preview::clear(app);
     let current = app.session.active_index();
     let Some(home) = app.ui.text_edit.as_ref().map(|ed| edit_home(app, ed)) else {
@@ -536,6 +538,8 @@ pub fn end_if_left(app: &mut PhotocraftApp) {
 /// Cancel the editing session: undo it back to where it started (removes a new layer).
 pub fn cancel(app: &mut PhotocraftApp) {
     app.ui.type_insertion_style = None;
+    // The session is undone below, which took the dragged box with it before too.
+    crate::type_box_preview::discard(app);
     crate::type_transform::reset(app);
     let Some(ed) = app.ui.text_edit.take() else { return };
     app.type_ime.clear_preedit();

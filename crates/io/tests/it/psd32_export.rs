@@ -9,11 +9,11 @@
 use crate::common;
 
 use common::Features;
+use craft_psd::{Compression, LayerInfoPlacement, PsdFile, hdr};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::Document;
 use photocraft_geom::Size;
 use photocraft_io::*;
-use photocraft_psd::{Compression, LayerInfoPlacement, PsdFile, hdr};
 
 fn be32(b: &[u8], at: usize) -> u32 {
     u32::from_be_bytes(b[at..at + 4].try_into().unwrap())
@@ -84,6 +84,110 @@ fn assert_32bit_layout(name: &str, bytes: &[u8]) {
 
 fn export_psd(doc: &Document) -> Vec<u8> {
     export(doc, "t.psd", &ExportOptions::default()).unwrap().bytes
+}
+
+#[test]
+/// Verify raw unmasked HDR planes and independently authored masked Smart caches across PSD and PSB round trips.
+fn masked_hdr_smart_filter_cache_survives_psd_and_psb_export() {
+    use photocraft_color::{BlendMode, PixelFormat};
+    use photocraft_doc::{Layer, LayerContent, LayerMask, SmartFilter, SmartObject, SmartSource};
+    use photocraft_geom::Affine;
+    use photocraft_raster::Surface;
+    use std::sync::Arc;
+
+    // Public document export reconstructs embedded sources in document.pixel_format()
+    // (RGBA even for opaque content). Exercise both opaque and varying partial alpha;
+    // true non-alpha Surface layouts are covered by compose::filter_mask's unit tests.
+    for opaque in [true, false] {
+        let mut source = Document::new("varying HDR source", Size::new(5, 3), ColorMode::Rgb, SampleType::F32);
+        let mut pixels = Surface::new(source.pixel_format());
+        let mut mask = LayerMask::reveal_all();
+        mask.surface = Surface::new(PixelFormat::new(ColorMode::Grayscale, SampleType::F32, false));
+        for y in 0..3 {
+            for x in 0..5 {
+                let alpha = if opaque { 1. } else { 0.25 + 0.125 * x as f32 + 0.0625 * y as f32 };
+                pixels.write_pixel(x, y, &[-4. + 3. * x as f32, 2. + 4. * (x % 2) as f32, 0.25 + 2. * y as f32, alpha]);
+                mask.surface.write_pixel(x, y, &[0.25 * (1 + (x + y) % 3) as f32]);
+            }
+        }
+        let bounds = source.bounds();
+        let filtered = photocraft_algo::apply_in(&pixels, &photocraft_algo::FilterParams::GaussianBlur { radius: 1. }, bounds, bounds, None, bounds);
+        let base_samples = pixels.read_region(bounds);
+        let filtered_samples = filtered.read_region(bounds);
+        assert!(base_samples.iter().zip(&filtered_samples).any(|(base, filtered)| (base - filtered).abs() > 0.1), "the actual blur must change the fixture");
+        assert!(filtered_samples.as_chunks::<4>().0.iter().any(|p| p[..3].iter().any(|&v| v < 0.)), "retain signed filtered colors");
+        assert!(filtered_samples.as_chunks::<4>().0.iter().any(|p| p[..3].iter().any(|&v| v > 1.)), "retain HDR filtered colors");
+
+        // Author the mixed cache independently of mix/unmix. This is a premultiplied
+        // weighted sum, so the import and export inverses cannot mask each other's bugs.
+        let mut mixed = Surface::new(source.pixel_format());
+        for y in 0..3 {
+            for x in 0..5 {
+                let (base, after) = (pixels.pixel(x, y), filtered.pixel(x, y));
+                let coverage = f64::from(mask.value(x, y));
+                let before = f64::from(base[3]) * (1. - coverage);
+                let after_alpha = f64::from(after[3]) * coverage;
+                let alpha = before + after_alpha;
+                let mut sample = [0.; 4];
+                for c in 0..3 {
+                    sample[c] = ((f64::from(base[c]) * before + f64::from(after[c]) * after_alpha) / alpha) as f32;
+                }
+                sample[3] = alpha as f32;
+                mixed.write_pixel(x, y, &sample);
+            }
+        }
+        let mixed_samples = mixed.read_region(bounds);
+        assert!(
+            mixed_samples.iter().zip(&filtered_samples).any(|(mixed, filtered)| (mixed - filtered).abs() > 0.1),
+            "skipping export unmix must fail the raw cache oracle"
+        );
+        source.layers.push(Layer::new("HDR pixels", LayerContent::Raster(pixels)));
+        let bytes = export(&source, "psd", &ExportOptions::default()).unwrap().bytes;
+        let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "source.psd".into(), bytes: Arc::new(bytes) }, Affine::IDENTITY, Some(mixed));
+        smart.smart_filters.push(SmartFilter {
+            command: "filter.blur.gaussianBlur".into(),
+            params: serde_json::json!({"radius": 1.}),
+            blend: BlendMode::Normal,
+            opacity: 1.,
+            visible: true,
+        });
+        smart.filter_mask = Some(mask);
+        let mut doc = Document::new("masked HDR Smart object", source.size, source.mode, source.depth);
+        doc.layers.push(Layer::new("HDR Smart", LayerContent::Smart(smart)));
+        for extension in ["psd", "psb"] {
+            let out = export(&doc, extension, &ExportOptions::default()).unwrap();
+            assert!(!out.warnings.iter().any(|w| w.contains("smart object written as pixels")), "{:?}", out.warnings);
+            assert!(common::strict_block_errors(&out.bytes).is_empty());
+            let file = PsdFile::from_bytes(&out.bytes).unwrap();
+            assert_eq!(file.header.depth, 32);
+            let record = file.layers().iter().find(|record| record.name() == "HDR Smart").unwrap();
+            // Inspect the stored planes directly, before the importer can apply the mask.
+            // PSD/PSB records must contain filtered, unmasked pixels, not our mixed cache.
+            for (channel, id) in [0, 1, 2, -1].into_iter().enumerate() {
+                let rect = record.channel_rect(id);
+                assert_eq!((rect.left, rect.top, rect.right, rect.bottom), (0, 0, 5, 3));
+                let plane = record.decode_channel(id, file.header.depth, file.header.version).unwrap();
+                assert_eq!(plane.len(), 15 * 4);
+                for (index, bytes) in plane.as_chunks::<4>().0.iter().enumerate() {
+                    let actual = f32::from_be_bytes(*bytes);
+                    let expected = filtered_samples[index * 4 + channel];
+                    assert!(
+                        actual.is_finite() && (actual - expected).abs() < 1e-4,
+                        "{extension} opaque={opaque} raw pixel {index} channel {id}: {actual} != {expected}"
+                    );
+                }
+            }
+            let back = import(&format!("masked.{extension}"), &out.bytes).unwrap().document;
+            let LayerContent::Smart(smart) = &back.layers[0].content else { panic!("Smart object was rasterized") };
+            assert_eq!(smart.smart_filters.len(), 1);
+            assert!(smart.filter_mask.is_some());
+            let actual = smart.cache.as_ref().unwrap().read_region(bounds);
+            assert_eq!(actual.len(), mixed_samples.len());
+            for (index, (&actual, &expected)) in actual.iter().zip(&mixed_samples).enumerate() {
+                assert!(actual.is_finite() && (actual - expected).abs() < 1e-4, "{extension} opaque={opaque} mixed sample {index}: {actual} != {expected}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -196,7 +300,7 @@ fn merged_oracle_does_not_treat_extra_channels_as_transparency() {
         let mut file = PsdFile::from_bytes(&export_psd(&doc)).unwrap();
         let color_channels = if mode == ColorMode::Rgb { 3 } else { 1 };
         file.header.channels = color_channels + 1;
-        file.layer_info = Some(photocraft_psd::LayerInfo { merged_alpha: false, layers: Vec::new(), padding: None });
+        file.layer_info = Some(craft_psd::LayerInfo { merged_alpha: false, layers: Vec::new(), padding: None });
         file.image_data.compression = Compression::Raw;
         file.image_data.data = (0..color_channels).flat_map(|_| 2.0_f32.to_be_bytes()).chain(0.0_f32.to_be_bytes()).collect();
         assert!(!file.merged_has_alpha());
@@ -228,9 +332,9 @@ fn mt32_marks_the_merged_transparency() {
     let name: Vec<u8> = [0u8, 0, 0, 13].into_iter().chain("Transparency\0".encode_utf16().flat_map(u16::to_be_bytes)).collect();
     file.resources.retain(|r| !matches!(r.id, 1006 | 1045));
     assert!(!file.merged_has_alpha(), "a positive layer count alone");
-    file.global_blocks.push(photocraft_psd::TaggedBlock::new(*b"Mt32", Vec::new()));
+    file.global_blocks.push(craft_psd::TaggedBlock::new(*b"Mt32", Vec::new()));
     assert!(file.merged_has_alpha());
-    file.resources.push(photocraft_psd::ImageResource::new(1045, name));
+    file.resources.push(craft_psd::ImageResource::new(1045, name));
     let merged = merged_composite(&file).unwrap();
     assert_eq!(merged.iter().map(|p| p[3]).collect::<Vec<_>>(), vec![1.0, 0.0]);
     let opened = import("transparent.psd", &file.to_bytes().unwrap()).unwrap();

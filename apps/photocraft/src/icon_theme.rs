@@ -45,21 +45,28 @@ pub fn base_dirs(var: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     dirs
 }
 
-/// One `[section]` of an `index.theme`, as (key, value) pairs.
-fn section<'a>(index: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
-    let mut inside = false;
-    let mut pairs = vec![];
+/// Every `[section]` of an `index.theme` as (key, value) pairs, in one pass; the first section
+/// of a name wins. (Looking each directory's section up by rescanning the file multiplied its
+/// size by the number of directories.)
+fn sections(index: &str) -> std::collections::HashMap<&str, Vec<(&str, &str)>> {
+    let mut all = std::collections::HashMap::new();
+    let mut current: Option<Vec<(&str, &str)>> = None;
+    let mut name = "";
     for line in index.lines().map(str::trim) {
         if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            if inside {
-                break;
+            if let Some(done) = current.take() {
+                all.entry(name).or_insert(done);
             }
-            inside = s == name;
-        } else if inside && let Some((k, v)) = line.split_once('=') {
+            name = s;
+            current = Some(vec![]);
+        } else if let (Some(pairs), Some((k, v))) = (current.as_mut(), line.split_once('=')) {
             pairs.push((k.trim(), v.trim()));
         }
     }
-    pairs
+    if let Some(done) = current {
+        all.entry(name).or_insert(done);
+    }
+    all
 }
 
 fn list(value: Option<&str>) -> impl Iterator<Item = &str> {
@@ -156,13 +163,14 @@ impl IconTheme {
             // The first index wins; a theme can still be spread over several base directories.
             let Some(index) = roots.iter().find_map(|r| read_small(&r.join("index.theme"))) else { continue };
             let index = String::from_utf8_lossy(&index);
-            let head = section(&index, "Icon Theme");
+            let all = sections(&index);
+            let head = all.get("Icon Theme").map_or(&[][..], Vec::as_slice);
             let get = |k: &str| head.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
             let mut subdirs: Vec<((i64, i64), &str)> = list(get("Directories"))
                 .chain(list(get("ScaledDirectories")))
                 .filter(|d| !d.split('/').any(|part| part == ".." || part.is_empty()))
                 .take(MAX_DIRS)
-                .map(|d| (distance(&section(&index, d)), d))
+                .map(|d| (distance(all.get(d).map_or(&[][..], Vec::as_slice)), d))
                 .collect();
             subdirs.sort_by_key(|(key, _)| *key);
             // Not checked for existence: a theme lists hundreds, and the search stops at a hit.
@@ -192,8 +200,9 @@ impl IconTheme {
 /// An SVG's coverage (alpha) as a `px` × `px` mask, the drawing fitted and centred. `None` for an
 /// unreadable SVG or an absurd size.
 pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
-    use resvg::{tiny_skia, usvg};
-    if !(1..=256).contains(&px) {
+    use craft_svg::tree::{draw, draw::tiny_skia, usvg};
+    // usvg inflates gzip (`.svgz`) input without a decoded-size limit, and icons are plain `.svg`.
+    if !(1..=256).contains(&px) || svg.starts_with(&[0x1f, 0x8b]) {
         return None;
     }
     // Glyphs are paths: no `<image>` is loaded, so an icon can't make us read another file
@@ -212,8 +221,7 @@ pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
         }
         let s = px as f32 / side;
         let (dx, dy) = ((px as f32 - size.width() * s) / 2.0, (px as f32 - size.height() * s) / 2.0);
-        let mut pixmap = tiny_skia::Pixmap::new(px, px)?;
-        resvg::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), &mut pixmap.as_mut());
+        let pixmap = draw::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), px, px, 0, 64 * 1024 * 1024).ok()?;
         Some(pixmap.data().as_chunks::<4>().0.iter().map(|[_, _, _, a]| *a).collect())
     }))
     .ok()
@@ -285,6 +293,19 @@ mod tests {
         assert_eq!(theme.find_svg("x"), Some(base.join("A/ok/x.svg")));
         assert!(IconTheme::load("..", std::slice::from_ref(&base)).is_none());
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn sections_are_read_once_and_the_first_of_a_name_wins() {
+        let all = sections("stray=1\n[A]\nSize=16\n[B]\nSize=22\n[A]\nSize=48\n");
+        assert_eq!(all["A"], vec![("Size", "16")]);
+        assert_eq!(all["B"], vec![("Size", "22")]);
+        assert!(!all.contains_key(""));
+    }
+
+    #[test]
+    fn a_gzip_icon_is_refused() {
+        assert_eq!(rasterize_mask(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0], 16), None);
     }
 
     #[test]

@@ -856,10 +856,13 @@ pub(super) const EVENTS: &[Event] = &[
             "image.calculations",
             "type.convertToShape",
             "type.createWorkPath",
+            super::steps_frame_section::COMMAND,
             "layer.new.layer",
             "layer.layerStyle.createLayer",
             "layer.new.group",
             "layer.groupLayers",
+            super::steps_artboard_section::NEW,
+            super::steps_artboard_section::FROM_LAYERS,
             "layer.duplicate",
             "layer.new.layerViaCopy",
             "layer.new.layerViaCut",
@@ -1204,6 +1207,15 @@ pub(super) const EVENTS: &[Event] = &[
         ids: &["file.automate.batch"],
         from: super::steps_batch::batch_from,
         to: super::steps_batch::batch_to,
+    },
+    // File › Automate › Fit Image: the script event recorded after the Image Size it runs (#10723).
+    Event {
+        code: "",
+        name: super::steps_automate::FIT_IMAGE_EVENT,
+        label: "Fit Image",
+        ids: &[super::steps_automate::FIT_IMAGE],
+        from: super::steps_automate::fit_image_from,
+        to: super::steps_automate::fit_image_to,
     },
     // Create Droplet (#10710): Photoshop has no string ID for it.
     Event {

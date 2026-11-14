@@ -72,6 +72,30 @@ fn channel_thumbs_skip_selection_steps_and_reuse_textures() {
     assert_eq!(after, first, "into the same textures");
 }
 
+/// The C and K thumbnails the Channels panel uploads for rich black 100/100/100/0 show its own
+/// inks: full cyan and no black, not the RGB thumbnail separated again (#8359).
+#[test]
+fn cmyk_channel_thumbs_upload_the_document_inks() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 120, "height": 60, "mode": "cmyk"})).unwrap();
+    app.run("tools.setColors", json!({"foregroundCmyk": [1.0, 1.0, 1.0, 0.0]})).unwrap();
+    app.run("edit.fillForeground", json!({})).unwrap();
+    let ctx = egui::Context::default();
+    ctx.begin_pass(Default::default());
+    let ids = app.channel_thumbs(&ctx);
+    let mut delta = ctx.end_pass().textures_delta;
+    // composite, then C, M, Y and K
+    assert_eq!(ids.len(), 5);
+    let centre = |id: egui::TextureId| {
+        let d = delta.set.get(&id).and_then(|d| d.last()).expect("uploaded");
+        let egui::ImageData::Color(img) = &d.image;
+        img[(img.size[0] / 2, img.size[1] / 2)]
+    };
+    assert_eq!(centre(ids[1]), egui::Color32::from_gray(0), "cyan is full ink");
+    assert_eq!(centre(ids[4]), egui::Color32::from_gray(255), "rich black has no K");
+    delta.clear();
+}
+
 /// The Channels tab (the Layers card's second tab) of a 64×48 white document with a layer
 /// mask on "Masked" and one alpha channel.
 fn channels_harness() -> (egui_kittest::Harness<'static, PhotocraftApp>, u64) {

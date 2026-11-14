@@ -157,10 +157,12 @@ fn confirming_an_unedited_adjustment_smart_filter_keeps_what_it_renders() {
         ("lab", Lab, "curves", json!({"pencil": true, "smooth": 2, "points": jagged})),
         ("rgb", Rgb, "curves", json!({"pencil": true, "smooth": 2, "points": jagged})),
         ("lab", Lab, "curves", json!({"points": dim})),
+        ("lab", Lab, "curves", json!({"points": [[0, 0], [128.01234, 64.05678], [255, 255]]})),
         ("lab", Lab, "curves", json!({"points": dim, "a": lift})),
         ("lab", Lab, "curves", json!({"lightness": dim})),
         ("lab", Lab, "curves", json!({"pencil": true, "points": drawn})),
         ("lab", Lab, "levels", json!({"inBlack": 30, "gamma": 1.5})),
+        ("lab", Lab, "levels", json!({"inBlack": 30.01234, "gamma": 1.56789})),
         ("lab", Lab, "levels", json!({"inWhite": 200, "a": {"inBlack": 12}})),
         ("lab", Lab, "levels", json!({"lightness": {"inBlack": 30}})),
         ("rgb", Rgb, "curves", json!({"points": dim, "red": lift})),
@@ -287,6 +289,239 @@ fn filter_editor_starts_missing_parameters_from_defaults_not_remembered_values()
     // A plain Filter menu dialog still starts from the remembered values.
     let id = crate::filter_dialog::open(&mut app, command).unwrap();
     assert_eq!(app.ui.dialog_mut(id).unwrap().fields["reduceNoise"].as_f64(), Some(60.0));
+}
+
+/// A captured tone filter must visibly affect its CPU preview, not merely retain parameters.
+fn assert_tone_preview_is_non_neutral(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let idx = app.session.active_index().unwrap();
+    let id = app.ui.dialogs.last().unwrap().id;
+    let saved = app.ui.dialogs.last().unwrap().fields.clone();
+    let kind = saved["__adjust"].as_str().unwrap();
+    let mode = app.session.active().unwrap().doc.mode;
+    crate::canvas::ensure_filter_preview(app, idx, ctx).unwrap();
+    let rendered = photocraft_compose::flatten(app.filter_preview.as_ref().unwrap().result.as_ref().unwrap()).px.clone();
+    let neutral = photocraft_engine::adjust_params::to_params(&photocraft_engine::adjust_params::default_for(kind, mode).unwrap());
+    let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+    fields.retain(|key, _| key.starts_with("__"));
+    fields.extend(neutral.as_object().unwrap().clone());
+    crate::canvas::ensure_filter_preview(app, idx, ctx).unwrap();
+    let identity = photocraft_compose::flatten(app.filter_preview.as_ref().unwrap().result.as_ref().unwrap()).px.clone();
+    assert_ne!(rendered, identity, "{mode:?} {kind}: the recorded filter must affect the preview");
+    app.ui.dialog_mut(id).unwrap().fields = saved;
+    crate::canvas::ensure_filter_preview(app, idx, ctx).unwrap();
+}
+
+/// Re-editing a whole-image tone Smart Filter keeps its colour controls and stored records,
+/// even when a colour component, alpha, Quick Mask or either layer-mask UI target is selected.
+#[test]
+fn tone_filter_editor_ignores_current_channel_target() {
+    use photocraft_engine::{adjust_params, channel_cmds::ChannelTarget};
+    for mode in ["rgb", "lab", "cmyk"] {
+        for kind in ["levels", "curves"] {
+            for view in 0..6 {
+                let (mut app, layer) = app(8, mode);
+                let command = format!("image.adjustments.{kind}");
+                let color_mode = app.session.active().unwrap().doc.mode;
+                let mut recorded = adjust_params::to_params(&adjust_params::default_for(kind, color_mode).unwrap());
+                let key = if mode == "lab" {
+                    "lightness"
+                } else if kind == "curves" {
+                    "points"
+                } else {
+                    ""
+                };
+                if kind == "levels" {
+                    if key.is_empty() {
+                        recorded["gamma"] = json!(1.4);
+                    } else {
+                        recorded[key]["gamma"] = json!(1.4);
+                    }
+                } else {
+                    recorded[key] = json!([[0, 0], [128, 180], [255, 255]]);
+                }
+                app.run(&command, recorded.clone()).unwrap();
+                app.run("layer.layerMask.revealAll", json!({})).unwrap();
+                app.run("channel.new", json!({"name":"Saved sky", "fill":"white"})).unwrap();
+                if view == 4 {
+                    app.run("select.editInQuickMaskMode", json!({})).unwrap();
+                }
+                app.session.active_mut().unwrap().channel_view.target = match view {
+                    0 => ChannelTarget::Alpha(0),
+                    1 => ChannelTarget::LayerMask,
+                    2 => ChannelTarget::Color(1),
+                    _ => ChannelTarget::Composite,
+                };
+                app.ui.mask_target = view == 3;
+                app.ui.filter_mask_target = (view == 5).then_some(layer.0);
+                let before = app.session.active().unwrap().doc.clone();
+                let filters = smart(&app, layer).clone();
+                let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+                PhotocraftApp::setup_context(&h.ctx, Default::default());
+                let ctx = h.ctx.clone();
+                super::open_editor(h.state_mut(), &ctx, layer.0, &filters, 2);
+                let id = h.state().ui.dialogs.last().unwrap().id;
+                let values = crate::filter_dialog::params_of(&h.state().ui.dialogs.last().unwrap().fields);
+                assert_eq!(values.get("target"), None, "{mode} {kind} view={view}: no channel target is added to a Smart Filter");
+                let read = |p: &serde_json::Value| adjust_params::from_params(kind, p, None, color_mode).unwrap();
+                assert_eq!(read(&values), read(&recorded), "{mode} {kind} view={view}: recorded colour settings survive reopening");
+                h.run_steps(3);
+                let names: Vec<_> = h.query_all_by_role(egui::accesskit::Role::ComboBox).filter_map(|n| n.value()).collect();
+                let expected = match mode {
+                    "lab" => "Lightness",
+                    "cmyk" => "CMYK",
+                    _ => "RGB",
+                };
+                assert!(names.iter().any(|n| n == expected), "{mode} {kind} view={view}: {names:?}");
+                assert!(
+                    !names.iter().any(|n| n == "Saved sky" || n == "Quick Mask" || n == "Smart Object Mask" || n == "Green" || n == "Magenta" || n == "a"),
+                    "{names:?}"
+                );
+                let ctx = h.ctx.clone();
+                let idx = h.state().session.active_index().unwrap();
+                assert!(crate::canvas::ensure_filter_preview(h.state_mut(), idx, &ctx).is_some());
+                assert_tone_preview_is_non_neutral(h.state_mut(), &ctx);
+                assert!(std::sync::Arc::ptr_eq(&h.state().session.active().unwrap().doc, &before), "preview never writes to the selected plane");
+                let shown = photocraft_compose::flatten(h.state().filter_preview.as_ref().unwrap().result.as_ref().unwrap()).px.clone();
+                crate::dialogs::confirm(h.state_mut(), id).unwrap();
+                assert_eq!(
+                    shown,
+                    photocraft_compose::flatten(&h.state().session.active().unwrap().doc).px,
+                    "{mode} {kind} view={view}: preview matches commit"
+                );
+                assert_eq!(smart(h.state(), layer).smart_filters.len(), 3);
+                assert_eq!(read(&smart(h.state(), layer).smart_filters[2].params), read(&recorded));
+                let after = &h.state().session.active().unwrap().doc;
+                assert_eq!(after.channels, before.channels);
+                assert_eq!(after.quick_mask, before.quick_mask);
+                assert_eq!(after.layer(layer).unwrap().mask, before.layer(layer).unwrap().mask);
+            }
+        }
+    }
+}
+
+/// Whole-image Curves stored through the gray alias reopen without changing their rendered effect.
+#[test]
+fn rabbit_whole_image_curves_alias_survives_reopening() {
+    for mode in ["rgb", "lab", "cmyk"] {
+        for depth in [8, 16, 32] {
+            for recorded in [
+                json!({"gray":[[0,255],[255,0]]}),
+                json!({"gray":(0..256).map(|i|255-i).collect::<Vec<_>>(),"pencil":true,"smooth":2}),
+                json!({"gray":"ignored","points":[[0,255],[255,0]]}),
+            ] {
+                let (mut app, layer) = app(depth, mode);
+                app.run("image.adjustments.curves", recorded.clone()).unwrap();
+                let before = app.session.active().unwrap().doc.clone();
+                let original = photocraft_compose::flatten(&before).px.clone();
+                let filters = smart(&app, layer).clone();
+                let ctx = egui::Context::default();
+                super::open_editor(&mut app, &ctx, layer.0, &filters, 2);
+                let id = app.ui.dialogs.last().unwrap().id;
+                let fields = &app.ui.dialogs.last().unwrap().fields;
+                assert!(fields.get("gray").is_none(), "the alias must be consumed before defaults");
+                let idx = app.session.active_index().unwrap();
+                crate::canvas::ensure_filter_preview(&mut app, idx, &ctx).unwrap();
+                let shown = photocraft_compose::flatten(app.filter_preview.as_ref().unwrap().result.as_ref().unwrap()).px.clone();
+                assert_eq!(shown, original, "{mode} {depth}: reopening preserves the stored effect");
+                assert!(std::sync::Arc::ptr_eq(&before, &app.session.active().unwrap().doc));
+                crate::dialogs::confirm(&mut app, id).unwrap();
+                assert_eq!(shown, photocraft_compose::flatten(&app.session.active().unwrap().doc).px, "{mode} {depth}: confirm matches preview");
+                assert_eq!(smart(&app, layer).smart_filters.len(), filters.smart_filters.len());
+            }
+        }
+    }
+}
+
+/// A document switch through the control channel leaves the modal open but hides stale controls.
+#[test]
+fn rabbit_stale_tone_filter_dialog_hides_controls_until_the_original_document_returns() {
+    for kind in ["levels", "curves"] {
+        let (mut app, layer) = app(8, "rgb");
+        let command = format!("image.adjustments.{kind}");
+        app.run(&command, if kind == "levels" { json!({"gamma":2}) } else { json!({"points":[[0,255],[255,0]]}) }).unwrap();
+        let original = app.session.active().unwrap().doc.clone();
+        let filters = smart(&app, layer).clone();
+        app.run("file.new", json!({"width":32,"height":24,"mode":"lab"})).unwrap();
+        let other = app.session.active().unwrap().doc.clone();
+        assert!(app.session.set_active(0));
+        let mut h = Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, Default::default());
+        let ctx = h.ctx.clone();
+        super::open_editor(h.state_mut(), &ctx, layer.0, &filters, 2);
+        let id = h.state().ui.dialogs.last().unwrap().id;
+        h.run_steps(3);
+        assert!(h.query_all_by_role(egui::accesskit::Role::ComboBox).any(|n| n.value().as_deref() == Some("RGB")));
+        let (req, _rx) = crate::control::ControlRequest::new("ui.window.open", json!({"document":1}));
+        crate::control::handle(h.state_mut(), &ctx, &req);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.dialogs.len(), 1);
+        assert!(h.query_all_by_role(egui::accesskit::Role::ComboBox).next().is_none(), "stale targets cannot expose the other document's editor");
+        assert!(h.query_by_label("The adjustment target is missing or unavailable.").is_some());
+        assert!(!crate::adjust_dialog::picker_armed(h.state()));
+        assert!(std::sync::Arc::ptr_eq(&other, &h.state().session.active().unwrap().doc));
+        let (req, _rx) = crate::control::ControlRequest::new("ui.window.open", json!({"document":0}));
+        crate::control::handle(h.state_mut(), &ctx, &req);
+        h.run_steps(3);
+        assert!(std::sync::Arc::ptr_eq(&original, &h.state().session.active().unwrap().doc));
+        assert!(h.query_all_by_role(egui::accesskit::Role::ComboBox).any(|n| n.value().as_deref() == Some("RGB")));
+        let (req, _rx) = crate::control::ControlRequest::new("ui.window.open", json!({"document":1}));
+        crate::control::handle(h.state_mut(), &ctx, &req);
+        assert!(crate::dialogs::confirm(h.state_mut(), id).is_err());
+        assert!(std::sync::Arc::ptr_eq(&other, &h.state().session.active().unwrap().doc));
+    }
+}
+
+/// Malformed whole-image Curves aliases remain preview/commit errors instead of identity curves.
+#[test]
+fn rabbit_invalid_whole_curves_alias_does_not_turn_neutral() {
+    for mode in ["rgb", "lab", "cmyk"] {
+        for bad in [json!({"gray":"bad"}), json!({"gray":[[0,0]]}), json!({"gray":[0,1,2],"pencil":true})] {
+            let (mut app, layer) = app(8, mode);
+            app.run("image.adjustments.curves", json!({"points":[[0,255],[255,0]]})).unwrap();
+            let before = app.session.active().unwrap().doc.clone();
+            let target = crate::smart_filter_dialog::target(&mut app, layer, 2).unwrap();
+            let id = crate::adjust_dialog::open_smart_filter(&mut app, "image.adjustments.curves", &bad, target).unwrap();
+            assert!(!app.ui.dialog_mut(id).unwrap().fields.contains_key("points"), "invalid aliases cannot be hidden by defaults");
+            let idx = app.session.active_index().unwrap();
+            assert!(crate::canvas::ensure_filter_preview(&mut app, idx, &egui::Context::default()).is_none());
+            assert!(app.filter_preview.as_ref().is_none_or(|preview| preview.result.is_none()));
+            assert!(crate::dialogs::confirm(&mut app, id).is_err());
+            assert!(std::sync::Arc::ptr_eq(&before, &app.session.active().unwrap().doc));
+        }
+    }
+}
+
+/// Whole-image Levels aliases show the recorded gamma and cannot override a subsequent edit.
+#[test]
+fn rabbit_whole_image_levels_alias_is_visible_and_editable() {
+    for mode in ["rgb", "cmyk"] {
+        for depth in [8, 16, 32] {
+            let (mut app, layer) = app(depth, mode);
+            // A neutral CMYK adjustment still takes the existing colour-conversion path.
+            // Compare with the same public neutral command, rather than omitting that stage.
+            let mut oracle = photocraft_engine::Session::new();
+            oracle.add_document(app.session.active().unwrap().doc.as_ref().clone(), None);
+            oracle.select_layer(layer).unwrap();
+            oracle.execute("image.adjustments.levels", json!({"gamma":1})).unwrap();
+            let neutral = photocraft_compose::flatten(&oracle.active().unwrap().doc).px.clone();
+            app.run("image.adjustments.levels", json!({"gray":{"gamma":2}})).unwrap();
+            let filters = smart(&app, layer).clone();
+            let ctx = egui::Context::default();
+            super::open_editor(&mut app, &ctx, layer.0, &filters, 2);
+            let id = app.ui.dialogs.last().unwrap().id;
+            let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+            assert_eq!(fields["gamma"], json!(2.0));
+            assert!(!fields.contains_key("gray"));
+            fields.insert("gamma".into(), json!(1.0));
+            let idx = app.session.active_index().unwrap();
+            crate::canvas::ensure_filter_preview(&mut app, idx, &ctx).unwrap();
+            let shown = photocraft_compose::flatten(app.filter_preview.as_ref().unwrap().result.as_ref().unwrap()).px.clone();
+            assert!(shown == neutral, "{mode} {depth}: the visible edit matches a neutral Levels command");
+            crate::dialogs::confirm(&mut app, id).unwrap();
+            assert_eq!(shown, photocraft_compose::flatten(&app.session.active().unwrap().doc).px);
+            assert!(smart(&app, layer).smart_filters[2].params.get("gray").is_none());
+        }
+    }
 }
 
 /// A smart object in a `mode` document with `command` recorded as its one smart filter, and its layer id.

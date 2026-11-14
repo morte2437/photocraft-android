@@ -636,6 +636,54 @@ fn clicking_the_vector_mask_targets_it_for_the_path_tools() {
 }
 
 #[test]
+fn a_targeted_vector_mask_flips_its_path_not_the_layer_pixels() {
+    let (s, masked, _) = session();
+    let mut h = harness(s, 0, 1.0, 290.0);
+    let r = mask_rect(&h, masked, MaskKind::Vector);
+    click_with(&mut h, r.center(), Modifiers::NONE);
+    assert!(h.state().ui.vector_mask_target);
+    let before = layer(&h, masked);
+    h.state_mut().run("edit.transform.flipHorizontal", json!({})).unwrap();
+    let after = layer(&h, masked);
+    let path = after.vector_mask.as_ref().unwrap().path.clone();
+    let k = &path.subpaths[0].knots;
+    assert_eq!((k[0].anchor.x, k[0].anchor.y), (120.0, 10.0), "mirrored about the path's bounds (x = 140)");
+    assert_eq!(after.surface().unwrap().content_bounds(), before.surface().unwrap().content_bounds(), "the pixels are untouched");
+    h.state_mut().run("edit.undo", json!({})).unwrap();
+    assert_eq!(layer(&h, masked).vector_mask.unwrap().path, before.vector_mask.unwrap().path, "undo restores the path");
+}
+
+/// #12283: the panel's vector-mask target must not override an alpha channel or Quick Mask (the
+/// engine routes those), and an explicit target in the params always wins.
+#[test]
+fn a_targeted_vector_mask_yields_to_alpha_quick_mask_and_explicit_targets() {
+    let (s, masked, _) = session();
+    let mut h = harness(s, 0, 1.0, 290.0);
+    let r = mask_rect(&h, masked, MaskKind::Vector);
+    click_with(&mut h, r.center(), Modifiers::NONE);
+    assert!(h.state().ui.vector_mask_target && h.state().vector_mask_targeted());
+    let target = |h: &Harness<'_, PhotocraftApp>, p: serde_json::Value| h.state().with_mask_target("edit.transform.flipHorizontal", p);
+    assert_eq!(target(&h, json!({}))["target"], "vectorMask");
+    assert_eq!(target(&h, json!({"target": "pixels"}))["target"], "pixels", "an explicit target wins");
+    let before = layer(&h, masked).vector_mask.unwrap().path;
+
+    // Photoshop targets a new alpha channel on its own; the panel still says vector mask.
+    h.state_mut().run("channel.new", json!({"name": "Alpha", "fill": "white"})).unwrap();
+    assert!(h.state().ui.vector_mask_target, "the panel keeps its vector-mask flag");
+    assert_eq!(h.state().session.active().unwrap().channel_view.target, photocraft_engine::channel_cmds::ChannelTarget::Alpha(0));
+    assert!(target(&h, json!({})).get("target").is_none(), "the alpha channel wins");
+    h.state_mut().run("edit.transform.flipHorizontal", json!({})).unwrap();
+    assert_eq!(layer(&h, masked).vector_mask.unwrap().path, before, "the vector mask stays put");
+
+    // Quick Mask mode wins too, even with the stale panel flag.
+    h.state_mut().run("select.editInQuickMaskMode", json!({"on": true})).unwrap();
+    assert!(h.state().ui.vector_mask_target && !h.state().vector_mask_targeted());
+    assert!(target(&h, json!({})).get("target").is_none(), "the Quick Mask wins");
+    h.state_mut().run("edit.transform.flipHorizontal", json!({})).unwrap();
+    assert_eq!(layer(&h, masked).vector_mask.unwrap().path, before, "the vector mask stays put");
+}
+
+#[test]
 fn mask_view_gestures_fail_gracefully_without_a_mask() {
     let (s, masked, shape) = session();
     let mut h = harness(s, 0, 1.0, 290.0);

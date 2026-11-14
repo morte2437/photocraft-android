@@ -29,6 +29,8 @@ pub struct Prompt {
     auto: Option<Answer>,
     /// The document `auto` answered last: if it is asked about again, its save didn't go through.
     auto_answered: Option<DocId>,
+    /// `auto` came from a control client (`saveAll`): its Saves are judged as automation.
+    auto_control: bool,
 }
 
 fn index_of(app: &PhotocraftApp, id: DocId) -> Option<usize> {
@@ -85,7 +87,17 @@ pub fn intercept(app: &mut PhotocraftApp, id: &str, params: &Value) -> bool {
         log::warn!("quitting a window that lost its GPU device before its unsaved work could be saved for recovery");
         return false;
     }
-    let prompt = Prompt { id: id.to_string(), params: params.clone(), target, docs, focused: None, apply_all: false, auto: None, auto_answered: None };
+    let prompt = Prompt {
+        id: id.to_string(),
+        params: params.clone(),
+        target,
+        docs,
+        focused: None,
+        apply_all: false,
+        auto: None,
+        auto_answered: None,
+        auto_control: false,
+    };
     match &app.discard {
         None => ask(app, prompt),
         // Quitting overrides whatever is pending: it covers every document, so nothing is lost.
@@ -187,7 +199,7 @@ fn advance(app: &mut PhotocraftApp, ctx: &egui::Context) {
             if let Some(p) = app.discard.as_mut() {
                 p.docs = rest;
                 // Apply to All covered the documents asked about; these are asked about afresh.
-                (p.apply_all, p.auto, p.auto_answered) = (false, None, None);
+                (p.apply_all, p.auto, p.auto_answered, p.auto_control) = (false, None, None, false);
             }
             return;
         }
@@ -264,6 +276,8 @@ fn couldnt_save(e: String) -> String {
     if e == crate::file_dialog::CANCELLED { e } else { format!("Couldn't save: {e}") }
 }
 
+/// Draws the unsaved-changes (or Revert) prompt while one is pending and acts on the button the
+/// user picks; a refused or failed answer is reported in the status bar and the prompt stays.
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // Save can ask for a path and then TIFF or Targa Options, and then write in the background.
     // Wait for all three; cancellation or a failed save brings us back.
@@ -286,18 +300,24 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     // "Apply to All" answers the rest one document per frame, as Photoshop does. A document that
     // comes back (its save was cancelled or failed) is asked about normally again, so a save that
     // can't succeed never repeats on its own.
-    match app.discard.as_ref().and_then(|p| p.auto.map(|a| (a, p.auto_answered == Some(doc)))) {
-        Some((answer, false)) => {
+    // An Apply to All a control client chose keeps judging each Save as that client's.
+    match app.discard.as_ref().and_then(|p| p.auto.map(|a| (a, p.auto_answered == Some(doc), p.auto_control))) {
+        Some((answer, false, from_control)) => {
             if let Some(p) = app.discard.as_mut() {
                 p.auto_answered = Some(doc);
             }
-            apply(app, ctx, doc, answer);
+            // A refused Save leaves this document first: the next frame asks about it normally.
+            if let Err(e) = apply(app, ctx, doc, answer, from_control) {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
             ctx.request_repaint();
             return;
         }
-        Some((_, true)) => {
+        Some((_, true, _)) => {
             if let Some(p) = app.discard.as_mut() {
                 p.auto = None;
+                p.auto_control = false;
                 p.apply_all = false;
             }
         }
@@ -337,7 +357,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     } else {
         vec![(ButtonRole::Default, "Yes", Some(Key::Y), 84.0, Answer::Save), (ButtonRole::Alternate, "No", Some(Key::N), 84.0, Answer::Discard), cancel]
     };
-    let mut answer = ctx.input_mut(|i| buttons.iter().find(|b| b.2.is_some_and(|k| i.consume_key(egui::Modifiers::NONE, k))).map(|b| b.4));
+    // The letters answer bare. macOS also takes ⌘D for Don't Save, the Mac shortcut Photoshop's
+    // prompt keeps (#11282): the shortcuts hold their keys while the prompt is up
+    // (`shortcuts::handle_modal_canvas_keys`), so the key isn't Select › Deselect here.
+    let mut answer = ctx.input_mut(|i| {
+        let letter = buttons.iter().find(|b| b.2.is_some_and(|k| i.consume_key(egui::Modifiers::NONE, k))).map(|b| b.4);
+        if letter.is_none() && mac && !reverts && i.consume_key(egui::Modifiers::COMMAND, Key::D) { Some(Answer::Discard) } else { letter }
+    });
     let labels = button_labels(mac, &buttons.iter().map(|b| (b.1, b.2)).collect::<Vec<_>>());
     let row: Vec<DialogButton> =
         buttons.iter().zip(&labels).map(|(b, label)| DialogButton::new(b.0, label, b.3).focus(focus && b.0 == ButtonRole::Default)).collect();
@@ -372,30 +398,65 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     if let Some(answer) = answer {
         if apply_all && offer_all {
-            apply_to_rest(app, doc, answer);
+            apply_to_rest(app, doc, answer, false);
         }
-        apply(app, ctx, doc, answer);
+        if let Err(e) = apply(app, ctx, doc, answer, false) {
+            app.ui.status = e;
+            app.ui.status_error = true;
+        }
     }
 }
 
 /// Makes a Save or Don't Save answer about `doc` the answer for every document still to ask about.
-fn apply_to_rest(app: &mut PhotocraftApp, doc: DocId, answer: Answer) {
+/// `from_control` says a control client gave it, so each later Save is judged as automation too.
+fn apply_to_rest(app: &mut PhotocraftApp, doc: DocId, answer: Answer, from_control: bool) {
     if !matches!(answer, Answer::Save | Answer::Discard) {
         return;
     }
     if let Some(p) = app.discard.as_mut() {
         p.auto = Some(answer);
         p.auto_answered = Some(doc);
+        p.auto_control = from_control;
     }
 }
 
-/// Acts on the answer about `doc`, the document the prompt is asking about.
-fn apply(app: &mut PhotocraftApp, ctx: &egui::Context, doc: DocId, answer: Answer) {
+/// Acts on the answer about `doc`, the document the prompt is asking about. `from_control` says
+/// a control client gave it (`ui.dialog.confirm`). Save is refused when automation may not run
+/// File › Save (see [`authorize_save`]); the prompt stays up.
+fn apply(app: &mut PhotocraftApp, ctx: &egui::Context, doc: DocId, answer: Answer, from_control: bool) -> Result<(), String> {
     match answer {
         Answer::Cancel => app.discard = None,
         Answer::Discard => advance(app, ctx),
-        Answer::Save if save(app, ctx, doc) => advance(app, ctx),
-        Answer::Save => {}
+        Answer::Save => {
+            authorize_save(app, from_control)?;
+            if save(app, ctx, doc) {
+                advance(app, ctx);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Save writes the document back over its own file, as File › Save does, so automation (a
+/// control client's answer, a control request's gate or synthetic input) is judged for
+/// `file.save` before it runs: a client allowed to close a document can't use the prompt to
+/// write a file its policy keeps it from. A control answer counts as automation even when its
+/// services install no session gate (only the command callback). The installed gate (or the
+/// services' policy) and the command callback both judge it, and with neither available the
+/// Save is refused rather than run unjudged.
+fn authorize_save(app: &PhotocraftApp, from_control: bool) -> Result<(), String> {
+    if !(from_control || app.automation_input || app.session.authorize.is_some()) {
+        return Ok(());
+    }
+    let params = json!({});
+    let gate = app.session.authorize.or(app.services.automation_authorize);
+    if let Some(gate) = gate {
+        gate("file.save", &params).map_err(|e| e.to_string())?;
+    }
+    match app.services.automation_command.as_ref() {
+        Some(authorize) => authorize("file.save", &params),
+        None if gate.is_some() => Ok(()),
+        None => Err("automation command `file.save` is refused: no automation policy is available to judge it".into()),
     }
 }
 
@@ -438,8 +499,16 @@ fn choices(reverts: bool, several: bool) -> Vec<&'static str> {
 }
 
 /// Answers the prompt for a control client: `save`, `dontSave` or `cancel` (Revert takes
-/// `dontSave` or `cancel`); `saveAll` and `dontSaveAll` answer for every document still to ask about. Like the buttons, Save may first ask for a path in the save dialog.
+/// `dontSave` or `cancel`); `saveAll` and `dontSaveAll` answer for every document still to ask
+/// about. Like the buttons, Save may first ask for a path in the save dialog. Save is always
+/// judged as automation for `file.save`, whatever gate the request installed.
 pub fn answer_control(app: &mut PhotocraftApp, ctx: &egui::Context, choice: &str) -> Result<Value, String> {
+    answer_choice(app, ctx, choice, true)
+}
+
+/// Answers the prompt with `choice` (see [`answer_control`]); `from_control` says a control
+/// client chose it, so its Save is judged as automation even without a session gate.
+pub(crate) fn answer_choice(app: &mut PhotocraftApp, ctx: &egui::Context, choice: &str, from_control: bool) -> Result<Value, String> {
     let Some(doc) = app.discard.as_ref().and_then(|p| p.docs.first().copied()) else {
         return Err("no unsaved-changes prompt is open".into());
     };
@@ -462,12 +531,12 @@ pub fn answer_control(app: &mut PhotocraftApp, ctx: &egui::Context, choice: &str
     };
     // The client's answer replaces one Apply to All left behind (a save that failed at once).
     if let Some(p) = app.discard.as_mut() {
-        (p.apply_all, p.auto, p.auto_answered) = (false, None, None);
+        (p.apply_all, p.auto, p.auto_answered, p.auto_control) = (false, None, None, false);
     }
     if all {
-        apply_to_rest(app, doc, answer);
+        apply_to_rest(app, doc, answer, from_control);
     }
-    apply(app, ctx, doc, answer);
+    apply(app, ctx, doc, answer, from_control)?;
     Ok(json!({"open": app.discard.is_some(), "fileDialog": app.file_dialog_open()}))
 }
 

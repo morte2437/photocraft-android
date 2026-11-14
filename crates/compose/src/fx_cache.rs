@@ -275,6 +275,13 @@ fn evict_fx_cache_over_budget(key: u64) {
             c.bytes = c.bytes.saturating_sub(s.get().map_or(0, |e| e.bytes));
         }
     }
+    // The current entry alone over the budget: its callers hold the maps, the cache must not.
+    if c.bytes > budget
+        && let Some(s) = c.map.remove(&key)
+    {
+        c.order.retain(|k| *k != key);
+        c.bytes = c.bytes.saturating_sub(s.get().map_or(0, |e| e.bytes));
+    }
 }
 
 /// The layer's effect maps from the global cache, built on a miss.

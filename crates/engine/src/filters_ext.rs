@@ -567,9 +567,13 @@ pub(crate) fn map_document(p: &Value) -> Option<&Value> {
     p.get("mapDocument").filter(|d| !d.is_null() && d.as_i64().is_none_or(|i| i >= 0))
 }
 
+/// Largest displacement-map file read (the same cap as imported presets).
+const MAX_MAP_FILE_BYTES: u64 = 512 << 20;
+
 /// Displace's map read from a file (flattened, or its `mapLayer`).
 fn map_from_path(path: &str, layer: Option<u64>) -> Result<Option<algo::Image>> {
-    let bytes = std::fs::read(path).map_err(|e| EngineError::Other(format!("cannot read displacement map `{path}`: {e}")))?;
+    let bytes =
+        crate::allocation::read_file_within(path, MAX_MAP_FILE_BYTES).map_err(|e| EngineError::Other(format!("cannot read displacement map `{path}`: {e}")))?;
     let imported = crate::file_cmds::import(path, &bytes).map_err(|e| EngineError::Other(format!("cannot open displacement map `{path}`: {e}")))?;
     Ok(map_from_document(&imported, layer))
 }

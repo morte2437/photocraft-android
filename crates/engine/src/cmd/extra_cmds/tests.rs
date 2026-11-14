@@ -94,6 +94,10 @@ fn active(s: &Session) -> &Layer {
     d.doc.layer(d.active_layer.unwrap()).unwrap()
 }
 
+fn layer_of(s: &Session, id: u64) -> &Layer {
+    doc(s).layer(LayerId(id)).unwrap()
+}
+
 fn pixel(s: &Session, x: i32, y: i32) -> Vec<f32> {
     active(s).surface().unwrap().pixel(x, y)
 }
@@ -463,6 +467,251 @@ fn transform_presets_turn_about_the_selection() {
     s.execute("select.all", json!({})).unwrap();
     s.execute("edit.transform.flipHorizontal", json!({})).unwrap();
     assert_eq!(s.active().unwrap().doc.channels[0].surface.content_bounds(), Rect::new(20, 10, 30, 20));
+}
+
+/// A two-knot path whose Bézier handles reach past its anchors on every side, so a flip about
+/// the anchors' bounds and one about the control bounds differ.
+fn asymmetric_vector_path() -> photocraft_doc::Path {
+    use photocraft_doc::{Knot, Path, Subpath};
+    use photocraft_geom::Point;
+    Path::new(vec![Subpath {
+        closed: false,
+        knots: vec![
+            Knot { anchor: Point::new(10.0, 20.0), in_ctrl: Point::new(8.0, 18.0), out_ctrl: Point::new(12.0, 22.0), smooth: false },
+            Knot { anchor: Point::new(30.0, 30.0), in_ctrl: Point::new(28.0, 28.0), out_ctrl: Point::new(34.0, 34.0), smooth: false },
+        ],
+        op: photocraft_doc::PathOp::Combine,
+    }])
+}
+
+fn vector_mask_session(linked: bool, path: photocraft_doc::Path) -> (Session, LayerId) {
+    let mut s = session(8);
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.edit("vector mask", |doc, _| {
+        doc.layer_mut(id).unwrap().vector_mask = Some(photocraft_doc::VectorMask { linked, ..photocraft_doc::VectorMask::new(path) });
+        Ok(())
+    })
+    .unwrap();
+    (s, id)
+}
+
+fn mask_path(s: &Session, id: LayerId) -> photocraft_doc::Path {
+    s.active().unwrap().doc.layer(id).unwrap().vector_mask.as_ref().unwrap().path.clone()
+}
+
+/// #12283: a targeted vector mask flips its own path about the path's control bounds (anchors and
+/// handles), on a layer with no pixels, whether the mask is linked or unlinked.
+#[test]
+fn transform_presets_flip_a_targeted_vector_mask_about_its_control_bounds() {
+    use photocraft_geom::Point;
+    let xy = |p: Point| (p.x, p.y);
+    for linked in [true, false] {
+        let (mut s, id) = vector_mask_session(linked, asymmetric_vector_path());
+        let before = mask_path(&s, id);
+        let past = s.active().unwrap().history.past_len();
+        s.execute("edit.transform.flipHorizontal", json!({"target": "vectorMask"})).unwrap();
+        assert_eq!(s.active().unwrap().history.past_len(), past + 1, "one Transform Path step, linked {linked}");
+        let flipped = mask_path(&s, id);
+        let k = &flipped.subpaths[0].knots;
+        // Bounds are x 8..34, so x' = 42 - x.
+        assert_eq!(xy(k[0].anchor), (32.0, 20.0));
+        assert_eq!(xy(k[0].in_ctrl), (34.0, 18.0));
+        assert_eq!(xy(k[0].out_ctrl), (30.0, 22.0));
+        assert_eq!(xy(k[1].anchor), (12.0, 30.0));
+        assert_eq!(xy(k[1].in_ctrl), (14.0, 28.0));
+        assert_eq!(xy(k[1].out_ctrl), (8.0, 34.0));
+        assert!(s.active().unwrap().doc.layer(id).unwrap().surface().unwrap().content_bounds().is_empty(), "the empty pixel layer stays empty");
+        // Undo restores the path exactly, redo puts the flip back.
+        s.undo();
+        assert_eq!(mask_path(&s, id), before, "undo");
+        s.redo();
+        assert_eq!(mask_path(&s, id), flipped, "redo");
+        s.undo();
+        // Bounds are y 18..34, so y' = 52 - y.
+        s.execute("edit.transform.flipVertical", json!({"target": "vectorMask"})).unwrap();
+        let k = &mask_path(&s, id).subpaths[0].knots;
+        assert_eq!(xy(k[0].anchor), (10.0, 32.0));
+        assert_eq!(xy(k[0].in_ctrl), (8.0, 34.0));
+        assert_eq!(xy(k[0].out_ctrl), (12.0, 30.0));
+        assert_eq!(xy(k[1].anchor), (30.0, 22.0));
+        assert_eq!(xy(k[1].in_ctrl), (28.0, 24.0));
+        assert_eq!(xy(k[1].out_ctrl), (34.0, 18.0));
+    }
+}
+
+/// Fractional path centers must not be rounded to the pixel grid, and clockwise and
+/// counterclockwise presets must move every anchor and handle in the expected direction.
+#[test]
+fn transform_presets_rotate_vector_masks_about_fractional_control_bounds() {
+    let path = asymmetric_vector_path().transform(&photocraft_geom::Affine::translate(0.25, 0.5));
+    assert_eq!(path.control_bounds(), Some((8.25, 18.5, 34.25, 34.5)));
+    let cases = [
+        ("rotate180", [[(32.25, 32.5), (34.25, 34.5), (30.25, 30.5)], [(12.25, 22.5), (14.25, 24.5), (8.25, 18.5)]]),
+        ("rotate90Cw", [[(27.25, 15.5), (29.25, 13.5), (25.25, 17.5)], [(17.25, 35.5), (19.25, 33.5), (13.25, 39.5)]]),
+        ("rotate90Ccw", [[(15.25, 37.5), (13.25, 39.5), (17.25, 35.5)], [(25.25, 17.5), (23.25, 19.5), (29.25, 13.5)]]),
+    ];
+    for linked in [true, false] {
+        for (kind, expected) in cases {
+            let (mut s, id) = vector_mask_session(linked, path.clone());
+            let past = s.active().unwrap().history.past_len();
+            s.execute(&format!("edit.transform.{kind}"), json!({"target": "vectorMask"})).unwrap();
+            let after = mask_path(&s, id);
+            let actual: Vec<_> =
+                after.subpaths[0].knots.iter().map(|k| [(k.anchor.x, k.anchor.y), (k.in_ctrl.x, k.in_ctrl.y), (k.out_ctrl.x, k.out_ctrl.y)]).collect();
+            assert_eq!(actual, expected, "{kind}, linked {linked}");
+            assert_eq!(s.active().unwrap().history.past_len(), past + 1, "one history step");
+            s.undo();
+            assert_eq!(mask_path(&s, id), path, "undo {kind}");
+            s.redo();
+            assert_eq!(mask_path(&s, id), after, "redo {kind}");
+        }
+    }
+}
+
+/// The explicit path route must not let presets or direct path commands edit a vector mask
+/// through Lock All, including when that lock comes from a containing group.
+#[test]
+fn targeted_vector_mask_transforms_respect_layer_and_group_lock_all() {
+    for inherited in [false, true] {
+        let (mut s, id) = vector_mask_session(true, asymmetric_vector_path());
+        let lock_id = if inherited {
+            let group = LayerId(s.execute("layer.groupLayers", json!({"layer": id.0})).unwrap()["layer"].as_u64().unwrap());
+            s.execute("layer.select", json!({"layer": id.0})).unwrap();
+            group
+        } else {
+            id
+        };
+        s.edit("Lock All", |doc, _| {
+            doc.layer_mut(lock_id).unwrap().locks.all = true;
+            Ok(())
+        })
+        .unwrap();
+        let before = s.active().unwrap().doc.clone();
+        let past = s.active().unwrap().history.past_len();
+        for kind in ["flipHorizontal", "flipVertical", "rotate180", "rotate90Cw", "rotate90Ccw"] {
+            let err = s.execute(&format!("edit.transform.{kind}"), json!({"target": "vectorMask"})).unwrap_err();
+            assert!(err.to_string().contains("locked"), "{kind}: {err}");
+            assert_eq!(s.active().unwrap().doc, before);
+            assert_eq!(s.active().unwrap().history.past_len(), past);
+        }
+        for vector_mask in [true, false] {
+            let err = s.execute("path.transform", json!({"name": "layer", "layer": id.0, "vectorMask": vector_mask, "translateX": 1})).unwrap_err();
+            assert!(err.to_string().contains("locked"), "{err}");
+            assert_eq!(s.active().unwrap().doc, before);
+            assert_eq!(s.active().unwrap().history.past_len(), past);
+        }
+
+        s.edit("Lock Pixels Only", |doc, _| {
+            let locks = &mut doc.layer_mut(lock_id).unwrap().locks;
+            locks.all = false;
+            locks.pixels = true;
+            Ok(())
+        })
+        .unwrap();
+        s.execute("edit.transform.flipHorizontal", json!({"target": "vectorMask"})).unwrap();
+        assert_ne!(mask_path(&s, id), asymmetric_vector_path(), "pixel-only locks permit mask edits");
+    }
+}
+
+/// #12283: a shape layer's path is its content, but it can also carry a separate vector mask. A
+/// targeted flip moves only the mask; the shape's path and rendered cache stay as they were.
+#[test]
+fn a_targeted_vector_mask_on_a_shape_layer_leaves_the_shape_path_and_cache_alone() {
+    let mut s = session(8);
+    let id = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [2, 2, 20, 20], "fill": "#ff0000"})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("vector mask", |doc, _| {
+        doc.layer_mut(id).unwrap().vector_mask = Some(photocraft_doc::VectorMask::new(asymmetric_vector_path()));
+        Ok(())
+    })
+    .unwrap();
+    let (shape_path, shape_cache) = match &doc(&s).layer(id).unwrap().content {
+        LayerContent::Shape(sh) => (sh.path.clone(), sh.cache.clone()),
+        _ => panic!("a shape layer"),
+    };
+    let mask_before = mask_path(&s, id);
+    assert!(shape_cache.is_some(), "the shape is rendered");
+    let past = s.active().unwrap().history.past_len();
+
+    s.execute("edit.transform.flipHorizontal", json!({"target": "vectorMask"})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), past + 1, "one Transform Path step");
+    let LayerContent::Shape(sh) = &doc(&s).layer(id).unwrap().content else { panic!("still a shape layer") };
+    assert_eq!(sh.path, shape_path, "the shape's path is untouched");
+    assert_eq!(sh.cache, shape_cache, "the shape's cache is untouched");
+    let mask_after = mask_path(&s, id);
+    assert_ne!(mask_after, mask_before, "the vector mask moved");
+    assert_eq!((mask_after.subpaths[0].knots[0].anchor.x, mask_after.subpaths[0].knots[0].anchor.y), (32.0, 20.0), "about the mask's bounds");
+
+    s.undo();
+    assert_eq!(mask_path(&s, id), mask_before, "undo restores the mask");
+    let LayerContent::Shape(sh) = &doc(&s).layer(id).unwrap().content else { panic!("still a shape layer") };
+    assert_eq!((sh.path.clone(), sh.cache.clone()), (shape_path, shape_cache), "and leaves the shape alone");
+    s.redo();
+    assert_eq!(mask_path(&s, id), mask_after, "redo flips the mask again");
+}
+
+/// The Channels panel's vector-mask target reaches the presets through the engine's target
+/// injection, without an explicit `target` param.
+#[test]
+fn the_channels_panel_vector_mask_target_routes_the_presets() {
+    let (mut s, id) = vector_mask_session(true, asymmetric_vector_path());
+    s.execute("channel.target", json!({"channel": "vectorMask"})).unwrap();
+    s.execute("edit.transform.flipHorizontal", json!({})).unwrap();
+    let k = &mask_path(&s, id).subpaths[0].knots;
+    assert_eq!((k[0].anchor.x, k[0].anchor.y), (32.0, 20.0));
+}
+
+/// A targeted vector mask turns alone: the layer's pixels do not move, even when it has some.
+#[test]
+fn a_targeted_vector_mask_flip_leaves_layer_pixels_alone() {
+    let mut s = session(8);
+    let id = s.active().unwrap().active_layer.unwrap();
+    paint_square(&mut s, Rect::new(2, 2, 6, 6), [1.0, 0.0, 0.0, 1.0]);
+    s.edit("vector mask", |doc, _| {
+        doc.layer_mut(id).unwrap().vector_mask = Some(photocraft_doc::VectorMask::new(asymmetric_vector_path()));
+        Ok(())
+    })
+    .unwrap();
+    let before = active(&s).surface().unwrap().read_region(Rect::new(0, 0, 40, 30));
+    s.execute("edit.transform.flipHorizontal", json!({"target": "vectorMask"})).unwrap();
+    let after = active(&s).surface().unwrap().read_region(Rect::new(0, 0, 40, 30));
+    assert_eq!(after, before, "the pixels are untouched");
+    assert_eq!(pixel(&s, 2, 2), vec![1.0, 0.0, 0.0, 1.0]);
+}
+
+/// A whole-layer preset still carries a linked vector mask and leaves an unlinked one in place.
+#[test]
+fn a_whole_layer_flip_carries_only_a_linked_vector_mask() {
+    for linked in [true, false] {
+        let mut s = session(8);
+        let id = s.active().unwrap().active_layer.unwrap();
+        paint_square(&mut s, Rect::new(2, 2, 6, 6), [1.0, 0.0, 0.0, 1.0]);
+        s.edit("vector mask", |doc, _| {
+            doc.layer_mut(id).unwrap().vector_mask = Some(photocraft_doc::VectorMask { linked, ..photocraft_doc::VectorMask::new(asymmetric_vector_path()) });
+            Ok(())
+        })
+        .unwrap();
+        let before = mask_path(&s, id);
+        s.execute("edit.transform.flipHorizontal", json!({})).unwrap();
+        let after = mask_path(&s, id);
+        if linked {
+            assert_ne!(after, before, "a linked vector mask moves with its layer");
+        } else {
+            assert_eq!(after, before, "an unlinked vector mask stays put");
+        }
+    }
+}
+
+/// An empty targeted vector mask is refused before anything is recorded, so history is unchanged.
+#[test]
+fn an_empty_targeted_vector_mask_refuses_without_history() {
+    let (mut s, id) = vector_mask_session(true, photocraft_doc::Path::default());
+    let before = s.active().unwrap().doc.clone();
+    let past = s.active().unwrap().history.past_len();
+    let err = s.execute("edit.transform.flipHorizontal", json!({"target": "vectorMask"})).unwrap_err();
+    assert!(err.to_string().contains("nothing to transform"), "{err}");
+    assert_eq!(s.active().unwrap().doc, before);
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    assert!(s.active().unwrap().doc.layer(id).unwrap().vector_mask.as_ref().unwrap().path.subpaths.is_empty());
 }
 
 #[test]
@@ -918,6 +1167,54 @@ fn rasterize_fill_and_all_in_one_step() {
     assert_eq!(s.execute("layer.rasterize.allLayers", json!({})).unwrap()["rasterized"], 1);
     assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
     assert!(doc(&s).walk().iter().all(|(_, _, l)| !matches!(l.content, LayerContent::Fill(_))));
+}
+
+/// #4974: Rasterize converts its layers as one step, so a layer that fails after another was
+/// converted leaves the document, history, journal and dirty state as they were.
+#[test]
+fn a_later_layer_failing_takes_back_the_rasterized_ones() {
+    let mut s = session(8);
+    let a = s.execute("layer.newFillLayer.solidColor", json!({"color": "#00ff00"})).unwrap()["layer"].as_u64().unwrap();
+    let b = s.execute("layer.newFillLayer.solidColor", json!({"color": "#0000ff"})).unwrap()["layer"].as_u64().unwrap();
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let before = s.active().unwrap().doc.clone();
+    let steps = s.active().unwrap().history.past_len();
+    let journal = s.journal.len();
+
+    let ids = vec![LayerId(a), LayerId(b)];
+    let r = rasterize_layers(&mut s, ids.clone(), None, |s, id, only, key| {
+        if id.0 == b { Err(EngineError::Other("second layer failed".into())) } else { rasterize_one(s, id, only, key) }
+    });
+    assert!(r.is_err());
+    assert!(matches!(layer_of(&s, a).content, LayerContent::Fill(_)));
+    assert!(matches!(layer_of(&s, b).content, LayerContent::Fill(_)));
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &before));
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert!(!s.active().unwrap().history.can_redo());
+    assert_eq!(s.journal.len(), journal);
+    assert!(!s.active().unwrap().is_dirty());
+
+    // Without the failure both are converted in a single step.
+    rasterize_layers(&mut s, ids, None, rasterize_one).unwrap();
+    assert!(matches!(layer_of(&s, a).content, LayerContent::Raster(_)));
+    assert!(matches!(layer_of(&s, b).content, LayerContent::Raster(_)));
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
+}
+
+/// A refused Rasterize starts no step: the revision and the saved state do not move.
+#[test]
+fn rasterize_with_nothing_to_convert_changes_nothing() {
+    let mut s = session(8);
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let (revision, steps) = (s.active().unwrap().revision, s.active().unwrap().history.past_len());
+    assert!(s.execute("layer.rasterize.layer", json!({})).is_err());
+    assert!(s.execute("layer.rasterize.type", json!({})).is_err());
+    assert_eq!(s.execute("layer.rasterize.allLayers", json!({})).unwrap()["rasterized"], 0);
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert!(!s.active().unwrap().is_dirty());
 }
 
 #[test]

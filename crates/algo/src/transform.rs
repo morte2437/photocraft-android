@@ -210,6 +210,15 @@ pub fn convex_quad(q: &[[f64; 2]; 4]) -> bool {
     area2.is_finite() && area2 >= 2.0
 }
 
+/// Is `q` (TL, TR, BR, BL) a usable Perspective Crop quad in either winding: a [`convex_quad`],
+/// or one wound counter-clockwise on screen (a box flipped on one axis, which crops mirrored,
+/// #12489) with the same corner angle and area limits? Self-crossing, degenerate and non-finite
+/// quads are not. The Perspective Warp steps keep the clockwise-only [`convex_quad`].
+pub fn convex_quad_any_winding(q: &[[f64; 2]; 4]) -> bool {
+    let [tl, tr, br, bl] = *q;
+    convex_quad(q) || convex_quad(&[tl, bl, br, tr])
+}
+
 /// The output size a Perspective Crop of `q` (TL, TR, BR, BL) takes when none is given: the mean
 /// length of the top and bottom edges by the mean length of the left and right edges.
 pub fn quad_size(q: &[[f64; 2]; 4]) -> (f64, f64) {
@@ -287,9 +296,10 @@ fn perspective_estimate(q: &[[f64; 2]; 4], [cx, cy]: [f64; 2]) -> Option<(f64, f
 /// The homography taking the quad `q` (TL, TR, BR, BL) onto the rectangle (0, 0)–(`w`, `h`), corner
 /// to corner: the inverse of the unit-square-to-quad map (Heckbert, "Fundamentals of Texture
 /// Mapping and Image Warping", 1989, §2.2.3) scaled to the rectangle. `None` when `q` isn't a
-/// [`convex_quad`] or the size isn't positive.
+/// [`convex_quad_any_winding`] or the size isn't positive. A quad wound counter-clockwise maps
+/// mirrored, each corner onto its own rectangle corner.
 pub fn quad_to_rect(q: &[[f64; 2]; 4], w: f64, h: f64) -> Option<Homography> {
-    if !(convex_quad(q) && w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
+    if !(convex_quad_any_winding(q) && w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
         return None;
     }
     Homography::rect_to_quad([0.0, 0.0, w, h], *q)?.inverse()

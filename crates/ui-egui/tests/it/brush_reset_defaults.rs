@@ -85,7 +85,7 @@ fn reset_all_tools_from_the_brush_gives_the_other_tools_the_default_tip() {
     let mut app = app();
     pick(&mut app, Tool::Brush);
     control(&mut app, "ui.menu.invoke", json!({"id": "tool.resetAll", "params": {"confirmed": true}}));
-    for tool in [Tool::Pencil, Tool::Eraser] {
+    for tool in [Tool::Eraser, Tool::Blur] {
         pick(&mut app, tool);
         assert_eq!(tip(&mut app), DEFAULT_TIP, "{tool:?}");
     }
@@ -93,7 +93,7 @@ fn reset_all_tools_from_the_brush_gives_the_other_tools_the_default_tip() {
 
 #[test]
 fn other_painting_tools_keep_the_default_reset_tip() {
-    for tool in [Tool::Pencil, Tool::Eraser] {
+    for tool in [Tool::Eraser, Tool::Blur] {
         let mut a = app();
         pick(&mut a, tool);
         scramble(&mut a);

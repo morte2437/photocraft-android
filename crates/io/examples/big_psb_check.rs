@@ -1,10 +1,10 @@
-//! Opens the files written by `photocraft-psd`'s `big_psb` example and checks their pixels.
+//! Opens the files written by `craft-psd`'s `big_psb` example and checks their pixels.
 //!
 //! `cargo run --release -p photocraft-io --example big_psb_check -- <file.psb>...`
 //!
 //! The opt-in tests in `tests/it/large_files.rs` generate and check the same files.
 
-use photocraft_psd::fixtures::sample;
+use craft_psd::fixtures::sample;
 
 fn main() {
     for path in std::env::args().skip(1) {

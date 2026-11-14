@@ -177,6 +177,15 @@ pub fn error(app: &mut PhotocraftApp, message: String) {
     post(app, message, Vec::new(), true, None);
 }
 
+/// Disclose the salvage warnings a footage-loading command result carries (#11113): a GIF or
+/// WebP damaged after some frames keeps its earlier frames and returns the decoder's warning in
+/// `warnings`, which must reach the user like any other import warning. Nothing happens when
+/// every frame came through.
+pub fn footage_warnings(app: &mut PhotocraftApp, result: &serde_json::Value, what: &str) {
+    let warnings: Vec<String> = result["warnings"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str).map(str::to_owned).collect();
+    io_warnings(app, what, &warnings);
+}
+
 /// Auto-hide (issue #2022): drop notices whose delay has elapsed, pausing the timers of any the
 /// pointer is resting on. `hovered` is true when the pointer is over the notice stack; `just_left`
 /// is true on the frame it moves away. In both cases the timers restart from `now`, so a long
@@ -379,7 +388,9 @@ mod tests {
     #[test]
     fn import_warning_punctuation_is_localized_without_changing_english() {
         let mut app = PhotocraftApp::new(Session::new(), Services::default());
-        for lang in [crate::i18n::Lang::EN, crate::i18n::Lang::from_code("cs").unwrap()] {
+        // English in every build; Czech too when the craft-i18n catalogs are embedded.
+        let czech = crate::i18n::needs_catalogs().then(|| crate::i18n::Lang::from_code("cs").expect("cs registered"));
+        for lang in std::iter::once(crate::i18n::Lang::EN).chain(czech) {
             crate::i18n::with_language(lang, || {
                 let what = crate::i18n::fmt(tl!("Opened {name}"), &[("name", "x.psd")]);
                 let warnings = vec!["first warning".into(), "second warning".into(), "third warning".into()];

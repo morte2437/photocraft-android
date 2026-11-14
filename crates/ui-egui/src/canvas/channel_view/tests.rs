@@ -90,6 +90,27 @@ fn plain_composite_draws_nothing() {
 }
 
 #[test]
+fn spot_overlay_previews_with_the_spot_dot_gain() {
+    // A 50 % tint of a black spot ink printed over the white composite: its coverage is the 50 %
+    // dot plus Color Settings › Spot's dot gain (read, not changed: the setting is process-wide).
+    let mut s = session();
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 4, "height": 4})).unwrap();
+    s.execute("channel.newSpot", json!({"name": "Ink", "color": "#000000", "solidity": 0})).unwrap();
+    let st = s.active_mut().unwrap();
+    let doc = std::sync::Arc::make_mut(&mut st.doc);
+    let ch = doc.channels.last_mut().unwrap();
+    ch.surface.write_region(photocraft_geom::Rect::new(0, 0, 1, 1), &[0.5]);
+    let i = doc.channels.len() - 1;
+    st.channel_view.alpha_visible = vec![false; i + 1];
+    st.channel_view.alpha_visible[i] = true;
+    let st = s.active().unwrap();
+    let px = render(&st.doc, &st.channel_view, st.doc.bounds(), 1, Look::default(), st.active_layer).unwrap();
+    let gain = photocraft_compose::multichannel::spot_dot_gain();
+    let paper = 1.0 - photocraft_compose::multichannel::dot_gain(0.5, gain);
+    assert!(px[0].a() == 255 && (f32::from(px[0].r()) / 255.0 - paper).abs() <= 1.5 / 255.0, "{:?} vs {paper} at {gain} %", px[0]);
+}
+
+#[test]
 fn quick_mask_overlay_is_red_over_masked_areas() {
     let mut s = session();
     s.execute("select.rect", json!({"x": 0, "y": 0, "width": 4, "height": 4})).unwrap();
@@ -136,7 +157,9 @@ fn layer_mask_views_and_damage_on_the_downsampled_grid() {
     s.execute("layer.new.layer", json!({})).unwrap();
     s.execute("edit.fill", json!({"color": "#0000ff"})).unwrap();
     s.execute("layer.layerMask.revealAll", json!({})).unwrap();
-    s.execute("paint.gradient", json!({"from": [0, 0], "to": [37, 0], "colors": ["#000000", "#ffffff"], "target": "mask"})).unwrap();
+    // Pixels are sampled half a pixel up and left of their centre (#12018): a drag ending on 36
+    // keeps the last column (sampled at 35.5) near white.
+    s.execute("paint.gradient", json!({"from": [0, 0], "to": [36, 0], "colors": ["#000000", "#ffffff"], "target": "mask"})).unwrap();
     s.execute("view.layerMask", json!({"mode": "gray"})).unwrap();
     let st = s.active().unwrap();
     let b = st.doc.bounds();
@@ -350,6 +373,89 @@ fn rgb_off_shows_alpha_quick_mask_or_the_layer_mask() {
     assert_eq!(px[0], Color32::BLACK, "the hidden mask reads black, not the red layer");
 }
 
+/// A CMYK channel shows the document's ink, not the composite separated again from RGB: rich
+/// black 100/100/100/0 has no K, and full C, M and Y (#8359).
+#[test]
+fn cmyk_channels_show_the_document_inks() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "cmyk"})).unwrap();
+    s.execute("tools.setColors", json!({"foregroundCmyk": [1.0, 1.0, 1.0, 0.0]})).unwrap();
+    s.execute("edit.fillForeground", json!({})).unwrap();
+    for (channel, gray) in [("cyan", 0), ("magenta", 0), ("yellow", 0), ("black", 255)] {
+        s.execute("channel.target", json!({"channel": channel})).unwrap();
+        let st = s.active().unwrap();
+        let px = render(&st.doc, &st.channel_view, st.doc.bounds(), 1, Look::default(), st.active_layer).unwrap();
+        assert!(px.iter().all(|p| *p == Color32::from_gray(gray)), "{channel}: {:?}", px[0]);
+    }
+}
+
+/// With a channel hidden, the shown inks convert through the document's own CMYK profile, as its
+/// composite does, not the built-in one.
+#[test]
+fn cmyk_channel_views_use_the_document_profile() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 4, "height": 4, "mode": "cmyk"})).unwrap();
+    s.execute("tools.setColors", json!({"foregroundCmyk": [0.0, 0.5, 0.5, 0.0]})).unwrap();
+    s.execute("edit.fillForeground", json!({})).unwrap();
+    s.execute("channel.setVisible", json!({"channel": "black", "visible": false})).unwrap();
+    let st = s.active().unwrap();
+    let params =
+        craft_cms::synth::CmykParams { description: "Test Uncoated".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() };
+    let mut doc = (*st.doc).clone();
+    doc.icc_profile = Some(craft_cms::synth::cmyk_profile(&params).unwrap().to_bytes());
+    let space = photocraft_compose::cmyk_space(&doc).expect("a profile other than the built-in one");
+    let fmt = doc.pixel_format();
+    let inks: Vec<f32> = [0.0, 0.5, 0.5, 0.0].into_iter().chain(fmt.alpha.then_some(1.0)).collect();
+    let tagged = photocraft_color::convert::with_cmyk_space(Some(&space), || to_rgba(&fmt, &inks));
+    let builtin = to_rgba(&fmt, &inks);
+    // 8-bit inks: within one level of the tagged conversion, well away from the built-in one.
+    let off = |c: [f32; 4], px: Color32| [px.r(), px.g(), px.b()].iter().zip(c).map(|(p, c)| (i32::from(*p) - i32::from(q(c))).abs()).max().unwrap();
+    let px = render(&doc, &st.channel_view, doc.bounds(), 1, Look::default(), st.active_layer).unwrap()[0];
+    assert!(off(tagged, px) <= 1, "{px:?} vs tagged {tagged:?}");
+    assert!(off(builtin, px) > 4, "{px:?} vs built-in {builtin:?}");
+}
+
+/// A downsampled view of a whole CMYK document reads its inks from the proxy, at the same pixels
+/// as the full document.
+#[test]
+fn cmyk_inks_from_the_proxy_match_the_document() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 9, "height": 7, "mode": "cmyk"})).unwrap();
+    s.execute("select.rect", json!({"x": 0, "y": 0, "width": 5, "height": 7})).unwrap();
+    s.execute("tools.setColors", json!({"foregroundCmyk": [1.0, 1.0, 1.0, 0.0]})).unwrap();
+    s.execute("edit.fillForeground", json!({})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert!(proxy(doc, doc.bounds(), 2).is_some());
+    let full = ink_samples(doc, &(0..9).step_by(2).collect::<Vec<_>>(), &(0..7).step_by(2).collect::<Vec<_>>());
+    assert_eq!(inks(doc, doc.bounds(), 2), full);
+    assert_eq!(full[0], [1.0, 1.0, 1.0, 0.0]);
+    assert_eq!(full[4], [0.0; 4]);
+}
+
+/// Hidden CMYK channels read the inks and visible spot channels print over the RGB composite, so
+/// the sampled composite one of them cached is not reused by the other.
+#[test]
+fn cmyk_ink_samples_and_the_spot_composite_are_cached_apart() {
+    let mut app = PhotocraftApp::new(Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 16, "height": 8, "mode": "cmyk", "background": "white"})).unwrap();
+    app.run("tools.setColors", json!({"foregroundCmyk": [1.0, 1.0, 1.0, 0.0]})).unwrap();
+    app.run("edit.fillForeground", json!({})).unwrap();
+    // Ink everywhere, so the spot view samples the whole composite (and caches it).
+    app.run("select.all", json!({})).unwrap();
+    app.run("channel.newSpot", json!({"color": "#00ffff", "solidity": 0})).unwrap();
+    app.sync_views();
+    let ctx = egui::Context::default();
+    let id = app.session.active().unwrap().doc.id.0;
+    let source = |app: &PhotocraftApp| app.channel_views.get(&id).and_then(|c| c.source.as_ref()).map(|s| (s.inks, s.pixels.clone()));
+    app.run("channel.setVisible", json!({"channel": "black", "visible": false})).unwrap();
+    assert!(ensure(&mut app, &ctx, 0, None).is_some());
+    let doc = app.session.active().unwrap().doc.clone();
+    assert_eq!(source(&app), Some((true, inks(&doc, doc.bounds(), 1))), "hidden K: the inks");
+    app.run("channel.setVisible", json!({"channel": "black", "visible": true})).unwrap();
+    assert!(ensure(&mut app, &ctx, 0, None).is_some(), "the spot prints");
+    assert_eq!(source(&app), Some((false, composite(&doc, doc.bounds(), 1))), "the spot prints over the composite, not the inks");
+}
+
 /// A white-backed `mode`/`depth` document, 3×1, with a 0.8/0.4/0.2 picture and two overlapping
 /// spot inks (`a` covers 1, ½, 0 of the pixels; `b` the reverse).
 fn spot_doc(mode: ColorMode, depth: photocraft_color::SampleType, sa: f32, sb: f32) -> Document {
@@ -478,7 +584,8 @@ fn sparse_inks_composite_only_their_bounding_box() {
                 continue;
             };
             let mut want = [whole[k]];
-            ink.apply(&mut want, [doc.channels[0].surface.pixel((x * f) as i32, (y * f) as i32)[0]]);
+            let gain = photocraft_compose::multichannel::spot_dot_gain();
+            ink.apply_with_gain(&mut want, [doc.channels[0].surface.pixel((x * f) as i32, (y * f) as i32)[0]], gain);
             let want = Color32::from_rgb(q(want[0][0]), q(want[0][1]), q(want[0][2]));
             assert_eq!(*px, want, "/{factor} ({x}, {y})");
         }
@@ -520,18 +627,18 @@ fn uninked_spot_draws_no_texture() {
 /// canvas around them does.
 #[test]
 fn printed_inks_follow_the_display_transform() {
-    use photocraft_cms::{Builtin, TransformOptions};
+    use craft_cms::{Builtin, TransformOptions};
     let doc = spot_doc(ColorMode::Rgb, photocraft_color::SampleType::U8, 1.0, 1.0);
     let mut v = ChannelView::default();
     v.set_alpha_visible(0, true);
     let plain = render(&doc, &v, doc.bounds(), 1, Look::default(), None).unwrap();
-    let t = photocraft_cms::transform::cached(Builtin::Srgb.profile(), Builtin::DisplayP3.profile(), TransformOptions::default()).unwrap();
+    let t = craft_cms::transform::cached(Builtin::Srgb.profile(), Builtin::DisplayP3.profile(), TransformOptions::default()).unwrap();
     let screen = Screen { encode_srgb: false, transform: Some(t.clone()) };
     let shown =
         render_with_source(&doc, &v, doc.bounds(), 1, Look::default(), None, CompositeSource { cached: None, fresh: &mut None, screen: &screen }).unwrap();
     // x 0: solid teal; x 2: no ink of channel 0, so transparent either way.
     let mut teal = [0.0f32, 0.6, 0.65, 1.0];
-    t.apply(&mut teal, 4);
+    t.apply(&mut teal, 4).unwrap();
     assert_ne!(plain[0], shown[0]);
     assert_eq!(shown[0], Color32::from_rgb(q(teal[0]), q(teal[1]), q(teal[2])));
     assert_eq!((plain[2], shown[2]), (Color32::TRANSPARENT, Color32::TRANSPARENT));
@@ -543,7 +650,7 @@ fn printed_inks_follow_the_display_transform() {
 #[test]
 fn printed_inks_keep_their_colour_in_a_linear_document() {
     let mut doc = spot_doc(ColorMode::Rgb, photocraft_color::SampleType::F32, 1.0, 1.0);
-    doc.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::LinearSrgb.profile().to_bytes());
     let mut v = ChannelView::default();
     v.set_alpha_visible(0, true);
     let encoded = Screen { encode_srgb: true, transform: None };

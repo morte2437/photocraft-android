@@ -792,8 +792,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             d.set_filter(cur);
         }
         widgets::hairline(&mut ru);
-        let list_h = 190.0;
-        let params_h = (inner.height() - 110.0 - list_h).max(80.0);
+        let (params_h, list_h) = column_heights(inner.height());
         egui::ScrollArea::vertical().id_salt("gallery-params").max_height(params_h).show(&mut ru, |ui| {
             let sel = d.selected;
             let e = &mut d.effects[sel];
@@ -848,7 +847,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let lr = ERect::from_min_max(pos2(inner.left(), list_top), inner.max);
         let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(lr));
         widgets::hairline(&mut lu);
-        egui::ScrollArea::vertical().id_salt("gallery-layers").max_height(list_h - 44.0).show(&mut lu, |ui| {
+        egui::ScrollArea::vertical().id_salt("gallery-layers").auto_shrink([false, false]).max_height(list_h - 44.0).show(&mut lu, |ui| {
             let mut toggle = None;
             for i in (0..d.effects.len()).rev() {
                 let sel = i == d.selected;
@@ -903,6 +902,20 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         Some("cancel") => app.distort.gallery = None,
         _ => {}
     }
+}
+
+/// Heights of the settings area and the effect-layer list in the right column, given the column's
+/// height. The list keeps at least `MIN_LIST_H` and takes the space the settings (at most
+/// `PARAMS_SHARE` of what is left under the buttons and the filter menu) don't, so a tall dialog
+/// shows more effect layers instead of scrolling a short list.
+fn column_heights(column_h: f32) -> (f32, f32) {
+    const MIN_LIST_H: f32 = 190.0;
+    const CHROME_H: f32 = 110.0;
+    const PARAMS_SHARE: f32 = 0.45;
+    let room = (column_h - CHROME_H).max(0.0);
+    let list_h = (room * (1.0 - PARAMS_SHARE)).max(MIN_LIST_H);
+    let params_h = (column_h - CHROME_H - list_h).max(80.0);
+    (params_h, list_h)
 }
 
 #[cfg(test)]

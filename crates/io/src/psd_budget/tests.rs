@@ -1,5 +1,5 @@
 use super::*;
-use photocraft_psd::{ColorMode, Compression, Version, testgen};
+use craft_psd::{ColorMode, Compression, Version, testgen};
 
 #[test]
 fn retained_storage_is_summed_but_workspace_is_reused() {
@@ -58,7 +58,7 @@ fn large_off_canvas_layer_is_rejected_without_decoding_its_tiny_data() {
         // Unknown memory keeps a conservative automatic allowance, so this file is refused
         // pending approval (or by the hard platform limit on 32-bit) before any pixel decode.
         assert!(matches!(crate::import("huge.psd", &bytes), Err(IoError::PsdApprovalRequired { .. } | IoError::PsdImportBudget { .. })));
-        let source = photocraft_psd::Source::new(bytes);
+        let source = craft_psd::Source::new(bytes);
         assert!(matches!(
             crate::import_source_for_open_with("huge.psd", source, &photocraft_raster::Interrupt::NONE),
             Err(IoError::PsdApprovalRequired { .. } | IoError::PsdImportBudget { .. })
@@ -71,7 +71,7 @@ fn user_mask_bounds_count_even_when_the_layer_is_small() {
     let mut file = testgen::small(Version::Psd, Compression::Raw);
     let before = estimate(&file);
     // The generator's first record has a user mask. Modify its parsed mask in place.
-    if let photocraft_psd::layer::MaskData::Mask(mask) = &mut file.layers_mut()[0].mask {
+    if let craft_psd::layer::MaskData::Mask(mask) = &mut file.layers_mut()[0].mask {
         mask.rect = Rect::from_xywh(0, 0, 20_000, 20_000);
     } else {
         panic!("fixture needs a parsed mask");
@@ -133,8 +133,8 @@ fn legacy_conversion_reports_a_rejected_import_instead_of_decoding_it() {
     });
 }
 
-fn pattern_block(mode: u32, depth: u16, width: u32, height: u32) -> photocraft_psd::TaggedBlock {
-    use photocraft_psd::patterns::{PsdPattern, mode_channels, write_pattern_block};
+fn pattern_block(mode: u32, depth: u16, width: u32, height: u32) -> craft_psd::TaggedBlock {
+    use craft_psd::patterns::{PsdPattern, mode_channels, write_pattern_block};
     let len = (width as usize * depth as usize).div_ceil(8) * height as usize;
     let p = PsdPattern {
         mode,
@@ -147,7 +147,7 @@ fn pattern_block(mode: u32, depth: u16, width: u32, height: u32) -> photocraft_p
         channels: vec![vec![0; len]; mode_channels(mode)],
         alpha: None,
     };
-    photocraft_psd::TaggedBlock::new(*b"Patt", write_pattern_block(&[p]).unwrap())
+    craft_psd::TaggedBlock::new(*b"Patt", write_pattern_block(&[p]).unwrap())
 }
 
 #[test]
@@ -190,14 +190,14 @@ fn an_unknown_color_mode_pays_for_the_layers_it_imports_as_rgb() {
     let rgb = testgen::small(Version::Psd, Compression::Raw);
     assert!(!rgb.layers().is_empty() && !super::super::psd_import::merged_needed(&rgb), "the fixture must import its layers alone");
     let mut unknown = rgb.clone();
-    unknown.header.color_mode = photocraft_psd::ColorMode::Unknown(5);
+    unknown.header.color_mode = craft_psd::ColorMode::Unknown(5);
     assert!(unknown.header.validate().is_ok());
     let required = estimate(&unknown);
     assert!(required >= estimate(&rgb), "the layers import as RGB and are counted");
     let bytes = unknown.to_bytes().unwrap();
     let opts = crate::ImportOptions { psd_max_pixel_bytes: required - 1, ..Default::default() };
     assert!(matches!(crate::import_with_options("mode5.psd", &bytes, &opts), Err(IoError::PsdImportBudget { .. })));
-    let source = photocraft_psd::Source::new(bytes);
+    let source = craft_psd::Source::new(bytes);
     let refused = crate::import_source_with_limit("mode5.psd", source, &photocraft_raster::Interrupt::NONE, required - 1);
     assert!(matches!(refused, Err(IoError::PsdImportBudget { .. })), "{:?}", refused.map(|(r, _)| r.warnings));
 }

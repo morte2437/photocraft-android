@@ -169,6 +169,7 @@ impl LiveMixer {
             sample_all_layers: flag(p, "sampleAllLayers", bm.sample_all_layers) && crate::channel_cmds::target_of(p) == crate::channel_cmds::Target::Pixels,
             clean_after_stroke: flag(p, "cleanAfterStroke", bm.clean_after_stroke),
             load_after_stroke: flag(p, "loadAfterStroke", bm.load_after_stroke),
+            solid_colors_only: bm.solid_colors_only,
         };
         let initial_state = if let Some(value) = p.get("mixerState") {
             if value.get("spatial").and_then(Value::as_array).is_some_and(|v| v.len() != 4096) {

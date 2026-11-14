@@ -17,17 +17,18 @@ JetBrains Mono font (assets/fonts/JetBrainsMono-Regular.ttf) — SIL Open Font L
 Lucide icons (assets/icons/*.svg, except slice-knife.svg) — ISC; icons derived from Feather also MIT. See assets/icons/LICENSE-lucide.txt.
 SCOWL English word list (assets/dict/en_US-scowl-50.txt.gz) — SCOWL license. See assets/dict/LICENSE-SCOWL.txt.
 libfacedetection face detection weights and network (crates/algo/data/libfacedetection.bin, crates/algo/src/faces/cnn.rs) — BSD-3-Clause, Copyright (c) 2015-2019, Shiqi Yu, all rights reserved. See crates/algo/data/LICENSE-libfacedetection.txt.
+Interface translations (embedded at build time from storytold/craft-i18n locales/<code>/common.tsv and photocraft.tsv, at the commit in craft-i18n.rev) — MIT OR Apache-2.0, Copyright (c) 2026 ArtCraft Team and the craft-i18n contributors; the license texts are the same as LICENSE-MIT and LICENSE-APACHE. Per-language credits and provenance: https://github.com/storytold/craft-i18n/blob/main/ATTRIBUTION.md
 
 Builds made with craft-fonts (CRAFT_FONTS_DIR; all official releases) also embed the fonts listed in
 https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (today BIZ UDPGothic, Shippori Mincho and
 BIZ UDMincho; not the web build), under the SIL Open Font License 1.1. Their licence texts
 ship with the package as OFL-<family>.txt.
 
-Linux Wayland window decorations
--------------------------------
+Linux and FreeBSD Wayland window decorations
+-------------------------------------------
 sctk-adwaita 0.10.1 (https://github.com/PolyMeilex/sctk-adwaita,
 commit d5f343c45c04d4a026db57f76760819b7325db00) is used by winit on Linux
-for vector window controls. Its title-font features are disabled: no Cantarell
+and FreeBSD for vector window controls. Its title-font features are disabled: no Cantarell
 font is embedded by this dependency and no font file is added to this repo.
 
 sctk-adwaita's MIT licence:

@@ -44,6 +44,10 @@ pub(crate) fn float_window(app: &mut PhotocraftApp, doc: usize, offset: usize, f
     view.zoom_transition = None;
     view.display_camera = None;
     view.fit_pending = offset > 0 || view.fit_pending;
+    // A floating window draws the document's own view from now on (`tabs::extra_windows`).
+    if floating && let Some(v) = app.ui.views.get_mut(doc) {
+        *v = view.clone();
+    }
     app.ui.windows.push(crate::state::DocWindow { id: wid, document: doc, view, open: true, floating, focused: false, position: None });
     wid
 }
@@ -100,7 +104,14 @@ pub(super) fn arrange(app: &mut PhotocraftApp, k: &str, p: &Value) -> Result<Val
         }
         "floatAllInWindows" | "cascade" => {
             let n = app.session.documents().len();
-            let ids: Vec<u64> = (0..n).map(|d| float_window(app, d, d, true)).collect();
+            // A document that already floats keeps its window: two floating windows would share
+            // the document's view (`tabs::extra_windows`) and overwrite each other's centre.
+            let ids: Vec<u64> = (0..n)
+                .map(|d| match app.ui.windows.iter().find(|w| w.open && w.floating && w.document == d) {
+                    Some(w) => w.id,
+                    None => float_window(app, d, d, true),
+                })
+                .collect();
             Ok(json!({"windows": ids}))
         }
         "matchZoom" | "matchLocation" | "matchRotation" | "matchAll" => {

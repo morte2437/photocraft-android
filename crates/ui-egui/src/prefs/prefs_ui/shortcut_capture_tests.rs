@@ -51,6 +51,9 @@ fn field(h: &Harness<'_, PhotocraftApp>, id: u64, name: &str) -> Value {
 /// The actual shortcut grid matches Azerbaijani uppercase text and English command aliases.
 #[test]
 fn azerbaijani_shortcuts_search_handles_dotted_i_and_english() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let (mut h, id) = dialog(1.0, "image.imageSize", "ŞƏKİL ÖLÇÜSÜ");
     h.state_mut().run("prefs.set", json!({"path":"interface.language", "value":"az"})).unwrap();
     h.run_steps(4);
@@ -457,4 +460,155 @@ fn accept_takes_the_key_from_every_command_holding_it() {
     click(&mut h, "Accept and Go to Conflict");
     let o = field(&h, id, "overrides");
     assert_eq!((o["edit.cut"].clone(), o["edit.copy"].clone(), o["edit.paste"].clone()), (json!(""), json!(""), json!("Cmd+X")), "{o}");
+}
+
+/// The Keyboard Shortcuts dialog over a document with one undoable step (a selection).
+fn dialog_over_document(command: &str, filter: &str) -> (Harness<'static, PhotocraftApp>, u64) {
+    let (mut h, id) = dialog(1.0, command, filter);
+    let app = h.state_mut();
+    app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 4})).unwrap();
+    app.sync_views();
+    h.run_steps(2);
+    (h, id)
+}
+
+/// The document's revision and the view's zoom: what Undo, Redo and the view keys would change.
+fn document_state(h: &Harness<'_, PhotocraftApp>) -> (u64, f32) {
+    let app = h.state();
+    (app.session.active().map(|d| d.revision).unwrap_or_default(), app.ui.views.first().map(|v| v.zoom).unwrap_or_default())
+}
+
+/// #8965: every key the app itself uses (Undo's ⌘Z family, View › Extras' ⌘H, the view keys
+/// that work under dialogs) is recorded by a waiting shortcut field like any other key, and none
+/// of them runs its command on the way.
+#[test]
+fn keys_the_app_uses_are_recorded_while_capturing_and_run_nothing() {
+    let cmd = Modifiers::COMMAND;
+    for (m, k, holder) in [
+        (cmd, Key::Z, "Undo"),
+        (cmd | Modifiers::ALT, Key::Z, "Toggle Last State"),
+        (cmd | Modifiers::SHIFT, Key::Z, "Redo"),
+        (cmd, Key::H, "Extras"),
+        (cmd, Key::Num0, "Fit on Screen"),
+        (cmd, Key::Num1, "100%"),
+        (cmd, Key::Equals, "Zoom In"),
+        (cmd, Key::Minus, "Zoom Out"),
+    ] {
+        let (mut h, id) = dialog_over_document("edit.search", "search…");
+        let before = document_state(&h);
+        capture(&mut h, &crate::shortcuts::pretty("Cmd+F"), Key::ControlLeft, m, k);
+        let want = crate::prefs_ui::shortcut_text(k, m).unwrap();
+        assert_eq!(field(&h, id, "overrides")["edit.search"], json!(want), "{want}");
+        assert_eq!(field(&h, id, "capture"), json!(false), "{want}");
+        let message = field(&h, id, "message");
+        assert!(message.as_str().is_some_and(|s| s.contains("already in use") && s.contains(holder)), "{want}: {message}");
+        assert_eq!(document_state(&h), before, "{want} ran nothing under the dialog");
+        assert!(h.state().ui.dialogs.iter().any(|d| d.id == id), "{want}: the dialog stays open");
+    }
+}
+
+/// The macOS menu bar used for the test: records what it was synced to and hands out queued
+/// events like AppKit's key equivalents.
+struct Menu {
+    synced: std::rc::Rc<std::cell::RefCell<Vec<crate::native_menu::MenuBar>>>,
+    events: std::rc::Rc<std::cell::RefCell<Vec<crate::native_menu::Event>>>,
+}
+
+impl crate::native_menu::Backend for Menu {
+    fn sync(&mut self, bar: &crate::native_menu::MenuBar) {
+        self.synced.borrow_mut().push(bar.clone());
+    }
+    fn drain(&mut self) -> Vec<crate::native_menu::Event> {
+        std::mem::take(&mut *self.events.borrow_mut())
+    }
+}
+
+/// #8965 on macOS: while a shortcut field waits for keys, the menu items with a key stay enabled,
+/// so their key equivalents reach the field and are recorded; afterwards the items are disabled again.
+#[test]
+fn the_mac_menu_bar_hands_its_keys_to_a_waiting_shortcut_field() {
+    use crate::native_menu::{Chord, Event as MenuEvent, NativeMenu};
+    let synced = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (mut h, id) = dialog_over_document("edit.search", "search…");
+    h.state_mut().services.native_menu = Some(NativeMenu::new(Box::new(Menu { synced: synced.clone(), events: events.clone() })));
+    let enabled = |id: &str| synced.borrow().last().and_then(|bar| bar.find(id).map(|it| it.enabled));
+    h.run_steps(2);
+    assert_eq!(enabled("edit.undo"), Some(false), "the rows are disabled under the dialog");
+    h.get_by_label(&crate::shortcuts::pretty("Cmd+F")).click();
+    h.run_steps(2);
+    assert_eq!(field(&h, id, "capture"), json!(true));
+    for item in ["edit.undo", "edit.toggleLastState", "view.extras", "view.zoomIn"] {
+        assert_eq!(enabled(item), Some(true), "{item} keeps its key equivalent live while capturing");
+    }
+    assert_eq!(enabled("image.imageRotation.90cw"), Some(false), "an item without a key stays disabled");
+    let before = document_state(&h);
+    // AppKit chose Toggle Last State by its key equivalent: the menu reports the key press.
+    events.borrow_mut().push(MenuEvent::Key(Chord::parse("Cmd+Alt+Z").unwrap()));
+    let mut raw = egui::RawInput::default();
+    if let Some(menu) = h.state_mut().services.native_menu.as_mut() {
+        menu.raw_input(&mut raw);
+    }
+    assert_eq!(raw.events.len(), 1, "{:?}", raw.events);
+    for e in raw.events {
+        h.event(e);
+    }
+    h.run_steps(2);
+    assert_eq!(field(&h, id, "overrides")["edit.search"], json!("Cmd+Alt+Z"));
+    assert_eq!(document_state(&h), before, "⌘⌥Z didn't step the History");
+    assert_eq!(field(&h, id, "capture"), json!(false));
+    assert_eq!(enabled("edit.undo"), Some(false), "the rows are disabled again once the key is recorded");
+    // A click that raced the update still doesn't run under the dialog.
+    events.borrow_mut().push(MenuEvent::Click("edit.undo".into()));
+    let mut raw = egui::RawInput::default();
+    if let Some(menu) = h.state_mut().services.native_menu.as_mut() {
+        menu.raw_input(&mut raw);
+    }
+    h.run_steps(2);
+    assert_eq!(document_state(&h), before, "a menu click doesn't undo under the dialog");
+}
+
+/// A capture flag of the wrong type or on another dialog doesn't count as a waiting field.
+#[test]
+fn only_a_real_capture_flag_owns_the_keyboard() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    assert!(!crate::prefs_ui::capturing_shortcut(&app), "no dialog");
+    let ctx = egui::Context::default();
+    let id = crate::menus::invoke(&mut app, &ctx, "edit.keyboardShortcuts", json!({})).unwrap()["dialog"].as_u64().unwrap();
+    for (value, want) in [(json!(true), true), (json!("true"), false), (json!(1), false), (Value::Null, false), (json!(false), false)] {
+        app.ui.dialog_mut(id).unwrap().fields.insert("capture".into(), value.clone());
+        assert_eq!(crate::prefs_ui::capturing_shortcut(&app), want, "{value}");
+    }
+}
+
+/// #8965: closing the dialog while a field waits for keys gives the keyboard back. The menu rows
+/// return to their normal state, ⌘Z undoes the document again and the view keys zoom again.
+#[test]
+fn closing_a_capturing_dialog_restores_the_normal_keys() {
+    let synced = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (mut h, id) = dialog_over_document("edit.search", "search…");
+    h.state_mut().services.native_menu = Some(crate::native_menu::NativeMenu::new(Box::new(Menu { synced: synced.clone(), events })));
+    let enabled = |id: &str| synced.borrow().last().and_then(|bar| bar.find(id).map(|it| it.enabled));
+    h.get_by_label(&crate::shortcuts::pretty("Cmd+F")).click();
+    h.run_steps(2);
+    assert!(crate::prefs_ui::capturing_shortcut(h.state()));
+    assert_eq!(enabled("image.imageRotation.90cw"), Some(false));
+    assert_eq!(enabled("edit.undo"), Some(true));
+    crate::dialogs::cancel(h.state_mut(), id).unwrap();
+    h.run_steps(2);
+    assert!(!h.state().ui.dialogs.iter().any(|d| d.id == id), "the dialog is closed");
+    assert!(!crate::prefs_ui::capturing_shortcut(h.state()));
+    assert_eq!(enabled("image.imageRotation.90cw"), Some(true), "rows without a key are enabled again");
+    assert_eq!(enabled("edit.undo"), Some(true), "Undo is enabled: there is a step to undo");
+    let (revision, zoom) = document_state(&h);
+    key(&mut h, Key::Z, true, Modifiers::COMMAND);
+    key(&mut h, Key::Z, false, Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_ne!(document_state(&h).0, revision, "⌘Z undoes the selection again");
+    key(&mut h, Key::Equals, true, Modifiers::COMMAND);
+    key(&mut h, Key::Equals, false, Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_ne!(document_state(&h).1, zoom, "⌘= zooms again");
 }

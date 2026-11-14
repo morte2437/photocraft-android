@@ -3,7 +3,7 @@
 PhotoCraft loads and saves action sets in the reference application's `.atn` format: Load Actions and
 Save Actions in the Actions panel menu, `actions.load` / `actions.save` for agents, and
 `photocraft batch --actions set.atn` on the command line. Reading and writing the file lives in
-`photocraft-psd` (`crates/psd/src/atn.rs`, version 16 sets, exact round trip); the mapping between the
+`craft-psd` (`crates/psd/src/atn.rs`, version 16 sets, exact round trip); the mapping between the
 application's events and PhotoCraft commands lives in `photocraft-engine`
 (`crates/engine/src/cmd/atn_cmds/`, table `EVENTS` in `events.rs`).
 
@@ -147,7 +147,8 @@ row; the action still adds only one Undo entry.
 | `CtTL` | cutToLayer | Layer Via Cut | `layer.new.layerViaCut` |
 | `LnsF` | lensFlare | Lens Flare | `filter.render.lensFlare` |
 | `Lvls` | levels | Levels | `image.adjustments.levels`, `image.autoTone`, `image.autoContrast` |
-| `Mk  ` | make | Make | `image.calculations`, `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newFillLayer.gradient`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath` |
+| `Mk  ` | make | Make | `image.calculations`, `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.new.frameFromLayers` (Layer › New › Frame from Layers), `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newFillLayer.gradient`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath` |
+| `Mk  ` | make | Make | `image.calculations`, `layer.layerStyle.createLayer`, `layer.new.layer`, `layer.new.group`, `layer.groupLayers`, `layer.duplicate`, `layer.new.layerViaCopy`, `layer.new.layerViaCut`, `layer.newFillLayer.solidColor`, `layer.newFillLayer.pattern`, `layer.newFillLayer.gradient`, `layer.newAdjustmentLayer.levels`, `layer.newAdjustmentLayer.curves`, `layer.newAdjustmentLayer.hueSaturation`, `layer.newAdjustmentLayer.brightnessContrast`, `layer.newAdjustmentLayer.threshold`, `layer.newAdjustmentLayer.posterize`, `layer.newAdjustmentLayer.invert`, `layer.newAdjustmentLayer.colorBalance`, `layer.newAdjustmentLayer.vibrance`, `layer.newAdjustmentLayer.exposure`, `layer.newAdjustmentLayer.photoFilter`, `layer.newAdjustmentLayer.blackWhite`, `layer.newAdjustmentLayer.channelMixer`, `layer.newAdjustmentLayer.selectiveColor`, `layer.newAdjustmentLayer.gradientMap`, `layer.layerMask.revealAll`, `layer.layerMask.hideAll`, `layer.layerMask.revealSelection`, `layer.layerMask.hideSelection`, `file.new`, `file.newFromClipboard`, `history.newSnapshot`, `type.convertToShape`, `type.createWorkPath`, `layer.new.artboard` (Layer › New › Artboard), `layer.new.artboardFromLayers` (Layer › New › Artboard from Layers) |
 | (string ID only) | animationFramesFromLayers | Make Frames from Layers |  |
 | (string ID only) | matchColor | Match Color | `image.adjustments.matchColor` |
 | `Mxm ` | maximum | Maximum | `filter.other.maximum` |
@@ -239,6 +240,7 @@ row; the action still adds only one Undo entry.
 | (string ID only) | textSaveDefaultTypeStyles | Save Default Type Styles | `type.saveDefaultTypeStyles` |
 | (string ID only) | recordMeasurements | Record Measurements | `image.analysis.recordMeasurements` |
 | (string ID only) | CropPhotosAuto0001 | Crop and Straighten Photos | `file.automate.cropAndStraightenPhotos` |
+| (string ID only) | 3caa3434-cb67-11d1-bc43-0060b0a13dc4 | Fit Image (script event; pixel box sides) | `file.automate.fitImage` |
 | (string ID only) | placedLayerExportContents | Export Contents | `layer.smartObjects.exportContents` |
 | (string ID only) | placedLayerConvertToLinked | Convert to Linked | `layer.smartObjects.convertToLinked` |
 | (string ID only) | placedLayerRelinkToFile | Relink to File | `layer.smartObjects.relinkToFile` |
@@ -271,6 +273,20 @@ Unknown targets or extra keys stay complete kept steps. Unrepresented native
 options are refused on export. Playback uses the native command's preconditions
 and current state. Isolate Layers toggles the panel view; type defaults remain
 session settings; Record Measurements uses the current measurement configuration.
+
+Layer › New › Frame from Layers is a Make with `null` = the class
+`framedGroupSection`, `From` = the layer by name and `Nm  ` = the frame's name. It
+plays as `layer.new.frameFromLayers` on that layer, and the frame fits that
+layer's bounds whatever is selected. The dialog's width and height are not in the
+step. `layerSectionStart` and `layerSectionEnd` are ids of the recording session:
+a loaded step saves back its recorded descriptor, session ids included, while it
+still frames the same layer with the same name, and a step recorded in PhotoCraft
+writes `null`, `From` and `Nm  ` (only for a name that isn't blank) without them. A
+native step without a layer of its own frames the selected layers and writes
+`From` = the target layer, a form the recordings don't show. Another `From`, a
+repeated or extra key, or a value of another type stays a kept step; a native step
+with a layer by id, or with the group options the command passes on (colour, mode,
+opacity), refuses export.
 
 Link Layers plays as the toggle the reference application performs (played twice on the same
 layers it links, then unlinks them; see the measurements below). Unlink is explicit and
@@ -307,6 +323,21 @@ Custom-shape playback requires the asset selected by its ID to be installed.
 Other unsupported dialog fields or origin values remain kept. Native explicit
 shape choices cannot be saved as radius-only descriptors.
 
+Layer › New › Artboard and Layer › New › Artboard from Layers are a Make with
+`null` = the class `artboardSection`. With `artboardRect` (`Top `, `Left`,
+`Btom`, `Rght`: doubles holding whole pixels, a board of positive size in the
+32-bit range) the step plays as `layer.new.artboard` with that `rect`; with `From`
+= the target layer it plays as `layer.new.artboardFromLayers` on the selected
+layers, at their bounds. `Nm  ` is the board's name. `layerSectionStart` and
+`layerSectionEnd` are ids of the recording session: a loaded step saves back its
+recorded descriptor, session ids included, while it still makes the same board,
+and a step recorded in PhotoCraft writes the other keys without them (`Nm  ` only
+for a name of its own). Both or neither of `artboardRect` and `From`, another
+`From` target, a repeated or extra key, or a value of another type stays a kept
+step. The step records no background, preset or size of the dialog's own, so a
+native step that sets one of those, takes the Background into the first board, or
+(New Artboard) has no position of its own refuses export.
+
 Crop and Straighten Photos executes the native scan operation once, creating one
 document per photo found inside the selection and leaving the source unchanged.
 It requires a selected, visible layer with no pixel or full lock, including
@@ -314,6 +345,22 @@ inherited group state, and remains unavailable for Indexed Color documents.
 The separate `CropPhotos0001` helper remains a complete kept Photoshop step.
 Playback stops at that enabled helper before subsequent duplicate/crop steps can
 run. This covers the parent event, not complete recordings with generated helpers.
+
+Fit Image is the script event `3caa3434-cb67-11d1-bc43-0060b0a13dc4` that follows
+the Image Size step it runs, which stays a step of its own. `Wdth` and
+`Hght` (pixel unit floats above 0) and `limit` (Don't Enlarge) play as
+`file.automate.fitImage`. With `limit` true it leaves a document that already fits
+unchanged; with `limit` false it enlarges a smaller document to fit the box.
+The descriptor's class is `cjsp` with an empty class name (measured, in two UI
+languages). `Msge` is the script's own text, not a setting: the reference plays the
+step the same with the recorded text, an empty one, unrelated text or the key
+removed, so the three-key form without `Msge` maps too. A loaded step saves back
+with its recorded descriptor (message or none, class, key order), and once its
+settings change it saves them into that descriptor. A step recorded in PhotoCraft
+saves class `cjsp` and an empty `Msge`. Another unit, a side of 0, a repeated `Msge`,
+a missing `Wdth`, `Hght` or `limit`, or an extra key stays a kept step. A native
+step with a missing or 0 side (the document's own size) or a resampling method
+other than the default refuses export, because the event has no key for it.
 
 Set Measurement Scale › Custom is a Set of the target document's `measurementScale`
 property. `T   ` holds `pixelLength` (a long above 0), `logicalLength` (a double
@@ -421,7 +468,7 @@ This is another implemented subset of #10723, not support for its remaining even
   remain independent of translated names; ordinary layer-name references remain names.
 - Close without `Svng` preserves the unanswered save choice. Headless playback refuses to discard a
   changed document. Native `file.close` still defaults to discard; `save: "ask"` opts into this policy.
-- Photo Filter converts recorded Lab colours through `photocraft-cms`.
+- Photo Filter converts recorded Lab colours through `craft-cms`.
 - Direct Vibrance and Gradient Map save as the string events `vibrance` and `gradientMapEvent`.
   Stroke Outside uses `StrL.Otsd`, group Pass Through uses `BlnM.passThrough`, Canvas Size extension
   colours use `FrgC` and `Clr `, and Absolute Colorimetric intent uses `Inte.AClr`.

@@ -14,6 +14,49 @@ fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     menu_items(app).into_iter().find(|i| i.id == id).and_then(|i| i.checked)
 }
 
+/// The form must list every source first and default to Current only when a document exists.
+#[test]
+fn image_processor_source_choices_include_current_and_all_open_documents() {
+    for n in [0, 2] {
+        let (mut app, ctx) = app_with(n);
+        menu(&mut app, &ctx, "file.scripts.imageProcessor", json!({})).unwrap();
+        let fields = &app.ui.dialogs.last().unwrap().fields;
+        assert_eq!(fields["source"], json!(if n == 0 { "folder" } else { "current" }));
+        assert_eq!(fields["__choices"]["source"], json!(["current", "open", "folder"]));
+        assert_eq!(fields["__labels"]["current"], json!("Current document"));
+        assert_eq!(fields["__labels"]["open"], json!("All open documents"));
+        assert_eq!(form_keys(fields).first().map(String::as_str), Some("source"));
+    }
+}
+
+/// Confirming either document source must ignore a stale input-folder field, export the
+/// expected number of copies and retain the open documents' original snapshots.
+#[test]
+fn image_processor_dialog_confirms_open_document_sources_without_reading_the_input_folder() {
+    for source in ["current", "open"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, ctx) = app_with(0);
+        for name in ["First", "Second"] {
+            app.run("file.new", json!({"name": name, "width": 100, "height": 80})).unwrap();
+        }
+        let before: Vec<_> = app.session.documents().iter().map(|st| st.doc.clone()).collect();
+        let id = menu(&mut app, &ctx, "file.scripts.imageProcessor", json!({})).unwrap()["dialog"].as_u64().unwrap();
+        let fields = &mut app.ui.dialog_mut(id).unwrap().fields;
+        fields.insert("source".into(), json!(source));
+        fields.insert("input".into(), json!(dir.path().join("missing-input")));
+        fields.insert("output".into(), json!(dir.path()));
+        fields.insert("format".into(), json!("png"));
+        fields.insert("width".into(), json!(50));
+        fields.insert("height".into(), json!(50));
+        let result = crate::dialogs::confirm(&mut app, id).unwrap();
+        assert_eq!(result["files"].as_array().unwrap().len(), if source == "current" { 1 } else { 2 }, "{result}");
+        assert!(result["errors"].as_array().unwrap().is_empty(), "{result}");
+        for (st, original) in app.session.documents().iter().zip(&before) {
+            assert!(std::sync::Arc::ptr_eq(&st.doc, original));
+        }
+    }
+}
+
 /// #1209: the browser picker supplies bytes even when the engine cannot read native paths.
 #[test]
 fn place_embedded_enablement_does_not_require_native_doc() {
@@ -688,6 +731,7 @@ fn batch_dialogs_include_all_subfolders() {
             assert_eq!(fields["stopOnError"], json!(false));
             assert_eq!(fields["errorLog"], json!(""));
         }
+        fields.insert("source".into(), json!("folder"));
         fields.insert("input".into(), json!(input));
         fields.insert("output".into(), json!(dir.join(out).to_string_lossy()));
         fields.insert("includeSubfolders".into(), json!(true));
@@ -1184,6 +1228,87 @@ fn every_arranged_tile_has_rulers() {
         }
     }
     assert!(labels[0] > 0 && labels[1] > 0, "ruler labels per tile: {labels:?}");
+}
+
+/// #10069: with documents side by side, a press on a dialog over another document's tile made
+/// that document active under the dialog. Only a press that reaches the tile switches documents.
+#[test]
+fn a_press_on_a_dialog_over_an_arranged_tile_keeps_the_active_document() {
+    use egui_kittest::Harness;
+    let (mut app, _) = app_with(2);
+    app.ui.view.arrange = "tileAllVertically".into();
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 600.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+            // A dialog (Levels, say) over the left half of the document area.
+            egui::Window::new("Levels")
+                .id(egui::Id::unique("arrange-test-dialog"))
+                .fixed_pos(egui::pos2(60.0, 120.0))
+                .fixed_size(egui::vec2(260.0, 200.0))
+                .show(ui.ctx(), |ui| ui.label("Levels"));
+            // An open menu (View › Pixel Aspect Ratio, say): a foreground popup below the dialog.
+            egui::Area::new(egui::Id::unique("arrange-test-menu")).order(egui::Order::Foreground).fixed_pos(egui::pos2(60.0, 360.0)).show(ui.ctx(), |ui| {
+                ui.set_min_size(egui::vec2(200.0, 80.0));
+                ui.label("Anamorphic 2:1 (2)")
+            });
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(4);
+    let active = h.state().session.active_index().unwrap();
+    let rect = h.state().last_canvas_rect;
+    let other = crate::canvas::arranged_cells(h.state(), rect).unwrap().into_iter().find(|(d, _)| *d != active).unwrap();
+    let dialog = h.ctx.memory(|m| m.area_rect(egui::Id::unique("arrange-test-dialog"))).unwrap();
+    assert!(other.1.intersects(dialog), "the dialog covers part of the other tile: {:?} and {dialog:?}", other.1);
+    let press = |h: &mut Harness<'_, PhotocraftApp>, p: egui::Pos2| {
+        h.event(egui::Event::PointerMoved(p));
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.run_steps(1);
+        h.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+    };
+    let on_dialog = other.1.intersect(dialog).center();
+    press(&mut h, on_dialog);
+    assert_eq!(h.state().session.active_index(), Some(active), "a press on the dialog leaves the active document alone");
+    // Nor does choosing a menu item over the tile: the item's command must reach the active
+    // document, not the one under the menu.
+    let menu = h.ctx.memory(|m| m.area_rect(egui::Id::unique("arrange-test-menu"))).unwrap();
+    assert!(other.1.intersects(menu), "the menu covers part of the other tile: {:?} and {menu:?}", other.1);
+    press(&mut h, other.1.intersect(menu).center());
+    assert_eq!(h.state().session.active_index(), Some(active), "a press on a menu leaves the active document alone");
+    // A press on the dialog and a move off it that arrive in one frame: the press decides.
+    let clear = [other.1.center_bottom() - egui::vec2(0.0, 20.0), other.1.right_center() - egui::vec2(20.0, 0.0)]
+        .into_iter()
+        .find(|p| !dialog.contains(*p) && !menu.contains(*p))
+        .unwrap();
+    h.event(egui::Event::PointerMoved(on_dialog));
+    h.run_steps(1);
+    // `Harness::event` runs a frame per event, so both go into one frame's input.
+    h.input_mut().events.extend([
+        egui::Event::PointerButton { pos: on_dialog, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        egui::Event::PointerMoved(clear),
+    ]);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: clear, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().session.active_index(), Some(active), "a press on the dialog, then a move in the same frame, leaves it alone");
+    // The tile itself, clear of the dialog, still switches documents.
+    press(&mut h, clear);
+    assert_eq!(h.state().session.active_index(), Some(other.0), "a press on the tile activates its document");
+    // Two presses in one frame, the dialog's and then the tile's: the last one decides.
+    h.state_mut().session.set_active(active);
+    h.run_steps(2);
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    h.input_mut().events.extend([button(on_dialog, true), button(on_dialog, false), egui::Event::PointerMoved(clear), button(clear, true)]);
+    h.run_steps(1);
+    h.event(button(clear, false));
+    h.run_steps(2);
+    assert_eq!(h.state().session.active_index(), Some(other.0), "the frame's last press, on the tile, activates its document");
 }
 
 #[test]

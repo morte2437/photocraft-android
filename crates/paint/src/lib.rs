@@ -42,7 +42,7 @@ pub use brush::{
 pub use curve::ResponseCurve;
 pub use mip_cache::{mip_cache_bytes, purge_mip_cache};
 pub use mixer::MixerSettings;
-pub use render::{BrushContext, StrokeRenderer, UnionLive, grid_center, grid_square, render_stroke};
+pub use render::{BrushContext, StrokeRenderer, UnionLive, grid_center, grid_square, render_stroke, render_stroke_clipped};
 pub use tile::{GrayTile, StoredTile};
 
 /// One input sample. Missing stylus data defaults to "mouse": full pressure, no tilt/rotation.
@@ -407,7 +407,11 @@ mod tests {
 }
 
 #[cfg(test)]
+mod airbrush_rate_tests;
+#[cfg(test)]
 mod brush_tests;
+#[cfg(test)]
+mod mixer_click_empty_layer_tests;
 
 #[cfg(test)]
 mod smoothing_catch_up_default_tests;

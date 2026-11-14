@@ -1012,3 +1012,43 @@ fn relative_steps_move_each_character_from_its_own_value() {
     s.execute("type.setStyle", json!({"layer": empty, "range": [0, 0], "leadingBy": -2})).unwrap();
     assert_eq!(text_layer(&s, empty).char_runs()[0].style.leading_pt, Some(10.0));
 }
+
+/// The `(width, height)` of a layer that is paragraph text in a box.
+fn box_size(t: &TextLayer) -> (f32, f32) {
+    match t.shape {
+        TextShape::Box { width, height, .. } => (width, height),
+        ref s => panic!("not a box: {s:?}"),
+    }
+}
+
+/// A huge `box` once became an infinite `f32` size; it stays finite now.
+#[test]
+fn a_huge_box_keeps_a_finite_size() {
+    let mut s = session();
+    let id = s.execute("type.create", json!({"text": "Hello", "size": 24})).unwrap()["layer"].as_u64().unwrap();
+    // Ok or a clean error are both fine; a panic is not. On success the box must have been applied.
+    let result = s.execute("type.edit", json!({"layer": id, "box": [0, 0, 1e300, 1e300]}));
+    if result.is_ok() {
+        assert!(matches!(text_layer(&s, id).shape, TextShape::Box { .. }), "a successful box edit makes a box");
+    }
+    if let TextShape::Box { .. } = text_layer(&s, id).shape {
+        let (w, h) = box_size(&text_layer(&s, id));
+        assert!(w.is_finite() && h.is_finite() && w >= 1.0 && h >= 1.0, "{w} x {h}");
+    }
+}
+
+/// `apply_box` keeps the stored size between 1 px and `f32::MAX`, and non-finite input becomes the minimum.
+#[test]
+fn apply_box_clamps_sizes_to_a_finite_minimum_and_maximum() {
+    let mut s = session();
+    let id = s.execute("type.create", json!({"text": "Hello", "size": 24})).unwrap()["layer"].as_u64().unwrap();
+    let mut t = text_layer(&s, id);
+    apply_box(&mut t, [f64::NAN, f64::INFINITY, f64::NAN, f64::NEG_INFINITY]);
+    assert_eq!(box_size(&t), (1.0, 1.0), "non-finite counts as 0, then the 1 px minimum");
+    assert_eq!((t.transform.m[4], t.transform.m[5]), (0.0, 0.0));
+    apply_box(&mut t, [5.0, 6.0, 1e300, f64::MAX]);
+    assert_eq!(box_size(&t), (f32::MAX, f32::MAX));
+    assert_eq!((t.transform.m[4], t.transform.m[5]), (5.0, 6.0));
+    apply_box(&mut t, [0.0, 0.0, -20.0, 0.25]);
+    assert_eq!(box_size(&t), (1.0, 1.0));
+}

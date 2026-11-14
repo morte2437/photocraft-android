@@ -609,7 +609,8 @@ fn build_up_accumulates_over_time() {
     let (n0, a0) = hold(0.0);
     let (n1, a1) = hold(500.0);
     let (n2, a2) = hold(2000.0);
-    assert_eq!((n0, n1, n2), (1, 11, 41));
+    // A click lays two dabs with the airbrush on (#11886), then one per 50 ms at this rate.
+    assert_eq!((n0, n1, n2), (2, 12, 42));
     assert!(a0 < a1 && a1 < a2, "{a0} {a1} {a2}");
     // Without build-up, lingering adds nothing.
     let nb = BrushSettings { build_up: false, ..b };
@@ -624,15 +625,15 @@ fn huge_airbrush_time_gap_emits_bounded_catch_up() {
     let b = BrushSettings { build_up: true, build_up_rate: 1000.0, ..brush() };
     let a = StrokePoint { time: 0.0, ..StrokePoint::new(20.0, 20.0, 1.0) };
     let brief_pause = StrokePoint { time: 200.0, ..a };
-    assert_eq!(dabs_of(&b, &[a, brief_pause]).len(), 201, "a 200 ms pause should retain its airbrush build-up");
+    assert_eq!(dabs_of(&b, &[a, brief_pause]).len(), 202, "a 200 ms pause should retain its airbrush build-up (after the click's two dabs)");
 
     let z = StrokePoint { time: f64::MAX, ..a };
     let d = dabs_of(&b, &[a, z]);
-    assert!(d.len() <= 2, "a huge pause should resume with one dab, not replay its time backlog: {}", d.len());
+    assert!(d.len() <= 3, "a huge pause should resume with one dab, not replay its time backlog: {}", d.len());
     assert_eq!(d.last().map(|dab| dab.center), Some(Point::new(20.0, 20.0)));
 
     let infinite = StrokePoint { time: f64::INFINITY, ..a };
-    assert!(dabs_of(&b, &[a, infinite]).len() <= 1);
+    assert!(dabs_of(&b, &[a, infinite]).len() <= 2, "the click's two dabs, no backlog");
 }
 
 #[test]
@@ -1335,6 +1336,67 @@ fn tail_preview_shows_the_stroke_as_finishing_it_would() {
 }
 
 #[test]
+fn sampled_dabs_are_the_same_in_their_tight_box_with_rows_cut_to_the_tip() {
+    // A sampled dab is computed over the rotated tip's own box, and in each row only where the
+    // tip can land; at any angle (just off a right angle too), flip, roundness and projection,
+    // the pixels match scanning the whole square that fits any rotation, which is 0 elsewhere.
+    let tip = GrayTile::from_fn(37, 23, |x, y| 0.05 + ((x * 7 + y * 13) % 11) as f32 / 11.0);
+    let dual = DualBrush { enabled: true, tip: TipShape::Sampled(GrayTile::from_fn(15, 40, |x, _| 0.1 + (x % 3) as f32 / 3.0)), ..Default::default() };
+    let b = BrushSettings { tip: TipShape::Sampled(tip), dual_brush: dual, ..brush() };
+    let ctx = BrushContext::new(&b);
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    for angle in [0.0, 0.3, -1.1, half_pi, half_pi + 1e-6, half_pi - 3e-7, 3.0, std::f32::consts::PI] {
+        for (roundness, flip, proj) in [(1.0, false, 1.0), (0.35, true, 1.0), (0.8, false, 0.4)] {
+            let d = Dab { angle, roundness, flip_x: flip, proj_scale: proj, proj_angle: 0.7, ..Dab::round(Point::new(60.3, 41.7), 40.0, 0.9) };
+            for dual in [false, true] {
+                let what = format!("angle {angle}, roundness {roundness}, flip {flip}, projection {proj}, dual {dual}");
+                let r = ctx.dab_rect(&d, dual);
+                let square = crate::render::rect_around(&d, d.radius * std::f32::consts::SQRT_2);
+                let (mut cut, mut full) = (Vec::new(), Vec::new());
+                ctx.rasterize(&d, dual, r, &mut cut);
+                crate::render::FULL_SCAN.with(|f| f.set(true));
+                ctx.rasterize(&d, dual, square, &mut full);
+                crate::render::FULL_SCAN.with(|f| f.set(false));
+                assert!(full.iter().any(|&v| v > 0.0), "{what}");
+                let (sw, rw) = (square.width() as i32, r.width() as i32);
+                for y in square.y0..square.y1 {
+                    for x in square.x0..square.x1 {
+                        let v = full[((y - square.y0) * sw + (x - square.x0)) as usize];
+                        let got = if r.contains(x, y) { cut[((y - r.y0) * rw + (x - r.x0)) as usize] } else { 0.0 };
+                        assert!(v == got, "{what}: pixel ({x}, {y}) is {got}, scanning the square gives {v}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn composite_live_shows_the_finished_stroke_after_every_chunk() {
+    // A big smoothed Dual Brush stroke: its tail spans many coverage tiles and moves every step,
+    // so the tiles it redraws, the ones it leaves and the ones the stroke covers all occur. The
+    // zigzag's corners are cut by the smoothing, so earlier tails reach where the stroke never
+    // paints and must be taken back.
+    let dual = DualBrush { enabled: true, size: 90.0, spacing: 0.3, mode: MaskMode::Overlay, roundness: 0.7, ..Default::default() };
+    let b = BrushSettings { size: 70.0, hardness: 0.3, spacing: 0.05, dual_brush: dual, smoothing: Smoothing { amount: 0.9, ..Default::default() }, ..brush() };
+    let pts: Vec<StrokePoint> = (0..40).map(|i| StrokePoint::new(60.0 + i as f64 * 8.0, if i % 8 < 4 { 60.0 } else { 160.0 }, 1.0)).collect();
+    for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+        let pre = Surface::with_default(fmt, &[0.2, 0.5, 0.9, 1.0]);
+        let mut live = pre.clone();
+        let mut r = StrokeRenderer::new(&b, Some(fmt), 1.0);
+        let mut tail = Rect::EMPTY;
+        for (n, chunk) in pts.chunks(3).enumerate() {
+            r.push(chunk);
+            tail = r.composite_live(tail, &pre, &mut live, None, false).1;
+            let mut done = pre.clone();
+            render_stroke(&mut done, &b, &pts[..(n * 3 + chunk.len())], None, false, 1.0);
+            let same = (0..220).all(|y| (0..480).all(|x| live.rgba(x, y) == done.rgba(x, y)));
+            assert!(same, "{fmt:?}: after chunk {n} the live preview differs from the finished stroke");
+        }
+    }
+}
+
+#[test]
 fn live_union_of_passes_matches_merging_the_finished_passes_after_every_chunk() {
     // Symmetric painting previews the stroke and its mirrors with `composite_union_live`, which
     // redraws only changed tiles; after every chunk the target must be exactly what finishing
@@ -1920,10 +1982,11 @@ fn general_loop_strokes_render_the_same_in_parallel_and_serially_at_every_depth(
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_parallel_composite_converts_through_the_documents_cmyk_profile() {
-    use photocraft_cms::synth::{CmykParams, cmyk_profile};
+    use craft_cms::synth::{CmykParams, cmyk_profile};
     use photocraft_color::convert::{CmykSpace, with_cmyk_space};
     let profile =
-        cmyk_profile(&CmykParams { description: "Brush Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+        cmyk_profile(&CmykParams { description: "Brush Test CMYK".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+            .unwrap();
     let bytes = profile.to_bytes();
     let Some(space) = CmykSpace::for_profile(Some(&bytes)) else { panic!("the synthetic profile is a CMYK space") };
     let fmt = PixelFormat::new(ColorMode::Cmyk, SampleType::U16, true);

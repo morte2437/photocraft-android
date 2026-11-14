@@ -401,6 +401,18 @@ fn nearest_neighbor_reduction_does_not_average() {
     }
 }
 
+/// A reduction beyond 4096x by Lanczos must not build a weight per covered source sample.
+#[test]
+fn a_tiny_lanczos_scale_keeps_its_weights_small() {
+    let scale = 1.0e-7;
+    for o in [0, 1] {
+        let (_, w) = weights(o, scale, Kernel::Lanczos, None, (0, 63));
+        assert!(w.len() < 1024, "{} weights", w.len());
+        let sum: f64 = w.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "{sum}");
+    }
+}
+
 /// #9212: a bicubic shrink of both axes stores the image between its passes with one axis at the
 /// old size, larger than the result; single-pass filters and growing axes store nothing larger.
 #[test]

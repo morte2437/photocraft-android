@@ -360,7 +360,7 @@ fn tone_space(mode: ColorMode) -> photocraft_doc::adjust::ToneSpace {
 /// - blocks with inner lengths (`PlLd`, `SoLd`, `SoLE`, `lnk2`/`lnk3`/`lnkD`, `lfx2`)
 ///   re-parse exactly (`TaggedBlock::check_structure`).
 pub fn strict_block_errors(bytes: &[u8]) -> Vec<String> {
-    let file = match photocraft_psd::PsdFile::from_bytes(bytes) {
+    let file = match craft_psd::PsdFile::from_bytes(bytes) {
         Ok(f) => f,
         Err(e) => return vec![format!("parse: {e}")],
     };
@@ -374,8 +374,8 @@ pub fn strict_block_errors(bytes: &[u8]) -> Vec<String> {
         let pad = li.padding.as_ref().map_or(body % 2, |p| p.len() as u64);
         // In a global `Lr16`/`Lr32` block the padding to 4 follows the block, outside its length.
         let after = match &file.layer_info_placement {
-            photocraft_psd::LayerInfoPlacement::GlobalBlock { padding, .. } => padding.as_ref().map_or((4 - (body + pad) % 4) % 4, |p| p.len() as u64),
-            photocraft_psd::LayerInfoPlacement::Section => 0,
+            craft_psd::LayerInfoPlacement::GlobalBlock { padding, .. } => padding.as_ref().map_or((4 - (body + pad) % 4) % 4, |p| p.len() as u64),
+            craft_psd::LayerInfoPlacement::Section => 0,
         };
         if (body + pad + after) % 4 != 0 {
             errs.push(format!("layer info: {body} bytes + {pad} padding is not a multiple of 4"));

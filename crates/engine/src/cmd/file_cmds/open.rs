@@ -147,9 +147,9 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
     if !name.to_ascii_lowercase().ends_with(".exr") || !s.prefs.get().file_handling.exr_aces_cg {
         return;
     }
-    let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
+    let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
     if doc.icc_profile.as_ref().map(|v| v.as_slice()) == Some(linear.as_slice()) {
-        doc.icc_profile = Some(photocraft_cms::Builtin::AcesCg.profile().to_bytes());
+        doc.icc_profile = Some(craft_cms::Builtin::AcesCg.profile().to_bytes());
     }
 }
 
@@ -196,11 +196,14 @@ pub fn open_bytes_as_with_options(
     let mut opts = crate::jobs::import_options(s.prefs());
     opts.psd_high_memory_approved = approve_high_memory;
     opts.psd_approved_estimate = None;
-    let raw = super::raw_open::prepare(s, &decode_name, path.as_deref(), bytes)?;
+    let raw = super::raw_open::prepare(s, &decode_name, &file_name(name), path.as_deref(), bytes)?;
     let (r, raw_settings) = if let Some((imported, settings)) = raw {
         (imported, Some(settings))
     } else {
-        let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| crate::error::io_open_error(&decode_name, e))?;
+        let r = photocraft_io::import_with_options_as(&decode_name, bytes, as_ext, &opts).map_err(|e| match as_ext {
+            Some(ext) => crate::error::io_open_as_error(&file_name(name), ext, e),
+            None => crate::error::io_open_error(&decode_name, e),
+        })?;
         (r, None)
     };
     if (s.batch_open.is_some() || s.batch_open_notices.is_some()) && r.preview_only {
@@ -235,6 +238,22 @@ pub fn open_bytes_as_with_options(
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }
 
+/// Extensions Open As reads besides the codec formats, the camera raw formats
+/// (`photocraft_io::raw::EXTENSIONS`) and the Affinity ones (`photocraft_io::affinity::EXTENSIONS`):
+/// the document and vector formats `photocraft_io::import` handles, and `raw`, the Open As type
+/// for any camera raw.
+const OPEN_AS_EXTRA: &[&str] = &["raw", "pdn", "ora", "xcf", "xcf.gz", "xcfgz", "kra", "krz", "psd", "psb", "psdt", "pcraft", "svg", "svgz", "pdf", "ai"];
+
+/// Whether `ext` (the `as` value of Open As) names a format PhotoCraft reads.
+fn is_open_as_format(ext: &str) -> bool {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    let ext = ext.as_str();
+    OPEN_AS_EXTRA.contains(&ext)
+        || photocraft_io::raw::EXTENSIONS.contains(&ext)
+        || photocraft_io::affinity::EXTENSIONS.contains(&ext)
+        || photocraft_codecs::from_extension(ext).is_some_and(|f| f.caps().read)
+}
+
 /// Open the selected file with its decoder options and record its Batch source identity.
 pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
@@ -246,6 +265,11 @@ pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::BadParams { cmd: "file.openAs".into(), msg: "expected boolean for \"approveHighMemory\"".into() });
         }
     };
+    if let Some(ext) = as_ext
+        && !is_open_as_format(ext)
+    {
+        return Err(EngineError::BadParams { cmd: "file.openAs".into(), msg: format!("\"as\" names no format PhotoCraft reads: {ext:?}") });
+    }
     let bytes = read_file(&path)?;
     let result = open_bytes_as_with_options(s, &path, &bytes, as_ext, Some(path.clone()), approve_high_memory)?;
     remember_batch_open(s);

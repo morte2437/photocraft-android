@@ -333,10 +333,12 @@ struct SrcView<'a> {
     h: usize,
     origin: (i32, i32),
     ch: usize,
+    alpha: Option<usize>,
 }
 
 fn sample_bilinear(src: SrcView<'_>, sx: f32, sy: f32, out: &mut [f32]) -> bool {
     let ch = src.ch;
+    let alpha = src.alpha.filter(|&a| a < ch);
     if ch == 0 || out.len() < ch {
         return false;
     }
@@ -370,10 +372,17 @@ fn sample_bilinear(src: SrcView<'_>, sx: f32, sy: f32, out: &mut [f32]) -> bool 
             let (Ok(ux), Ok(uy)) = (usize::try_from(px), usize::try_from(py)) else { continue };
             let Some(base) = pixel_index(ux, uy, src.w, src.h, ch) else { continue };
             let Some(pxs) = src.data.get(base..base.saturating_add(ch)) else { continue };
-            for (d, s) in dst.iter_mut().zip(pxs.iter()) {
-                *d += *s * wt;
+            let coverage = alpha.and_then(|a| pxs.get(a)).copied().unwrap_or(1.0);
+            for (c, (d, s)) in dst.iter_mut().zip(pxs.iter()).enumerate() {
+                *d += *s * wt * if alpha.is_some_and(|a| c < a) { coverage } else { 1.0 };
             }
             any = true;
+        }
+    }
+    if let Some(a) = alpha {
+        let coverage = dst.get(a).copied().unwrap_or(0.0);
+        for value in dst.iter_mut().take(a) {
+            *value = if coverage > 0.0 { *value / coverage } else { 0.0 };
         }
     }
     any
@@ -535,7 +544,11 @@ fn stamp_dab_on_rect(p: &mut StampParams<'_>, dab: &Dab, rect: (i32, i32, i32, i
                 continue;
             }
             let (sx, sy) = rotated_source(dab, x, y);
-            if !sample_bilinear(SrcView { data: p.src, w: p.src_w, h: p.src_h, origin: p.src_origin, ch: p.ch }, sx, sy, &mut sampled) {
+            if !sample_bilinear(SrcView { data: p.src, w: p.src_w, h: p.src_h, origin: p.src_origin, ch: p.ch, alpha: p.alpha }, sx, sy, &mut sampled) {
+                continue;
+            }
+            // Stamping a fully transparent sample leaves the pixel as it is.
+            if p.alpha.is_some_and(|a| sampled.get(a).is_some_and(|&v| v == 0.0)) {
                 continue;
             }
             let Some(li) = pixel_index(lx, ly, tw, th, p.ch) else { continue };
@@ -571,12 +584,14 @@ fn dab_intersects(dab: &Dab, tile: (i32, i32, i32, i32)) -> bool {
 /// Mean difference between `src` and `dest` over the dab's covered pixels (working-space peak is
 /// 1, so a tolerance of 50% is `0.5`). Per pixel it is the larger of the mean colour change and the
 /// alpha change: an opaque pixel's unchanged alpha must not water a colour change down, and the
-/// Eraser keeps the colour and lowers only the alpha. `None` if nothing is covered.
+/// Eraser keeps the colour and lowers only the alpha. Fully transparent source samples are left
+/// out; a dab whose samples are all transparent has a mean of `0.0`. `None` if nothing is covered.
 fn dab_mean_diff(p: &StampParams<'_>, dab: &Dab) -> Option<f32> {
     let (x0, y0, x1, y1) = dab_bounds(dab)?;
     let mut sampled = vec![0.0f32; p.ch];
     let mut sum = 0.0f32;
     let mut count = 0u32;
+    let mut transparent = 0u32;
     for y in y0..y1 {
         for x in x0..x1 {
             if coverage_at(dab, x, y, p.hardness) <= 0.0 {
@@ -585,11 +600,15 @@ fn dab_mean_diff(p: &StampParams<'_>, dab: &Dab) -> Option<f32> {
             let Some(di) = origin_index(p.dest_origin, x, y, p.dest_w, p.dest_h, p.ch) else { continue };
             let Some(dst) = p.dest.get(di..di.saturating_add(p.ch)) else { continue };
             let (sx, sy) = rotated_source(dab, x, y);
-            if !sample_bilinear(SrcView { data: p.src, w: p.src_w, h: p.src_h, origin: p.src_origin, ch: p.ch }, sx, sy, &mut sampled) {
+            if !sample_bilinear(SrcView { data: p.src, w: p.src_w, h: p.src_h, origin: p.src_origin, ch: p.ch, alpha: p.alpha }, sx, sy, &mut sampled) {
                 continue;
             }
             let nch = p.ch.min(dst.len()).min(sampled.len());
             if nch == 0 {
+                continue;
+            }
+            if p.alpha.is_some_and(|a| sampled.get(a).is_some_and(|&v| v == 0.0)) {
+                transparent = transparent.saturating_add(1);
                 continue;
             }
             let (mut colour, mut colours, mut alpha) = (0.0f32, 0u32, 0.0f32);
@@ -608,7 +627,8 @@ fn dab_mean_diff(p: &StampParams<'_>, dab: &Dab) -> Option<f32> {
         }
     }
     if count == 0 {
-        return None;
+        // Stamping a fully transparent sample leaves the pixel as it is.
+        return (transparent > 0).then_some(0.0);
     }
     let mean = sum / count as f32;
     mean.is_finite().then_some(mean)

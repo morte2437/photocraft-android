@@ -3,11 +3,11 @@
 //! resource 1057 (`has_real_merged_data = false`). Layers, alpha channels and the Quick Mask are
 //! written as usual, so the file reopens the same.
 
+use craft_psd::PsdFile;
 use photocraft_color::{ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{AlphaChannel, Document, Layer};
 use photocraft_geom::{Rect, Size};
 use photocraft_io::{ExportOptions, export, import};
-use photocraft_psd::PsdFile;
 use photocraft_raster::Surface;
 
 fn compat_off() -> ExportOptions {

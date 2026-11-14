@@ -55,11 +55,16 @@ pub fn validate_curve(points: &[[f32; 2]]) -> Result<(), String> {
 
 use crate::photo_util::{hash01, linear_to_srgb, par_rows, srgb_to_linear};
 
-mod local_tone;
+pub mod local_tone;
 mod per_pixel;
+pub mod spatial;
 mod whites_blacks;
 
-pub use per_pixel::{CURVE_LUT, Grade, Grain, PerPixel, Vignette, VignetteStyle, WB_STEPS, WhitesBlacks, per_pixel, white_black_points};
+pub use local_tone::{LocalTone, ToneKind, TonePass};
+pub use per_pixel::{
+    CURVE_LUT, Grade, Grain, PerPixel, Vignette, VignetteStyle, WB_STEPS, WhitesBlacks, WhitesBlacksModel, per_pixel, white_black_points, whites_blacks_model,
+};
+pub use spatial::{Clarity, Dehaze, Texture};
 
 /// How the pixels encode light: the sRGB curve (gamma 0) or a pure power law (ProPhoto's 1.8,
 /// Adobe RGB's 2.2). The tone controls work on light, so the document's own curve decodes it.
@@ -388,11 +393,13 @@ fn box_mean(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
 
 /// Approximate Gaussian (three box passes).
 fn gauss(v: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
-    if sigma < 0.3 {
-        return v.to_vec();
-    }
+    box_means(v, w, h, &spatial::gauss_radii(sigma))
+}
+
+/// Box means of radii `radii` in turn.
+fn box_means(v: &[f32], w: usize, h: usize, radii: &[usize]) -> Vec<f32> {
     let mut out = v.to_vec();
-    for r in crate::fxutil::gauss_box_radii(sigma) {
+    for &r in radii {
         out = box_mean(&out, w, h, r);
     }
     out
@@ -402,7 +409,7 @@ fn gauss(v: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
 /// coefficients are computed on a `s×` subsampled copy and upsampled bilinearly, which is
 /// visually equivalent for the large radii used by tone controls at a fraction of the cost.
 fn guided_fast(i: &[f32], p: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
-    let s = (r / 8).clamp(1, 8);
+    let (s, rs) = spatial::fast_guided_steps(r);
     if s == 1 {
         return guided(i, p, w, h, r, eps);
     }
@@ -420,7 +427,6 @@ fn guided_fast(i: &[f32], p: &[f32], w: usize, h: usize, r: usize, eps: f32) -> 
         o.iter().zip(&c).map(|(a, b)| a / b.max(1.0)).collect()
     };
     let (si, sp) = (down(i), down(p));
-    let rs = (r / s).max(1);
     let mi = box_mean(&si, sw, sh, rs);
     let mp = box_mean(&sp, sw, sh, rs);
     let ip: Vec<f32> = si.iter().zip(&sp).map(|(a, b)| a * b).collect();
@@ -680,7 +686,6 @@ pub fn develop(px: &mut [[f32; 4]], w: usize, h: usize, p: &CameraRaw, float: bo
         return;
     }
     let ps = p.pixel_scale.clamp(0.01, 1.0);
-    let long = w.max(h) as f32;
     // 1. White balance + exposure in linear light.
     if let Some(g) = per_pixel::gains(p) {
         par_rows(px, w, 1, |_, row| {
@@ -708,8 +713,8 @@ pub fn develop(px: &mut [[f32; 4]], w: usize, h: usize, p: &CameraRaw, float: bo
         });
     }
     // 2. Dehaze.
-    if p.dehaze != 0.0 {
-        dehaze(px, w, h, p.dehaze / 100.0);
+    if let Some(d) = Dehaze::new(p, w, h) {
+        dehaze(px, w, h, &d);
     }
     // 3. Tone. Highlights and Shadows: a local Laplacian filter (see `local_tone`).
     if p.highlights != 0.0 || p.shadows != 0.0 {
@@ -718,20 +723,22 @@ pub fn develop(px: &mut [[f32; 4]], w: usize, h: usize, p: &CameraRaw, float: bo
     if !p.local_tone_neutral() && [p.contrast, p.texture, p.clarity].iter().any(|v| *v != 0.0) {
         let l: Vec<f32> = px.iter().map(|q| luma([q[0], q[1], q[2]]).max(0.0)).collect();
         let lc: Vec<f32> = l.iter().map(|v| v.min(1.0)).collect();
-        let clar = (p.clarity != 0.0).then(|| guided_fast(&lc, &lc, w, h, ((long * 0.02) as usize).max(3), 0.005));
-        let tex = (p.texture != 0.0).then(|| gauss(&lc, w, h, (long * 0.002).max(1.5 * ps)));
+        let clarity = Clarity::new(p, w, h);
+        let texture = Texture::new(p, w, h);
+        let clar = clarity.as_ref().map(|c| guided_fast(&lc, &lc, w, h, c.radius, spatial::CLARITY_EPS));
+        let tex = texture.as_ref().map(|t| box_means(&lc, w, h, &t.radii));
         let k_con = p.contrast / 100.0 * 0.6;
         par_rows(px, w, 1, |y, row| {
             for (x, q) in row.iter_mut().enumerate() {
                 let i = y * w + x;
                 let l0 = l[i];
                 let mut lv = lc[i];
-                if let Some(c) = &clar {
+                if let (Some(c), Some(k)) = (&clar, &clarity) {
                     let mw = 1.0 - (2.0 * lv.clamp(0.0, 1.0) - 1.0).powi(2);
-                    lv += p.clarity / 100.0 * 0.8 * (lc[i] - c[i]) * mw;
+                    lv += k.amount * (lc[i] - c[i]) * mw;
                 }
-                if let Some(t) = &tex {
-                    lv += p.texture / 100.0 * 0.9 * (lc[i] - t[i]).clamp(-0.1, 0.1);
+                if let (Some(t), Some(k)) = (&tex, &texture) {
+                    lv += k.amount * (lc[i] - t[i]).clamp(-spatial::TEXTURE_LIMIT, spatial::TEXTURE_LIMIT);
                 }
                 *q = tone(*q, l0, lc[i], lv, k_con);
             }
@@ -885,11 +892,17 @@ fn balance(mut q: [f32; 4], g: [f32; 3]) -> [f32; 4] {
     q
 }
 
+/// The index of the `q` quantile (0 … 1) among `len` sorted values, as every percentile in the
+/// develop picks it.
+pub fn quantile_rank(len: usize, q: f32) -> usize {
+    (len.saturating_sub(1) as f32 * q).round() as usize
+}
+
 /// The image's black and white points as sRGB-encoded grey levels: the 3rd percentile of the
 /// luminance and the 99.5th of the brightest channel, on a copy at most 256 pixels across (so a
 /// preview proxy and the full image agree). `map` is applied to each pixel first.
 fn luminance_points(px: &[[f32; 4]], w: usize, h: usize, enc: Encoding, map: impl Fn([f32; 4]) -> [f32; 4] + Sync) -> (f32, f32) {
-    let f = w.max(h).div_ceil(256).max(1);
+    let f = w.max(h).div_ceil(whites_blacks::POINTS_SIDE).max(1);
     let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
     // Each band of `f` rows sums into its own row of cells, in the same order as one pass would.
     let bands = crate::photo_util::par_map(sh, |sy| {
@@ -912,10 +925,10 @@ fn luminance_points(px: &[[f32; 4]], w: usize, h: usize, enc: Encoding, map: imp
     }
     let pct = |mut v: Vec<f32>, q: f32| {
         v.sort_by(f32::total_cmp);
-        v[((v.len() - 1) as f32 * q).round() as usize]
+        v[quantile_rank(v.len(), q)]
     };
-    let bp = pct(cells.iter().map(|c| luma(*c)).collect(), 0.03);
-    let wp = pct(cells.iter().map(|c| c[0].max(c[1]).max(c[2])).collect(), 0.995);
+    let bp = pct(cells.iter().map(|c| luma(*c)).collect(), whites_blacks::POINT_QUANTILES[0]);
+    let wp = pct(cells.iter().map(|c| c[0].max(c[1]).max(c[2])).collect(), whites_blacks::POINT_QUANTILES[1]);
     (linear_to_srgb(bp), linear_to_srgb(wp))
 }
 
@@ -929,25 +942,32 @@ fn value_noise(x: f32, y: f32, seed: u64) -> f32 {
     top + (bot - top) * sy
 }
 
-fn dehaze(px: &mut [[f32; 4]], w: usize, h: usize, amount: f32) {
-    // Transmission on a ≤ 768 px proxy, upsampled.
-    let k = w.max(h).div_ceil(768).max(1);
-    let (sw, sh) = (w.div_ceil(k), h.div_ceil(k));
-    let mut small = vec![[0.0f32; 3]; sw * sh];
-    let mut cnt = vec![0f32; sw * sh];
-    for y in 0..h {
-        for x in 0..w {
-            let i = (y / k) * sw + x / k;
-            for c in 0..3 {
-                small[i][c] += px[y * w + x][c].clamp(0.0, 1.0);
+/// Dehaze's copy of `px` (`w × h`): each pixel mapped by `map`, clipped to 0 … 1 and averaged over
+/// `d.factor × d.factor` blocks, each block summed in raster order.
+fn haze_cells(px: &[[f32; 4]], w: usize, h: usize, d: &Dehaze, map: impl Fn([f32; 4]) -> [f32; 4] + Sync) -> Vec<[f32; 3]> {
+    let (k, [sw, sh]) = (d.factor, d.size);
+    let bands = crate::photo_util::par_map(sh, |sy| {
+        let mut small = vec![[0.0f32; 3]; sw];
+        let mut cnt = vec![0f32; sw];
+        for y in sy * k..((sy + 1) * k).min(h) {
+            for x in 0..w {
+                let q = map(px[y * w + x]);
+                let i = x / k;
+                for c in 0..3 {
+                    small[i][c] += q[c].clamp(0.0, 1.0);
+                }
+                cnt[i] += 1.0;
             }
-            cnt[i] += 1.0;
         }
-    }
-    for (s, c) in small.iter_mut().zip(&cnt) {
-        *s = s.map(|v| v / c.max(1.0));
-    }
-    let r = (sw.max(sh) / 60).max(2);
+        small.iter().zip(&cnt).map(|(s, c)| s.map(|v| v / c.max(1.0))).collect::<Vec<_>>()
+    });
+    bands.into_iter().flatten().collect()
+}
+
+fn dehaze(px: &mut [[f32; 4]], w: usize, h: usize, d: &Dehaze) {
+    // Transmission on a ≤ DEHAZE_SIDE px proxy, upsampled.
+    let (k, [sw, sh], r, amount) = (d.factor, d.size, d.radius, d.amount);
+    let small = haze_cells(px, w, h, d, |q| q);
     // The minimum (or, with `f32::max`, maximum) over each (2r + 1)² window.
     let rank_filter = |v: &[f32], start: f32, pick: fn(f32, f32) -> f32| -> Vec<f32> {
         let mut a = vec![0.0f32; sw * sh];
@@ -968,33 +988,37 @@ fn dehaze(px: &mut [[f32; 4]], w: usize, h: usize, amount: f32) {
     };
     let min_filter = |v: &[f32]| rank_filter(v, f32::MAX, f32::min);
     let dark = min_filter(&small.iter().map(|c| c[0].min(c[1]).min(c[2])).collect::<Vec<_>>());
-    // Atmospheric light: mean colour of the brightest 0.1 % of the dark channel.
+    // Atmospheric light: mean colour of the brightest 0.1 % of the dark channel (ties in the
+    // order of the cells).
     let mut idx: Vec<usize> = (0..sw * sh).collect();
     idx.sort_by(|&a, &b| dark[b].total_cmp(&dark[a]));
-    let top = (sw * sh / 1000).max(1);
+    let top = d.top;
     let mut air = [0.0f32; 3];
     for &i in &idx[..top] {
         for c in 0..3 {
             air[c] += small[i][c] / top as f32;
         }
     }
-    let air = air.map(|v| v.max(0.2));
+    let air = air.map(|v| v.max(spatial::DEHAZE_AIR_FLOOR));
     let norm_dark = min_filter(&small.iter().map(|c| (c[0] / air[0]).min(c[1] / air[1]).min(c[2] / air[2])).collect::<Vec<_>>());
     // Opened (a maximum filter of the same radius after the minimum): the minimum grows every
     // dark object by `r`, so sky beside a dark building took its dark channel, counted as
     // haze-free and kept a bright halo (#9273). Opening shrinks dark regions back to their
     // outline and is still a lower bound of the dark channel over the window. It raises the dark
-    // channel on average, so the 0.95 weight is scaled to keep the slider's overall strength.
+    // channel on average, so the ω weight is scaled to keep the slider's overall strength.
     let opened = rank_filter(&norm_dark, f32::MIN, f32::max);
-    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
-    let weight = 0.95 * mean(&norm_dark) / mean(&opened).max(1e-6);
+    // Summed in f64: an f32 running sum over the copy's few hundred thousand cells drifts by about
+    // 1e-5, which the low transmission beside haze multiplies up to a visible fraction of a level.
+    let mean = |v: &[f32]| (v.iter().map(|x| f64::from(*x)).sum::<f64>() / v.len().max(1) as f64) as f32;
+    let weight = spatial::DEHAZE_OMEGA * mean(&norm_dark) / mean(&opened).max(1e-6);
     let t_raw: Vec<f32> = opened.iter().map(|d| 1.0 - weight * d).collect();
     let guide: Vec<f32> = small.iter().map(|c| luma(*c)).collect();
-    let t = guided(&guide, &t_raw, sw, sh, r * 2, 1e-3);
+    let t = guided(&guide, &t_raw, sw, sh, d.guide_radius, spatial::DEHAZE_EPS);
     let ks = k as f32;
     par_rows(px, w, 1, |y, row| {
         for (x, q) in row.iter_mut().enumerate() {
-            let tv = crate::photo_util::bilinear(&t, sw, sh, 1, 0, (x as f32 + 0.5) / ks - 0.5, (y as f32 + 0.5) / ks - 0.5).clamp(0.1, 1.0);
+            let tv =
+                crate::photo_util::bilinear(&t, sw, sh, 1, 0, (x as f32 + 0.5) / ks - 0.5, (y as f32 + 0.5) / ks - 0.5).clamp(spatial::DEHAZE_T_FLOOR, 1.0);
             for c in 0..3 {
                 let i = q[c];
                 let j = (i - air[c]) / tv + air[c];
@@ -1005,23 +1029,25 @@ fn dehaze(px: &mut [[f32; 4]], w: usize, h: usize, amount: f32) {
 }
 
 fn detail(px: &mut [[f32; 4]], w: usize, h: usize, p: &CameraRaw, ps: f32) {
+    // The controls' documented 0..=100 range: raw values drive the filter radii below.
+    let [nl, nld, nc, ncd] = [p.noise_luminance, p.noise_luminance_detail, p.noise_color, p.noise_color_detail].map(|v| v.clamp(0.0, 100.0));
     // Work in Y + chroma (BT.709 luma, B−Y, R−Y).
     let mut y: Vec<f32> = px.iter().map(|q| luma([q[0], q[1], q[2]])).collect();
     let mut cb: Vec<f32> = px.iter().zip(&y).map(|(q, l)| q[2] - l).collect();
     let mut cr: Vec<f32> = px.iter().zip(&y).map(|(q, l)| q[0] - l).collect();
-    if p.noise_luminance > 0.0 {
-        let n = p.noise_luminance / 100.0;
+    if nl > 0.0 {
+        let n = nl / 100.0;
         let r = ((1.0 + 3.0 * n) * ps).round().max(1.0) as usize;
         let smooth = guided(&y, &y, w, h, r, (n * 0.06).powi(2) + 1e-6);
-        let keep = p.noise_luminance_detail / 100.0 * 0.5;
+        let keep = nld / 100.0 * 0.5;
         for i in 0..w * h {
             y[i] = smooth[i] + (y[i] - smooth[i]) * keep;
         }
     }
-    if p.noise_color > 0.0 {
-        let sigma = (p.noise_color / 100.0 * 6.0 * ps).max(0.3);
+    if nc > 0.0 {
+        let sigma = (nc / 100.0 * 6.0 * ps).max(0.3);
         let (bcb, bcr) = (gauss(&cb, w, h, sigma), gauss(&cr, w, h, sigma));
-        let keep = p.noise_color_detail / 100.0 * 0.3;
+        let keep = ncd / 100.0 * 0.3;
         for i in 0..w * h {
             cb[i] = bcb[i] + (cb[i] - bcb[i]) * keep;
             cr[i] = bcr[i] + (cr[i] - bcr[i]) * keep;
@@ -1124,7 +1150,8 @@ mod tests {
                 [c[0], c[1], c[2], 1.0]
             })
             .collect();
-        dehaze(&mut px, w, h, 1.0);
+        let d = Dehaze::new(&CameraRaw { dehaze: 100.0, ..Default::default() }, w, h).unwrap();
+        dehaze(&mut px, w, h, &d);
         let sky = |xs: std::ops::Range<usize>| {
             let v: Vec<f32> =
                 (150..390).flat_map(|y| xs.clone().map(move |x| (x, y))).map(|(x, y)| luma([px[y * w + x][0], px[y * w + x][1], px[y * w + x][2]])).collect();
@@ -1281,6 +1308,12 @@ mod tests {
         let mut nr = noisy.clone();
         develop(&mut nr, w, h, &CameraRaw { noise_luminance: 80.0, ..Default::default() }, false);
         assert!(var(&nr) < var(&noisy) * 0.5);
+        // Out-of-range noise settings are held to their 0..=100 range, not turned into huge radii.
+        let mut wild = noisy.clone();
+        let hostile =
+            CameraRaw { noise_luminance: 1.0e30, noise_color: 1.0e30, noise_luminance_detail: 1.0e30, noise_color_detail: 1.0e30, ..Default::default() };
+        develop(&mut wild, w, h, &hostile, false);
+        assert!(wild.iter().all(|q| q[0].is_finite()));
         let mut sh = noisy.clone();
         develop(&mut sh, w, h, &CameraRaw { sharpen_amount: 100.0, ..Default::default() }, false);
         assert!(var(&sh) > var(&noisy));
@@ -1402,5 +1435,24 @@ mod tests {
         let mut a = vec![[2.0f32, 1.5, 0.5, 1.0]; 16];
         develop(&mut a, 4, 4, &CameraRaw { exposure: 0.5, ..Default::default() }, true);
         assert!(a[0][0] > 2.0);
+    }
+
+    /// A Gaussian narrower than 0.3 px has no box radii, so it returns its input unchanged, and
+    /// Texture on a proxy that small changes nothing.
+    #[test]
+    fn a_gaussian_below_0_3_px_leaves_the_image_alone() {
+        assert!(spatial::gauss_radii(0.29).is_empty());
+        assert!(!spatial::gauss_radii(0.3).is_empty());
+        let (w, h) = (64usize, 48usize);
+        let v: Vec<f32> = (0..w * h).map(|i| ((i * 37) % 101) as f32 / 100.0).collect();
+        assert_eq!(gauss(&v, w, h, 0.29), v);
+        assert_eq!(box_means(&v, w, h, &[]), v);
+        assert_ne!(gauss(&v, w, h, 1.0), v);
+        let src: Vec<[f32; 4]> = v.iter().map(|&x| [x, 1.0 - x, 0.5 * x, 1.0]).collect();
+        let base = CameraRaw { contrast: 10.0, pixel_scale: 0.1, ..Default::default() };
+        let (mut plain, mut textured) = (src.clone(), src);
+        develop(&mut plain, w, h, &base, false);
+        develop(&mut textured, w, h, &CameraRaw { texture: 80.0, ..base }, false);
+        assert_eq!(plain, textured);
     }
 }

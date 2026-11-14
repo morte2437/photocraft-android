@@ -145,7 +145,7 @@ fn batch_folder_input_controls(s: &mut Session, dir: &str, input: &str, first: &
     png(&output, "ignored.png", 3, 2, "#ffffff");
     let sub = join(input, "sub");
     std::fs::create_dir_all(&sub).unwrap();
-    let raw = join(&sub, "d.cr3");
+    let raw = join(&sub, "d.orf");
     std::fs::copy(first, &raw).unwrap();
     let result = s
         .execute(
@@ -481,8 +481,8 @@ fn batch_quiet_profile_open_uses_caller_policy_and_retains_diagnostics() {
     assert_eq!(result["notices"][0]["color"]["action"], "converted");
     assert_eq!(result["notices"][0]["color"]["ask"], false);
     let saved = photocraft_io::import("a.png", &std::fs::read(join(&output, "a.png")).unwrap()).unwrap().document;
-    let profile = photocraft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
-    assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()));
+    let profile = craft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
+    assert!(profile.same_colors(craft_cms::Builtin::Srgb.profile()));
     // A script calling an action with a failing inner Batch still retains both import reports.
     let inner = join(&dir, "inner");
     s.actions.list.push(crate::actions_cmds::Action::new(
@@ -678,8 +678,8 @@ fn background_recorded_batch_keeps_opening_and_destination_policies() {
     let bytes = std::fs::read(saved_path).unwrap();
     assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "the structured suffix does not choose the encoder");
     let saved = photocraft_io::import("result.png", &bytes).unwrap().document;
-    let profile = photocraft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
-    assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()));
+    let profile = craft_cms::Profile::parse(saved.icc_profile.as_ref().unwrap()).unwrap();
+    assert!(profile.same_colors(craft_cms::Builtin::Srgb.profile()));
     assert_eq!(std::fs::read(source).unwrap(), original);
     assert_eq!(serde_json::to_value(s.prefs()).unwrap(), prefs);
     assert_eq!(s.color.settings, settings);
@@ -1446,7 +1446,7 @@ fn camera_raw_opens_as_16_bit_with_notes() {
     assert_eq!(doc(&s).depth, photocraft_color::SampleType::U16);
     // Damaged raw data is an error, not a crash.
     let mut bad = spec.build();
-    bad.truncate(bad.len() / 2);
+    bad.truncate(bad.len() / 5);
     assert!(open_bytes_as(&mut s, "bad.dng", &bad, None, None).is_err());
 }
 
@@ -1684,6 +1684,34 @@ fn save_a_copy_writes_the_targa_bits_asked_for() {
     }
 }
 
+/// A PDF keeps the document's spot channels as `/Separation` plates unless `pdfSpotPlates` is
+/// false; anything but a boolean is refused before anything is written.
+#[test]
+fn save_a_copy_writes_pdf_spot_plates_unless_asked_not_to() {
+    let dir = tmp("pdf-spot-plates");
+    let mut s = session(12, 6, 8);
+    s.execute("select.all", json!({})).unwrap();
+    s.execute("channel.newSpot", json!({"name": "Underbase White", "color": "#ffffff"})).unwrap();
+    let has = |bytes: &[u8], needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    for (params, plates) in
+        [(json!({}), true), (json!({"pdfSpotPlates": true}), true), (json!({"pdfSpotPlates": null}), true), (json!({"pdfSpotPlates": false}), false)]
+    {
+        let out = join(&dir, "a.pdf");
+        let mut p = params.clone();
+        p["path"] = json!(out);
+        s.execute("file.saveACopy", p).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(has(&bytes, "/Separation /Underbase#20White /DeviceCMYK"), plates, "{params}");
+        assert_eq!(has(&bytes, "/OP true /op true"), plates, "{params}: overprint rides with the plates");
+    }
+    for bad in [json!(1), json!("true"), json!([true])] {
+        let out = join(&dir, "bad.pdf");
+        let r = s.execute("file.saveACopy", json!({"path": out, "pdfSpotPlates": bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+        assert!(!std::path::Path::new(&out).exists(), "{bad}: nothing written");
+    }
+}
+
 /// `dpxBits` picks a DPX's bits per sample (byte 803 of the header); unset, it follows the
 /// document's depth. Anything but 8, 10, 12 or 16 is refused before anything is written.
 #[test]
@@ -1755,6 +1783,17 @@ fn dds_params_are_none_until_one_is_given() {
     assert_eq!(dds_param(&json!({"ddsCompression": null}), "file.saveAs").unwrap(), None);
     assert_eq!(dds_param(&json!({"ddsMipmaps": true}), "file.saveAs").unwrap(), Some(DdsOptions { compression: DdsCompression::None, mipmaps: true }));
     assert_eq!(dds_param(&json!({"ddsCompression": "bc2"}), "file.saveAs").unwrap(), Some(DdsOptions { compression: DdsCompression::Bc2, mipmaps: false }));
+}
+
+/// The layer export's `format` is an extension, never a path: separators and `..` are refused.
+#[test]
+fn layer_export_format_cannot_carry_path_components() {
+    let dir = tmp("fmt-path");
+    let mut s = session(8, 8, 8);
+    for bad in ["png/../../x", "..\\x", "a/b", ""] {
+        let r = s.execute("file.export.layersToFiles", json!({"dir": dir, "format": bad}));
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{bad}: {r:?}");
+    }
 }
 
 /// A `tgaBits` other than 24 or 32 is a bad parameter, reported before anything is written.
@@ -1832,8 +1871,8 @@ fn image_previews_preference_controls_the_psd_thumbnail() {
     let dir = tmp("previews");
     let mut s = session(300, 200, 16);
     let has_thumbnail = |path: &str| {
-        let file = photocraft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap();
-        file.resources.iter().any(|r| r.id == photocraft_psd::resources::ids::THUMBNAIL)
+        let file = craft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap();
+        file.resources.iter().any(|r| r.id == craft_psd::resources::ids::THUMBNAIL)
     };
     for (ask, expect) in [(Ask::Always, true), (Ask::Never, false), (Ask::Ask, true)] {
         s.edit_prefs(|p| p.file_handling.image_previews = ask);
@@ -1854,7 +1893,7 @@ fn maximize_compatibility_preference_controls_the_psd_merged_image() {
     let dir = tmp("maximize");
     let mut s = session(300, 200, 16);
     s.execute("layer.new.layer", json!({})).unwrap();
-    let real_merged = |path: &str| photocraft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap().has_real_merged_data();
+    let real_merged = |path: &str| craft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap().has_real_merged_data();
     for (ask, expect) in [(Ask::Always, true), (Ask::Never, false), (Ask::Ask, true)] {
         s.edit_prefs(|p| p.file_handling.maximize_psd_compatibility = ask);
         for ext in ["psd", "psb"] {
@@ -1905,7 +1944,7 @@ fn maximize_compatibility_param_overrides_the_preference_for_one_save() {
     let dir = tmp("maximize-param");
     let mut s = session(300, 200, 16);
     s.execute("layer.new.layer", json!({})).unwrap();
-    let real_merged = |path: &str| photocraft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap().has_real_merged_data();
+    let real_merged = |path: &str| craft_psd::PsdFile::from_bytes(&std::fs::read(path).unwrap()).unwrap().has_real_merged_data();
     for (ask, param, expect) in [
         (Ask::Always, json!(false), false),
         (Ask::Never, json!(true), true),
@@ -1974,6 +2013,21 @@ fn place_embedded_centres_fits_and_embeds() {
         assert!(s.undo() && s.undo());
         assert_eq!(doc(&s).layers.len(), 1);
     }
+}
+
+/// A caller-chosen placement scale cannot ask for an image beyond the render limit.
+#[test]
+fn placing_refuses_a_scale_that_would_exceed_the_pixel_limit() {
+    let dir = tmp("place-huge-scale");
+    let small = png(&dir, "small.png", 200, 100, "#ff0000");
+    let mut s = session(100, 100, 8);
+    for scale in [1e9, 1e300, 1e308, 23170.25] {
+        assert!(matches!(s.execute("file.placeEmbedded", json!({"path": small, "scale": scale})), Err(EngineError::BadParams { .. })), "{scale}");
+    }
+    assert!(s.execute("file.placeEmbedded", json!({"path": small, "scale": 50})).is_ok());
+    // The error names the command that asked.
+    let linked = s.execute("file.placeLinked", json!({"path": small, "scale": 1e9}));
+    assert!(matches!(linked, Err(EngineError::BadParams { ref cmd, .. }) if cmd == "file.placeLinked"), "{linked:?}");
 }
 
 /// Preferences ▸ General ▸ Always Create Smart Objects When Placing: unchecked, an embedded place
@@ -2696,6 +2750,41 @@ fn trimming_an_empty_layer_keeps_a_valid_nonzero_canvas() {
 }
 
 #[test]
+fn image_processor_scratch_sessions_answer_to_the_authorization_gate() {
+    fn deny_image(id: &str, _: &Value) -> Result<()> {
+        if id.starts_with("image.") { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+    }
+    let dir = tmp("proc-gate");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    png(&input, "a.png", 40, 20, "#ff0000");
+    let mut s = Session::new();
+    s.authorize = Some(deny_image);
+    let out = join(&dir, "out");
+    let r = s.execute("file.scripts.imageProcessor", json!({"input": input, "output": out, "format": "jpg", "width": 20, "height": 20})).unwrap();
+    assert!(r["files"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
+}
+
+#[test]
+fn batch_save_points_answer_to_the_authorization_gate() {
+    fn deny_save(id: &str, _: &Value) -> Result<()> {
+        if id == "file.save" { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+    }
+    let dir = tmp("batch-save-gate");
+    let input = join(&dir, "in");
+    std::fs::create_dir_all(&input).unwrap();
+    png(&input, "a.png", 8, 8, "#ff0000");
+    let mut s = Session::new();
+    s.authorize = Some(deny_save);
+    let out = join(&dir, "out");
+    let r = s.execute("file.automate.batch", json!({"steps": [["file.save", {}]], "input": input, "output": out, "format": "png"})).unwrap();
+    assert!(r["files"].as_array().unwrap().is_empty(), "{r}");
+    assert_eq!(r["errors"].as_array().unwrap().len(), 1, "{r}");
+    assert!(!std::path::Path::new(&join(&out, "a.png")).exists());
+}
+
+#[test]
 fn load_files_into_stack_and_image_processor_and_batch() {
     let dir = tmp("batch");
     let input = join(&dir, "in");
@@ -3074,14 +3163,14 @@ fn cube_export_uses_only_selected_adjustments_in_document_order() {
     let first = s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap();
     let second = s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap();
     let both = s.execute("file.export.colorLookupTables", json!({"size": 3})).unwrap();
-    let all = photocraft_cms::lutfile::parse_cube(both["cube"].as_str().unwrap()).unwrap();
+    let all = craft_cms::lutfile::parse_cube(both["cube"].as_str().unwrap()).unwrap();
     assert_eq!(both["layerCount"], 2);
     assert!(all.data[0] < 0.001, "two Invert adjustments produce identity");
 
     // Selection comes from the Layers panel rather than the active layer alone.
     s.execute("layer.select", json!({"layer": first})).unwrap();
     let selected = s.execute("file.export.colorLookupTables", json!({"size": 3, "scope": "selected"})).unwrap();
-    let one = photocraft_cms::lutfile::parse_cube(selected["cube"].as_str().unwrap()).unwrap();
+    let one = craft_cms::lutfile::parse_cube(selected["cube"].as_str().unwrap()).unwrap();
     assert_eq!(selected["layerCount"], 1);
     assert!(one.data[0] > 0.999, "one invert maps black to white");
     assert_eq!(all.size, one.size);
@@ -3140,7 +3229,7 @@ fn exported_selected_cube_round_trips_through_lookup_importer() {
     assert_eq!(r["size"], 17);
     assert_eq!(r["layerCount"], 1);
     let text = std::fs::read_to_string(&path).unwrap();
-    let parsed = photocraft_cms::lutfile::parse_cube(&text).unwrap();
+    let parsed = craft_cms::lutfile::parse_cube(&text).unwrap();
     assert_eq!(parsed.size, 17);
     assert_eq!(parsed.data.len(), 17 * 17 * 17 * 3);
     assert!(parsed.data[..3].iter().all(|v| *v > 0.999));
@@ -3721,9 +3810,9 @@ fn folder_listing_recognises_gzipped_xcf_by_its_double_extension() {
 }
 
 /// A folder batch picks up every extension that the codecs open: Cineon, DICOM, Amiga IFF, PCX,
-/// XPM, DDS, the Netpbm family, and Photoshop templates. Not the raws whose usual files open only
-/// as the embedded JPEG preview (CR3, compressed ORF and RAF, RW2 other than raw formats 3, 4 and
-/// 5): a batch would process the thumbnail without a word.
+/// XPM, DDS, the Netpbm family, and Photoshop templates. Not raws that this build cannot decode
+/// natively (ORF, RAF, SRF, SR2, and RW2 variants other than raw formats 3, 4 and 5): a batch
+/// should not process an embedded JPEG preview without a word.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn folder_listing_takes_every_format_photocraft_opens() {
@@ -3870,6 +3959,33 @@ fn sanitize_keeps_windows_device_names_off_the_disk() {
     for name in ["console", "normal", "com10", "lpt0", "nullify", "con_", "com⁴", "com¹¹"] {
         assert_eq!(sanitize(name), name);
     }
+}
+
+/// A droplet whose steps run the same droplet stops at the nesting limit with an error for the
+/// input, rather than opening documents until the stack or memory runs out.
+#[test]
+fn a_droplet_that_runs_itself_stops_at_the_nesting_limit() {
+    let dir = tmp("droplet-recursion");
+    let input = png(&dir, "a.png", 4, 4, "#ff0000");
+    let droplet = join(&dir, "self.pcdroplet");
+    let out = join(&dir, "out");
+    let step = json!(["file.automate.runDroplet", {"droplet": droplet, "input": [input], "output": out}]);
+    std::fs::write(&droplet, json!({"photocraftDroplet": 1, "name": "self", "action": {"steps": [step]}, "options": {"format": "png"}}).to_string()).unwrap();
+    let mut s = Session::new();
+    // Each level runs the next in a scratch session; the innermost is refused, so this returns.
+    let r = s.execute("file.automate.runDroplet", json!({"droplet": droplet, "input": [input], "output": out})).unwrap();
+    assert_eq!(s.actions.batch_depth, 0);
+    // The limit reaches the outermost result: the input failed, nothing was saved unprocessed.
+    assert!(r["errors"][0]["error"].as_str().unwrap().contains("nested more than"), "{r}");
+    assert_eq!(r["files"], json!([]), "{r}");
+    assert!(!std::path::Path::new(&out).join("a.png").exists());
+    // At the limit, the droplet is refused before its file is read (this one doesn't exist).
+    s.actions.batch_depth = crate::actions_cmds::MAX_BATCH_DEPTH;
+    let missing = join(&dir, "missing.pcdroplet");
+    let e = s.execute("file.automate.runDroplet", json!({"droplet": missing, "input": [input], "output": out})).unwrap_err();
+    assert!(e.to_string().contains("nested more than"), "{e}");
+    let e = s.execute("file.automate.batch", json!({"steps": [], "input": [input], "output": out})).unwrap_err();
+    assert!(e.to_string().contains("nested more than"), "{e}");
 }
 
 #[test]

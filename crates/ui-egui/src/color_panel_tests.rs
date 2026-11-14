@@ -339,6 +339,67 @@ fn color_wheel_ring_sets_hue_and_triangle_sets_saturation_and_brightness() {
     assert!((hsv[0] - 90.0).abs() < 4.0 && hsv[1] < 0.9 && hsv[2] < 0.95, "{after:?} {hsv:?}");
 }
 
+/// The wheel's ring and triangle are meshes, which egui doesn't antialias: each edge fades to
+/// transparent over the feather, centred on it, so neither looks jagged (#9996).
+#[test]
+fn color_wheel_edges_are_feathered() {
+    use crate::color_panel_ui::{ring_mesh, triangle_mesh};
+    let (center, inner, outer, feather) = (pos2(100.0, 100.0), 80.0, 96.0, 1.0);
+    let ring = ring_mesh(center, inner, outer, feather);
+    for v in &ring.vertices {
+        let r = (v.pos - center).length();
+        if v.color == egui::Color32::TRANSPARENT {
+            let fringe = (r - (inner - 0.5)).abs().min((r - (outer + 0.5)).abs());
+            assert!(fringe < 1e-3, "transparent vertex at radius {r}");
+        } else {
+            assert!(r > inner + 0.5 - 1e-3 && r < outer - 0.5 + 1e-3, "solid vertex at radius {r}");
+            assert_eq!(v.color.a(), 255);
+        }
+    }
+    assert!(ring.vertices.iter().any(|v| v.color == egui::Color32::TRANSPARENT));
+    // Hard edges: no fringe at all.
+    assert!(ring_mesh(center, inner, outer, 0.0).vertices.iter().all(|v| v.color.a() == 255));
+
+    // An equilateral triangle in the ring (inradius 39.5): solid vertices half a feather inside
+    // its edges, transparent ones half a feather outside.
+    let tri = [0.0f32, 1.0 / 3.0, 2.0 / 3.0].map(|t| {
+        let a = t * std::f32::consts::TAU;
+        center + egui::vec2(a.cos(), -a.sin()) * 79.0
+    });
+    // Signed distance from `p` to the nearest edge, positive inside.
+    let inside = |p: egui::Pos2| {
+        (0..3)
+            .map(|k| {
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                let n = egui::vec2(-(b - a).y, (b - a).x).normalized();
+                let d = (p - a).dot(n);
+                if (center - a).dot(n) < 0.0 { -d } else { d }
+            })
+            .fold(f32::INFINITY, f32::min)
+    };
+    let m = triangle_mesh(tri, 0.25, feather);
+    let (mut solid_edge, mut fringe) = (0, 0);
+    for v in &m.vertices {
+        let d = inside(v.pos);
+        if v.color == egui::Color32::TRANSPARENT {
+            assert!((d + 0.5).abs() < 1e-2, "transparent vertex {d} from the edge");
+            fringe += 1;
+        } else {
+            assert!(d > 0.5 - 1e-2, "solid vertex {d} from the edge");
+            solid_edge += usize::from((d - 0.5).abs() < 1e-2);
+            // It shows the colour picking reads where it is drawn.
+            let (s, b) = crate::color_panel_ui::triangle_sv(tri, v.pos).unwrap();
+            let picked = crate::color_panel_ui::rgb32(photocraft_color::convert::hsb_to_rgb([90.0, s, b]));
+            assert_eq!(v.color, picked, "vertex at {:?}", v.pos);
+        }
+    }
+    assert!(fringe >= 48 && solid_edge >= 48, "{fringe} fringe, {solid_edge} edge vertices");
+    // Every index points at a vertex.
+    assert!(m.indices.iter().all(|&i| (i as usize) < m.vertices.len()));
+    assert!(ring.indices.iter().all(|&i| (i as usize) < ring.vertices.len()));
+    assert!(triangle_mesh(tri, 0.25, 0.0).vertices.iter().all(|v| v.color.a() == 255));
+}
+
 /// Picking a mode from the panel menu changes the panel; the theme never does.
 #[test]
 fn panel_menu_picks_the_mode_and_ramp() {

@@ -1,6 +1,6 @@
 //! Layer style libraries (`.asl`) ⇄ PhotoCraft styles.
 //!
-//! The container is parsed by [`photocraft_psd::asl`]. Each style's `Lefx` is the same effects
+//! The container is parsed by [`craft_psd::asl`]. Each style's `Lefx` is the same effects
 //! tree as a layer's `lfx2` block ([`crate::effects_map`]); `blendOptions` ("Include Layer
 //! Blending Options") carries the blend mode, opacity and fill opacity; the file's patterns feed
 //! the styles' Pattern Overlays, pattern strokes and bevel textures.
@@ -11,14 +11,14 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use craft_psd::asl::{self, AslFile};
+use craft_psd::descriptor::{Descriptor, Id, Value};
 use photocraft_color::BlendMode;
 use photocraft_doc::{Effect, FxPaint, Pattern};
-use photocraft_psd::asl::{self, AslFile};
-use photocraft_psd::descriptor::{Descriptor, Id, Value};
 
 use crate::blocks::{enum_of, get_desc, num};
 use crate::effects_map::{blend_from_id, blend_value, effects_descriptor, effects_from_descriptor, is_known_effects_key};
-use crate::pattern_map::{from_psd, to_psd};
+use crate::pattern_map::{from_psd, to_psd_patterns};
 
 /// One style as PhotoCraft keeps it.
 #[derive(Clone, Debug, PartialEq)]
@@ -176,7 +176,7 @@ fn style_id(index: usize, name: &str) -> String {
 pub fn write_asl(styles: &[AslStyle], patterns: &[Pattern]) -> Result<Vec<u8>, String> {
     let pct = |v: f32| Value::UnitFloat { unit: *b"#Prc", value: f64::from(v.clamp(0.0, 1.0)) * 100.0 };
     let file = AslFile {
-        patterns: patterns.iter().map(to_psd).collect(),
+        patterns: to_psd_patterns(patterns)?,
         pattern_error: None,
         styles: styles
             .iter()
@@ -208,9 +208,9 @@ pub fn write_asl(styles: &[AslStyle], patterns: &[Pattern]) -> Result<Vec<u8>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft_psd::descriptor::UnicodeString;
     use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
     use photocraft_doc::{BevelTexture, FxCommon, StrokePosition};
-    use photocraft_psd::descriptor::UnicodeString;
     use photocraft_raster::Surface;
 
     fn pattern(id: &str, s: SampleType) -> Pattern {
@@ -376,7 +376,7 @@ mod tests {
             let _ = read_asl(&c);
         }
         assert!(read_asl(b"").is_err());
-        assert!(read_asl(&photocraft_psd::grd::write(&[])).is_err());
+        assert!(read_asl(&craft_psd::grd::write(&[])).is_err());
     }
 
     #[test]

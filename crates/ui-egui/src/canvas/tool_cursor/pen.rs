@@ -92,7 +92,7 @@ pub fn rasterize(variant: PenVariant, scale: f32) -> Option<CustomCursorImage> {
         return None;
     }
     let icon_px_f = (LOGICAL_SIZE * scale).round();
-    if icon_px_f < 1.0 || icon_px_f > 512.0 {
+    if !(1.0..=512.0).contains(&icon_px_f) {
         return None;
     }
     let icon_px = icon_px_f as u32;

@@ -69,6 +69,26 @@ pub(crate) fn with_doc_sampler<R>(doc: &Document, layer: Option<LayerId>, all_la
     }
 }
 
+/// A flat, opaque image: what Quick Selection reads with a group active and Sample All Layers off.
+struct FlatSampler;
+
+impl Sampler for FlatSampler {
+    fn rgba(&self, r: Rect) -> Vec<[f32; 4]> {
+        vec![[0.0, 0.0, 0.0, 1.0]; r.width() as usize * r.height() as usize]
+    }
+}
+
+/// Runs `f` with Quick Selection's sampler: [`with_sampler`]'s, except that with a group active
+/// and Sample All Layers off it reads a flat area, so a click selects only the brush disc instead
+/// of the composite's shapes, as the reference application does (#12933). Artboards and frames,
+/// groups too but not measured, keep reading the composite.
+fn with_quick_sampler<R>(s: &Session, all_layers: bool, f: impl FnOnce(&dyn Sampler, &Document) -> R) -> Result<R> {
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let plain_group = |l: &Layer| l.frame.is_none() && matches!(&l.content, LayerContent::Group(g) if g.artboard.is_none());
+    let group = d.active_layer.and_then(|id| d.doc.layer(id)).is_some_and(plain_group);
+    if group && !all_layers { Ok(f(&FlatSampler, &d.doc)) } else { with_sampler(s, all_layers, f) }
+}
+
 /// Stores `region` combined with the current selection by `m` as one history step.
 /// Finding nothing never destroys work: the selection (and history) is left alone and the
 /// caller gets `changed: false`, whatever the mode. (Select Subject and Object Selection run
@@ -112,7 +132,7 @@ fn quick_selection(s: &mut Session, p: &Value) -> Result<Value> {
         _ => SelectionMode::Add,
     };
     let enhance = b(p, "enhanceEdge", false);
-    let region = with_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
+    let region = with_quick_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
         let canvas = doc.bounds();
         let Some(r) = quick::quick_select(smp, canvas, &pts, size) else { return Ok(None) };
         let surface = matting::region_surface(&r);
@@ -280,7 +300,25 @@ fn object_at_point(s: &mut Session, p: &Value, (x, y): (f32, f32)) -> Result<Val
     Ok(out)
 }
 
+/// The reference application's Object Selection alert in the modes it refuses (#12867).
+/// Multichannel and Duotone weren't measured and keep selecting.
+pub fn object_mode_refusal(mode: photocraft_color::ColorMode) -> Option<&'static str> {
+    use photocraft_color::ColorMode;
+    match mode {
+        ColorMode::Indexed => Some(
+            "Could not complete your request because the tool does not work with Indexed Color images. Please convert the image to RGB or another supported mode before using..",
+        ),
+        ColorMode::Bitmap => Some(
+            "Could not complete your request because the tool does not work with Bitmap images. Please convert the image to RGB or another supported mode before using..",
+        ),
+        _ => None,
+    }
+}
+
 fn object_selection(s: &mut Session, p: &Value) -> Result<Value> {
+    if let Some(why) = s.active().and_then(|d| object_mode_refusal(d.doc.mode)) {
+        return Err(EngineError::Other(why.into()));
+    }
     if p.get("rect").is_none()
         && let Some(pt) = point_param(p)
     {
@@ -574,4 +612,11 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+mod object_transparent_layer_tests;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod object_mode_refusal_tests;
+#[cfg(test)]
+mod quick_group_target_tests;

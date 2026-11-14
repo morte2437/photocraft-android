@@ -135,9 +135,8 @@ fn mask_creation_preserves_selection_coverage_and_existing_masks() {
                 before.selection.as_ref().unwrap().read_region(before.bounds()),
                 "{depth}-bit coverage is unchanged"
             );
-            // The selection went into the mask, except for the Gradient tool's fill layer.
-            let kept = if command == "gradient.fill.create" { before.selection.clone() } else { None };
-            assert_eq!(after.selection, kept, "{command}");
+            // The selection went into the mask, so it is dropped (#8801, #12196).
+            assert!(after.selection.is_none(), "{command}");
             assert_eq!(after.layers[0].mask, before.layers[0].mask, "creating a mask does not requantize an existing mask");
         }
     }

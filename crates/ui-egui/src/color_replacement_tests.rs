@@ -243,7 +243,7 @@ fn it_paints_like_the_brush_tools() {
     a.run("tools.increaseBrushSize", json!({})).unwrap();
     assert!(a.session.tools.brush.size > size);
     a.run("tools.decreaseBrushSize", json!({})).unwrap();
-    assert_eq!(a.session.tools.brush.size, size);
+    assert_eq!(a.session.tools.brush.size, 10.0, "[ snaps back below the original intermediate 12 px size");
     // Alt+right drag resizes and paints nothing.
     let events = json!([{"kind": "down", "x": 40, "y": 20}, {"kind": "move", "x": 60, "y": 20}, {"kind": "up", "x": 70, "y": 20}]);
     let (req, _rx) = crate::control::ControlRequest::new("ui.pointer", json!({"tool": "colorReplacement", "button": "right", "alt": true, "events": events}));

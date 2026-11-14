@@ -457,7 +457,7 @@ fn clip_to_canvas(mut mesh: egui::Mesh, size: [f32; 2], to_screen: impl Fn(Pos2)
 /// 3×3, 4×4 and 5×5 are just those even cells, with an anchor at every intersection. `guide` is
 /// the split line following the pointer.
 /// How near the pointer (screen px) a handle's anchor or the handle itself must be for the
-/// handle to show. Everything else stays out of the way: only anchors are always drawn.
+/// handle of a multi-patch grid to show. Default's twelve points are always drawn.
 const HANDLE_REVEAL_PX: f32 = 56.0;
 
 /// The anchor a handle belongs to, as `(i, j)` in the control grid (an anchor is its own).
@@ -474,8 +474,10 @@ pub(super) fn handle_anchor(i: usize, j: usize) -> (usize, usize) {
     }
 }
 
-/// Anchors always, small and quiet. A handle and its arm show only while the pointer is close to
-/// them or they are being dragged, so a dense grid does not bury the picture in dots.
+/// Default (one patch) draws its 4 corners and 8 edge handles always, and a split grid its
+/// anchors as hollow circles, as the reference does (#12497). On a split or 3×3–5×5 grid a handle
+/// and its arm show only while the pointer is close to them or they are being dragged, so a
+/// dense grid does not bury the picture in dots; the presets keep their square anchors.
 fn draw_warp_points(painter: &egui::Painter, m: &BezierMesh, scr: impl Fn([f64; 2]) -> Pos2, pv: &TransformPreview, line: Stroke) {
     let (nx, ny) = (m.nx(), m.ny());
     let hover = painter.ctx().input(|i| i.pointer.hover_pos());
@@ -483,6 +485,9 @@ fn draw_warp_points(painter: &egui::Painter, m: &BezierMesh, scr: impl Fn([f64; 
         Some(WarpDrag::Point { index, .. }) => Some(handle_anchor(index % nx, index / nx)),
         _ => None,
     };
+    const POINT_R: f32 = 2.75;
+    let all_shown = single_patch(m);
+    let round_anchors = !matches!(super::options_bar::warp_grid_id(m), "3" | "4" | "5");
     let near = |p: Pos2| hover.is_some_and(|h| h.distance(p) <= HANDLE_REVEAL_PX);
     let faint = Stroke::new(0.75, line.color.gamma_multiply(0.8));
     for j in 0..ny {
@@ -492,19 +497,24 @@ fn draw_warp_points(painter: &egui::Painter, m: &BezierMesh, scr: impl Fn([f64; 
             }
             let p = scr(m.point(i, j));
             if i.is_multiple_of(3) && j.is_multiple_of(3) {
-                let r = egui::Rect::from_center_size(p, vec2(5.0, 5.0));
-                painter.rect_filled(r, 0.0, Color32::WHITE);
-                painter.rect_stroke(r, 0.0, faint, egui::StrokeKind::Inside);
+                if round_anchors {
+                    painter.circle_stroke(p, POINT_R, Stroke::new(line.width, Color32::WHITE));
+                    painter.circle_stroke(p, POINT_R + line.width, faint);
+                } else {
+                    let r = egui::Rect::from_center_size(p, vec2(5.0, 5.0));
+                    painter.rect_filled(r, 0.0, Color32::WHITE);
+                    painter.rect_stroke(r, 0.0, faint, egui::StrokeKind::Inside);
+                }
                 continue;
             }
             let (ai, aj) = handle_anchor(i, j);
             let a = scr(m.point(ai, aj));
-            if !(near(p) || near(a) || dragged == Some((ai, aj))) {
+            if !(all_shown || near(p) || near(a) || dragged == Some((ai, aj))) {
                 continue;
             }
             painter.line_segment([a, p], faint);
-            painter.circle_filled(p, 2.75, Color32::WHITE);
-            painter.circle_stroke(p, 2.75, faint);
+            painter.circle_filled(p, POINT_R, Color32::WHITE);
+            painter.circle_stroke(p, POINT_R, faint);
         }
     }
 }
@@ -618,3 +628,7 @@ fn draw_warp_overlay(painter: &egui::Painter, xf: &ViewXform, w: &Warp, pv: &Tra
         }
     }
 }
+
+#[cfg(test)]
+#[path = "warp_handles_visible_tests.rs"]
+mod warp_handles_visible_tests;

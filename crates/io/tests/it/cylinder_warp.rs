@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
+use craft_psd::PsdFile;
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, SmartObject, SmartSource};
 use photocraft_geom::warp::{Warp, WarpStyle};
 use photocraft_geom::{Affine, Rect, Size};
 use photocraft_io::{ExportOptions, export, import, smart_map};
-use photocraft_psd::PsdFile;
 use photocraft_raster::Surface;
 
 /// Silhouettes at x 10 and 90, edges at y 20 and 80, ellipses 0.3 deep, wrapped as little as
@@ -79,8 +79,8 @@ fn a_cylinder_survives_psd_and_wraps_the_contents_again() {
     let (file, back) = round_trip(&doc);
     let layer = file.layers().iter().find(|l| l.name() == "label").unwrap();
     let sold = smart_map::parse_sold(&layer.block(b"SoLd").unwrap().data).unwrap();
-    let Some(photocraft_psd::descriptor::Value::Descriptor(w)) = sold.descriptor.get("warp") else { panic!("no warp") };
-    assert!(matches!(w.get("warpStyle"), Some(photocraft_psd::descriptor::Value::Enumerated { value, .. }) if value.as_bytes() == b"warpCylinder"));
+    let Some(craft_psd::descriptor::Value::Descriptor(w)) = sold.descriptor.get("warp") else { panic!("no warp") };
+    assert!(matches!(w.get("warpStyle"), Some(craft_psd::descriptor::Value::Enumerated { value, .. }) if value.as_bytes() == b"warpCylinder"));
     let sm = smart(&back);
     assert_eq!(sm.warp.as_ref().map(|w| w.style), Some(WarpStyle::Cylinder));
     assert_eq!(sm.warp.as_ref(), Some(&warp));

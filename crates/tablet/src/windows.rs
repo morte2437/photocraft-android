@@ -11,7 +11,7 @@
 
 #![allow(unsafe_code, clippy::upper_case_acronyms)]
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 static BARREL_DOWN: AtomicBool = AtomicBool::new(false);
 
@@ -25,6 +25,10 @@ static PEN_END: AtomicU8 = AtomicU8::new(0);
 
 /// The pen end of the last contact [`take_pen_end`] has not read yet, as [`encode_end`] stores it.
 static CONTACT_END: AtomicU8 = AtomicU8::new(0);
+/// Where the pen was on the screen at its last pointer message (`ptPixelLocation`, physical
+/// pixels), [`pack_px`]ed, or [`NO_PX`]. Read by [`pen_screen_px`].
+static PEN_PX: AtomicU64 = AtomicU64::new(NO_PX);
+const NO_PX: u64 = u64::MAX;
 
 fn encode_end(end: Option<bool>) -> u8 {
     match end {
@@ -213,15 +217,39 @@ pub fn handle_pointer_message(message: u32, w_param: usize, pen_flags: impl FnOn
     PEN_END.store(encode_end(next.end), Ordering::Relaxed);
     PEN_ID.store(next.pen_id.unwrap_or(NO_PEN), Ordering::Relaxed);
     CONTACT_END.store(encode_end(next.contact), Ordering::Relaxed);
+    if next.pen_id.is_none() {
+        PEN_PX.store(NO_PX, Ordering::Relaxed);
+    }
 }
 
+/// `GetPointerPenInfo`'s pen flags for a pointer (`None`: not a pen). It also keeps where the pen
+/// is on the screen ([`pen_screen_px`]).
 fn read_pen_flags(pointer_id: u32) -> Option<u32> {
     // SAFETY: `info` is a stack-allocated buffer initialized to zero that outlives the call, and
     // `pointer_id` comes from a WM_POINTER message; an unknown id makes the call fail, not crash.
-    unsafe {
+    let info = unsafe {
         let mut info: POINTER_PEN_INFO = std::mem::zeroed();
-        (GetPointerPenInfo(pointer_id, &mut info) != 0).then_some(info.pen_flags)
-    }
+        (GetPointerPenInfo(pointer_id, &mut info) != 0).then_some(info)
+    }?;
+    let at = &info.pointer_info.pt_pixel_location;
+    PEN_PX.store(pack_px(at.x, at.y), Ordering::Relaxed);
+    Some(info.pen_flags)
+}
+
+fn pack_px(x: i32, y: i32) -> u64 {
+    (u64::from(x as u32) << 32) | u64::from(y as u32)
+}
+
+fn unpack_px(v: u64) -> Option<(i32, i32)> {
+    (v != NO_PX).then_some(((v >> 32) as u32 as i32, v as u32 as i32))
+}
+
+/// Where the pen in range is on the screen, in physical pixels, as of its last pointer message;
+/// `None` with no pen in range. Unlike a window-relative position it doesn't depend on where the
+/// window is, so the title bar can move the window after the pen (#7967) while Windows is still
+/// moving it (winit moves windows asynchronously). The system cursor doesn't follow every pen.
+pub fn pen_screen_px() -> Option<(i32, i32)> {
+    PEN_ID.load(Ordering::Relaxed).ne(&NO_PEN).then(|| unpack_px(PEN_PX.load(Ordering::Relaxed))).flatten()
 }
 
 /// `WH_GETMESSAGE`: the posted pointer messages, as the UI thread takes them from its queue.
@@ -311,6 +339,7 @@ impl Drop for Monitor {
         PEN_END.store(encode_end(None), Ordering::Relaxed);
         PEN_ID.store(NO_PEN, Ordering::Relaxed);
         CONTACT_END.store(encode_end(None), Ordering::Relaxed);
+        PEN_PX.store(NO_PX, Ordering::Relaxed);
     }
 }
 
@@ -338,6 +367,14 @@ mod tests {
 
     const POINTER_FLAG_INCONTACT: u32 = 0x0004;
     const POINTER_FLAG_FIRSTBUTTON: u32 = 0x0010;
+
+    #[test]
+    fn pen_screen_positions_round_trip_left_of_and_above_the_primary_monitor() {
+        for (x, y) in [(0, 0), (1140, 214), (-2400, -300), (i32::MAX, i32::MIN)] {
+            assert_eq!(unpack_px(pack_px(x, y)), Some((x, y)));
+        }
+        assert_eq!(unpack_px(NO_PX), None);
+    }
 
     #[test]
     fn plain_pen_contact_is_not_treated_as_barrel() {

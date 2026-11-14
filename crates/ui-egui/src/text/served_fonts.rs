@@ -272,6 +272,9 @@ mod tests {
     /// it with the Chinese one, even when the Japanese face arrived first.
     #[test]
     fn the_interface_languages_served_face_comes_first_in_the_ui_stack() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let (jpan, hans) = ("Served Test Jpan", "Served Test Hans");
         photocraft_text::served::add_fonts(&parse_manifest(&format!("{jpan} | Regular | fonts/j/J.ttf | Jpan\n{hans} | Regular | fonts/h/H.ttf | Hans\n")).0);
         crate::i18n::set_current(crate::i18n::Lang::from_code("zh-hans").expect("Simplified Chinese"));

@@ -303,9 +303,12 @@ fn help_search_finds_commands_by_any_word() {
 /// In another UI language both the translated and the English names match.
 #[test]
 fn help_search_matches_the_ui_language_and_english() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let items = menu_items(&app);
-    let Some(fr) = crate::i18n::Lang::from_code("fr") else { return };
+    let fr = crate::i18n::Lang::from_code("fr").expect("fr registered");
     let ids = |q: &str| search_items(&items, q, fr).iter().map(|i| i.id.clone()).collect::<Vec<_>>();
     assert!(!ids(&crate::i18n::tr(fr, "Layer").to_lowercase()).is_empty(), "French menu name");
     assert!(ids("distort").contains(&"edit.transform.distort".to_string()), "English still matches");
@@ -315,6 +318,9 @@ fn help_search_matches_the_ui_language_and_english() {
 /// Azerbaijani menu text and paths keep dotted I distinct; English aliases still work.
 #[test]
 fn azerbaijani_help_search_uses_the_language_of_each_alias() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let az = crate::i18n::Lang::from_code("az").unwrap();
     let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let items = menu_items(&app);

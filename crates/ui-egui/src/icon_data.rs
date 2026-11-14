@@ -152,6 +152,7 @@ pub static ICONS: &[(&str, &[u8])] = &[
     ("slice-select", include_bytes!("../../../assets/icons/slice-select.svg")),
     ("sliders-horizontal", include_bytes!("../../../assets/icons/sliders-horizontal.svg")),
     ("sparkles", include_bytes!("../../../assets/icons/sparkles.svg")),
+    ("spirit-level", include_bytes!("../../../assets/icons/spirit-level.svg")),
     ("spline", include_bytes!("../../../assets/icons/spline.svg")),
     ("square", include_bytes!("../../../assets/icons/square.svg")),
     ("square-dashed", include_bytes!("../../../assets/icons/square-dashed.svg")),
@@ -183,6 +184,7 @@ pub static ICONS: &[(&str, &[u8])] = &[
     ("type-mask-vertical", include_bytes!("../../../assets/icons/type-mask-vertical.svg")),
     ("undo-2", include_bytes!("../../../assets/icons/undo-2.svg")),
     ("unlink", include_bytes!("../../../assets/icons/unlink.svg")),
+    ("vector-shape", include_bytes!("../../../assets/icons/vector-shape.svg")),
     ("vertical-align-bottom", include_bytes!("../../../assets/icons/vertical-align-bottom.svg")),
     ("vertical-align-middle", include_bytes!("../../../assets/icons/vertical-align-middle.svg")),
     ("vertical-align-top", include_bytes!("../../../assets/icons/vertical-align-top.svg")),
@@ -190,4 +192,5 @@ pub static ICONS: &[(&str, &[u8])] = &[
     ("wand-sparkles", include_bytes!("../../../assets/icons/wand-sparkles.svg")),
     ("x", include_bytes!("../../../assets/icons/x.svg")),
     ("zoom-in", include_bytes!("../../../assets/icons/zoom-in.svg")),
+    ("zoom-out", include_bytes!("../../../assets/icons/zoom-out.svg")),
 ];

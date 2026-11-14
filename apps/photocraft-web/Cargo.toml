@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [features]
-# Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
+# Open HEIC/HEIF photos (the optional craft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]
 
@@ -40,4 +40,4 @@ web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlE
 [dev-dependencies]
 serde_json = { workspace = true }
 photocraft-paint = { workspace = true }
-photocraft-psd = { workspace = true }
+craft-psd = { workspace = true }

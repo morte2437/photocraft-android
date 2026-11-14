@@ -5,7 +5,7 @@ use egui_kittest::{Harness, kittest::Queryable};
 #[path = "zoom_menu_anchor_tests.rs"]
 mod zoom_menu_anchor_tests;
 
-fn app() -> PhotocraftApp {
+pub(super) fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
     app
@@ -23,12 +23,12 @@ fn work_path(app: &mut PhotocraftApp) {
     .unwrap();
 }
 
-fn choose_open(app: &mut PhotocraftApp, command: &str) {
+pub(super) fn choose_open(app: &mut PhotocraftApp, command: &str) {
     assert!(open(app, &Context::default(), Tool::Pen, [10.0, 10.0]));
     choose(app, &Context::default(), command);
 }
 
-fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
+pub(crate) fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
     app.sync_views();
     let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
@@ -45,7 +45,7 @@ fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn right_click(h: &mut Harness<'static, PhotocraftApp>, p: Pos2, modifiers: Modifiers) {
+pub(crate) fn right_click(h: &mut Harness<'static, PhotocraftApp>, p: Pos2, modifiers: Modifiers) {
     h.event(egui::Event::ModifiersChanged(modifiers));
     h.event(egui::Event::PointerMoved(p));
     h.run_steps(1);
@@ -213,7 +213,9 @@ fn type_layer_menu_targets_the_type_under_the_pointer() {
     assert!(open_at(&mut app, &ctx, Tool::Type, [10.0, 10.0], Some([16.0, 16.0])));
     assert_eq!(active(&app), Some(id));
     let menu = app.ui.canvas_tool_menu.clone().unwrap();
-    for edit_row in ["edit.undo", "edit.cut", "edit.copy", "edit.paste", "select.all", FAUX_BOLD, FAUX_ITALIC] {
+    // The text-edit rows belong to the edit menu only; the faux rows act on the whole layer
+    // here since #12043 (the new tests cover them).
+    for edit_row in ["edit.undo", "edit.cut", "edit.copy", "edit.paste", "select.all"] {
         assert!(!available(&app, &menu, edit_row), "{edit_row} belongs to the edit menu only");
     }
     assert!(entry_enabled(&app, &menu, "type.convertToParagraphText") && !entry_enabled(&app, &menu, "type.convertToPointText"));
@@ -385,7 +387,7 @@ fn transform_menu_follows_photoshop_order() {
     }
 }
 
-fn labels(rows: &[Row]) -> Vec<Option<&str>> {
+pub(super) fn labels(rows: &[Row]) -> Vec<Option<&str>> {
     rows.iter().map(|row| row.map(|(label, _)| label)).collect()
 }
 
@@ -524,7 +526,7 @@ fn zoom_app(w: u32, h: u32) -> PhotocraftApp {
     app
 }
 
-fn screen_of(app: &PhotocraftApp, doc: [f32; 2]) -> Pos2 {
+pub(super) fn screen_of(app: &PhotocraftApp, doc: [f32; 2]) -> Pos2 {
     crate::canvas::ViewXform::active(app).unwrap().to_screen(doc[0], doc[1])
 }
 

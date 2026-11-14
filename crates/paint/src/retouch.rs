@@ -161,6 +161,10 @@ pub fn over_native(fmt: &PixelFormat, dst: &mut [f32], src: &[f32], k: f32, lock
     match alpha_index(fmt) {
         Some(a) => {
             let (da, sa) = (dst[a], src[a] * k);
+            // Zero-weight source-over must preserve even the native float channel bits.
+            if sa <= 0.0 {
+                return;
+            }
             if lock_transparency {
                 // Alpha kept: source atop, the colour moves by the source alpha alone (#5783).
                 for c in 0..a {
@@ -235,6 +239,11 @@ pub fn apply_coverage(
         if blend == BlendMode::Normal {
             over_native(&fmt, px, src, k, lock_transparency);
         } else {
+            // A transparent source cannot paint. Skip it before an RGB round trip changes
+            // untouched native CMYK/Lab values; Normal handles zero weight in over_native.
+            if a.and_then(|a| src.get(a)).is_some_and(|alpha| *alpha <= 0.0) {
+                continue;
+            }
             let d = to_rgba(&fmt, px);
             let s = to_rgba(&fmt, src);
             let o =
@@ -253,7 +262,8 @@ pub fn apply_coverage(
 ///
 /// The working copy covers the stroke bounds grown by `halo` pixels so neighbourhood effects (blur,
 /// sharpen) can read around each dab; only the stroke bounds are written back. With
-/// `lock_transparency`, alpha is preserved. Returns the damaged rectangle.
+/// `lock_transparency`, alpha is preserved. Returns the damaged rectangle, or [`StrokeTooLarge`]
+/// when the working copy would not fit the budget (nothing is painted).
 pub fn apply_dab_stroke(
     target: &mut Surface,
     stroke: &Stroke,
@@ -261,21 +271,50 @@ pub fn apply_dab_stroke(
     lock_transparency: bool,
     halo: i32,
     mut effect: impl FnMut(&mut Region, &Footprint),
-) -> Rect {
+) -> Result<Rect, StrokeTooLarge> {
     let ds = dabs(stroke);
     if ds.is_empty() {
-        return Rect::EMPTY;
+        return Ok(Rect::EMPTY);
     }
     let ctx = crate::BrushContext::new(&stroke.brush);
     let bounds = ds.iter().fold(Rect::EMPTY, |r, d| r.union(&ctx.dab_rect(d, false)));
     let outer = Rect::new(bounds.x0 - halo, bounds.y0 - halo, bounds.x1 + halo, bounds.y1 + halo);
+    // The working copy is dense over the whole stroke rectangle, so two distant dabs ask for the
+    // area between them. Refuse before reading it.
+    if !fits_dab_stroke_budget(outer, target.channels()) {
+        return Err(StrokeTooLarge);
+    }
     let orig = Region::read(target, outer);
     let mut work = orig.clone();
     for (i, d) in ds.iter().enumerate() {
         effect(&mut work, &ctx.footprint(d, i));
     }
     mix_back(target, &orig, &work, bounds, stroke.brush.opacity, selection, lock_transparency);
-    bounds
+    Ok(bounds)
+}
+
+/// A sequential-dab stroke whose dense working copy would exceed the memory budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StrokeTooLarge;
+
+impl std::fmt::Display for StrokeTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stroke too large")
+    }
+}
+
+impl std::error::Error for StrokeTooLarge {}
+
+/// Bytes a sequential-dab stroke's dense buffers may take: the original and working copies over the
+/// grown stroke rectangle and the mixed result, `f32` samples.
+const MAX_DAB_STROKE_BYTES: u64 = if cfg!(target_pointer_width = "64") { 4 << 30 } else { 1 << 30 };
+
+/// Whether [`apply_dab_stroke`]'s three `channels`-deep planes over `outer` fit [`MAX_DAB_STROKE_BYTES`].
+fn fits_dab_stroke_budget(outer: Rect, channels: usize) -> bool {
+    (outer.width() as u64)
+        .checked_mul(outer.height() as u64)
+        .and_then(|px| px.checked_mul(channels as u64)?.checked_mul(3 * size_of::<f32>() as u64))
+        .is_some_and(|b| b <= MAX_DAB_STROKE_BYTES)
 }
 
 /// Mix a sequential-dab stroke's working pixels `work` back over the original `orig` at
@@ -354,6 +393,42 @@ pub struct Smudge {
     alpha: Option<usize>,
     /// Carried colour (premultiplied when `alpha` is set).
     carry: Option<Vec<f32>>,
+    /// Painting Mode (#12959): how the smudged colour replaces the pixel, see [`Smudge::with_mode`].
+    mode: BlendMode,
+    /// For a Mode other than Normal: the pixels as they were before the stroke first reached
+    /// them, in cells of [`ORIGIN_CELL`]² × (R, G, B, alpha); a NaN red marks a pixel not reached yet.
+    origin: std::collections::HashMap<(i32, i32), Vec<f32>>,
+}
+
+/// Side of the cells of [`Smudge`]'s pre-stroke pixels (dense cells, as a map lookup per pixel is slow).
+const ORIGIN_CELL: i32 = 64;
+
+/// Mix the carried colour `carried` (premultiplied when `alpha` is set) into `px` at `k`.
+#[inline]
+fn lay_down(px: &mut [f32], carried: &[f32], alpha: Option<usize>, k: f32) {
+    match alpha {
+        Some(a) => {
+            // Back to straight for the mix (premultiplied lerp towards the carried colour).
+            let ca = carried[a];
+            let mut buf = [0.0f32; 16];
+            let m = carried.len().min(buf.len());
+            buf[..m].copy_from_slice(&carried[..m]);
+            let src = &mut buf[..m];
+            if ca > 1e-6 {
+                for (c, v) in src.iter_mut().enumerate() {
+                    if c != a {
+                        *v /= ca;
+                    }
+                }
+            }
+            mix_premultiplied(px, src, a, k);
+        }
+        None => {
+            for (p, c) in px.iter_mut().zip(carried) {
+                *p += (*c - *p) * k;
+            }
+        }
+    }
 }
 
 impl Smudge {
@@ -364,12 +439,31 @@ impl Smudge {
     }
 
     pub fn new(strength: f32, finger: Option<Vec<f32>>, max_brush_size: f32) -> Self {
-        Self { strength: strength.clamp(0.0, 1.0), finger, radius: Self::sampling_radius(max_brush_size), alpha: None, carry: None }
+        Self {
+            strength: strength.clamp(0.0, 1.0),
+            finger,
+            radius: Self::sampling_radius(max_brush_size),
+            alpha: None,
+            carry: None,
+            mode: BlendMode::Normal,
+            origin: Default::default(),
+        }
     }
 
     /// Mix in premultiplied space using alpha channel `a` (the format's [`alpha_index`]).
     pub fn with_alpha(mut self, a: Option<usize>) -> Self {
         self.alpha = a;
+        self
+    }
+
+    /// The options bar's Mode (#12959). The smudged colour (the pixel mixed with the carried colour
+    /// at `strength`, as Normal writes it under a full tip) is blended with the pixel as it was
+    /// before the stroke, the way a paint colour would be, and laid down through the tip's
+    /// coverage: Darken keeps the darker of the two per channel, Hue takes the smudged colour's
+    /// hue with the original saturation and luminosity. The next dab picks up what was written.
+    /// For working copies whose first three channels are R, G, B; alpha is smudged as in Normal.
+    pub fn with_mode(mut self, mode: BlendMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -383,6 +477,8 @@ impl Smudge {
         let (cx, cy) = (fp.dab.center.x.floor() as i32, fp.dab.center.y.floor() as i32);
         let wr = work.rect;
         let alpha = self.alpha.filter(|a| *a < n);
+        let blend = (self.mode != BlendMode::Normal && (3..=16).contains(&n) && alpha.is_none_or(|a| a >= 3)).then_some(self.mode);
+        let mut cell: Option<((i32, i32), &mut Vec<f32>)> = None;
         let carry = self.carry.get_or_insert_with(|| {
             let mut c = vec![0.0f32; side * side * n];
             match &self.finger {
@@ -411,33 +507,43 @@ impl Smudge {
         // Lay down the carried colour.
         for y in fp.rect.y0.max(wr.y0)..fp.rect.y1.min(wr.y1) {
             for x in fp.rect.x0.max(wr.x0)..fp.rect.x1.min(wr.x1) {
-                let k = fp.at(x, y) * self.strength;
+                let cov = fp.at(x, y);
+                let k = cov * self.strength;
                 let (qx, qy) = (x - cx + r, y - cy + r);
                 if k <= 0.0 || qx < 0 || qy < 0 || qx >= side as i32 || qy >= side as i32 {
                     continue;
                 }
                 let q = (qy as usize * side + qx as usize) * n;
                 let px = work.px_mut(x, y);
+                let Some(mode) = blend else {
+                    lay_down(px, &carry[q..q + n], alpha, k);
+                    continue;
+                };
+                let key = (x.div_euclid(ORIGIN_CELL), y.div_euclid(ORIGIN_CELL));
+                if cell.as_ref().map(|c| c.0) != Some(key) {
+                    cell = Some((key, self.origin.entry(key).or_insert_with(|| vec![f32::NAN; (ORIGIN_CELL * ORIGIN_CELL * 4) as usize])));
+                }
+                let i = ((y.rem_euclid(ORIGIN_CELL) * ORIGIN_CELL + x.rem_euclid(ORIGIN_CELL)) * 4) as usize;
+                let Some(first) = cell.as_mut().and_then(|c| c.1.get_mut(i..i + 4)) else { continue };
+                if first[0].is_nan() {
+                    // First touch: the working pixel is still the one from before the stroke.
+                    first.copy_from_slice(&[px[0], px[1], px[2], alpha.map_or(1.0, |a| px[a])]);
+                }
+                let (backdrop, backdrop_alpha) = ([first[0], first[1], first[2]], first[3]);
+                let mut buf = [0.0f32; 16];
+                let smudged = &mut buf[..n];
+                smudged.copy_from_slice(px);
+                lay_down(smudged, &carry[q..q + n], alpha, self.strength);
+                // A transparent pixel has no colour to blend with: there the smudged colour stays.
+                let out = photocraft_color::blend::blend_rgb(mode, backdrop, [smudged[0], smudged[1], smudged[2]]);
+                for c in 0..3 {
+                    smudged[c] += (out[c] - smudged[c]) * backdrop_alpha;
+                }
                 match alpha {
-                    Some(a) => {
-                        // Back to straight for the mix (premultiplied lerp towards the carried colour).
-                        let ca = carry[q + a];
-                        let mut buf = [0.0f32; 16];
-                        let m = n.min(buf.len());
-                        buf[..m].copy_from_slice(&carry[q..q + m]);
-                        let src = &mut buf[..m];
-                        if ca > 1e-6 {
-                            for (c, v) in src.iter_mut().enumerate() {
-                                if c != a {
-                                    *v /= ca;
-                                }
-                            }
-                        }
-                        mix_premultiplied(px, src, a, k);
-                    }
+                    Some(a) => mix_premultiplied(px, smudged, a, cov),
                     None => {
                         for c in 0..n {
-                            px[c] += (carry[q + c] - px[c]) * k;
+                            px[c] += (smudged[c] - px[c]) * cov;
                         }
                     }
                 }
@@ -537,6 +643,38 @@ mod tests {
         }
     }
 
+    /// Missing source pixels must preserve native ink values even for non-Normal blend modes.
+    #[test]
+    fn transparent_retouch_source_preserves_native_channels_in_every_blend_mode() {
+        use photocraft_color::{ColorMode, SampleType};
+        for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            for mode in [ColorMode::Rgb, ColorMode::Grayscale, ColorMode::Cmyk, ColorMode::Lab] {
+                let fmt = PixelFormat::new(mode, sample, true);
+                for blend in std::iter::once(BlendMode::PassThrough).chain(BlendMode::layer_modes()) {
+                    let mut target = Surface::with_default(fmt, &vec![0.3; fmt.channels()]);
+                    let rect = Rect::new(0, 0, 2, 2);
+                    let before = target.read_region(rect);
+                    let paint = Region::new(rect, fmt.channels());
+                    apply_coverage(&mut target, rect, &[1.0; 4], 1.0, None, false, &paint, blend);
+                    assert_eq!(target.read_region(rect), before, "{fmt:?}, {blend:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_dab_stroke_between_distant_points_is_refused_before_reading() {
+        assert!(fits_dab_stroke_budget(Rect::new(0, 0, 4096, 4096), 4));
+        assert!(!fits_dab_stroke_budget(Rect::new(0, 0, 300_000, 300_000), 1));
+        assert!(!fits_dab_stroke_budget(Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX), usize::MAX));
+        // Two small dabs 40000 px apart on both axes: a 1.6 Gpx working rectangle.
+        let mut s = Surface::new(PixelFormat::GRAY8);
+        let st = stroke(&[(0.0, 0.0), (40_000.0, 40_000.0)], 6.0, 1.0);
+        let mut called = false;
+        assert_eq!(apply_dab_stroke(&mut s, &st, None, false, 2, |_, _| called = true), Err(StrokeTooLarge));
+        assert!(!called);
+    }
+
     #[test]
     fn dab_stroke_runs_sequentially_and_respects_selection() {
         let mut s = Surface::new(PixelFormat::GRAY8);
@@ -553,7 +691,8 @@ mod tests {
                     }
                 }
             }
-        });
+        })
+        .unwrap();
         assert!(seen.windows(2).all(|w| w[1] == w[0] + 1));
         assert!(s.pixel(20, 10)[0] > 0.1, "dabs accumulate");
         assert_eq!(s.pixel(40, 10)[0], 0.0, "outside the selection untouched");
@@ -567,7 +706,7 @@ mod tests {
             s.fill_rect(Rect::new(0, 0, 30, 40), &[1.0, 0.0, 0.0, 1.0]);
             let st = stroke(&[(20.0, 20.0), (70.0, 20.0)], 12.0, 1.0);
             let mut sm = Smudge::new(0.8, None, 12.0);
-            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp));
+            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp)).unwrap();
             // Red dragged to the right of the edge, fading with distance.
             let g = |x| s.pixel(x, 20)[1];
             assert!(g(35) < 0.5, "{fmt:?} {}", g(35));
@@ -577,7 +716,7 @@ mod tests {
             let mut s2 = Surface::new(fmt);
             s2.fill_rect(Rect::new(0, 0, 100, 40), &[1.0, 1.0, 1.0, 1.0]);
             let mut fg = Smudge::new(0.8, Some(vec![0.0, 0.0, 1.0, 1.0]), 12.0);
-            apply_dab_stroke(&mut s2, &st, None, false, 0, |w, fp| fg.dab(w, fp));
+            apply_dab_stroke(&mut s2, &st, None, false, 0, |w, fp| fg.dab(w, fp)).unwrap();
             assert!(s2.pixel(22, 20)[0] < 0.5);
         }
     }
@@ -590,7 +729,7 @@ mod tests {
             s.fill_rect(Rect::new(0, 0, 30, 40), &[1.0, 0.8, 0.0, 1.0]);
             let st = stroke(&[(20.0, 20.0), (70.0, 20.0)], 12.0, 0.5);
             let mut sm = Smudge::new(0.8, None, 12.0).with_alpha(Some(3));
-            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp));
+            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp)).unwrap();
             let mut smudged = 0;
             for x in 30..80 {
                 for y in 14..27 {
@@ -608,7 +747,7 @@ mod tests {
             let mut st = st.clone();
             st.brush.opacity = 0.5;
             let mut sm = Smudge::new(0.8, None, 12.0).with_alpha(Some(3));
-            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp));
+            apply_dab_stroke(&mut s, &st, None, false, 0, |w, fp| sm.dab(w, fp)).unwrap();
             let p = s.rgba(34, 20);
             assert!(p[3] > 0.02 && p[0] > 0.97, "{fmt:?}: {p:?}");
         }
@@ -627,7 +766,8 @@ mod tests {
             sm.dab(&mut empty, fp);
             assert!(empty.data.is_empty() && sm.carry.is_none(), "no carry is built for zero channels");
             calls += 1;
-        });
+        })
+        .unwrap();
         assert!(calls > 0);
     }
 
@@ -746,8 +886,8 @@ mod tests {
                     let mut b = a.clone();
                     let mut sm_a = Smudge::new(0.7, finger.clone(), 14.0).with_alpha(alpha);
                     let mut sm_b = sm_a.clone();
-                    apply_dab_stroke(&mut a, &st, None, false, 0, |w, fp| sm_a.dab(w, fp));
-                    apply_dab_stroke(&mut b, &st, None, false, 0, |w, fp| reference_dab(&mut sm_b, w, fp));
+                    apply_dab_stroke(&mut a, &st, None, false, 0, |w, fp| sm_a.dab(w, fp)).unwrap();
+                    apply_dab_stroke(&mut b, &st, None, false, 0, |w, fp| reference_dab(&mut sm_b, w, fp)).unwrap();
                     let rect = Rect::new(-20, -20, 120, 90);
                     assert_eq!(a.read_region(rect), b.read_region(rect), "{fmt:?} finger {} {path:?}", finger.is_some());
                     assert_eq!(sm_a.carry, sm_b.carry, "{fmt:?} carry");
@@ -784,7 +924,7 @@ mod tests {
                     }
                 }
             };
-            let bounds = apply_dab_stroke(&mut got, &st, Some(&sel), false, 0, effect);
+            let bounds = apply_dab_stroke(&mut got, &st, Some(&sel), false, 0, effect).unwrap();
             let orig = Region::read(&want, bounds);
             let mut work = orig.clone();
             let ctx = crate::BrushContext::new(&st.brush);

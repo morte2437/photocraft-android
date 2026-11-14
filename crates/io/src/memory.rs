@@ -54,7 +54,7 @@ pub const LOW_MEMORY_WARNING_MARGIN: u64 = 1 << 30;
 /// A layer plane, a decode buffer or a tile is one contiguous allocation, so each must fit this
 /// limit at the point it is allocated. An import's peak is the *sum* of many such buffers and
 /// may legitimately exceed this; decode paths enforce their own per-buffer limits
-/// (`photocraft-psd::MAX_DECODED_BYTES`, `photocraft-codecs`' `Limits::max_alloc`) there.
+/// (`craft-psd::MAX_DECODED_BYTES`, `photocraft-codecs`' `Limits::max_alloc`) there.
 pub const MAX_SINGLE_ALLOCATION: u64 = isize::MAX as u64;
 
 /// Architectural maximum linear memory of wasm32: 65,536 pages of 64 KiB (4 GiB).

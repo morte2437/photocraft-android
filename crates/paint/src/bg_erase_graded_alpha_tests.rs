@@ -43,7 +43,7 @@ fn swatch(tolerance_percent: f32, background: [f32; 4]) -> BgEraseSettings {
 fn one_click(fmt: PixelFormat, colour: [f32; 4], bs: &BgEraseSettings) -> i32 {
     let mut s = Surface::new(fmt);
     s.fill_rect(Rect::new(0, 0, 100, 100), &from_rgba(&fmt, colour));
-    apply_background_eraser(&mut s, &click((50.0, 50.0)), bs, None);
+    apply_background_eraser(&mut s, &click((50.0, 50.0)), bs, None).unwrap();
     (s.rgba(50, 50)[3] * 255.0).round() as i32
 }
 
@@ -121,7 +121,7 @@ fn a_blurred_edge_keeps_its_transition_graded() {
     for limits in [Limits::Contiguous, Limits::Discontiguous] {
         let mut t = s.clone();
         let bs = BgEraseSettings { sampling: Sampling::Once, limits, tolerance: 0.5, ..Default::default() };
-        apply_background_eraser(&mut t, &click((190.0, 70.0)), &bs, None);
+        apply_background_eraser(&mut t, &click((190.0, 70.0)), &bs, None).unwrap();
         for (i, want) in ALPHA.iter().enumerate() {
             let x = 185 + i as i32;
             let got = (t.rgba(x, 70)[3] * 255.0).round() as i32;

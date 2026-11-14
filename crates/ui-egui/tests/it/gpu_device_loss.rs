@@ -360,3 +360,70 @@ fn a_lost_window_device_closes_only_once_unsaved_work_is_saved() {
     assert_eq!(tries(), 3, "saved once, not again");
     assert_eq!(h.state().session.documents().len(), 1, "the document stays until the app closes");
 }
+
+/// Uploaded tiles retain their own placement when painted in the same view.
+#[test]
+fn tiled_canvas_keeps_tiles_in_place() {
+    use photocraft_ui_egui::gpu_canvas::ViewParams;
+    let tile_override = std::env::var("PHOTOCRAFT_GPU_TILE").ok().and_then(|v| v.parse::<u32>().ok());
+    if tile_override.is_some_and(|tile| tile > 64) {
+        eprintln!("skipping: PHOTOCRAFT_GPU_TILE must be at most 64 for this two-tile test");
+        return;
+    }
+    let _gpu = gpu_lock();
+    const N: u32 = 2;
+    const W: u32 = N * 64;
+    const H: u32 = 64;
+    let color = |tile: u32| if tile == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 255] };
+    let rgba: Vec<u8> = (0..W * H).flat_map(|i| color((i % W) / 64)).collect();
+    struct TileApp {
+        canvas: GpuCanvas,
+        params: ViewParams,
+    }
+    impl eframe::App for TileApp {
+        fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+            GpuCanvas::paint(ui.painter(), egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(W as f32, H as f32)), self.params);
+        }
+    }
+    let Ok(builder) = std::panic::catch_unwind(|| egui_kittest::Harness::builder().with_size(egui::vec2(W as f32, H as f32)).with_pixels_per_point(1.0).wgpu())
+    else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    let mut h = builder.build_eframe(|cc| {
+        let rs = cc.wgpu_render_state.as_ref().expect("render state");
+        let info = rs.adapter.get_info();
+        eprintln!("tiled canvas adapter {info:?}");
+        // Small tiles exercise the placement bindings without a large canvas.
+        let canvas = GpuCanvas::with_tile(rs, Some(64));
+        canvas.upload_full(1, [W, H], &rgba);
+        TileApp {
+            canvas,
+            params: ViewParams {
+                doc: 1,
+                doc_size: [W, H],
+                zoom: 1.0,
+                center: [W as f32 / 2.0, H as f32 / 2.0],
+                rotation: 0.0,
+                shadow: false,
+                pixel_grid: false,
+                view_key: 1,
+                display: 0,
+                output: 0,
+                hdr: None,
+                offset: [0.0; 2],
+            },
+        }
+    });
+    let (_, size, pixels) = h.state().canvas.read_texels(1).expect("uploaded pixels");
+    assert_eq!(size, [W, H]);
+    for tile in 0..N {
+        assert_eq!(pixels[(32 * W + tile * 64 + 32) as usize], color(tile).map(|v| f32::from(v) / 255.0), "upload tile {tile}");
+    }
+    h.run_steps(3);
+    let image = h.render().expect("canvas frame");
+    let actual: Vec<_> = (0..N).map(|tile| image.get_pixel(tile * 64 + 32, 32).0).collect();
+    let expected: Vec<_> = (0..N).map(color).collect();
+    assert_eq!(actual, expected, "each tile must retain its own screen placement");
+    assert!(h.state().canvas.health().is_ok());
+}

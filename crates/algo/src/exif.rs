@@ -30,9 +30,14 @@ impl CameraInfo {
     }
 }
 
+/// Text bytes decoded per EXIF read (real Make/Model/Lens/Date strings are a few dozen bytes).
+const MAX_TEXT_BYTES: usize = 1 << 20;
+
 struct Tiff<'a> {
     b: &'a [u8],
     le: bool,
+    /// Text bytes this read may still decode: duplicate tags can share one large blank value.
+    text_left: std::cell::Cell<usize>,
 }
 
 impl Tiff<'_> {
@@ -93,7 +98,9 @@ impl Tiff<'_> {
             return None;
         }
         let at = self.data_at(typ, count, field)?;
-        let s = self.b.get(at..at.checked_add(usize::try_from(count).ok()?)?)?;
+        let n = usize::try_from(count).ok()?;
+        self.text_left.set(self.text_left.get().checked_sub(n)?);
+        let s = self.b.get(at..at.checked_add(n)?)?;
         let s = String::from_utf8_lossy(s).trim_end_matches('\0').trim().to_string();
         (!s.is_empty()).then_some(s)
     }
@@ -111,7 +118,7 @@ pub fn read(exif: &[u8]) -> CameraInfo {
         Some([b'M', b'M', 0, 42]) => false,
         _ => return info,
     };
-    let t = Tiff { b, le };
+    let t = Tiff { b, le, text_left: std::cell::Cell::new(MAX_TEXT_BYTES) };
     let Some(ifd0) = t.u32(4) else { return info };
     let mut queue = vec![ifd0 as usize];
     let mut seen = Vec::new();
@@ -259,6 +266,31 @@ mod tests {
 
     /// Hostile payloads: huge counts, offsets near `u32::MAX`, self-referencing IFDs and random
     /// bytes read as `None` fields instead of panicking or overflowing (usize is 32 bits on wasm).
+    #[test]
+    fn blank_duplicate_text_tags_share_one_decode_budget() {
+        // Blank values never fill `make`, so every duplicate would decode the same 1 MiB again;
+        // the per-read budget stops after the first, so the later real value is not reached.
+        let blank = MAX_TEXT_BYTES;
+        let entry = |count: u32, off: u32| {
+            let mut e = Vec::new();
+            e.extend_from_slice(&0x010Fu16.to_le_bytes());
+            e.extend_from_slice(&2u16.to_le_bytes());
+            e.extend_from_slice(&count.to_le_bytes());
+            e.extend_from_slice(&off.to_le_bytes());
+            e
+        };
+        let mut b = b"II*\0".to_vec();
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&3u16.to_le_bytes());
+        b.extend(entry(blank as u32, 50));
+        b.extend(entry(blank as u32, 50));
+        b.extend(entry(2, u32::from_le_bytes(*b"M\0\0\0")));
+        b.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(b.len(), 50);
+        b.extend(std::iter::repeat_n(b' ', blank));
+        assert_eq!(read(&b).make, None);
+    }
+
     #[test]
     fn duplicate_text_tags_keep_the_first_value_without_copying_large_duplicates() {
         let value = vec![b'X'; 2 * 1024 * 1024];

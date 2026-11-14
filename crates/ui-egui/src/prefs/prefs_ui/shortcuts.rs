@@ -19,7 +19,14 @@ pub fn shortcut_items(app: &PhotocraftApp) -> Vec<(String, String, Vec<String>, 
     let tools_key = |id: &str| id.starts_with("tools.") || photocraft_engine::fill_key_cmds::IDS.contains(&id);
     let mut tools = Vec::new();
     let mut layer = Vec::new();
+    // The Mixer Brush's Load, Clean and switches have no default key but are listed together under
+    // Tools, as in the reference (#11959).
+    let mut mixer = Vec::new();
     for c in photocraft_engine::command_specs() {
+        if prefs::MIXER_BRUSH_COMMANDS.contains(&c.id) && seen.insert(c.id.to_string()) {
+            mixer.push((c.id.to_string(), c.label.to_string(), vec!["Tools".to_string()], c.shortcut.map(Into::into)));
+            continue;
+        }
         if seen.insert(c.id.to_string()) && c.shortcut.is_some() {
             let item = (c.id.to_string(), c.label.to_string(), c.menu.iter().map(|s| s.to_string()).collect::<Vec<_>>(), c.shortcut.map(Into::into));
             if c.menu.is_empty() && tools_key(c.id) {
@@ -36,6 +43,8 @@ pub fn shortcut_items(app: &PhotocraftApp) -> Vec<(String, String, Vec<String>, 
     let at = out.iter().rposition(|i| i.2.first().map(String::as_str) == Some("Layer")).map_or(out.len(), |i| i + 1);
     out.splice(at..at, layer);
     out.extend(tools);
+    mixer.sort_by_key(|item| prefs::MIXER_BRUSH_COMMANDS.iter().position(|id| *id == item.0));
+    out.extend(mixer);
     out.extend(
         crate::state::Tool::ALL
             .into_iter()
@@ -62,6 +71,14 @@ fn conflict_state(overrides: &BTreeMap<String, String>, alternates: &BTreeMap<St
 /// notation, where `Cmd` is Ctrl off the Mac.
 pub fn reserved_shortcut(sc: &str) -> bool {
     prefs::reserved_shortcut(sc)
+}
+
+/// Is a shortcut field in the front dialog (Edit › Keyboard Shortcuts) waiting for keys? Then
+/// the key pressed is the shortcut to record, so nothing else may take it first (#8965): not the
+/// dialog's own ⌘Z (#9487), the view keys that work under dialogs (⌘0, ⌘+…), or the macOS menu
+/// bar, which swallows the key equivalent of a disabled item.
+pub(crate) fn capturing_shortcut(app: &PhotocraftApp) -> bool {
+    app.ui.dialogs.last().is_some_and(|d| d.kind == crate::state::DialogKind::Command && d.fields.get("capture").and_then(Value::as_bool) == Some(true))
 }
 
 /// Text of a key press for the shortcut editor (`Cmd+Shift+K`), `None` for bare modifiers.

@@ -32,7 +32,7 @@ fn live_brush_texture_includes_this_frames_press_and_moves() {
             let app = h.state_mut();
             let live = app.live_stroke.as_ref().expect("painting starts on press");
             let key = live.display_key();
-            let doc = live.stroke.doc().clone();
+            let doc = live.doc().clone();
             let (_, display) = canvas_display(app, &doc, None);
             assert_eq!(app.canvases.values().next().unwrap().tex_preview_key, key ^ display, "{tool:?}: texture includes this frame's input");
         };

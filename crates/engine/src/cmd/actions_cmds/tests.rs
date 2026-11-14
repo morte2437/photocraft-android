@@ -395,6 +395,23 @@ fn recording_folds_one_run_of_move_tool_nudges() {
     assert_eq!(steps, &[("layer.translate".into(), json!({"dx": 3.0, "dy": 10.0})), ("layer.translate".into(), json!({"dx": 0.0, "dy": 1.0}))]);
 }
 
+/// Pattern Preview nudges fold when `wrap` matches, and stay separate when it does not.
+#[test]
+fn recording_folds_wrapped_move_tool_nudges() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 24, "height": 24, "background": "transparent"})).unwrap();
+    s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
+    s.execute("actions.record", json!({"name": "Nudge"})).unwrap();
+    for (dx, wrap, run) in [(1, true, "nudge:1"), (2, true, "nudge:1"), (1, false, "nudge:1")] {
+        s.execute("layer.translate", json!({"dx": dx, "dy": 0, "wrap": wrap, "coalesce": run})).unwrap();
+    }
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(
+        s.actions.list[0].steps,
+        [("layer.translate".into(), json!({"dx": 3.0, "dy": 0.0, "wrap": true})), ("layer.translate".into(), json!({"dx": 1.0, "dy": 0.0, "wrap": false}))]
+    );
+}
+
 /// Each nudge moves by whole pixels, so two 0.6 px steps fold into the 2 px they moved, not 1.2.
 #[test]
 fn folded_nudges_add_whole_pixel_steps() {
@@ -996,6 +1013,7 @@ fn play_refuses_recursion() {
 
 #[test]
 fn play_checks_each_step_with_the_authorize_hook() {
+    /// The automation policy these tests stand in for: every `file.` command is refused.
     fn deny_file(id: &str, _: &Value) -> Result<()> {
         if id.starts_with("file.") { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
     }
@@ -1013,6 +1031,101 @@ fn play_checks_each_step_with_the_authorize_hook() {
     assert_eq!(r["failed"]["id"], "file.open");
     assert!(r["failed"]["error"].as_str().unwrap().contains("disabled"), "{r}");
     assert!(s.documents().is_empty(), "the refused step does not open a document");
+}
+
+/// An action automation loads or edits keeps automation's gate when the user plays it (its
+/// key, the panel), so a client confined to its roots can't plant file steps that later run
+/// with the user's access. The user's own actions, and sets the user loads, run as before.
+#[test]
+fn actions_automation_wrote_keep_its_gate_when_the_user_plays_them() {
+    /// The automation policy these tests stand in for: every `file.` command is refused.
+    fn deny_file(id: &str, _: &Value) -> Result<()> {
+        if id.starts_with("file.") { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+    }
+    let open = || ("file.openAs".to_string(), json!({"path": "/outside/secret.png"}));
+    let mut s = Session::new();
+    s.automation_gate = Some(deny_file);
+    s.actions.list.push(Action::new("Mine", vec![open()]));
+    s.actions.list.push(Action::new("Edited", vec![("layer.new.layer".into(), json!({}))]));
+    let (atn, _) = crate::atn_cmds::export("Set", &[&Action::new("Planted", vec![open()])], &[], false).unwrap();
+    let data = photocraft_paint::tile::b64_encode(&atn);
+
+    // An automation client loads a set and inserts a step into an existing action.
+    s.authorize = Some(deny_file);
+    s.execute("actions.load", json!({"data": data})).unwrap();
+    s.execute("actions.insert", json!({"action": "Edited", "id": "file.openAs", "params": {"path": "/outside/secret.png"}, "at": 0})).unwrap();
+    s.authorize = None;
+    assert!(!s.actions.list[0].automation, "the user's own action is not marked");
+
+    for name in ["Planted", "Edited"] {
+        let r = s.execute("actions.play", json!({"action": name})).unwrap();
+        assert_eq!(r["failed"]["id"], "file.openAs", "{name}: {r}");
+        assert!(r["failed"]["error"].as_str().unwrap().contains("disabled"), "{name}: {r}");
+        assert!(s.authorize.is_none(), "{name}: the kept gate is removed after playback");
+    }
+    // Nested: the user's action calling a planted one still meets the gate.
+    s.actions.list.push(Action::new("Caller", vec![("actions.play".into(), json!({"action": "Planted"}))]));
+    let r = s.execute("actions.play", json!({"action": "Caller"})).unwrap();
+    assert!(r["failed"]["error"].as_str().unwrap().contains("disabled"), "{r}");
+
+    // The user's own action runs with the user's access (the file is missing, not refused).
+    let r = s.execute("actions.play", json!({"action": "Mine"})).unwrap();
+    assert!(!r["failed"]["error"].as_str().unwrap().contains("disabled"), "{r}");
+    // A set the user loads is theirs.
+    s.execute("actions.load", json!({"data": data, "set": "Loaded by the user"})).unwrap();
+    assert!(!s.actions.list.last().unwrap().automation);
+}
+
+/// A step a control client runs while the user records (a `file.` command, or a call to an
+/// action) marks the recorded action as automation's, so it keeps automation's gate when the user
+/// plays it later. The user's own recording, with no gate installed, stays the user's.
+#[test]
+fn a_step_automation_runs_into_the_users_recording_keeps_its_gate() {
+    /// The automation policy these tests stand in for: every `file.` command is refused.
+    fn deny_file(id: &str, _: &Value) -> Result<()> {
+        if id.starts_with("file.") { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+    }
+    /// The gate a control client's request runs under: its policy admitted this step (say, a file
+    /// inside its roots), so the step runs and is journaled into the recording.
+    fn admit(_: &str, _: &Value) -> Result<()> {
+        Ok(())
+    }
+    let mut s = Session::new();
+    s.automation_gate = Some(deny_file);
+    // The user records an action of their own: it is not marked.
+    s.execute("actions.record", json!({"name": "Mine"})).unwrap();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(!s.actions.list[0].automation, "the user's own recording is not marked");
+
+    // The user records again; a control client runs a `file.` command meanwhile.
+    s.execute("actions.record", json!({"name": "Shared"})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s.authorize = Some(admit);
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.authorize = None;
+    s.execute("actions.stop", json!({})).unwrap();
+    let shared = &s.actions.list[1];
+    assert!(shared.steps.iter().any(|(id, _)| id == "file.new"), "the client's step is recorded: {:?}", shared.steps);
+    assert!(shared.automation, "a step the client ran marks the recorded action");
+    // Played ungated (the user's key or the panel), the client's step meets automation's gate.
+    let r = s.execute("actions.play", json!({"action": "Shared"})).unwrap();
+    assert_eq!(r["failed"]["id"], "file.new", "{r}");
+    assert!(r["failed"]["error"].as_str().unwrap().contains("disabled"), "{r}");
+    assert!(s.authorize.is_none(), "the kept gate is removed after playback");
+    // The user's own action still runs with the user's access.
+    let r = s.execute("actions.play", json!({"action": "Mine"})).unwrap();
+    assert!(r.get("failed").is_none(), "{r}");
+
+    // A call to an action the client plays into the user's recording marks it too.
+    s.execute("actions.record", json!({"name": "Caller"})).unwrap();
+    s.authorize = Some(admit);
+    s.execute("actions.play", json!({"action": "Mine"})).unwrap();
+    s.authorize = None;
+    s.execute("actions.stop", json!({})).unwrap();
+    let caller = &s.actions.list[2];
+    assert_eq!(caller.steps.first().map(|(id, _)| id.as_str()), Some("actions.play"), "{:?}", caller.steps);
+    assert!(caller.automation, "a call the client played marks the recorded action");
 }
 
 #[test]
@@ -1486,6 +1599,18 @@ fn record_keeps_an_empty_loaded_sets_exact_name() {
     assert_eq!(set.as_deref(), Some(" Web "));
     assert_eq!(crate::actions_edit_cmds::set_names(&s), [" Web "], "one folder, not a trimmed second one");
     assert_eq!(s.execute("actions.save", json!({"set": " Web "})).unwrap()["actions"], json!(["First"]));
+}
+
+#[test]
+fn skipped_steps_count_against_the_script_limit() {
+    let mut s = Session::new();
+    s.actions.list.push(Action::new("A", (0..3).map(|_| ("select.all".to_string(), json!({}))).collect()));
+    s.actions.script_depth = 1;
+    s.actions.script_steps = crate::automate_cmds::MAX_SCRIPT_STEPS - 1;
+    let e = s.execute("actions.play", json!({"action": "A", "from": 3})).err().map(|e| e.to_string());
+    assert!(e.is_some_and(|e| e.contains("the script ran more than")));
+    assert_eq!(s.actions.playing, 0);
+    assert!(s.action_history.is_none(), "a rejected call leaves no history scope open");
 }
 
 /// A droplet capturing two actions of one name (sets A and B) keeps each call on the action it

@@ -33,7 +33,7 @@ fn click(s: &mut Surface, mode: ReplaceMode, x: f64) {
         points: vec![StrokePoint::new(x, 50.0, 1.0)],
     };
     let rs = ReplaceSettings { mode, color: BLUE, ..Default::default() };
-    apply_color_replacement(s, &stroke, &rs, None, false);
+    apply_color_replacement(s, &stroke, &rs, None, false).unwrap();
 }
 
 /// The stored L (0..100) and a, b (-128..127) at a pixel.

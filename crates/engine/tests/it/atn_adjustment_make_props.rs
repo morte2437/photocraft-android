@@ -1,9 +1,9 @@
 //! #8384: an adjustment layer's Make step keeps the new layer's name (`Nm  `), blend mode
 //! (`Md  `) and clipping (`Grup`) on load, playback and save.
+use craft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
+use craft_psd::descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value as D};
 use photocraft_doc::{BlendMode, LayerContent};
 use photocraft_engine::{Session, actions_cmds::Action, atn_cmds};
-use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
-use photocraft_psd::descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value as D};
 use serde_json::{Value, json};
 
 const NAME: &str = "Independent named adjustment";

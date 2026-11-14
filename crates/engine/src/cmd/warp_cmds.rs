@@ -9,7 +9,7 @@
 //! what the Free Transform warp UI uses) or the active smart object's stored warp (a history step).
 
 use photocraft_algo::transform::{Homography, Interp};
-use photocraft_algo::warp::{warp_mesh_gray, warp_mesh_surface_with};
+use photocraft_algo::warp::{Fold, warp_mesh_gray_with, warp_mesh_surface_with};
 use photocraft_doc::{Document, Layer, LayerContent, LayerId, Locks, Rect};
 use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
 use photocraft_raster::{Interrupt, Surface};
@@ -252,10 +252,10 @@ fn warp_layer(
             sm.warp = src_warp.filter(|w| !w.is_identity());
             // Fallback appearance for sources that can't be re-rendered.
             if let Some(c) = &mut sm.cache {
-                *c = warp_mesh_surface_with(c, rect, &map, interp, ctl).ok_or(EngineError::Cancelled)?;
+                *c = warp_mesh_surface_with(c, rect, &map, Fold::IN_PLACE, interp, ctl).ok_or(EngineError::Cancelled)?;
             }
             if let Some(m) = &mut sm.filter_mask {
-                m.surface = warp_mesh_gray(&m.surface, &map, interp);
+                m.surface = warp_mesh_gray_with(&m.surface, &map, Fold::IN_PLACE, interp);
             }
         }
         _ => {
@@ -263,7 +263,7 @@ fn warp_layer(
                 *surf = match doc_sel {
                     Some(sel) => {
                         let (lifted, mut rest) = crate::transform_cmds::split_selected(surf, sel)?;
-                        let moved = warp_mesh_surface_with(&lifted, rect, &map, interp, ctl).ok_or(EngineError::Cancelled)?;
+                        let moved = warp_mesh_surface_with(&lifted, rect, &map, Fold::IN_PLACE, interp, ctl).ok_or(EngineError::Cancelled)?;
                         cancelled(ctl)?;
                         crate::transform_cmds::composite_over(&mut rest, &moved);
                         rest.prune();
@@ -272,7 +272,7 @@ fn warp_layer(
                     None => {
                         // Content outside the warp box stays where it is.
                         let fmt = surf.format();
-                        let warped = warp_mesh_surface_with(surf, rect, &map, interp, ctl).ok_or(EngineError::Cancelled)?;
+                        let warped = warp_mesh_surface_with(surf, rect, &map, Fold::IN_PLACE, interp, ctl).ok_or(EngineError::Cancelled)?;
                         cancelled(ctl)?;
                         // Tiles are shared, so a surface that has alpha already costs nothing to copy.
                         let mut rest = if fmt.alpha { surf.clone() } else { surf.convert(photocraft_color::PixelFormat::new(fmt.mode, fmt.sample, true)) };
@@ -294,12 +294,13 @@ fn warp_layer(
     if let Some(m) = l.mask.as_mut()
         && m.linked
     {
-        let whole = |m: &Surface| Ok(warp_mesh_gray(m, &map, interp));
+        // The mask follows the pixels, the part on top of a fold included.
+        let whole = |m: &Surface| Ok(warp_mesh_gray_with(m, &map, Fold::IN_PLACE, interp));
         m.surface = match mask_sel {
             Some(sel) => crate::transform_cmds::move_gray_selected(
                 &m.surface,
                 sel,
-                &|lifted, src| warp_mesh_surface_with(lifted, src, &map, interp, ctl).ok_or(EngineError::Cancelled),
+                &|lifted, src| warp_mesh_surface_with(lifted, src, &map, Fold::IN_PLACE, interp, ctl).ok_or(EngineError::Cancelled),
                 &whole,
             )?,
             None => whole(&m.surface)?,
@@ -494,7 +495,7 @@ fn warp_doc(doc: &mut Document, id: LayerId, w: &Warp, rect: Rect, interp: Inter
         crate::transform_cmds::refresh_text(&snapshot, l);
     }
     if let Some(sel) = &doc.selection {
-        doc.selection = Some(warp_mesh_gray(sel, &|x, y| w.map(x, y), Interp::Bilinear)).filter(|s| !s.content_bounds().is_empty());
+        doc.selection = Some(warp_mesh_gray_with(sel, &|x, y| w.map(x, y), Fold::IN_PLACE, Interp::Bilinear)).filter(|s| !s.content_bounds().is_empty());
     }
     Ok(())
 }
@@ -508,19 +509,24 @@ pub enum Split {
 }
 
 /// The default warp draws rule-of-thirds guides on its single patch. Make those real sections
-/// before a split, so the cut divides the grid on screen instead of replacing it.
-fn commit_default_sections(mesh: &mut BezierMesh) {
-    let _ = mesh.split_u(1.0 / 3.0);
-    let _ = mesh.split_u(2.0 / 3.0);
-    let _ = mesh.split_v(1.0 / 3.0);
-    let _ = mesh.split_v(2.0 / 3.0);
+/// before a split, so the cut divides the grid on screen instead of replacing it. A one-way split
+/// keeps only the thirds across its line and drops the ones it replaces (#12495).
+fn commit_default_sections(mesh: &mut BezierMesh, how: Split) {
+    if !matches!(how, Split::Vertical) {
+        let _ = mesh.split_u(1.0 / 3.0);
+        let _ = mesh.split_u(2.0 / 3.0);
+    }
+    if !matches!(how, Split::Horizontal) {
+        let _ = mesh.split_v(1.0 / 3.0);
+        let _ = mesh.split_v(2.0 / 3.0);
+    }
 }
 
 /// Applies a split (or removes the split nearest `at`) on `w`'s mesh (presets become custom).
 pub fn split_warp(w: &Warp, at: Option<[f64; 2]>, how: Split) -> Option<Warp> {
     let mut mesh = w.to_mesh(1, 1);
     if !matches!(how, Split::Remove) && w.style == WarpStyle::Custom && mesh.us.len() == 2 && mesh.vs.len() == 2 {
-        commit_default_sections(&mut mesh);
+        commit_default_sections(&mut mesh, how);
     }
     let (s, t) = match at {
         Some(p) => mesh.param_at(p),
@@ -554,7 +560,40 @@ pub fn split_warp(w: &Warp, at: Option<[f64; 2]>, how: Split) -> Option<Warp> {
             }
         }
     };
+    if ok && matches!(how, Split::Remove) {
+        restore_default_grid(&mut mesh);
+    }
     ok.then(|| Warp::custom(mesh, w.bounds))
+}
+
+/// After a split is removed: when what is left is the Default grid's thirds that a one-way split
+/// made real (`commit_default_sections`) and nothing else, merge them back into the Default grid's
+/// one patch, which draws them as guides again (#12912). Only when that loses nothing: splitting
+/// the merged patch at the thirds must give back the same points, so thirds whose anchors or
+/// handles were moved, or any other grid, stay as they are. The mesh doesn't record where its
+/// sections came from, so a straight 3 x 1 (or 1 x 3) grid at exactly the thirds made another way
+/// merges too; nothing is lost, as the Default grid draws the same lines as guides.
+fn restore_default_grid(mesh: &mut BezierMesh) {
+    const THIRDS: [f64; 4] = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+    let is = |k: &[f64], want: &[f64]| k.len() == want.len() && k.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9);
+    let columns = is(&mesh.us, &THIRDS) && is(&mesh.vs, &[0.0, 1.0]);
+    let rows = is(&mesh.vs, &THIRDS) && is(&mesh.us, &[0.0, 1.0]);
+    if !(columns || rows) {
+        return;
+    }
+    let mut merged = mesh.clone();
+    let removed = if columns { merged.remove_split_u(2) && merged.remove_split_u(1) } else { merged.remove_split_v(2) && merged.remove_split_v(1) };
+    if !removed {
+        return;
+    }
+    let mut again = merged.clone();
+    let split = if columns { again.split_u(1.0 / 3.0) && again.split_u(2.0 / 3.0) } else { again.split_v(1.0 / 3.0) && again.split_v(2.0 / 3.0) };
+    let same = split
+        && again.points.len() == mesh.points.len()
+        && again.points.iter().zip(&mesh.points).all(|(a, b)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    if same {
+        *mesh = merged;
+    }
 }
 
 fn param_rect(p: &Value) -> [f64; 4] {
@@ -751,3 +790,11 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "warp_split_default_grid_tests.rs"]
+mod warp_split_default_grid_tests;
+
+#[cfg(test)]
+#[path = "warp_remove_split_default_grid_tests.rs"]
+mod warp_remove_split_default_grid_tests;

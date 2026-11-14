@@ -11,7 +11,7 @@
 //!
 //! Script fallback: the manifest's `scripts` field says which scripts a font is for. The first
 //! served family listed for a script the bundled fonts don't cover (Arabic, Hebrew, Devanagari,
-//! Thai, Khmer, Lao, Burmese, Japanese, Chinese, Korean) is that script's fallback: text in that script asks for it
+//! Thai, Khmer, Lao, Burmese, Georgian, Japanese, Chinese, Korean) is that script's fallback: text in that script asks for it
 //! ([`request_for_text`], from layout), the font database puts it in the fallback stack once it
 //! arrives, and the web shell asks up front for the scripts of the browser's languages
 //! ([`request_for_languages`]). The manifest's SHA-256 becomes the fetch's Subresource Integrity
@@ -98,7 +98,7 @@ pub fn is_relative_path(p: &str) -> bool {
 
 /// The scripts a served font can be the fallback for: those the bundled fonts (Inter, which covers
 /// Latin, Greek and Cyrillic) lack, as ISO 15924 codes.
-const FALLBACK_SCRIPTS: &[&str] = &["Arab", "Hebr", "Deva", "Thai", "Khmr", "Laoo", "Mymr", "Jpan", "Hans", "Hant", "Kore"];
+const FALLBACK_SCRIPTS: &[&str] = &["Arab", "Hebr", "Deva", "Thai", "Khmr", "Laoo", "Mymr", "Geor", "Jpan", "Hans", "Hant", "Kore"];
 
 /// The script fallbacks in `fonts`: for each script in [`FALLBACK_SCRIPTS`], the first family in
 /// manifest order that lists it, as `(script, family)` in order of first appearance.
@@ -134,6 +134,7 @@ pub fn script_of(c: char, order: &[crate::cjk::CjkScript; 4]) -> Option<&'static
         0x1780..=0x17FF | 0x19E0..=0x19FF => "Khmr",
         0x0E80..=0x0EFF => "Laoo",
         0x1000..=0x109F | 0xA9E0..=0xA9FF | 0xAA60..=0xAA7F => "Mymr",
+        0x10A0..=0x10FF | 0x1C90..=0x1CBF | 0x2D00..=0x2D2F => "Geor",
         _ => return None,
     })
 }
@@ -152,6 +153,7 @@ pub fn language_script(tag: &str) -> Option<&'static str> {
         "km" => "Khmr",
         "lo" => "Laoo",
         "my" => "Mymr",
+        "ka" => "Geor",
         "ja" => "Jpan",
         "ko" => "Kore",
         "zh" if rest.iter().any(|r| matches!(*r, "hant" | "tw" | "hk" | "mo")) => "Hant",
@@ -474,6 +476,7 @@ mod tests {
             ('ລ', Some("Laoo")),
             ('မ', Some("Mymr")),
             ('ၡ', Some("Mymr")),
+            ('ა', Some("Geor")),
             ('あ', Some("Jpan")),
             ('한', Some("Kore")),
         ] {
@@ -496,6 +499,7 @@ mod tests {
             ("km-KH", Some("Khmr")),
             ("lo", Some("Laoo")),
             ("my-MM", Some("Mymr")),
+            ("ka-GE", Some("Geor")),
             ("ja-JP", Some("Jpan")),
             ("zh-CN", Some("Hans")),
             ("zh-TW", Some("Hant")),

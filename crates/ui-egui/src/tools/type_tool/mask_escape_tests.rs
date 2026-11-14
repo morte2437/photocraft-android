@@ -55,7 +55,7 @@ fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
     egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
 }
 
-fn escape(app: PhotocraftApp) -> PhotocraftApp {
+pub(super) fn escape(app: PhotocraftApp) -> PhotocraftApp {
     send(app, vec![key(egui::Key::Escape, egui::Modifiers::NONE)])
 }
 

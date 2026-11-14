@@ -127,7 +127,7 @@ const TRACKING_PRESETS: [&[f32]; 3] = [&[-100.0, -75.0, -50.0, -25.0, -10.0, -5.
 /// What a [`metric_field`] produced: a typed value in the display unit, a preset in the model's
 /// unit (points; converting it through the display unit and back would store 12.000001), or Auto.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum MetricChoice {
+pub(super) enum MetricChoice {
     Typed(f32),
     Preset(f32),
     Auto,
@@ -165,7 +165,6 @@ fn metric_field(
         if let Some(v) = num_field(ui, label, tip, value, range, unit, (width - combo_w).max(24.0)) {
             chosen = Some(MetricChoice::Typed(v));
         }
-        let near = |p: f32| (p * u - value).abs() <= 1e-4 * value.abs().max(1.0);
         let (press, close) = crate::press_menu::PressCombo::before(ui, menu);
         let combo = craft_ui::ComboBox::from_id_salt(menu)
             .selected_text("")
@@ -174,28 +173,55 @@ fn metric_field(
             .icon(crate::widgets::chevron_icon)
             .close_behavior(close)
             .show_ui(ui, |ui| {
-                if let Some(on) = auto {
-                    let item = ui.selectable_label(on, tl!("Auto"));
-                    if press.chosen(ui, &item) {
-                        chosen = Some(MetricChoice::Auto);
-                    }
-                }
-                for (i, group) in presets.iter().enumerate() {
-                    if i > 0 {
-                        ui.separator();
-                    }
-                    for &p in *group {
-                        let item = ui.selectable_label(auto != Some(true) && near(p), preset_label(p * u, unit));
-                        if press.chosen(ui, &item) {
-                            chosen = Some(MetricChoice::Preset(p));
-                        }
-                    }
+                if let Some(choice) = preset_items(ui, value, (u, unit), presets, auto, false, |ui, item| press.chosen(ui, item)) {
+                    chosen = Some(choice);
                 }
             });
         press.after(&combo.response);
         combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, ui.is_enabled(), tl!(menu)));
     });
     chosen
+}
+
+/// The rows of a list of presets for a number field. `value` is the field's value in the display
+/// unit; `presets`, `u`, `unit` and `auto` are as in [`metric_field`]; `chosen` says whether a row
+/// was chosen this frame. With `show_current`, a value that is none of the presets heads the list,
+/// marked, above a separator (the options bar's font size, #12052).
+pub(super) fn preset_items(
+    ui: &mut egui::Ui,
+    value: f32,
+    (u, unit): (f32, &str),
+    presets: &[&[f32]],
+    auto: Option<bool>,
+    show_current: bool,
+    chosen: impl Fn(&egui::Ui, &egui::Response) -> bool,
+) -> Option<MetricChoice> {
+    let near = |p: f32| (p * u - value).abs() <= 1e-4 * value.abs().max(1.0);
+    let mut out = None;
+    if show_current && !presets.iter().flat_map(|group| group.iter()).any(|&p| near(p)) {
+        // Already the value: choosing it closes the list and changes nothing.
+        let item = ui.selectable_label(true, preset_label(value, unit));
+        chosen(ui, &item);
+        ui.separator();
+    }
+    if let Some(on) = auto {
+        let item = ui.selectable_label(on, tl!("Auto"));
+        if chosen(ui, &item) {
+            out = Some(MetricChoice::Auto);
+        }
+    }
+    for (i, group) in presets.iter().enumerate() {
+        if i > 0 {
+            ui.separator();
+        }
+        for &p in *group {
+            let item = ui.selectable_label(auto != Some(true) && near(p), preset_label(p * u, unit));
+            if chosen(ui, &item) {
+                out = Some(MetricChoice::Preset(p));
+            }
+        }
+    }
+    out
 }
 
 /// Properties panel sections for a type layer: Character, Paragraph and Type Options (#155).

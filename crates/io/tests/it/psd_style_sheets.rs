@@ -5,9 +5,9 @@
 //! Reading only the Normal sheets left a centred paragraph style read as Left, so starting an
 //! edit re-laid the text out half a line to the side.
 
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use photocraft_doc::text::TextAlign;
 use photocraft_geom::Affine;
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use photocraft_text::engine_data::Value as E;
 use photocraft_text::psd::{TySh, text_layer_from_tysh, write_tysh};
 

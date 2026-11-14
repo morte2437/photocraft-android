@@ -10,7 +10,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::builder::NonEmptyStringValueParser;
+use clap::builder::{NonEmptyStringValueParser, OsStringValueParser, TypedValueParser};
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::parser::ValueSource;
 use clap::{Arg, ArgMatches, Args, Command};
@@ -34,18 +34,22 @@ pub struct ControlArgs {
 /// `photocraft-cli` access (#1551); the desktop app adds its own.
 #[derive(Args)]
 pub struct AutomationArgs {
-    /// The folder automation may read from (none without it)
-    #[arg(long, value_name = "DIR")]
-    pub automation_read_root: Option<PathBuf>,
+    /// Ordered folders automation may read from; repeat for more roots (none without it)
+    #[arg(long, value_name = "DIR", value_parser = root_path())]
+    pub automation_read_root: Vec<PathBuf>,
     /// The folder automation may write to (none without it)
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", value_parser = root_path())]
     pub automation_write_root: Option<PathBuf>,
+}
+
+fn root_path() -> impl TypedValueParser<Value = PathBuf> {
+    OsStringValueParser::new().try_map(|value: OsString| if value.is_empty() { Err("root needs a non-empty directory") } else { Ok(PathBuf::from(value)) })
 }
 
 impl AutomationArgs {
     /// The roots, opened as capabilities.
     pub fn workspace(&self) -> Result<AuthorizedWorkspace, AutomationError> {
-        AuthorizedWorkspace::new(self.automation_read_root.as_deref(), self.automation_write_root.as_deref())
+        AuthorizedWorkspace::with_read_roots(self.automation_read_root.iter().map(PathBuf::as_path), self.automation_write_root.as_deref())
     }
 }
 
@@ -119,5 +123,41 @@ mod tests {
         for bad in ["78787", "-1", "", "x"] {
             assert_eq!(control_port(bad), Err(NotAPort), "{bad:?}");
         }
+    }
+
+    #[derive(clap::Parser)]
+    struct RootCli {
+        #[command(flatten)]
+        automation: AutomationArgs,
+    }
+
+    #[test]
+    fn repeated_read_roots_preserve_order_and_write_roots_stay_single() {
+        use clap::Parser;
+        let parsed = RootCli::try_parse_from(["test", "--automation-read-root", "first", "--automation-read-root=second"]).unwrap();
+        assert_eq!(parsed.automation.automation_read_root, vec![PathBuf::from("first"), PathBuf::from("second")]);
+        for args in [
+            vec!["test", "--automation-write-root", "one", "--automation-write-root=two"],
+            vec!["test", "--automation-write-root=one", "--automation-write-root", "one"],
+            vec!["test", "--automation-read-root="],
+            vec!["test", "--automation-read-root", "--automation-write-root=work"],
+            vec!["test", "--automation-write-root="],
+        ] {
+            assert!(RootCli::try_parse_from(args.clone()).is_err(), "accepted {args:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_root_paths_are_preserved_without_lossy_conversion() {
+        use clap::Parser;
+        use std::os::unix::ffi::OsStringExt;
+        let value = OsString::from_vec(b"library-\xff".to_vec());
+        let parsed = RootCli::try_parse_from([OsString::from("test"), OsString::from("--automation-read-root"), value.clone()]).unwrap();
+        assert_eq!(parsed.automation.automation_read_root, vec![PathBuf::from(value.clone())]);
+        let mut inline = OsString::from("--automation-read-root=");
+        inline.push(&value);
+        let parsed = RootCli::try_parse_from([OsString::from("test"), inline]).unwrap();
+        assert_eq!(parsed.automation.automation_read_root, vec![PathBuf::from(value)]);
     }
 }

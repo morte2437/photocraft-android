@@ -73,11 +73,8 @@ pub(super) fn open(app: &mut PhotocraftApp) -> Result<Value, String> {
     authorize(app, &held, &held.command, &target.params)?;
     let resolved = photocraft_engine::actions_cmds::playback_params(&app.session, &held.command, &target.params).map_err(|e| e.to_string())?;
     app.session.precheck(&held.command, &resolved).map_err(|e| e.to_string())?;
-    let dialog = super::open_step_editor(app, &held.command)?;
+    let dialog = super::open_recorded_editor(app, &held.command, &target.params)?;
     let fields = &mut app.ui.dialog_mut(dialog).ok_or(tl!("The step editor could not be opened."))?.fields;
-    if let Some(params) = target.params.as_object() {
-        fields.extend(params.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())));
-    }
     fields.insert(MARK.into(), json!(true));
     held.dialog = dialog;
     app.held_record_again = Some(held);

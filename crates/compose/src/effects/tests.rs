@@ -1048,6 +1048,14 @@ fn shifting_by_hostile_distances_does_not_overflow() {
     }
 }
 
+/// A plane with no pixels but a huge other dimension must not size scratch from it.
+#[test]
+fn an_empty_distance_transform_allocates_nothing() {
+    let (d, n) = edt_nearest(&[], 0, 1 << 30);
+    assert!(d.is_empty() && n.is_empty());
+    assert!(edt(&[], 1 << 30, 0).is_empty());
+}
+
 /// #8639 review: a Stroke Emboss whose stroke lies wholly inside shades with the layer, so its
 /// non-Normal highlight or shadow counts as an interior blend, as an Inner Bevel's does; with the
 /// stroke reaching outside, or no stroke, it doesn't.

@@ -266,6 +266,13 @@ pub fn paint(
     }
     nav.clamp(rect.size(), source * scale);
     let image = egui::Rect::from_min_size(rect.center() - nav.center * source * scale, source * scale);
+    // The checkerboard is under the image only, as in Photoshop; the pane around it is the
+    // caller's grey (#2362). Only its visible part is drawn, however far the image is zoomed,
+    // with cells counted from the image's corner so they move with it as it is panned.
+    let shown = rect.intersect(image).intersect(ui.clip_rect());
+    if shown.is_positive() {
+        crate::widgets::checker_at(&ui.painter().with_clip_rect(shown), shown, image.min, 8.0);
+    }
     ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())).image(
         tex.id(),
         image,
@@ -412,6 +419,77 @@ mod tests {
         h.run_steps(3);
         assert!(Arc::ptr_eq(&before, &cached(&h.ctx)), "picker drag must not re-encode");
         assert_eq!(h.state().1, [0, 255, 0, 255, 0, 0, 255, 255]);
+    }
+
+    /// #2362: as in Photoshop, the checkerboard is drawn under the image only, not across the
+    /// whole pane: a 40 × 20 image at 100 % in a 200 × 100 pane gets a checkerboard of its size.
+    #[test]
+    fn the_checkerboard_is_under_the_image_only() {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+            |ui, state: &mut (Map<String, Value>, egui::Rect)| {
+                let img = egui::ColorImage::new([40, 20], vec![egui::Color32::TRANSPARENT; 40 * 20]);
+                let tex = ui.ctx().load_texture("fixture", img, egui::TextureOptions::LINEAR);
+                let (r, response) = ui.allocate_exact_size(egui::vec2(200.0, 100.0), egui::Sense::drag());
+                state.1 = r;
+                paint(ui, r, &response, &tex, egui::vec2(40.0, 20.0), &mut state.0);
+            },
+            (serde_json::from_value::<Map<String, Value>>(json!({"__zoom": 1.0})).unwrap(), egui::Rect::NOTHING),
+        );
+        h.run_steps(2);
+        let pane = h.state().1;
+        let light: Vec<egui::Rect> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.fill == egui::Color32::from_gray(250) => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(light.len(), 1, "one checkerboard: {light:?}");
+        let image = egui::Rect::from_center_size(pane.center(), egui::vec2(40.0, 20.0));
+        assert!((light[0].min - image.min).length() < 0.5 && (light[0].max - image.max).length() < 0.5, "{:?} vs the image {image:?}", light[0]);
+    }
+
+    /// #2362 review: a zoomed-in image is clipped by the pane, and its checkerboard's cells are
+    /// counted from the image's corner, not the pane's, as the canvas's are from the document's,
+    /// so they move with the image when it is panned. A 400 × 200 image at 100 % in a 200 × 100
+    /// pane, panned so its corner is 20 × 30 points up-left of the pane's: every dark cell lies in
+    /// one odd 8-point cell of the image's grid.
+    #[test]
+    fn a_clipped_images_checkerboard_keeps_the_images_phase() {
+        for center in [[0.3, 0.4], [0.61, 0.27]] {
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+                |ui, state: &mut (Map<String, Value>, egui::Rect)| {
+                    let img = egui::ColorImage::new([400, 200], vec![egui::Color32::TRANSPARENT; 400 * 200]);
+                    let tex = ui.ctx().load_texture("fixture", img, egui::TextureOptions::LINEAR);
+                    let (r, response) = ui.allocate_exact_size(egui::vec2(200.0, 100.0), egui::Sense::drag());
+                    state.1 = r;
+                    paint(ui, r, &response, &tex, egui::vec2(400.0, 200.0), &mut state.0);
+                },
+                (serde_json::from_value::<Map<String, Value>>(json!({"__zoom": 1.0, "__center": center})).unwrap(), egui::Rect::NOTHING),
+            );
+            h.run_steps(2);
+            let pane = h.state().1;
+            let image_min = pane.center() - egui::vec2(center[0], center[1]) * egui::vec2(400.0, 200.0);
+            let dark: Vec<egui::Rect> = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Rect(r) if r.fill == egui::Color32::from_gray(214) && r.rect.is_positive() => Some(r.rect),
+                    _ => None,
+                })
+                .collect();
+            assert!(dark.len() > 100, "the pane is covered: {} dark cells", dark.len());
+            for r in dark {
+                assert!(pane.expand(0.01).contains_rect(r), "{r:?} is inside the pane {pane:?}");
+                let cell = |p: egui::Pos2, nudge: f32| ((p - image_min + egui::Vec2::splat(nudge)) / 8.0).floor();
+                let (a, b) = (cell(r.min, 0.01), cell(r.max, -0.01));
+                assert_eq!(a, b, "{r:?} spans one of the image's cells (image at {image_min:?})");
+                assert_eq!((a.x + a.y).rem_euclid(2.0), 1.0, "{r:?} is a dark cell of the image's grid (image at {image_min:?})");
+            }
+        }
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub(crate) fn open(app: &mut PhotocraftApp) -> Option<u64> {
     if color.mode == photocraft_color::ColorMode::Cmyk
         && let Some(d) = app.ui.dialog_mut(id)
     {
-        d.fields.insert("__cmyk".into(), json!(color.c));
+        color_picker_ui::seed_cmyk(&mut d.fields, color.c);
     }
     Some(id)
 }
@@ -42,13 +42,16 @@ pub(crate) fn open(app: &mut PhotocraftApp) -> Option<u64> {
 pub(crate) fn open_new(app: &mut PhotocraftApp) -> Option<u64> {
     let document = app.session.active()?.doc.id.0;
     let foreground = app.session.tools.foreground;
-    Some(color_picker_ui::open_for_command(
-        app,
-        "Color Picker (Solid Color)",
-        [foreground[0], foreground[1], foreground[2]],
-        "layer.newFillLayer.solidColor",
-        json!({"document": document}),
-    ))
+    let rgb = [foreground[0], foreground[1], foreground[2]];
+    let id = color_picker_ui::open_for_command(app, "Color Picker (Solid Color)", rgb, "layer.newFillLayer.solidColor", json!({"document": document}));
+    // A foreground picked as CMYK opens showing those inks, as its own picker does, so OK keeps
+    // them even when the foreground is finer than the picker's hex (#8568).
+    if let Some(cmyk) = app.session.tools.picked_cmyk(rgb)
+        && let Some(d) = app.ui.dialog_mut(id)
+    {
+        color_picker_ui::seed_cmyk(&mut d.fields, cmyk);
+    }
+    Some(id)
 }
 
 /// A creation picker is distinct from the editor opened by a fill layer's thumbnail.

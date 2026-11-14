@@ -7,6 +7,16 @@ use super::{GradientChoices, LayerContent, PaintChange, PhotocraftApp, Tokens, T
 // ---------------------------------------------------------------------------------------------
 // Options bars
 
+/// The Pen's gear, before Auto Add/Delete as in Photoshop: a popup with the Rubber Band check
+/// item, off by default and saved with the tool options (#12900).
+fn pen_gear(o: &mut crate::state::ToolOptions, ui: &mut egui::Ui) {
+    let gear = crate::icons::button_with_icon_size(ui, "settings", 28.0, 20.0, false, tl!("Set additional pen and path options"));
+    egui::Popup::menu(&gear).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(140.0);
+        ui.checkbox(&mut o.pen_rubber_band, tl!("Rubber Band"));
+    });
+}
+
 /// Options bar for vector tools; false for other tools.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bool {
     if !(is_shape_tool(tool)
@@ -24,38 +34,38 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         crate::widgets::scrub_option_label(ui, &label);
     };
     let target = selected_shape(&app.session);
-    if tool == Tool::PathSelection && !crate::direct_select::active_paths(app).is_empty() {
+    // Direct Selection shares the Path Selection bar (#13219).
+    if matches!(tool, Tool::PathSelection | Tool::DirectSelection) && !crate::direct_select::active_paths(app).is_empty() {
         path_operations_menu(app, ui);
         crate::widgets::vline(ui, 22.0);
     }
     let o = &mut app.ui.tool_options;
-    if tool == Tool::PathSelection && target.is_none() {
-        lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the selected path") });
+    if matches!(tool, Tool::PathSelection | Tool::DirectSelection) && target.is_none() {
+        if tool == Tool::PathSelection {
+            lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the selected path") });
+        }
         return true;
     }
-    if tool == Tool::DirectSelection && target.is_none() {
-        let (shift, alt) = (crate::shortcuts::pretty("Shift"), crate::shortcuts::pretty("Alt"));
-        lbl(
-            ui,
-            &crate::i18n::fmt(
-                tl!("Click: select anchor · Drag: move anchor, handle or segment · {shift}-click: add · {alt}-click: whole subpath"),
-                &[("shift", &shift), ("alt", &alt)],
-            ),
-        );
+    if tool == Tool::AddAnchorPoint {
+        // Photoshop centres this in the rest of the bar after the preset picker (#12731).
+        let text = egui::RichText::new(tl!("No options for the Add Anchor Point Tool.")).color(t.text_dim).size(12.0);
+        ui.add_sized([ui.available_width(), ui.available_height()], egui::Label::new(text));
         return true;
     }
-    if matches!(tool, Tool::AddAnchorPoint | Tool::DeleteAnchorPoint) {
-        let hint = if tool == Tool::AddAnchorPoint {
-            tl!("Click a segment to add an anchor point · {alt}-click an anchor to delete it")
-        } else {
-            tl!("Click an anchor point to delete it · {alt}-click a segment to add one")
-        };
-        lbl(ui, &crate::i18n::fmt(hint, &[("alt", &crate::shortcuts::pretty("Alt"))]));
+    if tool == Tool::DeleteAnchorPoint {
+        // Photoshop centres this in the rest of the bar after the preset picker (#12827).
+        let text = egui::RichText::new(tl!("No options for the Delete Anchor Point Tool.")).color(t.text_dim).size(12.0);
+        ui.add_sized([ui.available_width(), ui.available_height()], egui::Label::new(text));
         return true;
     }
     if matches!(tool, Tool::Pen | Tool::FreeformPen | Tool::CurvaturePen) {
-        let opts = [("path".to_string(), tl!("Path")), ("shape".to_string(), tl!("Shape"))];
-        crate::widgets::dropdown(ui, "pen-mode", tl!("Mode"), &mut o.vector_mode, &opts, 80.0);
+        // Photoshop's Pen lists Shape, Path and a greyed Pixels (#12906); the other pens keep theirs.
+        let opts = if tool == Tool::Pen {
+            vec![("shape".to_string(), tl!("Shape")), ("path".to_string(), tl!("Path")), ("pixels".to_string(), tl!("Pixels"))]
+        } else {
+            vec![("path".to_string(), tl!("Path")), ("shape".to_string(), tl!("Shape"))]
+        };
+        crate::widgets::dropdown_enabled(ui, "pen-mode", tl!("Mode"), &mut o.vector_mode, &opts, 80.0, |m| m != "pixels");
         crate::widgets::vline(ui, 22.0);
         if o.vector_mode == "shape" {
             crate::widgets::value_field(ui, &mut o.stroke_width, 0.0..=288.0, "px", 58.0).accessible_name(tl!("Stroke:"));
@@ -71,6 +81,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         let o = &mut app.ui.tool_options;
         if tool == Tool::Pen {
             crate::widgets::vline(ui, 22.0);
+            pen_gear(o, ui);
             crate::widgets::checkbox(ui, &mut o.pen_auto_add_delete, tl!("Auto Add/Delete"));
         }
         let enter = crate::shortcuts::pretty("Enter");
@@ -97,25 +108,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 ),
             ),
         }
-        // Path mode: Make Selection from the path being drawn or the active path, as Photoshop's
-        // options bar's "Make: Selection…" does (#5703).
         if app.ui.tool_options.vector_mode == "path" {
             crate::widgets::vline(ui, 22.0);
-            let has_path = active_path_name(app).is_some() || app.ui.pen.as_ref().is_some_and(|p| p.knots.len() >= 2);
-            if ui.add_enabled(has_path, egui::Button::new(tl!("Make Selection"))).clicked()
-                && let Err(e) = crate::canvas_tool_menu::make_selection(app)
-            {
-                app.ui.status = e;
-                app.ui.status_error = true;
-            }
-            // Make: Shape turns the path into a shape layer with the shape fill and stroke (#10934).
-            let has_shape_path = super::path_ops::shape_source_path(app).is_some() || app.ui.pen.as_ref().is_some_and(|p| p.knots.len() >= 2);
-            if ui.add_enabled(has_shape_path, egui::Button::new(tl!("Make Shape"))).clicked()
-                && let Err(e) = super::make_shape(app)
-            {
-                app.ui.status = e;
-                app.ui.status_error = true;
-            }
+            make_buttons(app, ui);
         }
         return true;
     }
@@ -134,10 +129,27 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     // geometry, the Line's arrowheads included, stays.
     let paint = !(is_shape_tool(tool) && draws_path(&app.ui.tool_options));
     crate::shape_options::options_bar(app, ui, tool, paint);
+    if is_shape_tool(tool) {
+        // Path operations, alignment and arrangement, in Shape and Path mode (#13235).
+        crate::widgets::vline(ui, 22.0);
+        super::pen::path_operations_menu(app, ui);
+        super::pen::path_alignment_menu(app, ui);
+        super::pen::path_arrangement_menu(app, ui);
+    }
+    if tool == Tool::Rectangle {
+        crate::widgets::vline(ui, 22.0);
+        rectangle_gear(&mut app.ui.tool_options, ui);
+    }
     // Photoshop-style arrowhead settings at the right of Line options.
     if tool == Tool::Line {
         crate::widgets::vline(ui, 22.0);
-        ui.menu_image_button(crate::icons::image("settings", 18.0, t.icon), |ui| {
+        let mut concavity_alert = false;
+        // Stays open on clicks inside, like the Pen's gear: a click into a field to type a value
+        // would otherwise close the menu before the value was entered (#13258).
+        let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let gear = egui::Button::image(crate::icons::image("settings", 18.0, t.icon));
+        let menu = egui::containers::menu::MenuButton::from_button(gear).config(config);
+        let (gear, _) = menu.ui(ui, |ui| {
             let o = &mut app.ui.tool_options;
             ui.set_min_width(170.0);
             ui.label(tl!("Arrowheads"));
@@ -155,14 +167,98 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                 ui.add(egui::DragValue::new(&mut o.arrow_length).range(1.0..=4096.0).suffix(" px"));
             });
             ui.horizontal(|ui| {
-                ui.label(tl!("Concavity"));
-                ui.add(egui::DragValue::new(&mut o.arrow_concavity).range(0.0..=100.0).suffix(" %"));
+                let label = tl!("Concavity");
+                ui.label(label);
+                concavity_alert = crate::widgets::value_field_whole_alerting(ui, label, &mut o.arrow_concavity, CONCAVITY_RANGE, "%", 52.0).1;
             });
-        })
-        .response
-        .on_hover_text(tl!("Arrowhead options"));
+        });
+        gear.on_hover_text(tl!("Arrowhead options"));
+        if concavity_alert {
+            crate::panels::options_bar::range_alert(&mut app.ui, CONCAVITY_RANGE_ALERT);
+        }
     }
     true
+}
+
+/// The Rectangle tool's gear, after the path arrangement as in the reference application
+/// (#13343): Unconstrained (the default), Square, Fixed Size and Proportional, each size's W and H
+/// greyed unless its radio is chosen, and From Center. The settings are tool options; Escape
+/// closes the popup and keeps them. The Path Options at its top are #9971's.
+fn rectangle_gear(o: &mut crate::state::ToolOptions, ui: &mut egui::Ui) {
+    let gear = crate::icons::button_with_icon_size(ui, "settings", 28.0, 20.0, false, tl!("Set additional shape and path options"));
+    egui::Popup::menu(&gear).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(220.0);
+        ui.radio_value(&mut o.rect_constraint, "unconstrained".to_string(), tl!("Unconstrained"));
+        ui.radio_value(&mut o.rect_constraint, "square".to_string(), tl!("Square"));
+        // An empty field is 0: Fixed Size starts empty.
+        let sizes = [
+            ("fixedSize", tl!("Fixed Size"), [tl!("Fixed Size W:"), tl!("Fixed Size H:")], "px", 0, 300_000.0),
+            ("proportional", tl!("Proportional"), [tl!("Proportional W:"), tl!("Proportional H:")], "", 3, 99_999.0),
+        ];
+        for (key, label, names, suffix, decimals, max) in sizes {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut o.rect_constraint, key.to_string(), label);
+                let on = o.rect_constraint == key;
+                let (w, h) =
+                    if key == "fixedSize" { (&mut o.rect_fixed_width, &mut o.rect_fixed_height) } else { (&mut o.rect_ratio_width, &mut o.rect_ratio_height) };
+                ui.add_enabled_ui(on, |ui| {
+                    for (value, name, caption) in [(w, names[0], tl!("W:")), (h, names[1], tl!("H:"))] {
+                        ui.label(caption);
+                        crate::widgets::value_field_prec_blank(ui, value, 0.0..=max, suffix, 72.0, decimals).accessible_name(name);
+                    }
+                });
+            });
+        }
+        ui.checkbox(&mut o.rect_from_center, tl!("From Center"));
+    });
+}
+
+/// Arrowhead Concavity in percent of the head's length, as the reference takes it (#13258).
+pub(crate) const CONCAVITY_RANGE: std::ops::RangeInclusive<f32> = -50.0..=50.0;
+
+/// The reference's alert for a Concavity typed past [`CONCAVITY_RANGE`] (#13258).
+pub(crate) const CONCAVITY_RANGE_ALERT: &str = "An integer between -50% and 50% is required. Closest value inserted.";
+
+/// Path mode's "Make:" row, as in Photoshop's options bar: Selection… (#5703), Mask (#12904) and
+/// Shape (#10934), from the path being drawn or the active path; all greyed without one.
+fn make_buttons(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(tl!("Make:")).color(t.text_dim).size(12.0));
+    let pending = app.ui.pen.as_ref().is_some_and(|p| p.knots.len() >= 2);
+    let has_path = pending || active_path_name(app).is_some();
+    // A draft that finishes into the targeted vector mask has no path of its own to make a mask
+    // from, as in the canvas menu's Create Vector Mask.
+    let has_mask_path = has_path && !(pending && super::path_ops::targeted_vector_mask(app).is_some());
+    // Make: Shape turns the path into a shape layer with the shape fill and stroke (#10934).
+    let has_shape_path = pending || super::path_ops::shape_source_path(app).is_some();
+    let selection = ui.add_enabled(has_path, egui::Button::new(tl!("Selection…"))).clicked();
+    let mask = ui.add_enabled(has_mask_path, egui::Button::new(tl!("Mask"))).clicked();
+    let shape = ui.add_enabled(has_shape_path, egui::Button::new(tl!("Shape"))).clicked();
+    let made = if selection {
+        crate::canvas_tool_menu::make_selection(app)
+    } else if mask {
+        make_mask(app)
+    } else if shape {
+        super::make_shape(app).map(|_| ())
+    } else {
+        Ok(())
+    };
+    if let Err(e) = made {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
+}
+
+/// Make: Mask (#12904): a vector mask on the active layer from the path being drawn (finished
+/// first, as the canvas menu's Create Vector Mask does) or the active path. The command records
+/// the History step Add Vector Mask and turns the Background into a normal layer in that edit.
+fn make_mask(app: &mut PhotocraftApp) -> Result<(), String> {
+    if app.ui.pen.as_ref().is_some_and(|p| p.knots.len() >= 2) && !super::pen::pen_commit(app, false) {
+        return Err(app.ui.status.clone());
+    }
+    let name =
+        active_path_name(app).ok_or_else(|| tl!("No path to make a mask from: draw one with the Pen tool or select one in the Paths panel.").to_string())?;
+    app.run("layer.vectorMask.fromPath", json!({"name": name})).map(|_| ())
 }
 
 /// Whether the Shape tools are in Path mode: a drag adds its outline to the work path.
@@ -229,6 +325,7 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
     };
     let t = Tokens::get(ui.ctx());
     let mut edit: Option<Value> = None;
+    let mut concavity_alert = false;
     // A swatch picked in a Fill/Stroke popover joins the Recently Used Colors once the edit took it.
     let mut recent: Option<[f32; 3]> = None;
     let doc_id = app.session.active().map(|st| st.doc.id);
@@ -322,7 +419,8 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
         match live {
             photocraft_doc::vector::LiveShape::Rect { rect, .. }
             | photocraft_doc::vector::LiveShape::Ellipse { rect }
-            | photocraft_doc::vector::LiveShape::Polygon { rect, .. } => {
+            | photocraft_doc::vector::LiveShape::Polygon { rect, .. }
+            | photocraft_doc::vector::LiveShape::Triangle { rect, .. } => {
                 ui.horizontal(|ui| {
                     let (mut w, mut h) = (rect[2] as f32, rect[3] as f32);
                     let cw = num(ui, "W", &mut w, 1.0..=300000.0, "px");
@@ -357,7 +455,7 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
                 }
             }
             photocraft_doc::vector::LiveShape::Polygon { sides, star_ratio, corner_radius, .. } => {
-                // One radius rounds every vertex of a triangle, polygon or star, as in Photoshop.
+                // One radius rounds every vertex of a triangle or polygon, or a star's outer points, as in Photoshop.
                 ui.horizontal(|ui| {
                     let mut r = *corner_radius as f32;
                     if num(ui, tl!("Corner radius"), &mut r, 0.0..=100000.0, "px") {
@@ -372,6 +470,16 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
                     let mut sr = (*star_ratio * 100.0) as f32;
                     if num(ui, tl!("Star ratio"), &mut sr, 1.0..=100.0, "%") {
                         edit = Some(json!({"starRatio": sr as f64 / 100.0, "coalesce": key("star")}));
+                    }
+                })
+                .inner
+            }
+            photocraft_doc::vector::LiveShape::Triangle { corner_radius, .. } => {
+                // One radius rounds all three corners of a triangle; it has no sides or star ratio.
+                ui.horizontal(|ui| {
+                    let mut r = *corner_radius as f32;
+                    if num(ui, tl!("Corner radius"), &mut r, 0.0..=100000.0, "px") {
+                        edit = Some(json!({"cornerRadius": r, "coalesce": key("corner-radius")}));
                     }
                 })
                 .inner
@@ -407,8 +515,12 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
                     }
                 });
                 ui.horizontal(|ui| {
+                    let label = tl!("Concavity");
+                    ui.label(egui::RichText::new(label).color(t.text_dim).size(12.0));
                     let mut v = *concavity as f32;
-                    if num(ui, "Concavity", &mut v, 0.0..=100.0, "%") {
+                    let (r, out_of_range) = crate::widgets::value_field_whole_alerting(ui, label, &mut v, CONCAVITY_RANGE, "%", 64.0);
+                    concavity_alert |= out_of_range;
+                    if r.changed() {
                         edit = Some(json!({"arrowConcavity": v, "coalesce": key("arrow-concavity")}));
                     }
                 });
@@ -475,4 +587,15 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
             });
         }
     }
+    if concavity_alert {
+        crate::panels::options_bar::range_alert(&mut app.ui, CONCAVITY_RANGE_ALERT);
+    }
 }
+
+#[cfg(test)]
+#[path = "line_arrow_concavity_field_tests.rs"]
+mod line_arrow_concavity_field_tests;
+
+#[cfg(test)]
+#[path = "pen_make_mask_tests.rs"]
+mod pen_make_mask_tests;

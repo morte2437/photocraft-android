@@ -1,5 +1,6 @@
 use super::*;
 use photocraft_color::{PixelFormat, SampleType};
+mod adversarial_native;
 mod ext;
 mod mosaic;
 mod selection_mix;

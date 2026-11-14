@@ -143,7 +143,7 @@ fn inserted_menu_events_roundtrip_absent_settings_and_stateless_items_execute() 
             let mut s = session();
             s.execute("actions.insertMenuItem", json!({"action":"A","id":id,"eventKind":kind})).unwrap();
             let bytes = atn_cmds::export("S", &[&s.actions.list[0]], &[], false).unwrap().0;
-            let raw = photocraft_psd::atn::parse(&bytes).unwrap();
+            let raw = craft_psd::atn::parse(&bytes).unwrap();
             assert!(raw.actions[0].items[0].descriptor.is_none());
             let imported = atn_cmds::import(&bytes).unwrap();
             let (step, params) = &imported.actions[0].steps[0];
@@ -152,7 +152,7 @@ fn inserted_menu_events_roundtrip_absent_settings_and_stateless_items_execute() 
             assert_eq!(params["eventKind"], kind);
             let (saved, skipped) = atn_cmds::export("S", &[&imported.actions[0]], &[], false).unwrap();
             assert!(skipped.is_empty());
-            let saved = photocraft_psd::atn::parse(&saved).unwrap();
+            let saved = craft_psd::atn::parse(&saved).unwrap();
             assert_eq!(saved.actions[0].items[0], raw.actions[0].items[0]);
             let played = s.execute("actions.play", json!({"action":"A"})).unwrap();
             assert_eq!(played.get("failed").is_none(), !atn_cmds::menu_item_needs_settings(id), "{id}: {played}");
@@ -166,16 +166,16 @@ fn inserted_menu_events_roundtrip_absent_settings_and_stateless_items_execute() 
         assert!(s.execute("actions.insertMenuItem", params).is_err());
         assert_eq!(s.actions, original);
     }
-    let mut raw = photocraft_psd::atn::AtnFile::default();
-    raw.actions.push(photocraft_psd::atn::AtnAction {
-        items: vec![photocraft_psd::atn::AtnItem {
-            event: photocraft_psd::atn::AtnEvent::name("gaussianBlur"),
-            descriptor: Some(photocraft_psd::descriptor::Descriptor::new("null")),
+    let mut raw = craft_psd::atn::AtnFile::default();
+    raw.actions.push(craft_psd::atn::AtnAction {
+        items: vec![craft_psd::atn::AtnItem {
+            event: craft_psd::atn::AtnEvent::name("gaussianBlur"),
+            descriptor: Some(craft_psd::descriptor::Descriptor::new("null")),
             ..Default::default()
         }],
         ..Default::default()
     });
-    let loaded = atn_cmds::import(&photocraft_psd::atn::write(&raw).unwrap()).unwrap();
+    let loaded = atn_cmds::import(&craft_psd::atn::write(&raw).unwrap()).unwrap();
     assert_eq!(loaded.actions[0].steps[0].0, "filter.blur.gaussianBlur");
 }
 

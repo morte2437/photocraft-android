@@ -1,6 +1,6 @@
 //! #12099: Reset Tool gives the Healing Brush the reference application's tip, a 19 px hard round
 //! at 25 % spacing, not the 20 px default at 10 %; Reset All Tools and a first use do too. The
-//! Clone Stamp, the Spot Healing Brush and commands without brush params keep theirs.
+//! Pattern Stamp, the Spot Healing Brush and commands without brush params keep theirs.
 
 use photocraft_ui_egui::control::{ControlRequest, handle};
 use photocraft_ui_egui::{PhotocraftApp, Tool};
@@ -90,7 +90,7 @@ fn a_first_use_starts_with_the_tip() {
 
 #[test]
 fn other_retouch_tools_and_session_strokes_keep_their_tips() {
-    for tool in [Tool::CloneStamp, Tool::SpotHealing] {
+    for tool in [Tool::PatternStamp, Tool::SpotHealing] {
         let mut a = app();
         pick(&mut a, tool);
         scramble(&mut a);

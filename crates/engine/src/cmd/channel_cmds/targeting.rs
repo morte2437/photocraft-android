@@ -1,5 +1,5 @@
 use super::manage::fix_view_now;
-use super::planes::{color_count, materialize};
+use super::planes::{GraySurface, color_count, materialize};
 use super::refs::{ChanRef, bad, parse_ref};
 use super::view::{ChannelTarget, touch};
 use super::{ColorMode, Document, EngineError, Layer, LayerId, Rect, Result, Session, Surface, Value, from_rgba, json, list};
@@ -19,6 +19,8 @@ pub(crate) enum Target {
     QuickMask,
 }
 
+/// An alpha index that cannot fit this platform stays an unaddressable alpha target. Using
+/// usize::MAX makes the later checked lookup fail instead of wrapping or falling back to pixels.
 pub(crate) fn target_of(p: &Value) -> Target {
     match p.get("target") {
         Some(Value::String(s)) => match s.as_str() {
@@ -27,7 +29,7 @@ pub(crate) fn target_of(p: &Value) -> Target {
             "quickMask" => Target::QuickMask,
             _ => Target::Pixels,
         },
-        Some(Value::Object(o)) => o.get("channel").and_then(Value::as_u64).map_or(Target::Pixels, |i| Target::Alpha(i as usize)),
+        Some(Value::Object(o)) => o.get("channel").and_then(Value::as_u64).map_or(Target::Pixels, |i| Target::Alpha(usize::try_from(i).unwrap_or(usize::MAX))),
         _ => Target::Pixels,
     }
 }
@@ -35,6 +37,18 @@ pub(crate) fn target_of(p: &Value) -> Target {
 /// The target is an alpha channel or the Quick Mask (no layer involved).
 pub(crate) fn is_channel_target(p: &Value) -> bool {
     matches!(target_of(p), Target::Alpha(_) | Target::QuickMask)
+}
+
+/// The grayscale plane named by an explicit pixel-command target. Unlike the dialog metadata,
+/// this also identifies missing targets, so preview dispatch can report the command's error.
+pub fn gray_target(p: &Value) -> Option<GraySurface> {
+    match target_of(p) {
+        Target::Mask => Some(GraySurface::LayerMask),
+        Target::FilterMask => Some(GraySurface::FilterMask),
+        Target::Alpha(i) => Some(GraySurface::Alpha(i)),
+        Target::QuickMask => Some(GraySurface::QuickMask),
+        Target::Pixels => None,
+    }
 }
 
 /// The target is a spot channel: it stores ink but takes tone, as it reads.
@@ -125,13 +139,19 @@ pub(crate) fn mask_target_enabled(s: &Session, id: &str, p: &Value) -> Option<st
         // The commands that paint, fill, filter or adjust the filter mask need a smart object with
         // smart filters, not a pixel layer. Paste keeps its own check (something to paste).
         Target::FilterMask if follows_filter_mask(id) && !PASTE_IDS.contains(&id) => {
-            Some(crate::active_layer_of(s).and_then(crate::smart_cmds::filter_mask_paintable))
+            Some(addressed_layer(s, p).and_then(crate::smart_cmds::filter_mask_paintable))
         }
         Target::Mask if edits_mask(id) => {
-            Some(crate::active_layer_of(s).and_then(|l| if l.mask.is_some() { Ok(()) } else { Err("the active layer has no layer mask".into()) }))
+            Some(addressed_layer(s, p).and_then(|l| if l.mask.is_some() { Ok(()) } else { Err("the target layer has no layer mask".into()) }))
         }
         _ => None,
     }
+}
+
+/// The mask receiver resolved by the same layer selector as the eventual edit.
+fn addressed_layer<'a>(s: &'a Session, p: &Value) -> std::result::Result<&'a Layer, String> {
+    let id = crate::commands::layer_param(s, p).map_err(|e| e.to_string())?;
+    s.active().and_then(|st| st.doc.layer(id)).ok_or_else(|| format!("no layer {}", id.0))
 }
 
 /// Whether command `id` edits the targeted channel or mask when its params name no `"target"`
@@ -165,6 +185,18 @@ pub fn follows_filter_mask(id: &str) -> bool {
                 | crate::lens_cmds::WIDE
                 | crate::lens_cmds::RAW
         )
+}
+
+/// Edit › Transform's Rotate/Flip presets can turn a targeted vector mask's path (#12283).
+pub fn follows_vector_mask_target(id: &str) -> bool {
+    matches!(
+        id,
+        "edit.transform.rotate180"
+            | "edit.transform.rotate90Cw"
+            | "edit.transform.rotate90Ccw"
+            | "edit.transform.flipHorizontal"
+            | "edit.transform.flipVertical"
+    )
 }
 
 /// The paint and retouch tools that follow the targeted channel or mask.
@@ -251,6 +283,8 @@ pub(crate) fn inject_target(s: &Session, id: &str, params: Value) -> Value {
             json!("filterMask")
         }
         ChannelTarget::Composite if crate::mask_view_cmds::current(st).is_some() => json!("mask"),
+        // Edit › Transform's Rotate/Flip presets turn the targeted vector mask's path (#12283).
+        ChannelTarget::VectorMask if follows_vector_mask_target(id) => json!("vectorMask"),
         _ => return params,
     };
     match params {

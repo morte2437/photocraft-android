@@ -169,6 +169,9 @@ impl Session {
             let d = self.active().ok_or_else(|| "no document open".to_string())?;
             return if d.selected_layers().is_empty() { Err("no layer selected".into()) } else { Ok(()) };
         }
+        if let Some(why) = bitmap_mode_refusal(self, spec.id, params) {
+            return Err(why.into());
+        }
         channel_cmds::mask_target_enabled(self, spec.id, params).unwrap_or_else(|| (spec.enabled)(self))
     }
 
@@ -376,5 +379,78 @@ impl Session {
         let Some(st) = self.active_mut() else { return };
         let rect = layer_multi_cmds::grow_hint(&st.doc, rect);
         st.last_damage = Some(st.last_damage.map_or(rect, |d| d.intersect(&rect)));
+    }
+}
+
+/// A Bitmap document holds only black and white, so Photoshop greys out its filters and its
+/// Image › Adjustments, all but Invert (#10484), filter plug-ins included (`plugin.run`; the
+/// other `plugin.*` commands manage plug-ins). Catalogue queries still answer.
+fn bitmap_mode_refusal(s: &Session, id: &str, params: &Value) -> Option<&'static str> {
+    let edits = (id.starts_with("filter.") || id.starts_with("image.adjustments.") || id == crate::plugin_cmds::RUN)
+        && id != "image.adjustments.invert"
+        && !id.ends_with(".list")
+        // Only the Filter Gallery answers `{"list": true}` with its catalogue; other commands ignore it.
+        && !(id == "filter.filterGallery" && params.get("list").and_then(Value::as_bool) == Some(true));
+    (edits && s.active().is_some_and(|st| st.doc.mode == photocraft_color::ColorMode::Bitmap)).then_some("not available in Bitmap mode")
+}
+
+#[cfg(test)]
+mod bitmap_mode_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// #10484: Photoshop 2025 on a Bitmap document refuses Gaussian Blur, Add Noise, Levels and
+    /// Brightness/Contrast, and runs Invert. They all ran.
+    #[test]
+    fn bitmap_documents_refuse_filters_and_adjustments_but_invert() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16, "mode": "grayscale"})).unwrap();
+        s.edit("mode", |doc, _| {
+            doc.mode = photocraft_color::ColorMode::Bitmap;
+            Ok(())
+        })
+        .unwrap();
+        for id in ["filter.blur.gaussianBlur", "filter.noise.addNoise", "image.adjustments.levels", "image.adjustments.brightnessContrast"] {
+            assert!(!s.is_enabled(id), "{id} is greyed out");
+            let e = s.execute(id, json!({})).unwrap_err().to_string();
+            assert!(e.contains("Bitmap mode"), "{id}: {e}");
+        }
+        assert!(s.is_enabled("image.adjustments.invert"));
+        s.execute("image.adjustments.invert", json!({})).unwrap();
+        assert!(s.execute("filter.filterGallery", json!({"list": true})).is_ok(), "a catalogue query still answers");
+        // Grayscale again: the filters are back.
+        s.edit("mode", |doc, _| {
+            doc.mode = photocraft_color::ColorMode::Grayscale;
+            Ok(())
+        })
+        .unwrap();
+        assert!(s.is_enabled("filter.blur.gaussianBlur"));
+    }
+
+    /// `{"list": true}` answers a catalogue only where the command has one (the Filter Gallery);
+    /// HDR Toning ignored it and edited the Bitmap document.
+    #[test]
+    fn bitmap_documents_refuse_a_list_param_on_commands_without_a_catalogue() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16, "mode": "grayscale", "background": "white"})).unwrap();
+        s.execute("image.mode.bitmap", json!({"method": "threshold"})).unwrap();
+        let steps = s.active().unwrap().history.past_len();
+        let list = json!({"list": true});
+        for spec in crate::commands::command_specs() {
+            let id = spec.id;
+            let edits = (id.starts_with("filter.") || id.starts_with("image.adjustments."))
+                && !matches!(id, "image.adjustments.invert" | "filter.filterGallery")
+                && !id.ends_with(".list");
+            if edits {
+                let why = s.disabled_reason_with(id, &list);
+                assert!(why.as_deref().is_some_and(|w| w.contains("Bitmap mode")), "{id} with {{\"list\": true}}: {why:?}");
+            }
+        }
+        let e = s.execute("image.adjustments.hdrToning", json!({"list": true, "exposure": 1})).unwrap_err().to_string();
+        assert!(e.contains("Bitmap mode"), "{e}");
+        assert_eq!(s.active().unwrap().history.past_len(), steps, "no edit");
+        assert!(s.execute("filter.filterGallery", list).unwrap()["filters"].is_array(), "the gallery catalogue still answers");
+        assert!(s.execute("image.adjustments.colorLookup.list", json!({})).is_ok());
     }
 }

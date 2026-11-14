@@ -6,7 +6,7 @@
 use super::*;
 
 /// White Background plus a normal layer "Target" with a solid red band across it (y 10..30).
-fn session(depth: u32) -> Session {
+pub(super) fn session(depth: u32) -> Session {
     let mut s = Session::new();
     s.execute("file.new", json!({"width": 64, "height": 40, "depth": depth})).unwrap();
     s.execute("layer.new.layer", json!({"name": "Target"})).unwrap();
@@ -16,7 +16,7 @@ fn session(depth: u32) -> Session {
     s
 }
 
-fn target(s: &Session) -> &Layer {
+pub(super) fn target(s: &Session) -> &Layer {
     let d = s.active().unwrap();
     d.doc.layer(d.active_layer.unwrap()).unwrap()
 }
@@ -83,7 +83,7 @@ fn with_a_colour_channel_target_the_preview_matches_the_commit_on_a_locked_layer
         s.execute("edit.fill", json!({"color": "#3a7fd0", "opacity": 37})).unwrap();
         s.execute("select.deselect", json!({})).unwrap();
         s.execute("layer.setProps", json!({"locks": {"transparency": true}})).unwrap();
-        let opts = |pts: &[[f64; 2]]| json!({"points": pts, "size": 16, "hardness": 0.5, "opacity": 0.53, "target": {"colors": [1]}});
+        let opts = |pts: &[[f64; 2]]| json!({"points": pts, "size": 16, "hardness": 0.5, "opacity": 0.53, "target": {"colors": [1, 2]}});
         let all = [[8.0, 9.0], [32.0, 10.0], [56.0, 11.0]];
         let mut live = live_background_eraser(&s, &opts(&all[..1])).unwrap();
         for q in &all[1..] {

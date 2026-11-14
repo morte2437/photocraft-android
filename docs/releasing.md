@@ -302,6 +302,48 @@ one is missing, prints the package to install and exits with status 1 instead of
 Locally (on Linux): install [nfpm](https://nfpm.goreleaser.com/install/), then
 `packaging/linux/package.sh` (or `--formats "deb tar"`).
 
+#### Packaged automation and offline documentation
+
+Both Flatpak manifests install `photocraft-cli`, alongside the GUI. To start the stdio MCP
+server with a project in the sandbox's allowed Documents directory:
+
+```sh
+flatpak run --command=photocraft-cli ai.storyteller.photocraft mcp \
+  --automation-read-root "$HOME/Documents/project" \
+  --automation-write-root "$HOME/Documents/project"
+```
+
+The automation roots restrict PhotoCraft's file access; they do not grant Flatpak access to
+other host directories. For a project elsewhere, also grant that directory with Flatpak's
+`--filesystem=/absolute/project` run option. Stdio MCP needs no network permission.
+
+Linux packages include the original `mcp.md` and `control-protocol.md` for offline use:
+
+| Format | Documentation directory |
+|---|---|
+| `.deb`, `.rpm` | `/usr/share/doc/photocraft/` |
+| Extracted `.tar.gz` | `share/doc/photocraft/` inside the extracted release directory |
+| Flatpak (source or bundle) | `/app/share/doc/photocraft/` inside the sandbox |
+| Extracted AppImage | `squashfs-root/usr/share/doc/photocraft/` |
+
+For example, read the Flatpak's MCP guide without opening the GUI:
+
+```sh
+flatpak run --command=cat ai.storyteller.photocraft /app/share/doc/photocraft/mcp.md
+```
+
+To read an AppImage's guides, run `./PhotoCraft.AppImage --appimage-extract` in a directory
+where you want its `squashfs-root` contents, using the downloaded file's actual name. Then
+open either guide in `squashfs-root/usr/share/doc/photocraft/`. Extraction is an explicit user
+action; launching the app does not extract documentation into the home directory. These two
+Markdown files are included as written; links to other repository documents still need a
+checkout or the online documentation.
+
+`bash packaging/linux/package-docs-test.sh` checks the real Linux staging/tar commands,
+AppDir retention and both Flatpak manifests' install commands with fixture binaries and
+stubbed AppImage tooling. Packaging lint runs it through `extra-checks-script`; it does not
+compile Rust, build a real AppImage, or run a Flatpak sandbox.
+
 ### FreeBSD
 
 GitHub has no FreeBSD runners, so the `freebsd` job runs `packaging/freebsd/package.sh` in a

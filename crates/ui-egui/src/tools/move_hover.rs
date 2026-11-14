@@ -1,7 +1,7 @@
 //! Move tool › Show Highlight on Rollover (Preferences › Tools, on by default): with Auto-Select
 //! on, or ⌘ held while it is off, hovering the canvas outlines the layer (or group, per the
 //! Auto-Select target) that a click there would pick. The hit test is the click's own
-//! (`pick_cmds::auto_select_target`), so a type layer is outlined anywhere inside its text, as it
+//! (`pick_cmds::move_auto_select_target`), so a type layer is outlined anywhere inside its text, as it
 //! is picked there (#2591). The answer is cached per document revision and pointer pixel: a
 //! pointer resting on the canvas costs nothing per frame.
 
@@ -53,7 +53,7 @@ pub(crate) fn target(app: &mut PhotocraftApp, at: Option<[f64; 2]>, command: boo
         app.canvas_hover_layer = h.target_layer;
         return h.bounds;
     }
-    let target_layer = photocraft_engine::pick_cmds::auto_select_target(&st.doc, at[0], at[1], group);
+    let target_layer = photocraft_engine::pick_cmds::move_auto_select_target(&st.doc, at[0], at[1], group);
     let bounds = target_layer.and_then(|id| outline(&st.doc, id));
     let target_layer = if bounds.is_some() { target_layer } else { None };
     app.move_hover = Some(Hover { doc, revision, at, group, target_layer, bounds });
@@ -155,6 +155,15 @@ mod tests {
         // The empty top layer is clicked through to the painted one; the Background isn't outlined.
         assert_eq!(target(&mut app, Some([10.5, 12.0]), false, false), Some(a));
         assert_eq!(target(&mut app, Some([40.0, 40.0]), false, false), None);
+        app.session
+            .edit("paint top", |doc, active| {
+                let top = doc.layer_mut(active.unwrap()).unwrap();
+                top.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 32, 32), &[0.0, 0.0, 1.0, 1.0]);
+                top.locks.position = true;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(target(&mut app, Some([10.5, 12.0]), false, false), Some(a), "the rollover skips the position-locked top layer");
         // Nothing while a button is down or a drag runs.
         assert_eq!(target(&mut app, Some([10.5, 12.0]), false, true), None);
         // Auto-Select off: only with ⌘ held.
@@ -187,7 +196,8 @@ mod tests {
         assert_eq!(active_outline(&mut app, None, false, false), Some(a));
 
         // When a drag or transform is in progress, no outline:
-        app.guide_drag = Some(crate::rulers::GuideDrag { vertical: false, index: None, pos: 10.0, press: 10.0, over_ruler: false, flipped: false });
+        app.guide_drag =
+            Some(crate::rulers::GuideDrag { vertical: false, index: None, pos: 10.0, pointer: 10.0, press: 10.0, over_ruler: false, flipped: false });
         assert_eq!(active_outline(&mut app, None, false, false), None);
         app.guide_drag = None;
 

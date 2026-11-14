@@ -286,6 +286,9 @@ mod tests {
     /// Localized fuzzy and exact matches use Turkic casing while English aliases use root casing.
     #[test]
     fn azerbaijani_palette_keeps_dotted_i_and_english_aliases() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let az = crate::i18n::Lang::from_code("az").unwrap();
         assert!(super::bilingual_score(az, "ŞƏKİL", "Şəkil", "Image", "Şəkil", "Image").unwrap() >= 1000);
         assert_eq!(super::bilingual_score(az, "ŞƏKIL", "Şəkil", "Image", "Şəkil", "Image"), None);

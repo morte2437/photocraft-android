@@ -359,6 +359,7 @@ pub(crate) fn damage_since(
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
         && let Some(r) = crate::type_transform::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+            .or_else(|| crate::type_path_placement::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1))
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
@@ -420,9 +421,16 @@ pub(crate) fn damage_since(
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
+    // Between a dragged paragraph box's renders (and the document): the layer's old/new ink bounds.
+    if seen.0 == now.0
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::type_box_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
     let l = live_stroke(app, idx).filter(|l| seen.0 == now.0 && l.display_key() == now.1)?;
     let r = l.since(seen.1 ^ display_key)?;
-    Some(if r.is_empty() { r } else { r.inflate(effect_reach(&l.stroke.doc().layers)) })
+    Some(if r.is_empty() { r } else { r.inflate(effect_reach(&l.doc().layers)) })
 }
 
 /// Document `doc`'s canvas caches showed a preview that the edit just committed reproduces
@@ -440,7 +448,7 @@ pub(crate) fn shown_as_document(app: &mut PhotocraftApp, doc: photocraft_doc::Do
     let outputs: Vec<u32> = app.canvases.keys().filter(|k| k.0 == doc).map(|k| k.1).collect();
     for out in outputs {
         let (display, key) = canvas_display(app, &d, (out != 0 && out != GPU_OUTPUT).then_some(out));
-        let gpu_key = texture_key(display.as_deref());
+        let gpu_key = texture_key(display.as_deref(), &d);
         let Some(c) = app.canvases.get_mut(&(doc, out)) else { continue };
         if was_preview(c.preview_key ^ gpu_key) {
             c.preview_key = gpu_key;
@@ -487,7 +495,7 @@ pub(super) fn ensure_gpu(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     // viewport. Refresh the affected document region while Pattern Preview is enabled.
     let blend_visible = if app.ui.view.pattern_preview { doc.bounds() } else { visible };
     // The texture is shared by every display: only what it stores counts, not the monitor.
-    let display_key = texture_key(display.as_deref());
+    let display_key = texture_key(display.as_deref(), &doc);
     let seen = app.canvases.get(&(id, GPU_OUTPUT)).map(|c| (c.revision, c.preview_key));
     let damage_start = crate::gpu_canvas::now_ms();
     let mut damage = seen.and_then(|seen| damage_since(app, idx, seen, (revision, raw_key), display_key, last_damage));

@@ -77,6 +77,7 @@ mod resolution_axes;
 mod roundtrip;
 mod smart_contents_identity;
 mod smart_corpus;
+mod source_images;
 mod streaming_exr;
 mod svg;
 mod text_corpus;

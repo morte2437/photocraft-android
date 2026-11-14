@@ -295,9 +295,9 @@ pub fn nudge(app: &mut PhotocraftApp, dx: f64, dy: f64, duplicate_first: bool) {
     let moved = if duplicate_first {
         // A copy is a state of its own, folded with its move below.
         app.nudge_bundle.reset();
-        app.run("layer.translate", json!({"dx": dx, "dy": dy}))
+        app.run("layer.translate", crate::move_ui::pattern_wrap(app, json!({"dx": dx, "dy": dy})))
     } else {
-        crate::nudge_bundle::run(app, "layers", "layer.translate", json!({"dx": dx, "dy": dy}))
+        crate::nudge_bundle::run(app, "layers", "layer.translate", crate::move_ui::pattern_wrap(app, json!({"dx": dx, "dy": dy})))
     };
     match moved {
         // The reference names an arrow-key move "Nudge"; a bundled run is one step with that name.

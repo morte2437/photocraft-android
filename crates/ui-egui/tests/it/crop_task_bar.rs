@@ -379,7 +379,10 @@ fn the_bar_grows_for_cancel_and_done() {
 fn straighten_is_the_options_bar_straighten() {
     let mut h = harness();
     assert!(!photocraft_ui_egui::crop_straighten::mode(h.state()));
-    let at = widget(&h, "Straighten");
+    // The options-bar button and the task-bar one are both labelled "Straighten" now (#10888);
+    // click the one in the bar.
+    let bar = bar(&h).expect("the task bar");
+    let at = h.query_all_by_label("Straighten").map(|n| n.rect().center()).find(|p| bar.contains(*p)).expect("the task bar's Straighten");
     click_at(&mut h, at);
     assert!(photocraft_ui_egui::crop_straighten::mode(h.state()), "armed, as by the options bar's button");
     assert_eq!(h.state().ui.crop_rect, Some([0.0, 0.0, 400.0, 300.0]), "the click didn't reach the canvas");

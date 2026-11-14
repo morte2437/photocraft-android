@@ -645,7 +645,7 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
         return false;
     }
     let (display, _) = canvas_display(app, &doc, None);
-    let display_key = texture_key(display.as_deref());
+    let display_key = texture_key(display.as_deref(), &doc);
     let now = Identity { revision, preview: raw_key, display: display_key, size };
     let seen = app.streams.get(&id).and_then(|s| s.seen);
     if seen != Some(now) {

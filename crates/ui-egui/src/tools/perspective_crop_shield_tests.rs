@@ -95,3 +95,49 @@ fn the_shield_shows_with_a_quad_follows_a_drag_and_goes_away() {
     cancel(&mut app);
     assert_eq!(painted(&app), 0, "gone after cancel");
 }
+
+/// The shield polygons `draw_overlay` paints, in screen px (the same as document px here).
+fn shield_polygons(app: &PhotocraftApp) -> Vec<Vec<[f64; 2]>> {
+    let ctx = egui::Context::default();
+    let xf = ViewXform { rect: Rect::from_min_size(Pos2::ZERO, vec2(200.0, 150.0)), zoom: 1.0, center: [100.0, 75.0], flip: false, rotation: 0.0, aspect: 1.0 };
+    let mut o = ctx.run_ui(Default::default(), |ui| draw_overlay(app, ui.painter(), &xf));
+    o.textures_delta.clear();
+    o.shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Path(p) if p.fill == SHIELD => Some(p.points.iter().map(|v| [f64::from(v.x), f64::from(v.y)]).collect()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn dimmed(app: &PhotocraftApp, p: [f64; 2]) -> bool {
+    shield_polygons(app).iter().any(|poly| contains(poly, p))
+}
+
+#[test]
+fn the_shield_follows_a_corner_drag_and_a_move_drag() {
+    let mut app = app();
+    let ev = |app: &mut PhotocraftApp, e| assert!(pointer(app, e, egui::Modifiers::NONE));
+    app.ui.perspective_crop = Some([[20.0, 20.0], [180.0, 20.0], [180.0, 130.0], [20.0, 130.0]]);
+    let covered = |app: &PhotocraftApp| shield_polygons(app).iter().map(|p| area(p)).sum::<f64>();
+    assert!((covered(&app) - (area(&CANVAS) - 160.0 * 110.0)).abs() < 0.5, "{}", covered(&app));
+
+    // The bottom right corner dragged to (150, 100), the button still held.
+    ev(&mut app, ToolEvent::Down { x: 180.0, y: 130.0, pressure: 1.0 });
+    ev(&mut app, ToolEvent::Move { x: 150.0, y: 100.0, pressure: 1.0 });
+    assert!(matches!(app.pcrop.drag, Some(Drag::Corner { index: 2, .. })), "{:?}", app.pcrop.drag);
+    let q = [[20.0, 20.0], [180.0, 20.0], [150.0, 100.0], [20.0, 130.0]];
+    assert!((covered(&app) - (area(&CANVAS) - area(&q))).abs() < 0.5, "the shield follows the corner: {}", covered(&app));
+    assert!(dimmed(&app, [170.0, 120.0]), "the corner's old place is dimmed during the drag");
+    ev(&mut app, ToolEvent::Up { x: 150.0, y: 100.0 });
+
+    // The whole quad moved by (10, 5), the button still held.
+    ev(&mut app, ToolEvent::Down { x: 60.0, y: 60.0, pressure: 1.0 });
+    ev(&mut app, ToolEvent::Move { x: 70.0, y: 65.0, pressure: 1.0 });
+    assert!(matches!(app.pcrop.drag, Some(Drag::Move { .. })), "{:?}", app.pcrop.drag);
+    assert!(dimmed(&app, [22.0, 60.0]), "left of the moved quad is dimmed during the move");
+    assert!(!dimmed(&app, [185.0, 30.0]), "inside the moved quad is not dimmed during the move");
+    ev(&mut app, ToolEvent::Up { x: 70.0, y: 65.0 });
+    assert!(!dimmed(&app, [185.0, 30.0]) && dimmed(&app, [22.0, 60.0]), "and after it");
+}

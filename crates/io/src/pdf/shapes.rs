@@ -1,13 +1,11 @@
 //! Faithful vector subset for PDF shape export; unsupported shapes use raster fallback.
 
-use std::fmt::Write as _;
-
+use craft_pdf::write_raster::{ContentFillRule, ContentPath, ContentStroke, DeviceColor, PathElement};
 use photocraft_color::ColorMode;
 use photocraft_doc::{Fill, FillRule, LineCap, LineJoin, PathOp, ShapeLayer, StrokeAlign};
 
-/// Return a PDF path and fill operator for a directly representable shape.
-/// Coordinates remain in document pixels with y increasing down; the caller applies transforms.
-pub(super) fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> {
+/// Convert a directly representable PhotoCraft shape to neutral vector geometry.
+pub(super) fn shape_content(layer: &ShapeLayer, mode: ColorMode) -> Option<ContentPath> {
     if layer.has_soft_mask() || layer.path.inverted || layer.path.subpaths.len() != 1 {
         return None;
     }
@@ -20,7 +18,7 @@ pub(super) fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> 
         ColorMode::Cmyk => 4,
         _ => return None,
     };
-    let mut out = String::new();
+    let mut fill_color = None;
     if let Some(fill) = &layer.fill {
         let Fill::Solid(color) = fill else { return None };
         if color.mode != mode || !color.alpha.is_finite() || color.alpha != 1.0 || color.c[..channels].iter().any(|v| !v.is_finite()) {
@@ -30,15 +28,10 @@ pub(super) fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> 
             if !(0.0..=1.0).contains(value) {
                 return None;
             }
-            write!(out, "{value} ").ok()?;
         }
-        out.push_str(match mode {
-            ColorMode::Rgb => "rg\n",
-            ColorMode::Grayscale => "g\n",
-            ColorMode::Cmyk => "k\n",
-            _ => return None,
-        });
+        fill_color = Some((device_color(color.c, mode)?, content_fill_rule(layer.path.fill_rule)));
     }
+    let mut stroke_command = None;
     if let Some(stroke) = &layer.stroke {
         if stroke.align != StrokeAlign::Center || stroke.opacity != 1.0 || stroke.validate().is_err() || stroke.width <= 0.0 {
             return None;
@@ -51,14 +44,7 @@ pub(super) fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> 
             if !value.is_finite() || !(0.0..=1.0).contains(value) {
                 return None;
             }
-            write!(out, "{value} ").ok()?;
         }
-        out.push_str(match mode {
-            ColorMode::Rgb => "RG\n",
-            ColorMode::Grayscale => "G\n",
-            ColorMode::Cmyk => "K\n",
-            _ => return None,
-        });
         let cap = match stroke.cap {
             LineCap::Butt => 0,
             LineCap::Round => 1,
@@ -69,12 +55,15 @@ pub(super) fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> 
             LineJoin::Round => 1,
             LineJoin::Bevel => 2,
         };
-        writeln!(out, "{} w {cap} J {join} j {} M", stroke.width, stroke.miter_limit).ok()?;
-        out.push('[');
-        for dash in &stroke.dashes {
-            write!(out, "{} ", dash * stroke.width).ok()?;
-        }
-        writeln!(out, "] {} d", stroke.dash_offset * stroke.width).ok()?;
+        stroke_command = Some(ContentStroke {
+            color: device_color(stroke_color.c, mode)?,
+            width: f64::from(stroke.width),
+            cap,
+            join,
+            miter_limit: f64::from(stroke.miter_limit),
+            dashes: stroke.dashes.iter().map(|dash| f64::from(dash * stroke.width)).collect(),
+            dash_offset: f64::from(stroke.dash_offset * stroke.width),
+        });
     }
     let subpath = layer.path.subpaths.first()?;
     if !subpath.closed || subpath.knots.len() < 2 || subpath.op != PathOp::Combine {
@@ -84,23 +73,37 @@ pub(super) fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> 
     if !point_finite(first.anchor) {
         return None;
     }
-    writeln!(out, "{} {} m", first.anchor.x, first.anchor.y).ok()?;
+    let mut elements = vec![PathElement::MoveTo([first.anchor.x, first.anchor.y])];
     for segment in subpath.segments() {
         if segment.iter().any(|p| !point_finite(*p)) {
             return None;
         }
-        writeln!(out, "{} {} {} {} {} {} c", segment[1].x, segment[1].y, segment[2].x, segment[2].y, segment[3].x, segment[3].y).ok()?;
+        elements.push(PathElement::CubicTo([segment[1].x, segment[1].y], [segment[2].x, segment[2].y], [segment[3].x, segment[3].y]));
     }
-    out.push_str("h\n");
-    out.push_str(match (layer.fill.is_some(), layer.stroke.is_some(), layer.path.fill_rule) {
-        (true, false, FillRule::NonZero) => "f\n",
-        (true, false, FillRule::EvenOdd) => "f*\n",
-        (false, true, _) => "S\n",
-        (true, true, FillRule::NonZero) => "B\n",
-        (true, true, FillRule::EvenOdd) => "B*\n",
-        (false, false, _) => return None,
-    });
-    Some(out)
+    elements.push(PathElement::Close);
+    Some(ContentPath { elements, fill: fill_color, stroke: stroke_command })
+}
+
+fn device_color(values: [f32; 4], mode: ColorMode) -> Option<DeviceColor> {
+    Some(match mode {
+        ColorMode::Grayscale => DeviceColor::Gray(f64::from(values[0])),
+        ColorMode::Rgb => DeviceColor::Rgb([f64::from(values[0]), f64::from(values[1]), f64::from(values[2])]),
+        ColorMode::Cmyk => DeviceColor::Cmyk([f64::from(values[0]), f64::from(values[1]), f64::from(values[2]), f64::from(values[3])]),
+        _ => return None,
+    })
+}
+
+fn content_fill_rule(rule: FillRule) -> ContentFillRule {
+    match rule {
+        FillRule::NonZero => ContentFillRule::NonZero,
+        FillRule::EvenOdd => ContentFillRule::EvenOdd,
+    }
+}
+
+#[cfg(test)]
+fn shape_path(layer: &ShapeLayer, mode: ColorMode) -> Option<String> {
+    let path = shape_content(layer, mode)?;
+    craft_pdf::write_raster::encode_vector_content(&craft_pdf::write_raster::VectorContent { operations: vec![craft_pdf::write_raster::ContentOp::Path(path)] })
 }
 
 fn point_finite(p: photocraft_geom::Point) -> bool {

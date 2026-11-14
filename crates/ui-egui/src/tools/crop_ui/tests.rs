@@ -201,13 +201,15 @@ fn the_options_bar_reset_button_resets_a_changed_frame() {
     });
     h.state_mut().ui.tool = Tool::Crop;
     h.run_steps(8);
-    let button = |h: &egui_kittest::Harness<'_, PhotocraftApp>| h.get_by_role_and_label(egui::accesskit::Role::Button, "Reset").accesskit_node().is_disabled();
+    let button = |h: &egui_kittest::Harness<'_, PhotocraftApp>| {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Reset the crop box, image rotation, and aspect ratio settings").accesskit_node().is_disabled()
+    };
     assert!(button(&h), "an untouched frame has nothing to reset");
     h.state_mut().ui.crop_rect = Some([50.0, 20.0, 120.0, 70.0]);
     h.state_mut().crop.default_frame = false;
     h.run_steps(4);
     assert!(!button(&h), "a changed frame can be reset");
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Reset").click();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Reset the crop box, image rotation, and aspect ratio settings").click();
     h.run_steps(4);
     assert_eq!(h.state().ui.crop_rect, Some([0.0, 0.0, 200.0, 100.0]));
     assert!(button(&h));

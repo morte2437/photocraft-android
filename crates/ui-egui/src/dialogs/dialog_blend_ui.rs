@@ -3,10 +3,7 @@
 //! Both commands support the same layer blend modes, opacity and transparency lock.
 //! Keeping one widget and validation implementation prevents their options diverging.
 
-use egui::{Align2, Sense, pos2, vec2};
 use serde_json::{Map, Value, json};
-
-use crate::theme::Tokens;
 
 /// Validate a persisted blending choice before restoring it from Preferences.
 pub fn valid(key: &str, v: &Value) -> bool {
@@ -18,8 +15,16 @@ pub fn valid(key: &str, v: &Value) -> bool {
     }
 }
 
-/// UI for the identical Blending section of Fill and Stroke.
-pub fn body(ui: &mut egui::Ui, fields: &mut Map<String, Value>, prefix: &str) {
+/// The Blending section's labels (English sources), for the label column the section shares with
+/// the dialog above it: Fill and Stroke measure them with their own (#9635).
+pub const LABELS: [&str; 2] = ["Mode:", "Opacity:"];
+
+/// UI for the identical Blending section of Fill and Stroke, its labels in the dialog's
+/// `label_w`-wide column (see [`LABELS`]).
+pub fn body(ui: &mut egui::Ui, fields: &mut Map<String, Value>, prefix: &str, label_w: f32) {
+    let label = |ui: &mut egui::Ui, text: &str| {
+        crate::widgets::column_label(ui, text, label_w);
+    };
     ui.add_space(4.0);
     crate::widgets::section_label(ui, tl!("Blending"));
     crate::widgets::hairline(ui);
@@ -45,12 +50,6 @@ pub fn body(ui: &mut egui::Ui, fields: &mut Map<String, Value>, prefix: &str) {
             fields.insert("preserveTransparency".into(), json!(preserve));
         }
     });
-}
-
-fn label(ui: &mut egui::Ui, text: &str) {
-    let t = Tokens::get(ui.ctx());
-    let (r, _) = ui.allocate_exact_size(vec2(112.0, 22.0), Sense::hover());
-    ui.painter().text(pos2(r.right() - 6.0, r.center().y), Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), t.text_dim);
 }
 
 /// The `mode` param naming a blend mode ("normal", "colorBurn"…), parsed by the engine.

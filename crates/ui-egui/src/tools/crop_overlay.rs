@@ -428,13 +428,7 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 /// The options bar's overlay button and its menu (Photoshop's "Set the overlay options for the
 /// Crop tool").
 pub fn options_button(o: &mut ToolOptions, ui: &mut egui::Ui) {
-    let r = crate::icons::button(
-        ui,
-        o.crop_overlay.icon(),
-        24.0,
-        false,
-        &format!("{}  ({})", tl!("Set the overlay options for the Crop tool"), tl!(o.crop_overlay.label())),
-    );
+    let r = crate::icons::button(ui, o.crop_overlay.icon(), 24.0, false, tl!("Set the overlay options for the Crop Tool"));
     egui::Popup::menu(&r).show(|ui| {
         ui.set_min_width(220.0);
         // Check mark, then the entry's icon (the overlays have one, #10889), then the label.

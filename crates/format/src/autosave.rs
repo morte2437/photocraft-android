@@ -189,6 +189,18 @@ fn worker(rx: Receiver<Job>, bundle: PathBuf, sidecar: PathBuf, last: Arc<Mutex<
 /// bundle and listed it twice, or not at all (#9034). A rename swaps the name in one step, and
 /// recovery data is private to the app, so there is no metadata to keep.
 fn write_sidecar(path: &Path, bytes: &[u8]) -> Result<()> {
+    // The atomic writer follows a symlink at its destination; a link planted at the sidecar's
+    // name in the recovery folder must not redirect the write, so it is replaced, not followed.
+    if let Ok(meta) = std::fs::symlink_metadata(path)
+        && meta.file_type().is_symlink()
+    {
+        // Windows removes a directory symlink with `remove_dir`, not `remove_file`.
+        #[cfg(windows)]
+        let dir_link = std::os::windows::fs::FileTypeExt::is_symlink_dir(&meta.file_type());
+        #[cfg(not(windows))]
+        let dir_link = false;
+        if dir_link { std::fs::remove_dir(path)? } else { std::fs::remove_file(path)? }
+    }
     struct SidecarFs;
     impl crate::atomic::AtomicFs for SidecarFs {
         // As before: Windows refuses a read-only sidecar up front, Unix replaces it.
@@ -310,7 +322,7 @@ fn sidecarless_entry(recovery_dir: &Path, bundle: &Path) -> Option<RecoveryEntry
         return None;
     }
     let meta = std::fs::symlink_metadata(bundle.join(crate::store::MANIFEST)).ok().filter(|m| m.is_file())?;
-    let source = crate::store::DirSource { root: bundle.to_path_buf() };
+    let source = crate::store::DirSource::new(bundle, &crate::LoadOptions::default()).ok()?;
     let manifest = crate::store::read_manifest(&source, &crate::LoadOptions::default()).ok()?;
     let saved_at = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
     let info = RecoveryInfo { key: key.to_string(), document_name: manifest.document.name, original_path: None, saved_at, revision: 0 };
@@ -451,7 +463,13 @@ fn sweep_orphans(recovery_dir: &Path, min_age: std::time::Duration) {
         }
         // Anything at the sidecar's path (even a broken one) keeps the bundle.
         let has_sidecar = std::fs::symlink_metadata(recovery_dir.join(format!("{key}.json"))).is_ok();
-        let parts = [path.clone(), path.join(craft_pcraft_format::TILES_DIR), path.join(craft_pcraft_format::BLOBS_DIR)];
+        // A linked `tiles/` or `blobs/` is left alone: sweeping it would delete files elsewhere.
+        let real_dir = |p: PathBuf| std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()).then_some(p);
+        let parts: Vec<PathBuf> =
+            [Some(path.clone()), real_dir(path.join(craft_pcraft_format::TILES_DIR)), real_dir(path.join(craft_pcraft_format::BLOBS_DIR))]
+                .into_iter()
+                .flatten()
+                .collect();
         // A committed bundle is recoverable work: keep exactly what `list_recovery` lists.
         if !has_sidecar && sidecarless_entry(recovery_dir, &path).is_none() && parts.iter().all(|p| untouched_for(p, min_age, true)) {
             let _ = std::fs::remove_dir_all(&path);
@@ -629,6 +647,36 @@ mod tests {
         sweep_orphans(&dir, std::time::Duration::ZERO);
         assert!(!partial.exists() && !broken.exists());
         assert!(dir.join("first.pcraft").is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_in_the_recovery_folder_are_replaced_or_skipped_never_followed() {
+        let dir = std::env::temp_dir().join(format!(
+            "pcraft-links-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+        ));
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        // A sidecar name that links to a file elsewhere: the write replaces the link.
+        let victim = outside.join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        let sidecar = dir.join("k.json");
+        std::os::unix::fs::symlink(&victim, &sidecar).unwrap();
+        write_sidecar(&sidecar, b"{}").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&sidecar).unwrap(), b"{}");
+        // A bundle whose `tiles` links elsewhere: the sweep leaves the linked folder's files.
+        let stale = outside.join(".x.4294967294-0.pcsave.tmp");
+        std::fs::write(&stale, b"tmp").unwrap();
+        let bundle = dir.join("doc-1.pcraft");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::os::unix::fs::symlink(&outside, bundle.join(craft_pcraft_format::TILES_DIR)).unwrap();
+        std::fs::write(dir.join("doc-1.json"), b"{}").unwrap();
+        sweep_orphans(&dir, std::time::Duration::ZERO);
+        assert!(stale.is_file(), "files behind a linked tiles folder are not swept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

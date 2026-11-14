@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Stroke;
 use crate::replace::{Limits, Sampling};
-use crate::retouch::{Footprint, Region, alpha_index, apply_dab_stroke};
+use crate::retouch::{Footprint, Region, StrokeTooLarge, alpha_index, apply_dab_stroke};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -109,9 +109,9 @@ fn graded_weight(d: f32, tol: f32) -> f32 {
 
 /// Erase along `stroke`. The brush opacity is ignored (Photoshop's Background Eraser has none);
 /// the selection limits the effect. Returns the damaged rectangle; empty when the surface has no
-/// alpha channel.
-pub fn apply_background_eraser(target: &mut Surface, stroke: &Stroke, bs: &BgEraseSettings, selection: Option<&Surface>) -> Rect {
-    let Some(effect) = background_eraser_effect(target, bs) else { return Rect::EMPTY };
+/// alpha channel, an error when the stroke is too large to run.
+pub fn apply_background_eraser(target: &mut Surface, stroke: &Stroke, bs: &BgEraseSettings, selection: Option<&Surface>) -> Result<Rect, StrokeTooLarge> {
+    let Some(effect) = background_eraser_effect(target, bs) else { return Ok(Rect::EMPTY) };
     apply_dab_stroke(target, &background_eraser_stroke(stroke), selection, false, 0, effect)
 }
 
@@ -340,7 +340,7 @@ mod tests {
                 let fmt = PixelFormat::new(mode, sample, true);
                 let mut s = setup(fmt);
                 let bs = BgEraseSettings { sampling: Sampling::Once, limits: Limits::Discontiguous, tolerance: 0.05, ..Default::default() };
-                let d = apply_background_eraser(&mut s, &stroke(&[(20.0, 20.0), (60.0, 20.0)]), &bs, None);
+                let d = apply_background_eraser(&mut s, &stroke(&[(20.0, 20.0), (60.0, 20.0)]), &bs, None).unwrap();
                 assert!(!d.is_empty());
                 assert_eq!(alpha(&s, 20, 20), 0.0, "{fmt:?} green under the hotspot erased");
                 assert_eq!(alpha(&s, 45, 20), 1.0, "{fmt:?} blue kept");
@@ -354,13 +354,13 @@ mod tests {
         let fmt = PixelFormat::RGBA8;
         let mut s = setup(fmt);
         let bs = BgEraseSettings { sampling: Sampling::Continuous, limits: Limits::Discontiguous, tolerance: 0.05, ..Default::default() };
-        apply_background_eraser(&mut s, &stroke(&[(20.0, 20.0), (60.0, 20.0)]), &bs, None);
+        apply_background_eraser(&mut s, &stroke(&[(20.0, 20.0), (60.0, 20.0)]), &bs, None).unwrap();
         assert_eq!(alpha(&s, 20, 20), 0.0);
         assert_eq!(alpha(&s, 60, 20), 0.0, "blue erased once the hotspot reached it");
         // Background swatch = blue: only blue goes, wherever the hotspot is.
         let mut t = setup(fmt);
         let bs = BgEraseSettings { sampling: Sampling::BackgroundSwatch, background: BLUE, ..bs };
-        apply_background_eraser(&mut t, &stroke(&[(30.0, 20.0), (50.0, 20.0)]), &bs, None);
+        apply_background_eraser(&mut t, &stroke(&[(30.0, 20.0), (50.0, 20.0)]), &bs, None).unwrap();
         assert_eq!(alpha(&t, 30, 20), 1.0);
         assert_eq!(alpha(&t, 50, 20), 0.0);
     }
@@ -375,14 +375,14 @@ mod tests {
         for (limits, island_erased) in [(Limits::Contiguous, false), (Limits::FindEdges, false), (Limits::Discontiguous, true)] {
             let mut t = s.clone();
             let bs = BgEraseSettings { sampling: Sampling::Once, limits, tolerance: 0.05, ..Default::default() };
-            apply_background_eraser(&mut t, &stroke(&[(20.0, 20.0)]), &bs, None);
+            apply_background_eraser(&mut t, &stroke(&[(20.0, 20.0)]), &bs, None).unwrap();
             assert_eq!(alpha(&t, 31, 20) == 0.0, island_erased, "{limits:?}");
             assert_eq!(alpha(&t, 20, 20), 0.0);
         }
         // Protecting a foreground equal to the sampled colour erases nothing.
         let mut t = s.clone();
         let bs = BgEraseSettings { sampling: Sampling::Once, tolerance: 0.05, protect_foreground: true, foreground: GREEN, ..Default::default() };
-        apply_background_eraser(&mut t, &stroke(&[(20.0, 20.0)]), &bs, None);
+        apply_background_eraser(&mut t, &stroke(&[(20.0, 20.0)]), &bs, None).unwrap();
         assert_eq!(t, s);
     }
 
@@ -399,25 +399,25 @@ mod tests {
         let base = BgEraseSettings { limits: Limits::Discontiguous, tolerance: 0.01, ..Default::default() };
         let protect = BgEraseSettings { protect_foreground: true, foreground: STAND_IN, foreground_cmyk: picked, ..base.clone() };
         let mut t = s.clone();
-        apply_background_eraser(&mut t, &st, &protect, None);
+        apply_background_eraser(&mut t, &st, &protect, None).unwrap();
         assert_eq!(alpha(&t, 40, 20), 1.0, "the picked foreground inks are protected");
         assert_eq!(alpha(&t, 10, 20), 0.0, "white erased");
         let swatch = BgEraseSettings { sampling: Sampling::BackgroundSwatch, background: STAND_IN, background_cmyk: picked, ..base.clone() };
         let mut t = s.clone();
-        apply_background_eraser(&mut t, &st, &swatch, None);
+        apply_background_eraser(&mut t, &st, &swatch, None).unwrap();
         assert_eq!(alpha(&t, 40, 20), 0.0, "the picked background inks are erased fully");
         assert_eq!(alpha(&t, 10, 20), 1.0, "white kept");
         // Inks picked for another colour, and non-CMYK targets, use the stand-in as before.
         let stale = BgEraseSettings { background_cmyk: Some(([0.5; 3], [1.0, 0.0, 0.0, 0.0])), ..swatch.clone() };
         let mut t = s.clone();
-        apply_background_eraser(&mut t, &st, &stale, None);
+        apply_background_eraser(&mut t, &st, &stale, None).unwrap();
         assert_eq!(alpha(&t, 40, 20), 1.0, "stale inks are ignored");
         let rgb = PixelFormat::RGBA8;
         let mut r = Surface::new(rgb);
         r.fill_rect(Rect::new(0, 0, 80, 40), &from_rgba(&rgb, STAND_IN));
         let (mut with, mut without) = (r.clone(), r.clone());
-        apply_background_eraser(&mut with, &st, &swatch, None);
-        apply_background_eraser(&mut without, &st, &BgEraseSettings { background_cmyk: None, ..swatch }, None);
+        apply_background_eraser(&mut with, &st, &swatch, None).unwrap();
+        apply_background_eraser(&mut without, &st, &BgEraseSettings { background_cmyk: None, ..swatch }, None).unwrap();
         assert_eq!(with, without, "an RGB target ignores the inks");
     }
 
@@ -438,7 +438,7 @@ mod tests {
             background_cmyk: Some(([STAND_IN[0], STAND_IN[1], STAND_IN[2]], INKS)),
             ..Default::default()
         };
-        apply_background_eraser(&mut s, &stroke(&[(10.0, 20.0), (70.0, 20.0)]), &bs, None);
+        apply_background_eraser(&mut s, &stroke(&[(10.0, 20.0), (70.0, 20.0)]), &bs, None).unwrap();
         assert_eq!(alpha(&s, 40, 20), 0.0, "the stored inks are erased fully");
     }
 
@@ -453,7 +453,7 @@ mod tests {
         for sampling in [Sampling::Continuous, Sampling::Once] {
             let mut t = s.clone();
             let bs = BgEraseSettings { sampling, limits: Limits::Contiguous, ..Default::default() };
-            apply_background_eraser(&mut t, &st, &bs, None);
+            apply_background_eraser(&mut t, &st, &bs, None).unwrap();
             // Everything within radius − 1 of the line.
             for y in 6..24 {
                 for x in 10..51 {
@@ -470,18 +470,18 @@ mod tests {
         let mut sel = Surface::new(PixelFormat::GRAY8);
         sel.fill_rect(Rect::new(0, 0, 20, 40), &[1.0]);
         let bs = BgEraseSettings { sampling: Sampling::Once, limits: Limits::Discontiguous, tolerance: 0.05, ..Default::default() };
-        apply_background_eraser(&mut s, &stroke(&[(20.0, 20.0)]), &bs, Some(&sel));
+        apply_background_eraser(&mut s, &stroke(&[(20.0, 20.0)]), &bs, Some(&sel)).unwrap();
         assert_eq!(alpha(&s, 15, 20), 0.0);
         assert_eq!(alpha(&s, 25, 20), 1.0, "outside the selection kept");
         // Sampling a transparent hotspot erases nothing; NaN tolerance acts as 0; no alpha → no-op.
         let mut t = Surface::new(fmt);
-        assert!(apply_background_eraser(&mut t, &stroke(&[(5.0, 5.0)]), &bs, None).width() > 0);
+        assert!(apply_background_eraser(&mut t, &stroke(&[(5.0, 5.0)]), &bs, None).unwrap().width() > 0);
         assert_eq!(t.content_bounds(), Rect::EMPTY);
         let mut u = setup(fmt);
         let nan = BgEraseSettings { tolerance: f32::NAN, ..bs.clone() };
-        apply_background_eraser(&mut u, &stroke(&[(20.0, 20.0)]), &nan, None);
+        apply_background_eraser(&mut u, &stroke(&[(20.0, 20.0)]), &nan, None).unwrap();
         assert_eq!(alpha(&u, 20, 20), 0.0, "exact match still erased at tolerance 0");
         let mut g = Surface::new(PixelFormat::GRAY8);
-        assert!(apply_background_eraser(&mut g, &stroke(&[(5.0, 5.0)]), &bs, None).is_empty());
+        assert!(apply_background_eraser(&mut g, &stroke(&[(5.0, 5.0)]), &bs, None).unwrap().is_empty());
     }
 }

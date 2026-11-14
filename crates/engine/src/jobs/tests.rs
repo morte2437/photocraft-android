@@ -928,7 +928,7 @@ fn an_exr_path_open_decodes_in_bands_and_cancels_cleanly() {
 fn an_open_that_asks_about_its_profile_holds_the_document_back() {
     let mut src = session(8, 8);
     let mut doc = (*src.active().unwrap().doc).clone();
-    doc.icc_profile = Some(photocraft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes());
     let bytes = Arc::new(photocraft_io::export(&doc, "x.png", &Default::default()).unwrap().bytes);
     src.close(0);
     let mut s = Session::new();
@@ -1105,6 +1105,71 @@ fn a_job_lands_in_the_recording_it_was_started_in_only() {
     s.wait_job(id).unwrap();
     s.execute("actions.stop", json!({})).unwrap();
     assert_eq!(action_steps(&mut s, "A"), ["filter.blur.gaussianBlur"]);
+}
+
+/// The automation policy the next tests stand in for: Gaussian Blur is refused.
+fn deny_blur(id: &str, _: &Value) -> Result<()> {
+    if id == "filter.blur.gaussianBlur" { Err(EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+}
+
+/// The gate a control client's request runs under: its policy admitted the step, so it runs.
+fn admit(_: &str, _: &Value) -> Result<()> {
+    Ok(())
+}
+
+/// Whether the action named `name` is marked as written by automation.
+fn marked(s: &Session, name: &str) -> bool {
+    s.actions.list.iter().find(|a| a.name == name).unwrap().automation
+}
+
+/// A background step a gated client starts during the user's recording marks the recorded action
+/// as automation's, though the job is applied after the client's gate is removed: played
+/// ungated later (the user's key, the panel), the step still meets automation's gate.
+#[test]
+fn a_job_a_gated_client_starts_into_a_recording_keeps_its_gate_when_applied_ungated() {
+    let mut s = session(40, 30);
+    s.automation_gate = Some(deny_blur);
+    s.execute("actions.record", json!({"name": "Shared"})).unwrap();
+    s.authorize = Some(admit);
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.authorize = None;
+    s.wait_job(id).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(action_steps(&mut s, "Shared"), ["filter.blur.gaussianBlur"]);
+    assert!(marked(&s, "Shared"), "the client's background step marks the recorded action");
+    let r = s.execute("actions.play", json!({"action": "Shared"})).unwrap();
+    assert_eq!(r["failed"]["id"], "filter.blur.gaussianBlur", "{r}");
+    assert!(r["failed"]["error"].as_str().unwrap().contains("disabled"), "{r}");
+    assert!(s.authorize.is_none(), "the kept gate is removed after playback");
+}
+
+/// The converse: the user's own job, applied while a gated client waits on it, stays the user's.
+/// A gated client's job applied during a recording started after it marks nothing, since that
+/// recording doesn't get its step.
+#[test]
+fn a_users_job_applied_while_a_gated_client_waits_stays_the_users() {
+    let mut s = session(40, 30);
+    s.automation_gate = Some(deny_blur);
+    s.execute("actions.record", json!({"name": "Mine"})).unwrap();
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.authorize = Some(admit);
+    s.wait_job(id).unwrap();
+    s.authorize = None;
+    s.execute("actions.stop", json!({})).unwrap();
+    assert_eq!(action_steps(&mut s, "Mine"), ["filter.blur.gaussianBlur"]);
+    assert!(!marked(&s, "Mine"), "the user's job is not marked by the caller that applied it");
+    let r = s.execute("actions.play", json!({"action": "Mine"})).unwrap();
+    assert!(r.get("failed").is_none(), "{r}");
+
+    // A gated client's job started before the user records lands outside that recording.
+    s.authorize = Some(admit);
+    let id = job(s.start("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap());
+    s.authorize = None;
+    s.execute("actions.record", json!({"name": "Later"})).unwrap();
+    s.wait_job(id).unwrap();
+    s.execute("actions.stop", json!({})).unwrap();
+    assert!(action_steps(&mut s, "Later").is_empty());
+    assert!(!marked(&s, "Later"), "a recording that doesn't get the step is not marked");
 }
 
 /// Exercise six terminal job routes so prepared paint snapshots cannot outlive a completed or discarded job.

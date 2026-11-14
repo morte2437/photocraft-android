@@ -12,7 +12,7 @@ use super::{ONE_TO_100, ZERO_TO_100};
 use crate::PhotocraftApp;
 use crate::state::{DialogKind, Tool};
 
-fn bar(tool: Tool) -> Harness<'static, PhotocraftApp> {
+pub(super) fn bar(tool: Tool) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 80, "height": 80})).unwrap();
     app.ui.tool = tool;
@@ -23,7 +23,7 @@ fn bar(tool: Tool) -> Harness<'static, PhotocraftApp> {
 }
 
 /// Types `text` into the field named `label`, then Tabs out of it.
-fn type_into(h: &mut Harness<'static, PhotocraftApp>, label: &str, text: &str) {
+pub(super) fn type_into(h: &mut Harness<'static, PhotocraftApp>, label: &str, text: &str) {
     // The fields take their captions' names ("Opacity:").
     let label = &format!("{label}:");
     h.query_all_by_role(Role::SpinButton)
@@ -38,12 +38,12 @@ fn type_into(h: &mut Harness<'static, PhotocraftApp>, label: &str, text: &str) {
     h.run_steps(3);
 }
 
-fn alerts(h: &Harness<'static, PhotocraftApp>) -> Vec<String> {
+pub(super) fn alerts(h: &Harness<'static, PhotocraftApp>) -> Vec<String> {
     h.state().ui.dialogs.iter().filter(|d| d.kind == DialogKind::Error).filter_map(|d| d.fields.get("message")?.as_str().map(str::to_owned)).collect()
 }
 
 /// OK on the alert, as `ui.dialog.confirm` presses it (this harness draws only the bar).
-fn ok(h: &mut Harness<'static, PhotocraftApp>) {
+pub(super) fn ok(h: &mut Harness<'static, PhotocraftApp>) {
     let id = h.state().ui.dialogs.iter().find(|d| d.kind == DialogKind::Error).map(|d| d.id).expect("an alert");
     crate::dialogs::confirm(h.state_mut(), id).unwrap();
     h.run_steps(3);

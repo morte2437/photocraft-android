@@ -189,12 +189,17 @@ fn guard_distinguishes_labels_from_identifiers_and_comments() {
 
 #[test]
 fn catalogs_do_not_restore_retired_display_names() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/i18n");
-    for entry in std::fs::read_dir(dir).expect("catalog directory") {
-        let path = entry.expect("catalog entry").path();
-        if path.extension().is_none_or(|ext| ext != "tsv") {
+    // The catalogs live in craft-i18n (`CRAFT_I18N_DIR`, at `craft-i18n.rev`); without it there is nothing to scan.
+    let Some(root) = std::env::var_os("CRAFT_I18N_DIR").filter(|d| !d.is_empty()) else {
+        return;
+    };
+    let mut scanned = 0;
+    for entry in std::fs::read_dir(PathBuf::from(root).join("locales")).expect("craft-i18n locales directory") {
+        let path = entry.expect("locale entry").path().join("photocraft.tsv");
+        if !path.is_file() {
             continue;
         }
+        scanned += 1;
         let source = std::fs::read_to_string(&path).expect("UTF-8 catalog");
         for line in source.lines().filter(|line| !line.starts_with('#')) {
             let columns: Vec<_> = line.split('\t').collect();
@@ -207,6 +212,7 @@ fn catalogs_do_not_restore_retired_display_names() {
             }
         }
     }
+    assert!(scanned > 30, "only {scanned} photocraft.tsv catalogs under CRAFT_I18N_DIR");
 }
 
 #[test]

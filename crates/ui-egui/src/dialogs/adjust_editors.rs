@@ -36,8 +36,8 @@ pub(crate) use basic::PHOTO_FILTER_MODE;
 pub(crate) use basic::row_value;
 #[cfg(test)]
 use basic::track_stops;
+pub use basic::{apply_auto, reset_adjustment_editor, reset_color_balance};
 use basic::{black_white, brightness_contrast, channel_mixer, color_balance, photo_filter, sliders, threshold};
-pub use basic::{reset_adjustment_editor, reset_color_balance};
 use curves::curves;
 #[cfg(test)]
 use curves::{CURVE_HANDLE_SIZE, curve_graph};
@@ -96,6 +96,8 @@ pub struct Edit {
     pub commit: bool,
     /// Open the host's gradient-file dialog without changing adjustment parameters.
     pub import_gradients: bool,
+    /// Black & White's Auto: the host fills in the weights for its image ([`apply_auto`]).
+    pub auto: bool,
 }
 
 impl Edit {
@@ -103,6 +105,7 @@ impl Edit {
         self.changed |= o.changed;
         self.commit |= o.commit;
         self.import_gradients |= o.import_gradients;
+        self.auto |= o.auto;
     }
     fn discrete(changed: bool) -> Self {
         Edit { changed, commit: changed, ..Default::default() }
@@ -130,7 +133,7 @@ pub struct EditorCx {
     /// Preferences ▸ Interface ▸ Dynamic Color Sliders: colour tracks on the colour sliders
     /// (off: the plain track).
     pub dynamic_color_sliders: bool,
-    /// Image › Curves with a single Channels-panel target: that channel only (#5335).
+    /// Image › Levels/Curves with a single Channels-panel target: that channel only (#5335).
     pub isolated_curve: Option<photocraft_engine::channel_cmds::IsolatedCurveChannel>,
 }
 
@@ -238,6 +241,30 @@ fn label(ui: &mut egui::Ui, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #8351: a Gradient Map that keeps Photoshop's gradient shows and edits its stops, not the
+    /// dense baked ones; its midpoints follow added and removed stops.
+    #[test]
+    fn gradient_map_editor_edits_photoshops_stops() {
+        use super::gradient_map::{read_stops, write_stops};
+        let baked: Vec<Value> = (0..=96).map(|k| json!([k as f64 / 96.0, "#808080"])).collect();
+        let mut v =
+            json!({"stops": baked, "source": {"stops": [[0, "#000000"], [1, "#ffffff"]], "midpoints": [0.3], "smoothness": 0.8, "method": "perceptual"}});
+        let stops = read_stops(&v);
+        assert_eq!(stops.len(), 2, "the editor shows Photoshop's two stops");
+        let mut three = stops.clone();
+        three.push((0.5, [1.0, 0.0, 0.0]));
+        write_stops(&mut v, &three);
+        assert_eq!(v["source"]["stops"].as_array().map(Vec::len), Some(3));
+        assert_eq!(v["source"]["midpoints"], json!([0.3, 0.5]), "the new segment starts halfway");
+        assert_eq!(v["stops"].as_array().map(Vec::len), Some(97), "the baked stops are the engine's to redo");
+        write_stops(&mut v, &stops);
+        assert_eq!(v["source"]["midpoints"], json!([0.3]));
+        // Without a source the map's own stops are edited.
+        let mut plain = json!({"stops": [[0, "#000000"], [1, "#ffffff"]]});
+        write_stops(&mut plain, &three);
+        assert_eq!(plain["stops"].as_array().map(Vec::len), Some(3));
+    }
 
     #[test]
     fn saturation_track_follows_the_hue() {

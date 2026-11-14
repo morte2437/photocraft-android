@@ -19,7 +19,9 @@ fi
 
 TMP="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 KEYCHAIN="$TMP/photocraft-signing.keychain-db"
-CERT="$TMP/photocraft-signing.p12"
+# A fresh, private file (mktemp creates it exclusively, mode 0600): a predictable name could be
+# pre-created by another account, and redirection would keep that file's owner and mode.
+CERT="$(mktemp "$TMP/photocraft-signing.XXXXXX")"
 KC_PASS="${KEYCHAIN_PASSWORD:-$(openssl rand -hex 24)}"
 
 trap 'rm -f "$CERT"' EXIT

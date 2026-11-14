@@ -183,7 +183,7 @@ fn plld_unreadable_warps() {
 /// `SoLd` data with a 50 × 25 source, the quad `trnf` and, when given, a custom warp whose
 /// 16 control points are `pts`.
 fn sold_with_warp(trnf: [f64; 8], pts: Option<&[[f64; 2]]>) -> Vec<u8> {
-    use photocraft_psd::descriptor::ObjectArray;
+    use craft_psd::descriptor::ObjectArray;
     let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
     let mut d = Descriptor::new("null")
         .with("Idnt", Value::Text(UnicodeString::new_nul("uuid-1")))
@@ -214,7 +214,7 @@ fn sold_with_warp(trnf: [f64; 8], pts: Option<&[[f64; 2]]>) -> Vec<u8> {
 /// descriptor with `deformNumCols` × `deformNumRows` control points and the patch boundaries
 /// in `quiltSliceX` / `quiltSliceY`. With `plain_warp`, a `warpNone` `warp` key sits next to it.
 fn sold_with_quilt(trnf: [f64; 8], cols: f64, rows: f64, sx: &[f64], sy: &[f64], pts: &[[f64; 2]], plain_warp: bool) -> Vec<u8> {
-    use photocraft_psd::descriptor::ObjectArray;
+    use craft_psd::descriptor::ObjectArray;
     let e = |t: &str, v: &str| Value::Enumerated { type_id: Id::new(t), value: Id::new(v) };
     let bounds = || {
         Descriptor::new("Rctn")

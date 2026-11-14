@@ -177,6 +177,73 @@ fn pen_custom_undo_binding_and_menu_retract_pending_points() {
     assert!(app.ui.pen.is_none());
 }
 
+/// Verifies pressing Escape with a custom undo shortcut cancels an active type path preview without popping document history.
+#[test]
+fn escape_rebound_to_undo_cancels_type_path_preview_before_dispatch() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
+    app.sync_views();
+    app.ui.tool = Tool::PathSelection;
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[20, 100], [180, 100]]}]}})).unwrap();
+    app.ui.selected_path = Some("work".into());
+    app.run("type.create", json!({"text": "ABC", "x": 20, "y": 100})).unwrap();
+    app.run("type.attachToPath", json!({"start": 20})).unwrap();
+    app.run("type.setPathPlacement", json!({"end": 100})).unwrap();
+    app.ui.views[0].zoom = 1.0;
+
+    crate::type_path_placement::pointer(&mut app, crate::canvas::ToolEvent::Down { x: 40.0, y: 90.0, pressure: 1.0 });
+    crate::type_path_placement::pointer(&mut app, crate::canvas::ToolEvent::Move { x: 50.0, y: 90.0, pressure: 1.0 });
+    assert!(app.ui.type_path_drag.is_some(), "type path drag/preview must be active");
+
+    app.session.prefs.edit(|p| p.shortcuts.insert("edit.undo".into(), "Escape".into()));
+
+    let history_steps = app.session.active().unwrap().history.entries().len();
+    let revision = app.session.active().unwrap().revision;
+    let document = app.session.active().unwrap().doc.clone();
+    assert!(history_steps > 0);
+
+    let ctx = egui::Context::default();
+    press_key(&mut app, &ctx, Key::Escape, Modifiers::NONE);
+
+    assert!(app.ui.type_path_drag.is_none(), "type path preview must be cancelled by Escape");
+    assert_eq!(app.session.active().unwrap().revision, revision);
+    assert!(std::sync::Arc::ptr_eq(&app.session.active().unwrap().doc, &document));
+    assert_eq!(app.session.active().unwrap().history.entries().len(), history_steps, "existing history must remain intact (edit.undo must not be dispatched)");
+}
+
+/// Verifies tool key shortcuts cancel active type path placement capture and releasing afterwards does not commit placement changes.
+#[test]
+fn tool_shortcut_cancels_type_path_placement_and_release_does_not_commit() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
+    app.sync_views();
+    app.ui.tool = Tool::PathSelection;
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[20, 100], [180, 100]]}]}})).unwrap();
+    app.ui.selected_path = Some("work".into());
+    app.run("type.create", json!({"text": "ABC", "x": 20, "y": 100})).unwrap();
+    app.run("type.attachToPath", json!({"start": 20})).unwrap();
+    app.run("type.setPathPlacement", json!({"end": 100})).unwrap();
+    app.ui.views[0].zoom = 1.0;
+
+    let xf = crate::canvas::ViewXform::active(&app).unwrap();
+    assert!(crate::type_path_placement::pointer(&mut app, crate::canvas::ToolEvent::Down { x: 40.0, y: 90.0, pressure: 1.0 }));
+    assert!(crate::type_path_placement::pointer(&mut app, crate::canvas::ToolEvent::Move { x: 50.0, y: 90.0, pressure: 1.0 }));
+    assert!(app.ui.type_path_drag.is_some(), "type path placement drag must be active");
+
+    let history_steps = app.session.active().unwrap().history.entries().len();
+    let ctx = egui::Context::default();
+
+    press_key(&mut app, &ctx, Key::B, Modifiers::NONE);
+    assert_eq!(app.ui.tool, Tool::Brush);
+    assert!(app.ui.type_path_drag.is_none(), "switching tool via shortcut must cancel active type path capture");
+
+    press_key(&mut app, &ctx, Key::A, Modifiers::NONE);
+    assert_eq!(app.ui.tool, Tool::PathSelection);
+
+    assert!(!crate::type_path_placement::pointer_with_view(&mut app, crate::canvas::ToolEvent::Up { x: 50.0, y: 90.0 }, Some(&xf)));
+    assert_eq!(app.session.active().unwrap().history.entries().len(), history_steps, "no history step committed after cancelled gesture");
+}
+
 /// A 200×200 document for the ⌘⇧↩ / ⌘⌥↩ tests.
 fn selection_app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());

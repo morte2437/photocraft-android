@@ -120,3 +120,49 @@ fn automation_roots_come_from_the_environment_too() {
         assert!(stderr.contains("cannot configure automation workspace"), "{var}: stderr: {stderr}");
     }
 }
+
+#[test]
+fn invalid_read_root_is_not_hidden_by_another_valid_root() {
+    let dir = std::env::temp_dir().join(format!("photocraft-control-roots-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.to_str().unwrap();
+    let missing = dir.join("missing");
+    let file = dir.join("not-a-directory");
+    std::fs::write(&file, b"not a directory").unwrap();
+    for invalid in [&missing, &file] {
+        for roots in [[good, invalid.to_str().unwrap()], [invalid.to_str().unwrap(), good]] {
+            let Run { status, stderr } = run_photocraft(&[
+                "--control",
+                "0",
+                "--control-token",
+                VALID_TOKEN,
+                "--automation-read-root",
+                roots[0],
+                &format!("--automation-read-root={}", roots[1]),
+            ]);
+            assert_eq!(status.code(), Some(2), "every configured read root must be valid: {stderr}");
+            assert!(stderr.contains("cannot configure automation workspace"), "stderr: {stderr}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn empty_missing_and_repeated_write_root_flags_are_usage_errors() {
+    for flags in [
+        vec!["--automation-read-root"],
+        vec!["--automation-read-root", ""],
+        vec!["--automation-read-root="],
+        vec!["--automation-read-root", "--safe-gpu"],
+        vec!["--automation-write-root"],
+        vec!["--automation-write-root="],
+        vec!["--automation-write-root", "work", "--automation-write-root=work"],
+        vec!["--automation-write-root=", "--automation-write-root=work"],
+    ] {
+        let args: Vec<&str> = ["--control", "0", "--control-token", VALID_TOKEN].into_iter().chain(flags).collect();
+        let Run { status, stderr } = run_photocraft(&args);
+        assert_eq!(status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("--automation-"), "stderr: {stderr}");
+        assert!(!stderr.contains("cannot configure automation workspace"), "parse errors must fail before opening roots: {stderr}");
+    }
+}

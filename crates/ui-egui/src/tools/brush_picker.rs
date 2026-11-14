@@ -38,7 +38,7 @@ pub const MIN_SIZE: [f32; 2] = [230.0, 170.0];
 /// and name cells, set by [`BrushesPanelState::show_name`] and friends).
 pub(crate) const LIST: ListLayout = ListLayout { id: "brush-picker-presets", max_height: 300.0, cell: 44.0, indent: 4.0, cards: true };
 /// The scale slider's height (the Size and Hardness sliders').
-const SLIDER_H: f32 = 18.0;
+const SLIDER_H: f32 = widgets::TEXT_FIELD_H;
 /// The least gap between the preset list and the slider under it.
 const FOOTER_GAP: f32 = 6.0;
 /// The room the footer takes from the picker's bottom.

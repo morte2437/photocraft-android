@@ -11,8 +11,12 @@
 //!   enlarged by the transform: the full-resolution level with nearest filtering, so pixels stay
 //!   crisp like the canvas around them.
 //!
-//! Levels and filter variants are uploaded on first use and cached for the session.
+//! Levels and filter variants are uploaded on first use and cached for the session. A mip level
+//! first needed mid-drag (the scale crossing ½, ¼…) is built, colour-converted and uploaded on a
+//! helper thread, and the closest finer level already uploaded is shown until it is ready
+//! (#11103): halving a 24 MP layer took a whole frame or more on the UI thread.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{Color32, ColorImage, TextureHandle, TextureId, TextureOptions};
@@ -30,11 +34,35 @@ struct Level {
 pub struct PreviewTextures {
     name: String,
     /// CPU copies of the levels built so far (level 0 = full resolution), premultiplied.
-    images: Mutex<Vec<Arc<ColorImage>>>,
+    images: Arc<Mutex<Vec<Arc<ColorImage>>>>,
     /// uv extent of level 0 that covers the source exactly (< 1 when level 0 was padded).
     base_uv: [f32; 2],
-    uploaded: Mutex<Vec<Level>>,
+    uploaded: Arc<Mutex<Vec<Level>>>,
+    /// Mip levels being built off the UI thread, as `(level, display key)`.
+    building: Arc<Mutex<Vec<(u32, u64)>>>,
+    /// Whether a mip level that has a finer level to stand in for it is built off the UI thread.
+    background: bool,
+    /// Cleared when the preview closes (under the `uploaded` lock): a level finishing after that is
+    /// neither converted nor uploaded. Workers only read it, so they never keep the preview alive.
+    alive: Arc<AtomicBool>,
+    /// Held by a test to pause the workers just before they check `alive`.
+    #[cfg(test)]
+    gate: Arc<Mutex<()>>,
+    /// How many levels the workers have uploaded, for tests.
+    #[cfg(test)]
+    uploads: Arc<std::sync::atomic::AtomicUsize>,
 }
+
+impl Drop for PreviewTextures {
+    fn drop(&mut self) {
+        let _uploads = self.uploaded.lock().unwrap_or_else(PoisonError::into_inner);
+        self.alive.store(false, Ordering::Release);
+    }
+}
+
+/// Off the UI thread on native builds; the web build has no threads to spare. Unit tests build
+/// synchronously unless they ask (`set_background_builds`), so frames stay deterministic.
+const BUILD_IN_BACKGROUND: bool = cfg!(not(any(test, target_arch = "wasm32")));
 
 /// A source pixel shown at this many screen pixels or more counts as "zoomed in" (nearest).
 const CRISP_ZOOM: f32 = 2.0;
@@ -47,10 +75,49 @@ impl PreviewTextures {
         let base_uv = [base_uv[0].clamp(0.0, 1.0), base_uv[1].clamp(0.0, 1.0)];
         Self {
             name,
-            images: Mutex::new(vec![image]),
+            images: Arc::new(Mutex::new(vec![image])),
             base_uv,
-            uploaded: Mutex::new(vec![Level { level: 0, display_key: 0, nearest: false, tex, uv: base_uv }]),
+            uploaded: Arc::new(Mutex::new(vec![Level { level: 0, display_key: 0, nearest: false, tex, uv: base_uv }])),
+            building: Arc::new(Mutex::new(Vec::new())),
+            background: BUILD_IN_BACKGROUND,
+            alive: Arc::new(AtomicBool::new(true)),
+            #[cfg(test)]
+            gate: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            uploads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Level-zero texel for preview regressions.
+    #[cfg(test)]
+    pub fn texel(&self, x: usize, y: usize) -> Option<egui::Color32> {
+        let images = self.images.lock().ok()?;
+        let image = images.first()?;
+        if x >= image.size[0] || y >= image.size[1] {
+            return None;
+        }
+        image.pixels.get(y.checked_mul(image.size[0])?.checked_add(x)?).copied()
+    }
+
+    /// Build mip levels off the UI thread (`true`) or in the frame that first needs them.
+    #[cfg(test)]
+    pub(crate) fn set_background_builds(&mut self, on: bool) {
+        self.background = on;
+    }
+
+    /// Whether a mip level is still being built off the UI thread.
+    #[cfg(test)]
+    pub(crate) fn is_building(&self) -> bool {
+        !self.building.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
+    }
+
+    /// What a test locks to pause the workers just before they check that the preview is open,
+    /// what tells it they are all done, and how many levels they uploaded; the last two still work
+    /// once the preview is gone.
+    #[cfg(test)]
+    pub(crate) fn worker_hooks(&self) -> (Arc<Mutex<()>>, impl Fn() -> bool + use<>, Arc<std::sync::atomic::AtomicUsize>) {
+        let building = Arc::clone(&self.building);
+        (Arc::clone(&self.gate), move || building.lock().unwrap_or_else(PoisonError::into_inner).is_empty(), Arc::clone(&self.uploads))
     }
 
     /// Size of the full-resolution level in texels.
@@ -100,6 +167,19 @@ impl PreviewTextures {
         if let Some(l) = up.iter().find(|l| l.level == level && l.nearest == nearest && l.display_key == display_key) {
             return (l.tex.id(), l.uv);
         }
+        // A level first needed mid-drag: show the closest finer level already uploaded for this
+        // display while a helper thread builds it (#11103).
+        if self.background
+            && level > 0
+            && let Some(finer) = up.iter().filter(|l| l.display_key == display_key && l.level < level).max_by_key(|l| (l.level, !l.nearest))
+        {
+            let shown = (finer.tex.id(), finer.uv);
+            drop(up);
+            if self.build_in_background(ctx, level, display, display_key) {
+                return shown;
+            }
+            up = self.uploaded.lock().unwrap_or_else(PoisonError::into_inner);
+        }
         let Some((img, uv)) = self.level_image(level) else {
             // Can't build it (shouldn't happen): fall back to the first upload.
             return up.first().map_or((TextureId::default(), [1.0, 1.0]), |l| (l.tex.id(), l.uv));
@@ -114,24 +194,93 @@ impl PreviewTextures {
         (id, uv)
     }
 
+    /// Builds level `level` on a helper thread, uploads it and asks for a frame. False when no
+    /// thread could be started (the caller builds it in this frame instead).
+    fn build_in_background(&self, ctx: &egui::Context, level: u32, display: Option<&CanvasDisplay>, display_key: u64) -> bool {
+        {
+            let mut building = self.building.lock().unwrap_or_else(PoisonError::into_inner);
+            if building.contains(&(level, display_key)) {
+                return true;
+            }
+            building.push((level, display_key));
+        }
+        let (images, uploaded, building, alive) = (Arc::clone(&self.images), Arc::clone(&self.uploaded), Arc::clone(&self.building), Arc::clone(&self.alive));
+        let (ctx, base_uv, name) = (ctx.clone(), self.base_uv, format!("{}-{level}-linear", self.name));
+        let display = display.map(share_display);
+        #[cfg(test)]
+        let (gate, uploads) = (Arc::clone(&self.gate), Arc::clone(&self.uploads));
+        let job = move || {
+            let built = level_of(&images, base_uv, level);
+            #[cfg(test)]
+            drop(gate.lock().unwrap_or_else(PoisonError::into_inner));
+            // The box closed meanwhile: neither convert nor upload.
+            if let Some((img, uv)) = built.filter(|_| alive.load(Ordering::Acquire)) {
+                let img = display.as_ref().map_or_else(|| Arc::clone(&img), |d| Arc::new(display_image(&img, d)));
+                let mut up = uploaded.lock().unwrap_or_else(PoisonError::into_inner);
+                // Checked again under the lock the preview takes as it closes. A monitor profile
+                // change meanwhile released this display's uploads: drop it then too.
+                if alive.load(Ordering::Acquire) && up.iter().all(|l| l.display_key == display_key) && !up.iter().any(|l| l.level == level && !l.nearest) {
+                    let tex = ctx.load_texture(name, img, TextureOptions::LINEAR);
+                    #[cfg(test)]
+                    uploads.fetch_add(1, Ordering::Relaxed);
+                    up.push(Level { level, display_key, nearest: false, tex, uv });
+                }
+            }
+            building.lock().unwrap_or_else(PoisonError::into_inner).retain(|b| *b != (level, display_key));
+            ctx.request_repaint();
+        };
+        let started = std::thread::Builder::new().name("transform-mip".into()).spawn(job).is_ok();
+        if !started {
+            self.building.lock().unwrap_or_else(PoisonError::into_inner).retain(|b| *b != (level, display_key));
+        }
+        started
+    }
+
     /// Level `n` of the mip chain (built on demand by 2×2 box filtering) and its uv extent.
     pub(crate) fn level_image(&self, n: u32) -> Option<(Arc<ColorImage>, [f32; 2])> {
-        let mut imgs = self.images.lock().unwrap_or_else(PoisonError::into_inner);
-        while imgs.len() <= n as usize {
+        level_of(&self.images, self.base_uv, n)
+    }
+}
+
+/// Level `n` of `images` (built on demand by 2×2 box filtering) and its uv extent. Each level is
+/// filtered with the lock released, so a helper thread building one doesn't stall the frame
+/// reading another (the layer-style preview reads them too).
+fn level_of(images: &Mutex<Vec<Arc<ColorImage>>>, base_uv: [f32; 2], n: u32) -> Option<(Arc<ColorImage>, [f32; 2])> {
+    loop {
+        let (prev, len) = {
+            let imgs = images.lock().unwrap_or_else(PoisonError::into_inner);
             let prev = imgs.last()?;
-            if prev.size[0] <= 1 && prev.size[1] <= 1 {
+            if imgs.len() > n as usize || (prev.size[0] <= 1 && prev.size[1] <= 1) {
                 break;
             }
-            let next = Arc::new(halve(prev));
+            (Arc::clone(prev), imgs.len())
+        };
+        let next = Arc::new(halve(&prev));
+        let mut imgs = images.lock().unwrap_or_else(PoisonError::into_inner);
+        // Another thread may have added this level meanwhile: keep the first.
+        if imgs.len() == len {
             imgs.push(next);
         }
-        let k = (imgs.len() - 1).min(n as usize);
-        let img = imgs.get(k)?.clone();
-        let base = imgs.first()?.size;
-        // Level k covers size·2^k base texels (the last row/column may be padding).
-        let f = (1u64 << k) as f32;
-        let uv = [self.base_uv[0] * base[0] as f32 / (img.size[0] as f32 * f).max(1.0), self.base_uv[1] * base[1] as f32 / (img.size[1] as f32 * f).max(1.0)];
-        Some((img, [uv[0].min(1.0), uv[1].min(1.0)]))
+    }
+    let imgs = images.lock().unwrap_or_else(PoisonError::into_inner);
+    let k = (imgs.len() - 1).min(n as usize);
+    let img = imgs.get(k)?.clone();
+    let base = imgs.first()?.size;
+    // Level k covers size·2^k base texels (the last row/column may be padding).
+    let f = (1u64 << k) as f32;
+    let uv = [base_uv[0] * base[0] as f32 / (img.size[0] as f32 * f).max(1.0), base_uv[1] * base[1] as f32 / (img.size[1] as f32 * f).max(1.0)];
+    Some((img, [uv[0].min(1.0), uv[1].min(1.0)]))
+}
+
+/// A copy of `d` for a helper thread (its profiles and transform are shared, not copied).
+fn share_display(d: &CanvasDisplay) -> CanvasDisplay {
+    CanvasDisplay {
+        encode_srgb: d.encode_srgb,
+        source: Arc::clone(&d.source),
+        monitor: Arc::clone(&d.monitor),
+        transform: d.transform.clone(),
+        key: d.key,
+        texture_key: d.texture_key,
     }
 }
 
@@ -163,12 +312,21 @@ fn halve(img: &ColorImage) -> ColorImage {
     let (nw, nh) = (w.div_ceil(2).max(1), h.div_ceil(2).max(1));
     let mut out = vec![Color32::TRANSPARENT; nw * nh];
     let px = |x: usize, y: usize| img.pixels.get(y.min(h.saturating_sub(1)) * w + x.min(w.saturating_sub(1))).copied().unwrap_or_default();
-    for (y, row) in out.chunks_mut(nw).enumerate() {
+    let row = |y: usize, row: &mut [Color32]| {
         for (x, o) in row.iter_mut().enumerate() {
             let q = [px(2 * x, 2 * y), px(2 * x + 1, 2 * y), px(2 * x, 2 * y + 1), px(2 * x + 1, 2 * y + 1)];
             let avg = |c: fn(&Color32) -> u8| ((q.iter().map(|p| u32::from(c(p))).sum::<u32>() + 2) / 4) as u8;
             *o = Color32::from_rgba_premultiplied(avg(Color32::r), avg(Color32::g), avg(Color32::b), avg(Color32::a));
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        out.par_chunks_mut(nw).enumerate().for_each(|(y, r)| row(y, r));
+    }
+    #[cfg(target_arch = "wasm32")]
+    for (y, r) in out.chunks_mut(nw).enumerate() {
+        row(y, r);
     }
     ColorImage::new([nw, nh], out)
 }

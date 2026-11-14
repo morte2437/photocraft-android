@@ -267,7 +267,7 @@ fn reference_point_toggle(ui: &mut egui::Ui, on: &mut bool) -> bool {
     // The catalogue's "Toggle reference point" (sentence case, like the grid's tooltip).
     let label = tl!("Toggle reference point");
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, *on, label));
-    resp.on_hover_text(label);
+    resp.on_hover_text(label).on_disabled_hover_text(label);
     *on
 }
 
@@ -374,7 +374,7 @@ fn anchor_grid_widget(ui: &mut egui::Ui, current_anchor: Option<usize>, enabled:
             painter.rect_filled(pt_rect, 0.5, if enabled { color } else { color.gamma_multiply(0.4) });
         }
     }
-    resp.on_hover_text(tl!("Reference point location"));
+    resp.on_hover_text(tl!("Reference point location")).on_disabled_hover_text(tl!("Reference point location"));
     clicked
 }
 
@@ -467,6 +467,14 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
     let on_type = warps_type(app);
     // A cylinder has no splits or grid either (#4112): its handles are its own.
     let cylinder = w.style == WarpStyle::Cylinder;
+    // Free Transform's reference point check box and grid keep their slots, greyed and inert, as
+    // in the reference (#12503): on, at the centre. The disabled `Ui` greys the grid once; its own
+    // greying (for Toggle Reference Point off) would dim it again.
+    ui.add_enabled_ui(false, |ui| {
+        reference_point_toggle(ui, &mut true);
+        anchor_grid_widget(ui, Some(4), true);
+    });
+    crate::widgets::vline(ui, 22.0);
     // Split, Grid, then the warp style with its bend fields.
     ui.add_enabled_ui(!on_type && !cylinder, |ui| warp_mesh_fields(app, ui, w));
     crate::widgets::vline(ui, 22.0);
@@ -501,13 +509,30 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
         for (k, (name, v)) in fields.iter().enumerate() {
             lbl(ui, name);
             let mut f = *v as f32;
-            if crate::widgets::value_field(ui, &mut f, -100.0..=100.0, "%", 58.0).accessible_name(*name).changed()
+            let shown = ((f64::from(f) * 10.0).round() / 10.0) as f32;
+            let r = crate::widgets::value_field_fixed(ui, &mut f, -100.0..=100.0, "%", 62.0, 1).accessible_name(*name);
+            // The fields take one decimal: a typed 12.345 is stored as the 12.3 they show once the
+            // field is left (rounding each keystroke would rewrite the text being typed). Only an
+            // edit rounds: tabbing through keeps a value from a file (33.333) as it is, though the
+            // field applies its shown text (33.3) as it loses the focus. Arithmetic (`10+2`) only
+            // applies then, so a value other than the shown one is an edit too.
+            let edited_id = r.id.with("warp-edited");
+            let edited = ui.data(|d| d.get_temp::<bool>(edited_id)).unwrap_or(false);
+            let left = !r.has_focus();
+            if left {
+                ui.data_mut(|d| d.remove_temp::<bool>(edited_id));
+            } else if r.changed() {
+                ui.data_mut(|d| d.insert_temp(edited_id, true));
+            }
+            let edited = edited || (r.changed() && f != shown);
+            if ((r.changed() && !r.lost_focus()) || (r.lost_focus() && edited))
                 && let Some(Some(cur)) = app.ui.transform.as_mut().map(|t| t.warp.as_mut())
             {
+                let f = if left { (f64::from(f) * 10.0).round() / 10.0 } else { f64::from(f) };
                 match k {
-                    0 => cur.bend = f64::from(f),
-                    1 => cur.h_distort = f64::from(f),
-                    _ => cur.v_distort = f64::from(f),
+                    0 => cur.bend = f,
+                    1 => cur.h_distort = f,
+                    _ => cur.v_distort = f,
                 }
             }
         }
@@ -645,26 +670,22 @@ fn split_icon(ui: &mut egui::Ui, kind: &str, tip: &str, on: bool) -> egui::Respo
 /// `mode_switch`: the Free Transform / Warp switch (not for Content-Aware Scale, which only scales).
 fn transform_actions(app: &mut PhotocraftApp, ui: &mut egui::Ui, warping: bool, mode_switch: bool) {
     ui.add_space(8.0);
-    let commit_tip = if warping {
-        crate::i18n::fmt(tl!("Commit warp ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))])
-    } else {
-        crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))])
-    };
+    // Warp and Free Transform share these tooltips, as in the reference (#12503).
+    let commit_tip = crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]);
     let commit_btn = crate::icons::button(ui, "check", 26.0, false, &commit_tip);
     let label = "Commit transform";
     commit_btn.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!(label)));
     if commit_btn.clicked() {
         commit(app);
     }
-    let cancel_tip = if warping { tl!("Cancel warp (Esc)") } else { tl!("Cancel transform (Esc)") };
-    let cancel_btn = crate::icons::button(ui, "ban", 26.0, false, cancel_tip);
+    let cancel_btn = crate::icons::button(ui, "ban", 26.0, false, tl!("Cancel transform (Esc)"));
     let label = "Cancel transform";
     cancel_btn.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!(label)));
     if cancel_btn.clicked() {
         cancel(app);
     }
     if warping {
-        let reset = crate::icons::button(ui, "undo-2", 26.0, false, tl!("Reset"));
+        let reset = crate::icons::button(ui, "undo-2", 26.0, false, tl!("Reset the warp"));
         reset.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Reset warp"));
         if reset.clicked() {
             reset_warp(app);
@@ -707,3 +728,7 @@ pub(super) fn rotate_about_pivot(app: &mut PhotocraftApp, da: f64) {
         [c[0] + x * cs - y * sn, c[1] + x * sn + y * cs]
     });
 }
+
+#[cfg(test)]
+#[path = "warp_options_bar_tests.rs"]
+mod warp_options_bar_tests;

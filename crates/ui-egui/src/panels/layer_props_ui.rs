@@ -225,11 +225,17 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
                 if let Some(v) = field(ui, ("x", layer.id.0), ("X", "W"), "X", bb[0] as f32, w, (u, dw, dw), 0.5) {
-                    run.push(("layer.translate".into(), json!({"layer": layer.id.0, "dx": (v - bb[0] as f32).round() as i32, "dy": 0})));
+                    run.push((
+                        "layer.translate".into(),
+                        crate::move_ui::pattern_wrap(app, json!({"layer": layer.id.0, "dx": (v - bb[0] as f32).round() as i32, "dy": 0})),
+                    ));
                 }
                 ui.add_space(LINK_W + LABEL_GAP);
                 if let Some(v) = field(ui, ("y", layer.id.0), ("Y", "H"), "Y", bb[1] as f32, w, (u, dh, dh), 0.5) {
-                    run.push(("layer.translate".into(), json!({"layer": layer.id.0, "dx": 0, "dy": (v - bb[1] as f32).round() as i32})));
+                    run.push((
+                        "layer.translate".into(),
+                        crate::move_ui::pattern_wrap(app, json!({"layer": layer.id.0, "dx": 0, "dy": (v - bb[1] as f32).round() as i32})),
+                    ));
                 }
             });
             ui.add_space(ROW_GAP);
@@ -410,7 +416,6 @@ mod tests {
                     PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
                     return;
                 }
-                crate::field_wheel::begin_frame(ui.ctx());
                 let state = app.session.active().unwrap();
                 let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
                 properties(app, ui, &layer);
@@ -468,7 +473,6 @@ mod tests {
                     PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
                     return;
                 }
-                crate::field_wheel::begin_frame(ui.ctx());
                 let state = app.session.active().unwrap();
                 let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
                 properties(app, ui, &layer);
@@ -524,7 +528,6 @@ mod tests {
                     PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
                     return;
                 }
-                crate::field_wheel::begin_frame(ui.ctx());
                 if ui.data(|d| d.get_temp::<bool>(hide)).unwrap_or(false) {
                     return;
                 }
@@ -586,7 +589,6 @@ mod tests {
                     PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
                     return;
                 }
-                crate::field_wheel::begin_frame(ui.ctx());
                 let state = app.session.active().unwrap();
                 let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
                 properties(app, ui, &layer);
@@ -635,7 +637,6 @@ mod tests {
                     PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
                     return;
                 }
-                crate::field_wheel::begin_frame(ui.ctx());
                 let state = app.session.active().unwrap();
                 let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
                 properties(app, ui, &layer);
@@ -687,7 +688,6 @@ mod tests {
                     PhotocraftApp::setup_context(ui.ctx(), crate::theme::ThemeKind::ProMedium);
                     return;
                 }
-                crate::field_wheel::begin_frame(ui.ctx());
                 let state = app.session.active().unwrap();
                 let layer = state.doc.layer(state.active_layer.unwrap()).unwrap().clone();
                 properties(app, ui, &layer);
@@ -927,10 +927,10 @@ mod tests {
         );
 
         // The next live-property edit must still be accepted after resizing.
-        s.execute("shape.edit", json!({"layer": id.0, "arrowConcavity": 60.0})).unwrap();
+        s.execute("shape.edit", json!({"layer": id.0, "arrowConcavity": 40.0})).unwrap();
         let layer = s.active().unwrap().doc.layer(id).unwrap();
         let LayerContent::Shape(shape) = &layer.content else { panic!("expected shape layer") };
-        assert!(matches!(shape.live.as_ref(), Some(photocraft_doc::vector::LiveShape::ArrowLine { concavity, .. }) if (*concavity - 60.0).abs() < 1e-9));
+        assert!(matches!(shape.live.as_ref(), Some(photocraft_doc::vector::LiveShape::ArrowLine { concavity, .. }) if (*concavity - 40.0).abs() < 1e-9));
     }
 
     /// A stroked shape's Transform fields show its path, not the stroke's pixels, and a W edit

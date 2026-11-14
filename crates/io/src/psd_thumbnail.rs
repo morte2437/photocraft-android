@@ -6,11 +6,11 @@
 //! height, compressed size, bits per pixel 24, planes 1) followed by the JFIF stream. Photoshop
 //! keeps the long side at 160 px or less.
 
-use photocraft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
+use craft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
+use craft_psd::resources::{ImageResource, ids};
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType as CSample};
 use photocraft_color::ColorMode;
 use photocraft_doc::Document;
-use photocraft_psd::resources::{ImageResource, ids};
 
 use crate::IoError;
 
@@ -21,8 +21,8 @@ pub const MAX_SIDE: u32 = 160;
 pub const HEADER_LEN: usize = 28;
 
 /// The 1036 resource for `doc`: its composite reduced to at most [`MAX_SIDE`] with its spot inks
-/// printed over it, converted to sRGB through the document's profile, matted over white and
-/// JPEG-compressed.
+/// printed over it (with the Spot dot gain, as Photoshop saves it), converted to sRGB through the
+/// document's profile, matted over white and JPEG-compressed.
 pub(crate) fn resource(doc: &Document) -> Result<ImageResource, IoError> {
     let mut buf = photocraft_compose::multichannel::thumbnail_with_inks(doc, MAX_SIDE);
     let (w, h) = (buf.rect.width(), buf.rect.height());
@@ -33,7 +33,7 @@ pub(crate) fn resource(doc: &Document) -> Result<ImageResource, IoError> {
     let dst = Builtin::Srgb.profile();
     if !src.same_colors(dst) {
         let t = Transform::new(&src, dst, Intent::RelativeColorimetric, true).map_err(|e| IoError::Unsupported(e.to_string()))?;
-        t.apply(buf.px.as_flattened_mut(), 4);
+        t.apply(buf.px.as_flattened_mut(), 4).map_err(|e| IoError::Unsupported(e.to_string()))?;
     }
     let mut rgb = Vec::with_capacity(buf.px.len() * 3);
     for p in &buf.px {

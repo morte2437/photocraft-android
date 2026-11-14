@@ -197,23 +197,36 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.ui.status_error = true;
     }
     let Some(d) = app.camera_raw.as_ref() else { return };
-    // Where the platform has no extra windows (the web build), draw over the main window.
-    if ctx.embed_viewports() {
+    if draws_over_main_window(ctx, app.services.is_wayland) {
         draw(app, ctx, false);
         return;
     }
     let window_title = d.window_title();
     // Camera Raw is modal, as in Photoshop: the main window is dimmed and takes no input while it
-    // is open (in a separate window, or drawn over it where there are no extra windows).
+    // is open (in a separate window, or drawn over it: see `draws_over_main_window`).
     let main = ctx.content_rect();
-    egui::Area::new(egui::Id::unique("camera-raw-modal")).order(egui::Order::Foreground).fixed_pos(main.min).show(ctx, |ui| {
-        let (r, _) = ui.allocate_exact_size(main.size(), Sense::click_and_drag());
+    let scrim = egui::Area::new(egui::Id::unique("camera-raw-modal")).order(egui::Order::Foreground).fixed_pos(main.min).show(ctx, |ui| {
+        let (r, response) = ui.allocate_exact_size(main.size(), Sense::click_and_drag());
         ui.painter().rect_filled(r, 0.0, Tokens::get(ui.ctx()).scrim);
+        response
     });
+    let window = egui::ViewportId::from_hash_of("camera-raw-window");
+    // Coming back to PhotoCraft (⌘Tab, the Dock) can bring the main window over Camera Raw,
+    // leaving only the dimmed window that takes no input: the main window gaining focus, or a
+    // click on it, brings Camera Raw back to the front.
+    let main_focused = ctx.input(|i| i.viewport().focused.unwrap_or(false));
+    if let Some(d) = app.camera_raw.as_mut() {
+        if raise_camera_raw(d.main_focused, main_focused, scrim.inner.clicked() || scrim.inner.drag_started()) {
+            for command in raise_commands() {
+                ctx.send_viewport_cmd_to(window, command);
+            }
+        }
+        d.main_focused = main_focused;
+    }
     // A window of its own (title bar, moved and resized like any window), like Adobe Camera Raw.
     let builder = crate::os_window::builder().with_title(window_title).with_inner_size([1360.0, 900.0]).with_min_inner_size([900.0, 600.0]);
     let mut close = false;
-    ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("camera-raw-window"), builder, |ui, class| {
+    ctx.show_viewport_immediate(window, builder, |ui, class| {
         if ui.ctx().input(|i| i.viewport().close_requested()) {
             close = true;
         }
@@ -222,6 +235,33 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if close && app.camera_raw.is_some() {
         cancel(app);
     }
+}
+
+/// Whether the dialog is drawn over the main window instead of in a window of its own: where the
+/// platform has no extra windows (the web build), while the main window is full screen, and on
+/// Wayland while it is maximized.
+///
+/// The dialog's window is an immediate viewport, so it takes input and redraws only while the
+/// main window draws a frame. A window opened over a full-screen or maximized one can cover it
+/// (Hyprland hands the new window the full screen or the maximized state), the compositor then
+/// sends the hidden main window no frame callbacks, and the dialog freezes: its sliders don't
+/// move and nothing else responds. Elsewhere a maximized main window keeps Camera Raw in its own
+/// window, as in Photoshop.
+fn draws_over_main_window(ctx: &egui::Context, wayland: bool) -> bool {
+    let (fullscreen, maximized) = ctx.input(|i| (i.viewport().fullscreen == Some(true), i.viewport().maximized == Some(true)));
+    ctx.embed_viewports() || fullscreen || (wayland && maximized)
+}
+
+/// Whether to bring Camera Raw's window to the front: when the main window has just gained focus
+/// (it came forward over Camera Raw's) or is clicked.
+fn raise_camera_raw(was_focused: bool, focused: bool, clicked: bool) -> bool {
+    (focused && !was_focused) || clicked
+}
+
+/// Brings Camera Raw's window to the front, restoring it first if it was minimized (a minimized
+/// window ignores Focus).
+fn raise_commands() -> [egui::ViewportCommand; 2] {
+    [egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus]
 }
 
 impl CameraRawDialog {
@@ -549,5 +589,28 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
             report_file_error(app, r);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Coming back to PhotoCraft can put the main window over Camera Raw's: the main window
+    /// gaining focus brings Camera Raw's window to the front, once per activation, and so does a
+    /// click on the dimmed main window.
+    #[test]
+    fn the_main_window_gaining_focus_brings_camera_raw_back_to_the_front() {
+        assert!(raise_camera_raw(false, true, false), "the main window came forward");
+        assert!(!raise_camera_raw(true, true, false), "only once, so Camera Raw's own focus isn't fought");
+        assert!(!raise_camera_raw(true, false, false) && !raise_camera_raw(false, false, false));
+        assert!(raise_camera_raw(true, true, true), "a click on the dimmed main window");
+    }
+
+    /// Focus does nothing for a minimized window, which would leave only the dimmed main window
+    /// that takes no input: Camera Raw's is restored first.
+    #[test]
+    fn raising_camera_raw_restores_it_when_minimized() {
+        assert_eq!(raise_commands(), [egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus]);
     }
 }

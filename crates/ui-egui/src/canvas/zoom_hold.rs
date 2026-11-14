@@ -250,6 +250,23 @@ mod tests {
     }
 
     #[test]
+    fn zoom_out_mode_leaves_the_hold_direction_alone() {
+        // Zoom Out mode was not measured for Animated Zoom (#12066): a hold still zooms in, and
+        // out with ⌥, as in Zoom In mode.
+        for alt in [false, true] {
+            let held = |zoom_in: bool| {
+                let mut h = harness(true);
+                h.state_mut().ui.tool_options.zoom_in = zoom_in;
+                let p = h.state().last_canvas_rect.center() + vec2(50.0, -30.0);
+                hold(&mut h, p, 8, alt)
+            };
+            let (zoom_in, zoom_out) = (held(true), held(false));
+            assert_eq!(zoom_out, zoom_in, "alt {alt}");
+            assert!(zoom_out[4..=8].windows(2).all(|w| (w[1] < w[0]) == alt), "alt {alt}: {zoom_out:?}");
+        }
+    }
+
+    #[test]
     fn a_hold_at_the_zoom_limit_leaves_the_view_alone() {
         // Zoom Resizes Windows centres the image in a window wrapped around it
         // (zoom_window_fit.rs); a hold that can't zoom further must not move it back.

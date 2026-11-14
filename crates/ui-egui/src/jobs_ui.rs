@@ -766,7 +766,7 @@ pub(crate) fn after_open(
     name: &str,
     path: Option<&str>,
     warnings: &[String],
-    bytes: Option<&[u8]>,
+    bytes: Option<&Arc<Vec<u8>>>,
 ) -> Result<(), String> {
     let index = app.session.documents().iter().position(|st| st.doc.id == document).ok_or("the opened document is missing")?;
     app.session.set_active(index);

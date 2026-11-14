@@ -47,7 +47,7 @@ fn settings(protect: Option<usize>) -> BgEraseSettings {
 /// centre.
 fn drag_with(fmt: PixelFormat, bs: &BgEraseSettings) -> [i32; 8] {
     let mut s = blocks(fmt);
-    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), bs, None);
+    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), bs, None).unwrap();
     std::array::from_fn(|i| (s.rgba(100 * i as i32 + 50, 150)[3] * 255.0).round() as i32)
 }
 
@@ -121,7 +121,7 @@ fn protection_narrows_the_tolerance_to_the_foreground_in_one_dab() {
                 let mut s = blocks(fmt);
                 let bs = BgEraseSettings { sampling: Sampling::BackgroundSwatch, background: block(0), tolerance, ..settings(protect) };
                 let x = 100.0 * i as f64 + 50.0;
-                apply_background_eraser(&mut s, &stroke(&[(x, 150.0)]), &bs, None);
+                apply_background_eraser(&mut s, &stroke(&[(x, 150.0)]), &bs, None).unwrap();
                 s.rgba(x as i32, 150)[3]
             })
             .collect()
@@ -146,7 +146,7 @@ fn a_foreground_equal_to_the_sample_erases_nothing() {
             let s = blocks(PixelFormat::RGBA8);
             let mut t = s.clone();
             let bs = BgEraseSettings { limits, tolerance, ..settings(Some(0)) };
-            apply_background_eraser(&mut t, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &bs, None);
+            apply_background_eraser(&mut t, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &bs, None).unwrap();
             assert_eq!(t, s, "{limits:?} tolerance {tolerance}");
         }
     }
@@ -158,7 +158,7 @@ fn find_edges_keeps_the_foreground_colour_itself() {
     let fmt = PixelFormat::RGBA8;
     let mut s = blocks(fmt);
     let bs = BgEraseSettings { limits: Limits::FindEdges, ..settings(Some(1)) };
-    apply_background_eraser(&mut s, &stroke(&[(80.0, 150.0), (120.0, 150.0)]), &bs, None);
+    apply_background_eraser(&mut s, &stroke(&[(80.0, 150.0), (120.0, 150.0)]), &bs, None).unwrap();
     assert_eq!(s.rgba(75, 150)[3], 0.0, "the sample erased");
     assert_eq!(s.rgba(110, 150)[3], 1.0, "the foreground colour kept");
 }
@@ -170,8 +170,8 @@ fn protect_off_is_unchanged() {
     let mut s = blocks(PixelFormat::RGBA8);
     let mut t = s.clone();
     let on_far = BgEraseSettings { foreground: [0.0, 0.0, 1.0, 1.0], protect_foreground: true, ..settings(None) };
-    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &settings(None), None);
-    apply_background_eraser(&mut t, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &on_far, None);
+    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &settings(None), None).unwrap();
+    apply_background_eraser(&mut t, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &on_far, None).unwrap();
     assert_eq!(s, t, "a foreground beyond the Tolerance protects nothing");
 }
 
@@ -193,7 +193,7 @@ fn protection_works_in_the_documents_own_channels() {
     }
     let fg = [level(3), level(3), level(3), 1.0];
     let bs = BgEraseSettings { foreground: fg, ..settings(Some(3)) };
-    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &bs, None);
+    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (750.0, 150.0)]), &bs, None).unwrap();
     let a: Vec<f32> = (0..8).map(|i| s.rgba(100 * i + 50, 150)[3]).collect();
     assert_eq!(a[0], 0.0, "gray: the sample erased, {a:?}");
     for (i, v) in a.iter().enumerate().skip(3) {
@@ -222,14 +222,14 @@ fn the_foreground_is_matched_at_the_documents_precision() {
             let mut s = Surface::new(fmt);
             s.fill_rect(Rect::new(0, 0, 100, 100), &from_rgba(&fmt, [1.0; 4]));
             s.fill_rect(Rect::new(100, 0, 200, 100), &from_rgba(&fmt, grey));
-            apply_background_eraser(&mut s, &stroke(&[(50.0, 50.0), (150.0, 50.0)]), &bs, None);
+            apply_background_eraser(&mut s, &stroke(&[(50.0, 50.0), (150.0, 50.0)]), &bs, None).unwrap();
             assert_eq!(s.rgba(50, 50)[3], 0.0, "{fmt:?}: the sample erased");
             assert_eq!(s.rgba(150, 50)[3], 1.0, "{fmt:?}: the stored foreground colour kept");
             // The foreground grey is also the sample.
             let mut s = Surface::new(fmt);
             s.fill_rect(Rect::new(0, 0, 200, 100), &from_rgba(&fmt, grey));
             let t = s.clone();
-            apply_background_eraser(&mut s, &stroke(&[(50.0, 50.0), (150.0, 50.0)]), &bs, None);
+            apply_background_eraser(&mut s, &stroke(&[(50.0, 50.0), (150.0, 50.0)]), &bs, None).unwrap();
             assert_eq!(s, t, "{fmt:?}: a foreground stored as the sample erases nothing");
         }
     }

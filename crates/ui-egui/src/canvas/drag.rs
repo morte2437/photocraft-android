@@ -5,6 +5,9 @@ use super::{PhotocraftApp, Pos2, Rect, Stroke, Tool, vec2};
 #[derive(Clone, Debug)]
 pub struct Drag {
     pub tool: Tool,
+    /// A History Brush or Erase to History stroke's options as at the press: a tool key during the
+    /// drag changes the tool and its brush, not the stroke (`retouch_ui::history_brush_params`).
+    pub history_params: Option<serde_json::Value>,
     pub start: [f64; 2],
     pub points: Vec<[f64; 3]>,
     pub modifiers: egui::Modifiers,
@@ -57,6 +60,7 @@ impl Drag {
     pub fn new(tool: Tool, start: [f64; 2], points: Vec<[f64; 3]>, modifiers: egui::Modifiers, erase: bool) -> Self {
         Self {
             tool,
+            history_params: None,
             start,
             points,
             modifiers,

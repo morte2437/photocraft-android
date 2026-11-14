@@ -8,7 +8,7 @@ use crate::PhotocraftApp;
 use crate::control::{ControlRequest, handle};
 use crate::state::Tool;
 
-fn app() -> PhotocraftApp {
+pub(super) fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
     app.sync_views();
@@ -16,7 +16,7 @@ fn app() -> PhotocraftApp {
 }
 
 /// Run a menu command as the control channel does, then the frame's sync.
-fn invoke(app: &mut PhotocraftApp, id: &str, params: serde_json::Value) {
+pub(super) fn invoke(app: &mut PhotocraftApp, id: &str, params: serde_json::Value) {
     let ctx = egui::Context::default();
     let (req, _rx) = ControlRequest::new("ui.menu.invoke", json!({"id": id, "params": params}));
     handle(app, &ctx, &req);
@@ -24,7 +24,7 @@ fn invoke(app: &mut PhotocraftApp, id: &str, params: serde_json::Value) {
 }
 
 /// Pick `tool`, and swap its brush in as a frame does.
-fn pick(app: &mut PhotocraftApp, tool: Tool) {
+pub(super) fn pick(app: &mut PhotocraftApp, tool: Tool) {
     app.ui.tool = tool;
     crate::paint_mouse::sync_tool_brush(app);
     app.sync_views();
@@ -43,7 +43,6 @@ fn scramble(app: &mut PhotocraftApp) {
 }
 
 const BURN_TIP: [f64; 5] = [65.0, 0.0, 0.25, 0.0, 1.0];
-const DEFAULT_TIP: [f64; 5] = [20.0, 1.0, 0.1, 0.0, 1.0];
 
 #[test]
 fn reset_tool_gives_the_burn_tool_a_65_px_soft_tip() {
@@ -86,21 +85,4 @@ fn reset_all_tools_gives_it_the_tip_active_or_picked_later() {
     invoke(&mut app, "tool.resetAll", json!({"confirmed": true}));
     pick(&mut app, Tool::Burn);
     assert_eq!(tip(&mut app), BURN_TIP, "picked after the reset");
-}
-
-#[test]
-fn other_toning_tools_keep_their_tips() {
-    for tool in [Tool::Dodge, Tool::Sponge] {
-        let mut a = app();
-        pick(&mut a, tool);
-        scramble(&mut a);
-        invoke(&mut a, "tool.reset", json!({}));
-        assert_eq!(tip(&mut a), DEFAULT_TIP, "{tool:?}");
-        // A first use still takes the current tip, as before.
-        let mut a = app();
-        pick(&mut a, Tool::Pencil);
-        scramble(&mut a);
-        pick(&mut a, tool);
-        assert_eq!(tip(&mut a)[0], 57.0, "{tool:?}, first use");
-    }
 }

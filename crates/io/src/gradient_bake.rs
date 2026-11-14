@@ -152,6 +152,41 @@ fn eval(stops: &[(f32, [f32; 3])], mids: &[f32], smooth: f32, t: f32, m: Method)
     })
 }
 
+impl Method {
+    /// Its name in a [`photocraft_doc::adjust::GradientSource`] and in commands.
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Classic => "classic",
+            Method::Perceptual => "perceptual",
+            Method::Linear => "linear",
+            Method::Smooth => "smooth",
+        }
+    }
+
+    /// Its four-character code in a PSD gradient (`None` for Classic, which older blocks imply).
+    pub(crate) fn code(self) -> Option<&'static [u8; 4]> {
+        match self {
+            Method::Classic => None,
+            Method::Perceptual => Some(b"Perc"),
+            Method::Linear => Some(b"Lnr "),
+            Method::Smooth => Some(b"Smoo"),
+        }
+    }
+}
+
+/// A Gradient Map's kept Photoshop gradient (#8351) baked into the dense linear sRGB stops the
+/// compositors render. Hostile values (from a file or a command) are clamped: locations and
+/// Smoothness to 0..1, midpoints to 0.05..0.95, a missing midpoint is the middle.
+pub fn bake_source(src: &photocraft_doc::adjust::GradientSource) -> Vec<(f32, [f32; 3])> {
+    let unit = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    let mut stops: Vec<(f32, Color)> = src.stops.iter().map(|(t, c)| (unit(*t), Color::rgba(unit(c[0]), unit(c[1]), unit(c[2]), 1.0))).collect();
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mids: Vec<f32> =
+        (0..stops.len().saturating_sub(1)).map(|k| src.midpoints.get(k).copied().filter(|m| m.is_finite()).map_or(0.5, |m| m.clamp(0.05, 0.95))).collect();
+    let method = Method::from_name(&src.method).unwrap_or(Method::Classic);
+    bake(stops, &mids, unit(src.smoothness), method).into_iter().map(|(t, c)| (t, c.to_rgb())).collect()
+}
+
 /// Dense linear stops reproducing Photoshop's interpolation. Returns the input unchanged when it
 /// already interpolates linearly in sRGB.
 pub fn bake(stops: Vec<(f32, Color)>, midpoints: &[f32], smoothness: f32, method: Method) -> Vec<(f32, Color)> {
@@ -195,8 +230,8 @@ const OPACITY_RESPONSE: f32 = 0.65;
 
 /// Dense linear opacity stops reproducing Photoshop's interpolation of a gradient's transparency
 /// (Smoothness, opacity midpoints and the method, see [`OPACITY_RESPONSE`]). Returns the input
-/// unchanged when it already interpolates linearly. Smooth keeps Classic's opacity curve: it was
-/// not measured (the Photoshop build it was fitted on has no Smooth method).
+/// unchanged when it already interpolates linearly. Smooth keeps Classic's opacity curve here: it
+/// was measured only in the Gradient tool at 100 % Smoothness ([`bake_smooth_opacity`]).
 pub fn bake_opacity(stops: Vec<(f32, f32)>, midpoints: &[f32], smoothness: f32, method: Method) -> Vec<(f32, f32)> {
     let method = if method == Method::Smooth { Method::Classic } else { method };
     let plain_mids = midpoints.iter().all(|m| (m - 0.5).abs() < 1e-3);
@@ -230,6 +265,38 @@ pub fn bake_opacity(stops: Vec<(f32, f32)>, midpoints: &[f32], smoothness: f32, 
             let t = k as f32 / N as f32;
             // Smoothness and midpoints shape the curve as for Classic colours, in the method's space.
             (t, out(eval(&pts, midpoints, smoothness, t, Method::Classic)[0]))
+        })
+        .collect();
+    baked.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
+    baked
+}
+
+/// Gamma of Smooth's opacity response: the opacity of a fully transparent gradient ramp is the
+/// Oklab lightness curve's linear value `y` raised to `1 / 2.2`. Photoshop 27.11, "Foreground to
+/// Transparent" dragged over 600 px: alpha 255 / 179 / 100 / 35 / 0 at 50 / 250 / 400 / 550 / 750
+/// (#12010). The same ramp as an sRGB grey (`y` encoded with the sRGB curve) gives 30 at the dark
+/// end, 5 levels off, where the 2.2 power gives 35.
+const SMOOTH_OPACITY_GAMMA: f32 = 2.2;
+
+/// Smooth's transparency ramp: each opacity stop is a grey whose Oklab lightness is
+/// `(opacity^2.2)^(1/3)`, which the colours' measured Smooth easing ([`SMOOTH_EASE`]) crosses
+/// segment by segment, and the linear value `y = L^3` comes out as opacity `y^(1/2.2)`. Measured
+/// in the Gradient tool at 100 % Smoothness with 50 % midpoints, the only case that uses it.
+/// Constant opacity comes back as it is, clamped to 0..=1.
+pub fn bake_smooth_opacity(stops: Vec<(f32, f32)>, midpoints: &[f32]) -> Vec<(f32, f32)> {
+    let clamp = |o: f32| if o.is_finite() { o.clamp(0.0, 1.0) } else { 1.0 };
+    if stops.len() < 2 || stops.windows(2).all(|w| w[0].1 == w[1].1) {
+        return stops.into_iter().map(|(t, o)| (t, clamp(o))).collect();
+    }
+    let mut s = stops;
+    s.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let pts: Vec<(f32, [f32; 3])> = s.iter().map(|(t, o)| (*t, [clamp(*o).powf(SMOOTH_OPACITY_GAMMA).cbrt(); 3])).collect();
+    const N: usize = 96;
+    let mut baked: Vec<(f32, f32)> = (0..=N)
+        .map(|k| {
+            let t = k as f32 / N as f32;
+            let l = eval(&pts, midpoints, 0.0, t, Method::Smooth)[0];
+            (t, if l.is_finite() { l.clamp(0.0, 1.0).powi(3).powf(1.0 / SMOOTH_OPACITY_GAMMA) } else { 1.0 })
         })
         .collect();
     baked.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6);
@@ -389,6 +456,14 @@ mod tests {
     fn midpoint_shifts_the_half_way_colour() {
         let s = bake(vec![(0.0, Color::BLACK), (1.0, Color::WHITE)], &[0.25], 0.0, Method::Classic);
         assert!((at(&s, 0.25)[0] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn smooth_opacity_clamps_constant_stops() {
+        let flat = vec![(0.0, 0.4), (1.0, 0.4)];
+        assert_eq!(bake_smooth_opacity(flat.clone(), &[0.5]), flat);
+        assert_eq!(bake_smooth_opacity(vec![(0.0, 2.0), (1.0, 2.0)], &[0.5]), vec![(0.0, 1.0), (1.0, 1.0)]);
+        assert_eq!(bake_smooth_opacity(vec![(0.5, f32::NAN)], &[]), vec![(0.5, 1.0)]);
     }
 
     /// `eval` guards its own stops instead of relying on `bake`'s two-stop check.

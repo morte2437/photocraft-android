@@ -181,13 +181,13 @@ impl Headless {
     /// Open a file with custom import options and make it the active document.
     pub fn open_with_options(&mut self, path: &Path, opts: &photocraft_io::ImportOptions) -> Result<Value, AutomationError> {
         let requested = path.to_str().ok_or_else(|| AutomationError::BadRequest("automation paths must be valid UTF-8".into()))?;
-        let mut o = match &self.filesystem {
+        let (mut o, save_path) = match &self.filesystem {
             Filesystem::Denied => return Err(AutomationError::BadRequest("automation filesystem access is not granted: read authority is absent".into())),
-            Filesystem::TrustedLocal => files::open_with_options(path, opts)?,
+            Filesystem::TrustedLocal => (files::open_with_options(path, opts)?, Some(requested.to_string())),
             Filesystem::Workspace(workspace) => {
-                let bytes = workspace.read(requested)?;
+                let (bytes, save_path) = workspace.read_with_save_path(requested)?;
                 let name = path.file_name().and_then(|name| name.to_str()).unwrap_or(requested);
-                files::open_bytes_with_options(name, &bytes, opts)?
+                (files::open_bytes_with_options(name, &bytes, opts)?, save_path)
             }
         };
         // Preferences › Raw Defaults › Resolution, as the app's File › Open applies it.
@@ -197,7 +197,7 @@ impl Headless {
                 o.document.name = untitled;
                 None
             }
-            None => Some(requested.to_string()),
+            None => save_path,
         };
         let index = self.session.add_document(o.document, path.filter(|_| !o.source_read_only));
         if let Some(st) = self.session.active_mut() {

@@ -1,5 +1,148 @@
 use super::*;
 
+#[test]
+fn tolerance_ignores_fully_transparent_samples() {
+    for ch in [2, 4, 5] {
+        for hidden in [1.0, 0.0] {
+            let src = fill(2, 1, ch, |x, _, c| {
+                if c + 1 == ch {
+                    if x == 0 { 1.0 } else { 0.0 }
+                } else if x == 0 {
+                    0.4
+                } else {
+                    hidden
+                }
+            });
+            let before = fill(2, 1, ch, |x, _, c| {
+                if c + 1 == ch {
+                    if x == 0 { 1.0 } else { 0.0 }
+                } else if x == 0 {
+                    0.0
+                } else {
+                    hidden
+                }
+            });
+            let dab = Dab { x: 1.0, y: 0.5, theta: 0.0, radius: 2.0, pressure: 1.0 };
+            for tolerance in [0.6, 0.3] {
+                let mut dest = before.clone();
+                let written = stamp(&mut StampParams {
+                    dest: &mut dest,
+                    dest_w: 2,
+                    dest_h: 1,
+                    dest_origin: (0, 0),
+                    src: &src,
+                    src_w: 2,
+                    src_h: 1,
+                    src_origin: (0, 0),
+                    ch,
+                    dabs: std::slice::from_ref(&dab),
+                    hardness: 1.0,
+                    opacity: 1.0,
+                    flow: 1.0,
+                    tolerance,
+                    tile: 0,
+                    selection: None,
+                    lock_transparent: false,
+                    alpha: Some(ch - 1),
+                })
+                .unwrap();
+                if tolerance == 0.6 {
+                    assert_eq!(written, 0, "channels={ch}, hidden={hidden}");
+                    assert_eq!(dest, before);
+                } else {
+                    assert!(written > 0, "channels={ch}, hidden={hidden}");
+                    assert!((dest[0] - 0.4).abs() < 1e-6);
+                    assert_eq!(&dest[ch..], &before[ch..]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tolerance_skips_a_dab_whose_source_is_fully_transparent() {
+    for ch in [2, 4, 5] {
+        for opaque in [1.0, 0.0] {
+            let (w, h) = (4, 4);
+            let src = vec![0.0; w * h * ch];
+            let before = fill(w, h, ch, |_, _, c| if c + 1 == ch { opaque } else { 0.5 });
+            let mut dest = before.clone();
+            let dab = Dab { x: 2.0, y: 2.0, theta: 0.0, radius: 2.0, pressure: 1.0 };
+            let written = stamp(&mut StampParams {
+                dest: &mut dest,
+                dest_w: w,
+                dest_h: h,
+                dest_origin: (0, 0),
+                src: &src,
+                src_w: w,
+                src_h: h,
+                src_origin: (0, 0),
+                ch,
+                dabs: std::slice::from_ref(&dab),
+                hardness: 1.0,
+                opacity: 1.0,
+                flow: 1.0,
+                tolerance: 0.1,
+                tile: 0,
+                selection: None,
+                lock_transparent: false,
+                alpha: Some(ch - 1),
+            })
+            .unwrap();
+            assert_eq!(written, 0, "channels={ch}, opaque={opaque}");
+            assert_eq!(dest, before);
+        }
+    }
+}
+
+#[test]
+fn zero_tolerance_does_not_write_fully_transparent_samples() {
+    for ch in [2, 4, 5] {
+        for opaque in [1.0, 0.0] {
+            let (w, h) = (4, 4);
+            let src = vec![0.0; w * h * ch];
+            let before = fill(w, h, ch, |_, _, c| if c + 1 == ch { opaque } else { 0.5 });
+            let mut dest = before.clone();
+            let dab = Dab { x: 2.0, y: 2.0, theta: 0.0, radius: 2.0, pressure: 1.0 };
+            let written = stamp_run(w, h, ch, &src, &mut dest, &dab, 0);
+            assert_eq!(written, 0, "channels={ch}, opaque={opaque}");
+            assert_eq!(dest, before);
+        }
+    }
+}
+
+#[test]
+fn rotated_dabs_preserve_color_at_transparent_edges() {
+    for ch in [2, 4, 5] {
+        for hidden in [0.0, 1.0] {
+            let (w, h) = (4, 4);
+            let src = fill(w, h, ch, |x, _, c| {
+                if c + 1 == ch {
+                    if x < 2 { 1.0 } else { 0.0 }
+                } else if x < 2 {
+                    if c == 0 { 0.8 } else { 0.25 }
+                } else {
+                    hidden
+                }
+            });
+            let mut dest = vec![0.0; w * h * ch];
+            let dab = Dab { x: 2.0, y: 2.0, theta: std::f32::consts::FRAC_PI_4, radius: 4.0, pressure: 1.0 };
+            stamp_run(w, h, ch, &src, &mut dest, &dab, 0);
+            let mut partial = 0;
+            for pixel in dest.chunks_exact(ch) {
+                if pixel[ch - 1] > 0.0 && pixel[ch - 1] < 1.0 {
+                    partial += 1;
+                    for (c, value) in pixel[..ch - 1].iter().enumerate() {
+                        let expected = if c == 0 { 0.8 } else { 0.25 };
+                        assert!((value - expected).abs() < 1e-6, "channels={ch}, hidden={hidden}, pixel={pixel:?}");
+                    }
+                }
+            }
+            assert!(partial > 0);
+        }
+    }
+}
+
 fn fill(w: usize, h: usize, ch: usize, f: impl Fn(i32, i32, usize) -> f32) -> Vec<f32> {
     let mut v = vec![0.0; w * h * ch];
     for y in 0..h {

@@ -21,9 +21,9 @@
 //! rewritten from the edited planes. Anything inconsistent (an index out of range, mismatched
 //! vertex counts, a non-finite or degenerate quad) stays an opaque [`super::UNSUPPORTED_FILTER`].
 
+use craft_psd::descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value};
 use photocraft_algo::perspective::{PerspectiveMap, Plane, Straighten, straighten};
 use photocraft_doc::SmartFilter;
-use photocraft_psd::descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value};
 use serde_json::{Value as J, json};
 
 use super::{blend_options, from_hex, get_desc, rgbc, set, to_hex, unit};

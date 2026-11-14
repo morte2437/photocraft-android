@@ -1,5 +1,6 @@
-//! Frozen scalar sharpen from main, used as an exact-output oracle.
-use photocraft_algo::retouch::{local_blur, local_sharpen};
+//! Frozen scalar sharpen from main, used as an exact-output oracle. Its Protect Detail branch
+//! follows #12938: a wider unsharp mask whose differences are soft-limited to 6 levels.
+use photocraft_algo::retouch::{PROTECT_DETAIL_SIGMA, local_blur, local_sharpen};
 
 #[test]
 fn matches_scalar_sharpen_bit_for_bit_across_layouts_edges_and_hdr() {
@@ -51,8 +52,9 @@ fn scalar_local_sharpen(
     if ow == 0 || oh == 0 || ch == 0 {
         return Vec::new();
     }
-    let blur = local_blur(data, w, h, ch, alpha, win, 1.0);
+    let blur = local_blur(data, w, h, ch, alpha, win, if protect_detail { PROTECT_DETAIL_SIGMA } else { 1.0 });
     let mut out = vec![0.0f32; blur.len()];
+    let limit = 6.0f32 / 255.0;
     for y in y0..y1 {
         for x in x0..x1 {
             let o = ((y - y0) * ow + (x - x0)) * ch;
@@ -63,18 +65,9 @@ fn scalar_local_sharpen(
                     out[o + c] = v;
                     continue;
                 }
-                let mut s = v + amount * (v - blur[o + c]);
-                if protect_detail {
-                    let (mut lo, mut hi) = (v, v);
-                    for (dx, dy) in [(-1i32, -1i32), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-                        let (nx, ny) = ((x as i32 + dx).clamp(0, w as i32 - 1) as usize, (y as i32 + dy).clamp(0, h as i32 - 1) as usize);
-                        let nv = data[(ny * w + nx) * ch + c];
-                        lo = lo.min(nv);
-                        hi = hi.max(nv);
-                    }
-                    s = s.clamp(lo, hi);
-                }
-                out[o + c] = s;
+                let d = v - blur[o + c];
+                let d = if protect_detail { d * limit / (limit + d.abs()) } else { d };
+                out[o + c] = v + amount * d;
             }
         }
     }

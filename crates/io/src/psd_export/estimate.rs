@@ -1,5 +1,5 @@
 use super::{Document, PSD_SAVE_HEADROOM};
-use photocraft_psd::{PsdFile, Version, file::LayerInfoPlacement};
+use craft_psd::{PsdFile, Version, file::LayerInfoPlacement};
 
 /// The signature a kept tagged block is written with. `8B64` exists only in PSB files: a PSD
 /// with an `8B64` block (kept from a PSB source, e.g. its global `FMsk` or `cinf`) is refused by
@@ -10,7 +10,7 @@ use photocraft_psd::{PsdFile, Version, file::LayerInfoPlacement};
 pub(crate) fn block_signature(sig: [u8; 4], key: [u8; 4], version: Version) -> [u8; 4] {
     match version {
         Version::Psd if sig == *b"8B64" => *b"8BIM",
-        Version::Psb if sig == *b"8BIM" && photocraft_psd::tagged::uses_long_length(version, &key) => *b"8B64",
+        Version::Psb if sig == *b"8BIM" && craft_psd::tagged::uses_long_length(version, &key) => *b"8B64",
         _ => sig,
     }
 }

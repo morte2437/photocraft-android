@@ -93,6 +93,10 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
     let r = doc.bounds();
     let fmt = doc.pixel_format();
     let n = fmt.channels();
+    // The source is read as dense samples over the whole canvas, whatever tiles it stores, then
+    // returned as `n` native f32 samples per pixel. Refuse a canvas past the working budget
+    // before reading (an empty canvas can be 300000 px a side).
+    let out = (n as u64).saturating_mul(4);
     match layer {
         Some(id) => {
             let l = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
@@ -105,6 +109,7 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
                     return Err(EngineError::Other(format!("layer \"{}\" has no pixels", l.name)));
                 }
             };
+            crate::allocation::check_dense(r, (s.channels() as u64).saturating_mul(4).saturating_add(out), "reading this channel source")?;
             if s.format() == fmt {
                 return Ok((s.read_region(r), n));
             }
@@ -113,6 +118,8 @@ pub(super) fn native_pixels(doc: &Document, layer: Option<LayerId>) -> Result<(V
             Ok((raw.chunks_exact(sf.channels()).flat_map(|p| from_rgba(&fmt, to_rgba(&sf, p))).collect(), n))
         }
         None => {
+            // The composite is straight RGBA f32.
+            crate::allocation::check_dense(r, 16u64.saturating_add(out), "reading this channel source")?;
             let buf = photocraft_compose::render(doc, r);
             Ok((buf.px.iter().flat_map(|p| from_rgba(&fmt, *p)).collect(), n))
         }
@@ -152,6 +159,13 @@ fn ref_planes(doc: &Document, layer: Option<LayerId>, active: Option<LayerId>, r
     let colors = color_count(doc);
     Ok(match r {
         ChanRef::Composite | ChanRef::Color(_) => {
+            // After `native_pixels` returns its `n` samples per pixel, the colour planes (and for
+            // one channel the toned plane) are built beside them: check that peak first, as
+            // `native_pixels` only checks its own.
+            let n = doc.pixel_format().channels() as u64;
+            let toned = u64::from(matches!(r, ChanRef::Color(_)));
+            let planes = (colors as u64).saturating_add(toned).saturating_mul(4);
+            crate::allocation::check_dense(area, n.saturating_mul(4).saturating_add(planes), "reading this channel source")?;
             let (px, n) = native_pixels(doc, layer)?;
             let planes: Vec<Vec<f32>> = (0..colors).map(|c| px.chunks_exact(n).map(|p| p[c]).collect()).collect();
             match r {

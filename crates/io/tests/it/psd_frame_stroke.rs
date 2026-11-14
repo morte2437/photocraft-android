@@ -2,11 +2,11 @@
 //! vector mask (`vsms`) and its Properties › Stroke as a shape-style `vstk`. The stroke draws
 //! along the outline even when nothing is placed in the frame (#4381).
 
+use craft_psd::{PsdFile, SectionType, TaggedBlock};
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Document, Fill, Group, Layer, LayerContent, Path, ShapeStroke, Size, StrokeAlign, Subpath, VectorMask};
 use photocraft_io::vector_map::{parse_vstk, vstk_bytes};
 use photocraft_io::*;
-use photocraft_psd::{PsdFile, SectionType, TaggedBlock};
 
 fn red_inside(width: f32) -> ShapeStroke {
     ShapeStroke { width, align: StrokeAlign::Inside, paint: Fill::Solid(Color::rgb(1.0, 0.0, 0.0)), ..ShapeStroke::default() }
@@ -36,7 +36,7 @@ fn px(d: &Document, x: i32, y: i32) -> [f32; 4] {
 }
 
 /// The group's own record (its top, `lsct` 1 or 2) in a PSD file.
-fn frame_record(f: &mut PsdFile) -> &mut photocraft_psd::LayerRecord {
+fn frame_record(f: &mut PsdFile) -> &mut craft_psd::LayerRecord {
     f.layers_mut()
         .iter_mut()
         .find(|r| r.section_divider().is_some_and(|s| matches!(s.kind, SectionType::OpenFolder | SectionType::ClosedFolder)))
@@ -47,7 +47,7 @@ fn frame_record(f: &mut PsdFile) -> &mut photocraft_psd::LayerRecord {
 fn a_photoshop_frames_vstk_draws_its_stroke_along_the_outline() {
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
         // A file shaped like Photoshop's: the group record carries `vsms` and a `vstk`.
-        let mut f = document_to_psd(&frame_doc(depth, None));
+        let mut f = document_to_psd(&frame_doc(depth, None)).unwrap();
         frame_record(&mut f).blocks.push(TaggedBlock::new(*b"vstk", vstk_bytes(Some(&red_inside(4.0)), true, 72.0)));
         let (d, _) = psd_to_document(&f);
         assert_eq!(frame_stroke(&d), Some(red_inside(4.0)), "{depth:?}");

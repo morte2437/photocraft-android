@@ -359,12 +359,12 @@ fn make_shape_turns_the_work_path_into_a_shape_layer() {
     );
     PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
     h.run_steps(4);
-    assert!(h.get_by_label("Make Shape").accesskit_node().is_disabled(), "no path yet");
+    assert!(h.get_by_label("Shape").accesskit_node().is_disabled(), "no path yet");
     square(h.state_mut(), 20.0, 20.0, 100.0);
     let drawn = work(h.state());
     let (count, steps) = (layers(h.state()), h.state().session.active().unwrap().history.past_len());
     h.run_steps(2);
-    h.get_by_label("Make Shape").click();
+    h.get_by_label("Shape").click();
     h.run_steps(3);
     let app = h.state();
     assert_eq!(layers(app), count + 1);
@@ -383,7 +383,7 @@ fn make_shape_turns_the_work_path_into_a_shape_layer() {
     }
     let steps = h.state().session.active().unwrap().history.past_len();
     h.run_steps(2);
-    h.get_by_label("Make Shape").click();
+    h.get_by_label("Shape").click();
     h.run_steps(3);
     let app = h.state();
     assert!(app.ui.pen.is_none());

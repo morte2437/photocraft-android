@@ -540,16 +540,30 @@ fn type_shape_descriptor() -> Descriptor {
     desc("null").with("null", class_ref("contentLayer")).with("Usng", target_ref("textLayer"))
 }
 
+/// Make events another module maps: a type path, an artboard, a layer style or a frame,
+/// tried in that order.
+fn delegated_make_from(d: &Descriptor) -> Option<Mapped> {
+    let class = get_ref(d, "null").and_then(ref_class);
+    match class.as_deref() {
+        Some("Path") => return Some(super::steps_type_path::from(d)),
+        // Layer › New › Artboard and Artboard from Layers (#10723).
+        Some("artboardSection") => return Some(super::steps_artboard_section::from(d)),
+        _ => {}
+    }
+    if let Some(mapped) = super::steps_layer_style::create_from_descriptor(d) {
+        return Some(mapped);
+    }
+    // Layer › New › Frame from Layers (#10723).
+    (class.as_deref() == Some("framedGroupSection")).then(|| super::steps_frame_section::from(d))
+}
+
 /// Import Make events only when their geometry and options can be represented faithfully,
 /// including the exact target-text-to-content-layer references.
 pub(super) fn make_from(d: &Descriptor) -> Mapped {
     if let Some(mapped) = super::steps_calculations::from_descriptor(d) {
         return mapped;
     }
-    if get_ref(d, "null").and_then(ref_class).as_deref() == Some("Path") {
-        return super::steps_type_path::from(d);
-    }
-    if let Some(mapped) = super::steps_layer_style::create_from_descriptor(d) {
+    if let Some(mapped) = delegated_make_from(d) {
         return mapped;
     }
     if d.items == type_shape_descriptor().items {
@@ -717,8 +731,14 @@ pub(super) fn make_to(id: &str, p: &Value) -> Option<Descriptor> {
     if id == super::steps_type_path::COMMAND {
         return super::steps_type_path::to(p);
     }
+    if matches!(id, super::steps_artboard_section::NEW | super::steps_artboard_section::FROM_LAYERS) {
+        return super::steps_artboard_section::to(id, p);
+    }
     if id == super::steps_layer_style::CREATE {
         return super::steps_layer_style::style_to(id, p);
+    }
+    if id == super::steps_frame_section::COMMAND {
+        return super::steps_frame_section::to(p);
     }
     if id == "type.convertToShape" {
         return p.as_object().filter(|p| p.is_empty()).map(|_| type_shape_descriptor());

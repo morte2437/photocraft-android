@@ -25,10 +25,10 @@ fn selected_pixels_become_one_editable_smart_object_in_every_mode_and_depth() {
         for depth in SampleType::ALL {
             let mut doc = Document::new("Selected", Size::new(W as u32, H as u32), mode, depth);
             let profile = match mode {
-                ColorMode::Rgb => photocraft_cms::builtin::Builtin::Srgb,
-                ColorMode::Grayscale => photocraft_cms::builtin::Builtin::SGray,
-                ColorMode::Cmyk => photocraft_cms::builtin::Builtin::CoatedCmyk,
-                _ => photocraft_cms::builtin::Builtin::LabD50,
+                ColorMode::Rgb => craft_cms::builtin::Builtin::Srgb,
+                ColorMode::Grayscale => craft_cms::builtin::Builtin::SGray,
+                ColorMode::Cmyk => craft_cms::builtin::Builtin::CoatedCmyk,
+                _ => craft_cms::builtin::Builtin::LabD50,
             };
             doc.icc_profile = Some(profile.profile().to_bytes());
             doc.resolution_dpi = 300.0;

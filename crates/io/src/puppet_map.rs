@@ -18,8 +18,8 @@
 //! alone feed PhotoCraft's own solver once they are edited; the mode, density and rotation
 //! settings aren't mapped (their stored values aren't identified), so those stay at defaults.
 
+use craft_psd::descriptor::{Descriptor, Value};
 use photocraft_doc::SmartFilter;
-use photocraft_psd::descriptor::{Descriptor, Value};
 use serde_json::{Value as J, json};
 
 use super::{blend_options, from_hex, get_desc, set, to_hex};
@@ -159,7 +159,7 @@ pub(super) fn export_item(params: &J) -> Result<Descriptor, String> {
 mod tests {
     use super::*;
     use crate::smart_map::{UNSUPPORTED_FILTER, filter_from_item, item_for_filter, parse_sold};
-    use photocraft_psd::descriptor::{UnicodeString, VersionedDescriptor};
+    use craft_psd::descriptor::{UnicodeString, VersionedDescriptor};
 
     const QUAD: [f64; 8] = [10.0, 20.0, 110.0, 22.0, 108.0, 220.0, 12.0, 218.0];
 

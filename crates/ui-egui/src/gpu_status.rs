@@ -308,6 +308,9 @@ mod tests {
 
     #[test]
     fn system_info_copy_and_api_stay_english_in_czech_ui() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.perf.gpu_info.adapter = "Test GPU".into();
         app.perf.gpu_info.preference = "auto".into();
@@ -329,6 +332,9 @@ mod tests {
 
     #[test]
     fn system_info_translates_empty_and_stored_auto_only_for_display() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         // Hardware names are opaque even when they happen to match a lookup key.
         app.perf.gpu_info.adapter = "auto".into();

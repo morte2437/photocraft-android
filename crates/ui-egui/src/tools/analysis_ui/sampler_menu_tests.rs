@@ -98,6 +98,8 @@ fn right_click_off_a_sampler_greys_every_row() {
     assert_eq!(samplers(&app).len(), 2, "nothing deleted, no sampler placed");
 }
 
+/// The right-click menu's Delete removes the sampler under the pointer, closes the menu, and
+/// the samplers after it move up a number.
 #[test]
 fn delete_removes_the_sampler_under_the_pointer_and_renumbers_the_rest() {
     let (mut app, ctx) = app();
@@ -106,12 +108,14 @@ fn delete_removes_the_sampler_under_the_pointer_and_renumbers_the_rest() {
     assert_eq!(app.ui.canvas_tool_menu.as_ref().and_then(|m| m.sampler), Some(1));
     let r = control(&mut app, &ctx, "ui.context.choose", json!({"id": SAMPLER_DELETE}));
     assert_eq!(r["ok"], json!(true), "{r}");
-    assert_eq!(samplers(&app), [[20.0, 20.0], [180.0, 90.0]], "#3 became #2");
+    assert_eq!(samplers(&app), [[20.5, 20.5], [180.5, 90.5]], "#3 became #2");
     assert!(app.ui.canvas_tool_menu.is_none(), "choosing closes the menu");
     let listed = app.run("view.colorSamplers.list", json!({})).unwrap();
     assert_eq!(listed["samplers"][1]["number"], json!(2));
 }
 
+/// Delete never removes a different sampler when the list changes while the menu is open: one
+/// deleted or moved meanwhile, or another document with a sampler at the same index and spot.
 #[test]
 fn delete_never_removes_another_sampler_after_the_list_changes_under_the_menu() {
     let (mut app, ctx) = app();
@@ -122,7 +126,7 @@ fn delete_never_removes_another_sampler_after_the_list_changes_under_the_menu() 
     app.run("view.colorSamplers.delete", json!({"index": 0})).unwrap();
     let r = control(&mut app, &ctx, "ui.context.choose", json!({"id": SAMPLER_DELETE}));
     assert_eq!(r["ok"], json!(false), "Delete greys out: {r}");
-    assert_eq!(samplers(&app), [[120.0, 60.0], [180.0, 90.0]], "no other sampler is deleted");
+    assert_eq!(samplers(&app), [[120.5, 60.5], [180.5, 90.5]], "no other sampler is deleted");
     // The menu itself closes on the next frame.
     right_click(&mut app, &ctx, 120.0, 60.0);
     app.run("view.colorSamplers.move", json!({"index": 0, "x": 30, "y": 30})).unwrap();
@@ -150,6 +154,8 @@ fn readout_rows_do_nothing_until_samplers_have_readout_modes() {
     assert_eq!(samplers(&app).len(), 2);
 }
 
+/// A sampler gone while the menu is open, a non-finite point, or no document at all: Delete
+/// greys out and nothing panics.
 #[test]
 fn a_stale_sampler_or_odd_point_fails_gracefully() {
     let (mut app, ctx) = app();
@@ -160,7 +166,7 @@ fn a_stale_sampler_or_odd_point_fails_gracefully() {
     let menu = app.ui.canvas_tool_menu.clone().unwrap();
     assert!(!crate::canvas_tool_menu::entry_enabled(&app, &menu, SAMPLER_DELETE));
     crate::canvas_tool_menu::choose(&mut app, &ctx, SAMPLER_DELETE);
-    assert_eq!(samplers(&app), [[5.0, 5.0]]);
+    assert_eq!(samplers(&app), [[5.5, 5.5]]);
     for p in [[f64::NAN, 5.0], [f64::INFINITY, 5.0], [5.0, f64::NEG_INFINITY]] {
         assert_eq!(super::sampler_at(&app, p), None);
     }

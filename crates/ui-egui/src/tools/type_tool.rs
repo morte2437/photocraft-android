@@ -144,6 +144,8 @@ mod font_commit_tests;
 mod font_picker_tests;
 #[cfg(test)]
 mod options_tooltips_tests;
+#[cfg(test)]
+mod panels_toggle_tests;
 
 #[cfg(test)]
 mod tests;

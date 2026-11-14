@@ -24,7 +24,7 @@ the AI models named in `Co-Authored-By` trailers.
 
 - The About window is `DialogKind::About` in `crates/ui-egui/src/dialogs.rs` (Help ▸ About PhotoCraft).
   Its tab is the dialog field `tab` (`about`, `contributors`, `models`), so agents can switch it with
-  `ui.dialog.set`. Labels are translated like the rest of the shell (`tl!` + `crates/ui-egui/src/i18n/*.tsv`).
+  `ui.dialog.set`. Labels are translated like the rest of the shell (`tl!` + craft-i18n's `locales/<code>/photocraft.tsv`).
 
 ## Credit yourself
 

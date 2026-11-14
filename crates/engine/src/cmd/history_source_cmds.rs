@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use photocraft_doc::Document;
+use photocraft_doc::{ColorMode, Document};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -99,6 +99,21 @@ pub(crate) fn paint_source(st: &DocState, p: &Value, cmd: &str) -> Result<Arc<Do
         )));
     }
     Ok(doc)
+}
+
+/// The History Brush's refusals after Image › Mode, with Photoshop's alert texts (#12842): only
+/// the History Brush's pairs were measured (RGB to Grayscale, a depth change), so any other change,
+/// or both at once, converts the source as before. Document modes are compared: the pixel format
+/// reads Indexed and Multichannel as RGB.
+pub(crate) fn refuse_other_format(st: &DocState, source: &Document) -> Result<()> {
+    let (mode_differs, depth_differs) = (source.mode != st.doc.mode, source.depth != st.doc.depth);
+    if source.mode == ColorMode::Rgb && st.doc.mode == ColorMode::Grayscale && !depth_differs {
+        return Err(EngineError::Other("Could not use the history brush because the current color mode does not match that of the history state.".into()));
+    }
+    if depth_differs && !mode_differs {
+        return Err(EngineError::Other("Could not use the history brush because the current bit depth does not match that of the history state.".into()));
+    }
+    Ok(())
 }
 
 /// `history.setSource {state}` or `{snapshot}`: make a History panel row or a snapshot the History
@@ -188,7 +203,7 @@ mod tests {
     #[test]
     fn default_source_is_the_oldest_state() {
         let mut s = session();
-        assert_eq!(crate::inspect::document(s.active().unwrap())["historySource"], json!({"state": 0, "label": "Open"}));
+        assert_eq!(crate::inspect::document(s.active().unwrap())["historySource"], json!({"state": 0, "label": "New"}));
         brush(&mut s, json!({}));
         assert!(close(rgb(&s), [1.0, 1.0, 1.0]), "{:?}", rgb(&s));
     }
@@ -380,3 +395,7 @@ mod tests {
         assert_eq!(s.execute(CMD, json!({"snapshot": 0})).unwrap()["snapshot"], 0);
     }
 }
+
+#[cfg(test)]
+#[path = "history_brush_format_mismatch_tests.rs"]
+mod history_brush_format_mismatch_tests;

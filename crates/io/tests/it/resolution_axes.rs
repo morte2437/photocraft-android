@@ -4,12 +4,12 @@
 use crate::common;
 
 use common::*;
+use craft_psd::resources::ids;
+use craft_psd::testgen;
+use craft_psd::{Compression, ImageResource, ResolutionInfo, Version};
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, Metadata, SampleType as CSample};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_io::*;
-use photocraft_psd::resources::ids;
-use photocraft_psd::testgen;
-use photocraft_psd::{Compression, ImageResource, ResolutionInfo, Version};
 
 fn resolution_notes(r: &ImportResult) -> Vec<&String> {
     r.warnings.iter().filter(|w| w.contains("vertical resolution")).collect()
@@ -75,7 +75,7 @@ fn resolution_info_cm_display_unit_is_pixels_per_inch() {
     assert!(resolution_notes(&r).is_empty(), "{:?}", r.warnings);
 
     let out = export(&r.document, "out.psd", &ExportOptions::default()).unwrap();
-    let file = photocraft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
+    let file = craft_psd::PsdFile::from_bytes(&out.bytes).unwrap();
     let written = file.resolution().unwrap();
     assert!((written.h_res() - 300.0).abs() < 1e-3, "{}", written.h_res());
     assert!((written.v_res() - 300.0).abs() < 1e-3, "{}", written.v_res());

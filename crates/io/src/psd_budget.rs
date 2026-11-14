@@ -4,11 +4,11 @@
 //! Reserve the sum of all possible retained tiles and the largest workspace, without credit
 //! for pruning or tile sharing. Reserving before any worker starts makes scheduling irrelevant.
 
-use photocraft_geom::TILE_SIZE;
-use photocraft_psd::{
+use craft_psd::{
     PsdFile,
     layer::{CHANNEL_REAL_USER_MASK, CHANNEL_USER_MASK, Rect},
 };
+use photocraft_geom::TILE_SIZE;
 
 use crate::IoError;
 
@@ -174,7 +174,7 @@ pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
     let sample = u64::from(h.depth.div_ceil(8));
     let cc = match h.color_mode {
         // Unknown modes use the RGB fallback, including its alpha channel.
-        photocraft_psd::ColorMode::Unknown(_) => 3,
+        craft_psd::ColorMode::Unknown(_) => 3,
         mode => u64::from(mode.color_channels().unwrap_or(3)),
     };
     if super::psd_import::can_recover_layers(file) {
@@ -219,15 +219,15 @@ pub fn estimate(file: &PsdFile) -> Result<PsdMemoryEstimate, IoError> {
         let converted = mul(pixels, mul(channels.max(cc + 1), sample * 3 + 12)?)?;
         budget.scratch(converted.checked_add(inflate_scratch(merged, 1)?).ok_or_else(overflow)?);
     }
-    let mut patterns = photocraft_psd::patterns::PatternBudget::default();
+    let mut patterns = craft_psd::patterns::PatternBudget::default();
     for block in file.global_blocks.iter().filter(|b| crate::pattern_map::PATTERN_KEYS.contains(&b.key)) {
         // Earlier records can decode before a malformed later record discards the block.
-        let items = photocraft_psd::patterns::pattern_block_memory(&block.data, &mut patterns);
+        let items = craft_psd::patterns::pattern_block_memory(&block.data, &mut patterns);
         for p in items {
             let pixels = mul(u64::from(p.width), u64::from(p.height))?;
             let sample = u64::from(p.depth.div_ceil(8));
-            let color = if p.mode == 2 { 3 } else { photocraft_psd::patterns::mode_channels(p.mode) as u64 };
-            let alpha = u64::from(p.planes > photocraft_psd::patterns::mode_channels(p.mode));
+            let color = if p.mode == 2 { 3 } else { craft_psd::patterns::mode_channels(p.mode) as u64 };
+            let alpha = u64::from(p.planes > craft_psd::patterns::mode_channels(p.mode));
             budget.surface(Rect::from_xywh(0, 0, p.width, p.height), color + alpha, sample)?;
             // The block parser returns all planes together. Count them as retained so
             // previous converted patterns and later blocks cannot reuse this allowance.

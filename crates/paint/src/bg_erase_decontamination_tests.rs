@@ -50,7 +50,7 @@ fn rgba(s: &Surface, i: usize) -> [i32; 4] {
 /// The reference's drag from block 0's centre to `to_x`, Sampling Once.
 fn drag(fmt: PixelFormat, tolerance_percent: f32, to_x: f64) -> Surface {
     let mut s = blocks(fmt);
-    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (to_x, 150.0)]), &once(tolerance_percent), None);
+    apply_background_eraser(&mut s, &stroke(&[(50.0, 150.0), (to_x, 150.0)]), &once(tolerance_percent), None).unwrap();
     s
 }
 
@@ -59,7 +59,7 @@ fn clicks(fmt: PixelFormat, tolerance_percent: f32, clicks: usize) -> Surface {
     let mut s = blocks(fmt);
     for _ in 0..clicks {
         for i in 0..8 {
-            apply_background_eraser(&mut s, &stroke(&[(100.0 * i as f64 + 50.0, 150.0)]), &swatch(tolerance_percent), None);
+            apply_background_eraser(&mut s, &stroke(&[(100.0 * i as f64 + 50.0, 150.0)]), &swatch(tolerance_percent), None).unwrap();
         }
     }
     s
@@ -191,7 +191,7 @@ fn it_works_in_the_documents_own_channels() {
         let bs = BgEraseSettings { background: [level(0), level(0), level(0), 1.0], ..swatch(50.0) };
         let click_all = |s: &mut Surface| {
             for i in 0..8 {
-                apply_background_eraser(s, &stroke(&[(100.0 * i as f64 + 50.0, 150.0)]), &bs, None);
+                apply_background_eraser(s, &stroke(&[(100.0 * i as f64 + 50.0, 150.0)]), &bs, None).unwrap();
             }
         };
         click_all(&mut s);

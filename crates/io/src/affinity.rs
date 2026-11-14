@@ -1,13 +1,13 @@
 //! Affinity documents (`.af`, `.afdesign`, `.afphoto`, `.afpub`): the native layers, curves,
-//! shapes, artboards, text, images and masks `photocraft-affinity` reads, mapped to PhotoCraft
+//! shapes, artboards, text, images and masks `craft-affinity` reads, mapped to PhotoCraft
 //! layers (groups, shape layers, type layers, embedded smart objects, pixel layers, layer and
 //! vector masks). What could not be mapped is listed in the warnings. A file whose native data
 //! can't be read opens as its embedded preview, with a warning saying why.
 
 use std::sync::Arc;
 
-use photocraft_affinity::model::{self as af, Align, Blend, Kind, Pixels};
-use photocraft_affinity::paint::{self as ap, Cap, GradientKind, Join};
+use craft_affinity::model::{self as af, Align, Blend, Kind, Pixels};
+use craft_affinity::paint::{self as ap, Cap, GradientKind, Join};
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::text::{CharStyle, ParagraphRun, ParagraphStyle, TextAlign, TextRun, TextShape};
 use photocraft_doc::vector::{Knot, LineCap, LineJoin, Path, ShapeLayer, ShapeStroke, StrokeAlign, Subpath, VectorMask};
@@ -19,7 +19,7 @@ use photocraft_raster::Surface;
 
 use crate::{ImportResult, IoError};
 
-pub use photocraft_affinity::is_affinity;
+pub use craft_affinity::is_affinity;
 
 /// Extensions recognized as Affinity documents.
 pub const EXTENSIONS: &[&str] = &["af", "afphoto", "afdesign", "afpub"];
@@ -32,22 +32,36 @@ const MAX_SIDE: f64 = 300_000.0;
 /// container of embedded images could still decode (and keep) a surface each until the process
 /// dies. ORA and KRA budget their decoded pixels the same way.
 const MAX_PIXEL_BYTES: u64 = 1 << 30;
+/// Bytes the import's optional pixel caches (shapes, type layers) may hold together. They are
+/// drawn again on the first edit, so running out costs nothing but speed; raster layers and
+/// embedded images are lost for good when they don't fit. A separate pool keeps thousands of
+/// cheap caches early in a file from using up [`MAX_PIXEL_BYTES`] and dropping images later.
+const MAX_CACHE_BYTES: u64 = 512 << 20;
 
 pub fn has_extension(name: &str) -> bool {
     name.rsplit(['/', '\\']).next().and_then(|n| n.rsplit_once('.')).is_some_and(|(_, ext)| EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
 }
 
-pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
-    match photocraft_affinity::read(bytes, photocraft_affinity::Limits::default()) {
+pub(crate) fn import(name: &str, bytes: &[u8], ctl: &photocraft_raster::Interrupt) -> Result<ImportResult, IoError> {
+    match craft_affinity::read(bytes, craft_affinity::Limits::default()) {
         Ok(d) => {
             let mut b = Builder::new(name, &d)?;
+            b.ctl = *ctl;
             b.document(&d)?;
+            ctl.check().map_err(|_| IoError::Cancelled)?;
             let mut warnings: Vec<String> = d.warnings.iter().map(|w| format!("Affinity: not imported or approximated: {w}.")).collect();
             warnings.extend(b.warnings.iter().map(|w| format!("Affinity: {w}.")));
             // Type layers draw from their model, within the import's raster bound: the sizes and
-            // frames come from an untrusted file.
+            // frames come from an untrusted file. They share the optional-cache budget with the
+            // shapes, so a file with thousands of type layers can't allocate without end.
             let mut document = b.doc;
-            crate::text_import::prepare(&mut document, None);
+            let unrendered = crate::text_import::prepare_within(&mut document, None, &mut b.cache_budget, ctl).map_err(|_| IoError::Cancelled)?;
+            if unrendered > 0 {
+                warnings.push(format!("Affinity: {unrendered} type layers beyond the import's memory limit were left without pixels until they are edited."));
+            }
+            if b.uncached_shapes > 0 {
+                warnings.push(format!("Affinity: {} shapes beyond the import's memory limit were left without a pixel cache.", b.uncached_shapes));
+            }
             // Save never writes back over the Affinity file.
             Ok(ImportResult { document, warnings, source_read_only: true, preview_only: false })
         }
@@ -56,8 +70,8 @@ pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> 
 }
 
 /// The embedded preview, for files whose native document can't be read.
-fn preview(name: &str, bytes: &[u8], native: &photocraft_affinity::Error) -> Result<ImportResult, IoError> {
-    let p = photocraft_affinity::preview(bytes).map_err(|e| IoError::Unsupported(format!("{native}; its embedded preview can't be read either ({e})")))?;
+fn preview(name: &str, bytes: &[u8], native: &craft_affinity::Error) -> Result<ImportResult, IoError> {
+    let p = craft_affinity::preview(bytes).map_err(|e| IoError::Unsupported(format!("{native}; its embedded preview can't be read either ({e})")))?;
     let opts = photocraft_codecs::DecodeOptions {
         limits: photocraft_codecs::Limits { max_width: 4096, max_height: 4096, max_pixels: 4096 * 4096, max_alloc: 128 << 20 },
         ..Default::default()
@@ -80,7 +94,7 @@ fn preview(name: &str, bytes: &[u8], native: &photocraft_affinity::Error) -> Res
     Ok(r)
 }
 
-struct Builder {
+struct Builder<'a> {
     doc: Document,
     warnings: Vec<String>,
     /// Document pixels (in the canvas) per Affinity document pixel: always 1; spreads are offset.
@@ -88,6 +102,12 @@ struct Builder {
     canvas: Rect,
     /// Decoded pixel bytes left for embedded images and their resampled surfaces.
     pixel_budget: u64,
+    /// Bytes left for the optional shape and type caches ([`MAX_CACHE_BYTES`]).
+    cache_budget: u64,
+    /// Shapes that went without a cache because `cache_budget` ran out.
+    uncached_shapes: usize,
+    /// Checked per layer: a cancelled import stops building.
+    ctl: photocraft_raster::Interrupt<'a>,
 }
 
 /// Deduct `cost` bytes from a decoded-pixel budget; `false` (leaving the budget alone) when it
@@ -110,7 +130,7 @@ fn point(p: af::Point) -> Point {
     Point::new(p.x, p.y)
 }
 
-impl Builder {
+impl Builder<'_> {
     fn new(name: &str, d: &af::Document) -> Result<Self, IoError> {
         // Spreads (Publisher pages) side by side, 64 px apart.
         let mut w: f64 = 0.0;
@@ -126,7 +146,16 @@ impl Builder {
         let mut doc = Document::new(name, size, ColorMode::Rgb, SampleType::U8);
         doc.resolution_dpi = d.dpi as f32;
         let canvas = Rect::new(0, 0, size.width as i32, size.height as i32);
-        Ok(Self { doc, warnings: Vec::new(), format: PixelFormat::RGBA8, canvas, pixel_budget: MAX_PIXEL_BYTES })
+        Ok(Self {
+            doc,
+            warnings: Vec::new(),
+            format: PixelFormat::RGBA8,
+            canvas,
+            pixel_budget: MAX_PIXEL_BYTES,
+            cache_budget: MAX_CACHE_BYTES,
+            uncached_shapes: 0,
+            ctl: photocraft_raster::Interrupt::NONE,
+        })
     }
 
     fn warn(&mut self, w: &str) {
@@ -249,9 +278,12 @@ impl Builder {
 
     /// One Affinity node and its subtree; `to_doc` maps Affinity document pixels to the canvas.
     fn layer(&mut self, n: &af::Node, to_doc: Affine, top: bool) -> Option<Layer> {
+        if self.ctl.cancelled() {
+            return None;
+        }
         let children: Vec<Layer> = n.children.iter().filter_map(|c| self.layer(c, to_doc, false)).collect();
         let mut l = match &n.kind {
-            Kind::Layer | Kind::Group => self.group(n, children),
+            Kind::Layer | Kind::Group | Kind::Table(_) | Kind::MasterInstance { .. } => self.group(n, children),
             Kind::Unsupported if children.is_empty() => return None,
             Kind::Unsupported => self.group(n, children),
             Kind::Shape { path, fills, strokes, even_odd } => {
@@ -273,7 +305,10 @@ impl Builder {
                     g
                 }
             }
-            Kind::Artboard { rect, background } => {
+            Kind::Artboard { rect, background, .. } => {
+                if n.class != craft_affinity::stream::Tag::of(b"ShpN") {
+                    self.warn("a converted artboard outline (imported at its bounding box)");
+                }
                 let r = self.bbox(to_doc, *rect);
                 let bg = match background.first() {
                     Some(ap::Paint::Solid(c)) => {
@@ -446,13 +481,26 @@ impl Builder {
         // The pixel cache is optional (the shape renders from its path without it), so charge the
         // area it would cover to the import's pixel budget and go without it when that is spent:
         // geometry across a 300000 px canvas would otherwise be rasterized for every shape.
-        let reach = sh.stroke.as_ref().map_or(0, |s| (s.width.ceil() as i32).saturating_add(1));
-        let area = frame.inflate(reach).intersect(&self.canvas);
-        let cost = u64::from(area.width()).saturating_mul(u64::from(area.height())).saturating_mul(self.format.bytes_per_pixel() as u64);
-        if charge(&mut self.pixel_budget, cost) {
-            sh.cache = Some(photocraft_vector::render_shape(&sh, self.format, self.canvas));
+        // Once not even one tile is left nothing can be charged, so skip compiling the shape
+        // (flattening and stroking its path) just to throw the result away.
+        let tile = crate::text_import::cache_bytes(Rect::new(0, 0, 1, 1), self.format.bytes_per_pixel());
+        if self.cache_budget < tile {
+            if !sh.path.subpaths.is_empty() {
+                self.uncached_shapes += 1;
+            }
+            return sh;
+        }
+        // The compiled bounds are what `render` covers, an acute miter reaching past the stroke width included.
+        #[cfg(test)]
+        COMPILED_SHAPES.with(|n| n.set(n.get() + 1));
+        let compiled = photocraft_vector::CompiledShape::new(&sh, photocraft_vector::DEFAULT_TOLERANCE, self.canvas);
+        let area = compiled.bounds().map_or(Rect::default(), |b| b.intersect(&self.canvas));
+        // Whole tiles: even a 2x2 px shape keeps one, which 50 000 small shapes add up to gigabytes.
+        let cost = crate::text_import::cache_bytes(area, self.format.bytes_per_pixel());
+        if charge(&mut self.cache_budget, cost) {
+            sh.cache = Some(compiled.render(self.format, self.canvas));
         } else {
-            self.warn("shapes covering more pixels than the import's memory allows were left without a pixel cache");
+            self.uncached_shapes += 1;
         }
         sh
     }
@@ -514,6 +562,7 @@ impl Builder {
     fn pixels(&mut self, img: &af::Image) -> Option<(u32, u32, Vec<u8>)> {
         match &img.pixels {
             Pixels::Rgba8(v) => Some((img.width, img.height, v.clone())),
+            Pixels::Cmyka8(v) => Some((img.width, img.height, Pixels::cmyka8_to_rgba8(v))),
             Pixels::Encoded(bytes) => {
                 let opts = photocraft_codecs::DecodeOptions {
                     limits: photocraft_codecs::Limits { max_width: 65_535, max_height: 65_535, max_pixels: MAX_PIXELS, max_alloc: 512 << 20 },
@@ -551,7 +600,7 @@ impl Builder {
                 m,
                 Some(surface),
             )),
-            Pixels::Rgba8(_) => LayerContent::Raster(surface),
+            Pixels::Rgba8(_) | Pixels::Cmyka8(_) => LayerContent::Raster(surface),
         })
     }
 
@@ -580,7 +629,8 @@ impl Builder {
         let exact = a == 1.0 && d == 1.0 && b == 0.0 && c == 0.0 && e.fract() == 0.0 && f.fract() == 0.0;
         let inv = m.inverse()?;
         let (rw, rh) = (r.width() as usize, r.height() as usize);
-        if !charge(&mut self.pixel_budget, (rw as u64).saturating_mul(rh as u64).saturating_mul(channels as u64)) {
+        // The surface keeps whole tiles: a narrow image stores up to 256 times its pixels.
+        if !charge(&mut self.pixel_budget, photocraft_raster::tile_storage_bytes(r, &format)) {
             self.warn("the document's images need more pixel memory than the import allows; the rest were left out");
             return None;
         }
@@ -633,6 +683,8 @@ fn default_name(k: &Kind) -> String {
         Kind::Shape { .. } => "Shape",
         Kind::Text(_) => "Text",
         Kind::Image(_) => "Image",
+        Kind::Table(_) => "Table",
+        Kind::MasterInstance { .. } => "Master",
         Kind::Unsupported => "Group",
     }
     .into()
@@ -657,6 +709,12 @@ fn color(c: ap::Color) -> Color {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// How many shapes this thread compiled for a pixel cache (for the exhausted-budget test).
+    static COMPILED_SHAPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -667,7 +725,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, (width, height, pixels))| af::Node {
-                class: photocraft_affinity::synth::tag(b"ImgN"),
+                class: craft_affinity::synth::tag(b"ImgN"),
                 name: format!("Image {i}"),
                 visible: true,
                 locked: false,
@@ -676,6 +734,7 @@ mod tests {
                 kind: Kind::Image(af::Image { width, height, pixels, transform: af::Affine::IDENTITY }),
                 mask: None,
                 pixel_mask: None,
+                effects: Vec::new(),
                 children: Vec::new(),
             })
             .collect();
@@ -684,6 +743,8 @@ mod tests {
             spreads: vec![af::Spread { bounds: af::Rect { x0: 0.0, y0: 0.0, x1: 64.0, y1: 64.0 }, pages: Vec::new(), transparent: true, nodes }],
             saved_by: None,
             warnings: Vec::new(),
+            masters: Vec::new(),
+            cmyk_profile: None,
         }
     }
 
@@ -697,11 +758,11 @@ mod tests {
 
     #[test]
     fn images_past_the_pixel_budget_are_left_out() {
-        // Two 64×64 RGBA images cost 16 KiB each when resampled; a 16 KiB budget admits one and
+        // Two 64×64 RGBA images each keep a whole 256×256 tile (256 KiB); a one-tile budget admits one and
         // the second is dropped with a warning instead of being staged anyway.
         let d = affinity_document(vec![(64, 64, Pixels::Rgba8(vec![0; 64 * 64 * 4])), (64, 64, Pixels::Rgba8(vec![0; 64 * 64 * 4]))]);
         let mut b = Builder::new("budget", &d).unwrap();
-        b.pixel_budget = 64 * 64 * 4;
+        b.pixel_budget = 256 * 256 * 4; // one whole tile per image
         b.document(&d).unwrap();
         assert_eq!(b.doc.layers.len(), 1, "the image past the budget must not import");
         assert!(b.warnings.iter().any(|w| w.contains("pixel memory")), "{:?}", b.warnings);
@@ -722,8 +783,174 @@ mod tests {
         assert!(b.warnings.iter().any(|w| w.contains("pixel memory")), "{:?}", b.warnings);
         // The same image imports when the budget covers the decode and the resample.
         let mut ok = Builder::new("room", &d).unwrap();
-        ok.pixel_budget = 8 * 8 * 4 * 2;
+        ok.pixel_budget = 8 * 8 * 4 + 256 * 256 * 4;
         ok.document(&d).unwrap();
         assert_eq!(ok.doc.layers.len(), 1, "within the budget the image imports as a smart object");
+    }
+
+    fn node(kind: Kind) -> af::Node {
+        af::Node {
+            class: craft_affinity::synth::tag(b"ImgN"),
+            name: "n".into(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            blend: Blend::Normal,
+            kind,
+            mask: None,
+            pixel_mask: None,
+            effects: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    fn page(nodes: Vec<af::Node>) -> af::Document {
+        af::Document {
+            dpi: 72.0,
+            spreads: vec![af::Spread { bounds: af::Rect { x0: 0.0, y0: 0.0, x1: 64.0, y1: 64.0 }, pages: Vec::new(), transparent: true, nodes }],
+            saved_by: None,
+            warnings: Vec::new(),
+            masters: Vec::new(),
+            cmyk_profile: None,
+        }
+    }
+
+    /// A 2×2 px solid rectangle.
+    fn tiny_shape(i: usize) -> af::Node {
+        let p = |x: f64, y: f64| af::Point { x, y };
+        let (x, y) = ((i % 30) as f64, (i / 30 % 30) as f64);
+        let corners = [p(x, y), p(x + 2.0, y), p(x + 2.0, y + 2.0), p(x, y + 2.0)];
+        let sub = af::SubPath { start: corners[0], segments: (1..=4).map(|k| [corners[k % 4]; 3]).collect(), closed: true };
+        node(Kind::Shape {
+            path: af::Path { subpaths: vec![sub] },
+            fills: vec![ap::Paint::Solid(ap::Color::Rgb { r: 1.0, g: 0.0, b: 0.0, a: 1.0 })],
+            strokes: Vec::new(),
+            even_odd: false,
+        })
+    }
+
+    #[test]
+    fn small_shapes_are_charged_a_whole_tile_each() {
+        // Surfaces keep whole tiles, so 2×2 px shapes cost a tile each: 50 000 of them were
+        // 7 GB. A budget of three tiles keeps the pixel cache of the first three only.
+        let d = page((0..10).map(tiny_shape).collect());
+        let mut b = Builder::new("shapes", &d).unwrap();
+        b.cache_budget = 3 * 256 * 256 * 4;
+        b.document(&d).unwrap();
+        let cached = |l: &Layer| matches!(&l.content, LayerContent::Shape(s) if s.cache.is_some());
+        assert_eq!(b.doc.layers.iter().filter(|l| cached(l)).count(), 3);
+        assert_eq!(b.doc.layers.iter().filter(|l| matches!(l.content, LayerContent::Shape(_))).count(), 10, "every shape still imports");
+        assert_eq!(b.uncached_shapes, 7);
+        assert_eq!(b.cache_budget, 0);
+        assert_eq!(b.pixel_budget, MAX_PIXEL_BYTES, "caches don't draw on the pool images need");
+    }
+
+    #[test]
+    fn shapes_are_not_compiled_once_no_cache_tile_fits() {
+        // Three tiles pay for the first three shapes; the other 27 must not even be compiled.
+        let d = page((0..30).map(tiny_shape).collect());
+        let mut b = Builder::new("shapes", &d).unwrap();
+        b.cache_budget = 3 * 256 * 256 * 4;
+        COMPILED_SHAPES.with(|n| n.set(0));
+        b.document(&d).unwrap();
+        assert_eq!(COMPILED_SHAPES.with(std::cell::Cell::get), 3);
+        assert_eq!(b.uncached_shapes, 27, "the skipped-cache warning still counts them");
+        assert_eq!(b.doc.layers.len(), 30, "every shape still imports");
+    }
+
+    #[test]
+    fn an_acute_miter_is_charged_for_the_tiles_it_reaches() {
+        // A thin spike at x = 250 with a 4 px miter stroke reaches x = 270, into the next 256 px
+        // tile, though the stroke width alone would stay in the first.
+        let p = |x: f64, y: f64| af::Point { x, y };
+        let sub = af::SubPath {
+            start: p(250.0, 100.0),
+            segments: [p(200.0, 95.0), p(200.0, 105.0), p(250.0, 100.0)].iter().map(|c| [*c; 3]).collect(),
+            closed: true,
+        };
+        let mut d = page(vec![node(Kind::Shape {
+            path: af::Path { subpaths: vec![sub] },
+            fills: Vec::new(),
+            strokes: vec![ap::Stroke {
+                paint: ap::Paint::Solid(ap::Color::Rgb { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
+                width: 4.0,
+                cap: Cap::Butt,
+                join: Join::Miter,
+                miter_limit: 20.0,
+                align: ap::Align::Center,
+                dash: None,
+                behind: false,
+                profile: None,
+            }],
+            even_odd: false,
+        })]);
+        d.spreads[0].bounds.x1 = 600.0;
+        d.spreads[0].bounds.y1 = 600.0;
+        let mut b = Builder::new("miter", &d).unwrap();
+        let tile = crate::text_import::cache_bytes(Rect::new(0, 0, 1, 1), b.format.bytes_per_pixel());
+        b.cache_budget = tile;
+        b.document(&d).unwrap();
+        assert_eq!(b.uncached_shapes, 1, "two tiles do not fit a budget of one");
+        assert_eq!(b.cache_budget, tile, "nothing was charged");
+        let mut b2 = Builder::new("miter", &d).unwrap();
+        b2.cache_budget = 2 * tile;
+        b2.document(&d).unwrap();
+        assert_eq!(b2.uncached_shapes, 0);
+        assert_eq!(b2.cache_budget, 0, "charged for both tiles");
+    }
+
+    #[test]
+    fn a_cancelled_import_stops_building_layers() {
+        let d = page((0..10).map(tiny_shape).collect());
+        let mut b = Builder::new("cancel", &d).unwrap();
+        let cancel = || true;
+        b.ctl = photocraft_raster::Interrupt::cancel_only(&cancel);
+        b.document(&d).unwrap();
+        assert!(b.doc.layers.is_empty(), "no layer is built once cancelled");
+        let mut doc = Document::new("t", Size::new(8, 8), ColorMode::Rgb, SampleType::U8);
+        let mut budget = u64::MAX;
+        doc.layers.push(Layer::new("t", LayerContent::Text(TextLayer { text: "x".into(), ..TextLayer::default() })));
+        assert!(crate::text_import::prepare_within(&mut doc, None, &mut budget, &b.ctl).is_err());
+    }
+
+    #[test]
+    fn type_layers_share_the_cache_budget_and_keep_going_without_pixels() {
+        // Each layer's ink is charged to the budget; one that doesn't fit keeps an empty cache and
+        // is counted, instead of every layer of a 2000-layer file drawing its own raster.
+        let mut doc = Document::new("t", Size::new(64, 64), ColorMode::Rgb, SampleType::U8);
+        for i in 0..20 {
+            let text = "Budget".to_string();
+            let mut t = TextLayer { text, font_family: "sans-serif".into(), size_pt: 24.0, ..TextLayer::default() };
+            t.runs = vec![TextRun { len: t.text.len(), style: CharStyle { size_pt: 24.0, ..CharStyle::default() } }];
+            doc.layers.push(Layer::new(format!("t{i}"), LayerContent::Text(t)));
+        }
+        // What one layer costs, then room for two and a half.
+        let mut probe = u64::MAX;
+        let mut one = doc.clone();
+        one.layers.truncate(1);
+        crate::text_import::prepare_within(&mut one, None, &mut probe, &photocraft_raster::Interrupt::NONE).unwrap();
+        let cost = u64::MAX - probe;
+        assert!(cost > 0);
+        let mut budget = cost * 5 / 2;
+        let skipped = crate::text_import::prepare_within(&mut doc, None, &mut budget, &photocraft_raster::Interrupt::NONE).unwrap();
+        let drawn = doc.layers.iter().filter(|l| matches!(&l.content, LayerContent::Text(t) if t.cache.as_ref().is_some_and(|c| c.tile_count() > 0))).count();
+        assert_eq!((drawn, skipped), (2, 18));
+        assert!(drawn + skipped == 20, "drawn {drawn} skipped {skipped}");
+        assert!(doc.layers.iter().all(|l| matches!(&l.content, LayerContent::Text(t) if t.cache.is_some())), "every layer has a cache, empty or not");
+    }
+
+    #[test]
+    fn shape_caches_leave_room_for_images() {
+        // 64 shapes overrun the cache pool; the image after them still imports.
+        let mut nodes: Vec<af::Node> = (0..64).map(tiny_shape).collect();
+        nodes.extend(affinity_document(vec![(64, 64, Pixels::Rgba8(vec![0; 64 * 64 * 4]))]).spreads.remove(0).nodes);
+        let d = page(nodes);
+        let mut b = Builder::new("mixed", &d).unwrap();
+        b.cache_budget = 4 * 256 * 256 * 4;
+        b.pixel_budget = 256 * 256 * 4; // one whole tile for the image
+        b.document(&d).unwrap();
+        assert_eq!(b.uncached_shapes, 60);
+        assert!(b.doc.layers.iter().any(|l| matches!(l.content, LayerContent::Smart(_) | LayerContent::Raster(_))), "the image must import");
+        assert!(!b.warnings.iter().any(|w| w.contains("pixel memory")), "{:?}", b.warnings);
     }
 }

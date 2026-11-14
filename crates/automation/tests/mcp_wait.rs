@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use photocraft_automation::security::authentication_reply;
+use photocraft_automation::security::{AuthStep, ServerHandshake};
 use photocraft_automation::{Backend, BridgeClient, PhotocraftMcp};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines};
@@ -183,7 +183,27 @@ struct FakeApp {
     log: Vec<Value>,
 }
 
+/// Answer the bridge's challenge authentication on one fake-app connection, frame by frame, as
+/// the real control servers do. Returns whether the connection authenticated.
+async fn authenticate<R, W>(lines: &mut Lines<R>, write: &mut W) -> bool
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut handshake = ServerHandshake::new();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let (reply, step) = handshake.reply(&line, TOKEN);
+        write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+        if step != AuthStep::Challenged {
+            return step == AuthStep::Authenticated;
+        }
+    }
+    false
+}
+
 impl FakeApp {
+    /// Listen on a fresh loopback port and serve every connection: authenticate it, then answer
+    /// its requests through [`FakeApp::answer`]. Returns the address and the shared state.
     async fn serve(runs: Duration, lose_start: bool) -> (String, Arc<Mutex<FakeApp>>) {
         let app = Arc::new(Mutex::new(FakeApp {
             runs,
@@ -203,9 +223,7 @@ impl FakeApp {
                 tokio::spawn(async move {
                     let (read, mut write) = socket.into_split();
                     let mut lines = BufReader::new(read).lines();
-                    let (auth, ok) = authentication_reply(&lines.next_line().await.unwrap().unwrap(), TOKEN);
-                    assert!(ok, "each connection must authenticate");
-                    write.write_all(format!("{auth}\n").as_bytes()).await.unwrap();
+                    assert!(authenticate(&mut lines, &mut write).await, "each connection must authenticate");
                     while let Ok(Some(line)) = lines.next_line().await {
                         let request: Value = serde_json::from_str(&line).unwrap();
                         let Some((result, after)) = app.lock().unwrap().answer(&request) else { return };

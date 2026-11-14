@@ -8,7 +8,7 @@ build = "build.rs"
 
 [features]
 default = ["gpu"]
-# Open HEIC/HEIF photos (the optional photocraft-heif crate). Not default so distributors choose
+# Open HEIC/HEIF photos (the optional craft-heif crate). Not default so distributors choose
 # it; official builds (CI, packaging/, release) build with `--features heif`.
 heif = ["photocraft-codecs/heif"]
 # Optional native GPU rendering backend, enabled by default in native CLI builds.
@@ -46,9 +46,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { workspace = true }
 tempfile = "3"
 # Reading back a saved PSD's merged-image flag (#8064).
-photocraft-psd = { workspace = true }
+craft-psd = { workspace = true }
 # A real ICC profile for the --metadata test (#9466).
-photocraft-cms = { workspace = true }
+craft-cms = { workspace = true }
 # Synthetic camera raws (#7789).
 photocraft-raw = { workspace = true, features = ["testgen"] }
 # Shell completions and man pages (examples/man-and-completions.rs, for the packages); not in

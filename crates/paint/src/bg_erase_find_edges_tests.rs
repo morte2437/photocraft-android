@@ -47,7 +47,7 @@ fn click(at: (f64, f64), size: f32, limits: Limits) -> Surface {
         points: vec![StrokePoint::new(at.0, at.1, 1.0)],
     };
     let bs = BgEraseSettings { sampling: Sampling::Continuous, limits, tolerance: 0.5, ..Default::default() };
-    apply_background_eraser(&mut s, &stroke, &bs, None);
+    apply_background_eraser(&mut s, &stroke, &bs, None).unwrap();
     s
 }
 

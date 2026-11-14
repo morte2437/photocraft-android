@@ -240,6 +240,9 @@ fn themes_move_to_the_app_menus_appearance() {
 /// the preference checked; choosing one sets `interface.language`.
 #[test]
 fn the_app_menu_switches_the_ui_language() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let l = photocraft_layout(&crate::menus::menu_items(&app(false)), Lang::EN, "ja");
     let app_menu = l.bar.menu(MenuRole::App).unwrap();
     let Some(Node::Submenu { children, .. }) = app_menu.children.iter().find(|n| matches!(n, Node::Submenu { label, .. } if label == "Language")) else {
@@ -255,6 +258,8 @@ fn the_app_menu_switches_the_ui_language() {
     let ctx = egui::Context::default();
     crate::menus::invoke(&mut a, &ctx, "app.language.fr", json!({})).unwrap();
     assert_eq!(a.session.prefs().interface.language, "fr");
+    crate::menus::invoke(&mut a, &ctx, "app.language.sr", json!({})).unwrap();
+    assert_eq!(a.session.prefs().interface.language, "sr-latn", "the old Serbian id still switches");
     crate::menus::invoke(&mut a, &ctx, "app.language.auto", json!({})).unwrap();
     assert_eq!(a.session.prefs().interface.language, "auto");
     assert!(crate::menus::invoke(&mut a, &ctx, "app.language.xx-nope", json!({})).is_err(), "an unknown code is an error");

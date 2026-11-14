@@ -35,7 +35,7 @@ pub fn kind_icon(content: &LayerContent) -> &'static str {
         LayerContent::Group(_) => "folder",
         LayerContent::Fill(_) => "paint-bucket",
         LayerContent::Text(_) => "type",
-        LayerContent::Shape(_) => "pentagon",
+        LayerContent::Shape(_) => "vector-shape",
         LayerContent::Smart(_) => "app-window",
         LayerContent::Raster(_) => "image",
     }

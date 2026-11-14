@@ -221,11 +221,18 @@ fn fill_to_new_layer(doc: &mut Document, id: Option<LayerId>, out: &Region, hole
             *a = if out.ch == n { src.last().copied().unwrap_or(1.0) } else { 1.0 };
         }
     }
-    let mut l = Layer::raster(doc.next_layer_name("Layer"), fmt);
+    let mut l = Layer::raster(result_layer_name(doc), fmt);
     crate::pixels_mut(&mut l)?.write_region(out.rect, &data);
     // Above the sampled layer and in its clipping mask, like Layer via Copy.
     let nid = crate::layer_place::insert_new(doc, id, l, crate::layer_place::Place::Above);
     Ok((out.rect, nid))
+}
+
+/// The new layer's name, as Photoshop names it (#12542): "Remove tool edits" while it is free,
+/// then the first free "Remove tool edits N" from 1.
+fn result_layer_name(doc: &Document) -> String {
+    const BASE: &str = "Remove tool edits";
+    if doc.walk().into_iter().any(|(_, _, l)| l.name == BASE) { doc.next_layer_name(BASE) } else { BASE.to_string() }
 }
 
 pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
@@ -265,3 +272,7 @@ pub(super) fn remove(s: &mut Session, p: &Value) -> Result<Value> {
         },
     )
 }
+
+#[cfg(test)]
+#[path = "remove_new_layer_name_tests.rs"]
+mod remove_new_layer_name_tests;

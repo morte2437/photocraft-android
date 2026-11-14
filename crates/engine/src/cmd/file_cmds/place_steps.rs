@@ -171,6 +171,19 @@ impl PlaceSteps {
             Some(c) if c.len() == 2 => (c[0].as_f64().unwrap_or(cw / 2.0), c[1].as_f64().unwrap_or(ch / 2.0)),
             _ => (cw / 2.0, ch / 2.0),
         };
+        // `scale` is the caller's: bound the resampled size before allocating it (a frame's image
+        // renders through its smart object, which has its own budget). Resampling rounds the far
+        // output edges outward; an unresampled placement keeps its size.
+        if self.input.frame.is_none() {
+            let (ow, oh) = if (scale - 1.0).abs() > 1e-9 { ((w * scale).ceil(), (h * scale).ceil()) } else { (w, h) };
+            let scaled = ow * oh;
+            if scaled.is_nan() || scaled > photocraft_compose::MAX_RENDER_PIXELS as f64 {
+                return Err(EngineError::BadParams {
+                    cmd: self.input.command().into(),
+                    msg: format!("scaling {w}×{h} by {scale} makes an image too large to place"),
+                });
+            }
+        }
         let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
         self.plan = Plan { w, h, scale, dx, dy };
         // A frame's image renders through its smart object, which refuses a placement past the

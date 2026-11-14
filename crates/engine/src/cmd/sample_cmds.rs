@@ -76,6 +76,32 @@ pub fn sample_rect(x: f64, y: f64, size: u32, canvas: Rect) -> Option<Rect> {
     Some(square.intersect(&canvas))
 }
 
+/// The widest box, in document pixels, a zoomed-out average reads (#11751): at 1 % zoom a
+/// 101 by 101 Average would otherwise composite a 10 200-pixel square on every pointer move.
+pub const MAX_ZOOM_BOX: u32 = 4096;
+
+/// [`sample_rect`] for the Eyedropper at view `zoom` (screen pixels per document pixel, 1.0 is
+/// 100 %), as in Photoshop (#11751). Above 100 % it is the centred `size` × `size` square. At 100 %
+/// and below an N by N Average covers (N+1) × (N+1) *screen* pixels: at 100 % the document pixels
+/// x−N/2 to x+N/2+1 (N/2 rounded down), at 50 % 3 by 3 covers 8 × 8 document pixels. Point
+/// Sample is one pixel at every zoom; no zoom is today's centred square.
+pub fn sample_rect_at(x: f64, y: f64, size: u32, zoom: Option<f64>, canvas: Rect) -> Option<Rect> {
+    let centred = sample_rect(x, y, size, canvas)?;
+    let Some(zoom) = zoom.filter(|z| z.is_finite() && *z > 0.0 && *z <= 1.0) else { return Some(centred) };
+    if size == 1 {
+        return Some(centred);
+    }
+    let (px, py) = (x.floor() as i32, y.floor() as i32);
+    // (N+1) screen pixels in document pixels, at least N+1.
+    let side = (f64::from(size + 1) / zoom).round().clamp(f64::from(size + 1), f64::from(MAX_ZOOM_BOX)) as i32;
+    // The pixel sits just left of the box's middle: x−N/2 … x+N/2+1 at 100 %.
+    let before = (side + 1) / 2 - 1;
+    let x0 = px.saturating_sub(before);
+    let y0 = py.saturating_sub(before);
+    let square = Rect::new(x0, y0, x0.saturating_add(side), y0.saturating_add(side));
+    Some(square.intersect(&canvas))
+}
+
 /// Round `v` to what a channel of `depth` can store (32 bit keeps the float).
 fn quantize(v: f32, depth: SampleType) -> f32 {
     let mut b = [0u8; 4];
@@ -166,7 +192,13 @@ fn sampled_document(doc: &Document, active: Option<LayerId>, which: SampleLayers
 /// the canvas. Transparent black off the canvas, over transparency, or when `which` needs an
 /// active layer and there is none.
 pub fn sample_color(doc: &Document, active: Option<LayerId>, x: f64, y: f64, size: u32, which: SampleLayers) -> [f32; 4] {
-    let Some(rect) = sample_rect(x, y, size, doc.bounds()) else { return [0.0; 4] };
+    sample_color_at(doc, active, x, y, size, None, which)
+}
+
+/// [`sample_color`] over the box the Eyedropper reads at view `zoom` ([`sample_rect_at`]); `None`
+/// is the centred square, as the Color Sampler always uses (#11751).
+pub fn sample_color_at(doc: &Document, active: Option<LayerId>, x: f64, y: f64, size: u32, zoom: Option<f64>, which: SampleLayers) -> [f32; 4] {
+    let Some(rect) = sample_rect_at(x, y, size, zoom, doc.bounds()) else { return [0.0; 4] };
     let Some(src) = sampled_document(doc, active, which) else { return [0.0; 4] };
     let buf = photocraft_compose::render(&src, rect);
     if size == 1 {
@@ -203,6 +235,20 @@ pub fn size_param(cmd: &str, p: &Value) -> Result<u32> {
     }
 }
 
+/// The optional `zoom` param (#11751): the view zoom the Eyedropper samples at, screen pixels per
+/// document pixel (1.0 = 100 %). Missing or null: the centred box. Anything but a finite positive
+/// number is an error.
+pub fn zoom_param(cmd: &str, p: &Value) -> Result<Option<f64>> {
+    match p.get("zoom") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .filter(|z| z.is_finite() && *z > 0.0)
+            .map(Some)
+            .ok_or_else(|| bad(cmd, format!("`zoom` = {v} must be a positive number (screen pixels per document pixel, 1 = 100 %)"))),
+    }
+}
+
 /// The `sampleLayer` param (default `all`).
 pub fn layers_param(cmd: &str, p: &Value) -> Result<SampleLayers> {
     match p.get("sampleLayer") {
@@ -225,15 +271,16 @@ pub fn specs() -> Vec<CommandSpec> {
         label: "Sample Color",
         menu: &[],
         shortcut: None,
-        params: r##"{"x":f64,"y":f64,"size":"point"|1|3|5|11|31|51|101=1,"sampleLayer":"current"|"currentAndBelow"|"all"|"allNoAdjustments"|"currentAndBelowNoAdjustments"="all"} → [r,g,b,a] (the Eyedropper's Sample Size and Sample: the composite pixel, or the average of the size×size square centred on it, clipped to the canvas; transparent off the canvas)"##,
+        params: r##"{"x":f64,"y":f64,"size":"point"|1|3|5|11|31|51|101=1,"sampleLayer":"current"|"currentAndBelow"|"all"|"allNoAdjustments"|"currentAndBelowNoAdjustments"="all","zoom":f64? (the view zoom, 1 = 100 %: at 100 % and below an N by N Average covers (N+1)×(N+1) screen pixels, as in Photoshop; missing: the centred square)} → [r,g,b,a] (the Eyedropper's Sample Size and Sample: the composite pixel, or the average of the size×size square centred on it (without `zoom`; with it, the zoom-dependent box above), clipped to the canvas; transparent off the canvas)"##,
         enabled: |s| s.active().map(|_| ()).ok_or_else(|| "no document open".into()),
         run: |s: &mut Session, p: &Value| {
             const CMD: &str = "document.sampleColor";
             let (x, y) = (coord(CMD, p, "x")?, coord(CMD, p, "y")?);
             let size = size_param(CMD, p)?;
+            let zoom = zoom_param(CMD, p)?;
             let which = layers_param(CMD, p)?;
             let d = s.active().ok_or(EngineError::NoDocument)?;
-            Ok(json!(sample_color(&d.doc, d.active_layer, x, y, size, which)))
+            Ok(json!(sample_color_at(&d.doc, d.active_layer, x, y, size, zoom, which)))
         },
         journal: false,
     }]

@@ -99,7 +99,8 @@ pub(super) fn export_contents(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"path": path, "fileName": name, "bytes": bytes.len(), "converted": false}));
     }
     let contents = decode_source(&name, &bytes)?;
-    let r = photocraft_io::export(&contents, path, &Default::default()).map_err(|e| other(format!("can't export the contents as {}: {e}", base_name(path))))?;
+    let r = photocraft_io::export(&contents, path, &photocraft_io::ExportOptions { read_linked_files: s.authorize.is_none(), ..Default::default() })
+        .map_err(|e| other(format!("can't export the contents as {}: {e}", base_name(path))))?;
     crate::file_cmds::write_file(path, &r.bytes)?;
     Ok(json!({"path": path, "fileName": name, "bytes": r.bytes.len(), "converted": true, "warnings": r.warnings}))
 }

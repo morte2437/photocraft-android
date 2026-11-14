@@ -655,6 +655,22 @@ pub fn refresh_at(dpi: f32, format: PixelFormat, t: &mut TextLayer) {
     t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
 }
 
+/// Makes `t` paragraph text in the box `[x, y, width, height]`: the box sits at the text-space
+/// origin and the layer transform moves it to `(x, y)`, keeping its linear part. `x` and `y` are
+/// document px (the transform's translation); `width` and `height` are text-space px, so under a
+/// scaled transform they are scaled by its linear part.
+/// `type.edit`'s `box` param and the Type tool's live box-drag preview both use it, so the preview
+/// shows exactly the layer the command would make. Non-finite numbers count as 0, as a JSON
+/// `null` does in the command (a width or height of 0 becomes the 1 px minimum). The stored size
+/// is clamped to `1.0..=f32::MAX` so a huge input can't become an infinite `f32`.
+pub fn apply_box(t: &mut TextLayer, b: [f64; 4]) {
+    let [x, y, w, h] = b.map(|v| if v.is_finite() { v } else { 0.0 });
+    let size = |v: f64| v.clamp(1.0, f64::from(f32::MAX)) as f32;
+    let lin = t.transform.m;
+    t.shape = TextShape::Box { x: 0.0, y: 0.0, width: size(w), height: size(h) };
+    t.transform = Affine { m: [lin[0], lin[1], lin[2], lin[3], x, y] };
+}
+
 /// Refuses to change a type layer under Lock All (its own or an enclosing group's), with
 /// Photoshop's message. Every command that edits a type layer's text calls it first (#3132, #4188).
 pub(crate) fn check_text_unlocked(doc: &Document, id: LayerId) -> Result<()> {
@@ -937,7 +953,8 @@ pub(crate) fn new_text_layer(s: &Session, p: &Value, cmd: &str) -> Result<TextLa
     Ok(t)
 }
 
-/// The name of the history state a new type layer makes: what `type.create` records, and what the
+/// The name of the history state a new horizontal type layer makes: what `type.create` records
+/// (vertical text is "New Vertical Type Layer", #12058), and what the
 /// Type tool's commit keeps in the modes [`commits_as_selection`] names (#12041).
 pub const NEW_TYPE_LAYER_LABEL: &str = "New Type Layer";
 
@@ -989,6 +1006,7 @@ pub fn name_selection_commit(s: &mut Session) {
 
 const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","baseline":"normal|superscript|subscript","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
 
+/// The Type commands: create and edit type layers, set styles, fill paths, and the queries about them.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -1003,7 +1021,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut t = new_text_layer(s, p, "type.create")?;
                 let given = p.get("name").and_then(Value::as_str).map(str::to_string);
                 let name = given.clone().unwrap_or_else(|| layer_name(&t.text));
-                let id = s.edit(NEW_TYPE_LAYER_LABEL, |doc, active| {
+                // The reference application names new vertical text after its tool (#12058).
+                let label = if t.orientation == Orientation::Vertical { "New Vertical Type Layer" } else { NEW_TYPE_LAYER_LABEL };
+                let id = s.edit(label, |doc, active| {
                     refresh(doc, &mut t);
                     let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Text(t)), crate::layer_place::Place::AutoEditable);
                     *active = Some(id);
@@ -1113,9 +1133,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     let lin = t.transform.m;
                     if let Some(b) = p.get("box").and_then(Value::as_array).filter(|b| b.len() == 4) {
-                        let v: Vec<f64> = b.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect();
-                        t.shape = TextShape::Box { x: 0.0, y: 0.0, width: v[2].max(1.0) as f32, height: v[3].max(1.0) as f32 };
-                        t.transform = Affine { m: [lin[0], lin[1], lin[2], lin[3], v[0], v[1]] };
+                        let mut v = [0.0; 4];
+                        for (slot, x) in v.iter_mut().zip(b) {
+                            *slot = x.as_f64().unwrap_or(0.0);
+                        }
+                        apply_box(t, v);
                     }
                     if let Some(pt) = p.get("point").and_then(Value::as_array).filter(|b| b.len() == 2) {
                         t.shape = TextShape::Point;
@@ -1287,3 +1309,6 @@ fn step_size(s: &mut Session, p: &Value, up: bool, default_by: f32) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "type_vertical_history_name_tests.rs"]
+mod vertical_history_name_tests;

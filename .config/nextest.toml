@@ -16,7 +16,7 @@ nextest-version = "0.9.150"
 gpu = { max-threads = 4 }
 
 [[profile.default.overrides]]
-filter = 'package(photocraft-gpu) | (package(photocraft-ui-egui) & (kind(test) | test(/canvas|gpu|mip|type_tool|background_redraw::|floating_group_titles|swap_arrow::tests::rendered_glyph/)))'
+filter = 'package(photocraft-gpu) | (package(photocraft-ui-egui) & (kind(test) | test(/canvas|gpu|mip|type_tool|background_redraw::|floating_group_titles|swap_arrow::tests::rendered_glyph/))) | (package(photocraft-automation) & test(/^gpu_backend::/))'
 test-group = 'gpu'
 
 # CI (`--profile ci`, .github/workflows/ci.yml). Collect all failures in one integration run

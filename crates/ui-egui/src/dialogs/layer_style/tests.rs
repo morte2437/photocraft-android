@@ -250,6 +250,9 @@ fn every_effect_row_shows_a_checkbox() {
 // and out of the column instead of wrapping to a second row.
 #[test]
 fn default_buttons_wrap_inside_the_page_column_with_long_labels() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     use egui_kittest::kittest::Queryable;
     let ru = crate::i18n::Lang::from_code("ru").unwrap();
     crate::i18n::with_language(ru, || {

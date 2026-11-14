@@ -161,10 +161,10 @@ fn cancelling_one_damaged_open_does_not_open_the_next_damaged_file_without_conse
 fn damage_confirmation_precedes_the_profile_question() {
     let mut app = app();
     app.run("edit.colorSettings", json!({"askOnMismatch": true, "policyRgb": "preserve"})).unwrap();
-    let (mut file, _) = photocraft_psd::PsdFile::from_bytes_and_merged(&recovery_psd::make_psd(true), |_| false).unwrap();
-    file.resources.push(photocraft_psd::ImageResource::new(
-        photocraft_psd::resources::ids::ICC_PROFILE,
-        photocraft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes().to_vec(),
+    let (mut file, _) = craft_psd::PsdFile::from_bytes_and_merged(&recovery_psd::make_psd(true), |_| false).unwrap();
+    file.resources.push(craft_psd::ImageResource::new(
+        craft_psd::resources::ids::ICC_PROFILE,
+        craft_cms::Builtin::from_id("adobe-rgb-compat").unwrap().profile().to_bytes().to_vec(),
     ));
     app.open_bytes("profile.psd", &file.to_bytes().unwrap()).unwrap();
     let id = damage_dialog(&mut app);

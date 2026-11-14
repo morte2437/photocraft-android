@@ -64,16 +64,8 @@ pub fn selection_mode(tool: Tool, bar: u8, m: egui::Modifiers) -> &'static str {
                 "add"
             }
         }
-        // Object Selection: ⌥ subtracts, ⇧ adds (see `retouch_ui::finish_object_selection`).
-        Tool::ObjectSelection => {
-            if m.alt {
-                "subtract"
-            } else if m.shift {
-                "add"
-            } else {
-                "replace"
-            }
-        }
+        // Every other selection tool, Object Selection included: ⇧⌥ intersects, ⇧ adds, ⌥
+        // subtracts, otherwise the options-bar mode (`retouch_ui::finish_object_selection`).
         _ => {
             if m.shift && m.alt {
                 "intersect"
@@ -109,7 +101,14 @@ pub fn badge(app: &PhotocraftApp, tool: Tool, m: egui::Modifiers) -> Option<Badg
     // Add / Delete Anchor Point: + or − beside the crosshair, as on Photoshop's pen cursors (⌥
     // swaps them; ⌘ is Direct Selection, which shows none).
     if let Some(t) = crate::anchor_tools::effective(tool, m) {
-        return (!m.command).then_some(if t == Tool::AddAnchorPoint { Badge::Add } else { Badge::Subtract });
+        // Add Anchor Point shows its "+" only over a segment a click would split (#12729); ⌥'s
+        // swapped tools keep theirs everywhere.
+        let over_segment = || app.hover_doc.is_some_and(|p| crate::anchor_tools::adds_anchor_at(app, tool, p));
+        return (!m.command && (m.alt || tool != Tool::AddAnchorPoint || over_segment())).then_some(if t == Tool::AddAnchorPoint {
+            Badge::Add
+        } else {
+            Badge::Subtract
+        });
     }
     // The Curvature Pen over a point: + on the active path's segments (a click adds an anchor
     // there), four arrows on an anchor (a press drags it).
@@ -290,8 +289,12 @@ mod tests {
         // Smart selection tools.
         assert_eq!(badge(&app, Tool::QuickSelection, none), Some(Badge::Add));
         assert_eq!(badge(&app, Tool::QuickSelection, alt), Some(Badge::Subtract));
+        // Object Selection follows the options bar like the other selection tools (#12853).
+        assert_eq!(badge(&app, Tool::ObjectSelection, none), Some(Badge::Intersect));
+        app.ui.selection_mode = 0;
         assert_eq!(badge(&app, Tool::ObjectSelection, none), None);
         assert_eq!(badge(&app, Tool::ObjectSelection, shift), Some(Badge::Add));
+        assert_eq!(badge(&app, Tool::ObjectSelection, both), Some(Badge::Intersect));
         // Other tools never show one.
         for t in [Tool::Brush, Tool::Move, Tool::Zoom, Tool::Crop] {
             assert_eq!(badge(&app, t, shift), None);

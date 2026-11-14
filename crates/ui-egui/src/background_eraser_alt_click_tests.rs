@@ -161,21 +161,35 @@ fn a_click_without_alt_still_erases() {
 /// While ⌥ is held the cursor is the Eyedropper's pipette (`pipette_cursor`), where the
 /// Background Eraser otherwise shows its own tip; Control+⌥ keeps the tip.
 #[test]
+#[cfg(not(target_arch = "wasm32"))]
 fn alt_shows_the_eyedropper_cursor() {
     let mut h = background_eraser();
+    h.state_mut().run("tools.setBrush", json!({"brush": {"size": 40, "hardness": 1.0}})).unwrap();
+    h.state_mut().run("prefs.set", json!({"path": "cursors.painting", "value": "fullSizeTip"})).unwrap();
     let p = screen(&h, 150.0, 50.0);
-    let pipette = |h: &mut Harness<'static, PhotocraftApp>, m: Modifiers| {
+    let cursor = |h: &mut Harness<'static, PhotocraftApp>, m: Modifiers| {
         mods(h, m);
         h.hover_at(p);
         h.run_steps(2);
-        let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("pc-icon-cursor"));
-        let shown = h.ctx.memory(|memory| memory.areas().visible_layer_ids().contains(&layer));
-        (shown, h.output().platform_output.cursor_icon)
+        let output = &h.output().platform_output;
+        (output.cursor_icon, output.cursor_image.clone())
     };
-    assert_eq!(pipette(&mut h, Modifiers::ALT), (true, egui::CursorIcon::None), "⌥: the pipette replaces the pointer");
-    assert!(!pipette(&mut h, Modifiers::NONE).0, "without ⌥: the eraser's own tip");
-    assert!(!pipette(&mut h, Modifiers::ALT | Modifiers::CTRL).0, "Control+⌥ is not the Eyedropper");
-    assert!(pipette(&mut h, Modifiers::ALT).0, "⌥ again: the pipette again");
+    let pipette = cursor(&mut h, Modifiers::ALT);
+    assert_eq!(pipette.0, egui::CursorIcon::Crosshair, "the native pipette has a visible OS fallback");
+    assert!(pipette.1.is_some(), "⌥ uses an OS pipette bitmap");
+    for modifiers in [Modifiers::NONE, Modifiers::ALT | Modifiers::CTRL] {
+        let tip = cursor(&mut h, modifiers);
+        assert_ne!(tip, pipette);
+        assert_eq!(tip.0, egui::CursorIcon::Crosshair, "eraser tip has a visible OS fallback");
+        let image = tip.1.expect("the eraser's circular tip remains visible");
+        let [x, y] = image.hotspot;
+        let alpha = |x, y| image.rgba[(usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4 + 3];
+        assert!(alpha(x, y) > 230, "Background Eraser retains the centre cross");
+        for (dx, dy) in [(20, 0), (-20, 0), (0, 20), (0, -20)] {
+            assert!(alpha((i32::from(x) + dx) as u16, (i32::from(y) + dy) as u16) > 230, "40 px circular eraser tip at {modifiers:?}");
+        }
+    }
+    assert_eq!(cursor(&mut h, Modifiers::ALT), pipette, "⌥ again: the same pipette bitmap");
 }
 
 /// Control+⌥-drag stays the brush-resize gesture: it samples nothing and erases nothing.

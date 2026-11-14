@@ -30,7 +30,7 @@ pub const MAX_FILE_BYTES: u64 = 512 << 20;
 /// Largest accepted `.abr` file: brush libraries of large sampled tips outgrow [`MAX_FILE_BYTES`].
 /// Tied to the decoder's sample budget (1 GiB, 512 MiB on 32-bit targets) so it never refuses
 /// what this accepts.
-pub const MAX_ABR_FILE_BYTES: u64 = photocraft_psd::abr::MAX_TOTAL_BYTES as u64;
+pub const MAX_ABR_FILE_BYTES: u64 = if cfg!(target_pointer_width = "64") { 1 << 30 } else { 512 << 20 };
 
 /// File bytes from `data` (base64) or `path`, plus a default group name.
 pub(crate) fn file_bytes(p: &Value, cmd: &str, what: &str) -> Result<(Vec<u8>, String)> {
@@ -350,9 +350,9 @@ fn lab_to_rgb([l, a, b]: [f32; 3]) -> [f32; 3] {
     [gamma(r), gamma(g), gamma(bb)]
 }
 
-fn stop_color(c: photocraft_psd::grd::GrdColor) -> crate::presets::gradients::StopColor {
+fn stop_color(c: craft_psd::grd::GrdColor) -> crate::presets::gradients::StopColor {
     use crate::presets::gradients::StopColor;
-    use photocraft_psd::grd::GrdColor;
+    use craft_psd::grd::GrdColor;
     let clamp = |c: [f32; 3]| StopColor::Rgb(c.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }));
     match c {
         GrdColor::Foreground => StopColor::Foreground,
@@ -375,7 +375,7 @@ fn import_grd(s: &mut Session, p: &Value) -> Result<Value> {
         None if !stem.is_empty() => stem,
         None => "Imported Gradients".to_string(),
     };
-    let grads = photocraft_psd::grd::parse(&bytes).map_err(|e| bad(cmd, format!("not a readable gradient file (.grd): {e}")))?;
+    let grads = craft_psd::grd::parse(&bytes).map_err(|e| bad(cmd, format!("not a readable gradient file (.grd): {e}")))?;
     // Same default as the group insertion below and the documented contract (#10640).
     let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(false);
     let mut taken =
@@ -459,8 +459,8 @@ mod tests {
         assert!(super::file_bytes_limited(&over_limit, "test", "preset", 2).is_err());
     }
     use super::*;
-    use photocraft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v6, write_v12};
-    use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as DV};
+    use craft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v6, write_v12};
+    use craft_psd::descriptor::{Descriptor, UnicodeString, Value as DV};
 
     fn abr_v2() -> Vec<u8> {
         let tip = AbrSample { id: String::new(), width: 6, height: 4, depth: 8, data: vec![255; 24] };
@@ -484,14 +484,14 @@ mod tests {
     /// the value its options-bar field shows, so it paints instead of laying down nothing.
     #[test]
     fn selecting_an_imported_zero_opacity_brush_floors_it_at_one_percent() {
-        use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
+        use craft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
         let preset = |opacity: i32| {
             Descriptor::new("brushPreset")
                 .with("Nm  ", D::Text(UnicodeString::new_nul("Faint")))
                 .with("toolOptions", D::Descriptor(Descriptor::new("currentToolOptions").with("Opct", D::Integer(opacity))))
         };
         for (opacity, expected) in [(0, 0.01), (37, 0.37)] {
-            let abr = photocraft_psd::abr::write_v6_folders(2, &[], &[], &[preset(opacity)], &[vec![]], true).unwrap();
+            let abr = craft_psd::abr::write_v6_folders(2, &[], &[], &[preset(opacity)], &[vec![]], true).unwrap();
             let mut s = Session::new();
             s.execute("brush.presets.importAbr", json!({"data": photocraft_paint::tile::b64_encode(&abr), "select": true})).unwrap();
             assert!((s.tools.brush.opacity - expected).abs() < 1e-6, "{opacity}: {}", s.tools.brush.opacity);
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn duplicate_gradient_names_remain_independently_selectable() {
-        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        use craft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
         let gradients: Vec<_> = [0.2, 0.8]
             .into_iter()
             .map(|red| GrdGradient {
@@ -627,7 +627,7 @@ mod tests {
     /// names distinct from the existing group's, keeping name-only selection unambiguous.
     #[test]
     fn default_gradient_reimport_keeps_names_unique_across_sibling_groups() {
-        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        use craft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
         let gradients = vec![GrdGradient {
             name: "Sunset".into(),
             stops: vec![
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn gradient_import_preserves_original_and_case_distinct_names() {
-        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        use craft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
         let gradients: Vec<_> = ["Foo", "Foo", "Foo 2", "FOO"]
             .into_iter()
             .enumerate()
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn grd_import_adds_a_gradient_group() {
         use crate::presets::gradients::StopColor;
-        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        use craft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
         let grads = vec![
             GrdGradient {
                 name: "Ember".into(),

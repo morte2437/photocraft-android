@@ -1,0 +1,8 @@
+[
+  ["engine.execute", {"command": "file.new", "params": {"name": "Clone Preview", "width": 128, "height": 128}}],
+  ["engine.execute", {"command": "paint.pencil", "params": {"points": [[32, 32]], "size": 60, "color": "#d02020"}}],
+  ["engine.execute", {"command": "cloneSource.set", "params": {"source": [32, 32]}}],
+  ["engine.execute", {"command": "layer.new.layer", "params": {}}],
+  ["ui.set", {"tool": "cloneStamp", "zoom": 3, "center": [64, 64]}],
+  ["engine.execute", {"command": "tools.setBrush", "params": {"size": 36, "hardness": 1, "opacity": 0.5, "flow": 0.4}}]
+]

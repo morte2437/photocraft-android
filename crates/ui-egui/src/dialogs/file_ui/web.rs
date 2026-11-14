@@ -157,7 +157,8 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
         if let Some(rects) = f.get_mut("__previewRects").and_then(Value::as_array_mut) {
             rects.push(json!([r.left(), r.top(), r.right(), r.bottom()]));
         }
-        crate::widgets::checker(ui.painter(), r, 8.0);
+        // Photoshop's panes are grey around the image; only the image shows transparency (#2362).
+        ui.painter().rect_filled(r, 0.0, t.canvas);
         let image = web_preview::paint(ui, r, &response, &tex, source_size, f);
         web_preview::slices(ui, r, image, &response, &doc, crate::tools::slice_ui::slice_color(app), f);
         ui.painter().rect_stroke(r, 0.0, egui::Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
@@ -244,6 +245,7 @@ pub(super) fn web_frame_document(doc: &photocraft_doc::Document, frame: Option<u
     Ok((*preview.active().ok_or(photocraft_engine::EngineError::NoDocument)?.doc).clone())
 }
 
+/// Lay out the preview and settings without letting their content resize the dialog.
 pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let Some(doc) = app.session.active().map(|d| d.doc.clone()) else { return };
@@ -303,7 +305,7 @@ pub(super) fn web_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<S
         // Settings scroll independently on smaller windows.
         ui.vertical(|ui| {
             ui.set_width(250.0);
-            egui::ScrollArea::vertical().id_salt("web-settings").max_height(area.y).show(ui, |ui| {
+            egui::ScrollArea::both().auto_shrink([false, true]).id_salt("web-settings").max_height(area.y).show(ui, |ui| {
                 ui.label(egui::RichText::new(tl!("Preset")).color(t.text_dim));
                 let mut preset = s(f, "__preset", "");
                 let mut opts: Vec<(String, &str)> = vec![("".into(), "[Unnamed]")];

@@ -85,10 +85,23 @@ pub fn body(ui: &mut egui::Ui, fields: &Map<String, Value>) {
     ));
 }
 
-/// The held import: as a new group, or replacing the group when `choice` is "replace".
+/// Return whether to replace the group. A missing choice means New Group; a present invalid value
+/// is rejected so the caller can leave the pending import available for correction.
+pub(crate) fn replace_choice(fields: &Map<String, Value>) -> Result<bool, String> {
+    match fields.get("choice") {
+        None => Ok(false),
+        Some(Value::String(choice)) if choice == "new" => Ok(false),
+        Some(Value::String(choice)) if choice == "replace" => Ok(true),
+        _ => Err(tl!("Choose Import as New Group or Replace.").into()),
+    }
+}
+
+/// Validate the answer before taking the held import. New Group keeps the existing group;
+/// Replace imports into its place.
 pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<Value, String> {
+    let replace = replace_choice(fields)?;
     let Held { cmd, what, stem, mut params } = app.held_preset_import.take().ok_or(tl!("No import is waiting. Import the file again."))?;
-    params["replace"] = json!(fields.get("choice").and_then(Value::as_str) == Some("replace"));
+    params["replace"] = json!(replace);
     crate::preset_files_ui::run_import(app, cmd, what, &stem, params).map(|()| Value::Null)
 }
 
@@ -96,3 +109,6 @@ pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<V
 pub fn cancel(app: &mut PhotocraftApp) {
     app.held_preset_import = None;
 }
+
+#[cfg(test)]
+mod tests;

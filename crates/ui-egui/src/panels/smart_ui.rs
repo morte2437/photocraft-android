@@ -124,6 +124,12 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
     let rows = std::iter::once(None).chain((0..sm.smart_filters.len()).rev().map(Some));
     for index in rows {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), if index.is_none() { header_height } else { SUB_ROW_H }), Sense::click_and_drag());
+        // Off screen: keep the row's place but skip its painting, widgets and drop (#13118), as
+        // effect rows do. The drawn marker below still records `l`, so a selected filter that
+        // scrolled away stays selected.
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
         if let Some((to, action)) = reorder_drop(ui, l, sm.smart_filters.len(), index, rect) {
             // The moved filter ends up selected, with its smart object active, as after a click.
             ui.ctx().data_mut(|d| d.insert_temp::<FilterDrag>(selected_key(doc.id), (l.id.0, Some(to))));
@@ -411,7 +417,9 @@ fn reorder_drop(ui: &egui::Ui, l: &Layer, n: usize, row: Option<usize>, rect: Re
     let ctx = ui.ctx();
     let (from, src) = ctx.data(|d| d.get_temp::<FilterDrag>(drag_key()))?;
     let (src, p) = (src?, ctx.input(|i| i.pointer.interact_pos())?);
-    if from != l.id.0 || !rect.contains(p) {
+    // Only the part of the row the list shows: one half scrolled under the panel's header takes
+    // no drop there (#13118, as masks since #10485).
+    if from != l.id.0 || !rect.intersect(ui.clip_rect()).contains(p) {
         return None;
     }
     let above = p.y < rect.center().y;
@@ -496,34 +504,22 @@ pub fn open_editor(app: &mut PhotocraftApp, ctx: &egui::Context, layer: u64, sm:
             return;
         }
     };
-    // A smart filter's dialog shows the filter's own settings, never the last-used ones.
-    let Some(id) = crate::adjust_dialog::open_neutral(app, &f.command).or_else(|| {
+    let Some(id) = crate::adjust_dialog::open_smart_filter(app, &f.command, &f.params, target.clone()).or_else(|| {
         let id = crate::filter_dialog::has_dialog(&f.command).then(|| crate::filter_dialog::open(app, &f.command)).flatten()?;
         // The filter dialog opens on the user's last-used values; a recorded filter that lacks a
         // key must show (and save) the schema default instead.
         let mut fields = app.ui.dialog_mut(id)?.fields.clone();
         crate::filter_dialog::reset_fields(app, &mut fields);
+        if let Value::Object(p) = &f.params {
+            fields.extend(p.iter().filter(|(key, _)| !key.starts_with("__")).map(|(key, value)| (key.clone(), value.clone())));
+        }
         app.ui.dialog_mut(id)?.fields = fields;
         Some(id)
     }) else {
         return;
     };
-    // A recorded Photo Filter that names only its preset gets the preset's colour, which the
-    // dialog would otherwise fill in with its neutral one; recorded values stay as they were.
-    let params = crate::adjust_dialog::complete_params(app, &f.command, &f.params).unwrap_or_else(|| f.params.clone());
-    let mode = app.session.active().map(|st| st.doc.mode);
     if let Some(d) = app.ui.dialog_mut(id) {
         d.fields.insert("__smartFilter".into(), target);
-        if let Value::Object(p) = &params {
-            for (k, v) in p {
-                if !k.starts_with("__") {
-                    d.fields.insert(k.clone(), v.clone());
-                }
-            }
-        }
-        if let Some(mode) = mode {
-            crate::adjust_dialog::seed_from_recorded(&mut d.fields, &f.params, mode);
-        }
     }
 }
 

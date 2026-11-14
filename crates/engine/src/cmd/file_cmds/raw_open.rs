@@ -61,7 +61,7 @@ fn auto_sample(surface: &photocraft_raster::Surface) -> Vec<[f32; 4]> {
 }
 
 /// Develop representable prior settings at the sensor stage, retaining only the remaining RGB work.
-pub(super) fn prepare(s: &Session, name: &str, path: Option<&str>, bytes: &[u8]) -> Result<Option<(ImportResult, CameraRaw)>> {
+pub(super) fn prepare(s: &Session, name: &str, shown: &str, path: Option<&str>, bytes: &[u8]) -> Result<Option<(ImportResult, CameraRaw)>> {
     let Some(defaults) = &s.batch_raw_open else { return Ok(None) };
     if !photocraft_io::raw::is_raw(bytes) {
         return Ok(None);
@@ -74,9 +74,9 @@ pub(super) fn prepare(s: &Session, name: &str, path: Option<&str>, bytes: &[u8])
     let prior = prior.map(|(settings, _)| settings);
     let mut settings = prior.clone().unwrap_or_default();
     let opts = crate::jobs::import_options(s.prefs());
-    let mut imported = photocraft_io::import_with_options(name, bytes, &opts).map_err(|error| EngineError::Other(format!("{name}: {error}")))?;
+    let mut imported = photocraft_io::import_with_options(name, bytes, &opts).map_err(|error| EngineError::Other(format!("{shown}: {error}")))?;
     if imported.preview_only || !imported.warnings.iter().any(|warning| warning.contains(photocraft_io::raw::DEVELOPED_NOTE)) {
-        return Err(EngineError::Other(format!("{name}: complete RAW development is required")));
+        return Err(EngineError::Other(format!("{shown}: complete RAW development is required")));
     }
     if prior.is_none() && defaults.apply_auto_tone {
         let surface = imported.document.layers.iter().find_map(|layer| layer.surface()).ok_or(EngineError::NoDocument)?;
@@ -97,7 +97,8 @@ pub(super) fn prepare(s: &Session, name: &str, path: Option<&str>, bytes: &[u8])
     };
     if tuning != (RawTuning { demosaic: opts.demosaic, ..Default::default() }) {
         super::open::raw_defaults(s, &imported.warnings, &mut imported.document);
-        let (mut developed, wb) = photocraft_io::raw::import_raw_tuned(name, bytes, &tuning).map_err(|error| EngineError::Other(format!("{name}: {error}")))?;
+        let (mut developed, wb) =
+            photocraft_io::raw::import_raw_tuned(name, bytes, &tuning).map_err(|error| EngineError::Other(format!("{shown}: {error}")))?;
         developed.document.resolution_dpi = imported.document.resolution_dpi;
         imported = developed;
         settings.exposure = 0.0;

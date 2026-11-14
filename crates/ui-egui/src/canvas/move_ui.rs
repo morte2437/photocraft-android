@@ -136,7 +136,10 @@ fn exceeds(doc: &Document, ids: &[LayerId], limit: u64, mask_target: bool) -> bo
 }
 
 /// Preview keys of move drags: `BASE + n`, one per offset shown (see `canvas::display_doc`).
+/// [`PATTERN_BIT`] marks a wrapped preview so a mid-drag Pattern Preview toggle cannot reuse
+/// the other mode's cached pixels (`is_preview_key` still holds: `BASE + bit + n < BASE << 1`).
 const BASE: u64 = 1 << 39;
+const PATTERN_BIT: u64 = 1 << 20;
 
 pub(crate) struct MovePreview {
     doc: DocId,
@@ -149,7 +152,7 @@ pub(crate) struct MovePreview {
     /// than the canvas brings its pixels from beyond the edge into view (`None` = anything).
     bounds: Option<Rect>,
     canvas: Rect,
-    /// Offsets shown so far, by preview key (`BASE + index`).
+    /// Offsets shown so far, by preview key (`BASE + index`, with [`PATTERN_BIT`] when wrapping).
     offsets: Vec<(i32, i32)>,
     /// The document at the latest offset.
     shown: Option<Arc<Document>>,
@@ -158,23 +161,41 @@ pub(crate) struct MovePreview {
     /// The moving layers hold more pixels than [`LIVE_LIMIT`]: they aren't copied for every frame
     /// of the drag, which shows its outline and arrow alone (#6114, #6163).
     too_big: bool,
+    /// View › Pattern Preview: pixels wrap, so a partial damage rect would leave the far edge stale.
+    pattern: bool,
 }
 
 impl MovePreview {
     fn key(&self) -> u64 {
-        BASE + self.offsets.len() as u64
+        BASE + self.offsets.len() as u64 + if self.pattern { PATTERN_BIT } else { 0 }
     }
     fn offset_of(&self, key: u64) -> Option<(i32, i32)> {
         if key == 0 {
             return Some((0, 0));
         }
-        let i = usize::try_from(key.checked_sub(BASE + 1)?).ok()?;
+        if (key & PATTERN_BIT != 0) != self.pattern {
+            return None;
+        }
+        let i = usize::try_from((key & !PATTERN_BIT).checked_sub(BASE + 1)?).ok()?;
         self.offsets.get(i).copied()
     }
     fn area(&self, d: (i32, i32)) -> Option<Rect> {
+        if self.pattern {
+            return Some(self.canvas);
+        }
         let b = self.bounds?;
         Some(if b.is_empty() { b } else { b.translate(d.0, d.1).inflate(1).intersect(&self.canvas) })
     }
+}
+
+/// `layer.translate` params, plus `"wrap": true` while View › Pattern Preview is on.
+pub(crate) fn pattern_wrap(app: &PhotocraftApp, mut args: serde_json::Value) -> serde_json::Value {
+    if app.ui.view.pattern_preview
+        && let Some(obj) = args.as_object_mut()
+    {
+        obj.insert("wrap".into(), json!(true));
+    }
+    args
 }
 
 /// The whole-pixel offset of the current Move drag on document `idx`, if one is under way.
@@ -216,6 +237,12 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
     let mask_target = app.layer_mask_targeted();
     let st = app.session.documents().get(idx)?;
     let (doc_id, revision, doc) = (st.doc.id, st.revision, st.doc.clone());
+    let pattern = app.ui.view.pattern_preview;
+    // A toggle of Pattern Preview mid-drag drops the old keys; `damage` is then `None` and the
+    // canvas recomposites, so preview pixels and the release share the live mode.
+    if app.move_preview.as_ref().is_some_and(|p| p.doc == doc_id && p.revision == revision && p.pattern != pattern) {
+        app.move_preview = None;
+    }
     let fresh = app.move_preview.as_ref().is_some_and(|p| p.doc == doc_id && p.revision == revision);
     if !fresh {
         let ids = photocraft_engine::layer_multi_cmds::move_targets(&doc, &st.selected_layers());
@@ -230,7 +257,8 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
         let moving = with_descendants(&doc, &ids);
         let too_big = exceeds(&doc, &ids, LIVE_LIMIT, mask_target);
         let bounds = bounds.map(|b| moving.iter().filter_map(|id| shape_reach(doc.layer(*id)?, canvas)).fold(b, |acc, r| acc.union(&r)));
-        app.move_preview = Some(MovePreview { doc: doc_id, revision, ids, moving, bounds, canvas, offsets: Vec::new(), shown: None, floating: false, too_big });
+        app.move_preview =
+            Some(MovePreview { doc: doc_id, revision, ids, moving, bounds, canvas, offsets: Vec::new(), shown: None, floating: false, too_big, pattern });
     }
     let p = app.move_preview.as_mut()?;
     if p.too_big {
@@ -241,7 +269,8 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
     }
     if p.offsets.last() != Some(&offset) {
         let t0 = crate::gpu_canvas::now_ms();
-        match photocraft_engine::layer_multi_cmds::moved_target(&doc, &p.ids, offset.0, offset.1, mask_target) {
+        let wrap = app.ui.view.pattern_preview.then_some(doc.bounds());
+        match photocraft_engine::layer_multi_cmds::moved_wrapping(&doc, &p.ids, offset.0, offset.1, mask_target, wrap) {
             Ok(d) => {
                 // Duotone documents display through their inks.
                 let d = photocraft_engine::mode_cmds::display_document(&d).unwrap_or(d);
@@ -269,7 +298,7 @@ fn shape_reach(l: &photocraft_doc::Layer, canvas: Rect) -> Option<Rect> {
 }
 
 /// `ids` and every layer inside them (groups move their contents).
-fn with_descendants(doc: &Document, ids: &[LayerId]) -> Vec<LayerId> {
+pub(crate) fn with_descendants(doc: &Document, ids: &[LayerId]) -> Vec<LayerId> {
     let walk = doc.walk();
     let roots: Vec<_> = walk.iter().filter(|(_, _, l)| ids.contains(&l.id)).map(|(p, _, _)| p.as_slice()).collect();
     walk.iter().filter(|(p, _, _)| roots.iter().any(|r| p.starts_with(r))).map(|(_, _, l)| l.id).collect()
@@ -317,6 +346,7 @@ fn floating_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Document>, u
             shown: None,
             floating: true,
             too_big: false,
+            pattern: false,
         });
     }
     if offset == (0, 0) && app.move_preview.as_ref().is_none_or(|p| p.offsets.is_empty()) {
@@ -378,14 +408,17 @@ pub(crate) fn finish(app: &mut PhotocraftApp, dx: f64, dy: f64) {
     // Within the range the preview and the ΔX/ΔY readout show (`drag_offset`), so the release
     // commits the offset they showed even at the lowest zoom of a huge document.
     let (dx, dy) = (dx.clamp(-1e7, 1e7), dy.clamp(-1e7, 1e7));
-    // Only when the canvas shows this very offset (else it recomposites everything once).
+    // The raw drag, including a whole number of canvases. `layer.translate` drops that only
+    // when every target is raster samples folding back onto themselves.
     let at = (dx as i32, dy as i32);
-    let shown = app.move_preview.take().filter(|p| p.shown.is_some() && p.offsets.last() == Some(&at));
+    let pattern = app.ui.view.pattern_preview;
+    let shown = app.move_preview.take().filter(|p| p.shown.is_some() && p.offsets.last() == Some(&at) && p.pattern == pattern);
     if dx == 0.0 && dy == 0.0 {
         return;
     }
     // `nest`: a layer dropped on another artboard joins it (Photoshop's auto-nesting).
-    let Ok(result) = app.run("layer.translate", json!({"dx": dx, "dy": dy, "selection": carries_selection(app), "nest": app.ui.artboard_tool.auto_nest}))
+    let Ok(result) =
+        app.run("layer.translate", pattern_wrap(app, json!({"dx": dx, "dy": dy, "selection": carries_selection(app), "nest": app.ui.artboard_tool.auto_nest})))
     else {
         return;
     };

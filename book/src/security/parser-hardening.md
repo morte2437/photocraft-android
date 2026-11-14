@@ -6,7 +6,7 @@ Parser safety is broader than “does not crash.” A parser must also bound mem
 
 ### PSD/PSB
 
-`photocraft-psd` enforces maximum document dimensions and channel counts, bounds decoded channel data, limits ActionDescriptor nesting and pattern edges, and uses checked arithmetic for key decoded-size calculations. Tests cover malformed headers, truncation, property-generated inputs, and dedicated fuzz targets.
+`craft-psd` enforces maximum document dimensions and channel counts, bounds decoded channel data, limits ActionDescriptor nesting and pattern edges, and uses checked arithmetic for key decoded-size calculations. Tests cover malformed headers, truncation, property-generated inputs, and dedicated fuzz targets.
 
 ### Raster codecs
 

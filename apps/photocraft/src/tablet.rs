@@ -92,6 +92,17 @@ pub fn right_button_service() -> Option<photocraft_ui_egui::RightButtonDownFn> {
     None
 }
 
+/// Where the pen is on the screen (Windows), for the title bar's pen moves (#7967).
+#[cfg(target_os = "windows")]
+pub fn pen_screen_service() -> Option<photocraft_ui_egui::PenScreenFn> {
+    Some(Box::new(|| photocraft_tablet::windows::pen_screen_px().map(|(x, y)| [x, y])))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn pen_screen_service() -> Option<photocraft_ui_egui::PenScreenFn> {
+    None
+}
+
 /// Which end of the pen is in use (Windows): flipping the pen to its eraser end selects the
 /// Eraser (#2285). Elsewhere the end arrives with the samples in the stylus feed.
 #[cfg(target_os = "windows")]

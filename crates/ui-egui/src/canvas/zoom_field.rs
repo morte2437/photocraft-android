@@ -583,6 +583,10 @@ mod tests {
     #[test]
     fn menu_i_key_does_not_leak_dotless_text_into_zoom_in_any_ui_language() {
         for code in ["az", "tr", "en", "de"] {
+            // English runs in every build; the others need the craft-i18n catalogs.
+            if code != "en" && !crate::i18n::needs_catalogs() {
+                continue;
+            }
             let lang = crate::i18n::Lang::from_code(code).unwrap();
             crate::i18n::with_language(lang, || {
                 for text in ["I", "i", "İ", "ı"] {

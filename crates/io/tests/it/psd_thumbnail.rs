@@ -1,12 +1,12 @@
 //! Preferences › File Handling › Image Previews: PSD/PSB saves embed Photoshop's thumbnail
 //! resource (1036: 28-byte header + JFIF, ≤ 160 px) unless the previews are turned off.
 
+use craft_psd::PsdFile;
+use craft_psd::resources::ids;
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer};
 use photocraft_geom::Size;
 use photocraft_io::{ExportOptions, export, import};
-use photocraft_psd::PsdFile;
-use photocraft_psd::resources::ids;
 
 /// A `w`×`h` document of `mode`/`depth` holding one layer of `rgba` (given as straight sRGB-ish
 /// RGBA and converted to the document's model), covering the left `cover` fraction.
@@ -146,7 +146,7 @@ fn the_document_profile_is_honoured() {
     // Mid gray in a linear-sRGB document is sRGB ≈ 0.735, not 0.5: the thumbnail goes through
     // the embedded profile rather than assuming sRGB.
     let mut d = doc(ColorMode::Rgb, SampleType::U16, 50, 50, [0.5, 0.5, 0.5, 1.0], 1.0);
-    d.icc_profile = Some(std::sync::Arc::new(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes().to_vec()));
+    d.icc_profile = Some(std::sync::Arc::new(craft_cms::Builtin::LinearSrgb.profile().to_bytes().to_vec()));
     let (_, _, px) = thumbnail(&export(&d, "x.psd", &ExportOptions::default()).unwrap().bytes).unwrap();
     let mid = px[25 * 50 + 25];
     assert!(near(mid, [0.735; 3], 0.03), "{mid:?}");

@@ -47,6 +47,11 @@ pub fn closed(app: &mut PhotocraftApp, d: &Dialog) {
     if d.fields.get("skip").and_then(Value::as_bool) != Some(true) {
         return;
     }
+    remember(app, pref);
+}
+
+/// Keep "Don't show again" for the question remembered as `pref`, with the other dialog preferences.
+pub fn remember(app: &mut PhotocraftApp, pref: &str) {
     app.session.edit_prefs(|prefs| {
         prefs.dialogs.insert(pref.into(), json!({"skip": true}));
     });

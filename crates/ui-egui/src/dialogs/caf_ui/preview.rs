@@ -1,4 +1,5 @@
-use super::{CMD, CafWorkspace, Color32, LayerId, MAX_CAF_POINTS, MAX_OUTLINE_EDGES, PhotocraftApp, Rect, TextureHandle, Value, json, stroke_json};
+use super::{CMD, CafWorkspace, Color32, LayerId, MAX_CAF_POINTS, MAX_OUTLINE_SEGMENTS, PhotocraftApp, Rect, TextureHandle, Value, json, stroke_json};
+use crate::outline::Segment;
 
 /// What the plan (without the brush strokes) says: the window, the fill area and the sampling
 /// option's area, over `rect`.
@@ -99,36 +100,36 @@ pub(super) fn compute_base(app: &PhotocraftApp, w: &CafWorkspace) -> Result<Base
     Ok(Base { window: plan.window, rect: plan.rect, hole: plan.hole, base })
 }
 
-/// Unit edges between the fill area and the rest, in document px.
-pub(super) fn outline(b: &Base) -> Option<Vec<[[f32; 2]; 2]>> {
-    let (w, h) = (b.rect.width() as usize, b.rect.height() as usize);
-    let (ox, oy) = (b.rect.x0 as f32, b.rect.y0 as f32);
-    let at = |x: i64, y: i64| x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && b.hole.get(y as usize * w + x as usize).copied().unwrap_or(false);
-    let mut out = Vec::new();
-    for y in 0..h as i64 {
-        for x in 0..w as i64 {
-            if !at(x, y) {
-                continue;
-            }
-            let (fx, fy) = (ox + x as f32, oy + y as f32);
-            if !at(x - 1, y) {
-                out.push([[fx, fy], [fx, fy + 1.0]]);
-            }
-            if !at(x + 1, y) {
-                out.push([[fx + 1.0, fy], [fx + 1.0, fy + 1.0]]);
-            }
-            if !at(x, y - 1) {
-                out.push([[fx, fy], [fx + 1.0, fy]]);
-            }
-            if !at(x, y + 1) {
-                out.push([[fx, fy + 1.0], [fx + 1.0, fy + 1.0]]);
-            }
-            if out.len() > MAX_OUTLINE_EDGES {
-                return None;
+/// The fill area's edges merged into runs, as the canvas traces a selection, in document px;
+/// `None` past [`MAX_OUTLINE_SEGMENTS`].
+pub(super) fn outline(b: &Base) -> Option<Vec<Segment>> {
+    let area = super::lifecycle::bounds(b);
+    let w = b.rect.width() as usize;
+    let at = |x: i32, y: i32| b.rect.contains(x, y) && b.hole.get((y - b.rect.y0) as usize * w + (x - b.rect.x0) as usize).copied().unwrap_or(false);
+    let mut segs = Vec::new();
+    // Between rows y - 1 and y along x, then between columns x - 1 and x along y.
+    for horizontal in [true, false] {
+        let (l0, l1, t0, t1) = if horizontal { (area.y0, area.y1, area.x0, area.x1) } else { (area.x0, area.x1, area.y0, area.y1) };
+        for l in l0..=l1 {
+            let mut run = None;
+            for t in t0..=t1 {
+                let (p, q) = if horizontal { ((t, l), (t, l.saturating_sub(1))) } else { ((l, t), (l.saturating_sub(1), t)) };
+                let edge = t < t1 && at(p.0, p.1) != at(q.0, q.1);
+                match (edge, run) {
+                    (true, None) => run = Some(t),
+                    (false, Some(s)) => {
+                        segs.push(if horizontal { ([s, l], [t, l]) } else { ([l, s], [l, t]) });
+                        if segs.len() > MAX_OUTLINE_SEGMENTS {
+                            return None;
+                        }
+                        run = None;
+                    }
+                    _ => {}
+                }
             }
         }
     }
-    Some(out)
+    Some(segs)
 }
 
 /// Recompute the base after a change of the fill area, the sampling option or the document.

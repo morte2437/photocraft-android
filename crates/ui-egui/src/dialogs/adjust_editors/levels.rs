@@ -70,6 +70,7 @@ pub(crate) fn levels_drag(ctx: &egui::Context, mem: egui::Id) -> Option<u8> {
     ctx.data(|d| d.get_temp::<Option<u8>>(levels_drag_id(mem))).flatten()
 }
 
+/// Edit the selected Levels record using its own channel label, histogram and Auto endpoints.
 pub(super) fn levels(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let t = Tokens::get(ui.ctx());
     let channels = editor_channels(cx, space_of(v));

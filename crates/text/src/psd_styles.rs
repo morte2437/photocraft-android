@@ -245,7 +245,7 @@ pub fn write_style_sheets(tysh: &[u8], layer: &TextLayer, styles: &TextStyles, d
     let raw = crate::engine_data::write(&e);
     {
         let item = t.text.items.iter_mut().find(|(k, _)| k.is("EngineData"))?;
-        item.1 = photocraft_psd::descriptor::Value::RawData(raw)
+        item.1 = craft_psd::descriptor::Value::RawData(raw)
     }
     Some(write_tysh(&t))
 }

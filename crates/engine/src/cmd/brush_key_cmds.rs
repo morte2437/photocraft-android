@@ -18,11 +18,17 @@ use crate::{EngineError, Result, Session};
 /// Photoshop's largest brush diameter, in pixels.
 pub const MAX_SIZE: f32 = 5000.0;
 
-/// `[` / `]`: 25 % smaller or larger, and at least a pixel either way so small brushes still grow
-/// and shrink (2 / 1.25 rounds back to 2, which kept `[` from reaching 1 px, #3229).
+/// `[` / `]`: the next diameter in the key's direction, following the measured size table
+/// through 1500 px (#12936), then continuing in 100 px steps to the maximum. Intermediate
+/// sizes snap in that direction, and the 1 px endpoint stays reachable (#3229).
 fn size_step(size: f32, up: bool) -> f32 {
-    let next = if up { (size * 1.25).round().max(size + 1.0) } else { (size / 1.25).round().min(size - 1.0) };
-    next.clamp(1.0, MAX_SIZE)
+    let mut steps = [
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0, 125.0, 150.0, 175.0,
+        200.0, 250.0, 300.0,
+    ]
+    .into_iter()
+    .chain((4..=(MAX_SIZE / 100.0) as u32).map(|n| n as f32 * 100.0));
+    if up { steps.find(|&next| next > size).unwrap_or(MAX_SIZE) } else { steps.rfind(|&next| next < size).unwrap_or(1.0) }
 }
 
 /// ⇧[ / ⇧]: to the previous or next quarter (0, 25, 50, 75, 100 %).
@@ -165,6 +171,10 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+#[path = "brush_key_cmds/bracket_steps_tests.rs"]
+mod bracket_steps_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -280,7 +290,7 @@ mod tests {
         let mut s = Session::new();
         s.execute("tools.setBrush", json!({"brush": {"size": 40, "hardness": 0.5}})).unwrap();
         s.execute("tools.increaseBrushSize", json!({})).unwrap();
-        assert_eq!(s.tools.brush.size, 50.0);
+        assert_eq!(s.tools.brush.size, 45.0);
         s.execute("tools.decreaseBrushSize", Value::Null).unwrap();
         assert_eq!(s.tools.brush.size, 40.0);
         // Pixel artists: `[` held down reaches 1 px (#3229).

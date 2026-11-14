@@ -1,6 +1,6 @@
 use super::*;
 use photocraft_color::{BlendMode, Color, PixelFormat, SampleType};
-use photocraft_doc::Size;
+use photocraft_doc::{BlendIf, BlendRange, Effect, FxCommon, Size};
 use serde_json::json;
 
 const KINDS: [&str; 14] = crate::adjust_editors::KINDS;
@@ -89,6 +89,63 @@ pub(crate) fn document(mode: ColorMode, depth: SampleType, selection: bool) -> (
     (doc, id)
 }
 
+/// A target in the middle of a clipping group, nested two groups deep: a base, a clipped layer
+/// below the target, the target (semi-transparent noise, 80 % Multiply, a mask) and a clipped
+/// layer above it. The target is clipped, so its preview must isolate it from the group. It is
+/// unstyled, which is the path the preview accelerates.
+pub(crate) fn clipped_document(mode: ColorMode, depth: SampleType, selection: bool) -> (Document, LayerId) {
+    let (w, h) = (40u32, 32u32);
+    let mut doc = Document::with_background("t", Size::new(w, h), mode, depth, Color::rgba(0.7, 0.6, 0.5, 1.0));
+    let fmt = doc.pixel_format();
+    if let Some(s) = doc.layers[0].surface_mut() {
+        fill_noise(s, Rect::from_xywh(0, 0, w, h / 2), 3, 1.0);
+    }
+    let mut base = Layer::raster("clip base", fmt);
+    if let Some(s) = base.surface_mut() {
+        fill_noise(s, Rect::from_xywh(0, 0, w, h), 5, 0.35);
+    }
+    base.opacity = 0.9;
+    let mut below = Layer::raster("below", fmt);
+    if let Some(s) = below.surface_mut() {
+        fill_noise(s, Rect::from_xywh(2, 18, 30, 10), 7, 0.4);
+    }
+    below.clipped = true;
+    below.opacity = 0.5;
+    let mut target = Layer::raster("target", fmt);
+    if let Some(s) = target.surface_mut() {
+        fill_noise(s, Rect::from_xywh(4, 2, 30, 26), 11, 0.2);
+    }
+    target.clipped = true;
+    target.opacity = 0.8;
+    target.blend = BlendMode::Multiply;
+    let mut m = LayerMask::reveal_all();
+    m.surface.fill_rect(Rect::from_xywh(0, 0, 10, 10), &[0.3]);
+    target.mask = Some(m);
+    let id = target.id;
+    let mut above = Layer::raster("above", fmt);
+    if let Some(s) = above.surface_mut() {
+        fill_noise(s, Rect::from_xywh(20, 10, 12, 12), 17, 0.5);
+    }
+    above.clipped = true;
+    above.opacity = 0.6;
+    let mut inner = Layer::group("inner", vec![base, below, target, above]);
+    inner.opacity = 0.95;
+    let outer = Layer::group("outer", vec![inner]);
+    let mut top = Layer::raster("top", fmt);
+    if let Some(s) = top.surface_mut() {
+        fill_noise(s, Rect::from_xywh(0, 20, 40, 12), 23, 0.0);
+    }
+    top.blend = BlendMode::Screen;
+    doc.layers.extend([outer, top]);
+    if selection {
+        let mut sel = photocraft_raster::Surface::new(PixelFormat::GRAY8);
+        sel.fill_rect(Rect::from_xywh(8, 4, 24, 20), &[1.0]);
+        sel.fill_rect(Rect::from_xywh(8, 4, 6, 20), &[0.5]);
+        doc.selection = Some(sel);
+    }
+    (doc, id)
+}
+
 /// The document after running the real destructive command on `target`.
 pub(crate) fn destructive(doc: &Document, target: LayerId, kind: &str, params: &Value) -> Option<Document> {
     let mut s = photocraft_engine::Session::new();
@@ -144,6 +201,121 @@ fn preview_composite_matches_the_destructive_command() {
     assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
 
+/// A clipped target is adjusted through an isolating group in the preview only: its composite
+/// matches the destructive command for every kind, depth, mode and selection.
+#[test]
+fn a_clipped_target_previews_like_the_destructive_command() {
+    let tol = 1.0 / 255.0 + 1e-4;
+    let mut worst = (0.0f32, String::new());
+    let mut fails = Vec::new();
+    for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            for selection in [false, true] {
+                let (doc, target) = clipped_document(mode, depth, selection);
+                assert!(unsupported(&doc, target).is_none(), "a clipped raster target is supported");
+                for kind in KINDS {
+                    for params in [sample(kind), json!({})] {
+                        let what = format!("{kind} {mode:?} {depth:?} selection {selection} {params}");
+                        let want = destructive(&doc, target, kind, &params);
+                        let got = preview_document(&doc, target, kind, &params);
+                        let gray_colour = mode == ColorMode::Grayscale && GRAY_COLOUR.contains(&kind);
+                        let (Some(want), Ok(got)) = (want, got) else {
+                            assert!(gray_colour, "{what}: command and preview disagree on validity");
+                            continue;
+                        };
+                        assert!(!gray_colour, "{what}: should use the proxy preview");
+                        let d = max_diff(&got, &want);
+                        if d > worst.0 {
+                            worst = (d, what.clone());
+                        }
+                        if d > tol {
+                            fails.push(format!("{what}: preview differs from the command by {:.2}/255", d * 255.0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("worst clipped-target preview difference {:.3}/255 ({})", worst.0 * 255.0, worst.1);
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+}
+
+/// The isolating preview keeps the target's place and compositing properties, puts its raw raster
+/// and the adjustment inside its group, and leaves the committed document untouched.
+#[test]
+fn a_clipped_target_preview_keeps_its_place_and_properties() {
+    let (mut doc, target) = clipped_document(ColorMode::Rgb, SampleType::U8, true);
+    // Nondefaults the transformed group must keep, not just Photoshop's defaults.
+    let l = doc.layer_mut(target).unwrap();
+    l.fill_opacity = 0.4;
+    l.excluded_channels = 0b101;
+    l.advanced.blend_clipped = false;
+    let before = doc.layer(target).unwrap().clone();
+    let path = doc.path_of(target).unwrap();
+    let layer_count = doc.layer_count();
+    let base = base_document(&doc, target).unwrap();
+    let group = base.layer(target).unwrap();
+    assert!(group.is_group(), "the target becomes an isolating group");
+    assert_eq!(base.path_of(target), Some(path.clone()), "same place in the stack");
+    assert_eq!(group.clipped, before.clipped);
+    assert_eq!((group.blend, group.opacity, group.fill_opacity), (before.blend, before.opacity, before.fill_opacity));
+    assert_eq!(group.mask, before.mask);
+    assert_eq!(group.effects, before.effects);
+    assert_eq!(group.excluded_channels, before.excluded_channels);
+    assert_eq!(group.advanced, before.advanced);
+    let children = group.children().unwrap();
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0].id, CARRIER_LAYER);
+    assert_eq!(children[0].surface(), before.surface(), "the raw raster is unchanged");
+    assert_eq!(children[1].id, PREVIEW_LAYER);
+    assert!(children[1].clipped, "the adjustment clips to the raw raster");
+    let mut preview_path = path;
+    preview_path.push(1);
+    assert_eq!(base.path_of(PREVIEW_LAYER), Some(preview_path), "inside the target's group");
+    // The committed document is untouched.
+    assert_eq!(doc.layer_count(), layer_count);
+    assert!(doc.layer(PREVIEW_LAYER).is_none());
+    assert!(doc.layer(CARRIER_LAYER).is_none());
+    assert_eq!(doc.layer(target).unwrap().surface(), before.surface());
+    // The reduced-resolution preview flips every id, including the carrier and the nested
+    // adjustment, so its textures stay separate and stable.
+    let proxy = proxy_base(&base, 2);
+    assert_ne!(proxy.id, base.id);
+    assert!(proxy.walk().iter().all(|(_, _, l)| base.layer(l.id).is_none() && l.id != PREVIEW_LAYER));
+    assert!(proxy.layer(LayerId(PREVIEW_LAYER.0 ^ PROXY_LAYER_BIT)).is_some());
+    assert!(proxy.layer(LayerId(CARRIER_LAYER.0 ^ PROXY_LAYER_BIT)).is_some());
+}
+
+/// The canvas damage region still bounds every change when the target is clipped: outside it the
+/// preview composites like the committed document, within a tight premultiplied tolerance.
+#[test]
+fn a_clipped_target_preview_changes_nothing_outside_its_region() {
+    // The extra group's straight-alpha normalization introduces floating-point rounding.
+    // Allow 1e-6 outside the damage region, well below the 1/255 command-parity tolerance;
+    // the committed document itself must remain identical.
+    const OUTSIDE: f32 = 1e-6;
+    let pm = |p: &[f32; 4]| [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]];
+    for selection in [false, true] {
+        let (doc, target) = clipped_document(ColorMode::Rgb, SampleType::U8, selection);
+        let committed = doc.clone();
+        let r = region(&doc, target);
+        assert!(!r.is_empty(), "the target can change something");
+        let before = photocraft_compose::render(&doc, doc.bounds());
+        for kind in KINDS {
+            let p = preview_document(&doc, target, kind, &sample(kind)).unwrap();
+            let after = photocraft_compose::render(&p, doc.bounds());
+            for (i, (a, b)) in before.px.iter().zip(&after.px).enumerate() {
+                let (x, y) = ((i % 40) as i32, (i / 40) as i32);
+                if !r.contains(x, y) {
+                    let (pa, pb) = (pm(a), pm(b));
+                    assert!((0..4).all(|c| (pa[c] - pb[c]).abs() <= OUTSIDE), "{kind} selection {selection}: ({x}, {y}) outside {r:?}: {pa:?} vs {pb:?}");
+                }
+            }
+        }
+        assert_eq!(doc, committed, "the committed document is unchanged");
+    }
+}
+
 #[test]
 fn preview_leaves_the_document_alone_and_marks_its_layer() {
     let (doc, target) = document(ColorMode::Rgb, SampleType::U8, true);
@@ -163,7 +335,14 @@ fn preview_leaves_the_document_alone_and_marks_its_layer() {
 fn ineligible_targets_use_the_proxy_preview() {
     let (mut doc, target) = document(ColorMode::Rgb, SampleType::U8, false);
     let clipped = doc.layers[2].id;
-    assert_eq!(unsupported(&doc, clipped), Some("the target is clipped"));
+    assert_eq!(unsupported(&doc, clipped), None, "a clipped raster target previews by isolating it");
+    assert!(base_document(&doc, clipped).unwrap().layer(clipped).unwrap().is_group());
+    // Blend If still needs the CPU proxy: its "This Layer" ranges test the adjusted colour.
+    let (mut blend_doc, blend_target) = clipped_document(ColorMode::Rgb, SampleType::U8, false);
+    let mut blend_if = BlendIf::default();
+    blend_if.set(0, [BlendRange { black: [30, 30], white: [220, 220] }, BlendRange::FULL]);
+    blend_doc.layer_mut(blend_target).unwrap().blend_if = blend_if;
+    assert_eq!(unsupported(&blend_doc, blend_target), Some(tl!("Blend If")));
     assert_eq!(unsupported(&doc, LayerId(u64::MAX - 1)), Some("no target layer"));
     doc.layers.push(Layer::new("adj", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
     let adj = doc.layers[4].id;
@@ -181,6 +360,47 @@ fn ineligible_targets_use_the_proxy_preview() {
     let (gray, t) = document(ColorMode::Grayscale, SampleType::U16, false);
     assert!(preview_document(&gray, t, "hueSaturation", &json!({"colorize": true, "hue": 30, "saturation": 40})).is_err());
     assert!(preview_document(&gray, t, "hueSaturation", &json!({"lightness": 20})).is_ok());
+}
+
+/// A clipped target with enabled effects on itself or an enclosing group keeps the CPU proxy:
+/// the preview's temporary group would rebuild the styled group's effect shape maps on the UI
+/// thread for every settings change. Disabled effects and styled siblings elsewhere don't count.
+#[test]
+fn a_styled_clipped_target_keeps_the_proxy_preview() {
+    let overlay = || Effect::ColorOverlay { common: FxCommon::new(BlendMode::Normal, 0.5), color: Color::rgba(0.2, 0.8, 0.4, 1.0) };
+    let (mut doc, target) = clipped_document(ColorMode::Rgb, SampleType::U8, false);
+    assert_eq!(unsupported(&doc, target), None, "the fixture target is unstyled");
+    // An enabled effect on the target itself.
+    doc.layer_mut(target).unwrap().effects.items.push(overlay());
+    let why = unsupported(&doc, target).expect("a styled clipped target keeps the proxy");
+    assert!(why.contains("layer effects"), "{why}");
+    assert!(base_document(&doc, target).is_err(), "no preview group for a styled clip");
+    doc.layer_mut(target).unwrap().clipped = false;
+    assert_eq!(unsupported(&doc, target), None, "unclipped styled targets keep their existing path");
+    doc.layer_mut(target).unwrap().clipped = true;
+    doc.layer_mut(target).unwrap().effects.enabled = false;
+    assert_eq!(unsupported(&doc, target), None, "the disabled master switch doesn't count");
+    doc.layer_mut(target).unwrap().effects.enabled = true;
+    // Disabled effects cost nothing: still eligible.
+    if let Effect::ColorOverlay { common, .. } = &mut doc.layer_mut(target).unwrap().effects.items[0] {
+        common.enabled = false;
+    }
+    assert_eq!(unsupported(&doc, target), None, "disabled effects don't count");
+    doc.layer_mut(target).unwrap().effects.items.clear();
+    // An enabled effect on an enclosing group.
+    let inner = doc.layers[1].children().unwrap()[0].id;
+    doc.layer_mut(inner).unwrap().effects.items.push(overlay());
+    assert!(unsupported(&doc, target).is_some(), "a styled enclosing group keeps the proxy");
+    if let Effect::ColorOverlay { common, .. } = &mut doc.layer_mut(inner).unwrap().effects.items[0] {
+        common.enabled = false;
+    }
+    assert_eq!(unsupported(&doc, target), None, "a disabled group effect doesn't count");
+    doc.layer_mut(inner).unwrap().effects.items.clear();
+    // A styled sibling inside the same clipping group is unrelated.
+    let above = doc.layer(inner).unwrap().children().unwrap()[3].id;
+    doc.layer_mut(above).unwrap().effects.items.push(overlay());
+    assert_eq!(unsupported(&doc, target), None, "an unrelated styled sibling doesn't reject the target");
+    assert!(base_document(&doc, target).is_ok());
 }
 
 /// The canvas recomposites only `region` between previews: nothing outside it may change.
@@ -280,13 +500,42 @@ fn dialog_previews_through_the_layer() {
     }
 }
 
+/// A clipped target still previews through the layer: the session keys, damage region and
+/// settings swap work on its isolating group, and closing the dialog drops the preview.
+#[test]
+fn a_clipped_target_dialog_previews_through_the_layer() {
+    let (doc, target) = clipped_document(ColorMode::Rgb, SampleType::U16, true);
+    let mut app = app_with(doc.clone(), target);
+    let id = crate::adjust_dialog::open(&mut app, "image.adjustments.levels").unwrap();
+    assert!(on_layer(&mut app, 0));
+    let (first, k1) = display_doc(&mut app, 0).unwrap();
+    assert!(first.layer(target).unwrap().is_group());
+    assert!(first.layer(PREVIEW_LAYER).is_some());
+    let (again, k1b) = display_doc(&mut app, 0).unwrap();
+    assert!(Arc::ptr_eq(&first, &again) && k1 == k1b, "unchanged settings reuse the cached preview");
+    app.ui.dialog_mut(id).unwrap().fields.insert("gamma".into(), json!(1.6));
+    let (second, k2) = display_doc(&mut app, 0).unwrap();
+    assert_ne!(k1, k2);
+    let st = app.session.active().unwrap();
+    assert_eq!(switch_region(&app, st.doc.id, st.revision, k1, k2), Some(region(&doc, target)));
+    let params = crate::filter_dialog::params_of(&app.ui.dialog_mut(id).unwrap().fields);
+    let want = destructive(&doc, target, "levels", &params).unwrap();
+    assert!(max_diff(&second, &want) <= 1.0 / 255.0);
+    app.ui.dialog_mut(id).unwrap().fields.insert("__preview".into(), json!(false));
+    assert!(display_doc(&mut app, 0).is_none());
+    assert!(on_layer(&mut app, 0), "still the layer path, just hidden");
+    app.ui.close_dialog(id);
+    assert!(display_doc(&mut app, 0).is_none() && !on_layer(&mut app, 0));
+}
+
 /// Targets the layer path can't reproduce keep the CPU proxy preview.
 #[test]
 fn ineligible_dialogs_keep_the_proxy_preview() {
-    // A clipped target.
-    let (doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
-    let clipped = doc.layers[2].id;
-    let mut app = app_with(doc, clipped);
+    // An adjustment-layer target.
+    let (mut doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
+    doc.layers.push(Layer::new("adj", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
+    let adj = doc.layers[4].id;
+    let mut app = app_with(doc, adj);
     crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
     assert!(!on_layer(&mut app, 0) && display_doc(&mut app, 0).is_none());
     // An alpha-channel target.
@@ -301,27 +550,28 @@ fn ineligible_dialogs_keep_the_proxy_preview() {
     assert!(!on_layer(&mut app, 0));
 }
 
-/// The proxy preview of a clipped target records why it doesn't preview through the layer
+/// The proxy preview of an ineligible target records why it doesn't preview through the layer
 /// instead of dropping the reason (#7487).
 #[test]
-fn a_clipped_adjustment_preview_records_why_it_uses_the_proxy() {
-    let (doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
-    let clipped = doc.layers[2].id;
-    let mut app = app_with(doc, clipped);
+fn an_ineligible_adjustment_preview_records_why_it_uses_the_proxy() {
+    let (mut doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
+    doc.layers.push(Layer::new("adj", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
+    let adj = doc.layers[4].id;
+    let mut app = app_with(doc, adj);
     app.render_path.assume_gpu = true;
     let dialog = crate::adjust_dialog::open(&mut app, "image.adjustments.curves").unwrap();
     assert!(!on_layer(&mut app, 0));
     let doc = app.session.active().unwrap().doc.id.0;
-    assert_eq!(app.render_path.current(doc), Some(&crate::render_path::CpuReason::AdjustPreview("the target is clipped")));
+    assert_eq!(app.render_path.current(doc), Some(&crate::render_path::CpuReason::AdjustPreview("not a pixel layer")));
     let path = crate::render_path::inspect(&app);
     assert_eq!(path["current"]["kind"], "adjustPreview");
-    assert!(path["current"]["detail"].as_str().is_some_and(|d| d.contains("the target is clipped")), "{path}");
+    assert!(path["current"]["detail"].as_str().is_some_and(|d| d.contains("not a pixel layer")), "{path}");
     // Asked again with nothing changed: no new entry.
     assert!(!on_layer(&mut app, 0));
     assert_eq!(app.render_path.history().count(), 1);
     // A GPU refresh of the canvas while the dialog is open doesn't end the preview's reason.
     crate::render_path::note(&mut app, doc, crate::render_path::Path::Gpu { full: true });
-    assert_eq!(app.render_path.current(doc), Some(&crate::render_path::CpuReason::AdjustPreview("the target is clipped")));
+    assert_eq!(app.render_path.current(doc), Some(&crate::render_path::CpuReason::AdjustPreview("not a pixel layer")));
     assert_eq!(app.render_path.history().count(), 1);
     // Closing the dialog ends the reason, though the canvas is still current (no refresh).
     app.ui.close_dialog(dialog);
@@ -338,10 +588,11 @@ fn a_clipped_adjustment_preview_records_why_it_uses_the_proxy() {
 #[test]
 fn an_adjustment_preview_keeps_the_canvas_reason() {
     use crate::render_path::{CpuReason, Path};
-    let (doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
-    let clipped = doc.layers[2].id;
+    let (mut doc, _) = document(ColorMode::Rgb, SampleType::U8, false);
+    doc.layers.push(Layer::new("adj", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
+    let adj = doc.layers[4].id;
     let canvas_back_on_gpu = |app: &crate::PhotocraftApp| app.render_path.history().any(|c| !c.preview && c.reason.is_none());
-    let mut app = app_with(doc.clone(), clipped);
+    let mut app = app_with(doc.clone(), adj);
     app.render_path.assume_gpu = true;
     let doc_id = app.session.active().unwrap().doc.id.0;
     let canvas = CpuReason::Unsupported("Advanced Blending on Layer 1".into());
@@ -357,7 +608,7 @@ fn an_adjustment_preview_keeps_the_canvas_reason() {
     assert!(!canvas_back_on_gpu(&app));
 
     // A window without the GPU (`--safe-gpu`): the preview adds nothing, before or after closing.
-    let mut app = app_with(doc, clipped);
+    let mut app = app_with(doc, adj);
     app.render_path.assume_gpu = true;
     let doc_id = app.session.active().unwrap().doc.id.0;
     let cpu = CpuReason::CpuMode("--safe-gpu".into());

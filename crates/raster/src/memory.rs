@@ -195,6 +195,13 @@ impl Drop for Reservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `RESERVED` is process-wide, and `cargo test` runs this module's tests on threads of one
+    /// process (nextest gives each test its own), so the tests that reserve take turns: one's
+    /// reservation must not show up in another's before/after count.
+    static RESERVING: Mutex<()> = Mutex::new(());
+    fn reserving() -> std::sync::MutexGuard<'static, ()> {
+        RESERVING.lock().unwrap_or_else(PoisonError::into_inner)
+    }
     #[test]
     fn ceiling_includes_non_tile_memory_and_other_apps() {
         let s = Snapshot { total_bytes: 64 << 30, available_bytes: 10 << 30, process_resident_bytes: 20 << 30, process_virtual_bytes: 100 << 30 };
@@ -217,6 +224,7 @@ mod tests {
     }
     #[test]
     fn an_operation_that_fits_alone_waits_for_a_concurrent_one() {
+        let _turn = reserving();
         let available = refresh().transient_bytes;
         let first = try_reserve_operation(available / 2 + 1).unwrap();
         let releaser = std::thread::spawn(move || {
@@ -230,6 +238,7 @@ mod tests {
     }
     #[test]
     fn reservations_are_bounded_and_returned() {
+        let _turn = reserving();
         let before = stats().2;
         let r = try_reserve(1024).unwrap();
         assert_eq!(stats().2, before + 1024);

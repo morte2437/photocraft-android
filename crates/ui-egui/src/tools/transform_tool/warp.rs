@@ -67,6 +67,7 @@ pub(super) fn split_cursor(m: &BezierMesh, tool: SplitTool, (s, t): (f64, f64), 
 }
 
 /// Armed split tool, or Option held: the guide tracks the pointer and the split lands on release.
+/// A Split button is one-shot, as in the reference: the release that splits ends its mode (#12498).
 /// Returns false when this event is an ordinary control-point drag.
 fn split_gesture(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> bool {
     let armed = app.transform_preview.as_ref().and_then(|p| p.split_tool);
@@ -103,9 +104,12 @@ fn split_gesture(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) 
             } else {
                 None
             };
-            if let Some(kind) = kind {
-                // On an existing line, or a click the drag path also delivers, this is a no-op.
-                let _ = split(app, kind.command(), Some([x, y]));
+            // Outside the grid or on an existing line this is a no-op, and the mode stays armed.
+            if let Some(kind) = kind
+                && split(app, kind.command(), Some([x, y])).is_ok()
+                && let Some(pv) = app.transform_preview.as_mut()
+            {
+                pv.split_tool = None;
             }
             true
         }
@@ -189,3 +193,7 @@ pub fn split(app: &mut PhotocraftApp, id: &str, at: Option<[f64; 2]>) -> Result<
     }
     edit_session_warp(app, id, &p)
 }
+
+#[cfg(test)]
+#[path = "warp_split_one_shot_tests.rs"]
+mod warp_split_one_shot_tests;

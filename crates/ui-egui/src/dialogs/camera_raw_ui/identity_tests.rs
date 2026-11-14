@@ -54,6 +54,7 @@ fn identity_app() -> (PhotocraftApp, RawOpen, Control) {
         bytes: Some(bytes),
         developed_with: Default::default(),
         demosaic: Default::default(),
+        decoded: None,
         crop: None,
     };
     let mut app = PhotocraftApp::new(session, crate::Services::default());
@@ -149,7 +150,7 @@ fn queue_identity_targets_an_inactive_raw_without_changing_the_active_document()
     let (mut app, raw, control) = identity_app();
     app.session.set_active(0);
     assert_eq!(app.session.active().unwrap().doc.id, control.doc.id);
-    queue_open_dialog(&mut app, raw.document, &raw.name, raw.path.as_deref(), raw.bytes.as_deref().map(Vec::as_slice), &[]).unwrap();
+    queue_open_dialog(&mut app, raw.document, &raw.name, raw.path.as_deref(), raw.bytes.as_ref(), &[]).unwrap();
     let queued = app.raw_shelf.first().map(|h| &h.raw).expect("the explicitly named RAW was queued");
     assert_eq!(queued.document, raw.document);
     assert_eq!((&queued.name, &queued.path, &queued.bytes), (&raw.name, &raw.path, &raw.bytes));
@@ -160,12 +161,12 @@ fn queue_identity_targets_an_inactive_raw_without_changing_the_active_document()
 #[test]
 fn queue_identity_rejects_a_missing_document_without_replacing_the_pending_review() {
     let (mut app, raw, control) = identity_app();
-    queue_open_dialog(&mut app, raw.document, &raw.name, raw.path.as_deref(), raw.bytes.as_deref().map(Vec::as_slice), &[]).unwrap();
+    queue_open_dialog(&mut app, raw.document, &raw.name, raw.path.as_deref(), raw.bytes.as_ref(), &[]).unwrap();
     let pending = app.raw_shelf.first().map(|h| &h.raw).unwrap().clone();
     app.session.set_active(0);
     let missing = photocraft_doc::DocId::fresh();
     assert!(!app.session.documents().iter().any(|state| state.doc.id == missing));
-    assert!(queue_open_dialog(&mut app, missing, "missing.dng", Some("missing.dng"), Some(&[1, 2, 3]), &[]).is_err());
+    assert!(queue_open_dialog(&mut app, missing, "missing.dng", Some("missing.dng"), Some(&std::sync::Arc::new(vec![1, 2, 3])), &[]).is_err());
     let queued = app.raw_shelf.first().map(|h| &h.raw).expect("the existing review is preserved");
     assert_eq!(queued.document, pending.document);
     assert_eq!((&queued.name, &queued.path, &queued.bytes), (&pending.name, &pending.path, &pending.bytes));

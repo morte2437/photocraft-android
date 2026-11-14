@@ -117,6 +117,7 @@ mod tests {
         FilterPreviewKey {
             doc: photocraft_doc::DocId(1),
             revision,
+            sources: Vec::new(),
             dialog,
             active: None,
             target: Default::default(),

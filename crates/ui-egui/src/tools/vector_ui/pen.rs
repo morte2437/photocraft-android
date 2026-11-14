@@ -68,6 +68,10 @@ pub fn pen_down(app: &mut PhotocraftApp, x: f64, y: f64, shift: bool) {
     pen.commit_failed = false;
     pen.adjusting_in = false;
     pen.last_pointer = Some([x, y]);
+    // Drawing on deselects an anchor Auto Add put on the path being drawn.
+    if app.ui.direct_selection.target == Some(crate::direct_select::PathRef::Pen) && app.ui.direct_selection.drag.is_none() {
+        app.ui.direct_selection.anchors.clear();
+    }
     pen.reposition = false;
     // The press that carries a path on never closes it, even when its other end is in reach too:
     // the canvas showed the continue-path pointer there (`continues_path_at`).
@@ -331,6 +335,27 @@ pub fn pen_commit(app: &mut PhotocraftApp, closed: bool) -> bool {
     try_pen_commit(app, closed).is_ok()
 }
 
+/// ↩ with a Pen path in progress: finish it as an open path. Photoshop then deselects the Work
+/// Path it went into: still listed in the Paths panel, but not drawn, and the next path replaces
+/// it instead of joining it (#12892). Esc ([`pen_end`]) keeps it selected. The Curvature Pen,
+/// which shares the draft, keeps today's behaviour (not measured).
+pub fn pen_enter(app: &mut PhotocraftApp) {
+    let work_path = |app: &PhotocraftApp| app.session.active().and_then(|st| st.doc.work_path.clone());
+    let curvature = app.ui.pen.as_ref().is_some_and(|p| p.curvature);
+    let before = work_path(app);
+    if pen_commit(app, false) && !curvature && work_path(app) != before {
+        deselect_finished_work_path(app);
+    }
+}
+
+/// Deselect and hide the Work Path a finished path just went into. Callers check that it did: a
+/// draft drawn into a vector mask leaves the Work Path selected without changing it.
+fn deselect_finished_work_path(app: &mut PhotocraftApp) {
+    if app.ui.selected_path.as_deref() == Some("work") {
+        super::deselect_loaded_path(app, "work");
+    }
+}
+
 /// Finish the draft as [`pen_commit`] does. On failure the draft stays as it was, marked
 /// `commit_failed`, and the error is shown and returned.
 pub(super) fn try_pen_commit(app: &mut PhotocraftApp, closed: bool) -> Result<(), String> {
@@ -349,9 +374,11 @@ pub(super) fn try_pen_commit(app: &mut PhotocraftApp, closed: bool) -> Result<()
     let mut original = pen.clone();
     original.dragging = false;
     original.adjusting_last = false;
+    let draft = super::pen_resume::draft_before_finish(&pen);
     if pen.curvature {
         curvature_refresh(&mut pen, closed);
     }
+    let before = super::pen_resume::current_doc(app);
     if let Err(e) = commit_path(app, &pen, closed) {
         app.ui.pen = Some(PenPath { commit_failed: true, ..original });
         app.ui.status = e.clone();
@@ -359,6 +386,8 @@ pub(super) fn try_pen_commit(app: &mut PhotocraftApp, closed: bool) -> Result<()
         return Err(e);
     }
     app.ui.pen_doc = None;
+    // Undo back to this finish gives the path back to the Pen (`pen_resume_on_undo`).
+    super::pen_resume::remember_finish(app, draft, &before);
     Ok(())
 }
 
@@ -394,13 +423,17 @@ pub fn pen_end(app: &mut PhotocraftApp) {
     if app.ui.direct_selection.target == Some(crate::direct_select::PathRef::Pen) {
         app.ui.direct_selection = Default::default();
     }
+    let draft = super::pen_resume::draft_before_finish(&pen);
     if pen.curvature {
         curvature_refresh(&mut pen, false);
     }
     let refused = std::mem::take(&mut app.ui.status);
+    let before = super::pen_resume::current_doc(app);
     let kept = app.run("path.set", json!({"name": "work", "op": "combine", "path": pen_to_json(&pen, false)})).is_ok();
     if kept {
         app.ui.selected_path = Some("work".into());
+        // Undo gives the path back to the Pen here too (`pen_resume_on_undo`).
+        super::pen_resume::remember_finish(app, draft, &before);
     }
     let outcome = if kept { tl!("The path was kept as the Work Path") } else { tl!("The path was discarded") };
     app.ui.status = format!("{refused} ({outcome})");
@@ -412,7 +445,9 @@ pub fn pen_end(app: &mut PhotocraftApp) {
 /// layer; in Path mode a subpath of the targeted vector mask, else of the selected path or a new
 /// work path. An added subpath takes the options bar's Path Operation (#1397). `false` when the
 /// document refused it, with the reason in the status bar.
-fn commit_path_current(app: &mut PhotocraftApp, pen: &PenPath, closed: bool) -> bool {
+///
+/// The Freeform history override applies to document paths and new shape layers only.
+fn commit_path_current(app: &mut PhotocraftApp, pen: &PenPath, closed: bool, freeform: bool) -> bool {
     if pen.knots.is_empty() || (pen.knots.len() < 2 && app.ui.tool_options.vector_mode == "shape") {
         return true;
     }
@@ -434,12 +469,12 @@ fn commit_path_current(app: &mut PhotocraftApp, pen: &PenPath, closed: bool) -> 
             stroke["color"] = json!(app.session.tools.foreground);
             stroke
         };
-        app.run("shape.create", json!({"kind": "path", "path": path, "fill": fill, "stroke": stroke}))
+        app.run("shape.create", json!({"kind": "path", "path": path, "fill": fill, "stroke": stroke, "historyName": freeform.then_some("Freeform Pen")}))
     } else if let Some((name, p)) =
         pen.resumes.as_ref().and_then(|r| app.session.active().and_then(|st| with_resumed_subpath(&st.doc, r, &path)).map(|p| (r.path.clone(), p)))
     {
         // The resumed subpath, carried on, takes its old place: one step, no second subpath.
-        app.run("path.set", json!({"name": name, "path": p})).inspect(|_| app.ui.selected_path = Some(name))
+        app.run("path.set", json!({"name": name, "path": p, "historyName": freeform.then_some("Freeform Pen")})).inspect(|_| app.ui.selected_path = Some(name))
     } else if let Some((id, existing)) = targeted_vector_mask(app) {
         // A targeted vector mask takes the new subpath (#196), as in Photoshop.
         let mut p = photocraft_engine::vector_cmds::path_json(&existing);
@@ -458,7 +493,7 @@ fn commit_path_current(app: &mut PhotocraftApp, pen: &PenPath, closed: bool) -> 
         // subpath, even with nothing selected in the Paths panel.
         let target = draft_target(app, pen);
         let name = target.clone().unwrap_or_else(|| "work".into());
-        let mut params = json!({"name": name, "path": path});
+        let mut params = json!({"name": name, "path": path, "historyName": freeform.then_some("Freeform Pen")});
         if target.is_some() {
             params["op"] = json!(op.unwrap_or("combine"));
         }
@@ -674,17 +709,54 @@ pub(crate) fn pen_path_op(o: &ToolOptions) -> Option<&'static str> {
     }
 }
 
+/// The operation (`shape.create` `op`) a Shape-tool drag is added with (#13235); None for a new
+/// shape layer (New Layer, in Shape mode). Path mode has no New Layer: there it is Exclude
+/// Overlapping Shapes, as the reference application's default.
+pub(crate) fn shape_path_op(o: &ToolOptions) -> Option<&'static str> {
+    let op = PATH_OPS.iter().map(|(v, ..)| *v).find(|v| *v == o.shape_path_op).unwrap_or("newLayer");
+    match op {
+        "newLayer" if o.shape_mode == "shape" => None,
+        "newLayer" => Some("exclude"),
+        op => Some(op),
+    }
+}
+
+/// Whether the active tool draws shape layers (so New Layer applies): the Shape tools in Shape
+/// mode, the Pens in Shape mode; Path Selection and Direct Selection have no shape layer to make.
+fn tool_in_shape_mode(app: &PhotocraftApp) -> bool {
+    let (tool, o) = (app.ui.tool, &app.ui.tool_options);
+    if matches!(tool, Tool::PathSelection | Tool::DirectSelection) {
+        false
+    } else if super::shapes::is_shape_tool(tool) {
+        o.shape_mode == "shape"
+    } else {
+        o.vector_mode == "shape"
+    }
+}
+
+/// The active tool's resolved operation (see `pen_path_op` and `shape_path_op`).
+fn tool_path_op(app: &PhotocraftApp) -> Option<&'static str> {
+    if super::shapes::is_shape_tool(app.ui.tool) { shape_path_op(&app.ui.tool_options) } else { pen_path_op(&app.ui.tool_options) }
+}
+
+/// The Path Operations setting the active tool keeps: the Shape tools' own, else the Pens'.
+pub(crate) fn path_op_field(app: &mut PhotocraftApp) -> &mut String {
+    if super::shapes::is_shape_tool(app.ui.tool) { &mut app.ui.tool_options.shape_path_op } else { &mut app.ui.tool_options.pen_path_op }
+}
+
 /// What the Path Operations menu's Merge Shape Components merges, as a command, its params and
-/// the number of shape components there: with Path Selection the path it selects in; in Shape
-/// mode the selected shape layer; in Path mode the path the Pen draws into (a targeted vector
-/// mask, the selected path, else the Work Path).
+/// the number of shape components there: with Path Selection or Direct Selection the path they
+/// select in (with Direct Selection the one with selected anchors first); in Shape mode the
+/// selected shape layer; in Path mode the path the Pen draws into (a targeted vector mask, the
+/// selected path, else the Work Path).
 fn merge_target(app: &PhotocraftApp) -> Option<(&'static str, Value, usize)> {
-    if app.ui.tool == Tool::PathSelection {
-        let (r, p) = crate::direct_select::active_paths(app).into_iter().next()?;
+    if matches!(app.ui.tool, Tool::PathSelection | Tool::DirectSelection) {
+        let anchored = crate::path_components::selected(app).filter(|_| app.ui.tool == Tool::DirectSelection).map(|(r, p, _)| (r, p));
+        let (r, p) = anchored.or_else(|| crate::direct_select::active_paths(app).into_iter().next())?;
         return Some(("path.mergeShapeComponents", r.params(app), p.components().len()));
     }
     let st = app.session.active()?;
-    if app.ui.tool_options.vector_mode == "shape" {
+    if tool_in_shape_mode(app) {
         let id = st.active_layer?;
         let LayerContent::Shape(sh) = &st.doc.layer(id)?.content else { return None };
         return Some(("layer.combineShapes.mergeShapeComponents", json!({"layer": id.0}), sh.path.components().len()));
@@ -697,16 +769,16 @@ fn merge_target(app: &PhotocraftApp) -> Option<(&'static str, Value, usize)> {
     Some(("path.mergeShapeComponents", json!({"name": name}), path.components().len()))
 }
 
-/// The Path Operations button of the Pen, Freeform Pen, Curvature Pen and Path Selection (#1397),
-/// Photoshop's: the operation of the selected path components, or with none selected how the next
-/// path combines with the shape or path it is drawn into; and Merge Shape Components. Its icon
-/// shows the selected components' operation, else the tool's.
+/// The Path Operations button of the Pen, Freeform Pen, Curvature Pen, Path Selection (#1397) and
+/// Direct Selection (#13219), Photoshop's: the operation of the selected path components, or with
+/// none selected how the next path combines with the shape or path it is drawn into; and Merge
+/// Shape Components. Its icon shows the selected components' operation, else the tool's.
 pub(super) fn path_operations_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
-    // New Layer makes a shape layer: Path mode and Path Selection have none.
-    let shape = app.ui.tool_options.vector_mode == "shape" && app.ui.tool != Tool::PathSelection;
+    // New Layer makes a shape layer: Path mode, Path Selection and Direct Selection have none.
+    let shape = tool_in_shape_mode(app);
     let current = crate::path_components::selected_op(app)
-        .or_else(|| pen_path_op(&app.ui.tool_options))
-        .map_or("newLayer", |op| if op == "newLayer" && !shape { "combine" } else { op });
+        .or_else(|| tool_path_op(app))
+        .map_or(if shape { "newLayer" } else { "combine" }, |op| if op == "newLayer" && !shape { "combine" } else { op });
     let icon = PATH_OPS.iter().find(|(v, ..)| *v == current).map_or("path-op-combine", |(.., i)| *i);
     let resp = crate::icons::button_with_icon_size(ui, icon, 24.0, 16.0, false, tl!("Path operations"));
     let resp = crate::brush_picker::named(resp, "Path operations");
@@ -739,6 +811,83 @@ pub(super) fn path_operations_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         app.ui.status = e;
         app.ui.status_error = true;
     }
+}
+
+/// Path alignment's Align entries: label and icon (#13235).
+pub(crate) const PATH_ALIGN_ENTRIES: [(&str, &str); 6] = [
+    ("Align Left Edges", "align-edge-left"),
+    ("Align Horizontal Centers", "align-edge-hcenter"),
+    ("Align Right Edges", "align-edge-right"),
+    ("Align Top Edges", "align-edge-top"),
+    ("Align Vertical Centers", "align-edge-vcenter"),
+    ("Align Bottom Edges", "align-edge-bottom"),
+];
+
+/// Path alignment's Distribute entries.
+pub(crate) const PATH_DISTRIBUTE_ENTRIES: [(&str, &str); 6] = [
+    ("Distribute Left Edges", "distribute-left"),
+    ("Distribute Horizontal Centers", "distribute-hcenter"),
+    ("Distribute Right Edges", "distribute-right"),
+    ("Distribute Top Edges", "distribute-top"),
+    ("Distribute Vertical Centers", "distribute-vcenter"),
+    ("Distribute Bottom Edges", "distribute-bottom"),
+];
+
+/// Path alignment's Distribute Spacing entries.
+pub(crate) const PATH_SPACING_ENTRIES: [(&str, &str); 2] =
+    [("Distribute Horizontally", "distribute-horizontal"), ("Distribute Vertically", "distribute-vertical")];
+
+/// Path arrangement's entries, front to back.
+pub(crate) const PATH_ARRANGE_ENTRIES: [&str; 4] = ["Bring Shape To Front", "Bring Shape Forward", "Send Shape Backward", "Send Shape To Back"];
+
+/// The Path alignment button of the Shape tools (#13235). Every entry is greyed: the engine has no
+/// command that aligns or distributes the components of a path yet.
+pub(super) fn path_alignment_menu(_app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let resp = crate::icons::button_with_icon_size(ui, "align-edge-left", 24.0, 16.0, false, tl!("Path alignment"));
+    let resp = crate::brush_picker::named(resp, "Path alignment");
+    // Stays open while the Align To dropdown is used.
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(240.0);
+        ui.label(tl!("Align:"));
+        for (label, glyph) in PATH_ALIGN_ENTRIES {
+            ui.add_enabled_ui(false, |ui| path_op_button(ui, glyph, tl!(label), false));
+        }
+        ui.separator();
+        ui.label(tl!("Distribute:"));
+        for (label, glyph) in PATH_DISTRIBUTE_ENTRIES {
+            ui.add_enabled_ui(false, |ui| path_op_button(ui, glyph, tl!(label), false));
+        }
+        ui.separator();
+        ui.label(tl!("Distribute Spacing:"));
+        for (label, glyph) in PATH_SPACING_ENTRIES {
+            ui.add_enabled_ui(false, |ui| path_op_button(ui, glyph, tl!(label), false));
+        }
+        ui.separator();
+        let key = egui::Id::unique("path-align-to");
+        let mut canvas = ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false);
+        ui.horizontal(|ui| {
+            ui.label(tl!("Align To:"));
+            let text = if canvas { tl!("Canvas") } else { tl!("Selection") };
+            craft_ui::ComboBox::from_id_salt("path-align-to-box").selected_text(text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut canvas, false, tl!("Selection"));
+                ui.selectable_value(&mut canvas, true, tl!("Canvas"));
+            });
+        });
+        ui.data_mut(|d| d.insert_temp(key, canvas));
+    });
+}
+
+/// The Path arrangement button of the Shape tools (#13235). Its entries are greyed: the engine
+/// has no command that reorders the components of a path yet.
+pub(super) fn path_arrangement_menu(_app: &mut PhotocraftApp, ui: &mut egui::Ui) {
+    let resp = crate::icons::button_with_icon_size(ui, "layers", 24.0, 16.0, false, tl!("Path arrangement"));
+    let resp = crate::brush_picker::named(resp, "Path arrangement");
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(200.0);
+        for label in PATH_ARRANGE_ENTRIES {
+            ui.add_enabled(false, egui::Button::new(tl!(label)));
+        }
+    });
 }
 
 /// A Path Operations menu row: its icon and label, highlighted when it is the current operation.
@@ -783,9 +932,13 @@ pub(crate) fn freeform_finish_owned(app: &mut PhotocraftApp, points: &[[f64; 3]]
     }
     let trace: Vec<[f64; 2]> = points.iter().map(|p| [p[0], p[1]]).collect();
     let (Some(first), Some(last)) = (trace.first(), trace.last()) else { return };
-    let tol = 6.0 / app.point_zoom().max(0.01) as f64;
+    let zoom = app.point_zoom().max(0.01) as f64;
+    // Photoshop closes a release within 3 screen px of the start on each axis, a square (#12830).
+    let reach = 3.0 / zoom;
+    // The trace must still be longer than the former 4 × 6 screen px to close: unchanged.
+    let min_length = 24.0 / zoom;
     let length: f64 = trace.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
-    let closed = (first[0] - last[0]).hypot(first[1] - last[1]) < tol && length > 4.0 * tol;
+    let closed = near_start(first, last, reach) && length > min_length;
     let fit = f64::from(app.ui.tool_options.curve_fit);
     let pen = if straight.is_empty() {
         let Some(sub) = photocraft_vector::trace::fit_trace(&trace, fit, closed) else { return };
@@ -793,15 +946,22 @@ pub(crate) fn freeform_finish_owned(app: &mut PhotocraftApp, points: &[[f64; 3]]
         let unlinked = sub.knots.iter().enumerate().filter(|(_, k)| !k.smooth).map(|(i, _)| i).collect();
         (PenPath { knots, unlinked, ..Default::default() }, sub.closed)
     } else {
-        fit_with_straight_segments(&trace, straight, fit, closed.then_some(tol))
+        fit_with_straight_segments(&trace, straight, fit, closed)
     };
     let (mut pen, closed) = pen;
     pen.owner = Some(owner);
-    if let Err(e) = commit_path(app, &pen, closed) {
+    if let Err(e) = commit_path_named(app, &pen, closed, true) {
         app.ui.pen = Some(PenPath { commit_failed: true, ..pen });
         app.ui.status = e;
         app.ui.status_error = true;
     }
+}
+
+/// Is the Freeform Pen's `end` within `reach` of its `start` on both axes?
+fn near_start(start: &[f64; 2], end: &[f64; 2], reach: f64) -> bool {
+    // The screen-to-document conversion runs in f32, so a release exactly `reach` off can land a hair past it.
+    let reach = reach + 1e-3;
+    (start[0] - end[0]).abs() <= reach && (start[1] - end[1]).abs() <= reach
 }
 
 fn knot_points(k: &photocraft_doc::Knot) -> [[f64; 2]; 3] {
@@ -810,8 +970,9 @@ fn knot_points(k: &photocraft_doc::Knot) -> [[f64; 2]; 3] {
 
 /// A Freeform Pen trace with ⌥-clicked straight segments (into the points at `straight`): each
 /// freehand run between them is fitted on its own, and the runs are joined by straight lines
-/// between corner anchors. `close` (a reach) closes the path when it ends on its start point.
-fn fit_with_straight_segments(trace: &[[f64; 2]], straight: &[usize], fit: f64, close: Option<f64>) -> (PenPath, bool) {
+/// between corner anchors. `close`: the release was near the start, so the last anchor becomes
+/// the first one. The fitted last anchor is not tested again: fitting can move it past the reach.
+fn fit_with_straight_segments(trace: &[[f64; 2]], straight: &[usize], fit: f64, close: bool) -> (PenPath, bool) {
     let mut cuts: Vec<usize> = straight.iter().copied().filter(|&i| i > 0 && i < trace.len()).collect();
     cuts.sort_unstable();
     cuts.dedup();
@@ -842,12 +1003,7 @@ fn fit_with_straight_segments(trace: &[[f64; 2]], straight: &[usize], fit: f64, 
         }
         start = end;
     }
-    // Ended on the start point: the last anchor is the first one.
-    let ends_on_start = |k: &[[[f64; 2]; 3]], reach: f64| match (k.first(), k.last()) {
-        (Some(a), Some(b)) => k.len() > 3 && (a[0][0] - b[0][0]).hypot(a[0][1] - b[0][1]) < reach,
-        _ => false,
-    };
-    let closed = close.is_some_and(|reach| ends_on_start(&knots, reach));
+    let closed = close && knots.len() > 3;
     if closed && let Some(last) = knots.pop() {
         if let Some(k) = knots.first_mut() {
             k[1] = [last[1][0] - last[0][0] + k[0][0], last[1][1] - last[0][1] + k[0][1]];
@@ -862,10 +1018,17 @@ fn fit_with_straight_segments(trace: &[[f64; 2]], straight: &[usize], fit: f64, 
 
 use super::{PenOwner, cancel_stale_pen, capture_pen_owner};
 
+/// Commits a draft with the normal history labels used by Pen and Curvature Pen.
 fn commit_path(app: &mut PhotocraftApp, pen: &PenPath, closed: bool) -> Result<(), String> {
+    commit_path_named(app, pen, closed, false)
+}
+
+/// Commits a draft with its captured owner and returns the refusal message on failure.
+/// `freeform` changes history labels only for document paths and newly created shape layers.
+fn commit_path_named(app: &mut PhotocraftApp, pen: &PenPath, closed: bool, freeform: bool) -> Result<(), String> {
     let Some(owner) = pen.owner.clone().filter(|o| o.valid(app)) else { return Err("Pen draft target is stale; no path was changed".into()) };
     let result = as_owner(app, &owner, |app| {
-        let result = commit_path_current(app, pen, closed);
+        let result = commit_path_current(app, pen, closed, freeform);
         if result && matches!(owner.target, super::PenTarget::Shape { .. } | super::PenTarget::VectorMask(_)) {
             app.ui.selected_path = Some("layer".into());
         }
@@ -936,3 +1099,15 @@ pub(super) fn make_shape_from_draft(app: &mut PhotocraftApp, pen: &PenPath) -> R
     }
     r
 }
+
+#[cfg(test)]
+#[path = "freeform_history_name_tests.rs"]
+mod freeform_history_name_tests;
+
+#[cfg(test)]
+#[path = "pen_alt_drag_segment_tests.rs"]
+mod pen_alt_drag_segment_tests;
+
+#[cfg(test)]
+#[path = "freeform_close_tolerance_tests.rs"]
+mod freeform_close_tolerance_tests;

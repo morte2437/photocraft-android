@@ -72,8 +72,21 @@ pub(super) fn split(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let doc = s.documents()[idx].doc.clone();
     let area = doc.bounds();
-    let (px, n) = native_pixels(&doc, None)?;
     let mode = edit_mode(&doc);
+    // A CMYK composite's channels are its inks: mixed on ink values where the stack allows, since
+    // a trip through RGB moves them by a few levels (#9236).
+    let inks = if mode == ColorMode::Cmyk { photocraft_compose::cmyk::render_cmyk(&doc, doc.bounds()) } else { None };
+    let (px, n) = match inks {
+        Some(buf) => {
+            let n = doc.pixel_format().channels();
+            let px: Vec<f32> = buf.px.iter().flat_map(|p| p.iter().copied().take(n)).collect();
+            if px.len() != buf.px.len() * n {
+                return Err(EngineError::Other(format!("Split Channels: an ink pixel has fewer than {n} values")));
+            }
+            (px, n)
+        }
+        None => native_pixels(&doc, None)?,
+    };
     let names = color_names(mode);
     let short = |name: &str| name.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
     let mut docs: Vec<Document> = Vec::new();

@@ -50,8 +50,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use craft_psd::PsdFile;
 use photocraft_io::*;
-use photocraft_psd::PsdFile;
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -191,7 +191,7 @@ const THUMB_BAD_FRAC: f32 = 0.02;
 
 /// Photoshop's embedded thumbnail (resource 1036: a 28-byte header, then JFIF) as RGB floats.
 fn thumbnail(file: &PsdFile) -> Option<(u32, u32, Vec<[f32; 3]>)> {
-    let r = file.resource(photocraft_psd::resources::ids::THUMBNAIL)?;
+    let r = file.resource(craft_psd::resources::ids::THUMBNAIL)?;
     let format = u32::from_be_bytes(r.data.get(..4)?.try_into().ok()?);
     if format != 1 {
         return None;
@@ -325,7 +325,7 @@ fn check_file(name: &str, bytes: &[u8]) -> (Outcome, Option<f32>) {
     // whole image, decoded independently by the psd crate). When Photoshop wrote no real merged
     // image (Maximize Compatibility off) or it decodes through our own model code (Multichannel),
     // its embedded thumbnail is the oracle at thumbnail size.
-    let use_thumb = file.has_real_merged_data() == Some(false) || file.header.color_mode == photocraft_psd::ColorMode::Multichannel;
+    let use_thumb = file.has_real_merged_data() == Some(false) || file.header.color_mode == craft_psd::ColorMode::Multichannel;
     let merged = if use_thumb { None } else { merged_composite(&file).ok() };
     let Some(merged) = merged else {
         let notes: Vec<&str> = imp.warnings.iter().map(String::as_str).take(2).collect();

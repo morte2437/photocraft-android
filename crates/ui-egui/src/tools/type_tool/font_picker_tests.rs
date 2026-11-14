@@ -41,16 +41,21 @@ fn harness_sized(preview: FontPreview, recents: Vec<String>, size: egui::Vec2) -
     let mut families: Vec<String> = (0..60).map(|i| format!("Family {i:02}")).collect();
     families.push("Zeta Sans".into());
     let state = State { current: "Family 00".into(), families, button: egui::Id::NULL, popup: egui::Id::NULL, preview, recents };
-    let mut h = Harness::builder().with_size(size).with_max_steps(SETTLE_STEPS).build_ui_state(
-        |ui, s: &mut State| {
-            s.button = ui.make_persistent_id(egui::IdSalt::new("type-font"));
-            s.popup = s.button.with("popup");
-            let fams = s.families.clone();
-            let recents = s.recents.clone();
-            font_picker_in(ui, &mut s.current, 170.0, &fams, s.preview, &recents);
-        },
-        state,
-    );
+    // As the app does: the wheel is a gesture over the field or past it (#11353).
+    let mut h = Harness::builder()
+        .with_size(size)
+        .with_max_steps(SETTLE_STEPS)
+        .with_context_setup(|ctx| ctx.add_plugin(crate::field_wheel::FieldWheel))
+        .build_ui_state(
+            |ui, s: &mut State| {
+                s.button = ui.make_persistent_id(egui::IdSalt::new("type-font"));
+                s.popup = s.button.with("popup");
+                let fams = s.families.clone();
+                let recents = s.recents.clone();
+                font_picker_in(ui, &mut s.current, 170.0, &fams, s.preview, &recents);
+            },
+            state,
+        );
     h.run();
     h
 }
@@ -1262,6 +1267,105 @@ fn wheel_over_the_closed_font_button_steps_through_the_families() {
     assert_eq!(h.state().current, "Family 01");
     wheel(&mut h, 5.0);
     assert_eq!(h.state().current, "Family 00", "stops at the first family");
+}
+
+/// The closed font field (on "Family 03" of ten) 100 pt down a scroll area 200 pt tall over a large
+/// filler, as in a panel: (the family, the panel's vertical offset).
+fn font_field_in_a_panel() -> Harness<'static, (String, f32)> {
+    let families: Vec<String> = (0..10).map(|i| format!("Family {i:02}")).collect();
+    let mut h = Harness::builder().with_size(vec2(400.0, 300.0)).with_step_dt(1.0 / 30.0).build_ui_state(
+        move |ui, s: &mut (String, f32)| {
+            crate::field_wheel::begin_frame(ui.ctx());
+            let out = egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                ui.add_space(100.0);
+                font_picker_in(ui, &mut s.0, 170.0, &families, FontPreview::Medium, &[]);
+                ui.allocate_space(vec2(300.0, 1000.0));
+            });
+            s.1 = out.state.clamped_offset().y;
+        },
+        ("Family 03".to_string(), 0.0),
+    );
+    h.run();
+    h
+}
+
+/// #11353: a trackpad scrolling a panel past the closed font field keeps scrolling the panel and
+/// leaves the family alone.
+#[test]
+fn a_gesture_that_starts_over_the_panel_keeps_scrolling_it_over_the_font_field() {
+    let mut h = font_field_in_a_panel();
+    let field = |h: &Harness<'static, (String, f32)>| h.query_all_by_role(Role::TextInput).next().unwrap().rect();
+    h.hover_at(field(&h).center() + vec2(0.0, 50.0));
+    h.run_steps(1);
+    let down = || egui::Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -12.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    };
+    h.event(down());
+    h.run_steps(1);
+    // Still the same gesture as the pointer reaches the field, a few notches' worth.
+    for _ in 0..6 {
+        let over = field(&h);
+        assert!(over.top() > 0.0, "the field is still in view");
+        h.hover_at(over.center());
+        h.event(down());
+        h.run_steps(1);
+    }
+    assert_eq!(h.state().0, "Family 03", "the field passing under the pointer is not stepped");
+    assert!(h.state().1 > 12.0, "the panel kept scrolling");
+}
+
+/// #11353: a trackpad gesture that starts over the font field scrolls the panel and leaves the
+/// family alone.
+#[test]
+fn a_trackpad_gesture_that_starts_over_the_font_field_scrolls_the_panel() {
+    let mut h = font_field_in_a_panel();
+    let over = h.query_all_by_role(Role::TextInput).next().unwrap().rect().center();
+    h.hover_at(over);
+    h.run_steps(1);
+    for _ in 0..4 {
+        h.event(egui::Event::MouseWheel {
+            source: egui::MouseWheelSource::Trackpad,
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -12.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        h.run_steps(1);
+    }
+    assert_eq!(h.state().0, "Family 03", "the family is not stepped");
+    assert!(h.state().1 > 0.0, "the panel scrolled");
+}
+
+/// #11353: a gesture that steps the font field, then wheels on with the pointer off it, is the
+/// panel's from then on: coming back over the field in the same gesture doesn't step it again.
+#[test]
+fn a_gesture_that_wheels_off_the_font_field_does_not_step_it_on_coming_back() {
+    let mut h = font_field_in_a_panel();
+    let over = h.query_all_by_role(Role::TextInput).next().unwrap().rect().center();
+    h.hover_at(over);
+    h.run_steps(1);
+    // Up, so the panel (already at the top) doesn't move the field.
+    let up = || egui::Event::MouseWheel {
+        source: egui::MouseWheelSource::Unknown,
+        unit: egui::MouseWheelUnit::Line,
+        delta: vec2(0.0, 1.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    };
+    h.event(up());
+    h.run_steps(1);
+    assert_eq!(h.state().0, "Family 02", "the start of the gesture steps it");
+    h.hover_at(over + vec2(0.0, 50.0));
+    h.event(up());
+    h.run_steps(1);
+    h.hover_at(over);
+    h.event(up());
+    h.run_steps(4);
+    assert_eq!(h.state().0, "Family 02", "the field was stepped once, by the start of the gesture");
 }
 
 #[test]

@@ -92,9 +92,12 @@ fn ruler_drag_protractor_and_clear() {
     up(&mut app, 60.0, 10.0);
     let info = photocraft_engine::analysis_cmds::ruler_info(&ruler(&app).unwrap(), &Default::default());
     assert!((info["angle"].as_f64().unwrap() - 90.0).abs() < 1e-6, "{info}");
-    // A click without a drag far away starts a new line and clears it.
+    // A click without a drag far away keeps the ruler (#11980); Clear removes it.
+    let before = ruler(&app);
     down(&mut app, 150.0, 80.0, none);
     up(&mut app, 150.0, 80.0);
+    assert_eq!(ruler(&app), before);
+    app.run("image.analysis.rulerTool", json!({"clear": true})).unwrap();
     assert!(ruler(&app).is_none());
     assert_eq!(app.session.active().unwrap().history.past_len(), 0, "the ruler adds no history");
 }

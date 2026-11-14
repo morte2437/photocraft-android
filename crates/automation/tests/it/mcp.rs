@@ -532,7 +532,7 @@ async fn headless_doc_save_takes_maximize_compatibility() {
         let r = call(&client, tool, params.clone()).await;
         assert_ne!(r.is_error, Some(true), "{params}: {}", text(&r));
         let bytes = std::fs::read(dir.join(params["path"].as_str().unwrap())).unwrap();
-        assert_eq!(photocraft_psd::PsdFile::from_bytes(&bytes).unwrap().has_real_merged_data(), Some(real), "{params}");
+        assert_eq!(craft_psd::PsdFile::from_bytes(&bytes).unwrap().has_real_merged_data(), Some(real), "{params}");
     }
     let r = call(&client, "doc_export", json!({"path": "bad.psd", "maximizeCompatibility": "no"})).await;
     assert_eq!(r.is_error, Some(true), "{}", text(&r));
@@ -555,7 +555,7 @@ async fn headless_doc_export_layers_takes_maximize_compatibility() {
         let file = result["files"][0].as_str().unwrap();
         assert!(file.starts_with(sub), "{file}");
         let bytes = std::fs::read(dir.join(file)).unwrap();
-        assert_eq!(photocraft_psd::PsdFile::from_bytes(&bytes).unwrap().has_real_merged_data(), Some(real), "{params}");
+        assert_eq!(craft_psd::PsdFile::from_bytes(&bytes).unwrap().has_real_merged_data(), Some(real), "{params}");
     }
     let r = call(&client, "doc_export_layers", json!({"dir": "bad", "format": "psd", "maximizeCompatibility": "no"})).await;
     assert_eq!(r.is_error, Some(true), "{}", text(&r));
@@ -577,6 +577,8 @@ async fn bridge_doc_save_forwards_maximize_compatibility() {
     app.abort();
 }
 
+/// An oversized app reply drops the connection with a budget error and never retries the
+/// operation on a fresh, authenticated connection.
 #[tokio::test(flavor = "multi_thread")]
 async fn bridge_response_budget_drops_connection_without_retrying_the_operation() {
     use photocraft_automation::{BridgeClient, budgets::MAX_RESPONSE_BYTES};
@@ -586,12 +588,8 @@ async fn bridge_response_budget_drops_connection_without_retrying_the_operation(
         let (sock, _) = listener.accept().await.unwrap();
         let (read, mut write) = sock.into_split();
         let mut reader = BufReader::new(read);
+        crate::bridge::serve_handshake(&mut reader, &mut write).await;
         let mut line = String::new();
-        reader.read_line(&mut line).await.unwrap();
-        let auth: Value = serde_json::from_str(&line).unwrap();
-        let reply = json!({"id": auth["id"], "ok": true, "result": {"authenticated": true}});
-        write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
-        line.clear();
         reader.read_line(&mut line).await.unwrap();
         let request: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(request["method"], "engine.execute");
@@ -750,6 +748,49 @@ async fn save_without_path_never_flattens_over_the_opened_file() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn ordered_read_roots_preserve_save_identity_over_mcp() {
+    let base = tmp("ordered-read-roots");
+    let library = base.join("library");
+    let work = base.join("work");
+    for (root, width, background) in [(&library, 11, "white"), (&work, 7, "black")] {
+        std::fs::create_dir_all(root).unwrap();
+        let mut fixture = photocraft_automation::Headless::new();
+        fixture.command_run("file.new", json!({"width": width, "height": 5, "background": background})).unwrap();
+        fixture.command_run("layer.new.layer", json!({"name": "Source marker"})).unwrap();
+        let bytes = photocraft_automation::files::save_bytes(&fixture.session.active().unwrap().doc, "same.pcraft", None, &Default::default()).unwrap().0;
+        std::fs::write(root.join("same.pcraft"), bytes).unwrap();
+    }
+    let original_library = std::fs::read(library.join("same.pcraft")).unwrap();
+    let original_work = std::fs::read(work.join("same.pcraft")).unwrap();
+    let workspace = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path()], Some(work.as_path())).unwrap();
+    let client = connect(PhotocraftMcp::headless_with_workspace(workspace)).await;
+
+    assert_eq!(json_of(&call(&client, "doc_open", json!({"path": "same.pcraft"})).await)["width"], 11);
+    json_of(&call(&client, "command_run", json!({"id": "layer.new.layer", "params": {"name": "Library edit"}})).await);
+    let before = json_of(&call(&client, "session_list", json!({})).await);
+    assert!(before["documents"][0]["path"].is_null());
+    assert_eq!(before["documents"][0]["dirty"], true);
+    let denied = call(&client, "doc_save", json!({})).await;
+    assert_eq!(denied.is_error, Some(true));
+    assert!(text(&denied).contains("pass `path`"), "{}", text(&denied));
+    assert_eq!(json_of(&call(&client, "session_list", json!({})).await), before);
+    assert_eq!(std::fs::read(library.join("same.pcraft")).unwrap(), original_library);
+    assert_eq!(std::fs::read(work.join("same.pcraft")).unwrap(), original_work);
+
+    json_of(&call(&client, "doc_save", json!({"path": "same.pcraft"})).await);
+    json_of(&call(&client, "command_run", json!({"id": "layer.new.layer", "params": {"name": "Work edit"}})).await);
+    assert_eq!(json_of(&call(&client, "doc_save", json!({})).await)["path"], "same.pcraft");
+    let reopened = json_of(&call(&client, "doc_open", json!({"path": work.join("same.pcraft").to_string_lossy()})).await);
+    assert_eq!(reopened["width"], 11);
+    assert_eq!(json_of(&call(&client, "doc_inspect", json!({})).await)["layers"][0]["name"], "Work edit");
+    assert_eq!(json_of(&call(&client, "session_list", json!({})).await)["documents"][0]["dirty"], false);
+    assert_eq!(std::fs::read(library.join("same.pcraft")).unwrap(), original_library);
+    assert_ne!(std::fs::read(work.join("same.pcraft")).unwrap(), original_work);
+    client.cancel().await.unwrap();
+    cleanup(&base);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn filesystem_policy_rejects_absolute_and_escaping_paths_before_effects() {
     let base = tmp("filesystem-policy");
     let root = base.join("workspace");
@@ -814,7 +855,7 @@ async fn doc_place_is_capability_scoped() {
     assert_eq!(placed, 3, "the absolute path beneath the root places as well");
     let refused = call(&client, "doc_place", json!({"path": outside.join("outside.png").to_string_lossy()})).await;
     assert_eq!(refused.is_error, Some(true));
-    assert!(text(&refused).contains("must be inside the automation root"), "{}", text(&refused));
+    assert!(text(&refused).contains("must be inside an automation read root"), "{}", text(&refused));
     let after = json_of(&call(&client, "doc_inspect", json!({})).await)["layers"].as_array().unwrap().len();
     assert_eq!(after, placed, "nothing outside the root was placed");
     // The ambient command keeps its refusal: the capability-scoped method is the only way in.
@@ -847,7 +888,7 @@ async fn doc_replace_smart_object_is_capability_scoped() {
     assert_ne!(replaced.is_error, Some(true), "{}", text(&replaced));
     let refused = call(&client, "doc_replace_smart_object", json!({"path": outside.join("outside.png").to_string_lossy(), "layer": layer})).await;
     assert_eq!(refused.is_error, Some(true));
-    assert!(text(&refused).contains("must be inside the automation root"), "{}", text(&refused));
+    assert!(text(&refused).contains("must be inside an automation read root"), "{}", text(&refused));
     let ambient = call(&client, "command_run", json!({"id": "layer.smartObjects.replaceContents", "params": {"path": "inside.png", "layer": layer}})).await;
     assert_eq!(ambient.is_error, Some(true));
     assert!(text(&ambient).contains("ambient filesystem paths"), "{}", text(&ambient));
@@ -1025,11 +1066,16 @@ async fn fake_app() -> (String, tokio::task::JoinHandle<Vec<Value>>) {
     fake_app_with_screenshot(None).await
 }
 
+/// A fake app on one connection: it authenticates with the real [`ServerHandshake`], then
+/// answers the control methods the bridge tests use, returning the requests it saw.
+///
+/// [`ServerHandshake`]: photocraft_automation::security::ServerHandshake
 async fn fake_app_with_screenshot(screenshot_png: Option<Vec<u8>>) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let h = tokio::spawn(async move {
         let mut seen = Vec::new();
+        let mut handshake = photocraft_automation::security::ServerHandshake::new();
         let mut authenticated = false;
         let (sock, _) = listener.accept().await.unwrap();
         let (r, mut w) = sock.into_split();
@@ -1039,12 +1085,10 @@ async fn fake_app_with_screenshot(screenshot_png: Option<Vec<u8>>) -> (String, t
             let id = req["id"].clone();
             let method = req["method"].as_str().unwrap_or("").to_owned();
             let reply = match method.as_str() {
-                "auth" if req["params"]["token"] == CONTROL_TOKEN => {
-                    authenticated = true;
-                    json!({"id": id, "ok": true, "result": {"authenticated": true}})
-                }
                 _ if !authenticated => {
-                    json!({"id": id, "ok": false, "error": "authentication required"})
+                    let (reply, step) = handshake.reply(&line, CONTROL_TOKEN);
+                    authenticated = step == photocraft_automation::security::AuthStep::Authenticated;
+                    reply
                 }
                 "ui.inspect" => {
                     json!({"id": id, "ok": true, "result": {"tool": "brush", "panels": ["layers"]}})
@@ -1105,6 +1149,8 @@ async fn bridge_forwards_to_control_protocol() {
     app.abort();
 }
 
+/// #1007: an edit whose reply is lost is not resent, and the next call reconnects and
+/// authenticates again.
 #[tokio::test(flavor = "multi_thread")]
 async fn bridge_lost_reply_does_not_replay_an_edit_and_next_call_reconnects() {
     use photocraft_automation::{BridgeClient, Headless};
@@ -1123,12 +1169,8 @@ async fn bridge_lost_reply_does_not_replay_an_edit_and_next_call_reconnects() {
                 let (socket, _) = listener.accept().await.unwrap();
                 let (read, mut write) = socket.into_split();
                 let mut reader = BufReader::new(read);
+                crate::bridge::serve_handshake(&mut reader, &mut write).await;
                 let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                let (auth, authenticated) = photocraft_automation::security::authentication_reply(&line, CONTROL_TOKEN);
-                assert!(authenticated, "each connection must authenticate");
-                write.write_all(format!("{auth}\n").as_bytes()).await.unwrap();
-                line.clear();
                 reader.read_line(&mut line).await.unwrap();
                 let request: Value = serde_json::from_str(&line).unwrap();
                 seen.push(request["params"]["command"].as_str().unwrap().to_owned());
@@ -1278,6 +1320,7 @@ fn bridge_rejects_non_loopback() {
     assert!(PhotocraftMcp::bridge("localhost:1", "short").is_err());
 }
 
+/// A bridge with the wrong token stops at the app's challenge proof, before any control method.
 #[tokio::test(flavor = "multi_thread")]
 async fn bridge_rejects_wrong_token_before_control_methods() {
     let (addr, app) = fake_app().await;
@@ -1285,7 +1328,8 @@ async fn bridge_rejects_wrong_token_before_control_methods() {
     let client = connect(PhotocraftMcp::bridge(&addr, wrong).unwrap()).await;
     let r = call(&client, "ui_inspect", json!({})).await;
     assert_eq!(r.is_error, Some(true));
-    assert!(text(&r).contains("authentication required"), "{}", text(&r));
+    // The app's challenge proof does not match the client's token, so nothing more is sent.
+    assert!(text(&r).contains("did not prove it holds this control token"), "{}", text(&r));
     client.cancel().await.unwrap();
     app.abort();
 }

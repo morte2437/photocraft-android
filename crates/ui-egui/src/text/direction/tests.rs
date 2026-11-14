@@ -124,6 +124,9 @@ fn the_shell_mirrors_in_a_right_to_left_ui() {
 /// left-to-right for now (module docs), so only the dock side is checked.
 #[test]
 fn hebrew_and_urdu_mirror_the_shell_and_draw_their_letters() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let _lang = i18n::language_scope(Lang::EN);
     for (code, letter) in [("he", 'ש'), ("ur", 'ر')] {
         let lang = Lang::from_code(code).expect("registered language");

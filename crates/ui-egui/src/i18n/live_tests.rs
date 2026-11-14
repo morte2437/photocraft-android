@@ -19,6 +19,9 @@ fn lang(code: &str) -> Lang {
 /// a preference and as a system tag.
 #[test]
 fn requested_languages_resolve_regional_preferences() {
+    if !needs_catalogs() {
+        return;
+    }
     for (tag, code) in [
         ("en-US", "en"),
         ("zh-CN", "zh-hans"),
@@ -29,7 +32,7 @@ fn requested_languages_resolve_regional_preferences() {
         ("fr-CA", "fr"),
         ("id-ID", "id"),
         ("vi-VN", "vi"),
-        ("sr-RS", "sr"),
+        ("sr-RS", "sr-latn"),
         ("az-Latn-AZ", "az"),
         ("bs-BA", "bs"),
     ] {
@@ -43,6 +46,9 @@ fn requested_languages_resolve_regional_preferences() {
 /// Switching redraws the menu and persists through the shell's save/load services on restart.
 #[test]
 fn azerbaijani_draw_after_switching_and_restore_after_restart() {
+    if !needs_catalogs() {
+        return;
+    }
     use std::{cell::RefCell, rc::Rc};
 
     let code = "az";
@@ -94,6 +100,9 @@ fn azerbaijani_draw_after_switching_and_restore_after_restart() {
 /// Preferences draw the catalog terms verbatim and the bundled UI font covers their letters.
 #[test]
 fn azerbaijani_preferences_draw_terms_and_glyphs() {
+    if !needs_catalogs() {
+        return;
+    }
     let code = "az";
     let interface = "İnterfeys";
     let light = "Açıq mövzu";
@@ -116,6 +125,9 @@ fn azerbaijani_preferences_draw_terms_and_glyphs() {
 
 #[test]
 fn ukrainian_native_app_menu_keeps_product_and_language_names() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let h = harness();
         let layout = crate::native_menu::photocraft_layout(&crate::menus::menu_items(h.state()), lang("uk"), "uk");
@@ -130,6 +142,9 @@ fn ukrainian_native_app_menu_keeps_product_and_language_names() {
 
 #[test]
 fn ukrainian_color_picker_titles_draw_in_the_selected_language() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         for (target, title) in [("foreground", "Color Picker (Foreground Color)"), ("background", "Color Picker (Background Color)")] {
             let mut h = harness();
@@ -144,6 +159,9 @@ fn ukrainian_color_picker_titles_draw_in_the_selected_language() {
 
 #[test]
 fn ukrainian_rasterize_prompt_draws_in_the_selected_language() {
+    if !needs_catalogs() {
+        return;
+    }
     use crate::rasterize_prompt::Kind;
 
     with_language(Lang::EN, || {
@@ -161,6 +179,9 @@ fn ukrainian_rasterize_prompt_draws_in_the_selected_language() {
 
 #[test]
 fn scoped_preview_restores_language_even_after_a_panic() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         with_language(lang("fr"), || {
             assert_eq!(current(), lang("fr"));
@@ -176,6 +197,9 @@ fn scoped_preview_restores_language_even_after_a_panic() {
 
 #[test]
 fn drawing_languages_are_isolated_between_threads() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(lang("fr"), || {
         let thread = std::thread::spawn(|| {
             assert_eq!(current(), Lang::EN);
@@ -188,6 +212,9 @@ fn drawing_languages_are_isolated_between_threads() {
 
 #[test]
 fn dynamic_brush_sections_draw_in_the_selected_language() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "zh-hans"})).expect("language");
@@ -202,6 +229,9 @@ fn dynamic_brush_sections_draw_in_the_selected_language() {
 
 #[test]
 fn fill_dialog_draws_in_the_selected_language() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "pt-br"})).expect("language");
@@ -218,6 +248,9 @@ fn fill_dialog_draws_in_the_selected_language() {
 
 #[test]
 fn file_info_camera_data_draws_in_the_selected_language_read_only() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         let exif = photocraft_algo::exif::build(&photocraft_algo::exif::CameraInfo {
@@ -252,6 +285,9 @@ fn file_info_camera_data_draws_in_the_selected_language_read_only() {
 
 #[test]
 fn cjk_font_order_follows_the_selected_language() {
+    if !needs_catalogs() {
+        return;
+    }
     use photocraft_text::cjk::CjkScript;
     for (code, script) in [("zh-hans", CjkScript::SimplifiedChinese), ("ja", CjkScript::Japanese), ("ko", CjkScript::Korean)] {
         with_language(lang(code), || {
@@ -264,6 +300,9 @@ fn cjk_font_order_follows_the_selected_language() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn korean_glyphs_remain_available_after_repeated_language_switches() {
+    if !needs_catalogs() {
+        return;
+    }
     use photocraft_text::cjk::{self, CjkChar, CjkScript};
     #[cfg(target_os = "linux")]
     assert!(crate::cjk_fonts::wait_for_fontconfig_cjk_scan(), "Fontconfig CJK lookup did not finish within 10 seconds");
@@ -273,7 +312,8 @@ fn korean_glyphs_remain_available_after_repeated_language_switches() {
     }
     with_language(Lang::EN, || {
         let mut h = harness();
-        let glyphs: std::collections::BTreeSet<_> = lang("ko").0.text().chars().filter(|c| cjk::classify(*c) == Some(CjkChar::Hangul)).collect();
+        let glyphs: std::collections::BTreeSet<_> =
+            lang("ko").catalog_texts().flat_map(str::chars).filter(|c| cjk::classify(*c) == Some(CjkChar::Hangul)).collect();
         for code in ["zh-hans", "ja", "ko", "fr", "ko"] {
             h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": code})).expect("language");
             h.run_steps(12);
@@ -309,6 +349,9 @@ fn harness_with_services(services: Services) -> egui_kittest::Harness<'static, P
 /// Auto draws the detected system language on first launch while keeping the Auto preference.
 #[test]
 fn first_launch_renders_the_system_language_without_overwriting_auto() {
+    if !needs_catalogs() {
+        return;
+    }
     for (tag, code) in [
         ("en-US", "en"),
         ("zh-CN", "zh-hans"),
@@ -336,6 +379,9 @@ fn first_launch_renders_the_system_language_without_overwriting_auto() {
 
 #[test]
 fn missing_or_unsupported_system_languages_render_english() {
+    if !needs_catalogs() {
+        return;
+    }
     for tags in [vec![], vec!["sw-KE", "is-IS"]] {
         system::with_system_tags(&tags, || {
             with_language(Lang::EN, || {
@@ -350,6 +396,9 @@ fn missing_or_unsupported_system_languages_render_english() {
 
 #[test]
 fn older_preferences_without_a_language_follow_the_system() {
+    if !needs_catalogs() {
+        return;
+    }
     system::with_system_tags(&["fr-CA"], || {
         with_language(Lang::EN, || {
             let services = Services { load_prefs: Some(Box::new(|| Some(r#"{"interface":{"uiScale":"125"}}"#.into()))), ..Default::default() };
@@ -363,6 +412,9 @@ fn older_preferences_without_a_language_follow_the_system() {
 
 #[test]
 fn an_explicit_language_survives_restart_on_a_different_system_language() {
+    if !needs_catalogs() {
+        return;
+    }
     let saved = system::with_system_tags(&["ja-JP"], || {
         with_language(Lang::EN, || {
             let mut h = harness();
@@ -386,6 +438,9 @@ fn an_explicit_language_survives_restart_on_a_different_system_language() {
 
 #[test]
 fn a_control_request_changes_the_drawing_language_in_the_same_frame() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         let document = h.state().session.active().expect("document").doc.clone();
@@ -409,6 +464,9 @@ fn a_control_request_changes_the_drawing_language_in_the_same_frame() {
 
 #[test]
 fn preferences_preview_does_not_commit_until_applied_and_survives_reload() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         let id = crate::prefs_ui::open_preferences(h.state_mut(), "interface");
@@ -439,6 +497,9 @@ fn preferences_preview_does_not_commit_until_applied_and_survives_reload() {
 
 #[test]
 fn keyboard_shortcuts_list_commands_in_the_selected_language() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "pt-br"})).expect("language");
@@ -475,6 +536,9 @@ fn drawn_text(h: &egui_kittest::Harness<'_, PhotocraftApp>) -> Vec<String> {
 
 #[test]
 fn czech_status_notices_and_navigator_draw_translated_text() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "cs"})).expect("language");
@@ -516,6 +580,9 @@ fn czech_status_notices_and_navigator_draw_translated_text() {
 
 #[test]
 fn czech_shortcut_conflicts_keep_warning_state_and_shortcut_codes() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "cs"})).expect("language");
@@ -547,6 +614,9 @@ fn czech_shortcut_conflicts_keep_warning_state_and_shortcut_codes() {
 /// the end of the sentence lands at the left.
 #[test]
 fn arabic_labels_are_laid_out_right_to_left() {
+    if !needs_catalogs() {
+        return;
+    }
     with_language(Lang::EN, || {
         let mut h = harness();
         h.state_mut().run("prefs.set", json!({"path": "interface.language", "value": "ar"})).unwrap();

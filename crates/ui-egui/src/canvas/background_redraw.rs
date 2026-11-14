@@ -292,7 +292,9 @@ pub(crate) fn start(
     gpu_attempt_ms: f64,
 ) {
     let all = blocks(doc.bounds());
-    let display_key = display.as_deref().map_or(0, |d| d.texture_key);
+    // What the texture stores, like `texture_key`: a Multichannel document's inks follow the Spot
+    // dot gain, so blocks drawn with another gain aren't this state's.
+    let display_key = display.as_deref().map_or(0, |d| d.texture_key) ^ super::display::ink_preview_key(&doc);
     let gamma = text_gamma(app);
     // Taken again when a running redraw continues: the edit (or Memory Usage) may have changed it.
     let cap = keep_cap(app, doc.id);

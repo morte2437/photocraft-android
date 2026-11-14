@@ -233,6 +233,10 @@ fn weights(o: i32, scale: f64, kernel: Kernel, edge: Option<(i32, i32)>, content
             let sum: f64 = w.iter().sum();
             (lo, w.into_iter().map(|v| v / sum).collect())
         }
+        // Past a 4096x reduction Lanczos would build a weight per covered source sample (tens of
+        // thousands per output sample); the box average that folds the beyond-edge weights is
+        // indistinguishable at that scale.
+        Kernel::Lanczos if scale < 1.0 / 4096.0 => weights(o, scale, Kernel::Bilinear, edge, content),
         Kernel::Lanczos => {
             let stretch = if scale < 1.0 { 1.0 / scale } else { 1.0 };
             let u = (o as f64 + 0.5) / scale - 0.5;

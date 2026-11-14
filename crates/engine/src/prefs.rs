@@ -120,6 +120,11 @@ choice!(
     /// fastest and softest. Photoshop's Camera Raw has no such choice.
     RawDemosaic { Ahd = "ahd", Mhc = "mhc", Bilinear = "bilinear" } default Ahd
 );
+choice!(
+    /// MCP › When PhotoCraft Is Closed: what `photocraft-cli mcp` does when an
+    /// agent calls a tool and the app isn't running.
+    WhenAppClosed { Launch = "launch", Headless = "headless", Error = "error" } default Launch
+);
 
 impl Unit {
     /// Document pixels → this unit. `dpi` is the document resolution, `extent` the 100% length
@@ -528,8 +533,8 @@ pub use cmds::specs;
 #[cfg(test)]
 pub(crate) use files::write_files_atomically;
 pub use shortcuts::{
-    ALTERNATE_SHORTCUTS, BindKind, MAX_ALTERNATES, TEMPORARY_TOOLS, alternate_keys, bindable_items, conflicts, default_alternates, normalize_shortcut,
-    reserved_shortcut,
+    ALTERNATE_SHORTCUTS, BindKind, MAX_ALTERNATES, MIXER_BRUSH_COMMANDS, TEMPORARY_TOOLS, alternate_keys, bindable_items, conflicts, default_alternates,
+    normalize_shortcut, reserved_shortcut,
 };
 use store::read_lenient;
 pub use store::{InvalidPref, PREFS_VERSION, PrefsStore, read_section};
@@ -924,7 +929,10 @@ impl TransparencyAndGamut {
 pub struct UnitsAndRulers {
     pub rulers: Unit,
     pub type_units: TypeUnit,
+    /// Column Size › Width in points: Image Size and Canvas Size's Columns width unit
+    /// (`n` columns are `n × column_width + (n − 1) × gutter`).
     pub column_width: f64,
+    /// Column Size › Gutter in points, the space between columns.
     pub gutter: f64,
     pub print_resolution: f64,
     pub screen_resolution: f64,
@@ -1166,18 +1174,62 @@ impl Default for RawDefaults {
     }
 }
 
+/// Before the agents switch, a Control Port other than 0 started the control server by itself.
+/// A saved `integrations` section like that keeps its connection: the port now means "on, at this
+/// port". Every reader of the saved section applies this (the app, its launch read, and
+/// `photocraft-cli mcp`), so they agree.
+pub fn migrate_integrations(section: &mut Value) {
+    if let Some(integrations) = section.as_object_mut()
+        && !integrations.contains_key("connectAgents")
+        && integrations.get("controlPort").and_then(Value::as_u64).is_some_and(|p| (1..=65535).contains(&p))
+    {
+        integrations.insert("connectAgents".into(), json!(true));
+    }
+}
+
+/// A saved `integrations` section read as the app's preference load reads it: migrated, and
+/// leniently (a value of the wrong type keeps its default, the rest still loads). The desktop
+/// app's launch read and `photocraft-cli mcp` use it, so a bad value can't reset, say, When
+/// PhotoCraft Is Closed for them alone.
+pub fn read_integrations_section(mut section: Value) -> Integrations {
+    migrate_integrations(&mut section);
+    read_section(section)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Integrations {
     /// Allow agents to drive the app over the loopback control channel / MCP bridge.
     pub allow_agent_control: bool,
-    /// Default control port (0 = only when `--control` is given).
+    /// Port agents connect to (0 = any free port, published in the connection file).
     pub control_port: u32,
+    /// The folder automation may read from when no `--automation-read-root` is given (empty =
+    /// none). Applied at once while agents are connected.
+    pub read_root: String,
+    /// The folder automation may write to when no `--automation-write-root` is given (empty =
+    /// none). Applied at once while agents are connected.
+    pub write_root: String,
+    /// Without the suite's `AI-MCP` flag, agents may connect: the desktop app serves the control
+    /// protocol on loopback for `photocraft-cli mcp` without `--control`, and starts or stops it at
+    /// once when this changes (off by default; launch flags still win). Set from a saved Control
+    /// Port ([`migrate_integrations`]); not in the dialog. With the flag the ArtCraft Launcher's
+    /// switch decides instead. After the older fields, so a
+    /// section saved as a list still reads them where they were.
+    pub connect_agents: bool,
+    /// What `photocraft-cli mcp` does while agents may use the app but it is closed.
+    pub when_app_closed: WhenAppClosed,
 }
 
 impl Default for Integrations {
     fn default() -> Self {
-        Self { allow_agent_control: true, control_port: 0 }
+        Self {
+            allow_agent_control: true,
+            control_port: 0,
+            read_root: String::new(),
+            write_root: String::new(),
+            connect_agents: false,
+            when_app_closed: WhenAppClosed::Launch,
+        }
     }
 }
 
@@ -1420,6 +1472,11 @@ impl Preferences {
 
     /// Set a value by dotted path, validating it. Unknown paths and wrong types are errors.
     pub fn set(&mut self, path: &str, value: Value) -> std::result::Result<(), String> {
+        // `set_path` skips empty segments, so `.alternateShortcuts.x` would reach the typed state
+        // below the per-path validators above; refuse such paths instead.
+        if path.split('.').any(str::is_empty) {
+            return Err(format!("invalid preference path `{path}`"));
+        }
         if path == "alternateShortcuts" {
             let obj = value.as_object().ok_or("`alternateShortcuts` maps command ids to lists of shortcuts")?;
             let mut map = BTreeMap::new();
@@ -1514,7 +1571,8 @@ impl Preferences {
     pub fn alternates(&self, id: &str, primary: Option<&str>) -> Vec<String> {
         let main = primary.and_then(normalize_shortcut);
         let keys: Vec<String> = match self.alternate_shortcuts.get(id) {
-            Some(list) => list.iter().filter_map(|s| normalize_shortcut(s)).collect(),
+            // A hand-edited settings file can hold more than `alternate_keys` admits.
+            Some(list) => list.iter().take(MAX_ALTERNATES).filter_map(|s| normalize_shortcut(s)).collect(),
             None => default_alternates(id).filter_map(normalize_shortcut).collect(),
         };
         let mut out: Vec<String> = Vec::with_capacity(keys.len());
@@ -1637,6 +1695,16 @@ impl Session {
             // A partially migrated file may already contain a newer theme selection (#5139).
             interface.entry(slot).or_insert_with(|| json!(theme.name()));
         }
+        // The Serbian interface catalog was `sr`; since the catalogs moved to craft-i18n it is
+        // `sr-latn`, the same Latin text. A saved `sr` loads as `sr-latn` and is saved that way next.
+        if let Some(language) = v.get_mut("interface").and_then(|interface| interface.get_mut("language"))
+            && language.as_str().is_some_and(|code| code.eq_ignore_ascii_case("sr"))
+        {
+            *language = json!("sr-latn");
+        }
+        if let Some(integrations) = v.get_mut("integrations") {
+            migrate_integrations(integrations);
+        }
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
         let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
         let mut invalid = Vec::new();
@@ -1647,7 +1715,15 @@ impl Session {
         prefs.performance.effect_cache_mb = accepted_effect_cache_mb(prefs.performance.effect_cache_mb, SMALL_ADDRESS_SPACE);
         if let Some(c) = color {
             self.color.settings = read_lenient(c, &["colorSettings"], &mut invalid);
+            // A number outside 0..MAX reads, but `validate_settings` would then refuse every
+            // later Color Settings edit: reset it like an unreadable value.
+            let gain = self.color.settings.spot_dot_gain;
+            if !(gain.is_finite() && (0.0..=photocraft_compose::multichannel::MAX_SPOT_DOT_GAIN).contains(&gain)) {
+                invalid.push(InvalidPref { keys: vec!["colorSettings".into(), "spotDotGain".into()], value: json!(gain) });
+                self.color.settings.spot_dot_gain = photocraft_compose::multichannel::SPOT_DOT_GAIN;
+            }
             photocraft_compose::psblend::set_text_gamma(self.color.settings.blend_text_gamma);
+            photocraft_compose::multichannel::set_spot_dot_gain(self.color.settings.spot_dot_gain);
         }
         self.prefs.edit(|p| *p = prefs);
         if let Some(v) = presets {

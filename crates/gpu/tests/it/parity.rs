@@ -742,8 +742,13 @@ fn adjustments() -> Vec<Adjustment> {
         Adjustment::PhotoFilter { color: [0.2, 0.6, 0.9], density: 0.3, preserve_luminosity: false },
         Adjustment::BlackWhite { weights: [40.0, 60.0, 40.0, 60.0, 20.0, 80.0], tint: None },
         Adjustment::BlackWhite { weights: [70.0, 20.0, 50.0, 10.0, 90.0, 30.0], tint: Some([0.9, 0.7, 0.5]) },
-        Adjustment::GradientMap { stops: vec![(0.0, [0.1, 0.0, 0.3]), (0.5, [0.9, 0.3, 0.1]), (1.0, [1.0, 1.0, 0.8])], reverse: false, dither: false },
-        Adjustment::GradientMap { stops: vec![(0.0, [0.0, 0.0, 0.0]), (1.0, [1.0, 1.0, 1.0])], reverse: true, dither: true },
+        Adjustment::GradientMap {
+            stops: vec![(0.0, [0.1, 0.0, 0.3]), (0.5, [0.9, 0.3, 0.1]), (1.0, [1.0, 1.0, 0.8])],
+            reverse: false,
+            dither: false,
+            source: None,
+        },
+        Adjustment::GradientMap { stops: vec![(0.0, [0.0, 0.0, 0.0]), (1.0, [1.0, 1.0, 1.0])], reverse: true, dither: true, source: None },
         Adjustment::ColorBalance { shadows: [20.0, -10.0, 5.0], midtones: [-15.0, 10.0, 30.0], highlights: [0.0, 5.0, -20.0], preserve_luminosity: true },
         Adjustment::ColorBalance { shadows: [10.0, 0.0, 0.0], midtones: [0.0, 0.0, 0.0], highlights: [0.0, 0.0, 10.0], preserve_luminosity: false },
         Adjustment::SelectiveColor { relative: true, adjustments: selective() },
@@ -1059,6 +1064,7 @@ fn hard_stop_effects_and_gradient_maps_request_cpu() {
             stops: vec![(0.0, [0.0; 3]), (0.5, [1.0; 3]), (0.5, [0.0; 3]), (1.0, [1.0; 3])],
             reverse: false,
             dither: false,
+            source: None,
         }),
     ));
     assert_gradient_fallback(&d);
@@ -1877,6 +1883,55 @@ fn layer_effects_every_kind() {
             if let Err(e) = fx_diff(&mut g, &d, &format!("{name} {depth:?}")) {
                 failures.push(e);
             }
+        }
+    }
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// A Normal inside or center stroke replaces the layer beneath it instead of blending with it
+/// (#6513): opaque red under a 50 % green stroke ends as green at 50 % alpha, on the GPU as on
+/// the CPU (`effects.rs`: `layer * (1 - coverage) + stroke * opacity * coverage`).
+#[test]
+fn semi_transparent_normal_stroke_knocks_out_the_layer_beneath_it() {
+    let Some(mut g) = gpu() else { return };
+    let mut failures = Vec::new();
+    for position in [StrokePosition::Inside, StrokePosition::Center] {
+        for (opacity, paint) in
+            [(0.5, FxPaint::Color(Color::rgb(0.0, 1.0, 0.0))), (0.5, FxPaint::Gradient(gradient())), (1.0, FxPaint::Color(Color::rgb(0.0, 1.0, 0.0)))]
+        {
+            let mut d = Document::new("fx", Size::new(48, 48), ColorMode::Rgb, SampleType::U8);
+            let mut l = Layer::raster("red", d.pixel_format());
+            l.surface_mut().unwrap().fill_rect(Rect::new(12, 12, 36, 36), &[1.0, 0.0, 0.0, 1.0]);
+            let mut st = stroke(4.0, position, paint);
+            st.common.opacity = opacity;
+            l.effects.items = vec![Effect::Stroke(st)];
+            d.layers.push(l);
+            let what = format!("{position:?} stroke at {opacity}");
+            // The CPU reference itself: the edge pixel is the stroke colour at the stroke's alpha.
+            let cpu = photocraft_compose::render(&d, d.bounds());
+            if matches!(d.layers[0].effects.items.first(), Some(Effect::Stroke(StrokeFx { paint: FxPaint::Color(_), .. }))) && opacity < 1.0 {
+                let px = cpu.px[24 * 48 + 12];
+                if (px[1] - 1.0).abs() > 0.01 || px[0] > 0.01 || (px[3] - 0.5).abs() > 0.01 {
+                    failures.push(format!("{what}: CPU edge pixel {px:?}, want [0, 1, 0, 0.5]"));
+                }
+            }
+            if let Err(e) = fx_diff(&mut g, &d, &what) {
+                failures.push(e);
+            }
+        }
+    }
+    // Lab documents replace the layer the same way (no CIELAB mix).
+    for position in [StrokePosition::Inside, StrokePosition::Center] {
+        let mut d = Document::new("lab", Size::new(48, 40), ColorMode::Lab, SampleType::U16);
+        let fmt = d.pixel_format();
+        d.layers.push(noise_layer("bg", fmt, Rect::new(0, 0, 48, 40), 81, 0.7));
+        let mut fx = blob("fx", fmt, 24.0, 20.0, 12.0, [0.7, 0.3, 0.2]);
+        let mut st = stroke(4.0, position, FxPaint::Color(Color::rgb(0.1, 0.8, 0.3)));
+        st.common.opacity = 0.5;
+        fx.effects.items = vec![Effect::Stroke(st)];
+        d.layers.push(fx);
+        if let Err(e) = fx_diff(&mut g, &d, &format!("lab {position:?} stroke at 0.5")) {
+            failures.push(e);
         }
     }
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));

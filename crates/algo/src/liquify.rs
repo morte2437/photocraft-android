@@ -653,9 +653,9 @@ impl LiquifyField {
         }
         let Some((i0, j0, i1, j1)) = self.node_span(c, r) else { return Rect::EMPTY };
         // Snapshot of the affected nodes plus a margin (sampling reads around them).
-        let m = ((delta[0].abs().max(delta[1].abs()) + r * 0.2) / self.cell).ceil() as usize + 2;
+        let m = (((delta[0].abs().max(delta[1].abs()) + r * 0.2) / self.cell).ceil() as usize).saturating_add(2);
         let (si0, sj0) = (i0.saturating_sub(m), j0.saturating_sub(m));
-        let (si1, sj1) = ((i1 + m).min(self.w - 1), (j1 + m).min(self.h - 1));
+        let (si1, sj1) = (i1.saturating_add(m).min(self.w - 1), j1.saturating_add(m).min(self.h - 1));
         let sw = si1 - si0 + 1;
         let sh = sj1 - sj0 + 1;
         let mut snap = Vec::with_capacity(sw * sh);
@@ -680,7 +680,9 @@ impl LiquifyField {
                 let p = self.node_pos(i, j);
                 let (dx, dy) = (p[0] - c[0], p[1] - c[1]);
                 let t2 = (dx * dx + dy * dy) / (r * r);
-                if t2 >= 1.0 {
+                // NaN is skipped too: it is what a far-off centre with a huge radius gives
+                // (infinity over infinity): a NaN weight would spread NaN displacements.
+                if t2.is_nan() || t2 >= 1.0 {
                     continue;
                 }
                 let fall = falloff(t2, density);
@@ -749,8 +751,10 @@ impl LiquifyField {
             self.d[idx] = d;
             self.freeze[idx] = f;
         }
-        let pad = r.ceil() as i32 + 2;
-        Rect::new(c[0].floor() as i32 - pad, c[1].floor() as i32 - pad, c[0].ceil() as i32 + pad, c[1].ceil() as i32 + pad).intersect(&self.bounds)
+        // Each edge is worked out in f64 and only then converted (saturating), so a far-off centre
+        // with a huge radius still covers the nodes it changed.
+        let pad = r.ceil() + 2.0;
+        Rect::new((c[0].floor() - pad) as i32, (c[1].floor() - pad) as i32, (c[0].ceil() + pad) as i32, (c[1].ceil() + pad) as i32).intersect(&self.bounds)
     }
 
     /// Replays strokes on a fresh field.

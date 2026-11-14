@@ -1,6 +1,8 @@
 //! #11802: ⇧ and ⌥ constrain the Perspective Crop's new drag (a square, from the centre) and its
 //! corner drags (one axis, stays a rectangle). Ctrl, and no modifier, keep today's behaviour.
 
+use std::sync::Arc;
+
 use egui::Modifiers;
 
 use super::*;
@@ -88,6 +90,41 @@ fn alt_corner_drag_keeps_a_rectangle() {
     // From the top-left corner too.
     drag(&mut app, [100.0, 100.0], [50.0, 160.0], ALT);
     assert_eq!(app.ui.perspective_crop, rect(50.0, 160.0, 740.0, 430.0));
+}
+
+/// #11802: ⌥ dragging a corner past the opposite one on both axes keeps today's result: the
+/// rectangle turned 180° (the corners keep their order, so it commits upside down). Crossing on
+/// one axis only is a separate item.
+#[test]
+fn alt_corner_drag_past_the_opposite_corner_on_both_axes_turns_the_rectangle_180_degrees() {
+    let mut app = app();
+    app.ui.perspective_crop = Some([[100.0, 100.0], [500.0, 100.0], [500.0, 400.0], [100.0, 400.0]]);
+    // Where the turned rectangle will lie (40,60 to 100,100): a red patch in its bottom right and
+    // a green one in its top left.
+    let patch = |app: &mut PhotocraftApp, x: i32, y: i32, c: [f32; 4]| {
+        Arc::make_mut(&mut app.session.active_mut().unwrap().doc).layers[0]
+            .surface_mut()
+            .unwrap()
+            .fill_rect(photocraft_geom::Rect::from_xywh(x, y, 10, 10), &c);
+    };
+    patch(&mut app, 90, 90, [1.0, 0.0, 0.0, 1.0]);
+    patch(&mut app, 40, 60, [0.0, 1.0, 0.0, 1.0]);
+    // The bottom right corner goes above and to the left of the fixed top left one.
+    drag(&mut app, [500.0, 400.0], [40.0, 60.0], ALT);
+    assert_eq!(
+        app.ui.perspective_crop,
+        Some([[100.0, 100.0], [40.0, 100.0], [40.0, 60.0], [100.0, 60.0]]),
+        "the opposite corner stays, the neighbours follow, the corners keep their order: the rectangle turned 180 degrees"
+    );
+    // Committing keeps that: a 60 x 40 canvas upside down, the red patch (the old bottom right)
+    // at the top left and the green one (the old top left) at the bottom right.
+    commit(&mut app);
+    assert!(app.ui.perspective_crop.is_none(), "committed");
+    let doc = &app.session.active().unwrap().doc;
+    assert_eq!((doc.size.width, doc.size.height), (60, 40));
+    let surf = doc.layers[0].surface().unwrap();
+    assert_eq!(surf.rgba(3, 3), [1.0, 0.0, 0.0, 1.0], "upside down: the red patch is at the top left");
+    assert_eq!(surf.rgba(56, 36), [0.0, 1.0, 0.0, 1.0], "upside down: the green patch is at the bottom right");
 }
 
 #[test]

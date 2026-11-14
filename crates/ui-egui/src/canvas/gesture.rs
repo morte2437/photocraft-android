@@ -6,6 +6,10 @@ use super::strokes::{
 use super::textures::shown_as_document;
 use super::{PhotocraftApp, Tool, json};
 
+#[cfg(test)]
+#[path = "rectangle_click_in_shape_tests.rs"]
+mod rectangle_click_in_shape_tests;
+
 pub(crate) fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
     finish(app, d, None);
 }
@@ -53,16 +57,13 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
         let Some(d) = app.drag.take() else { return };
         let live = app.live_stroke.take();
         if let Some(l) = live {
-            let (doc, key, steps) = (l.doc, l.key, l.damage.len() as u64);
-            if let EngineStroke::Mixer(mixer) = l.stroke {
-                if l.preview_failed {
-                    let mut p = stroke_params(app, &d, &app.stylus.stroke_points(&d.points));
-                    p["seed"] = json!(mixer.seed);
-                    drop(mixer);
-                    let _ = app.run("paint.mixerBrush", p);
-                    return;
-                }
-                match mixer.prepare_commit(&mut app.session) {
+            // What the stroke's thread was still painting.
+            let (painted, stroke) = l.paint.finish();
+            let failed = l.preview_failed || painted.iter().any(Result::is_err);
+            let steps = (l.damage.len() + painted.len()) as u64;
+            let (doc, key, seed) = (l.doc, l.key, l.seed);
+            match stroke {
+                Some(EngineStroke::Mixer(mixer)) if !failed => match mixer.prepare_commit(&mut app.session) {
                     Ok(p) => {
                         if app.run("paint.mixerBrush", p).is_ok() {
                             shown_as_document(app, doc, |k| k == 0 || (key..=key + steps).contains(&k));
@@ -72,6 +73,15 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
                         app.ui.status = e.to_string();
                         app.ui.status_error = true;
                     }
+                },
+                // A step failed, or the thread stopped mid-step: render the whole stroke.
+                stroke => {
+                    drop(stroke);
+                    let mut p = stroke_params(app, &d, &app.stylus.stroke_points(&d.points));
+                    if let Some(seed) = seed {
+                        p["seed"] = json!(seed);
+                    }
+                    let _ = app.run("paint.mixerBrush", p);
                 }
             }
         } else {
@@ -87,8 +97,8 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
     if live_retouch_command(d.tool).is_some() || crate::retouch_ui::dab_params(app, d.tool).is_some() || d.tool == Tool::ColorReplacement {
         app.live_stroke = None;
     }
-    let finished =
-        crate::eraser_ui::finish_stroke(app, d.tool, &d.points, d.line) || crate::retouch_ui::finish_stroke(app, d.tool, &d.points, d.modifiers, d.line);
+    let finished = crate::eraser_ui::finish_stroke(app, d.tool, &d.points, d.line)
+        || crate::retouch_ui::finish_stroke_with(app, d.tool, &d.points, d.modifiers, d.line, d.history_params.clone());
     app.session.clear_live_stroke();
     if finished {
         return;
@@ -104,8 +114,10 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
         // mode a click adds nothing: the dialog makes a shape layer, which Path mode never draws,
         // and the click's few pixels of travel would add a speck of a subpath to the work path.
         t if crate::vector_ui::is_shape_tool(t)
-            && crate::shape_dialog::is_click(d.start, &d.points, app.point_zoom())
-            && (crate::vector_ui::draws_path(&app.ui.tool_options) || crate::shape_dialog::open(app, t, d.start).is_some()) => {}
+            && crate::shape_dialog::is_tool_click(t, &app.ui.tool_options, d.start, &d.points, app.point_zoom())
+            && (crate::vector_ui::draws_path(&app.ui.tool_options)
+                || crate::shape_dialog::click_inside_active_rectangle(app, t, d.start)
+                || crate::shape_dialog::open(app, t, d.start).is_some()) => {}
         t if crate::vector_ui::is_shape_tool(t) => crate::vector_ui::finish_shape(app, t, d.start, [end[0], end[1]], d.live),
         Tool::PathSelection => crate::vector_ui::path_selection_finish(app, d.start, [end[0], end[1]]),
         Tool::Type | Tool::VerticalType | Tool::HorizontalTypeMask | Tool::VerticalTypeMask => crate::type_tool::pointer_up(app, d.start, [end[0], end[1]]),
@@ -161,7 +173,7 @@ fn finish(app: &mut PhotocraftApp, mut d: Drag, click: Option<bool>) {
                 if made.is_ok() && d.tool != Tool::Lasso {
                     crate::retouch_ui::patch_hint(app);
                 }
-            } else if app.session.is_enabled("select.deselect") {
+            } else if (d.tool != Tool::Lasso || selection_mode(app, d.modifiers) == "replace") && app.session.is_enabled("select.deselect") {
                 let _ = app.run("select.deselect", json!({}));
             }
         }

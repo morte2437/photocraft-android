@@ -21,6 +21,7 @@ mod crop_ctrl_straighten;
 mod crop_default_mode;
 mod crop_defaults;
 mod crop_frame_look;
+mod crop_options_bar_chrome;
 mod crop_overlay_icons;
 mod crop_popup_keys;
 mod crop_shift_corner;
@@ -35,6 +36,11 @@ mod eyedropper_ring;
 mod full_res_preview;
 mod gpu_device_loss;
 mod healing_reset_tip;
+// The interactive bench's `#[cfg(test)]` reporting tests: CI runs `--tests`, never examples.
+// Embedding the example leaves its other entrypoints unused in this binary.
+#[path = "../../examples/interactive_bench.rs"]
+#[allow(dead_code)]
+mod interactive_bench_reporting;
 mod layout_perf;
 mod live_stroke_canvas;
 mod magnetic_lasso_right_click;
@@ -45,6 +51,7 @@ mod pattern_preview_canvas;
 mod radial_blur_center;
 mod remove_channel_target;
 mod system_locale;
+mod tone_targets;
 mod transform_readout_units;
 mod ui_scale_canvas;
 mod variables_data_sets;

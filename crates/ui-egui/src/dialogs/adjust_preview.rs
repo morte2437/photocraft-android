@@ -16,12 +16,18 @@
 //! document (with the preview layer) and the region are built once per dialog session; a change
 //! only swaps the layer's adjustment in a shallow copy.
 //!
+//! An already-clipped, unstyled target becomes a group in the preview document only: its raw
+//! raster and the temporary adjustment are children, while its external compositing properties
+//! stay on the group. This applies the adjustment before the target blends into its clipping
+//! group, as the destructive command does.
+//!
 //! Cases where an adjustment-layer composite differs from the destructive result, or where it
 //! would not be cheap, keep the CPU proxy preview (`canvas::ensure_filter_preview`), see
 //! [`unsupported`]:
 //! - the target is not a plain pixel layer (smart object, type, shape, group: the command edits
-//!   a smart object's filters or refuses), or is itself clipped (a clipped adjustment would act on
-//!   the whole clipping group, not just the target);
+//!   a smart object's filters or refuses);
+//! - a clipped target has enabled effects on itself or an enclosing group (their effect shape
+//!   maps would rebuild on the UI thread for every settings change);
 //! - the target uses Blend If (its "Current Layer" ranges test the layer's adjusted colour);
 //! - the target's untouched area is visible (a surface without alpha whose content doesn't cover
 //!   the canvas: the command only edits content);
@@ -38,7 +44,7 @@
 use std::sync::Arc;
 
 use photocraft_color::ColorMode;
-use photocraft_doc::{Adjustment, DocId, Document, Layer, LayerContent, LayerId, LayerMask};
+use photocraft_doc::{Adjustment, DocId, Document, Group, Layer, LayerContent, LayerId, LayerMask};
 use photocraft_geom::Rect;
 use serde_json::Value;
 
@@ -47,6 +53,9 @@ use crate::PhotocraftApp;
 /// Id of the temporary preview layer. Fixed so the GPU compositor keeps its mask (the selection)
 /// resident from one change to the next. Never reaches a committed document.
 pub const PREVIEW_LAYER: LayerId = LayerId(u64::MAX - 77);
+/// Id of the raw-raster carrier inside a clipped target's preview group (see [`base_document`]).
+/// Fixed like [`PREVIEW_LAYER`] so its GPU textures stay resident across settings changes.
+const CARRIER_LAYER: LayerId = LayerId(u64::MAX - 76);
 
 /// Tag of the preview keys handed to the canvas (`canvas::display_doc`).
 const TAG: u64 = 1 << 59;
@@ -54,15 +63,19 @@ const TAG: u64 = 1 << 59;
 /// settings hash.
 const SESSION_SHIFT: u32 = 40;
 
-/// Why `target` in `doc` can't preview as a clipped adjustment layer, or None when it can.
+/// Why `target` in `doc` can't preview through the temporary layer path, or None when it can.
 pub fn unsupported(doc: &Document, target: LayerId) -> Option<&'static str> {
     if !matches!(doc.mode, ColorMode::Rgb | ColorMode::Grayscale) {
         return Some("colour mode composites through display RGB");
     }
     let Some(l) = doc.layer(target) else { return Some("no target layer") };
     let LayerContent::Raster(s) = &l.content else { return Some("not a pixel layer") };
-    if l.clipped {
-        return Some("the target is clipped");
+    // A clipped target is previewed inside a new group. If the target or a group around it is
+    // styled, every slider change invalidates that group's effect shape maps, and rebuilding
+    // them is CPU work on the UI thread. The CPU proxy has its own worker, so styled clips keep
+    // it; an unrelated styled sibling doesn't affect this target's clip.
+    if l.clipped && (photocraft_compose::effects::has_effects(l) || styled_ancestor(doc, target)) {
+        return Some("clipped target or enclosing group has layer effects");
     }
     if photocraft_compose::blend_if_active(l, doc.mode) {
         return Some(tl!("Blend If"));
@@ -72,6 +85,12 @@ pub fn unsupported(doc: &Document, target: LayerId) -> Option<&'static str> {
         return Some("untouched area is visible");
     }
     None
+}
+
+/// Whether a group enclosing `target` has enabled layer effects.
+fn styled_ancestor(doc: &Document, target: LayerId) -> bool {
+    let Some(path) = doc.path_of(target) else { return false };
+    (1..path.len()).any(|n| path.get(..n).and_then(|p| doc.layer_at(p)).is_some_and(photocraft_compose::effects::has_effects))
 }
 
 /// Whether `adj` maps gray to gray. Others make colour in a grayscale document, which the command
@@ -93,18 +112,32 @@ fn keeps_gray(adj: &Adjustment) -> bool {
 /// `doc` with a placeholder temporary adjustment layer clipped to `target` (the selection as its
 /// mask): built once per dialog session, then [`with_settings`] per change. Errors when the target
 /// isn't eligible ([`unsupported`]).
+///
+/// An already-clipped target becomes a group containing its raw raster and the adjustment, so
+/// only its own pixels are adjusted. Its id and external compositing properties stay on the group.
 pub fn base_document(doc: &Document, target: LayerId) -> Result<Document, String> {
     if let Some(why) = unsupported(doc, target) {
         return Err(why.into());
     }
-    let mut l = Layer::new(tl!("Adjustment Preview"), LayerContent::Adjustment(Adjustment::Invert));
-    l.id = PREVIEW_LAYER;
-    l.clipped = true;
+    let mut preview = Layer::new(tl!("Adjustment Preview"), LayerContent::Adjustment(Adjustment::Invert));
+    preview.id = PREVIEW_LAYER;
+    preview.clipped = true;
     if let Some(sel) = &doc.selection {
-        l.mask = Some(LayerMask { surface: sel.clone(), enabled: true, linked: false, density: 1.0, feather: 0.0 });
+        preview.mask = Some(LayerMask { surface: sel.clone(), enabled: true, linked: false, density: 1.0, feather: 0.0 });
     }
     let mut out = doc.clone();
-    out.insert_above(Some(target), l);
+    if !out.layer(target).is_some_and(|l| l.clipped) {
+        out.insert_above(Some(target), preview);
+        return Ok(out);
+    }
+    let l = out.layer_mut(target).ok_or("no target layer")?;
+    let content = std::mem::replace(&mut l.content, LayerContent::Group(Group { children: Vec::new(), expanded: true, artboard: None, frame_stroke: None }));
+    let LayerContent::Raster(surface) = content else { return Err("not a pixel layer".into()) };
+    let mut carrier = Layer::new(l.name.clone(), LayerContent::Raster(surface));
+    carrier.id = CARRIER_LAYER;
+    if let LayerContent::Group(g) = &mut l.content {
+        g.children = vec![carrier, preview];
+    }
     Ok(out)
 }
 

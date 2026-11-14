@@ -67,14 +67,10 @@ pub fn is_focused(ctx: &egui::Context) -> bool {
 
 /// A command shortcut pressed while the keyboard is on the bar with no menu open (⌘D, ⌘⇧I, F7…)
 /// takes it off the bar, so the shortcut runs in the same press, as a native menu bar does
-/// (#6573). Keys the bar uses (arrows, ↩, Esc, letters, Alt+letter, F10) keep driving it, and
-/// an open menu still swallows shortcuts. True when the bar was left.
+/// (#6573). Keys the bar uses (arrows, ↩, Esc, letters, Alt+letter, F10) keep driving it; an
+/// open menu is closed by [`close_for_shortcut`]. True when the bar was left.
 pub fn leave_for_shortcut(ctx: &egui::Context) -> bool {
-    if !is_focused(ctx) || crate::menu_nav::is_open(ctx) {
-        return false;
-    }
-    let shortcut = ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key, pressed: true, modifiers, .. } if is_command_key(*key, *modifiers))));
-    if !shortcut {
+    if !is_focused(ctx) || crate::menu_nav::is_open(ctx) || !command_key_pressed(ctx) {
         return false;
     }
     let mut keys = Keys::load(ctx);
@@ -83,6 +79,76 @@ pub fn leave_for_shortcut(ctx: &egui::Context) -> bool {
     keys.store(ctx);
     ctx.request_repaint();
     true
+}
+
+/// A command shortcut (⌘1, ⌘D, F7…) pressed while a menu, a dropdown list or another popup (a
+/// panel's options menu, a picker) is open closes it, so the shortcut runs in the same press, as
+/// with Photoshop's menus and panel flyouts (#9065). Keys the menu or
+/// list uses (arrows, ↩, Esc, letters) keep driving it, and a field in it that has the keyboard
+/// (Help › Search, focused whenever Help opens) keeps its editing keys (⌘A, ⌘V…); any other
+/// shortcut also takes the focus from the field so it isn't held back as typing. True when one
+/// was closed.
+pub fn close_for_shortcut(ctx: &egui::Context) -> bool {
+    let menu = crate::menu_nav::is_open(ctx);
+    let list = crate::widgets::dropdown_list_open(ctx);
+    let pass = ctx.cumulative_pass_nr();
+    let own = ctx.data(|d| d.get_temp::<u64>(own_popup_id())).is_some_and(|seen| seen + 2 >= pass);
+    let popup = egui::Popup::is_any_open(ctx) || own;
+    let typing = ctx.text_edit_focused();
+    let shortcut = ctx.input(|i| {
+        i.events.iter().any(
+            |e| matches!(e, Event::Key { key, pressed: true, modifiers, .. } if is_command_key(*key, *modifiers) && !(typing && is_text_editing_key(*key, *modifiers))),
+        )
+    });
+    if !(menu || list || popup) || !shortcut {
+        return false;
+    }
+    if typing && let Some(id) = ctx.memory(|m| m.focused()) {
+        ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+    if menu {
+        crate::menu_nav::close(ctx);
+    }
+    if list {
+        crate::widgets::close_dropdown_list(ctx);
+    }
+    if popup {
+        egui::Popup::close_all(ctx);
+        ctx.data_mut(|d| {
+            d.remove::<u64>(own_popup_id());
+            d.insert_temp(closed_id(), pass);
+        });
+    }
+    ctx.request_repaint();
+    true
+}
+
+fn own_popup_id() -> Id {
+    Id::unique("pc-own-popup-open")
+}
+
+fn closed_id() -> Id {
+    Id::unique("pc-popups-closed-for-shortcut")
+}
+
+/// A popup that keeps its open state itself (`Popup::open_bool`, `Popup::open(true)`), which
+/// [`egui::Popup::is_any_open`] and [`egui::Popup::close_all`] don't see, calls this each frame
+/// it stays open, so that [`close_for_shortcut`] closes it too: it closes itself when
+/// [`popups_closed`] says so.
+pub fn own_popup_shown(ctx: &egui::Context) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(own_popup_id(), pass));
+}
+
+/// [`close_for_shortcut`] closed the popups in this frame: one that keeps its own open state
+/// closes now, ahead of the shortcut.
+pub fn popups_closed(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<u64>(closed_id())) == Some(ctx.cumulative_pass_nr())
+}
+
+/// A command shortcut was pressed this frame ([`is_command_key`]).
+fn command_key_pressed(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Key { key, pressed: true, modifiers, .. } if is_command_key(*key, *modifiers))))
 }
 
 /// A key press that is a command shortcut rather than a key of the bar: ⌘ / Ctrl with a key
@@ -97,6 +163,20 @@ fn is_command_key(key: Key, mods: Modifiers) -> bool {
     }
     let function_key = key != Key::F10 && key.name().strip_prefix('F').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     mods.command || mods.ctrl || mods.mac_cmd || function_key
+}
+
+/// A key a focused text field uses with ⌘ / Ctrl: select all, copy, cut, paste, undo and redo
+/// (without Alt, which makes them shortcuts as [`crate::shortcut_dispatch::Focus::allows`] has
+/// it: ⌘⌥Z, ⌘⌥C), and caret movement and deletion by word or line. On macOS, Control (not ⌘)
+/// also gives egui's Emacs keys to the field (Control+W deletes a word, Control+E goes to the end
+/// of the line); where Ctrl is the command key (Windows, Linux) Ctrl+W, Ctrl+K… stay Photoshop's
+/// shortcuts.
+fn is_text_editing_key(key: Key, mods: Modifiers) -> bool {
+    let clipboard = !mods.alt && matches!(key, Key::A | Key::C | Key::X | Key::V | Key::Z | Key::Y);
+    let editing =
+        clipboard || matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End | Key::Backspace | Key::Delete);
+    let emacs = mods.ctrl && !mods.command && matches!(key, Key::H | Key::K | Key::U | Key::W | Key::P | Key::N | Key::B | Key::F | Key::E);
+    editing || emacs
 }
 
 /// The mnemonic a key press stands for: the letter or digit of a plain key.
@@ -386,7 +466,7 @@ impl Keys {
             // typed into a field in the menu: Help › Search took "S" for System Info (#5996). A zoom
             // field that kept the keyboard through the click on the menu title is not in the menu,
             // but while Help › Search is open the letters are still typing.
-            let typing = ctx.text_edit_focused() && !(crate::zoom_field::is_focused(ctx) && !super::search::shown(ctx));
+            let typing = ctx.text_edit_focused() && (!crate::zoom_field::is_focused(ctx) || super::search::shown(ctx));
             let letter = events.iter().filter(|_| !typing).find_map(|e| match e {
                 Event::Key { key, pressed: true, modifiers, .. } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
                     key_char(*key).map(|c| (*key, c))
@@ -454,6 +534,27 @@ impl Keys {
 
 #[cfg(test)]
 mod tests {
+    /// #9314 review: macOS's Control editing keys stay the field's; a Ctrl that is the command
+    /// key (Windows, Linux: Close, Preferences…) does not.
+    #[test]
+    fn control_editing_keys_are_text_keys_only_where_ctrl_is_not_the_command_key() {
+        use egui::{Key, Modifiers};
+        let mac_control = Modifiers { ctrl: true, ..Default::default() };
+        let windows_ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        for k in [Key::W, Key::H, Key::K, Key::U, Key::E] {
+            assert!(super::is_text_editing_key(k, mac_control), "{k:?}");
+            assert!(!super::is_text_editing_key(k, windows_ctrl), "{k:?}");
+        }
+        assert!(super::is_text_editing_key(Key::V, windows_ctrl) && super::is_text_editing_key(Key::V, Modifiers::COMMAND));
+        assert!(!super::is_text_editing_key(Key::Num1, Modifiers::COMMAND));
+        // With Alt the letters are shortcuts (⌘⌥Z Toggle Last State, ⌘⌥C Canvas Size), as
+        // `Focus::allows` has it; Alt+arrows still move the caret by word.
+        for k in [Key::A, Key::C, Key::X, Key::V, Key::Z, Key::Y] {
+            assert!(!super::is_text_editing_key(k, Modifiers::COMMAND | Modifiers::ALT), "{k:?}");
+        }
+        assert!(super::is_text_editing_key(Key::ArrowLeft, Modifiers::ALT) && super::is_text_editing_key(Key::ArrowRight, Modifiers::COMMAND | Modifiers::ALT));
+    }
+
     use super::*;
 
     #[test]

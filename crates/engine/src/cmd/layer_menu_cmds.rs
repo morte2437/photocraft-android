@@ -131,6 +131,17 @@ fn apply_mask(s: &mut Session, p: &Value) -> Result<Value> {
         // displays. LayerMask::values_into accounts for density but not feather (#3044).
         let feathered = {
             let layer = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+            // The pixels are read over their content bounds (distant tiles span the gaps between
+            // them) as native samples, straight RGBA, the mask's coverage and the re-encoded
+            // output; a feathered mask is also rendered over the canvas and those bounds.
+            if let Some(surf) = layer.surface() {
+                let r = surf.content_bounds();
+                let n = surf.channels() as u64;
+                crate::allocation::check_dense(r, n.saturating_mul(8).saturating_add(20), "applying the layer mask")?;
+                if layer.mask.as_ref().is_some_and(|m| m.enabled && photocraft_compose::masks::feather_sigma(m.feather) > 0.0) {
+                    crate::allocation::check_dense(doc.bounds().union(&r), 8, "applying the feathered layer mask")?;
+                }
+            }
             if layer.mask.as_ref().is_some_and(|m| m.enabled && photocraft_compose::masks::feather_sigma(m.feather) > 0.0) {
                 // Do not bake an independent vector mask that remains attached after Apply.
                 let mut mask_only = layer.clone();

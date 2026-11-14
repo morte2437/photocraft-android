@@ -3,7 +3,7 @@ use super::*;
 /// The open canvas context menu's rows for `ui.state`: the spelling suggestions first (type edit
 /// menu over a misspelled word), then the menu's own rows.
 fn context_entries(app: &PhotocraftApp, menu: &crate::canvas_tool_menu::CanvasToolMenu) -> Vec<Value> {
-    use crate::canvas_tool_menu::{crop_rows, entry_enabled, rows, spelling_rows};
+    use crate::canvas_tool_menu::{crop_rows, entry_enabled, row_label, rows, spelling_rows};
     let spelling = spelling_rows(menu);
     let mut entries: Vec<Value> = spelling.iter().map(|(label, id)| json!({"label": label, "id": id, "enabled": entry_enabled(app, menu, id)})).collect();
     if !spelling.is_empty() {
@@ -14,7 +14,7 @@ fn context_entries(app: &PhotocraftApp, menu: &crate::canvas_tool_menu::CanvasTo
         None => json!({"separator": true}),
     }));
     entries.extend(rows(menu).iter().map(|row| match row {
-        Some((label, id)) => json!({"label": label, "id": id, "enabled": entry_enabled(app, menu, id)}),
+        Some((label, id)) => json!({"label": row_label(app, menu, label, id), "id": id, "enabled": entry_enabled(app, menu, id)}),
         None => json!({"separator": true}),
     }));
     entries
@@ -57,13 +57,14 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
             use crate::brush_mode_menu as m;
             let tool = app.ui.tool;
             let current = m::current(app, tool);
+            let checked = m::checked(app, ctx, tool);
             json!({
                 "pos": pos,
                 "tool": tool,
                 "mode": current.and_then(m::Item::label),
                 "choices": m::labels(tool),
                 "items": m::items(tool).into_iter().map(|i| match i.label() {
-                    Some(label) => json!({"label": label, "enabled": m::enabled(app, i), "checked": Some(i) == current}),
+                    Some(label) => json!({"label": label, "enabled": m::enabled(app, i), "checked": Some(i) == checked}),
                     None => json!({"separator": true}),
                 }).collect::<Vec<_>>(),
             })
@@ -134,6 +135,7 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "brush": {"size": app.session.tools.brush.size, "hardness": app.session.tools.brush.hardness, "opacity": app.session.tools.brush.opacity},
         "distort": app.distort.describe(),
         "jobs": crate::jobs_ui::inspect(app),
+        "agentLink": app.agent_link,
         "histogram": crate::histogram_panel::inspect(app),
         "cameraRaw": app.camera_raw.as_ref().map(|d| d.describe(&app.ui.camera_raw_scope, &app.ui.camera_raw_preview)),
     })

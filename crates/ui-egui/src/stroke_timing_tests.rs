@@ -417,16 +417,18 @@ fn the_stroke_trace_times_each_frame_of_a_stroke_and_ends_on_release() {
 #[test]
 fn releasing_a_clone_stamp_stroke_commits_what_a_replay_paints() {
     let setup = |run: &mut dyn FnMut(&str, Value)| {
-        run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.4}}));
+        // The whole tip that differs from the default brush, as a replay starts from that.
+        run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 0.4, "spacing": 0.25, "smoothing": {"amount": 0.0}}}));
         run("paint.stroke", json!({"points": [[10, 20], [190, 80]], "size": 30, "hardness": 0.5, "color": "#2060c0"}));
         run("cloneSource.set", json!({"source": [40, 30]}));
     };
     let mut h = harness();
+    // Picked first, so the brush set above is the Clone Stamp's own.
+    h.state_mut().ui.tool = Tool::CloneStamp;
+    h.run_steps(1);
     setup(&mut |id, p| {
         h.state_mut().run(id, p).unwrap();
     });
-    h.state_mut().ui.tool = Tool::CloneStamp;
-    h.run_steps(1);
     move_to(&mut h, 60.0, 50.0);
     button(&mut h, 60.0, 50.0, true);
     for (x, y) in [(80.0, 40.0), (110.0, 60.0), (140.0, 45.0), (170.0, 65.0)] {
@@ -472,6 +474,9 @@ fn releasing_a_sequential_dab_stroke_commits_what_a_replay_paints() {
         });
         h.state_mut().ui.tool = tool;
         h.run_steps(1);
+        // A tool with its own starting tip (Dodge, #12684) paints with that, not the setup's
+        // brush: give it the setup's tip, as the replay below has.
+        h.state_mut().run("tools.setBrush", json!({"brush": {"size": 24, "hardness": 0.2, "spacing": 0.1}})).unwrap();
         move_to(&mut h, 40.0, 30.0);
         button(&mut h, 40.0, 30.0, true);
         for (x, y) in [(70.0, 40.0), (100.0, 55.0), (130.0, 50.0), (160.0, 70.0)] {
@@ -540,8 +545,10 @@ fn a_shift_click_dodge_line_commits_its_live_pixels_unsmoothed() {
 fn pressure_sized_smudge_release_matches_replay_and_undo_redo() {
     use crate::stylus::PenSample;
 
+    // The spacing is set too: the Smudge tool starts with its own tip (#12964), the replay's
+    // fresh session with the default brush.
     let setup = |run: &mut dyn FnMut(&str, Value)| {
-        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"pressureSize":true,"smoothing":{"amount":0.4}}}));
+        run("tools.setBrush", json!({"brush": {"size":40,"hardness":0.7,"spacing":0.1,"pressureSize":true,"smoothing":{"amount":0.4}}}));
         run("paint.stroke", json!({"points":[[10,20],[190,80]],"size":30,"color":"#2060c0"}));
     };
     let mut h = harness();

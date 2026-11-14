@@ -10,7 +10,7 @@
 //! Breeze's (KDE) or a plain round set elsewhere, with the set of buttons and their side taken
 //! from the desktop's button layout. The shapes are drawn here, not read from the icon theme.
 
-use egui::{Color32, CursorIcon, Id, LayerId, Order, PointerButton, Pos2, Rect, ResizeDirection, Sense, Stroke, Ui, ViewportCommand, pos2, vec2};
+use egui::{Color32, CursorIcon, Id, LayerId, Order, PointerButton, Pos2, Rect, ResizeDirection, Sense, Stroke, Ui, Vec2, ViewportCommand, pos2, vec2};
 use serde_json::json;
 
 use crate::PhotocraftApp;
@@ -22,6 +22,9 @@ pub const BUTTON_WIDTH: f32 = 46.0;
 /// (#1581); 8 pt is about a native resize border, and only trims the toolbar buttons' outer 3 pt.
 const EDGE: f32 = 8.0;
 const CORNER: f32 = 12.0;
+/// The main window's minimum inner size (`apps/photocraft`'s viewport). A pen resize
+/// ([`PenDrag`]) stops there, as the OS's own resize does.
+pub const MIN_WINDOW_SIZE: Vec2 = vec2(760.0, 480.0);
 const MODAL_DRAG_AREA: &str = "titlebar-modal-drag-area";
 /// Breeze's Close button on hover and press (KDE's Breeze decoration colours).
 const BREEZE_CLOSE_HOVER: Color32 = Color32::from_rgb(0xff, 0x98, 0xa2);
@@ -485,9 +488,196 @@ fn hand_off(ctx: &egui::Context) {
 /// Move the window from this press. The window manager takes the press of an OS move as it does
 /// that of a resize and keeps its release, so egui kept the drag: every other move failed, and a
 /// resize right after one (#5725). The same hand-off ends it.
+///
+/// A pen or touch press moves the window itself instead ([`PenDrag`], #7967).
 pub(crate) fn start_os_move(ctx: &egui::Context) {
+    if start_pen_drag(ctx, PenDragKind::Move) {
+        return;
+    }
     ctx.send_viewport_cmd(ViewportCommand::StartDrag);
     hand_off(ctx);
+}
+
+/// What a pen or touch press on the title bar or an edge does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PenDragKind {
+    Move,
+    Resize(ResizeDirection),
+}
+
+/// A window move or resize by a pen or a finger, done here rather than by the OS (#7967, #11840).
+/// winit's `drag_window` / `drag_resize_window` post `WM_NCLBUTTONDOWN`, and Windows' move and
+/// size loop follows the mouse button. winit takes pen and touch input as `WM_POINTER` messages
+/// (`WindowEvent::Touch`) and Windows makes no mouse input from them, so the loop saw no button
+/// down and never ran: the window stayed put. winit only clears its "dragging" flag when that loop
+/// ends (`WM_EXITSIZEMOVE`), so after the first pen try it ignored every later `drag_window`,
+/// the mouse's too, until restart. A pen press therefore never asks the OS: the window follows
+/// the pen through `OuterPosition` / `InnerSize`, from where the pen is on the screen (the
+/// window's inner rect plus the pointer), so moving the window under the pen changes nothing.
+#[derive(Clone, Copy, Debug)]
+struct PenDrag {
+    kind: PenDragKind,
+    /// The press in screen points, and the window's outer and inner rects then. `None` while a
+    /// maximized window restores before it moves.
+    start: Option<(Pos2, Rect, Rect)>,
+    /// Where the press was in the maximized window, as a fraction of its width and points from
+    /// its top: the restored window is placed so the pen holds it at the same spot.
+    grab: (f32, f32),
+    /// The last pass this was applied in, so the title bar and the edge zones can both call
+    /// [`follow_pen_drag`].
+    pass: u64,
+    /// The OS reports where the pen is on the screen ([`note_os_pointer`]): the drag follows that.
+    /// Otherwise it follows the window's inner rect plus the pointer, which can run ahead.
+    os: bool,
+}
+
+fn os_pointer_id() -> Id {
+    Id::unique("titlebar-os-pointer")
+}
+
+/// Read the pen's screen position from the OS for this pass while a pen or a finger is down. A
+/// [`PenDrag`] follows that: winit moves the window asynchronously (`SWP_ASYNCWINDOWPOS`), so a
+/// pointer position egui got before a move landed, added to the window position read after it,
+/// counted the move twice, and the window ran away from the pen (an injected pen on Windows 11:
+/// +687, +909 for a +200, +120 stroke). The pen's own pointer messages
+/// (`Services::pen_screen_px`) say where it is; failing that the OS cursor
+/// (`Services::cursor_pos`, relative to the window's inner rect, so the sum is the screen
+/// position), which a pen doesn't always move. Call before the title bar and the edge zones.
+pub(crate) fn note_os_pointer(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if !PEN_DRAG || !ctx.input(|i| i.any_touches()) {
+        return;
+    }
+    let pen = app.services.pen_screen_px.as_ref().and_then(|f| f()).map(|[x, y]| pos2(x as f32, y as f32) / ctx.pixels_per_point());
+    let cursor = || {
+        let inner = ctx.input(|i| i.viewport().inner_rect)?;
+        app.services.cursor_pos.as_mut().and_then(|f| f(ctx)).map(|at| inner.min + at.to_vec2())
+    };
+    let Some(at) = pen.or_else(cursor) else { return };
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(os_pointer_id(), (pass, at)));
+}
+
+/// The screen position [`note_os_pointer`] read this pass.
+fn os_pointer(ctx: &egui::Context) -> Option<Pos2> {
+    let (pass, at) = ctx.data(|d| d.get_temp::<(u64, Pos2)>(os_pointer_id()))?;
+    (pass == ctx.cumulative_pass_nr()).then_some(at)
+}
+
+fn pen_drag_id() -> Id {
+    Id::unique("titlebar-pen-drag")
+}
+
+/// Only Windows needs it, and only Windows can place a window from the app everywhere (Wayland
+/// lets no client place its window). Tests run it on every platform.
+const PEN_DRAG: bool = cfg!(any(target_os = "windows", test));
+
+/// Start a [`PenDrag`] if the press is a pen's or a finger's: true if it took the press.
+fn start_pen_drag(ctx: &egui::Context, kind: PenDragKind) -> bool {
+    if !PEN_DRAG || !ctx.input(|i| i.any_touches()) {
+        return false;
+    }
+    let (inner, outer, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect, i.viewport().maximized.unwrap_or(false)));
+    let (Some(inner), Some(outer), Some(press)) = (inner, outer, ctx.input(|i| i.pointer.press_origin().or(i.pointer.latest_pos()))) else {
+        return false;
+    };
+    let pass = ctx.cumulative_pass_nr();
+    // Trust the OS's position only if it is where the pointer is: a finger leaves the cursor
+    // behind.
+    let latest = ctx.input(|i| i.pointer.latest_pos()).unwrap_or(press);
+    let os_now = os_pointer(ctx).filter(|s| (*s - (inner.min + latest.to_vec2())).length() <= 8.0);
+    let os = os_now.is_some();
+    let drag = if maximized {
+        if kind != PenDragKind::Move {
+            return false;
+        }
+        ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
+        PenDrag { kind, start: None, grab: (press.x / inner.width().max(1.0), press.y), pass, os }
+    } else {
+        let at = os_now.map_or(inner.min + press.to_vec2(), |s| s - (latest - press));
+        PenDrag { kind, start: Some((at, outer, inner)), grab: (0.0, 0.0), pass, os }
+    };
+    ctx.data_mut(|d| d.insert_temp(pen_drag_id(), drag));
+    true
+}
+
+/// Move or resize the window after the pen ([`PenDrag`]); ends with the press. Every pass, from
+/// the title bar and the edge zones.
+pub(crate) fn follow_pen_drag(ctx: &egui::Context) {
+    let Some(mut drag) = ctx.data(|d| d.get_temp::<PenDrag>(pen_drag_id())) else { return };
+    let pass = ctx.cumulative_pass_nr();
+    if drag.pass == pass {
+        return;
+    }
+    drag.pass = pass;
+    // The pen is down while egui has the press and a touch. egui's pointer can be gone meanwhile:
+    // the mouse cursor, parked where the window was, leaves the window as it moves away (winit's
+    // `CursorLeft`), which only matters when the drag goes by that pointer.
+    let (pos, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down() && i.any_touches()));
+    let (inner, outer, maximized) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().outer_rect, i.viewport().maximized.unwrap_or(false)));
+    let end = |ctx: &egui::Context| ctx.data_mut(|d| d.remove::<PenDrag>(pen_drag_id()));
+    let (Some(inner), Some(outer), true) = (inner, outer, down) else { return end(ctx) };
+    let pen = if drag.os {
+        // No OS reading this pass (the service failed): wait for the next.
+        let Some(at) = os_pointer(ctx) else {
+            ctx.data_mut(|d| d.insert_temp(pen_drag_id(), drag));
+            return;
+        };
+        at
+    } else {
+        let Some(pos) = pos else { return end(ctx) };
+        inner.min + pos.to_vec2()
+    };
+    let Some((press, outer0, inner0)) = drag.start else {
+        // Restoring a maximized window: wait for its restored size, then put it under the pen.
+        if !maximized {
+            let at = pen - vec2(drag.grab.0 * inner.width(), drag.grab.1) - (inner.min - outer.min);
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+            let shift = at - outer.min;
+            drag.start = Some((pen, outer.translate(shift), inner.translate(shift)));
+        }
+        ctx.data_mut(|d| d.insert_temp(pen_drag_id(), drag));
+        return;
+    };
+    let d = pen - press;
+    match drag.kind {
+        PenDragKind::Move => {
+            let at = outer0.min + d;
+            if at != outer.min {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+            }
+        }
+        PenDragKind::Resize(dir) => {
+            let r = resized(inner0, dir, d, MIN_WINDOW_SIZE);
+            if r.size() != inner.size() {
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(r.size()));
+            }
+            let at = outer0.min + (r.min - inner0.min);
+            if at != outer.min {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(at));
+            }
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(pen_drag_id(), drag));
+}
+
+/// `r` with the edges `dir` names moved by `d`, no smaller than `min`: a left or top edge stops
+/// where the window would be too small rather than pushing it along.
+fn resized(r: Rect, dir: ResizeDirection, d: Vec2, min: Vec2) -> Rect {
+    use ResizeDirection::*;
+    let mut r = r;
+    if matches!(dir, West | NorthWest | SouthWest) {
+        r.min.x = (r.min.x + d.x).min(r.max.x - min.x);
+    }
+    if matches!(dir, East | NorthEast | SouthEast) {
+        r.max.x = (r.max.x + d.x).max(r.min.x + min.x);
+    }
+    if matches!(dir, North | NorthWest | NorthEast) {
+        r.min.y = (r.min.y + d.y).min(r.max.y - min.y);
+    }
+    if matches!(dir, South | SouthWest | SouthEast) {
+        r.max.y = (r.max.y + d.y).max(r.min.y + min.y);
+    }
+    r
 }
 
 /// The compositor takes the button release of an OS resize or move (KDE Wayland, KWin on X11), so
@@ -525,9 +715,11 @@ fn reshow_cursor_after_os_resize(ctx: &egui::Context) {
 }
 
 /// Invisible resize zones along the window's edges, above everything else; a press in one starts
-/// an OS resize in that direction. None while the window is maximized or full screen.
+/// an OS resize in that direction (a pen's or a finger's: a [`PenDrag`]). None while the window
+/// is maximized or full screen.
 pub fn resize_zones(ui: &mut Ui) {
     let ctx = ui.ctx().clone();
+    follow_pen_drag(&ctx);
     if maximized(&ctx) || ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
         reshow_cursor_after_os_resize(&ctx);
         return;
@@ -537,7 +729,7 @@ pub fn resize_zones(ui: &mut Ui) {
     let zui = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(w));
     for (i, (r, dir, cursor)) in zones(w).into_iter().enumerate() {
         let resp = zui.interact(r, Id::unique(("titlebar-resize", i)), Sense::drag()).on_hover_cursor(cursor);
-        if resp.drag_started_by(PointerButton::Primary) {
+        if resp.drag_started_by(PointerButton::Primary) && !start_pen_drag(&ctx, PenDragKind::Resize(dir)) {
             ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
             hand_off(&ctx);
         }

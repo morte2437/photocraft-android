@@ -13,12 +13,11 @@ fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({"width": 120, "height": 80, "background": "transparent"})).unwrap();
     app.run("tools.setColors", json!({"foreground": "#000000", "background": "#ffffff"})).unwrap();
-    app.run("tools.setBrush", json!({"brush": {"size": 3, "hardness": 0.0}})).unwrap();
     // Each tool keeps its own brush (#218): switch first, then set the Pencil's options, as the
-    // options bar does (its first frame takes the Brush's tip at Photoshop's 10 % smoothing).
+    // options bar does.
     app.ui.tool = Tool::Pencil;
     crate::paint_mouse::sync_tool_brush(&mut app);
-    app.run("tools.setBrush", json!({"brush": {"smoothing": {"amount": 0.0}}})).unwrap();
+    app.run("tools.setBrush", json!({"brush": {"size": 3, "hardness": 0.0, "smoothing": {"amount": 0.0}}})).unwrap();
     app
 }
 
@@ -296,4 +295,257 @@ fn b_cycles_brush_pencil_color_replacement_and_mixer_brush() {
     assert_eq!(h.state().ui.tool, Tool::MixerBrush);
     assert_eq!(Tool::from_name("pencil"), Some(Tool::Pencil));
     assert_eq!(Tool::from_name("mixerBrush"), Some(Tool::MixerBrush));
+}
+
+/// Erase to History paints the source state in each Eraser mode, even on a layer made since.
+#[test]
+fn the_eraser_with_erase_to_history_paints_the_source_state_in_every_mode_even_on_a_layer_made_since() {
+    for mode in ["brush", "pencil", "block"] {
+        let mut app = app();
+        app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+        let before = layer(&app).surface().unwrap().rgba(60, 40);
+        assert!(before[3] > 0.99, "{before:?}");
+        // State 1 = after the stroke; the layer made next did not exist then.
+        app.run("history.setSource", json!({"state": 1})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] < 0.01);
+        app.ui.tool = Tool::Eraser;
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        app.run("tools.setBrush", json!({"brush": {"size": 15, "hardness": 1.0, "smoothing": {"amount": 0.0}}})).unwrap();
+        app.ui.tool_options.eraser_mode = mode.into();
+        // Without the option the Eraser erases: the empty layer stays empty.
+        drag(&mut app, &[(55.0, 40.0), (65.0, 40.0)], Modifiers::NONE);
+        assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] < 0.01, "{mode}");
+        app.ui.tool_options.erase_to_history = true;
+        drag(&mut app, &[(55.0, 40.0), (65.0, 40.0)], Modifiers::NONE);
+        let (id, p) = last(&app);
+        assert_eq!((id.as_str(), &p["eraseToHistory"]), ("paint.historyBrush", &json!(true)), "{mode}");
+        assert_eq!((p["pencil"] == json!(true), p["block"] == json!(true)), (mode == "pencil", mode == "block"), "{mode}");
+        let s = layer(&app).surface().unwrap().clone();
+        let after = s.rgba(60, 40);
+        assert!(after[3] > 0.99 && (0..3).all(|i| (after[i] - before[i]).abs() < 0.01), "{mode}: {after:?} vs {before:?}");
+        // The hard tips leave only whole pixels: painted back in full or untouched.
+        if mode != "brush" {
+            for y in 0..80 {
+                for x in 0..120 {
+                    let a = s.rgba(x, y)[3];
+                    assert!(a == 0.0 || a == 1.0, "{mode}: partial alpha {a} at ({x},{y})");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn erase_to_history_in_pencil_mode_ignores_the_brush_modes_flow() {
+    let mut app = app();
+    app.ui.tool = Tool::Eraser;
+    crate::paint_mouse::sync_tool_brush(&mut app);
+    app.run("tools.setBrush", json!({"brush": {"flow": 0.5}})).unwrap();
+    app.ui.tool_options.erase_to_history = true;
+    app.ui.tool_options.eraser_mode = "brush".into();
+    assert_eq!(crate::retouch_ui::history_brush_params(&app)["flow"], json!(50.0));
+    app.ui.tool_options.eraser_mode = "pencil".into();
+    assert_eq!(crate::retouch_ui::history_brush_params(&app)["flow"], json!(100.0));
+}
+
+/// ⌥ at the press reverses Erase to History for that stroke, and the option itself stays as it was.
+#[test]
+fn alt_at_the_press_reverses_erase_to_history_for_one_eraser_stroke() {
+    for (mode, pencil) in [("brush", false), ("pencil", true)] {
+        let mut app = app();
+        app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+        let painted = layer(&app).surface().unwrap().rgba(60, 40);
+        app.run("history.setSource", json!({"state": 1})).unwrap();
+        app.ui.tool = Tool::Eraser;
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        app.run("tools.setBrush", json!({"brush": {"size": 15, "hardness": 1.0, "smoothing": {"amount": 0.0}}})).unwrap();
+        app.ui.tool_options.eraser_mode = mode.into();
+        let stroke = |app: &mut PhotocraftApp, down: Modifiers, later: Modifiers| {
+            tool_event(app, ToolEvent::Down { x: 55.0, y: 40.0, pressure: 1.0 }, down);
+            tool_event(app, ToolEvent::Move { x: 65.0, y: 40.0, pressure: 1.0 }, later);
+            tool_event(app, ToolEvent::Up { x: 65.0, y: 40.0 }, later);
+        };
+        // A plain stroke erases, and ⌥ first pressed during it changes nothing.
+        stroke(&mut app, Modifiers::NONE, Modifiers::ALT);
+        assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] < 0.01, "{mode}");
+        // ⌥ at the press paints the source back, and letting go of it during the stroke doesn't stop it.
+        stroke(&mut app, Modifiers::ALT, Modifiers::NONE);
+        let (id, p) = last(&app);
+        assert_eq!((id.as_str(), &p["eraseToHistory"]), ("paint.historyBrush", &json!(true)), "{mode}: {id} {p}");
+        assert_eq!(p["pencil"] == json!(true), pencil, "{mode}: {p}");
+        let after = layer(&app).surface().unwrap().rgba(60, 40);
+        assert!(after[3] > 0.99 && (0..3).all(|i| (after[i] - painted[i]).abs() < 0.01), "{mode}: {after:?} vs {painted:?}");
+        // The option itself stays off, so the next plain stroke erases again.
+        assert!(!app.ui.tool_options.erase_to_history, "{mode}");
+        stroke(&mut app, Modifiers::NONE, Modifiers::NONE);
+        assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] < 0.01, "{mode}");
+        // With the option on, a plain stroke paints the source back and ⌥ at the press erases.
+        app.ui.tool_options.erase_to_history = true;
+        stroke(&mut app, Modifiers::NONE, Modifiers::NONE);
+        assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] > 0.99, "{mode}");
+        stroke(&mut app, Modifiers::ALT, Modifiers::NONE);
+        assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] < 0.01, "{mode}");
+        assert!(app.ui.tool_options.erase_to_history, "{mode}");
+    }
+}
+
+/// A ⇧-click Erase to History line isn't smoothed (#11887) and keeps the Eraser's brush from the
+/// press: the commit sends `smoothing: 0` beside the `brush` param, as its live preview does, so
+/// the release takes the pixels the preview drew.
+#[test]
+fn a_shift_click_erase_to_history_line_commits_its_live_pixels_unsmoothed() {
+    for mode in ["brush", "pencil", "block"] {
+        let mut app = app();
+        app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+        app.run("history.setSource", json!({"state": 1})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.ui.tool = Tool::Eraser;
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        app.run("tools.setBrush", json!({"brush": {"size": 9, "hardness": 1.0, "smoothing": {"amount": 0.6, "catchUpOnEnd": false}}})).unwrap();
+        app.ui.tool_options.eraser_mode = mode.into();
+        app.ui.tool_options.erase_to_history = true;
+        drag(&mut app, &[(20.0, 20.0), (40.0, 30.0)], Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Down { x: 100.0, y: 60.0, pressure: 1.0 }, Modifiers::SHIFT);
+        assert!(app.live_stroke.is_some(), "{mode}: a live line");
+        app.retouch_from_live = false;
+        tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 60.0 }, Modifiers::SHIFT);
+        let (id, p) = last(&app);
+        assert_eq!((id.as_str(), &p["eraseToHistory"]), ("paint.historyBrush", &json!(true)), "{mode}: {id} {p}");
+        let ends: Vec<[f64; 2]> = p["points"].as_array().unwrap().iter().map(|q| [q[0].as_f64().unwrap(), q[1].as_f64().unwrap()]).collect();
+        // The Pencil tip's line runs between the clicked pixels' centres.
+        let c = if mode == "pencil" { 0.5 } else { 0.0 };
+        assert_eq!(ends, vec![[40.0 + c, 30.0 + c], [100.0 + c, 60.0 + c]], "{mode}");
+        assert_eq!(p["smoothing"], json!(0.0), "{mode}: {p}");
+        assert!(p["brush"].is_object(), "{mode}: the brush from the press: {p}");
+        assert!(app.retouch_from_live, "{mode}: the release took the live pixels instead of rendering the line again");
+        // The line reaches the click: the source is painted back at its far end.
+        assert!(rgba(&app, 99, 60)[3] > 0.99, "{mode}");
+        assert_eq!(app.session.tools.brush.smoothing.amount, 0.6, "{mode}: the Eraser keeps its Smoothing");
+    }
+}
+
+/// A tool key pressed mid-stroke changes neither the stroke's options nor its tip.
+#[test]
+fn a_tool_key_during_an_erase_to_history_stroke_keeps_the_stroke_as_it_began() {
+    for (mode, pencil) in [("brush", false), ("pencil", true)] {
+        let mut app = app();
+        app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+        let before = layer(&app).surface().unwrap().rgba(60, 40);
+        app.run("history.setSource", json!({"state": 1})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app.ui.tool = Tool::Eraser;
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        app.run("tools.setBrush", json!({"brush": {"size": 15, "hardness": 1.0, "smoothing": {"amount": 0.0}}})).unwrap();
+        app.ui.tool_options.eraser_mode = mode.into();
+        app.ui.tool_options.erase_to_history = true;
+        tool_event(&mut app, ToolEvent::Down { x: 55.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Move { x: 60.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+        // What pressing a tool's letter does (`shortcuts`): the drag is not cancelled.
+        app.ui.tool = Tool::Brush;
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        app.run("tools.setBrush", json!({"brush": {"size": 90}})).unwrap();
+        tool_event(&mut app, ToolEvent::Move { x: 65.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Up { x: 65.0, y: 40.0 }, Modifiers::NONE);
+        let (id, p) = last(&app);
+        assert_eq!((id.as_str(), &p["eraseToHistory"]), ("paint.historyBrush", &json!(true)), "{mode}: {id} {p}");
+        assert_eq!(p["pencil"] == json!(true), pencil, "{mode}: {p}");
+        assert_eq!(p["size"], json!(15.0), "{mode}: the Eraser's size, not the new tool's");
+        let after = layer(&app).surface().unwrap().rgba(60, 40);
+        assert!(after[3] > 0.99 && (0..3).all(|i| (after[i] - before[i]).abs() < 0.01), "{mode}: {after:?} vs {before:?}");
+    }
+}
+
+#[test]
+fn a_tool_key_during_a_history_brush_stroke_keeps_the_brush_it_began_with() {
+    let mut app = app();
+    app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+    app.run("history.setSource", json!({"state": 1})).unwrap();
+    app.ui.tool = Tool::HistoryBrush;
+    crate::paint_mouse::sync_tool_brush(&mut app);
+    app.run("tools.setBrush", json!({"brush": {"size": 15, "hardness": 0.5, "spacing": 0.3, "smoothing": {"amount": 0.0}}})).unwrap();
+    tool_event(&mut app, ToolEvent::Down { x: 55.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Move { x: 60.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+    // What pressing a tool's letter does (`shortcuts`): the drag is not cancelled.
+    app.ui.tool = Tool::Brush;
+    crate::paint_mouse::sync_tool_brush(&mut app);
+    app.run("tools.setBrush", json!({"brush": {"size": 90, "hardness": 1.0, "spacing": 0.1}})).unwrap();
+    tool_event(&mut app, ToolEvent::Move { x: 65.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+    tool_event(&mut app, ToolEvent::Up { x: 65.0, y: 40.0 }, Modifiers::NONE);
+    let (id, p) = last(&app);
+    assert_eq!(id, "paint.historyBrush", "{p}");
+    assert_eq!(p["size"], json!(15.0), "{p}");
+    assert_eq!(p["hardness"].as_f64().map(f64::round), Some(50.0), "{p}");
+    assert_eq!(p["spacing"].as_f64().map(f64::round), Some(30.0), "{p}");
+    assert_eq!(p.get("eraseToHistory"), None, "{p}");
+}
+
+/// The layer after a History Brush (`mode` "") or Erase to History (`mode` "brush", "pencil",
+/// "block") stroke whose tool brush is given `pressed`; with `switched`, the Brush tool is picked
+/// halfway and its saved brush given `switched`, as a tool key does mid-stroke (the drag goes on).
+fn history_stroke_pixels(mode: &str, pressed: &serde_json::Value, switched: Option<&serde_json::Value>) -> Vec<f32> {
+    let mut app = app();
+    app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400})).unwrap();
+    app.run("history.setSource", json!({"state": 1})).unwrap();
+    let tool = if mode.is_empty() { Tool::HistoryBrush } else { Tool::Eraser };
+    if tool == Tool::Eraser {
+        // A layer made since the source state: Erase to History paints that state's one layer.
+        app.run("layer.new.layer", json!({})).unwrap();
+    } else {
+        app.run("paint.pencil", json!({"points": [[60.0, 40.0]], "size": 400, "erase": true})).unwrap();
+    }
+    assert!(layer(&app).surface().unwrap().rgba(60, 40)[3] < 0.01, "{mode}: nothing there to start with");
+    app.ui.tool = tool;
+    crate::paint_mouse::sync_tool_brush(&mut app);
+    app.run("tools.setBrush", json!({"brush": {"size": 15, "hardness": 1.0, "spacing": 0.1, "smoothing": {"amount": 0.0}}})).unwrap();
+    app.run("tools.setBrush", json!({ "brush": pressed })).unwrap();
+    if tool == Tool::Eraser {
+        app.ui.tool_options.eraser_mode = mode.into();
+        app.ui.tool_options.erase_to_history = true;
+    }
+    let pts = [(30.0, 40.0), (45.0, 44.0), (60.0, 37.0), (75.0, 43.0), (90.0, 40.0)];
+    tool_event(&mut app, ToolEvent::Down { x: pts[0].0, y: pts[0].1, pressure: 1.0 }, Modifiers::NONE);
+    for (i, &(x, y)) in pts.iter().enumerate().skip(1) {
+        if i == 3
+            && let Some(sw) = switched
+        {
+            // What pressing a tool's letter does (`shortcuts`): the drag is not cancelled.
+            app.ui.tool = Tool::Brush;
+            crate::paint_mouse::sync_tool_brush(&mut app);
+            app.run("tools.setBrush", json!({ "brush": sw })).unwrap();
+        }
+        tool_event(&mut app, ToolEvent::Move { x, y, pressure: 1.0 }, Modifiers::NONE);
+    }
+    tool_event(&mut app, ToolEvent::Up { x: pts[4].0, y: pts[4].1 }, Modifiers::NONE);
+    let (id, p) = last(&app);
+    assert_eq!(id, "paint.historyBrush", "{mode}: {p}");
+    let st = app.session.active().unwrap();
+    layer(&app).surface().unwrap().read_region(st.doc.bounds())
+}
+
+/// A tool key pressed mid-stroke leaves a History Brush or Erase to History stroke exactly as the
+/// same stroke without it, with the brush it was pressed with: tip shape, sampled tip, dynamics
+/// and smoothing, not only size, hardness and spacing (FredApps' review of #10692).
+#[test]
+fn a_tool_key_mid_stroke_paints_what_the_stroke_paints_without_it() {
+    let round = json!({"tip": "round", "roundness": 1.0, "angle": 0.0});
+    let cross = json!({"sampled": {"width": 3, "height": 3, "data": [0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0]}});
+    let cases = [
+        ("an elliptical tip, then a round one", json!({"roundness": 0.2, "angle": 30.0}), round.clone()),
+        ("a round tip, then a sampled one", round.clone(), json!({"tip": cross})),
+        ("a sampled tip, then a round one", json!({"tip": cross}), round.clone()),
+        ("no dynamics, then size jitter", round.clone(), json!({"shapeDynamics": {"enabled": true, "size": {"jitter": 1.0}}})),
+        ("no smoothing, then 90 %", round.clone(), json!({"smoothing": {"enabled": true, "amount": 0.9}})),
+    ];
+    for mode in ["", "brush", "pencil", "block"] {
+        for (what, pressed, switched) in &cases {
+            let plain = history_stroke_pixels(mode, pressed, None);
+            assert!(history_stroke_pixels(mode, pressed, Some(switched)) == plain, "{mode} {what}: the switch changed the stroke");
+            // The switched-to brush paints differently, so the comparison means something; Block
+            // mode keeps only the brush's smoothing.
+            if mode != "block" || what.contains("smoothing") {
+                assert!(history_stroke_pixels(mode, switched, None) != plain, "{mode} {what}: both brushes paint alike");
+            }
+        }
+    }
 }

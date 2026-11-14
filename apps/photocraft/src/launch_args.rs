@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(parsed.control, Some(50494));
         assert_eq!(parsed.auth.control_token.as_deref(), Some("abcd"));
         assert_eq!(parsed.auth.control_token_file, None);
-        assert_eq!(parsed.automation.automation_read_root.as_deref(), Some(std::path::Path::new("/r")));
+        assert_eq!(parsed.automation.automation_read_root, vec![std::path::PathBuf::from("/r")]);
         assert_eq!(parsed.automation.automation_write_root.as_deref(), Some(std::path::Path::new("/w")));
         assert!(parsed.safe_gpu && parsed.in_window_menus && parsed.new_instance);
         assert_eq!(parsed.present_mode, Some(PresentMode::AutoNoVsync));

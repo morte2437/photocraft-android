@@ -656,7 +656,8 @@ impl Default for BrushSettings {
             noise: false,
             wet_edges: false,
             build_up: false,
-            build_up_rate: 20.0,
+            // About ten dabs a second while held still, Photoshop's Airbrush rate (#11886).
+            build_up_rate: 10.0,
             smoothing: Smoothing::default(),
             protect_texture: false,
             locks: SectionLocks::default(),

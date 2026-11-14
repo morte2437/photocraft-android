@@ -116,7 +116,7 @@ fn smart_object_render_that_does_not_fit_is_refused_by_name() {
 
 #[test]
 fn layered_psd_is_refused_before_decode_without_changing_the_document() {
-    use photocraft_psd::{Compression, LayerSpec, PixelData, PsdBuilder};
+    use craft_psd::{Compression, LayerSpec, PixelData, PsdBuilder};
 
     let room = Room::new(None);
     const SIDE: u32 = 256;
@@ -182,7 +182,7 @@ fn small_flat_psd_still_places_and_renders() {
 /// memory is there.
 #[test]
 fn a_psd_with_image_resources_places_and_renders_when_it_fits() {
-    use photocraft_psd::{LayerSpec, PixelData, PsdBuilder};
+    use craft_psd::{LayerSpec, PixelData, PsdBuilder};
 
     let room = Room::new(Some(headroom::RESERVE + 256 * MIB));
     const SIDE: u32 = 64;

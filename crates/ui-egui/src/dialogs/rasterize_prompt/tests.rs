@@ -6,7 +6,7 @@ use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
 /// A document whose active layer is a `kind` layer over a white Background.
-fn app_with(kind: Kind) -> PhotocraftApp {
+pub(super) fn app_with(kind: Kind) -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
     app.run("file.new", json!({"width": 120, "height": 80})).unwrap();
     match kind {
@@ -28,21 +28,21 @@ fn app_with(kind: Kind) -> PhotocraftApp {
     app
 }
 
-fn active_content(app: &PhotocraftApp) -> &'static str {
+pub(super) fn active_content(app: &PhotocraftApp) -> &'static str {
     let st = app.session.active().unwrap();
     st.doc.layer(st.active_layer.unwrap()).unwrap().content.kind_name()
 }
 
-fn past(app: &PhotocraftApp) -> usize {
+pub(super) fn past(app: &PhotocraftApp) -> usize {
     app.session.active().unwrap().history.past_len()
 }
 
-fn click(app: &mut PhotocraftApp, x: f64, y: f64) {
+pub(super) fn click(app: &mut PhotocraftApp, x: f64, y: f64) {
     tool_event(app, ToolEvent::Down { x, y, pressure: 1.0 }, Modifiers::NONE);
     tool_event(app, ToolEvent::Up { x, y }, Modifiers::NONE);
 }
 
-fn prompt(app: &PhotocraftApp) -> Option<&crate::state::Dialog> {
+pub(super) fn prompt(app: &PhotocraftApp) -> Option<&crate::state::Dialog> {
     app.ui.dialogs.iter().find(|d| owns(&d.fields))
 }
 
@@ -178,14 +178,14 @@ fn the_control_channel_sees_and_confirms_the_prompt() {
     assert_eq!(active_content(&app), "Pixel");
 }
 
-const BLUR: &str = "filter.blur.gaussianBlur";
+pub(super) const BLUR: &str = "filter.blur.gaussianBlur";
 
-fn menu(app: &mut PhotocraftApp, id: &str) -> Result<serde_json::Value, String> {
+pub(super) fn menu(app: &mut PhotocraftApp, id: &str) -> Result<serde_json::Value, String> {
     crate::menus::invoke(app, &egui::Context::default(), id, json!({}))
 }
 
 /// Answers the filter prompt, then the frame runs the queued filter.
-fn answer(app: &mut PhotocraftApp, id: u64) {
+pub(super) fn answer(app: &mut PhotocraftApp, id: u64) {
     crate::dialogs::confirm(app, id).unwrap();
     run_pending(app, &egui::Context::default());
 }
@@ -276,7 +276,7 @@ fn filters_stay_grey_where_rasterizing_would_not_help() {
 }
 
 /// The dialogs, and the filter a prompt queued, frame by frame.
-fn harness(app: PhotocraftApp) -> egui_kittest::Harness<'static, PhotocraftApp> {
+pub(super) fn harness(app: PhotocraftApp) -> egui_kittest::Harness<'static, PhotocraftApp> {
     let h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
         |ui, app| {
             crate::dialogs::show(app, ui.ctx());

@@ -16,6 +16,11 @@ pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewX
     }
     let id = LayerId(ed.layer);
     let Some((l, aff, text)) = layout(app, id) else { return };
+    // A handle drag rendered in the background has not changed the document: draw the box where
+    // the pointer has it. The caret, selection and overflow mark still come from the document's
+    // layout, so the first two are hidden for the drag and the overflow mark follows on release.
+    let dragged = crate::type_box_preview::wanted_box(app, id);
+    let aff = dragged.map_or(aff, |b| crate::type_box_preview::overlay_affine(aff, b));
     if ed.mask {
         draw_mask_overlay(app, painter, xf, id);
     }
@@ -25,10 +30,13 @@ pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewX
         let p = aff.apply(Point::new(x as f64, y as f64));
         xf.to_screen(p.x as f32, p.y as f32)
     };
-    let shape = app.session.active().and_then(|s| text_layer(&s.doc, id).map(|t| t.shape.clone()));
+    let mut shape = app.session.active().and_then(|s| text_layer(&s.doc, id).map(|t| t.shape.clone()));
+    if let Some(b) = dragged {
+        shape = Some(photocraft_doc::text::TextShape::Box { x: 0.0, y: 0.0, width: b[2].max(1.0) as f32, height: b[3].max(1.0) as f32 });
+    }
     // Type on a path: the caret, selection and underline follow the curve the glyphs sit on.
-    let text_start = l.bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
-    let bend = shape.as_ref().and_then(|shape| photocraft_text::warp::Warp::on_path_with_text_start(shape, text_start));
+    let text_start = l.line_bounds().map_or(0.0, |bounds| f64::from(bounds[0]));
+    let bend = shape.as_ref().and_then(|shape| photocraft_text::warp::Warp::on_path_oriented(shape, text_start, l.vertical));
     // Line space (lines, clusters, carets) → screen: vertical type turns it 90° clockwise.
     let scr = |x: f32, y: f32| -> Pos2 {
         let (x, y) = l.to_text(x, y);
@@ -94,6 +102,9 @@ pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewX
                 painter.add(egui::Shape::line(run(ln.x0.min(0.0), ln.x1.max(ln.x0 + 1.0), y), Stroke::new(1.0, t.accent.gamma_multiply(0.8))));
             }
         }
+    }
+    if dragged.is_some() {
+        return;
     }
     // Uncommitted IME text is underlined, but only while the stored range still holds exactly
     // the composition: an application edit may have shifted it onto committed characters.

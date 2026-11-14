@@ -1,8 +1,10 @@
-use super::convert::{UniqueNames, export, import_with_encoding};
+use super::convert::{UniqueNames, clip_name, export, import_with_encoding};
 use super::{Action, DEFAULT_SET, EngineError, Result, Session, Value, bad, json};
 
-/// Load a set and retarget its own action references once, preserving foreign qualifications
-/// even when the caller changes the imported set's name or action names collide.
+/// `actions.load`: add the actions of an `.atn` file (`path` or `data`) to the list, retargeting
+/// the set's own action references once and preserving foreign qualifications even when the
+/// caller changes the imported set's name or action names collide. A set an automation client
+/// loads is marked as automation's, so it keeps the gate when the user plays it.
 pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "actions.load";
     if s.actions.recording.is_some() || s.actions.playing > 0 {
@@ -20,7 +22,8 @@ pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
     match p.get("set") {
         None | Some(Value::Null) => {}
         Some(Value::String(n)) if !n.trim().is_empty() => {
-            imp.set = n.trim().to_string();
+            // Held to the importer's name limit: the set name is copied into every action.
+            imp.set = clip_name(n.trim()).trim_end().to_string();
             for a in &mut imp.actions {
                 a.set = Some(imp.set.clone());
             }
@@ -75,6 +78,11 @@ pub(super) fn load(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
         }
+    }
+    // Actions an automation client loads keep its gate when the user plays them.
+    let automation = s.authorize.is_some();
+    for a in &mut added {
+        a.automation = automation;
     }
     s.actions.list.extend(added);
     // A set saved with no actions (Photoshop saves an empty set) is an empty folder, like one New

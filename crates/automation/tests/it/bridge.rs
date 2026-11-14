@@ -4,10 +4,10 @@
 
 use std::time::Duration;
 
-use photocraft_automation::security::authentication_reply;
+use photocraft_automation::security::{AuthStep, ServerHandshake};
 use photocraft_automation::{AutomationError, BridgeClient};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 const CONTROL_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -68,15 +68,28 @@ async fn fake_server(
     addr
 }
 
-/// Authenticate one connection: read the auth line, reply to it.
+/// Authenticate one connection.
 async fn authenticate(socket: &mut TcpStream) {
     let (read, mut write) = socket.split();
-    let mut reader = BufReader::new(read);
+    serve_handshake(&mut BufReader::new(read), &mut write).await;
+}
+
+/// The server side of one connection's authentication, as the real control servers run it: the
+/// bridge's challenge (or a one-frame token), answered frame by frame until it authenticates.
+pub(crate) async fn serve_handshake(reader: &mut (impl AsyncBufRead + Unpin), writer: &mut (impl AsyncWrite + Unpin)) {
+    let mut handshake = ServerHandshake::new();
     let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-    let (auth, ok) = authentication_reply(&line, CONTROL_TOKEN);
-    assert!(ok, "each connection must authenticate");
-    write.write_all(format!("{auth}\n").as_bytes()).await.unwrap();
+    loop {
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        let (reply, step) = handshake.reply(&line, CONTROL_TOKEN);
+        writer.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+        match step {
+            AuthStep::Authenticated => return,
+            AuthStep::Challenged => {}
+            AuthStep::Rejected => panic!("each connection must authenticate: {reply}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

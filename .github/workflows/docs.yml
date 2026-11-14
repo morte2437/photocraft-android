@@ -27,13 +27,16 @@ concurrency:
 
 jobs:
   build:
-    timeout-minutes: 15
     name: mdBook build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - name: Install mdBook
-        run: cargo install mdbook --version 0.4.52 --locked
-      - name: Build documentation
-        run: mdbook build book
+    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+    uses: storytold/craft-common-actions/.github/workflows/gate.yml@main
+    with:
+      timeout-minutes: 15
+      # The book needs mdBook only: no craft-fonts, apt packages, wasm target or nextest.
+      craft-fonts-ref: ""
+      targets: ""
+      free-disk-space: false
+      # Prebuilt mdBook, the version cargo install built before.
+      tools: mdbook@0.4.52
+      cache-version: v1-docs
+      command: mdbook build book

@@ -7,7 +7,7 @@ use crate::canvas::{ToolEvent, tool_event};
 
 mod right_click;
 
-fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
+pub(super) fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
     app.run("layer.new.layer", json!({})).unwrap();
@@ -33,13 +33,13 @@ fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn press(h: &mut Harness<'static, PhotocraftApp>, pos: Pos2, button: PointerButton, pressed: bool) {
+pub(super) fn press(h: &mut Harness<'static, PhotocraftApp>, pos: Pos2, button: PointerButton, pressed: bool) {
     h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
     h.run_steps(2);
 }
 
 /// Drag across the canvas centre with `button`; returns the document points it covered.
-fn drag(h: &mut Harness<'static, PhotocraftApp>, button: PointerButton) -> (Pos2, Pos2) {
+pub(super) fn drag(h: &mut Harness<'static, PhotocraftApp>, button: PointerButton) -> (Pos2, Pos2) {
     let c = h.state().last_canvas_rect.center();
     let (a, b) = (c - vec2(80.0, 0.0), c + vec2(80.0, 0.0));
     h.event(egui::Event::PointerMoved(a));
@@ -582,9 +582,9 @@ fn art_history_brush_starts_at_full_opacity() {
     sync_tool_brush(&mut app);
     assert_eq!(app.session.tools.brush.opacity, 1.0, "Art History starts at 100%");
     assert_eq!(app.session.tools.brush.size, 40.0, "and inherits the size");
-    app.ui.tool = Tool::CloneStamp;
+    app.ui.tool = Tool::HistoryBrush;
     sync_tool_brush(&mut app);
-    assert_eq!(app.session.tools.brush.opacity, 1.0, "the Clone Stamp takes the Art History brush's opacity");
+    assert_eq!(app.session.tools.brush.opacity, 1.0, "the History Brush takes the Art History brush's opacity");
     app.ui.tool = Tool::Brush;
     sync_tool_brush(&mut app);
     app.ui.tool = Tool::Eraser;

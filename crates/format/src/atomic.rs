@@ -236,7 +236,14 @@ pub fn atomic_write_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, byt
 
 /// [`atomic_write_with`] reporting write progress (see [`atomic_write_progress`]).
 pub fn atomic_write_with_progress(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, bytes: &[u8], progress: &dyn Fn(f32)) -> io::Result<()> {
-    replace_with(fs, retry, path, &mut |tmp| fs.write_new_progress(tmp, bytes, progress))
+    replace_with(fs, retry, path, true, &mut |tmp| fs.write_new_progress(tmp, bytes, progress))
+}
+
+/// [`atomic_write`] that never follows a symlink at `path`: a link there is replaced by the new
+/// file (the rename swaps the directory entry), so a link planted between a caller's own check
+/// and this write cannot carry it outside the folder (a store managing its own entries).
+pub fn atomic_write_no_follow(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    replace_with(&RealFs, RenameRetry::platform(), path, false, &mut |tmp| RealFs.write_new_progress(tmp, bytes, &|_| {}))
 }
 
 /// [`atomic_write`] for a file serialized as it is written (#6607): `write` fills the temporary
@@ -261,7 +268,7 @@ pub fn atomic_write_stream_progress(path: &Path, expected_len: u64, progress: &d
 
 /// [`atomic_write_stream`] through an explicit file system and retry policy.
 pub fn atomic_write_stream_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
-    replace_with(fs, retry, path, &mut |tmp| fs.write_new_stream(tmp, write))
+    replace_with(fs, retry, path, true, &mut |tmp| fs.write_new_stream(tmp, write))
 }
 
 /// A stream reporting how far it has got (see [`atomic_write_stream_progress`]), every
@@ -304,8 +311,8 @@ impl Seek for Progress<'_, '_> {
 
 /// The steps every atomic write shares: `write_tmp` fills a fresh temporary file beside the
 /// target, which is then renamed over it.
-fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
-    let target = resolve_symlink(path).map_err(|e| context(e, format!("cannot save {}", path.display())))?;
+fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, follow: bool, write_tmp: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
+    let target = if follow { resolve_symlink(path).map_err(|e| context(e, format!("cannot save {}", path.display())))? } else { path.to_path_buf() };
     let name = target.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{}: not a file path", path.display())))?;
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
@@ -340,7 +347,10 @@ fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &
     // default, its extended attributes, and its ACL. Best effort, and before the swap, so the
     // file the user ends up with never passes through a more permissive state.
     let replacing = target.exists();
-    if replacing {
+    // A link that is replaced rather than followed has nothing to carry over: reading the target's
+    // attributes would open whatever it points at (a FIFO with no writer blocks there).
+    let replaced_link = !follow && std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    if replacing && !replaced_link {
         let _ = fs.copy_metadata(&target, &tmp);
     }
 
@@ -358,7 +368,7 @@ fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &
     // so the caller keeps the document unsaved and its recovery data instead of discarding them
     // on a save that may not last.
     #[cfg(windows)]
-    fs.sync_dir(&dir).map_err(|e| publication_error(e, path))?;
+    dir_synced(fs.sync_dir(&dir)).map_err(|e| publication_error(e, path))?;
     #[cfg(not(windows))]
     dir_synced(fs.sync_dir(&dir)).map_err(|e| unconfirmed_error(e, path))?;
     Ok(())
@@ -379,9 +389,10 @@ fn open_dir_for_sync(dir: &Path) -> io::Result<Option<std::fs::File>> {
 /// `result` of flushing a directory, with "this file system can't flush directories" counted as
 /// success: `EINVAL` (Linux file systems without directory fsync), `ENOTSUP`/`EOPNOTSUPP` and,
 /// on Apple platforms, `ENOTTY`, or [`io::ErrorKind::Unsupported`]. Waiting or retrying won't
-/// change those, and failing every save there would make saving impossible. Any other error is
-/// returned: the flush was attempted and failed.
-#[cfg(not(windows))]
+/// change those, and failing every save there would make saving impossible. On Windows that is
+/// `ERROR_INVALID_FUNCTION` (1) and `ERROR_NOT_SUPPORTED` (50), which network shares (SMB, #9440)
+/// return when asked to flush a directory handle; access denied and I/O errors stay failures.
+/// Any other error is returned: the flush was attempted and failed.
 pub(crate) fn dir_synced(result: io::Result<()>) -> io::Result<()> {
     match result {
         Err(e) if dir_sync_unsupported(&e) => Ok(()),
@@ -389,10 +400,13 @@ pub(crate) fn dir_synced(result: io::Result<()>) -> io::Result<()> {
     }
 }
 
-#[cfg(not(windows))]
 fn dir_sync_unsupported(e: &io::Error) -> bool {
     if e.kind() == io::ErrorKind::Unsupported {
         return true;
+    }
+    // Win32 codes, not errno: ERROR_INVALID_FUNCTION and ERROR_NOT_SUPPORTED.
+    if cfg!(windows) {
+        return matches!(e.raw_os_error(), Some(1 | 50));
     }
     // errno values: EINVAL is 22 everywhere; ENOTSUP and EOPNOTSUPP are 95 on Linux and
     // Android, 45 and 102 on Apple platforms, 45 on the BSDs; ENOTTY is 25. Elsewhere 45 means

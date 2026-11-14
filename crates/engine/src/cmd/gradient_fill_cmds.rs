@@ -287,7 +287,7 @@ pub fn apply_set(layer: &Layer, f: &Fill, canvas: Rect, p: &Value, fg: [f32; 4],
 
 /// The Gradient Fill layer `gradient.fill.create` adds to `doc` for `p` (also the canvas's live
 /// preview of a Gradient tool drag): laid out on the canvas, so the handles land exactly where
-/// the drag was, and masked by the selection (Photoshop keeps the selection, as a mask).
+/// the drag was, and masked by the selection (`create` then drops the selection, #12196).
 pub fn new_layer(s: &Session, doc: &Document, p: &Value) -> Result<Layer> {
     const CMD: &str = CREATE;
     let from = point(CMD, p, "from")?.ok_or_else(|| bad(CMD, "missing `from` [x, y]"))?;
@@ -322,6 +322,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         new_layer(s, &d.doc, p)?
     };
     let id = s.edit("New Gradient Fill Layer", |doc, active| {
+        doc.selection = None;
         let id = crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::AutoEditable);
         *active = Some(id);
         Ok(id)
@@ -596,3 +597,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "gradient_fill_selection_tests.rs"]
+mod gradient_fill_selection_tests;

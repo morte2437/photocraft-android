@@ -24,14 +24,14 @@
 //! Warp (`perspective_warp_map.rs`), whose quads become the planes of its command. Hue/Saturation
 //! (`HStr`) maps to its adjustment command in `hue_sat_filter_map.rs`.
 
+use craft_psd::Compression;
+use craft_psd::Rect as PsdRect;
+use craft_psd::descriptor::{Class, Descriptor, Id, ObjectArray, ReferenceItem, UnicodeString, Value, VersionedDescriptor};
+use craft_psd::filter_effects::{EffectsPlane, FilterEffectsItem};
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{LayerMask, SmartFilter, SmartObject};
 use photocraft_geom::warp::{BezierMesh, Warp, WarpStyle};
 use photocraft_geom::{Affine, Rect as GeomRect};
-use photocraft_psd::Compression;
-use photocraft_psd::Rect as PsdRect;
-use photocraft_psd::descriptor::{Class, Descriptor, Id, ObjectArray, ReferenceItem, UnicodeString, Value, VersionedDescriptor};
-use photocraft_psd::filter_effects::{EffectsPlane, FilterEffectsItem};
 use photocraft_raster::Surface;
 use serde_json::{Map, Value as J, json};
 

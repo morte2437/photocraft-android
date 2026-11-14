@@ -545,7 +545,25 @@ impl<'a> EffectPass<'a> {
             for ((mv, a), dv) in m.v.iter_mut().zip(&shape.v).zip(&fields.din) {
                 *mv = if inside(*a) { (in_w + 0.5 - dv).clamp(0.0, 1.0) } else { 0.0 };
             }
-            paint_fx(lay, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, st.common.blend, st.common.opacity, self.patterns);
+            if st.common.blend == BlendMode::Normal {
+                // A Normal stroke replaces the layer under it instead of blending with it
+                // (Photoshop): at 50 % opacity an opaque pixel under the stroke turns into the
+                // stroke colour at 50 % alpha, not a 50/50 mix.
+                let mut stroke_px = Buffer { rect: self.big, px: vec![[0.0; 4]; lay.px.len()] };
+                paint_fx(&mut stroke_px, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, BlendMode::Normal, st.common.opacity, self.patterns);
+                for ((p, s), cov) in lay.px.iter_mut().zip(&stroke_px.px).zip(&m.v) {
+                    if s[3] <= 0.0 {
+                        continue;
+                    }
+                    let kept = p[3] * (1.0 - cov.clamp(0.0, 1.0));
+                    let alpha = kept + s[3];
+                    if alpha > 0.0 {
+                        *p = [(p[0] * kept + s[0] * s[3]) / alpha, (p[1] * kept + s[1] * s[3]) / alpha, (p[2] * kept + s[2] * s[3]) / alpha, alpha.min(1.0)];
+                    }
+                }
+            } else {
+                paint_fx(lay, &m, &st.paint, self.stroke_frame(st), self.anchor, self.big, st.common.blend, st.common.opacity, self.patterns);
+            }
         }
     }
 

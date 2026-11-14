@@ -294,7 +294,7 @@ fn grid(s: &Sensor, opts: &DevelopOptions, r: &Reference) -> Result<(usize, Vec<
     let c = s.crop;
     let in_data = c.x.checked_add(c.width).is_some_and(|v| v <= s.width) && c.y.checked_add(c.height).is_some_and(|v| v <= s.height);
     let need = s.width.checked_mul(s.height).and_then(|v| v.checked_mul(s.samples));
-    if c.is_empty() || !in_data || need.is_none_or(|n| s.data.len() < n) {
+    if c.is_empty() || !in_data || need.is_none_or(|n| s.sample_count() < n) {
         return reject("the crop lies outside the sensor data");
     }
     if !(s.samples == 3 || (s.samples == 1 && s.cfa.is_some())) {
@@ -849,7 +849,10 @@ mod tests {
         let cam: Vec<[f32; 3]> = patches(w, h).iter().map(|p| [0, 1, 2].map(|k| p[k] / WB[k] as f32)).collect();
         let data = crate::testgen::mosaic(&cam, w, [0, 1, 1, 2], 0, 4095);
         let b = crate::testgen::tiff_ep("NIKON CORPORATION", w, h, &data, [0, 1, 1, 2], 12, vec![]);
-        let s = crate::decode(&b, &crate::Limits::default()).unwrap();
+        let mut s = crate::decode(&b, &crate::Limits::default()).unwrap();
+        // The fixture uses a 12-bit encoding scale. craft-raw's NEF reader takes no WhiteLevel
+        // tag and reads the brightest flat, noiseless patch as a saturation plateau.
+        s.white = [4095.0; 3];
         let to_srgb = color::invert(&color::srgb_to_xyz_d50()).unwrap();
         let pro_to_srgb = color::mul(&to_srgb, &color::rgb_to_xyz(color::ROMM, color::D50_XY));
         let f = |x: f64| 1.6 * x / (1.0 + 0.6 * x);

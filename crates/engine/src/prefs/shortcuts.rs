@@ -106,6 +106,12 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+/// The Mixer Brush's commands Keyboard Shortcuts lists together in its Tools section, as the
+/// reference does (#11959): Load and Clean, then the Auto-Load, Auto-Clean and Sample All Layers
+/// switches. None has a default key.
+pub const MIXER_BRUSH_COMMANDS: [&str; 5] =
+    ["brush.mixer.load", "brush.mixer.clean", "brush.mixer.autoLoad", "brush.mixer.autoClean", "brush.mixer.sampleAllLayers"];
+
 /// Hold-and-release gestures (#249): temporary tools that last while their key is held and give
 /// the previous tool back on release. They are bound like shortcuts (Edit › Keyboard Shortcuts ›
 /// Tools › Temporary, `edit.keyboardShortcuts`) but held rather than pressed, so they are not

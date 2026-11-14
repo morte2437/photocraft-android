@@ -15,12 +15,18 @@ fn the_four_prompts_read_as_measured() {
     );
     assert_eq!(Kind::Type.message(), "This type layer must be rasterized before proceeding. Its text will no longer be editable. Rasterize the type?");
     assert_eq!(Kind::Shape.message(), "This shape layer must be rasterized before proceeding. It will no longer be editable as a shape. Rasterize the shape?");
-    assert_eq!(Kind::Fill.message(), "This fill layer must be rasterized before proceeding. Its fill content will no longer be editable. Rasterize the layer?");
+    assert_eq!(
+        Kind::Fill.message(),
+        "The fill for this layer must be rasterized before proceeding. It will no longer be editable as a fill. Rasterize the fill?"
+    );
     assert!(!Kind::SmartObject.message().contains("  "), "single spaces between sentences");
 }
 
 #[test]
 fn catalogs_that_had_a_translation_keep_one() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let new = Kind::SmartObject.message();
     let fr = Lang::from_code("fr").expect("French");
     assert_ne!(tr(fr, new), new, "French still translates the prompt");
@@ -28,12 +34,9 @@ fn catalogs_that_had_a_translation_keep_one() {
     let de = Lang::from_code("de").expect("German");
     assert_eq!(tr(de, new), new);
     // No catalog keeps the old key.
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/i18n");
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|e| e == "tsv") {
-            let text = std::fs::read_to_string(&path).unwrap();
-            assert!(!text.contains(OLD), "{} still has the old key", path.display());
-        }
+    for (code, _, catalog) in crate::i18n::CRAFT_I18N {
+        // Rows are `context <TAB> English <TAB> translation`; `#` starts a comment.
+        let mut keys = catalog.lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split('\t').nth(1));
+        assert!(keys.all(|k| k != OLD), "{code} still has the old key");
     }
 }

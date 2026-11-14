@@ -50,6 +50,9 @@ fn focused_font_search_does_not_type_into_the_canvas_layer() {
 
 #[test]
 fn numeric_type_fields_have_localized_accessible_names() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let pt = crate::i18n::Lang::from_code("pt-br").unwrap();
     let mut h = Harness::builder().build_ui_state(
         move |ui, value: &mut f32| {

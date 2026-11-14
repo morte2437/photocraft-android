@@ -91,3 +91,98 @@ fn letters_pick_blend_modes_in_the_open_list_without_switching_tools() {
     h.run_steps(2);
     assert!(h.state().ui.tool != Tool::Move, "M picks a marquee tool once the list is closed");
 }
+
+/// #9065: a command shortcut pressed with the Blend Mode list open closes the list and runs, as
+/// with Photoshop's menus (⌘1 there closes an open panel or menu bar menu and zooms to 100%).
+/// Letters and arrows stay the list's (the tests above).
+#[test]
+fn a_command_shortcut_closes_the_open_list_and_runs() {
+    command_shortcut_closes_the_open_list_and_runs(egui::Modifiers::COMMAND);
+}
+
+/// #9314 review: the same with the modifiers a real key press carries, not just egui's logical
+/// `command`: Ctrl on Windows and Linux, ⌘ on macOS.
+#[test]
+fn a_command_shortcut_with_each_platforms_modifiers_closes_the_open_list_and_runs() {
+    command_shortcut_closes_the_open_list_and_runs(egui::Modifiers::CTRL | egui::Modifiers::COMMAND);
+    command_shortcut_closes_the_open_list_and_runs(egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND);
+}
+
+/// ⌘1 / Ctrl+1 (100%), pressed with `mods`, with the Blend Mode list open.
+fn command_shortcut_closes_the_open_list_and_runs(mods: egui::Modifiers) {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 3000, "height": 2000})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app
+    });
+    h.run_steps(6);
+    assert_ne!(h.state().ui.views[0].zoom, 1.0, "the document starts fitted, not at 100%");
+    let named = |n: &egui_kittest::Node<'_>| {
+        let a = n.accesskit_node();
+        a.value().as_deref() == Some("Normal") || a.label().as_deref() == Some("Normal")
+    };
+    h.query_all_by_role(Role::ComboBox).find(|n| named(n)).expect("the Layers panel's Blend Mode dropdown").click();
+    h.run_steps(2);
+    assert!(crate::widgets::dropdown_list_open(&h.ctx), "the list is open");
+    h.key_press_modifiers(mods, egui::Key::Num1);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.views[0].zoom, 1.0, "⌘1 (100%) runs with the list open: {mods:?}");
+    assert!(!crate::widgets::dropdown_list_open(&h.ctx), "and closes the list: {mods:?}");
+    let st = h.state().session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().blend, BlendMode::Normal, "the mode is unchanged: {mods:?}");
+}
+
+/// #9065 (CodeRabbit on #9314): with the Layers panel's options menu open, a command shortcut
+/// closes the menu and runs, as Photoshop's panel flyout does (⌘1 there closes it and zooms to
+/// 100%).
+#[test]
+fn a_command_shortcut_closes_the_open_panel_menu_and_runs() {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 3000, "height": 2000})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app
+    });
+    h.run_steps(6);
+    assert_ne!(h.state().ui.views[0].zoom, 1.0, "the document starts fitted, not at 100%");
+    let group = crate::panel_docking::probe::group_rect(h.state(), &h.ctx, "layers").expect("layers group");
+    h.query_all_by_label("Panel menu").find(|n| group.contains(n.rect().center())).expect("the Layers panel menu").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Collapse All Groups").is_some(), "the Layers panel menu is open");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num1);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.views[0].zoom, 1.0, "⌘1 (100%) runs with the menu open");
+    assert!(h.query_by_label("Collapse All Groups").is_none(), "and closes the menu");
+}
+
+/// #9065 (CodeRabbit on #9314): Layer Style's contour picker keeps its open state in the
+/// dialog's fields rather than egui's popup memory; a command shortcut closes it too and runs
+/// (⌘1 zooms to 100%, which Layer Style lets through).
+#[test]
+fn a_command_shortcut_closes_the_open_contour_picker_and_runs() {
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 3000, "height": 2000})).unwrap();
+        app.run("layer.new.layer", json!({})).unwrap();
+        app
+    });
+    h.run_steps(6);
+    assert_ne!(h.state().ui.views[0].zoom, 1.0, "the document starts fitted, not at 100%");
+    crate::layer_style::open(h.state_mut(), Some("dropShadow")).expect("Layer Style opens");
+    h.run_steps(4);
+    let picker = "contourPicker";
+    let d = h.state_mut().ui.dialogs.last_mut().unwrap();
+    let fx = d.fields["selected"].clone();
+    d.fields.insert(picker.into(), json!({"effect": fx, "key": "contour"}));
+    h.run_steps(3);
+    assert!(h.query_by_label("Load Contours…").is_some(), "the contour picker is open");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num1);
+    h.run_steps(3);
+    assert_eq!(h.state().ui.views[0].zoom, 1.0, "⌘1 (100%) runs with the picker open");
+    assert!(h.query_by_label("Load Contours…").is_none(), "and closes the picker");
+    assert!(!h.state().ui.dialogs.last().unwrap().fields.contains_key(picker), "and forgets it was open");
+}

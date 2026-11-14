@@ -136,7 +136,7 @@ Same hub entry as standalone pickers; `color_picker_ui::confirm` branches on ext
 
 | System | Location | When |
 |---|---|---|
-| Unsaved changes | `discard_ui.rs` | Close, Revert, Close Others/All, Exit—Save / Don't Save / Cancel |
+| Unsaved changes | `discard_ui.rs` | Close, Close Others/All, Exit—Save / Don't Save / Cancel, where on macOS ⌘D is Don't Save too (#11282); Revert—Revert / Cancel, with no Don't Save for ⌘D to press |
 | Shell dialog | `control.rs`, `ui.inspect` id `"shell"` | Workspace, custom pixel aspect, show-extras options |
 | Camera Raw | `camera_raw_ui.rs` | Separate OS window on desktop; see control-protocol § Camera Raw |
 | Error message | `DialogKind::Error` | e.g. `move_lock`—message + OK |

@@ -1,10 +1,10 @@
 //! Multichannel PSDs: alpha-type channels and the document's resources and global blocks survive
 //! an import → export → import round trip.
 
+use craft_psd::resources::ImageResource;
+use craft_psd::{ColorMode, Compression, PsdFile, TaggedBlock, Version, testgen};
 use photocraft_doc::{ColorIndicates, Knot, NamedPath, Path, PathOp, Subpath};
 use photocraft_io::*;
-use photocraft_psd::resources::ImageResource;
-use photocraft_psd::{ColorMode, Compression, PsdFile, TaggedBlock, Version, testgen};
 
 /// DisplayInfo (1077) record: RGB colour, opacity (0..100) and kind (0/1 alpha, 2 spot).
 fn display_record(out: &mut Vec<u8>, rgb: [u16; 3], opacity: u16, kind: u8) {
@@ -103,7 +103,7 @@ fn ink_and_alpha_file(depth: u16) -> PsdFile {
     let mut f = testgen::merged_only(Version::Psd, ColorMode::Multichannel, depth, Compression::Rle, 4, 1);
     let mut planes = plane(&[0.0, 1.0, 0.0, 1.0], depth);
     planes.extend(plane(&[1.0, 1.0, 0.0, 0.0], depth));
-    f.image_data = photocraft_psd::ImageData::encode(Compression::Rle, &planes, &f.header).unwrap();
+    f.image_data = craft_psd::ImageData::encode(Compression::Rle, &planes, &f.header).unwrap();
     let mut info = 1u32.to_be_bytes().to_vec();
     display_record(&mut info, [0, 65535, 65535], 0, 2);
     display_record(&mut info, [65535, 0, 0], 50, 0);

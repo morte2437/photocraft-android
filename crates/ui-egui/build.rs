@@ -1,4 +1,5 @@
-//! Bake the contributor credits into the binary as static Rust tables. Nothing is read at run time.
+//! Bake the contributor credits into the binary as static Rust tables, and embed the craft-i18n
+//! interface catalogs. Nothing is read at run time.
 //!
 //! - contributors/contributors.json: commit stats per GitHub username, with a mark for whose people.toml
 //!   entry is verified.
@@ -7,10 +8,11 @@
 //!
 //! A missing or malformed file gives empty tables (or no names) and a warning.
 //!
-//! Also packs the translation catalogs (`src/i18n/*.tsv`) into `OUT_DIR/i18n/` for
-//! `i18n::LANGUAGES` (see [`pack_catalogs`]): stored that way they take ~0.5 MB of the binary
-//! instead of ~2.2 MB, which keeps the web build under its 24 MiB size gate
-//! (packaging/web/package.sh). A catalog is unpacked the first time its language is used.
+//! - `CRAFT_I18N_DIR`, a craft-i18n checkout (storytold/craft-i18n, at the SHA in
+//!   `craft-i18n.rev`): `craft_i18n.rs` holds `CRAFT_I18N`, one (locale, shared catalog, PhotoCraft
+//!   catalog) entry per locale that has a `photocraft.tsv`, embedded raw. Unset, or not a checkout
+//!   (a warning), it is empty and the interface is English only; with `CRAFT_I18N_REQUIRED=1` (CI
+//!   and releases) that is an error instead. Recipe: craft-i18n's `docs/integration.md`.
 
 use std::fmt::Write as _;
 
@@ -26,8 +28,83 @@ fn main() {
     if let Err(e) = std::fs::write(&out, generate(&json, &people)) {
         println!("cargo::warning=writing {}: {e}", out.display());
     }
-    pack_catalogs();
+    let out = out.with_file_name("craft_i18n.rs");
+    if let Err(e) = std::fs::write(&out, craft_i18n()) {
+        println!("cargo::error=writing {}: {e}", out.display());
+    }
     deflate_egui_fonts();
+}
+
+/// The catalog this app reads in each locale: `locales/<locale>/photocraft.tsv`.
+const APP_CATALOG: &str = "photocraft.tsv";
+
+/// `CRAFT_I18N` from `CRAFT_I18N_DIR`: the `Embedded` list the craft-i18n crate reads.
+fn craft_i18n() -> String {
+    println!("cargo::rerun-if-env-changed=CRAFT_I18N_DIR");
+    println!("cargo::rerun-if-env-changed=CRAFT_I18N_REQUIRED");
+    let required = std::env::var("CRAFT_I18N_REQUIRED").is_ok_and(|v| v.trim() == "1");
+    let entries = match std::env::var_os("CRAFT_I18N_DIR").filter(|d| !d.is_empty()) {
+        // Not canonicalized: on Windows that gives `\\?\C:\…`, which `include_str!` can't read.
+        Some(dir) => match locales(&std::path::PathBuf::from(dir).join("locales")) {
+            Ok(entries) => entries,
+            Err(e) => {
+                let level = if required { "error" } else { "warning" };
+                println!("cargo::{level}=CRAFT_I18N_DIR: {e}; the interface is English only");
+                Vec::new()
+            }
+        },
+        None => {
+            if required {
+                println!("cargo::error=CRAFT_I18N_REQUIRED=1 but CRAFT_I18N_DIR is unset: a release must embed the translations");
+            }
+            Vec::new()
+        }
+    };
+    let mut o = String::from("/// (locale, shared catalog, PhotoCraft's catalog), one entry per locale; `\"\"` for a missing file.\n");
+    o.push_str("pub static CRAFT_I18N: &craft_i18n::Embedded = &[\n");
+    for (code, shared, app) in entries {
+        // `{:?}` escapes the path (Windows backslashes) as a Rust string literal.
+        let shared = shared.map_or_else(|| "\"\"".to_string(), |p| format!("include_str!({p:?})"));
+        let _ = writeln!(o, "    ({code:?}, {shared}, include_str!({app:?})),");
+    }
+    o.push_str("];\n");
+    o
+}
+
+/// One embedded locale: its code, its `common.tsv` if it has one, and its PhotoCraft catalog.
+type Locale = (String, Option<std::path::PathBuf>, std::path::PathBuf);
+
+/// Every locale under `dir` with PhotoCraft's catalog, by code. An error when `dir` isn't a
+/// craft-i18n `locales/` directory.
+fn locales(dir: &std::path::Path) -> Result<Vec<Locale>, String> {
+    // Build scripts run in the crate's directory and `include_str!` resolves against the
+    // generated file, so a relative path would mean two different places.
+    if !dir.is_absolute() {
+        return Err(format!("{} is not an absolute path", dir.display()));
+    }
+    // Before read_dir, so a checkout that appears later reruns the script.
+    println!("cargo::rerun-if-changed={}", dir.display());
+    let list = std::fs::read_dir(dir).map_err(|e| format!("{} is not a craft-i18n checkout ({e})", dir.display()))?;
+    let mut out = Vec::new();
+    for entry in list.flatten() {
+        let path = entry.path();
+        let Some(code) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
+        let app = path.join(APP_CATALOG);
+        if !app.is_file() {
+            continue;
+        }
+        println!("cargo::rerun-if-changed={}", app.display());
+        let shared = Some(path.join("common.tsv")).filter(|p| p.is_file());
+        if let Some(p) = &shared {
+            println!("cargo::rerun-if-changed={}", p.display());
+        }
+        out.push((code, shared, app));
+    }
+    if out.is_empty() {
+        return Err(format!("{} has no locale with a {APP_CATALOG}", dir.display()));
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// Deflate egui's default fonts (the `epaint_default_fonts` crate) into `OUT_DIR/egui_fonts/` for
@@ -56,96 +133,6 @@ fn deflate_egui_fonts() {
     })();
     if let Err(e) = result {
         println!("cargo::error=deflating egui's default fonts into {}: {e}", out.display());
-    }
-}
-
-/// Whether a catalog line is an entry (`context<TAB>source<TAB>translation`, source and
-/// translation non-empty, as `i18n::catalog::parse_entries` reads it), and its key and translation.
-fn catalog_entry(line: &str) -> Option<(&str, &str)> {
-    if line.starts_with('#') {
-        return None;
-    }
-    let mut cols = line.splitn(3, '\t');
-    let (ctx, src, tr) = (cols.next()?, cols.next()?, cols.next()?);
-    let key = line.get(..ctx.len() + 1 + src.len())?;
-    (!src.is_empty() && !tr.is_empty() && !tr.contains('\t')).then_some((key, tr))
-}
-
-/// Pack every `src/i18n/*.tsv` into `OUT_DIR/i18n/`, losslessly (`i18n::unpack` restores each file
-/// byte for byte). Every catalog repeats the same English sources, so they are stored once:
-///
-/// - `keys.deflate`: every entry's `context<TAB>source`, one per line, in order of first
-///   appearance (the largest catalog first).
-/// - `<code>.tsv.deflate`: the catalog, each entry line replaced by `\x01<translation>` when its key
-///   follows the previous entry's in `keys`, else `\x02<offset><TAB><translation>` (the offset from
-///   there). Other lines are kept; one that starts with \x01, \x02 or \x03 gets a \x03 prefix.
-///
-/// Both are deflated. A catalog that can't be written is a build error (`include_bytes!` would
-/// fail on it anyway, with a less helpful message).
-fn pack_catalogs() {
-    use std::io::Write as _;
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/i18n");
-    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("i18n");
-    println!("cargo::rerun-if-changed={}", src.display());
-    let deflate = |bytes: &[u8]| -> std::io::Result<Vec<u8>> {
-        let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
-        z.write_all(bytes)?;
-        z.finish()
-    };
-    let result = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(&out)?;
-        let mut catalogs = Vec::new();
-        for entry in std::fs::read_dir(&src)? {
-            let path = entry?.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()).filter(|n| n.ends_with(".tsv")) else { continue };
-            println!("cargo::rerun-if-changed={}", path.display());
-            catalogs.push((name.to_owned(), std::fs::read_to_string(&path)?));
-        }
-        // Largest first, then by name: the key order (and so the output) is reproducible.
-        catalogs.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
-        let mut keys: Vec<&str> = Vec::new();
-        let mut index = std::collections::HashMap::new();
-        for line in catalogs.iter().flat_map(|(_, text)| text.split('\n')) {
-            if let Some((key, _)) = catalog_entry(line) {
-                index.entry(key).or_insert_with(|| {
-                    keys.push(key);
-                    keys.len() - 1
-                });
-            }
-        }
-        std::fs::write(out.join("keys.deflate"), deflate(keys.join("\n").as_bytes())?)?;
-        for (name, text) in &catalogs {
-            let mut packed = String::with_capacity(text.len());
-            let mut next = 0usize;
-            for (n, line) in text.split('\n').enumerate() {
-                if n > 0 {
-                    packed.push('\n');
-                }
-                match catalog_entry(line) {
-                    Some((key, tr)) => {
-                        let i = index.get(key).copied().unwrap_or_default();
-                        if i == next {
-                            packed.push('\x01');
-                        } else {
-                            let _ = write!(packed, "\x02{}\t", i as i64 - next as i64);
-                        }
-                        packed.push_str(tr);
-                        next = i + 1;
-                    }
-                    None => {
-                        if line.starts_with(['\x01', '\x02', '\x03']) {
-                            packed.push('\x03');
-                        }
-                        packed.push_str(line);
-                    }
-                }
-            }
-            std::fs::write(out.join(format!("{name}.deflate")), deflate(packed.as_bytes())?)?;
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        println!("cargo::error=packing the translation catalogs in {}: {e}", src.display());
     }
 }
 

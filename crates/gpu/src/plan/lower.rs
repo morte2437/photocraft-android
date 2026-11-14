@@ -287,7 +287,7 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             }
             (12, p, None)
         }
-        Adjustment::GradientMap { stops, reverse, dither } => {
+        Adjustment::GradientMap { stops, reverse, dither, .. } => {
             p[0][0] = if *reverse { 1.0 } else { 0.0 };
             p[0][1] = if *dither { 1.0 } else { 0.0 };
             let s4: Vec<(f32, [f32; 4])> = stops.iter().map(|(t, c)| (*t, [c[0], c[1], c[2], 1.0])).collect();

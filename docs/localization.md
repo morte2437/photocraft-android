@@ -1,12 +1,16 @@
 # UI localisation and live language switching
 
 PhotoCraft uses the same Rust catalog implementation in the native egui shell and the
-WebAssembly build. English source strings are lookup keys. UTF-8 TSV catalogs supply plain,
-contextual, command-ID and plural translations; missing entries fall back to English.
+WebAssembly build: the `craft-i18n` crate (craft-libs) over the catalogs of
+[storytold/craft-i18n](https://github.com/storytold/craft-i18n), shared by the Crafting Apps.
+English source strings are lookup keys. UTF-8 TSV catalogs (`locales/<code>/photocraft.tsv`, over
+the shared `common.tsv`) supply plain, contextual, command-ID and plural translations; missing
+entries fall back to English. The build embeds them from the checkout `CRAFT_I18N_DIR` names, at
+the commit in `craft-i18n.rev`; without it PhotoCraft builds and runs in English only.
 
 ## Supported languages
 
-| Language | Preference code | Integer plural forms |
+| Language | Preference code | Integer plural forms (CLDR) |
 |---|---|---|
 | English | `en` | one / other |
 | 简体中文 | `zh-hans` | one form |
@@ -25,19 +29,19 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | Polski | `pl` | one / few (2–4, not 12–14) / many |
 | Ελληνικά | `el` | one / other |
 | Nederlands | `nl` | one / other |
-| Magyar | `hu` | one form |
+| Magyar | `hu` | one / other (both read the same: "3 réteg") |
 | Tiếng Việt | `vi` | one form |
 | ไทย | `th` | one form |
 | தமிழ் | `ta` | one / other |
-| Srpski | `sr` | one / few / many (teens use many) |
+| Srpski (latinica) | `sr-latn` | one / few / other (teens use other) |
 | Bosanski | `bs` | one / few / other (teens use other) |
-| हिन्दी | `hi` | one / other |
+| हिन्दी | `hi` | one (0 and 1) / other |
 | Svenska | `sv` | one / other |
 | Suomi | `fi` | one / other (partitive after every count but 1) |
 | Dansk | `da` | one / other |
 | Norsk bokmål | `nb` | one / other |
-| ქართული | `ka` | one form (count-neutral: `შრე: {n}`) |
-| עברית | `he` | one / other |
+| ქართული | `ka` | one / other (both count-neutral: `შრე: {n}`) |
+| עברית | `he` | one / two / other (two repeats other) |
 | اردو | `ur` | one / other |
 | Română | `ro` | one / few (0, 2–19, 101–119 …) / other (20–100, 120 …) |
 | Azərbaycanca | `az` | one (1) / other (all other integer counts) |
@@ -50,11 +54,10 @@ drafts have edited core terminology; native-speaker review is pending. See
 
 Languages registered with `complete_menus` cover the current menu labels, `tl!` literals, blend
 mode names, and generated preference labels. A string a catalog lacks shows in English:
-`cargo xtask i18n-coverage` lists the missing strings per language, and `cargo xtask ci` prints
-that list as its last step without failing. Vietnamese (`vi`) is
-selectable, resolves regional tags such as `vi-VN`, and covers all current stable localization
-keys. `complete_menus` remains false while generated/dynamic long-tail labels are still under
-review. This does not include every engine error or status message: those remain English, as do
+`cargo xtask i18n-report` lists the missing strings per language (with `CRAFT_I18N_DIR` set), and
+`cargo xtask ci` prints that list as its last step without failing. Vietnamese (`vi`) is
+selectable, resolves regional tags such as `vi-VN`, and is registered with `complete_menus`, its
+coverage level with the other complete catalogs. This does not include every engine error or status message: those remain English, as do
 automation command IDs and user-provided document, layer and preset names.
 
 UI search and access-key comparisons use locale-aware dotted/dotless I rules for Azerbaijani
@@ -73,8 +76,10 @@ The existing preference store saves the selection for future launches. `auto` fo
 native system locale; an unsupported code follows the same fallback. Regional tags such as
 `fr-CA`, `ko-KR`, `vi-VN` and `zh-CN` resolve to the corresponding registered catalog. Traditional and
 Simplified Chinese remain distinct. Every Portuguese locale (`pt`, `pt-BR`, `pt-PT`) uses the
-Brazilian Portuguese catalog. The Serbian catalog is written in Latin script (Ekavian); every
-Serbian locale (`sr-RS`, `sr-Latn-RS`, `sr_RS@latin`, and Cyrillic `sr-Cyrl-RS`) resolves to it.
+Brazilian Portuguese catalog. The Serbian catalog (`sr-latn`) is written in Latin script
+(Ekavian); every Serbian locale (`sr`, `sr-RS`, `sr-ME`, `sr-Latn-RS`, `sr_RS@latin`, and Cyrillic
+`sr-Cyrl-RS`) resolves to it, and a preference saved as `sr` by an earlier version loads as
+`sr-latn`.
 The Bosnian catalog is written in Latin script (Ijekavian); every Bosnian locale (`bs-BA`,
 `bs-Latn-BA`, `bs_BA.UTF-8`, and Cyrillic `bs-Cyrl-BA`) resolves to it.
 Swedish locales from Sweden and Finland (`sv-SE`, `sv-FI`, `sv_FI.UTF-8`) use the Swedish catalog;
@@ -117,9 +122,10 @@ updates the labels in the same rendered frame. Drawing language is local to the 
 a scoped preview restores the previous language even if drawing unwinds. Menu and dialog
 identity continues to use command IDs, independent of translated labels.
 
-This is hot switching among the bundled catalogs. Catalog files are embedded with
-`include_str!`; editing a TSV file requires a rebuild. External catalog watching and
-file-resource hot reload are not implemented.
+This is hot switching among the embedded catalogs. `build.rs` embeds the craft-i18n catalogs with
+`include_str!`; a catalog change reaches PhotoCraft when `craft-i18n.rev` moves to a commit that
+has it, and needs a rebuild. External catalog watching and file-resource hot reload are not
+implemented.
 
 ## Right-to-left languages
 
@@ -160,23 +166,31 @@ detection remain separate outstanding work. Switching catalogs does not supply m
 
 ## Add or maintain a catalog
 
-1. Add `<code>.tsv` under `crates/ui-egui/src/i18n`, following the header in `ja.tsv`.
-2. Register its code, native name and plural rule in `i18n::LANGUAGES`.
-3. Translate the meaning of the English source keys. Preserve `{name}` placeholders, escaped
-   characters and the trailing `…` on dialog commands. Use `@id` to disambiguate a command
-   label and `@plural` for count-sensitive text. Keep product names such as PhotoCraft.
-4. Set `complete_menus` once `cargo xtask i18n-coverage` lists nothing missing for the language. Add source and license
-   attribution for translation assets, then run the catalog and shell tests.
+Translations live in craft-i18n, not here (its `docs/integration.md`). A PhotoCraft PR that adds
+or changes interface text adds the English only; translators add the other languages to
+`locales/<code>/photocraft.tsv` in craft-i18n PRs, and they show here once `craft-i18n.rev` moves
+to a commit that has them. A missing translation never fails a build or a release: the string shows
+in English. A few tests check named rows of the pinned catalogs (Hindi's Camera Raw row, for
+one), so moving `craft-i18n.rev` to a commit that drops such a row fails that test until it is
+updated.
+
+1. Translate the meaning of the English source keys. Preserve `{name}` placeholders, escaped
+   characters and the trailing `…` on dialog commands (an `@id` row without them is skipped and
+   the label's translation shows). Use `@id` to disambiguate a command label and `@plural` for
+   count-sensitive text, one form per CLDR category. Keep product names such as PhotoCraft.
+2. A new language: craft-i18n gets `locales/<code>/photocraft.tsv` with its `@id language.name`
+   row, then PhotoCraft registers its code in `i18n::LANGUAGES`.
+3. Set `complete_menus` once `cargo xtask i18n-report` lists nothing missing for the language.
 
 ```sh
+git clone https://github.com/storytold/craft-i18n ../craft-i18n
+git -C ../craft-i18n checkout "$(tr -d '[:space:]' < craft-i18n.rev)"
+export CRAFT_I18N_DIR="$PWD/../craft-i18n"
 cargo test -p photocraft-ui-egui --locked
-cargo clippy -p photocraft-ui-egui --all-targets --locked -- -D warnings
-cargo xtask i18n-coverage
-cargo xtask layers
-cargo xtask wasm
+cargo xtask i18n-report
 ```
 
 Render representative dialogs with the offscreen `snapshot` example, including a sequence
 of language changes in one process. Inspect the PNGs for missing glyphs and truncated labels.
-Translations are original work or reuse the open PhotoCraft contributions credited in
-[ATTRIBUTION.md](../ATTRIBUTION.md); no proprietary localisation resources are used.
+Translators are credited in craft-i18n's `ATTRIBUTION.md`; no proprietary localisation resources
+are used.

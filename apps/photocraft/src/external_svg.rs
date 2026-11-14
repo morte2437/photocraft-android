@@ -627,17 +627,14 @@ mod native {
     /// True for a symlink, or on Windows any reparse point, whose target could be swapped.
     /// Expects `symlink_metadata`, which describes the link itself rather than its target.
     fn is_redirect(metadata: &Metadata) -> bool {
-        if metadata.file_type().is_symlink() {
-            return true;
-        }
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            metadata.file_attributes() & 0x0000_0400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+            metadata.file_type().is_symlink() || metadata.file_attributes() & 0x0000_0400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
         }
         #[cfg(not(windows))]
         {
-            false
+            metadata.file_type().is_symlink()
         }
     }
 

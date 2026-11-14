@@ -18,9 +18,9 @@
 
 use std::sync::Arc;
 
+use craft_psd::ImageResource;
+use craft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
 use photocraft_doc::{Color, CountGroup, Document, MeasurementScale, Note};
-use photocraft_psd::ImageResource;
-use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value, VersionedDescriptor};
 
 pub const MEASUREMENT_SCALE: u16 = 1074;
 pub const COUNT_INFO: u16 = 1080;
@@ -310,7 +310,7 @@ pub fn write_scale_resource(s: &MeasurementScale) -> Vec<u8> {
     let d = Descriptor::new("null")
         .with("pixelLength", Value::Double(s.pixel_length))
         .with("logicalLength", Value::Double(s.logical_length))
-        .with("logicalUnits", Value::Text(photocraft_psd::descriptor::UnicodeString::new(&s.units)));
+        .with("logicalUnits", Value::Text(craft_psd::descriptor::UnicodeString::new(&s.units)));
     let mut v = VersionedDescriptor::new(d).to_bytes();
     if v.len() % 2 == 1 {
         v.push(0);

@@ -9,6 +9,11 @@
 //! alpha-type channel of a Multichannel document (selected / masked areas) still prints, as a
 //! transparent black ink, like the reference editor shows it. Its value is stored as-is
 //! (1 = selected, white in the Channels panel), so its ink is `1 − value`.
+//!
+//! Like Photoshop, the ink preview adds the Spot working space's dot gain (Edit › Color Settings ›
+//! Spot, [`set_spot_dot_gain`]): a 50 % dot shows as 50 % plus the gain, as it prints on press.
+//! The saved thumbnail ([`thumbnail_with_inks`]) adds it too, as Photoshop bakes the gain set at
+//! save time into a document's preview.
 
 //! This is a screen approximation, not a press proof: stored RGB alternate colours are taken as
 //! sRGB and, like Lab/gray alternates, converted into an RGB document's own profile; CMYK
@@ -18,13 +23,52 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::{Builtin, ColorSpace, Profile, Transform, TransformOptions};
+use craft_cms::{Builtin, ColorSpace, Profile, Transform, TransformOptions};
 use photocraft_color::convert::CmykSpace;
 use photocraft_color::{Color, ColorMode};
 use photocraft_doc::{AlphaChannel, Document};
 use photocraft_geom::Rect;
 
 use crate::Buffer;
+
+/// Photoshop's default Spot working space: Dot Gain 20 %.
+pub const SPOT_DOT_GAIN: f32 = 20.0;
+/// The largest dot gain the setting takes: a 50 % dot at 99 % (a gain of 50 % or more would
+/// print every midtone solid).
+pub const MAX_SPOT_DOT_GAIN: f32 = 49.0;
+
+static SPOT_DOT_GAIN_SETTING: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x41a0_0000); // 20.0f32
+
+/// Sets Color Settings › Spot: the dot gain, in percent at a 50 % dot, that the ink preview adds
+/// to every spot channel. It is an application setting, not stored in documents; values are
+/// clamped to 0–[`MAX_SPOT_DOT_GAIN`].
+///
+/// The value is process-wide: a test that changes it races every concurrently running test that
+/// renders a Multichannel document, so such tests belong in their own test binary (see
+/// `crates/compose/tests/spot_dot_gain.rs`).
+pub fn set_spot_dot_gain(percent: f32) {
+    let g = if percent.is_finite() { percent.clamp(0.0, MAX_SPOT_DOT_GAIN) } else { SPOT_DOT_GAIN };
+    SPOT_DOT_GAIN_SETTING.store(g.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The current Spot dot gain in percent (see [`set_spot_dot_gain`]).
+pub fn spot_dot_gain() -> f32 {
+    f32::from_bits(SPOT_DOT_GAIN_SETTING.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The ink coverage that prints for channel value `v` (0..1) with a dot gain of `percent` at a
+/// 50 % dot: `1 − (1 − v)^γ`, with γ chosen so a 50 % dot prints at 50 % + `percent`. Solids and
+/// paper stay as they are. This is the curve family of the built-in "Dot Gain 20 %-compatible"
+/// gray (a gamma fitted on Photoshop's Dot Gain 20 % profile; 20 % here gives γ ≈ 1.737).
+pub fn dot_gain(v: f32, percent: f32) -> f32 {
+    let v = v.clamp(0.0, 1.0);
+    let g = if percent.is_finite() { percent.clamp(0.0, MAX_SPOT_DOT_GAIN) / 100.0 } else { 0.0 };
+    if g <= 0.0 {
+        return v;
+    }
+    let gamma = (0.5 - g).ln() / 0.5f32.ln();
+    1.0 - (1.0 - v).powf(gamma)
+}
 
 /// One channel printed as an ink: its display colour in the composite's colour space.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,13 +88,19 @@ impl Ink {
 
     /// Print this ink with channel values `values` (one per pixel) over the opaque `px`.
     pub fn apply(&self, px: &mut [[f32; 4]], values: impl IntoIterator<Item = f32>) {
+        self.apply_with_gain(px, values, 0.0);
+    }
+
+    /// [`Ink::apply`] with a dot gain of `gain` percent at a 50 % dot (see [`dot_gain`]) added to
+    /// the ink.
+    pub fn apply_with_gain(&self, px: &mut [[f32; 4]], values: impl IntoIterator<Item = f32>, gain: f32) {
         let (c, s) = (self.rgb, self.solidity);
         for (p, v) in px.iter_mut().zip(values) {
             let v = if self.alpha { 1.0 - v } else { v };
             if v.is_nan() || v <= 0.0 {
                 continue;
             }
-            let v = v.min(1.0);
+            let v = dot_gain(v, gain);
             let keep = 1.0 - s * v;
             for j in 0..3 {
                 p[j] = keep * p[j] * (1.0 - v + v * c[j]) + s * v * c[j];
@@ -74,7 +124,7 @@ impl InkSpace {
                 .as_ref()
                 .and_then(|b| Profile::parse(b).ok())
                 .filter(|p| p.color_space == ColorSpace::Rgb && !p.same_colors(Builtin::Srgb.profile()))
-                .and_then(|own| photocraft_cms::transform::cached(Builtin::Srgb.profile(), &own, TransformOptions::default()).ok())
+                .and_then(|own| craft_cms::transform::cached(Builtin::Srgb.profile(), &own, TransformOptions::default()).ok())
         } else {
             None
         };
@@ -100,16 +150,18 @@ impl InkSpace {
         }
         let mut rgb = photocraft_color::convert::with_cmyk_space(self.cmyk.as_ref(), || color.to_rgb());
         if let Some(t) = &self.to_own {
-            t.apply(&mut rgb, 3);
+            // An RGB → RGB transform over one RGB pixel; were it refused, the colour stays sRGB.
+            let _ = t.apply(&mut rgb, 3);
         }
         rgb.map(|v| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) })
     }
 }
 
 /// Print the channels `visible(i)` picks from `doc.channels` (in panel order) as inks over the
-/// opaque `buf`, reading them over `buf.rect`.
+/// opaque `buf`, reading them over `buf.rect`, with the Spot dot gain ([`spot_dot_gain`]).
 pub fn overprint(buf: &mut Buffer, doc: &Document, visible: impl Fn(usize) -> bool) {
     let rect = buf.rect;
+    let gain = spot_dot_gain();
     let space = InkSpace::of(doc);
     let mut vals = Vec::new();
     for (i, ch) in doc.channels.iter().enumerate() {
@@ -123,7 +175,7 @@ pub fn overprint(buf: &mut Buffer, doc: &Document, visible: impl Fn(usize) -> bo
         }
         let n = ch.surface.channels().max(1);
         ch.surface.read_region_into(rect, &mut vals);
-        ink.apply(&mut buf.px, vals.chunks_exact(n).map(|v| v[0]));
+        ink.apply_with_gain(&mut buf.px, vals.chunks_exact(n).map(|v| v[0]), gain);
     }
 }
 
@@ -145,8 +197,8 @@ pub(crate) fn backdrop(doc: &Document, rect: Rect) -> Buffer {
 }
 
 /// [`crate::thumbnail_buffer`] of an RGB or CMYK document with its spot channels printed over it
-/// (matted over white, so opaque, where there is ink): the document's preview, as the reference
-/// editor saves it.
+/// (matted over white, so opaque, where there is ink) with the Spot dot gain ([`spot_dot_gain`]):
+/// the document's preview, as the reference editor saves it.
 /// Unchanged when no spot channel has ink.
 pub fn thumbnail_with_inks(doc: &Document, max_side: u32) -> Buffer {
     let mut buf = crate::thumbnail_buffer(doc, max_side);
@@ -168,8 +220,9 @@ pub fn thumbnail_with_inks(doc: &Document, max_side: u32) -> Buffer {
             *p = [p[0] * a + 1.0 - a, p[1] * a + 1.0 - a, p[2] * a + 1.0 - a, 1.0];
         }
     }
+    let gain = spot_dot_gain();
     for (ink, vals) in inks {
-        ink.apply(&mut buf.px, vals);
+        ink.apply_with_gain(&mut buf.px, vals, gain);
     }
     buf
 }
@@ -241,13 +294,34 @@ mod tests {
         k.write_region(Rect::new(0, 0, 4, 1), &[0.5, 1.0, 1.0, 0.0]);
         doc.channels.push(AlphaChannel::new("Alpha", k));
         let r = crate::flatten(&doc);
-        // 0.5 is stored as 128/255 in an 8-bit channel: within one 8-bit step.
-        assert!((r.px[0][0] - 0.5).abs() <= 1.0 / 255.0 && (r.px[0][1] - 0.5).abs() <= 1.0 / 255.0, "{:?}", r.px[0]);
+        // 0.5 is stored as 128/255 in an 8-bit channel, so its ink is 127/255; the preview adds
+        // the Spot dot gain.
+        let paper = 1.0 - dot_gain(1.0 - 128.0 / 255.0, spot_dot_gain());
+        assert!((r.px[0][0] - paper).abs() <= 1e-4 && (r.px[0][1] - paper).abs() <= 1e-4, "{:?}", r.px[0]);
         assert_eq!(r.px[1], [0.0, 1.0, 1.0, 1.0]);
         assert_eq!(r.px[3], [0.0, 0.0, 0.0, 1.0]);
         // Other modes have no inks.
         doc.mode = ColorMode::Rgb;
         assert_eq!(crate::flatten(&doc).px[1][3], 0.0);
+    }
+
+    #[test]
+    fn dot_gain_lifts_a_50_percent_dot_by_the_gain_and_keeps_paper_and_solids() {
+        for gain in [10.0, 15.0, 20.0, 25.0, 30.0, 38.0, MAX_SPOT_DOT_GAIN] {
+            assert!((dot_gain(0.5, gain) - (0.5 + gain / 100.0)).abs() < 1e-5, "{gain}");
+            assert_eq!(dot_gain(0.0, gain), 0.0);
+            assert!((dot_gain(1.0, gain) - 1.0).abs() < 1e-6);
+            let mut last = 0.0;
+            for i in 1..=100 {
+                let v = dot_gain(i as f32 / 100.0, gain);
+                assert!(v >= last && v >= i as f32 / 100.0, "{gain}: rises and never lightens");
+                last = v;
+            }
+        }
+        assert_eq!(dot_gain(0.3, 0.0), 0.3, "no gain is linear");
+        assert_eq!(dot_gain(0.3, f32::NAN), 0.3);
+        // The same curve family as the built-in Dot Gain 20 %-compatible gray (gamma 1.732).
+        assert!((dot_gain(0.5, 20.0) - (1.0 - 0.5f32.powf(1.732))).abs() < 2e-3);
     }
 
     /// One spot channel of `depth` holding `vals` (a row), ink `rgb` at `solidity`.
@@ -258,7 +332,9 @@ mod tests {
     }
 
     /// The ink formula written out for one ink over `p`.
+    /// The overprint adds the Spot dot gain (read, not changed: the setting is process-wide).
     fn print(p: [f32; 3], c: [f32; 3], s: f32, v: f32) -> [f32; 3] {
+        let v = dot_gain(v, spot_dot_gain());
         std::array::from_fn(|j| (1.0 - s * v) * p[j] * (1.0 - v + v * c[j]) + s * v * c[j])
     }
 

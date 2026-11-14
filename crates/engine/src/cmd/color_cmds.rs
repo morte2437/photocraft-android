@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 
-use photocraft_cms::{Builtin, ColorSpace, GamutCheck, Intent, Lut3d, Profile, SampleKind, Transform};
+use craft_cms::{Builtin, ColorSpace, GamutCheck, Intent, Lut3d, Profile, SampleKind, Transform};
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{DocId, Document, Duotone, Effect, Fill, FxPaint, Layer, LayerContent, TextStyles};
 use photocraft_raster::Surface;
@@ -125,6 +125,10 @@ pub struct ColorSettings {
     /// Advanced › "Blend Text Colors Using Gamma" (1 = off; Photoshop's default 1.45): type
     /// layers mix anti-aliased edges in this gamma (`photocraft_compose::psblend::set_text_gamma`).
     pub blend_text_gamma: f32,
+    /// Working Spaces › Spot: the dot gain, in percent at a 50 % dot, that previews of spot
+    /// channels add (Photoshop's default Dot Gain 20 %; its menu offers 10–30 % and custom
+    /// values). Lives in the compositor too (`photocraft_compose::multichannel::set_spot_dot_gain`).
+    pub spot_dot_gain: f32,
     /// Monitor profile the canvas is displayed in: `auto` (the main display's profile when the
     /// platform supplies it, else sRGB), a built-in RGB profile id or an `.icc` path.
     pub monitor_profile: String,
@@ -147,6 +151,7 @@ impl Default for ColorSettings {
             bpc: true,
             dither: true,
             blend_text_gamma: photocraft_compose::psblend::TEXT_GAMMA,
+            spot_dot_gain: photocraft_compose::multichannel::SPOT_DOT_GAIN,
             monitor_profile: "auto".into(),
         }
     }
@@ -197,6 +202,9 @@ pub fn validate_settings(c: &ColorSettings) -> std::result::Result<(), String> {
     }
     if Intent::parse(&c.intent).is_none() {
         return Err(format!("unknown intent `{}` (perceptual|relative|saturation|absolute)", c.intent));
+    }
+    if !(c.spot_dot_gain.is_finite() && (0.0..=photocraft_compose::multichannel::MAX_SPOT_DOT_GAIN).contains(&c.spot_dot_gain)) {
+        return Err(format!("spot dot gain must be 0..{} %", photocraft_compose::multichannel::MAX_SPOT_DOT_GAIN));
     }
     Ok(())
 }
@@ -283,7 +291,7 @@ impl ColorState {
                 // stay linear, as Photoshop keeps 32-bit documents in a linear version of the
                 // working space.
                 let linear_hdr =
-                    doc.depth == SampleType::F32 && (emb.same_colors(Builtin::LinearSrgb.profile()) || emb.same_colors(photocraft_cms::builtin::linear_gray()));
+                    doc.depth == SampleType::F32 && (emb.same_colors(Builtin::LinearSrgb.profile()) || emb.same_colors(craft_cms::builtin::linear_gray()));
                 if !mismatch || linear_hdr {
                     return merge(base, json!({"action": "kept"}));
                 }
@@ -332,7 +340,7 @@ impl ColorState {
         match embedded {
             Some(emb) => {
                 let linear_hdr =
-                    doc.depth == SampleType::F32 && (emb.same_colors(Builtin::LinearSrgb.profile()) || emb.same_colors(photocraft_cms::builtin::linear_gray()));
+                    doc.depth == SampleType::F32 && (emb.same_colors(Builtin::LinearSrgb.profile()) || emb.same_colors(craft_cms::builtin::linear_gray()));
                 if !self.settings.ask_on_mismatch || emb.same_colors(&working) || linear_hdr {
                     return None;
                 }
@@ -373,7 +381,7 @@ impl ColorState {
 
     /// Proofing state of a document (defaults: coated CMYK, relative colorimetric + BPC, off).
     pub fn proof(&self, doc: DocId) -> ProofView {
-        self.proofs.get(&doc).cloned().unwrap_or_else(|| ProofView { gamut_threshold: photocraft_cms::gamut::DEFAULT_THRESHOLD, ..Default::default() })
+        self.proofs.get(&doc).cloned().unwrap_or_else(|| ProofView { gamut_threshold: craft_cms::gamut::DEFAULT_THRESHOLD, ..Default::default() })
     }
 
     /// Borrow the document's proofing state without cloning its profile or allocating defaults.
@@ -383,7 +391,7 @@ impl ColorState {
     }
 
     pub(crate) fn proof_mut(&mut self, doc: DocId) -> &mut ProofView {
-        self.proofs.entry(doc).or_insert_with(|| ProofView { gamut_threshold: photocraft_cms::gamut::DEFAULT_THRESHOLD, ..Default::default() })
+        self.proofs.entry(doc).or_insert_with(|| ProofView { gamut_threshold: craft_cms::gamut::DEFAULT_THRESHOLD, ..Default::default() })
     }
 
     /// Transform from the canvas texture values (the composite, `CanvasDisplay::source`) to
@@ -431,7 +439,7 @@ impl ColorState {
             return Ok(lut);
         }
         let t = self.display_transform_for(doc, display)?;
-        Ok(Lut3d::from_transform(&t, size))
+        Lut3d::from_transform(&t, size).map_err(cms_err)
     }
 
     /// View › 32-bit Preview Options of `doc` when they change the display (a 32-bit document
@@ -465,7 +473,7 @@ impl ColorState {
     /// proof simulations beyond profile conversion, and transforms containing a CLUT retain
     /// the existing 3D LUT path. The shader applies the 32-bit preview before this transform,
     /// just as it does before the display LUT.
-    pub fn gpu_canvas_matrix_shaper_for(&self, doc: &Document, display: Option<u32>) -> Result<Option<photocraft_cms::GpuMatrixShaper>> {
+    pub fn gpu_canvas_matrix_shaper_for(&self, doc: &Document, display: Option<u32>) -> Result<Option<craft_cms::GpuMatrixShaper>> {
         let proof = self.proof(doc.id);
         if proof.gamut_warning || (proof.enabled && proof.setup.kind != crate::proof_sim::ProofKind::Profile) {
             return Ok(None);
@@ -481,7 +489,7 @@ impl ColorState {
         let pv = self.proof(doc.id);
         let display = self.canvas_display_for(doc, on)?;
         if !(pv.enabled || pv.gamut_warning || hdr && crate::proof_sim::hdr_active(self, doc)) {
-            return Ok(display.transform.as_ref().map(|t| Lut3d::from_transform(t, size).to_rgba8()));
+            return display.transform.as_ref().map(|t| Lut3d::from_transform(t, size).map(|l| l.to_rgba8()).map_err(cms_err)).transpose();
         }
         let lut = self.display_lut_with(doc, size, hdr, on)?;
         let mut bytes = lut.to_rgba8();
@@ -489,7 +497,7 @@ impl ColorState {
         let s = (size - 1) as f32;
         for (i, px) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let rgb = [(i % size) as f32 / s, ((i / size) % size) as f32 / s, (i / (size * size)) as f32 / s];
-            px[3] = if check.as_ref().is_some_and(|c| c.out_of_gamut(&rgb)) { 255 } else { 0 };
+            px[3] = if check.as_ref().is_some_and(|c| c.out_of_gamut(&rgb).unwrap_or(false)) { 255 } else { 0 };
         }
         Ok(Some(bytes))
     }
@@ -502,7 +510,7 @@ fn merge(mut a: Value, b: Value) -> Value {
     a
 }
 
-fn cms_err(e: photocraft_cms::CmsError) -> EngineError {
+pub(crate) fn cms_err(e: craft_cms::CmsError) -> EngineError {
     EngineError::Other(format!("colour management: {e}"))
 }
 
@@ -530,11 +538,11 @@ fn space_mode(cs: ColorSpace) -> Option<ColorMode> {
 
 /// Working (default) profile of a mode.
 pub fn working_profile(mode: ColorMode) -> Arc<Profile> {
-    Arc::new(photocraft_cms::builtin::default_for(mode_space(mode)).unwrap_or(Builtin::Srgb.profile()).clone())
+    Arc::new(craft_cms::builtin::default_for(mode_space(mode)).unwrap_or(Builtin::Srgb.profile()).clone())
 }
 
 /// Parses ICC bytes, caching by allocation so repeated lookups for the same document are free.
-pub fn profile_from_bytes(bytes: &Arc<Vec<u8>>) -> std::result::Result<Arc<Profile>, photocraft_cms::CmsError> {
+pub fn profile_from_bytes(bytes: &Arc<Vec<u8>>) -> std::result::Result<Arc<Profile>, craft_cms::CmsError> {
     type Cache = Mutex<Vec<(Weak<Vec<u8>>, Arc<Profile>)>>;
     static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
@@ -558,6 +566,38 @@ pub fn document_profile(doc: &Document) -> Arc<Profile> {
         .and_then(|b| profile_from_bytes(b).ok())
         .filter(|p| p.color_space == mode_space(doc.mode))
         .unwrap_or_else(|| working_profile(doc.mode))
+}
+
+/// A swatch colour (straight RGB in the RGB working space, as the foreground and background hold
+/// it) as the active document takes it. In a Grayscale document that is the colour's gray with the
+/// sRGB tone curve (sGray), through `craft-cms` (relative colorimetric with black point
+/// compensation), returned as equal R, G and B so the pixel conversion keeps it: RGB 0,200,0
+/// becomes gray 172, as the reference paints it (173, measured), not its Rec.601 luma 117 (#11940).
+/// The reference's swatch conversion doesn't follow the document's Dot Gain curve (that gives 153),
+/// so pixel conversions such as Image › Mode › Grayscale keep using the document's profile. Other
+/// modes, and a failed conversion, keep the colour. So do Grayscale documents outside the default
+/// gray working space, which #11940 did not measure: a Working Gray other than Dot Gain 20 %, or a
+/// document tagged with a gray profile other than that one.
+pub fn swatch_in_doc(s: &Session, c: [f32; 4]) -> [f32; 4] {
+    let Some(st) = s.active().filter(|st| st.doc.mode == ColorMode::Grayscale) else { return c };
+    let default_gray = Builtin::DotGain20Compat;
+    if s.color.settings.working_gray != default_gray.id() || document_profile(&st.doc).content_hash() != default_gray.profile().content_hash() {
+        return c;
+    }
+    let opts = craft_cms::TransformOptions { intent: Intent::RelativeColorimetric, bpc: true, ..Default::default() };
+    let sgray = Arc::new(Builtin::SGray.profile().clone());
+    let Ok(t) = craft_cms::cached(&working_profile(ColorMode::Rgb), &sgray, opts) else { return c };
+    let mut out = [0.0f32; 16];
+    if t.eval(&[c[0], c[1], c[2]], &mut out).is_err() {
+        return c;
+    }
+    let g = out[0];
+    if g.is_finite() {
+        let g = g.clamp(0.0, 1.0);
+        [g, g, g, c[3]]
+    } else {
+        c
+    }
 }
 
 /// Profile describing the compositor's RGB output for this document (see the module docs).
@@ -641,7 +681,8 @@ pub fn convert_surface(s: &Surface, from: ColorMode, to: PixelFormat, t: &Transf
     // Default (untouched) pixel.
     let dp = s.default_pixel();
     let mut dpo = vec![0.0f32; ds];
-    t.convert_f32(&dp, ss, &mut dpo, ds, true);
+    // The channel counts were matched to the transform above, so neither conversion below is refused.
+    let _ = t.convert_f32(&dp, ss, &mut dpo, ds, true);
     let mut out = Surface::with_default(to, &dpo);
     // Convert every distinct tile once, in one parallel pass into a staging buffer, then store
     // them. Coordinates that share a tile (a filled background) share the converted one (#4531).
@@ -670,7 +711,7 @@ pub fn convert_surface(s: &Surface, from: ColorMode, to: PixelFormat, t: &Transf
         {
             let sources: Vec<_> = batch.iter().map(|tile| tile.bytes()).collect();
             let jobs: Vec<(&[u8], &mut [u8])> = sources.iter().map(|bytes| &**bytes).zip(staging.chunks_mut(dst_len.max(1))).collect();
-            t.convert_bytes_many(kind, jobs, ss, ds, true);
+            let _ = t.convert_bytes_many(kind, jobs, ss, ds, true);
         }
         for bytes in staging.chunks(dst_len.max(1)) {
             let coord = photocraft_geom::TileCoord::new(0, 0);
@@ -694,7 +735,10 @@ fn convert_color(c: &mut Color, from: ColorMode, to: ColorMode, t: &Transform) {
     }
     let n = from.color_channels();
     let mut o = [0.0f32; 16];
-    t.eval(&c.c[..n], &mut o);
+    // A transform that does not take this colour's channels leaves the colour as it is.
+    if t.eval(&c.c[..n], &mut o).is_err() {
+        return;
+    }
     let m = to.color_channels();
     let mut nc = [0.0f32; 4];
     for (d, v) in nc.iter_mut().zip(&o[..m.min(4)]) {
@@ -950,19 +994,8 @@ pub fn convert_mode(s: &mut Session, mode: ColorMode, p: &Value) -> Result<Value
 pub fn gamut_mask(doc: &Document, setup: &ProofSetup, threshold: f32) -> Result<(Vec<u8>, usize)> {
     let check = GamutCheck::new(&composite_profile(doc), &setup.profile, threshold).map_err(cms_err)?;
     let buf = photocraft_compose::flatten(doc);
-    let mut count = 0;
-    let mask = buf
-        .px
-        .iter()
-        .map(|p| {
-            if p[3] > 0.0 && check.out_of_gamut(&p[..3]) {
-                count += 1;
-                255
-            } else {
-                0
-            }
-        })
-        .collect();
+    let mut mask = vec![0u8; buf.px.len()];
+    let count = check.mask_rgba(&buf.px, &mut mask).map_err(cms_err)?;
     Ok((mask, count))
 }
 
@@ -1212,9 +1245,18 @@ fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => {}
     }
+    if let Some(v) = p.get("spotDotGain") {
+        let max = f64::from(photocraft_compose::multichannel::MAX_SPOT_DOT_GAIN);
+        let g = v
+            .as_f64()
+            .filter(|g| (0.0..=max).contains(g))
+            .ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`spotDotGain` must be a dot gain of 0..{max} %") })?;
+        next.spot_dot_gain = g as f32;
+    }
     validate_settings(&next).map_err(|msg| EngineError::BadParams { cmd: cmd.into(), msg })?;
     if next != s.color.settings {
         photocraft_compose::psblend::set_text_gamma(next.blend_text_gamma);
+        photocraft_compose::multichannel::set_spot_dot_gain(next.spot_dot_gain);
         s.color.settings = next;
         // Persisted with the preferences.
         s.prefs.edit(|_| ());
@@ -1310,7 +1352,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.colorSettings",
             "Color Settings…",
             ["Edit"],
-            r##"{"workingRgb":"srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020","workingCmyk":"coated-cmyk","workingGray":"dot-gain-20-compat|sgray|gray-gamma-2.2","policyRgb":"preserve|convert|off","policyCmyk":"preserve|convert|off","policyGray":"preserve|convert|off","askOnMismatch":bool=true,"askOnPaste":bool=true,"askOnMissing":bool=false,"intent":"relative|perceptual|saturation|absolute","blendTextGamma":1.0..2.2|bool=1.45,"bpc":bool=true,"dither":bool=true,"monitorProfile":"auto|srgb|display-p3|adobe-rgb-compat|prophoto-compat|rec2020","reset":bool=false} (working spaces and the monitor profile also accept .icc paths; monitor `auto` = the main display's profile when the platform provides it, else sRGB; the reply's `monitorStatus` says which profile is in use and why: source auto|manual|fallback, reason)"##,
+            r##"{"workingRgb":"srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020","workingCmyk":"coated-cmyk","workingGray":"dot-gain-20-compat|sgray|gray-gamma-2.2","policyRgb":"preserve|convert|off","policyCmyk":"preserve|convert|off","policyGray":"preserve|convert|off","askOnMismatch":bool=true,"askOnPaste":bool=true,"askOnMissing":bool=false,"intent":"relative|perceptual|saturation|absolute","blendTextGamma":1.0..2.2|bool=1.45,"spotDotGain":0..49=20,"bpc":bool=true,"dither":bool=true,"monitorProfile":"auto|srgb|display-p3|adobe-rgb-compat|prophoto-compat|rec2020","reset":bool=false} (spotDotGain = the Spot working space: the dot gain, in % at a 50 % dot, that spot channel previews add, as Photoshop's Spot menu (Dot Gain 10–30 %, or a custom value); working spaces and the monitor profile also accept .icc paths; monitor `auto` = the main display's profile when the platform provides it, else sRGB; the reply's `monitorStatus` says which profile is in use and why: source auto|manual|fallback, reason)"##,
             always,
             color_settings,
             true,
@@ -1502,11 +1544,11 @@ mod tests {
         let mut proof = Builtin::LinearSrgb.profile().clone();
         proof.description = "Synthetic identity-matrix proof".into();
         proof.matrix = Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
-        proof.trc = Some([photocraft_cms::Curve::Identity, photocraft_cms::Curve::Identity, photocraft_cms::Curve::Identity]);
+        proof.trc = Some([craft_cms::Curve::Identity, craft_cms::Curve::Identity, craft_cms::Curve::Identity]);
         let proof = proof.with_encoded_bytes();
         let mut monitor = proof.clone();
         monitor.description = "Synthetic identity-matrix gamma monitor".into();
-        monitor.trc = Some(std::array::from_fn(|_| photocraft_cms::Curve::Gamma(2.2)));
+        monitor.trc = Some(std::array::from_fn(|_| craft_cms::Curve::Gamma(2.2)));
         let monitor = monitor.with_encoded_bytes();
         s.color.set_displays(Ok(vec![crate::display_color::Display {
             id: 1,
@@ -1544,13 +1586,13 @@ mod tests {
         let d = doc(&s).clone();
         let t = s.color.display_transform(&d).unwrap();
         let mut o = [0.0f32; 3];
-        t.eval(&[1.0, 1.0, 1.0], &mut o);
+        t.eval(&[1.0, 1.0, 1.0], &mut o).unwrap();
         assert!(o[0] < 0.97, "paper simulation: {o:?}");
         let lut = s.color.display_lut(&d, 17).unwrap();
-        assert_eq!(lut.data.len(), 17 * 17 * 17);
+        assert_eq!(lut.data().len(), 17 * 17 * 17);
         s.execute("view.proofColors", json!({"on": false})).unwrap();
         let t2 = s.color.display_transform(&d).unwrap();
-        t2.eval(&[1.0, 1.0, 1.0], &mut o);
+        t2.eval(&[1.0, 1.0, 1.0], &mut o).unwrap();
         assert!(o.iter().all(|v| (v - 1.0).abs() < 1e-3), "no proof: identity-ish {o:?}");
         // Saturated sRGB blue is outside coated CMYK; mid gray and white are inside.
         let r = s.execute("view.gamutWarning", json!({"on": true})).unwrap();
@@ -1570,7 +1612,7 @@ mod tests {
         assert_eq!(p.color_space, ColorSpace::Rgb);
         let t = s.color.display_transform(doc(&s)).unwrap();
         let mut o = [0.0f32; 3];
-        t.eval(&[0.5, 0.5, 0.5], &mut o);
+        t.eval(&[0.5, 0.5, 0.5], &mut o).unwrap();
         // The default working gray (Dot Gain 20 %-compatible, gamma 1.732) shows gray 0.5 as the
         // sRGB value of linear 0.5^1.732, as Photoshop does: lighter than sGray's 0.5.
         let want = photocraft_color::convert::linear_to_srgb(0.5f32.powf(1.732));
@@ -1688,7 +1730,7 @@ mod settings_tests {
         s.execute("edit.colorSettings", json!({"policyRgb": "convert"})).unwrap();
         let mut v2 = Builtin::Srgb.profile().clone();
         let trc = v2.trc.clone().unwrap();
-        let table = |c: &photocraft_cms::Curve| photocraft_cms::Curve::Table((0..1024).map(|i| c.eval64(f64::from(i) / 1023.0) as f32).collect());
+        let table = |c: &craft_cms::Curve| craft_cms::Curve::Table((0..1024).map(|i| c.eval64(f64::from(i) / 1023.0) as f32).collect());
         v2.trc = Some([table(&trc[0]), table(&trc[1]), table(&trc[2])]);
         v2.version = (2, 0x10);
         let bytes = v2.with_encoded_bytes().to_bytes();
@@ -1737,17 +1779,17 @@ mod settings_tests {
     fn input_only_p3() -> Profile {
         let p3 = Builtin::DisplayP3.profile();
         let t = Transform::new(p3, Builtin::LabD50.profile(), Intent::RelativeColorimetric, false).unwrap();
-        let clut = photocraft_cms::Clut::sample(vec![9; 3], 3, |inp, out| t.eval(inp, out));
-        let ident = || photocraft_cms::pipeline::Stage::Curves(vec![photocraft_cms::Curve::Identity; 3]);
-        let lut = photocraft_cms::profile::Lut {
-            kind: photocraft_cms::profile::LutKind::Ab,
+        let clut = craft_cms::Clut::sample(vec![9; 3], 3, |inp, out| t.eval(inp, out).unwrap()).unwrap();
+        let ident = || craft_cms::pipeline::Stage::Curves(vec![craft_cms::Curve::Identity; 3]);
+        let lut = craft_cms::profile::Lut {
+            kind: craft_cms::profile::LutKind::Ab,
             inputs: 3,
             outputs: 3,
-            stages: vec![ident(), photocraft_cms::pipeline::Stage::Clut(clut), ident()],
+            stages: vec![ident(), craft_cms::pipeline::Stage::Clut(clut), ident()],
         };
         let mut p = p3.clone();
-        p.class = photocraft_cms::ProfileClass::Input;
-        p.pcs = photocraft_cms::Pcs::Lab;
+        p.class = craft_cms::ProfileClass::Input;
+        p.pcs = craft_cms::Pcs::Lab;
         p.description = "Input-only P3".into();
         (p.matrix, p.trc) = (None, None);
         p.a2b = [Some(lut), None, None];

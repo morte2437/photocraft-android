@@ -219,6 +219,124 @@ fn pcraft_documents_save_in_place_but_flat_files_ask() {
     assert!(!app.ui.status_error);
 }
 
+/// #5733: like Photoshop's Save, a flat file still holding the whole document (one plain layer
+/// it can store) is written back in place; once it would lose something (a second layer, or
+/// transparency a JPEG can't keep) Save goes through Save As.
+#[test]
+fn a_flat_file_that_keeps_the_document_saves_in_place() {
+    let (mut app, written) = app_with(vec![None, None]);
+    let ctx = egui::Context::default();
+    app.open_file("/pics/flat.png", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    let r = menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap();
+    assert_eq!(r["path"], "/pics/flat.png", "{r}");
+    assert_eq!(written.borrow().len(), 1);
+    // A second layer: PNG can't keep it, so Save asks (cancelled).
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    assert_eq!(written.borrow().len(), 1);
+    // A JPEG with one transparent-capable layer that isn't the Background: JPEG has no alpha.
+    app.open_file("/pics/photo.jpg", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    assert_eq!(written.borrow().len(), 1);
+}
+
+/// #5733: Save doesn't write one image back over a file that held more (here a two-size icon;
+/// animations and multi-page TIFFs are recorded the same way), nor through an encoder that
+/// quantises (GIF), nor a Grayscale document into a format that stores only colour.
+#[test]
+fn save_in_place_skips_files_it_would_write_back_with_less() {
+    let (mut app, written) = app_with(vec![None, None, None]);
+    app.services.import = Some(Box::new(|name: &str, bytes: &[u8], _opts: &photocraft_io::ImportOptions| {
+        photocraft_io::import(name, bytes).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
+    }));
+    let ctx = egui::Context::default();
+    let save = |app: &mut PhotocraftApp| menus::invoke(app, &ctx, "file.save", json!({})).unwrap();
+    // One icon size: written back.
+    app.open_file("/pics/one.ico", &ico(1)).unwrap();
+    assert_eq!(save(&mut app)["path"], "/pics/one.ico");
+    assert_eq!(written.borrow().len(), 1);
+    // Two sizes: the document holds one, so Save asks (cancelled).
+    app.open_file("/pics/two.ico", &ico(2)).unwrap();
+    assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // A recorded Save played on it doesn't write over the other sizes either.
+    assert!(app.replay_save("file.save", &json!({})).is_err());
+    // A GIF: its palette and on/off transparency would lose colours.
+    app.open_file("/pics/still.gif", &gif_bytes()).unwrap();
+    assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // Grayscale in a BMP, which stores only colour.
+    app.open_file("/pics/gray.bmp", &png_bytes(4, 3)).unwrap();
+    app.run("image.mode.grayscale", json!({})).unwrap();
+    assert_eq!(save(&mut app), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    assert_eq!(written.borrow().len(), 1);
+}
+
+/// #5733: Save doesn't write in place where the format's writer would drop what the document has:
+/// a gray layer's transparency in DPX, an embedded colour profile in BMP, or a clipped layer.
+#[test]
+fn save_in_place_skips_alpha_profiles_and_layer_state_the_file_would_drop() {
+    let (mut app, written) = app_with(vec![None, None, None]);
+    let ctx = egui::Context::default();
+    let edit = |app: &mut PhotocraftApp, f: &dyn Fn(&mut Document)| f(std::sync::Arc::make_mut(&mut app.session.active_mut().unwrap().doc));
+    // An RGB layer with transparency: DPX keeps its alpha, so it is written back.
+    app.open_file("/pics/rgb.dpx", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap()["path"], "/pics/rgb.dpx");
+    assert_eq!(written.borrow().len(), 1);
+    // A gray one: DPX writes gray without alpha.
+    app.open_file("/pics/gray.dpx", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    edit(&mut app, &|d| d.mode = ColorMode::Grayscale);
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // A profile BMP can't embed.
+    app.open_file("/pics/tagged.bmp", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    edit(&mut app, &|d| d.icc_profile = Some(std::sync::Arc::new(vec![0; 128])));
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    // A clipped layer: the flat file keeps only its pixels.
+    app.open_file("/pics/clipped.png", b"x").unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    edit(&mut app, &|d| d.layers[0].clipped = true);
+    assert_eq!(menus::invoke(&mut app, &ctx, "file.save", json!({})).unwrap(), json!({"fileDialog": "save"}));
+    answer(&mut app);
+    assert_eq!(written.borrow().len(), 1);
+}
+
+/// An icon file whose `entries` directory entries all point at one 4×3 PNG image.
+fn ico(entries: u16) -> Vec<u8> {
+    let one = export_as(&png_bytes(4, 3), "i.ico");
+    // ICONDIR (6 bytes) + one 16-byte ICONDIRENTRY whose last 4 bytes are the image offset.
+    let (entry, image) = (&one[6..22], &one[22..]);
+    let offset = 6 + 16 * u32::from(entries);
+    let mut out = vec![0, 0, 1, 0];
+    out.extend(entries.to_le_bytes());
+    for _ in 0..entries {
+        out.extend(&entry[..12]);
+        out.extend(offset.to_le_bytes());
+    }
+    out.extend(image);
+    out
+}
+
+/// A one-frame GIF.
+fn gif_bytes() -> Vec<u8> {
+    export_as(&png_bytes(4, 3), "g.gif")
+}
+
+/// `bytes` (a PNG) re-encoded for the file name `name`.
+fn export_as(bytes: &[u8], name: &str) -> Vec<u8> {
+    let doc = photocraft_io::import("p.png", bytes).unwrap().document;
+    photocraft_io::export(&doc, name, &Default::default()).unwrap().bytes
+}
+
 #[test]
 fn templates_open_as_new_untitled_documents() {
     let (mut app, written) = app_with(Vec::new());
@@ -1380,6 +1498,9 @@ fn natural_order_counts_numbers_by_value() {
 /// status line follows the preference, not the English default.
 #[test]
 fn open_paths_reports_in_the_interface_language_before_the_first_frame() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let pattern = |i: u8| {
         let mut surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
         surface.fill_rect(photocraft_geom::Rect::new(0, 0, 4, 4), &[f32::from(i) / 3.0, 0.5, 0.2, 1.0]);
@@ -1675,6 +1796,173 @@ fn opening_an_open_file_again_shows_its_tab() {
     for d in [dir, dir2, dir3, dir4] {
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+// ---- Where a drop goes (#10492) ----
+
+/// A tab strip of three 100-wide tabs at y 14-50 over x 0-700, and a canvas below it.
+fn strip() -> crate::canvas::TabStrip {
+    let tab = |i: usize| (i, egui::Rect::from_min_max(egui::pos2(104.0 * i as f32, 20.0), egui::pos2(104.0 * i as f32 + 100.0, 46.0)));
+    crate::canvas::TabStrip { rect: egui::Rect::from_min_max(egui::pos2(0.0, 14.0), egui::pos2(700.0, 50.0)), tabs: vec![tab(0), tab(1), tab(2)] }
+}
+
+fn canvas() -> Option<egui::Rect> {
+    Some(egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(700.0, 550.0)))
+}
+
+#[test]
+fn a_drop_lands_on_the_region_under_the_pointer() {
+    let strip = strip();
+    let on = |at, uncovered, tabs, canvas, doc| target_at(at, uncovered, tabs, canvas, doc);
+    // Over the canvas of an open document: placed.
+    assert_eq!(on(Some(egui::pos2(300.0, 300.0)), true, Some(&strip), canvas(), true), DropTarget::Canvas);
+    // Over the tab strip: that tab position (the strip wins where it overlaps the canvas).
+    assert_eq!(on(Some(egui::pos2(4.0, 30.0)), true, Some(&strip), canvas(), true), DropTarget::Tabs(0));
+    assert_eq!(on(Some(egui::pos2(150.0, 30.0)), true, Some(&strip), canvas(), true), DropTarget::Tabs(1));
+    assert_eq!(on(Some(egui::pos2(690.0, 30.0)), true, Some(&strip), canvas(), true), DropTarget::Tabs(3));
+    // Over a panel, outside every region.
+    assert_eq!(on(Some(egui::pos2(750.0, 300.0)), true, Some(&strip), canvas(), true), DropTarget::Elsewhere);
+    // The pointer can't be read, or a window or dialog covers it: open, never place.
+    assert_eq!(on(None, true, Some(&strip), canvas(), true), DropTarget::Elsewhere);
+    assert_eq!(on(Some(egui::pos2(300.0, 300.0)), false, Some(&strip), canvas(), true), DropTarget::Elsewhere);
+    assert_eq!(on(Some(egui::pos2(4.0, 30.0)), false, Some(&strip), canvas(), true), DropTarget::Elsewhere);
+    // No document: the Home screen or an empty workspace. A canvas rectangle left from a document
+    // closed since doesn't make the drop a placement with nothing to place into.
+    assert_eq!(on(Some(egui::pos2(300.0, 300.0)), true, None, None, false), DropTarget::Elsewhere);
+    assert_eq!(on(Some(egui::pos2(300.0, 300.0)), true, None, canvas(), false), DropTarget::Elsewhere);
+}
+
+#[test]
+fn only_a_canvas_drop_of_a_non_preset_file_is_placed() {
+    let files =
+        ["photo.png", "photo.JPG", "layers.psd", "big.psb", "scan.tif", "shot.heic", "notes.txt", "no_extension", "", "C:\\pics\\a.webp", "/pics/b.svg"];
+    let presets = ["brushes.abr", "Sunsets.GRD", "/lib/set.abr", "C:\\lib\\x.grd"];
+    for target in [DropTarget::Canvas, DropTarget::Tabs(0), DropTarget::Tabs(7), DropTarget::Elsewhere] {
+        for name in files {
+            let want = if target == DropTarget::Canvas { DropRoute::Place } else { DropRoute::Open };
+            assert_eq!(target.route(name), want, "{target:?} {name:?}");
+        }
+        for name in presets {
+            assert_eq!(target.route(name), DropRoute::Open, "presets go to their libraries: {target:?} {name:?}");
+        }
+    }
+}
+
+/// A scratch folder, removed by the test.
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("photocraft-drop-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn error_titles(app: &PhotocraftApp) -> Vec<String> {
+    app.ui.notices.iter().filter(|n| n.error).map(|n| n.title.clone()).collect()
+}
+
+/// The Home screen (no document open) is where a first drop lands: every file opens as its own
+/// document, in drop order, whatever the type, and nothing is placed.
+#[test]
+fn files_dropped_with_no_document_open_all_open() {
+    let dir = scratch("home");
+    let names = ["a.png", "b.jpg", "c.psd", "d.tif"];
+    let files: Vec<_> = names
+        .iter()
+        .map(|n| {
+            let p = dir.join(n);
+            std::fs::write(&p, b"x").unwrap();
+            dropped(p, Err("read from the path".into()))
+        })
+        .collect();
+    let (mut app, _) = app_with(Vec::new());
+    // A canvas rectangle left from an earlier document must not turn the drop into a placement.
+    app.drop_canvas_rect = canvas();
+    assert_eq!(app.drop_target(&egui::Context::default(), Some(egui::pos2(300.0, 300.0))), DropTarget::Elsewhere);
+    app.open_dropped(&egui::Context::default(), files, Some(egui::pos2(300.0, 300.0)));
+    assert_eq!(doc_names(&app), names);
+    assert!(app.drop_places.is_empty());
+    assert!(error_titles(&app).is_empty(), "{:?}", app.ui.notices);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A folder dragged in says it is a folder (Windows' own error for reading one is "Access is
+/// denied"), opens nothing and places nothing, and the files dropped with it still go through.
+#[test]
+fn a_dropped_folder_is_refused_with_a_clear_message() {
+    let dir = scratch("folder");
+    let folder = dir.join("Holiday photos");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = dir.join("ok.psd");
+    std::fs::write(&file, b"x").unwrap();
+    let ctx = egui::Context::default();
+    // Opened (no document, or off the canvas).
+    let (mut app, _) = app_with(Vec::new());
+    app.open_dropped(&ctx, vec![dropped(folder.clone(), Err("read from the path".into())), dropped(file, Err("read from the path".into()))], None);
+    assert_eq!(doc_names(&app), ["ok.psd"]);
+    let errors = error_titles(&app);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("Couldn't open Holiday photos: ") && errors[0].contains("folder"), "{errors:?}");
+    // On the canvas: not queued for placing, and the layers stay as they were.
+    let mut app = app_with_canvas();
+    let layers = layer_count(&app);
+    app.open_dropped(&ctx, vec![dropped(folder, Err("read from the path".into()))], Some(egui::pos2(300.0, 300.0)));
+    assert!(app.drop_places.is_empty());
+    app.place_next_dropped(&ctx);
+    assert_eq!(layer_count(&app), layers);
+    assert_eq!(app.session.documents().len(), 1);
+    let errors = error_titles(&app);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].starts_with("Couldn't place Holiday photos: ") && errors[0].contains("folder"), "{errors:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A file that isn't an image is an error the user can read, on either route, not a silent no-op.
+#[test]
+fn a_dropped_file_that_is_not_an_image_reports_why() {
+    let dir = scratch("text");
+    let file = dir.join("notes.txt");
+    std::fs::write(&file, b"bad").unwrap();
+    let ctx = egui::Context::default();
+    let (mut app, _) = app_with(Vec::new());
+    app.open_dropped(&ctx, vec![dropped(file.clone(), Err("read from the path".into()))], None);
+    assert!(app.session.documents().is_empty());
+    assert!(app.ui.status_error);
+    assert!(error_titles(&app).iter().any(|t| t.starts_with("Couldn't open notes.txt: ")), "{:?}", app.ui.notices);
+    let mut app = app_with_canvas();
+    let layers = layer_count(&app);
+    app.open_dropped(&ctx, vec![dropped(file, Err("read from the path".into()))], Some(egui::pos2(300.0, 300.0)));
+    app.place_next_dropped(&ctx);
+    assert_eq!(layer_count(&app), layers);
+    assert!(app.ui.status_error);
+    assert!(error_titles(&app).iter().any(|t| t.starts_with("Couldn't place notes.txt: ")), "{:?}", app.ui.notices);
+    assert!(app.ui.transform.is_none(), "a failed place starts no Free Transform");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Several files dropped on the canvas together are all queued, in order; a preset file among
+/// them goes to its library instead.
+#[test]
+fn several_files_dropped_on_the_canvas_are_queued_in_order() {
+    let ctx = egui::Context::default();
+    let mut app = app_with_canvas();
+    app.open_dropped(
+        &ctx,
+        vec![dropped("/pics/one.png", Err("unused".into())), dropped("/pics/set.abr", Err("unused".into())), dropped("/pics/two.jpg", Err("unused".into()))],
+        Some(egui::pos2(300.0, 300.0)),
+    );
+    let queued: Vec<String> = app
+        .drop_places
+        .iter()
+        .map(|(_, p)| match p {
+            DropPlace::At { source, .. } => match source.as_ref() {
+                DropPlace::File(f) => dropped_name(f),
+                _ => panic!("expected a native file"),
+            },
+            _ => panic!("expected a drop with a captured destination"),
+        })
+        .collect();
+    assert_eq!(queued, ["one.png", "two.jpg"]);
+    assert!(error_titles(&app).iter().any(|t| t.starts_with("Couldn't open set.abr: ")), "{:?}", app.ui.notices);
 }
 
 #[test]

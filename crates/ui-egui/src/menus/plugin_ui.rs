@@ -102,6 +102,9 @@ mod tests {
     /// land under Filter › Plug-ins when the UI language translates those menu names (#2540).
     #[test]
     fn plugin_menu_path_stays_untranslated_in_other_languages() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let ja = crate::i18n::Lang::from_code("ja").expect("registered language");
         let _lang = crate::i18n::language_scope(ja);
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());

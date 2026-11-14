@@ -305,6 +305,18 @@ pub(crate) fn transform_doc_marks(doc: &mut Document, a: &Affine) {
     }
 }
 
+/// Runs `f` (Image Size, Canvas Size, Image Rotation) and puts the count points back where they
+/// were: they keep their document coordinates, also where they end up off the canvas, as in the
+/// reference application (#11762). Other marks follow the map as `f` applies it.
+pub(crate) fn keeping_count_points<R>(doc: &mut Document, f: impl FnOnce(&mut Document) -> R) -> R {
+    let saved: Vec<Vec<[f64; 2]>> = doc.measurement.count_groups.iter().map(|g| g.points.clone()).collect();
+    let r = f(doc);
+    for (g, points) in doc.measurement.count_groups.iter_mut().zip(saved) {
+        g.points = points;
+    }
+    r
+}
+
 /// Applies `a` to all non-pixel geometry of the document (layers and document marks).
 pub(crate) fn transform_geometry(doc: &mut Document, a: &Affine) {
     let dpi = doc.resolution_dpi;
@@ -319,9 +331,34 @@ pub(crate) fn transform_geometry(doc: &mut Document, a: &Affine) {
 pub(crate) enum Refresh {
     /// Shapes only (their pixels are clipped to the canvas, which may have grown).
     Shapes,
-    /// Type, shapes and smart objects (after a resampling map). Smart objects whose source is
-    /// unavailable keep their (already mapped) cache.
+    /// Type, shapes and smart objects (after a resampling map: Image Size, Image Rotation ›
+    /// Arbitrary). Smart objects whose source is unavailable keep their (already mapped) cache;
+    /// so does type set in a font that isn't installed ([`keeps_own_pixels`]), which the caller
+    /// maps with the pixels instead of re-rendering it in a substitute face (#8860).
     All,
+}
+
+/// Type whose rendering [`Refresh::All`] keeps: it has pixels (a PSD's, say) and uses a font
+/// that isn't installed, so a re-render would draw a substitute face.
+pub(crate) fn keeps_own_pixels(t: &TextLayer) -> bool {
+    t.cache.is_some() && !crate::type_extra_cmds::missing_fonts_in_layer(t).is_empty()
+}
+
+/// Applies `map` to the cached pixels of every type layer [`keeps_own_pixels`] (inside groups
+/// too), for whole-image maps that otherwise move type by its transform alone.
+pub(crate) fn map_missing_font_type<E>(layers: &mut [Layer], map: &mut dyn FnMut(&Surface) -> Result<Surface, E>) -> Result<(), E> {
+    for l in layers {
+        match &mut l.content {
+            LayerContent::Group(g) => map_missing_font_type(&mut g.children, map)?,
+            LayerContent::Text(t) if keeps_own_pixels(t) => {
+                if let Some(c) = &mut t.cache {
+                    *c = map(c)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn refresh(doc: &mut Document, what: Refresh) {
@@ -330,7 +367,7 @@ pub(crate) fn refresh(doc: &mut Document, what: Refresh) {
             match &mut l.content {
                 LayerContent::Group(g) => rec(snapshot, &mut g.children, what),
                 LayerContent::Shape(sh) => crate::vector_cmds::refresh_shape(snapshot, sh),
-                LayerContent::Text(t) if what == Refresh::All => crate::type_cmds::refresh(snapshot, t),
+                LayerContent::Text(t) if what == Refresh::All && !keeps_own_pixels(t) => crate::type_cmds::refresh(snapshot, t),
                 LayerContent::Smart(_) if what == Refresh::All => {
                     let _ = crate::smart_cmds::refresh_layer(snapshot, l);
                 }

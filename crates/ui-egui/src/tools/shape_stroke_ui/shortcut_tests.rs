@@ -125,3 +125,17 @@ fn undo_shortcut_remains_available_and_invalidates_the_open_stroke_editor() {
     assert!(h.state().ui.stroke_editor.is_none(), "Undo invalidates the editor's last applied style");
     assert!(!egui::Popup::is_any_open(&h.ctx));
 }
+
+/// #9065 (CodeRabbit on #9314): Stroke Options keeps its open state in the app rather than
+/// egui's popup memory; a command shortcut (⌘D) closes it too and runs, as it does any popup.
+#[test]
+fn a_command_shortcut_closes_stroke_options_and_runs() {
+    let mut app = app(Tool::Rectangle);
+    app.run("select.rect", json!({"x": 8, "y": 8, "width": 24, "height": 20})).unwrap();
+    let mut h = harness(app, false);
+    open(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().doc.selection.is_none(), "⌘D deselects with Stroke Options open");
+    assert!(h.state().ui.stroke_editor.is_none(), "and closes it");
+}

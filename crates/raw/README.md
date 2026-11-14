@@ -84,7 +84,8 @@ camera colour tables were copied.
 | Olympus ORF, uncompressed 16-bit (E-1, E-400…) | Decoded, with ImageProcessing black / WB / ValidBits / crop |
 | Sony "Compressed RAW 2", Pentax compressed PEF, RW2 RawFormat 6 and newer, Olympus compressed ORF | Unsupported: no public description of these codes was found apart from GPL decoder source, which this crate may not use (clean-room). `photocraft-io` opens the embedded JPEG preview instead |
 | Fujifilm RAF, uncompressed (X-Trans I–V, GFX and Bayer bodies since about 2010) | Decoded: 16-bit containers (either byte order), 12-bit LSB-first packing, 14-bit packing in 32-bit words; X-Trans 6×6 or Bayer 2×2 layout, black, as-shot WB, crop, RawExposureBias, orientation from the preview's EXIF |
-| Fujifilm compressed RAF, early FinePix / SuperCCD RAF (no CFA TIFF) | Unsupported (no public description of the compression); preview fallback |
+| Fujifilm compressed RAF, lossless and lossy (X-Trans and Bayer, 12/14/16-bit) | Decoded (`rafc.rs`): ported from LightCraft's clean-room decoder (storytold/lightcraft `crates/raw/src/vendor/rafc.rs`, MIT OR Apache-2.0, same organisation), verified there sample for sample on 24 files from 13 bodies; here on an X-T30 lossless file |
+| Early FinePix / SuperCCD RAF (no CFA TIFF) | Unsupported; preview fallback |
 | CR3 | Native CRX unsupported; bounded JPEG-track/PRVW preview fallback with CMT1 orientation. I/O labels the result as an 8-bit camera preview |
 | X-Trans and other periodic non-Bayer CFAs (up to 16×16) | Demosaiced by one pattern-agnostic edge-directed method, whatever `Demosaic` is chosen |
 

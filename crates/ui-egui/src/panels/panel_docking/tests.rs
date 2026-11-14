@@ -490,7 +490,12 @@ fn populated_canvas_keeps_a_real_opacity_edit_after_floating_and_redocking() {
             .widgets
             .layers()
             .flat_map(|(_, widgets)| widgets.iter())
-            .filter(|widget| widget.sense.senses_drag() && widget.rect.height() == 18.0 && floating.contains_rect(widget.rect))
+            .filter(|widget| {
+                widget.sense.senses_drag()
+                    && widget.rect.height() == crate::widgets::TEXT_FIELD_H
+                    && widget.rect.width() > floating.width() * 0.5
+                    && floating.contains_rect(widget.rect)
+            })
             .map(|widget| widget.rect)
             .collect()
     });

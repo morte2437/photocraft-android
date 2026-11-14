@@ -1178,7 +1178,7 @@ fn background_job_scenarios(b: &mut Bench, sz: &Sizes) {
     }
     let brushes = "import 500 brushes: longest UI-thread step";
     if b.wanted(brushes) {
-        use photocraft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v12};
+        use craft_psd::abr::{AbrSample, LegacyBrush, LegacyTip, write_v12};
         let list: Vec<LegacyBrush> = (0..500)
             .map(|i| {
                 let side = 40 + (i % 60) as u32;

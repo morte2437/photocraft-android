@@ -723,6 +723,8 @@ fn moving_an_artboard_left_of_or_above_the_origin_grows_the_canvas_there() {
     }
 }
 
+/// Moving or making a board past the canvas origin re-bases the document; the Color Sampler
+/// points and the painting symmetry shift with it and stay on the same pixels.
 #[test]
 fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_document() {
     // #9302: the re-based document moved everything but the Color Sampler points and the
@@ -737,9 +739,10 @@ fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_docume
         s.execute("layer.select", json!({"layer": gid.0})).unwrap();
         s.execute(cmd, p).unwrap();
         // The board lands at (0, 0) after the document shifted right 50 and down 20; the sampler
-        // is pinned to the canvas, not the board, so it shifts with the document only.
+        // is pinned to the canvas, not the board, so it shifts with the document only. Sampler
+        // points sit on pixel centres (#11725): one placed at 15, 15 is stored as 15.5, 15.5.
         assert_eq!(board_rect(&s, gid.0), Rect::new(0, 0, 40, 40), "{cmd}");
-        assert_eq!(samplers(&s), vec![[65.0, 35.0]], "{cmd}");
+        assert_eq!(samplers(&s), vec![[65.5, 35.5]], "{cmd}");
         assert_eq!(center(&s), Some([120.0, 40.0]), "{cmd}: the symmetry stays on its pixels");
     }
     // A new board left of the canvas shifts the photo right by its overhang.
@@ -747,7 +750,7 @@ fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_docume
     add_square(&mut s, Rect::new(10, 10, 30, 30), [1.0, 0.0, 0.0, 1.0]);
     s.execute("view.colorSamplers.add", json!({"x": 15, "y": 15})).unwrap();
     s.execute("layer.new.artboard", json!({"rect": [-200, 0, 100, 80]})).unwrap();
-    assert_eq!(samplers(&s), vec![[215.0, 15.0]]);
+    assert_eq!(samplers(&s), vec![[215.5, 15.5]]);
     assert!(red_at(&s, 215, 15));
     // A board made from layers (or a group) left of the canvas shifts by their overhang.
     for cmd in ["layer.new.artboardFromLayers", "layer.new.artboardFromGroup"] {
@@ -759,7 +762,7 @@ fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_docume
             s.execute("layer.groupLayers", json!({})).unwrap();
         }
         s.execute(cmd, json!({})).unwrap();
-        assert_eq!(samplers(&s), vec![[45.0, 15.0]], "{cmd}");
+        assert_eq!(samplers(&s), vec![[45.5, 15.5]], "{cmd}");
         assert!(red_at(&s, 45, 15), "{cmd}");
     }
     // The "+" button left of a board at the origin shifts by the board and the gap.
@@ -770,13 +773,15 @@ fn a_board_past_the_origin_moves_the_color_samplers_and_symmetry_with_the_docume
     s.execute("layer.artboard.addBeside", json!({"layer": gid.0, "side": "left"})).unwrap();
     let by = 40 + GAP;
     assert_eq!(board_rect(&s, gid.0), Rect::new(by, 0, by + 40, 40));
-    assert_eq!(samplers(&s), vec![[f64::from(by) + 5.0, 5.0]]);
+    assert_eq!(samplers(&s), vec![[f64::from(by) + 5.5, 5.5]]);
     assert!(red_at(&s, by + 5, 5));
     // A board right of the canvas shifts nothing.
     s.execute("layer.artboard.addBeside", json!({"layer": gid.0, "side": "right"})).unwrap();
-    assert_eq!(samplers(&s), vec![[f64::from(by) + 5.0, 5.0]]);
+    assert_eq!(samplers(&s), vec![[f64::from(by) + 5.5, 5.5]]);
 }
 
+/// Duplicating a board whose document has boards past the origin (one or several selected
+/// layers) re-bases it; the Color Sampler points shift with the document.
 #[test]
 fn duplicating_a_board_beside_one_past_the_origin_moves_the_color_samplers_with_the_document() {
     // #9302 review: Layer › Duplicate puts the copy right of its board, but `fit_canvas` still
@@ -799,7 +804,7 @@ fn duplicating_a_board_beside_one_past_the_origin_moves_the_color_samplers_with_
             s.execute("layer.duplicate", json!({"layer": gid.0})).unwrap();
         }
         assert_eq!(board_rect(&s, gid.0), Rect::new(0, 10, 40, 50), "multi {multi}: the document shifted right 40");
-        assert_eq!(s.active().unwrap().color_samplers, vec![[105.0, 15.0]], "multi {multi}");
+        assert_eq!(s.active().unwrap().color_samplers, vec![[105.5, 15.5]], "multi {multi}");
         assert!(red_at(&s, 105, 15), "multi {multi}: the sampler is still on the square");
     }
 }
@@ -1185,4 +1190,82 @@ fn a_layers_array_sets_every_listed_boards_background_in_one_step() {
     assert!(s.execute("layer.artboard.set", json!({"layers": [], "background": "white"})).is_err());
     assert!(s.execute("layer.artboard.set", json!({"layers": [a.0]})).is_err());
     assert_eq!(s.active().unwrap().history.entries().len(), n);
+}
+
+#[test]
+fn new_layers_made_with_an_artboard_selected_go_inside_it() {
+    // Photoshop 26.2: with an artboard itself selected, New Layer, fill layers and adjustment
+    // layers land on top of that board's contents.
+    let mut s = session(8);
+    s.execute("layer.new.artboard", json!({"x": 0, "y": 0, "width": 50, "height": 50, "name": "Board A"})).unwrap();
+    let b = s.execute("layer.new.artboard", json!({"x": 60, "y": 0, "width": 40, "height": 50, "name": "Board B"})).unwrap();
+    let board = LayerId(b["layer"].as_u64().unwrap());
+    for (cmd, p) in new_layer_commands() {
+        s.execute("layer.select", json!({"name": "Board B"})).unwrap();
+        let id = LayerId(s.execute(cmd, p).unwrap()["layer"].as_u64().unwrap());
+        let kids = doc(&s).layer(board).and_then(Layer::children).unwrap();
+        assert_eq!(kids.last().map(|l| l.id), Some(id), "{cmd} lands on top of the selected board's contents");
+    }
+    assert_eq!(doc(&s).layer(board).and_then(Layer::children).map(<[Layer]>::len), Some(5));
+}
+
+/// The five commands `new_layers_made_with_an_artboard_selected_go_inside_it` checks.
+fn new_layer_commands() -> [(&'static str, serde_json::Value); 5] {
+    [
+        ("layer.new.layer", json!({})),
+        ("layer.newFillLayer.solidColor", json!({"color": "#c82828"})),
+        ("layer.newFillLayer.gradient", json!({})),
+        ("gradient.fill.create", json!({"from": [0, 0], "to": [100, 0]})),
+        ("layer.newAdjustmentLayer.invert", json!({})),
+    ]
+}
+
+#[test]
+fn new_layers_made_with_a_layer_in_an_artboard_selected_go_directly_above_it() {
+    // #9311 review: with a layer inside a board selected (not the board), a new layer goes
+    // directly above that layer, inside the board, not on top of the board's contents.
+    let mut s = session(8);
+    s.execute("layer.new.artboard", json!({"x": 0, "y": 0, "width": 50, "height": 50, "name": "Board A"})).unwrap();
+    let b = s.execute("layer.new.artboard", json!({"x": 60, "y": 0, "width": 40, "height": 50, "name": "Board B"})).unwrap();
+    let board = LayerId(b["layer"].as_u64().unwrap());
+    let mut inside = Vec::new();
+    for name in ["low", "high"] {
+        s.execute("layer.select", json!({"name": "Board B"})).unwrap();
+        inside.push(LayerId(s.execute("layer.new.layer", json!({"name": name})).unwrap()["layer"].as_u64().unwrap()));
+    }
+    let (low, high) = (inside[0], inside[1]);
+    let board_path = doc(&s).path_of(board).unwrap();
+    for (cmd, p) in new_layer_commands() {
+        s.execute("layer.select", json!({"name": "low"})).unwrap();
+        let id = LayerId(s.execute(cmd, p).unwrap()["layer"].as_u64().unwrap());
+        let mut above_low = doc(&s).path_of(low).unwrap();
+        *above_low.last_mut().unwrap() += 1;
+        assert_eq!(doc(&s).path_of(id), Some(above_low), "{cmd} lands directly above the selected layer");
+        assert_eq!(doc(&s).path_of(id).map(|p| p[..p.len() - 1].to_vec()), Some(board_path.clone()), "{cmd} stays in the board");
+        let kids = doc(&s).layer(board).and_then(Layer::children).unwrap();
+        assert_eq!(kids.last().map(|l| l.id), Some(high), "{cmd} doesn't go on top of the board's contents");
+    }
+    assert_eq!(doc(&s).layer(board).and_then(Layer::children).map(<[Layer]>::len), Some(7));
+}
+
+#[test]
+fn new_layers_made_with_a_top_level_layer_selected_stay_at_the_top_level() {
+    // #9311 review: with no artboard selected (a top-level layer outside every board), a new
+    // layer goes directly above that layer at the top level, in no board.
+    let mut s = session(8);
+    s.execute("layer.new.artboard", json!({"x": 0, "y": 0, "width": 50, "height": 50, "name": "Board A"})).unwrap();
+    s.execute("layer.new.artboard", json!({"x": 60, "y": 0, "width": 40, "height": 50, "name": "Board B"})).unwrap();
+    let loose = add_square(&mut s, Rect::new(52, 10, 58, 20), [0.0, 0.0, 1.0, 1.0]);
+    let name = doc(&s).layer(loose).unwrap().name.clone();
+    let boards: Vec<usize> = doc(&s).artboards().iter().map(|(b, ..)| doc(&s).layer(*b).and_then(Layer::children).map_or(0, <[Layer]>::len)).collect();
+    for (cmd, p) in new_layer_commands() {
+        s.execute("layer.select", json!({"name": name})).unwrap();
+        let id = LayerId(s.execute(cmd, p).unwrap()["layer"].as_u64().unwrap());
+        let loose_at = doc(&s).path_of(loose).unwrap();
+        assert_eq!(loose_at.len(), 1, "the selected layer is at the top level");
+        assert_eq!(doc(&s).path_of(id), Some(vec![loose_at[0] + 1]), "{cmd} lands directly above the selected layer, at the top level");
+        assert_eq!(doc(&s).artboard_of(id), None, "{cmd} goes in no board");
+    }
+    let after: Vec<usize> = doc(&s).artboards().iter().map(|(b, ..)| doc(&s).layer(*b).and_then(Layer::children).map_or(0, <[Layer]>::len)).collect();
+    assert_eq!(after, boards, "no board gained a layer");
 }

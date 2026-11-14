@@ -99,8 +99,9 @@ fn adjustments_filters_and_drawing_preserve_other_encoded_components() {
                 let mut s = setup(mode, depth);
                 subset(&mut s);
                 let before = surface(&s);
-                // Color Replacement refuses 32-bit RGB, as the reference application does (#11923).
-                if *cmd == "paint.colorReplacement" && mode == "rgb" && depth == 32 {
+                // Color Replacement refuses 32-bit RGB (#11923), the Art History Brush every depth
+                // but 8 bits (#12637), as the reference application does.
+                if (*cmd == "paint.colorReplacement" && mode == "rgb" && depth == 32) || (*cmd == "paint.artHistoryBrush" && depth != 8) {
                     assert!(s.execute(cmd, p.clone()).is_err(), "{mode} {depth} {cmd} is refused");
                     assert_eq!(surface(&s), before, "{mode} {depth} {cmd}: nothing changed");
                     continue;
@@ -1539,8 +1540,8 @@ fn named_red_eye_target_does_not_bypass_channel_protection_on_the_active_layer()
     .unwrap();
     s.execute("channel.target", json!({"colors":[1,2]})).unwrap();
     let before = surface(&s);
-    let error = s.execute("paint.redEye", json!({"x":32,"y":32,"layer":"other"})).unwrap_err();
-    assert!(error.to_string().contains("no red-eye pixels"));
+    let result = s.execute("paint.redEye", json!({"x":32,"y":32,"layer":"other"})).unwrap();
+    assert_eq!(result["pixels"], 0, "{result}");
     assert!(surface(&s) == before);
 }
 
@@ -1559,4 +1560,137 @@ fn only_pixel_editing_paint_commands_follow_a_colour_set() {
     subset(&mut s);
     let loaded = s.execute("paint.mixerLoad", json!({"x": 4.0, "y": 4.0})).unwrap();
     assert_eq!(loaded["loaded"], json!(true));
+}
+
+/// A small RGB document for Stroke's mask and channel-view cases.
+fn stroke_session(depth: u32) -> Session {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 30, "depth": depth})).unwrap();
+    s.execute("layer.new.layer", json!({})).unwrap();
+    s
+}
+
+fn stroke_doc(s: &Session) -> &photocraft_doc::Document {
+    &s.active().unwrap().doc
+}
+
+fn stroke_layer(s: &Session) -> &photocraft_doc::Layer {
+    let st = s.active().unwrap();
+    st.doc.layer(st.active_layer.unwrap()).unwrap()
+}
+
+fn stroke_pixel(s: &Session, x: i32, y: i32) -> Vec<f32> {
+    stroke_layer(s).surface().unwrap().pixel(x, y)
+}
+
+/// A layer mask is edited independently of locked pixels, with selection and Undo preserved.
+#[test]
+fn stroke_edits_layer_masks_without_touching_locked_layer_pixels() {
+    for depth in [8, 16, 32] {
+        for selected in [true, false] {
+            let mut s = stroke_session(depth);
+            s.execute("edit.fill", json!({"contents": "white"})).unwrap();
+            s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+            s.execute("layer.setProps", json!({"locks": {"pixels": true, "transparency": true}})).unwrap();
+            if selected {
+                s.execute("select.rect", json!({"x": 10, "y": 10, "width": 10, "height": 10})).unwrap();
+            }
+            let full = Rect::new(0, 0, 40, 30);
+            let read = |s: &Session| stroke_layer(s).mask.as_ref().unwrap().surface.read_region(full);
+            let sample = |s: &Session, x, y| stroke_layer(s).mask.as_ref().unwrap().surface.sample_channel(x, y, 0);
+            let layer_before = stroke_layer(&s).surface().unwrap().read_region(full);
+            let mask_before = read(&s);
+            let past = s.active().unwrap().history.past_len();
+            s.execute("edit.stroke", json!({"target": "mask", "width": 2, "color": "#000000", "location": "inside"})).unwrap();
+            let edge_x = if selected { 10 } else { 0 };
+            assert_eq!(sample(&s, edge_x, 15), 0.0, "{depth} selected={selected}");
+            assert_eq!(sample(&s, 15, 15), 1.0, "the interior is untouched");
+            if selected {
+                assert_eq!(sample(&s, 9, 15), 1.0, "outside the selection is untouched");
+            }
+            assert_eq!(stroke_layer(&s).surface().unwrap().read_region(full), layer_before);
+            assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+            s.undo();
+            assert_eq!(read(&s), mask_before);
+            assert!(s.execute("edit.stroke", json!({"target": "pixels"})).is_err(), "pixel lock still applies to pixels");
+            assert_eq!(s.active().unwrap().history.past_len(), past);
+        }
+    }
+}
+
+/// Channel views retain Stroke's layer behavior for both saved alpha channels and Quick Mask.
+#[test]
+fn stroke_with_channel_views_keeps_editing_layer_pixels() {
+    for alpha in [false, true] {
+        let mut s = stroke_session(8);
+        s.execute("edit.fill", json!({"contents": "white"})).unwrap();
+        if alpha {
+            s.execute("channel.new", json!({"fill": "white"})).unwrap();
+            s.execute("channel.target", json!({"channel": 0})).unwrap();
+        } else {
+            s.execute("select.editInQuickMaskMode", json!({"on": true})).unwrap();
+        }
+        let full = Rect::new(0, 0, 40, 30);
+        let read = |s: &Session| {
+            if alpha { stroke_doc(s).channels[0].surface.read_region(full) } else { stroke_doc(s).quick_mask.as_ref().unwrap().surface.read_region(full) }
+        };
+        let before = read(&s);
+        let past = s.active().unwrap().history.past_len();
+        s.execute("edit.stroke", json!({"width": 2, "color": "#000000", "location": "inside"})).unwrap();
+        assert_eq!(stroke_pixel(&s, 0, 15)[0], 0.0);
+        assert_eq!(stroke_pixel(&s, 15, 15)[0], 1.0);
+        assert_eq!(read(&s), before);
+        assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+        s.undo();
+        assert_eq!(stroke_pixel(&s, 0, 15)[0], 1.0);
+    }
+}
+
+/// Invalid mask targets and all-locked masks fail without painting pixels or adding history.
+#[test]
+fn stroke_refuses_missing_and_locked_layer_masks() {
+    let mut s = stroke_session(8);
+    let past = s.active().unwrap().history.past_len();
+    assert!(s.execute("edit.stroke", json!({"target": "mask"})).is_err());
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    s.execute("layer.layerMask.revealAll", json!({})).unwrap();
+    s.execute("layer.setProps", json!({"locks": {"all": true}})).unwrap();
+    let past = s.active().unwrap().history.past_len();
+    assert!(s.execute("edit.stroke", json!({"target": "mask"})).is_err());
+    assert_eq!(s.active().unwrap().history.past_len(), past);
+    assert_eq!(stroke_layer(&s).mask.as_ref().unwrap().surface.sample_channel(0, 0, 0), 1.0);
+}
+
+/// Stored and implicit white filter masks share no-selection edges and transactional Undo.
+#[test]
+fn stroke_materializes_an_implicit_filter_mask_without_a_selection() {
+    for stored in [false, true] {
+        let mut s = stroke_session(8);
+        s.execute("edit.fill", json!({"contents": "white"})).unwrap();
+        s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+        if stored {
+            s.execute("select.all", json!({})).unwrap();
+        }
+        s.execute("filter.blur.gaussianBlur", json!({"radius": 1})).unwrap();
+        if s.active().unwrap().doc.selection.is_some() {
+            s.execute("select.deselect", json!({})).unwrap();
+        }
+        s.execute("layer.setProps", json!({"locks": {"pixels": true, "transparency": true}})).unwrap();
+        let mask = |s: &Session| match &stroke_layer(s).content {
+            photocraft_doc::LayerContent::Smart(sm) => sm.filter_mask.clone(),
+            _ => panic!("expected a smart object"),
+        };
+        let before = mask(&s);
+        assert_eq!(before.is_some(), stored);
+        let params = json!({"target": "filterMask", "width": 2, "color": "#000000", "location": "inside"});
+        assert!(s.is_enabled_with("edit.stroke", &params));
+        let past = s.active().unwrap().history.past_len();
+        s.execute("edit.stroke", params).unwrap();
+        let painted = mask(&s).unwrap();
+        assert_eq!(painted.surface.sample_channel(0, 15, 0), 0.0);
+        assert_eq!(painted.surface.sample_channel(15, 15, 0), 1.0);
+        assert_eq!(s.active().unwrap().history.past_len(), past + 1);
+        s.undo();
+        assert_eq!(mask(&s), before, "Undo restores the original mask representation");
+    }
 }

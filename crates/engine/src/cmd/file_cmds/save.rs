@@ -36,6 +36,9 @@ pub(crate) struct SaveOpts {
     /// DDS: the compression and whether to write the mip chain (`"ddsCompression"`,
     /// `"ddsMipmaps"`); unset, uncompressed without mipmaps.
     pub dds: photocraft_io::DdsOptions,
+    /// PDF: spot channels as overprinting Separation plates (`"pdfSpotPlates"`); on unless the
+    /// params say `false`.
+    pub pdf_spot_plates: bool,
     /// PSD/PSB: embed the thumbnail resource (Preferences › File Handling › Image Previews).
     pub image_previews: bool,
     /// PSD/PSB: write the real merged image (Preferences › File Handling › Maximize PSD and PSB
@@ -60,6 +63,7 @@ impl Default for SaveOpts {
             preserve_alpha: false,
             tiff_pyramid: false,
             dds: photocraft_io::DdsOptions::default(),
+            pdf_spot_plates: true,
             image_previews: true,
             psd_maximize_compatibility: true,
             pcraft_full_composite: false,
@@ -88,6 +92,7 @@ impl SaveOpts {
             preserve_alpha: false,
             tiff_pyramid: tiff_bool_param(p, "tiffPyramid", cmd)?.unwrap_or(false),
             dds: dds_param(p, cmd)?.unwrap_or_default(),
+            pdf_spot_plates: pdf_spot_plates_param(p, cmd)?,
             image_previews: file_handling.image_previews != crate::prefs::Ask::Never,
             psd_maximize_compatibility: maximize_compatibility_param(p, cmd)?.unwrap_or(file_handling.maximize_psd_compatibility != crate::prefs::Ask::Never),
             pcraft_full_composite: pcraft_full_composite_param(p, cmd)?.unwrap_or(file_handling.pcraft_full_composite),
@@ -103,6 +108,15 @@ impl SaveOpts {
 impl From<Option<f64>> for SaveOpts {
     fn from(quality: Option<f64>) -> Self {
         SaveOpts { quality, ..Default::default() }
+    }
+}
+
+/// Whether a PDF save in `p` writes spot plates (`"pdfSpotPlates": bool`; absent or null: yes).
+/// Anything else is a bad parameter of command `cmd`.
+pub fn pdf_spot_plates_param(p: &Value, cmd: &str) -> Result<bool> {
+    match p.get("pdfSpotPlates") {
+        None | Some(Value::Null) => Ok(true),
+        Some(v) => v.as_bool().ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: format!("`pdfSpotPlates` must be true or false, got {v}") }),
     }
 }
 
@@ -236,6 +250,7 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
         tiff_transparency: save.tiff_transparency,
         preserve_alpha: save.preserve_alpha,
         tga_bits: save.tga_bits,
+        pdf_spot_plates: save.pdf_spot_plates,
         image_previews: save.image_previews,
         psd_maximize_compatibility: save.psd_maximize_compatibility,
         pcraft_full_composite: save.pcraft_full_composite,

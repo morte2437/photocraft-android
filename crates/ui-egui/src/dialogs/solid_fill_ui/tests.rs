@@ -371,3 +371,35 @@ fn inks_given_to_a_non_cmyk_fill_in_a_cmyk_document_are_an_edit() {
     assert!(!is_edit(&f, original, ColorMode::Rgb));
     assert!(picked_color(&f, original, ColorMode::Cmyk).is_some_and(|c| c.mode == ColorMode::Cmyk && c.c == [0.3, 0.2, 0.1, 0.4]));
 }
+
+/// #8568: a new fill's picker opens with the inks the foreground was picked as, and Reset after an
+/// edit brings them back, so OK keeps them.
+#[test]
+fn a_new_fills_picker_is_seeded_with_the_foregrounds_inks() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    s.execute("image.mode.cmyk", json!({})).unwrap();
+    let mut app = PhotocraftApp::new(s, crate::Services::default());
+    let hex = |inks: [f32; 4]| {
+        let [r, g, b] = photocraft_color::convert::cmyk_to_rgb(inks).map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+        format!("#{r:02x}{g:02x}{b:02x}")
+    };
+    let rich = [0.5, 0.5, 0.5, 1.0];
+    app.session.execute("tools.setColors", json!({"foreground": hex(rich), "foregroundCmyk": rich})).unwrap();
+    let id = open_new(&mut app).unwrap();
+    let f = app.ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+    assert_eq!(color_picker_ui::picked_cmyk(&f), Some(rich), "seeded with the foreground's inks");
+    // An edit, then Reset (or a click on Current), brings the seeded inks back with the colour,
+    // not inks recomputed from it.
+    let mut edited = f.clone();
+    edited.insert("color".into(), json!("#ff0000"));
+    edited.remove("__cmyk");
+    color_picker_ui::reset(&mut edited);
+    assert_eq!(edited.get("color"), f.get("color"));
+    assert_eq!(color_picker_ui::picked_cmyk(&edited), Some(rich), "Reset restores the seeded inks");
+    app.ui.dialogs.retain(|d| d.id != id);
+    confirm_new(&mut app, &edited).unwrap();
+    let st = app.session.active().unwrap();
+    let LayerContent::Fill(Fill::Solid(original)) = st.doc.layer(st.active_layer.unwrap()).unwrap().content else { panic!("not a solid fill") };
+    assert_eq!(original.c, rich);
+}

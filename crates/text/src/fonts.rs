@@ -78,6 +78,9 @@ pub const LAO_FAMILIES: &[&str] = &["Lao Sangam MN", "Lao MN", "Lao UI", "Noto S
 /// Myanmar/Burmese-capable families: macOS (Myanmar Sangam MN, Myanmar MN), Windows (Myanmar Text)
 /// and Linux (Noto).
 pub const MYANMAR_FAMILIES: &[&str] = &["Myanmar Sangam MN", "Myanmar MN", "Myanmar Text", "Noto Sans Myanmar"];
+/// Georgian-capable families: craft-fonts and Linux (Noto), Windows (Sylfaen), macOS (".SF Georgian",
+/// a hidden system face). Georgian in a font without Mkhedruli glyphs falls back to these.
+pub const GEORGIAN_FAMILIES: &[&str] = &["Noto Sans Georgian", "Noto Serif Georgian", "Sylfaen", ".SF Georgian"];
 /// Indic-script families for document text. Windows has `Nirmala UI` for all nine scripts (from
 /// Windows 8); macOS has the Kohinoor and Sangam MN families; Linux has Noto Sans. Indic text in a
 /// font without these glyphs had no candidate to fall back to and drew .notdef boxes (#218).
@@ -121,6 +124,7 @@ pub fn fallback_candidates(order: &[crate::cjk::CjkScript; 4]) -> Vec<&'static s
     v.extend_from_slice(KHMER_FAMILIES);
     v.extend_from_slice(LAO_FAMILIES);
     v.extend_from_slice(MYANMAR_FAMILIES);
+    v.extend_from_slice(GEORGIAN_FAMILIES);
     for fams in INDIC_FAMILIES {
         for f in *fams {
             // Nirmala UI covers all nine scripts and is listed by each; probe it once.

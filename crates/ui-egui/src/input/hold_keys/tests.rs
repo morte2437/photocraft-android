@@ -782,7 +782,14 @@ fn tilde_held_with_the_brush_or_pencil_erases_with_its_brush() {
         drag_with(&mut h, Modifiers::NONE, 110.0, 130.0, 150.0, 130.0);
         key(&mut h, Key::Backtick, false, Modifiers::NONE);
         assert_eq!(last_stroke_erases(&h), Some(true), "{tool:?}");
-        assert_eq!(rgba(&h, 130, 130)[3], 0.0, "{tool:?}: erased to transparency");
+        // `drag_with` bends through `(118, 136)` on the way from `(110, 130)` to `(150, 130)`,
+        // so the Pencil's 1 px tip (#12200) no longer reaches `(130, 130)`; check `(110, 130)`
+        // at the stroke start instead.
+        assert_eq!(rgba(&h, 110, 130)[3], 0.0, "{tool:?}: erased to transparency");
+        // The whole drag erases, not only its first dab: a 1 px Pencil line along the 40 px drag
+        // clears far more pixels than one dab.
+        let cleared = (100..160).flat_map(|x| (120..146).map(move |y| (x, y))).filter(|&(x, y)| rgba(&h, x, y)[3] == 0.0).count();
+        assert!(cleared >= 20, "{tool:?}: erased along the drag, {cleared} pixels");
         assert_eq!(last_stroke(h.state())["mode"], json!("clear"), "{tool:?}");
         assert_eq!(h.state().session.active().unwrap().history.undo_label(), Some(label));
         assert_eq!(h.state().ui.tool, tool, "the tool stays");
@@ -1072,4 +1079,186 @@ fn a_one_frame_cmd_click_with_the_hand_tool_zooms() {
     ]);
     h.run_steps(2);
     assert!(h.state().ui.views[0].zoom > z0);
+}
+
+/// Right-click while Space holds the Hand over another tool: the Hand tool's view menu, as in
+/// Photoshop, not the held-over tool's menu; the tool comes back on release (#11271).
+#[test]
+fn space_right_click_opens_the_hand_view_menu() {
+    for tool in [Tool::Move, Tool::Brush, Tool::RectMarquee, Tool::Pen] {
+        let mut h = harness(tool);
+        let p = screen(&h, 200.0, 150.0);
+        h.event(Event::PointerMoved(p));
+        h.run_steps(1);
+        key(&mut h, Key::Space, true, Modifiers::NONE);
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+        key(&mut h, Key::Space, false, Modifiers::NONE);
+        h.run_steps(2);
+        let menu = h.state().ui.canvas_tool_menu.clone().unwrap_or_else(|| panic!("{tool:?}: Space right-click opens no menu"));
+        assert!(crate::canvas_tool_menu::rows(&menu) == crate::canvas_tool_menu::HAND_MENU, "{tool:?}: the Hand's view menu");
+        assert_eq!(menu.under, Some(tool), "{tool:?}: held over the selected tool");
+        assert!(h.state().ui.layer_menu.is_none(), "{tool:?}: not the Move tool's layer menu");
+        assert!(h.state().ui.brush_picker.is_none(), "{tool:?}: not the brush picker");
+        assert_eq!(h.state().ui.tool, tool, "{tool:?}: the tool is kept");
+        // Its rows work as the selected Hand's do.
+        let zoom = h.state().ui.views[0].zoom;
+        let ctx = h.ctx.clone();
+        crate::canvas_tool_menu::choose(h.state_mut(), &ctx, "view.twoHundredPercent");
+        h.run_steps(2);
+        assert!((h.state().ui.views[0].zoom - 2.0).abs() < 1e-3, "{tool:?}: 200% from {zoom}");
+        assert!(h.state().ui.canvas_tool_menu.is_none(), "{tool:?}: choosing closes the menu");
+    }
+}
+
+/// The Hand's menu opened over another tool closes when that tool changes, as the selected
+/// Hand's does when the Hand is put down (#11271).
+#[test]
+fn space_hand_view_menu_closes_when_the_tool_underneath_changes() {
+    let mut h = harness(Tool::Brush);
+    let p = screen(&h, 200.0, 150.0);
+    h.event(Event::PointerMoved(p));
+    h.run_steps(1);
+    key(&mut h, Key::Space, true, Modifiers::NONE);
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    key(&mut h, Key::Space, false, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "the menu outlives the Space release");
+    h.state_mut().ui.tool = Tool::Lasso;
+    h.run_steps(1);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "another tool closes it");
+}
+
+/// ⌘Space and ⌥Space hold the Zoom, not the Hand: a right-click opens no view menu (#11271).
+/// With ⌥ it opens nothing, not even the held-over Move tool's layer list; with ⌘ it is still a
+/// ⌘/Ctrl+right-click, which lists the layers under the pointer for any tool (#307).
+#[test]
+fn command_or_alt_space_right_click_opens_no_view_menu() {
+    for mods in [Modifiers::COMMAND, Modifiers::ALT] {
+        for tool in [Tool::Move, Tool::Brush] {
+            let mut h = harness(tool);
+            let p = screen(&h, 200.0, 150.0);
+            h.event(Event::PointerMoved(p));
+            h.run_steps(1);
+            key(&mut h, Key::Space, true, mods);
+            h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: true, modifiers: mods });
+            h.run_steps(1);
+            h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: false, modifiers: mods });
+            h.run_steps(1);
+            key(&mut h, Key::Space, false, mods);
+            h.run_steps(2);
+            let view = h.state().ui.canvas_tool_menu.as_ref().is_some_and(|m| m.anchor.is_some());
+            assert!(!view, "{mods:?} {tool:?}: no view menu");
+            assert_eq!(h.state().ui.layer_menu.is_some(), mods.command, "{mods:?} {tool:?}: the layer list only for ⌘+right-click");
+            assert_eq!(h.state().ui.tool, tool, "{mods:?} {tool:?}: the tool is kept");
+        }
+    }
+}
+
+/// A right-click at `p` with Space already held (the Hand over the selected tool).
+fn right_click_at(h: &mut Harness<'static, PhotocraftApp>, p: Pos2) {
+    h.event(Event::PointerMoved(p));
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+}
+
+/// A pending crop frame on the Crop tool, as the held-key test above sets one up.
+fn with_pending_crop(h: &mut Harness<'static, PhotocraftApp>) -> [f64; 4] {
+    let frame = [100.0, 50.0, 300.0, 200.0];
+    h.state_mut().ui.crop_rect = Some(frame);
+    h.state_mut().crop.default_frame = false;
+    h.run_steps(2);
+    assert!(crate::crop_ui::pending(h.state()));
+    frame
+}
+
+/// The Space-Hand view menu over a pending crop (#11271): Esc closes only the menu and Enter
+/// commits nothing, as under the crop's own menu; with the menu closed Esc discards the crop.
+#[test]
+fn space_hand_view_menu_keeps_escape_and_enter_from_the_pending_crop() {
+    let mut h = harness(Tool::Crop);
+    let frame = with_pending_crop(&mut h);
+    let size = h.state().session.active().map(|s| s.doc.size);
+    let steps = h.state().session.active().map(|s| s.history.past_len());
+    let p = screen(&h, 200.0, 125.0);
+    key(&mut h, Key::Space, true, Modifiers::NONE);
+    right_click_at(&mut h, p);
+    assert!(
+        h.state().ui.canvas_tool_menu.as_ref().is_some_and(|m| m.crop.is_none() && crate::canvas_tool_menu::is_view_tool(m.tool)),
+        "Space's Hand opens the view menu"
+    );
+    tap(&mut h, Key::Escape, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "Esc closes the menu");
+    assert_eq!(h.state().ui.crop_rect, Some(frame), "and only the menu: the crop is not discarded");
+    assert!(crate::crop_ui::pending(h.state()));
+    right_click_at(&mut h, p);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "the view menu opens again");
+    tap(&mut h, Key::Enter, Modifiers::NONE);
+    h.run_steps(2);
+    assert_eq!(h.state().session.active().map(|s| s.doc.size), size, "Enter under the menu doesn't crop");
+    assert_eq!(h.state().session.active().map(|s| s.history.past_len()), steps, "no history step");
+    assert_eq!(h.state().ui.crop_rect, Some(frame));
+    // Close the menu and let Space go: Esc discards the pending crop as ever.
+    h.state_mut().ui.canvas_tool_menu = None;
+    key(&mut h, Key::Space, false, Modifiers::NONE);
+    h.run_steps(3);
+    tap(&mut h, Key::Escape, Modifiers::NONE);
+    h.run_steps(2);
+    assert!(!crate::crop_ui::pending(h.state()), "with no menu open Esc discards the crop");
+}
+
+/// Only a plain Esc and Enter are the view menu's (#11271): Ctrl+Alt+Enter dispatches with the menu
+/// open (it leaves the menu open), and Esc with a tool key in one pass closes the menu and picks
+/// the tool.
+#[test]
+fn space_hand_view_menu_reserves_only_plain_escape_and_enter() {
+    let mut h = harness(Tool::Move);
+    let p = screen(&h, 200.0, 125.0);
+    key(&mut h, Key::Space, true, Modifiers::NONE);
+    right_click_at(&mut h, p);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "Space's Hand opens the view menu");
+    let mods = platform(Modifiers::COMMAND | Modifiers::ALT);
+    let steps = h.state().session.active().map(|s| s.history.past_len());
+    h.input_mut()
+        .events
+        .extend([Event::ModifiersChanged(mods), Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: mods }]);
+    h.run_steps(2);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(1);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "a modified Enter leaves the menu open");
+    assert_eq!(h.state().session.active().map(|s| s.history.past_len()), steps, "and changes nothing");
+    h.input_mut().events.extend([
+        Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE },
+        Event::Key { key: Key::B, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE },
+    ]);
+    h.run_steps(2);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "Esc closes the menu");
+    assert_eq!(h.state().ui.tool, Tool::Brush, "and B in the same pass still picks the Brush");
+}
+
+/// Space's Hand outside the image opens the pasteboard menu, which outlives the held Space and
+/// closes when the tool underneath changes (#11271).
+#[test]
+fn space_hand_pasteboard_menu_opens_outside_the_image_and_outlives_space() {
+    let mut h = harness(Tool::Move);
+    let outside = screen(&h, -60.0, -60.0);
+    key(&mut h, Key::Space, true, Modifiers::NONE);
+    right_click_at(&mut h, outside);
+    assert!(h.state().ui.canvas_tool_menu.as_ref().is_some_and(|m| m.pasteboard), "Space's Hand opens the pasteboard menu outside");
+    assert_eq!(h.state().ui.tool, Tool::Move, "the Move tool stays selected");
+    key(&mut h, Key::Space, false, Modifiers::NONE);
+    h.run_steps(3);
+    assert!(h.state().ui.canvas_tool_menu.as_ref().is_some_and(|m| m.pasteboard), "the pasteboard menu outlives the held Space");
+    h.state_mut().ui.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "another tool selected closes it");
 }

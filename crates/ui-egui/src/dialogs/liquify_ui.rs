@@ -276,6 +276,48 @@ pub struct LiquifyDialog {
     /// The undisplaced field drawn while Preview is off. It is as large as `field`, so it exists
     /// only while Preview is off: made when Preview is turned off, freed when it's turned back on.
     identity: Option<LiquifyField>,
+    /// The document's selection when the dialog opened, which OK applies Liquify through: the
+    /// preview mixes the same way (#9541). `None` without one.
+    selection: Option<PreviewSelection>,
+}
+
+/// The selection a Liquify preview is shown through, as the engine applies it on OK
+/// (`distort_cmds::mix_by_selection`): the result over the original by its coverage. On a smart
+/// object with a filter mask it is that mask, which the engine shows every filter through.
+struct PreviewSelection {
+    mask: photocraft_doc::LayerMask,
+    /// Coverage at each proxy pixel (row-major, the proxy's size).
+    proxy: Vec<f32>,
+    /// What shows where the mask hides the result, when that isn't the dialog's source: a filter
+    /// mask shows the smart object's placed pixels, without any filter (`filter_mask::mix`). With
+    /// its proxy, the same size as the dialog's.
+    base: Option<(Surface, ProxyImage)>,
+}
+
+impl PreviewSelection {
+    /// `sel` with its coverage sampled at `proxy`'s pixels. Kept even when every proxy pixel is
+    /// selected: a gap narrower than a proxy pixel still shows in the source-resolution crop.
+    fn new(mask: photocraft_doc::LayerMask, proxy: &ProxyImage, base: Option<Surface>) -> Self {
+        let (bx, by, s) = (f64::from(proxy.bounds.x0), f64::from(proxy.bounds.y0), proxy.scale);
+        let mut cov = Vec::with_capacity(proxy.w * proxy.h);
+        for y in 0..proxy.h {
+            let dy = (by + (y as f64 + 0.5) * s).floor() as i32;
+            for x in 0..proxy.w {
+                let dx = (bx + (x as f64 + 0.5) * s).floor() as i32;
+                cov.push(mask.value(dx, dy).clamp(0.0, 1.0));
+            }
+        }
+        let base = base.map(|b| {
+            let p = ProxyImage::new(&b, proxy.bounds, PROXY_SIDE);
+            (b, p)
+        });
+        PreviewSelection { mask, proxy: cov, base }
+    }
+}
+
+/// `new` over `old` (premultiplied RGBA8) by coverage `c`.
+fn mix(new: [u8; 4], old: [f32; 4], c: f32) -> [u8; 4] {
+    std::array::from_fn(|k| (f32::from(new[k]) * c + old[k].clamp(0.0, 1.0) * 255.0 * (1.0 - c) + 0.5).clamp(0.0, 255.0) as u8)
 }
 
 fn union(a: Option<[usize; 4]>, b: [usize; 4]) -> Option<[usize; 4]> {
@@ -455,13 +497,58 @@ impl LiquifyDialog {
     /// Re-renders the dirty proxy pixels into `out` (the texture upload happens in `show`).
     fn render_dirty(&mut self) {
         if let Some(r) = self.dirty {
-            let field = self.identity.as_ref().filter(|_| !self.preview).unwrap_or(&self.field);
-            if let Some(source) = &self.native_proxy {
-                let bounds = Rect::new(0, 0, self.proxy.w as i32, self.proxy.h as i32);
-                let dirty = Rect::new(r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32);
-                render_components(source, bounds, field, self.proxy.scale, &self.target, bounds, dirty, &mut self.out);
-            } else {
-                self.proxy.render(field, r, &mut self.out);
+            self.render_proxy(r);
+        }
+    }
+
+    /// Renders proxy pixels `r` through the field, then through the selection.
+    fn render_proxy(&mut self, r: [usize; 4]) {
+        let field = self.identity.as_ref().filter(|_| !self.preview).unwrap_or(&self.field);
+        if let Some(source) = &self.native_proxy {
+            let bounds = Rect::new(0, 0, self.proxy.w as i32, self.proxy.h as i32);
+            let dirty = Rect::new(r[0] as i32, r[1] as i32, r[2] as i32, r[3] as i32);
+            render_components(source, bounds, field, self.proxy.scale, &self.target, bounds, dirty, &mut self.out);
+        } else {
+            self.proxy.render(field, r, &mut self.out);
+        }
+        let Some(sel) = &self.selection else { return };
+        let w = self.proxy.w;
+        for y in r[1]..r[3].min(self.proxy.h) {
+            for x in r[0]..r[2].min(w) {
+                let i = y * w + x;
+                let old = match &sel.base {
+                    Some((_, p)) => p.px.get(i),
+                    None => self.proxy.px.get(i),
+                };
+                if let (Some(c), Some(old), Some(new)) = (sel.proxy.get(i), old, self.out.get_mut(i))
+                    && *c < 1.0
+                {
+                    *new = mix(*new, *old, *c);
+                }
+            }
+        }
+    }
+
+    /// Mixes the source-resolution preview's `dirty` pixels (document px, within `bounds`) over
+    /// the original by the selection.
+    fn select_view(&mut self, bounds: Rect, dirty: Rect) {
+        let Some(sel) = &self.selection else { return };
+        let (w, dw) = (bounds.width() as usize, dirty.width() as usize);
+        // One row of originals at a time: the crop can be millions of pixels.
+        let mut old = vec![[0.0f32; 4]; dw];
+        for y in dirty.y0..dirty.y1 {
+            sel.base.as_ref().map_or(&self.source, |(b, _)| b).read_rgba_into(Rect::new(dirty.x0, y, dirty.x1, y + 1), &mut old);
+            for x in dirty.x0..dirty.x1 {
+                let c = sel.mask.value(x, y).clamp(0.0, 1.0);
+                if c >= 1.0 {
+                    continue;
+                }
+                let at = ((y - bounds.y0) as usize) * w + (x - bounds.x0) as usize;
+                if let (Some(new), Some(o)) = (self.view_out.get_mut(at), old.get((x - dirty.x0) as usize)) {
+                    // Straight to premultiplied, as the preview's pixels are.
+                    let o = [o[0] * o[3], o[1] * o[3], o[2] * o[3], o[3]];
+                    *new = mix(*new, o, c);
+                }
             }
         }
     }
@@ -536,6 +623,7 @@ impl LiquifyDialog {
             self.preview_ms = crate::gpu_canvas::now_ms() - started;
             return;
         }
+        self.select_view(bounds, dirty);
         let x0 = (dirty.x0 - bounds.x0) as usize;
         let y0 = (dirty.y0 - bounds.y0) as usize;
         let x1 = (dirty.x1 - bounds.x0) as usize;
@@ -604,8 +692,17 @@ impl LiquifyDialog {
 
 /// Opens the dialog on the active layer.
 pub fn open(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
-    let (layer, surf, _) = crate::distort_ui::active_filter_target(app)?;
-    let canvas = app.session.active().ok_or("no document")?.doc.bounds();
+    let (layer, mut surf, _) = crate::distort_ui::active_filter_target(app)?;
+    let doc = &app.session.active().ok_or("no document")?.doc;
+    let canvas = doc.bounds();
+    // A smart object's pixels are its filters mixed through its filter mask; OK adds the Liquify
+    // above the filters themselves, so that is what it edits.
+    if let Some(photocraft_doc::LayerContent::Smart(sm)) = doc.layer(layer).map(|l| &l.content)
+        && sm.filter_mask.is_some()
+        && let Ok(Some(filtered)) = photocraft_engine::smart_cmds::render_below_filter(doc, sm, sm.smart_filters.len())
+    {
+        surf = filtered;
+    }
     open_on(app, ctx, layer, surf, Vec::new(), auto_cell(canvas), None)
 }
 
@@ -646,6 +743,21 @@ fn open_on(
     let colors = photocraft_engine::color_channels::explicit(&json!({"target":target}), surf.format().mode.color_channels()).map_err(|e| e.to_string())?;
     let native_proxy = colors.map(|_| crate::gallery_ui::reduce(&surf, canvas, proxy.scale as u32));
     let out = vec![[0u8; 4]; proxy.w * proxy.h];
+    // A smart object's filter mask shows every filter through it, a new Liquify too, whatever is
+    // selected (`smart_cmds::add_smart_filter`), over the placed pixels without any filter.
+    // Otherwise a new Liquify goes through the selection; a smart filter being edited has none.
+    let selection = match st.doc.layer(layer).map(|l| &l.content) {
+        Some(photocraft_doc::LayerContent::Smart(sm)) if sm.filter_mask.is_some() => sm.filter_mask.clone().map(|mask| {
+            let placed = photocraft_engine::smart_cmds::render_below_filter(&st.doc, sm, 0).ok().flatten();
+            PreviewSelection::new(mask, &proxy, placed)
+        }),
+        _ => st
+            .doc
+            .selection
+            .clone()
+            .filter(|_| smart_filter.is_none())
+            .map(|sel| PreviewSelection::new(photocraft_doc::LayerMask { surface: sel, ..photocraft_doc::LayerMask::reveal_all() }, &proxy, None)),
+    };
     let center = [f64::from(canvas.x0 + canvas.x1) / 2.0, f64::from(canvas.y0 + canvas.y1) / 2.0];
     let mut d = LiquifyDialog {
         document: st.doc.id,
@@ -685,6 +797,7 @@ fn open_on(
         smart_filter,
         preview: true,
         identity: None,
+        selection,
     };
     // A sensible starting brush (about a tenth of the image), then the settings last used, so
     // Liquify opens as it was left (#418). Saved values are clamped; a bad one is skipped.
@@ -808,11 +921,13 @@ fn brush_resize_gesture(mods: egui::Modifiers, secondary: bool) -> bool {
 }
 
 /// Horizontal motion sets the diameter (the circle's edge follows the pointer). Vertical motion
-/// sets density, Liquify's edge falloff, over the same 200 px travel the canvas uses for hardness.
+/// sets density, Liquify's edge falloff, over 200 px of travel.
 fn resized_brush(start_size: f32, start_density: f32, dx: f32, dy: f32, zoom: f32) -> (f32, f32) {
     // Liquify stores density as 0–100; the shared brush gesture works on normalized hardness.
     // Use the same zoom-corrected screen movement and size limits as the main canvas.
     let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+    // Density keeps its 200 px travel; the canvas hardness took Photoshop's slower rate (#11891).
+    let dy = dy * crate::brush_resize::HARDNESS_TRAVEL / 200.0;
     let (size, density) = crate::brush_resize::resized((start_size, start_density / 100.0), f64::from(dx / zoom), f64::from(dy / zoom), zoom);
     (size, (density * 100.0).round())
 }

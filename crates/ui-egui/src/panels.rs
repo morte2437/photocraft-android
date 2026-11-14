@@ -49,7 +49,7 @@ pub mod layers_panel_ui;
 pub(super) mod mask_props_ui;
 pub mod mask_thumbs_ui;
 mod navigator;
-mod options_bar;
+pub(crate) mod options_bar;
 pub(super) mod panel_docking;
 mod panel_state;
 pub mod preset_panels;
@@ -668,7 +668,7 @@ mod history_transform_tests {
             .viewport(|v| v.prev_pass.widgets.layers().flat_map(|(_, w)| w.iter()).filter(|w| w.rect.size() == vec2(24.0, 24.0)).map(|w| w.rect).collect());
         cells.sort_by(|a, b| a.center().y.total_cmp(&b.center().y));
         cells.dedup();
-        assert_eq!(cells.len(), 3, "Open, Fill, Fill: {cells:?}");
+        assert_eq!(cells.len(), 3, "New, Fill, Fill: {cells:?}");
         assert_eq!(h.state().session.active().unwrap().history.brush_source(), Some(0), "the default source");
         click(&mut h, cells[1].center());
         let st = h.state().session.active().unwrap();
@@ -896,7 +896,7 @@ mod snapshot_row_tests {
             let st = h.state().session.active().unwrap();
             (st.history.past_len(), st.history.redo_labels().count())
         };
-        assert_eq!(history(&h), (0, 3), "Open current, New Layer, Fill, Fill dimmed");
+        assert_eq!(history(&h), (0, 3), "New current, New Layer, Fill, Fill dimmed");
         assert!(h.state().session.is_enabled("history.deleteState"), "the engine still offers a later state to delete");
         let enabled = |h: &Harness<'static, PhotocraftApp>| {
             let p = trash(h);

@@ -112,7 +112,7 @@ fn public_affinity_documents_match_their_render_reference() {
             };
             photocraft_codecs::decode(&corpus(&path)).unwrap()
         } else {
-            photocraft_codecs::decode(photocraft_affinity::preview(&bytes).unwrap().png).unwrap()
+            photocraft_codecs::decode(craft_affinity::preview(&bytes).unwrap().png).unwrap()
         };
         let (tw, th) = reference.dimensions();
         let png = export(&r.document, "x.png", &ExportOptions::default()).unwrap().bytes;

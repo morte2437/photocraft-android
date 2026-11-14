@@ -110,7 +110,8 @@ fn mixer_live_current_layer_matches_reference_and_cancels() {
         &mut state,
         None,
         false,
-    );
+    )
+    .unwrap();
     let live = LiveMixer::begin(&s, &p).unwrap();
     let id = s.active().unwrap().active_layer.unwrap();
     let actual = live.doc.layer(id).unwrap().surface().unwrap().read_region(s.active().unwrap().doc.bounds());

@@ -435,5 +435,9 @@ pub fn specs() -> Vec<CommandSpec> {
 pub(crate) fn call(s: &mut Session, id: &str, p: Value) -> Result<Value> {
     let spec = crate::commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
     (spec.enabled)(s).map_err(|why| EngineError::Disabled(id.to_string(), why))?;
+    // A nested command answers to the session's authorization hook like a direct call.
+    if let Some(gate) = s.authorize {
+        gate(id, &p)?;
+    }
     (spec.run)(s, &p)
 }

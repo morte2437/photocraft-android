@@ -414,6 +414,10 @@ pub struct UiState {
     /// A live rectangle's corner radius widget being dragged (TOOL-214-12).
     #[serde(skip)]
     pub corner_radius: Option<crate::corner_radius::Drag>,
+    #[serde(skip)]
+    pub type_path_drag: Option<crate::type_path_placement::Drag>,
+    #[serde(skip)]
+    pub type_path_geometry_cache: crate::type_path_placement::GeometryCache,
     /// The bounding box of several selected shape layers, a handle being dragged.
     #[serde(skip)]
     pub shape_box: Option<crate::shape_bounds_box::Drag>,
@@ -612,6 +616,7 @@ pub struct UiState {
 }
 
 impl Default for UiState {
+    /// Creates the default UI state with default tools and empty drag state.
     fn default() -> Self {
         Self {
             tool: Tool::Move,
@@ -681,6 +686,8 @@ impl Default for UiState {
             stroke_editor: None,
             direct_selection: Default::default(),
             corner_radius: None,
+            type_path_drag: None,
+            type_path_geometry_cache: Default::default(),
             shape_box: None,
             selected_path: None,
             hidden_work_path: None,

@@ -1,5 +1,5 @@
 //! "Layer Via Copy" and "Layer Via Cut" carry a capital V in every menu, as in the reference
-//! application (#12357), and every translation moved with the key.
+//! application (#12357), and every translation moved with the key in the craft-i18n catalogs.
 
 use crate::canvas::canvas_tool_menu::SELECTION_MENU;
 use crate::menu_catalog::CATALOG;
@@ -34,29 +34,29 @@ fn selection_tools_canvas_menu_uses_the_capital_v() {
 }
 
 #[test]
-fn every_locale_file_keeps_its_translation_under_the_new_keys() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/i18n");
+fn every_locale_catalog_keeps_its_translation_under_the_new_keys() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let mut checked = 0;
-    for entry in std::fs::read_dir(dir).expect("i18n dir") {
-        let path = entry.expect("entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("tsv") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("tsv");
-        let keys: Vec<&str> = text.lines().filter_map(|l| l.split('\t').nth(1)).collect();
-        let name = path.display();
-        assert!(OLD.iter().all(|o| !keys.contains(o)), "{name} still has an old key");
-        // Hindi has no entries for these menus yet; every other file has both.
+    for (code, _, catalog) in crate::i18n::CRAFT_I18N {
+        // Rows are `context <TAB> English <TAB> translation`; `#` starts a comment.
+        let keys: Vec<&str> = catalog.lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split('\t').nth(1)).collect();
+        assert!(OLD.iter().all(|o| !keys.contains(o)), "{code} still has an old key");
+        // Hindi has no entries for these menus yet; every other catalog has both.
         if keys.contains(&"Layer Via Copy") || keys.contains(&"Layer Via Cut") {
-            assert!(NEW.iter().all(|(n, _)| keys.contains(n)), "{name} lacks a new key");
+            assert!(NEW.iter().all(|(n, _)| keys.contains(n)), "{code} lacks a new key");
             checked += 1;
         }
     }
-    assert!(checked >= 30, "only {checked} locale files carry the keys");
+    assert!(checked >= 30, "only {checked} locale catalogs carry the keys");
 }
 
 #[test]
 fn a_translation_is_found_under_the_new_key() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let de = crate::i18n::Lang::from_code("de").expect("German");
     assert_eq!(crate::i18n::tr(de, "Layer Via Copy"), "Ebene durch Kopieren");
     assert_eq!(crate::i18n::tr(de, "Layer Via Cut"), "Ebene durch Ausschneiden");

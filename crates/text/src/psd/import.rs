@@ -140,8 +140,8 @@ fn layer_frame<'a>(layer: &TextLayer, tysh: &[u8], txt2: &'a E, named: bool) -> 
 
 /// Puts `layer` on its path when its `Txt2` frame is type on a path (#7962): Photoshop keeps the
 /// path only there, and EngineData describes the layer as a text box the size of the path's
-/// bounds. The path is read into the `TySh` text space, the type starting where Photoshop starts
-/// it (see `psd_path`). `Ok(true)` when the layer is now path text, `Ok(false)` when its frame is
+/// bounds. The path is read into the `TySh` text space with the type's range on it (see
+/// `psd_path`). `Ok(true)` when the layer is now path text, `Ok(false)` when its frame is
 /// no path (or `Txt2` holds another text for it), `Err` with the reason when the path can't be
 /// read: the layer then stays the box or point text EngineData describes.
 pub fn apply_txt2_path(layer: &mut TextLayer, tysh: &[u8], txt2: &E) -> Result<bool, String> {
@@ -149,8 +149,7 @@ pub fn apply_txt2_path(layer: &mut TextLayer, tysh: &[u8], txt2: &E) -> Result<b
     if crate::psd_path::frame_kind(frame) != crate::psd_path::PATH_FRAME {
         return Ok(false);
     }
-    let path = crate::psd_path::read(frame)?;
-    layer.shape = TextShape::Path { path, start: 0.0, flip: false };
+    layer.shape = crate::psd_path::read_shape(frame)?;
     Ok(true)
 }
 

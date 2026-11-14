@@ -98,23 +98,92 @@ fn bayer_layouts() {
     }
 }
 
+/// A 780×18 all-zero RAF in Fujifilm's compressed storage (see `RafPacking::Compressed`).
+fn compressed(cfa: &[u8], bits: u32, lossy: bool) -> RafSpec {
+    let mut s = RafSpec::new(780, 18, vec![0; 780 * 18], cfa.to_vec());
+    s.bits = bits;
+    s.packing = RafPacking::Compressed { lossy };
+    s.black = vec![0];
+    s
+}
+
+#[test]
+fn compressed_lossless_and_lossy_decode() {
+    for cfa in [XTRANS.as_slice(), &RGGB, &[2, 1, 1, 0]] {
+        for bits in [12, 14, 16] {
+            for lossy in [false, true] {
+                let mut spec = compressed(cfa, bits, lossy);
+                spec.crop = Some([0, 2, 18, 776]);
+                let b = spec.build();
+                let s = decode(&b, &Limits::default()).unwrap_or_else(|e| panic!("{cfa:?} {bits} {lossy}: {e}"));
+                assert_eq!((s.width, s.height), (780, 18));
+                assert_eq!(s.data, spec.data);
+                assert_eq!(s.crop, Rect::new(2, 0, 776, 18));
+                assert_eq!(s.camera_wb, Some([2.0, 1.0, 1.5]));
+                assert_eq!(s.cfa.as_ref().map(|c| c.width), Some(if cfa.len() == 36 { 6 } else { 2 }));
+                develop_sensor(&s, &DevelopOptions::default()).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn compressed_images_of_any_group_count_decode() {
+    for h in [6, 24] {
+        for lossy in [false, true] {
+            let mut spec = compressed(&XTRANS, 14, lossy);
+            spec.height = h;
+            spec.data = vec![0; 780 * h];
+            let s = decode(&spec.build(), &Limits::default()).unwrap_or_else(|e| panic!("{h} rows, lossy {lossy}: {e}"));
+            assert_eq!((s.height, s.data.len()), (h, 780 * h));
+        }
+    }
+}
+
+#[test]
+fn compressed_variants_that_cannot_be_decoded_fail_cleanly() {
+    // The header's compression mode disagrees with the stream (lossy header, lossless stream).
+    let mut b = compressed(&XTRANS, 14, false).build();
+    b[108..112].copy_from_slice(&3u32.to_be_bytes());
+    assert!(matches!(decode(&b, &Limits::default()), Err(RawError::Malformed(_))));
+    // The stream assumes a fixed CFA arrangement.
+    let mut other = XTRANS;
+    other.swap(0, 2);
+    for cfa in [other.as_slice(), &[1, 0, 2, 1]] {
+        let b = compressed(cfa, 14, false).build();
+        match decode(&b, &Limits::default()) {
+            Err(RawError::Unsupported(m)) => assert!(m.contains("CFA"), "{m}"),
+            other => panic!("expected unsupported, got {other:?}"),
+        }
+    }
+    // A short strip without the IS signature.
+    let mut b = compressed(&XTRANS, 14, false).build();
+    let at = b.windows(5).position(|w| w == b"IS\x01\x10\x0e").unwrap();
+    b[at..at + 2].copy_from_slice(b"XX");
+    assert!(matches!(decode(&b, &Limits::default()), Err(RawError::Unsupported(_))));
+    // A damaged entropy stream (sizes intact, a run of zero bits inside the first stripe that
+    // overruns the residual escape) is malformed, never a panic.
+    let mut b = compressed(&XTRANS, 14, false).build();
+    let at = b.windows(5).position(|w| w == b"IS\x01\x10\x0e").unwrap();
+    // Lossless: the 16-byte header and the two-entry size table, padded to 32 bytes.
+    let stream = at + 32;
+    b[stream + 64..stream + 128].fill(0);
+    match decode(&b, &Limits::default()) {
+        Err(RawError::Malformed(m)) => assert!(m.contains("residual"), "{m}"),
+        other => panic!("expected malformed, got {other:?}"),
+    }
+}
+
 #[test]
 fn unsupported_variants_report_and_keep_the_preview() {
-    let mut spec = xtrans(RafPacking::Compressed, 14);
+    let mut spec = xtrans(RafPacking::U16 { le: true }, 14);
+    spec.cfa_tiff = false;
     let b = spec.build();
     match decode(&b, &Limits::default()) {
-        Err(RawError::Unsupported(m)) => assert!(m.contains("compressed"), "{m}"),
-        other => panic!("expected unsupported, got {other:?}"),
-    }
-    let p = embedded_preview(&b).unwrap();
-    assert_eq!((p.width, p.height), (32, 24));
-
-    spec.packing = RafPacking::U16 { le: true };
-    spec.cfa_tiff = false;
-    match decode(&spec.build(), &Limits::default()) {
         Err(RawError::Unsupported(m)) => assert!(m.contains("FinePix"), "{m}"),
         other => panic!("expected unsupported, got {other:?}"),
     }
+    assert!(embedded_preview(&b).is_some());
 }
 
 #[test]

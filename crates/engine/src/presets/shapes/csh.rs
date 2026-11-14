@@ -38,8 +38,8 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         false,
         move |ctx| {
             ctx.check()?;
-            let (bytes, stem) = crate::preset_import_cmds::file_bytes_limited(&params, CMD, ".csh file", photocraft_psd::csh::MAX_FILE_BYTES as u64)?;
-            let shapes = photocraft_psd::csh::parse(&bytes).map_err(|e| bad(CMD, e.to_string()))?;
+            let (bytes, stem) = crate::preset_import_cmds::file_bytes_limited(&params, CMD, ".csh file", craft_psd::csh::MAX_FILE_BYTES as u64)?;
+            let shapes = craft_psd::csh::parse(&bytes).map_err(|e| bad(CMD, e.to_string()))?;
             if shapes.is_empty() {
                 return Err(bad(CMD, "the CSH set contains no shapes"));
             }

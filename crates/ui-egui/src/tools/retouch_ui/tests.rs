@@ -1,7 +1,7 @@
 use super::*;
 use crate::canvas::{ToolEvent, tool_event};
 
-fn app() -> PhotocraftApp {
+pub(super) fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 100, "height": 60})).unwrap();
     app.run("tools.setBrush", json!({"brush": {"size": 16, "hardness": 1.0}})).unwrap();
@@ -22,7 +22,7 @@ fn active(app: &PhotocraftApp) -> &photocraft_doc::Layer {
     st.active_layer.and_then(|id| st.doc.layer(id)).unwrap()
 }
 
-fn stripes(app: &mut PhotocraftApp, step: usize, target: &str) {
+pub(super) fn stripes(app: &mut PhotocraftApp, step: usize, target: &str) {
     for x in (0..100).step_by(step) {
         app.run("paint.pencil", json!({"points": [[x, 0], [x, 60]], "size": 2, "color": "#606060", "target": target})).unwrap();
     }
@@ -53,7 +53,7 @@ fn only_clone_stamp_and_healing_brush_wrap_in_pattern_preview() {
             let mut app = app();
             stripes(&mut app, 8, "pixels");
             app.ui.view.pattern_preview = pattern_preview;
-            app.ui.clone_source = Some([20.0, 30.0]);
+            set_source(&mut app, 20.0, 30.0);
             app.ui.tool = tool;
             let m = egui::Modifiers::NONE;
             tool_event(&mut app, ToolEvent::Down { x: 86.0, y: 30.0, pressure: 1.0 }, m);
@@ -72,7 +72,10 @@ fn clone_stamp_in_pattern_preview_wraps_a_dab_across_the_right_edge() {
         let mut app = app();
         app.run("paint.pencil", json!({"points": [[10, 10]], "size": 24, "color": "#ff0000"})).unwrap();
         app.ui.tool = Tool::CloneStamp;
-        app.ui.clone_source = Some([10.0, 10.0]);
+        crate::paint_mouse::sync_tool_brush(&mut app);
+        // A hard tip, so the wrapped part of the dab is fully painted.
+        app.run("tools.setBrush", json!({"brush": {"size": 20, "hardness": 1}})).unwrap();
+        set_source(&mut app, 10.0, 10.0);
         app.ui.view.pattern_preview = pattern_preview;
         let modifiers = egui::Modifiers::NONE;
         tool_event(&mut app, ToolEvent::Down { x: 98.0, y: 30.0, pressure: 1.0 }, modifiers);
@@ -96,10 +99,12 @@ fn clone_stamp_in_pattern_preview_wraps_a_dab_across_the_right_edge() {
 fn clone_stamp_paints_with_the_brush_hardness() {
     let rim = |hardness: f32| {
         let mut app = app();
+        app.ui.tool = Tool::CloneStamp;
+        crate::paint_mouse::sync_tool_brush(&mut app);
         app.run("tools.setBrush", json!({"brush": {"size": 24, "hardness": hardness}})).unwrap();
         app.run("paint.pencil", json!({"points": [[15, 30]], "size": 40, "color": "#ff0000"})).unwrap();
         app.ui.tool = Tool::CloneStamp;
-        app.ui.clone_source = Some([15.0, 30.0]);
+        set_source(&mut app, 15.0, 30.0);
         let m = egui::Modifiers::NONE;
         tool_event(&mut app, ToolEvent::Down { x: 70.0, y: 30.0, pressure: 1.0 }, m);
         tool_event(&mut app, ToolEvent::Up { x: 70.0, y: 30.0 }, m);
@@ -144,7 +149,7 @@ fn clone_stamp_brush_opacity_and_flow_reach_the_painted_pixels() {
     app.run("paint.pencil", json!({"points": [[10, 10]], "size": 16, "color": "#ff0000"})).unwrap();
     app.run("layer.new.layer", json!({})).unwrap();
     app.ui.tool = Tool::CloneStamp;
-    app.ui.clone_source = Some([10.0, 10.0]);
+    set_source(&mut app, 10.0, 10.0);
     app.ui.tool_options.clone_sample = "all".into();
     app.run("tools.setBrush", json!({"brush": {"opacity": 0.5, "flow": 0.5}})).unwrap();
     assert!(finish_stroke(&mut app, Tool::CloneStamp, &[[50.0, 30.0, 1.0]], egui::Modifiers::NONE, false));
@@ -166,7 +171,7 @@ fn healing_brush_heals_in_normal_with_a_mode_outside_its_menu() {
         app.ui.tool = tool;
         crate::paint_mouse::sync_tool_brush(&mut app);
         app.session.tools.brush.mode = photocraft_color::BlendMode::Overlay;
-        app.ui.clone_source = Some([10.0, 10.0]);
+        set_source(&mut app, 10.0, 10.0);
         drag(&mut app, tool);
         let (_, params) = app.session.journal.last().unwrap();
         assert_eq!(params["mode"], want, "{tool:?}");
@@ -187,7 +192,7 @@ fn retouch_mode_reaches_the_command() {
         app.ui.tool = tool;
         crate::paint_mouse::sync_tool_brush(&mut app);
         app.run("tools.setBrush", json!({"brush": {"mode": mode}})).unwrap();
-        app.ui.clone_source = Some([10.0, 10.0]);
+        set_source(&mut app, 10.0, 10.0);
         drag(&mut app, tool);
         let (id, params) = app.session.journal.last().unwrap();
         assert_eq!((id.as_str(), params["mode"].as_str()), (cmd, Some(mode)), "{tool:?}");
@@ -220,15 +225,15 @@ fn paint_bucket_mode_reaches_the_fill() {
 
 #[test]
 fn clone_without_a_source_names_the_platform_modifier() {
-    // Option-click on the Mac, Alt-click elsewhere (#251).
-    for tool in [Tool::CloneStamp, Tool::Healing] {
-        let mut app = app();
-        app.ui.tool = tool;
-        assert!(finish_stroke(&mut app, tool, &[[10.0, 30.0, 1.0], [50.0, 30.0, 1.0]], egui::Modifiers::NONE, false));
-        assert!(app.ui.status_error, "{tool:?}");
-        let want = if cfg!(target_os = "macos") { "Option-click" } else { "Alt-click" };
-        assert!(app.ui.status.starts_with(want), "{tool:?}: {}", app.ui.status);
-    }
+    // Option-click on the Mac, Alt-click elsewhere (#251). The Clone Stamp says it in an alert
+    // (#12609, clone_stamp_no_source_alert_tests.rs).
+    let tool = Tool::Healing;
+    let mut app = app();
+    app.ui.tool = tool;
+    assert!(finish_stroke(&mut app, tool, &[[10.0, 30.0, 1.0], [50.0, 30.0, 1.0]], egui::Modifiers::NONE, false));
+    assert!(app.ui.status_error);
+    let want = if cfg!(target_os = "macos") { "Option-click" } else { "Alt-click" };
+    assert!(app.ui.status.starts_with(want), "{}", app.ui.status);
 }
 
 #[test]
@@ -725,7 +730,7 @@ fn content_aware_move_transform_on_drop_turns_the_patch_on_enter() {
 }
 
 #[test]
-fn red_eye_click_corrects_a_pupil_and_errors_on_a_miss() {
+fn red_eye_click_corrects_a_pupil_and_a_miss_adds_an_unchanged_state() {
     let mut app = app();
     app.run("paint.pencil", json!({"points": [[50, 30]], "size": 18, "hardness": 100, "color": "#f21818"})).unwrap();
     let before = active(&app).surface().unwrap().rgba(50, 30);
@@ -739,10 +744,14 @@ fn red_eye_click_corrects_a_pupil_and_errors_on_a_miss() {
     assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("paint.redEye"));
     let after = active(&app).surface().unwrap().rgba(50, 30);
     assert!(after[0] < before[0] - 0.15, "before {before:?} after {after:?}");
+    // A miss changes nothing but still adds a state, as in Photoshop (#12573).
+    let steps = app.session.active().unwrap().history.past_len();
     tool_event(&mut app, ToolEvent::Down { x: 8.0, y: 8.0, pressure: 1.0 }, egui::Modifiers::NONE);
     tool_event(&mut app, ToolEvent::Up { x: 8.0, y: 8.0 }, egui::Modifiers::NONE);
-    assert!(app.ui.status_error);
-    assert!(app.ui.status.contains("no red-eye pixels"), "{}", app.ui.status);
+    assert!(!app.ui.status_error, "{}", app.ui.status);
+    let history = &app.session.active().unwrap().history;
+    assert_eq!(history.past_len(), steps + 1);
+    assert_eq!(history.entries().last().map(|e| e.to_string()).as_deref(), Some("Red Eye Removal Tool"));
 }
 
 #[test]
@@ -815,6 +824,7 @@ fn waiting_remove_strokes_keep_their_own_brush() {
     let mut app = app();
     app.run("paint.pencil", json!({"points": [[0, 30], [100, 30]], "size": 200, "color": "#808080"})).unwrap();
     app.ui.tool = Tool::Remove;
+    crate::paint_mouse::sync_tool_brush(&mut app);
     app.ui.tool_options.remove_after_each_stroke = false;
     let m = egui::Modifiers::NONE;
     let stroke = |app: &mut PhotocraftApp, x: f64| {
@@ -1201,4 +1211,17 @@ fn history_brush_options_bar_shows_source_name() {
     h.state_mut().run("paint.pencil", json!({"points": [[10, 10]], "size": 1, "color": "#0000ff"})).unwrap();
     h.run_steps(4);
     h.get_by_label("The History Brush source was deleted: set a new source in the History panel");
+}
+
+/// An empty Clone Source slot refuses to paint, as with no source at all: the ⌥-click point left
+/// in `ui.clone_source` carries no document, so it must not be read from another document.
+#[test]
+fn an_empty_clone_source_slot_refuses_to_paint() {
+    let mut app = app();
+    app.ui.tool = Tool::CloneStamp;
+    crate::retouch_ui::set_source(&mut app, 10.0, 10.0);
+    assert!(crate::retouch_ui::clone_params(&app).is_some());
+    app.run("cloneSource.select", json!({"index": 1})).unwrap();
+    assert!(app.ui.clone_source.is_some(), "the old ⌥-click point is still remembered");
+    assert!(crate::retouch_ui::clone_params(&app).is_none());
 }

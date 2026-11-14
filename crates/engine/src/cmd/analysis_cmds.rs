@@ -795,7 +795,14 @@ fn straighten(s: &mut Session, p: &Value) -> Result<Value> {
     let (w0, h0) = (f64::from(d.size.width), f64::from(d.size.height));
     compound(s, "Straighten", |s| {
         if crop {
-            s.execute("image.rotation.arbitrary", json!({"angle": rot, "direction": "cw"}))?;
+            // Count points turn with the image here, since the crop after it moves them too.
+            // Called directly rather than through `execute`, so an untrusted session's gate is
+            // asked here, as dispatch would have asked it for the nested rotation.
+            let rotation = json!({"angle": rot, "direction": "cw"});
+            if let Some(gate) = s.authorize {
+                gate("image.rotation.arbitrary", &rotation)?;
+            }
+            crate::mode_cmds::rotate_arbitrary_with(s, &rotation, false)?;
             let nd = doc(s)?;
             let (cw, ch) = inscribed(w0, h0, rot.to_radians());
             let (nw, nh) = (f64::from(nd.size.width), f64::from(nd.size.height));
@@ -1179,6 +1186,18 @@ fn log_delete(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn csv_field(v: &Value) -> String {
     let s = match v {
+        // A text cell a spreadsheet would read as a formula gets a leading apostrophe (OWASP CSV
+        // injection); plain numbers in text keep their sign.
+        // Leading spaces do not hide it: a spreadsheet that trims them still reads a formula.
+        Value::String(s)
+            if {
+                let t = s.trim_start_matches(' ');
+                t.starts_with(['=', '@', '\t', '\r', '\n', '\u{ff1d}', '\u{ff20}'])
+                    || (t.starts_with(['+', '-', '\u{ff0b}', '\u{ff0d}']) && t.parse::<f64>().is_err())
+            } =>
+        {
+            format!("'{s}")
+        }
         Value::String(s) => s.clone(),
         Value::Array(a) => a.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" "),
         Value::Null => String::new(),

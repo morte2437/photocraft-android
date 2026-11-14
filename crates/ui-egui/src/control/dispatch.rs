@@ -86,6 +86,7 @@ fn mode_menu_choose(app: &mut PhotocraftApp, ctx: &egui::Context, label: &str) -
     ok(json!({"choice": label, "brushPicker": app.ui.brush_picker.is_some()}))
 }
 
+/// `engine.execute` and `ui.menu.invoke`: run command `command` (or `id`) with `params`, as the menu would or, for `engine.execute`, directly.
 fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let Some(id) = str_param(p, "command").or(str_param(p, "id")) else { return err("missing `command`") };
@@ -117,6 +118,8 @@ fn execute_command(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRe
     // result). `ui.menu.invoke` behaves like a menu click, so it may open the dialog.
     if req.method == "engine.execute" && photocraft_engine::commands::find(id).is_some() {
         return run_waiting(app, wait, |app| {
+            // These bypass `menus::invoke`: a Type box drag in progress applies its box first.
+            crate::type_box_preview::end_drag(app);
             let previous = std::mem::replace(&mut app.programmatic_playback, true);
             let result = app.run(id, params);
             app.programmatic_playback = previous;
@@ -1120,6 +1123,7 @@ fn dialog_set(app: &mut PhotocraftApp, p: &Value) -> Outcome {
         // A continuation belongs to the dialog that paused it, even when another
         // action has a valid token. Replacing it would resume or cancel that action.
         Some(_) if field == crate::actions::RESUME => err("the paused action token is read-only"),
+        Some(_) if field == crate::filter_dialog::MATCH_COLOR_DESTINATION => err("the Match Color destination is read-only"),
         Some(_) if previewed => err("confirm or cancel the color picker first"),
         // A Color Picker's target is fixed when it opens: OK must set the field it previewed in.
         Some(d) if matches!(field, "__colorPicker" | "__dialog" | "__field") && crate::color_picker_ui::owns(&d.fields) => {
@@ -1128,6 +1132,14 @@ fn dialog_set(app: &mut PhotocraftApp, p: &Value) -> Outcome {
         // A marker picks the handler OK runs: a dialog keeps the ones it was opened with.
         Some(d) if !d.fields.contains_key(field) && crate::dialogs::is_route_marker(field) => err(format!("`{field}` is set only by the dialog it belongs to")),
         Some(d) => {
+            // Reconcile old choices before interpreting a new explicit source index.
+            crate::filter_dialog::refresh_match_color_sources(&app.session, &mut d.fields);
+            if field == "source"
+                && d.fields.get("__command").and_then(Value::as_str) == Some("image.adjustments.matchColor")
+                && d.fields.get("source") != Some(&value)
+            {
+                d.fields.remove("sourceLayer");
+            }
             d.fields.insert(field.to_string(), value);
             // A Color Picker's colour shows in its target dialog at once, as a drag would.
             crate::color_picker_ui::live_preview::sync(app);
@@ -1261,6 +1273,9 @@ fn pointer(app: &mut PhotocraftApp, ctx: &egui::Context, p: &Value) -> Outcome {
     };
     if let Some(t) = parsed.tool {
         crate::tool_memory::select(app, t);
+        // The tool's own brush now, not at the next frame, so a paint command right after uses
+        // it (the Pencil's 1 px tip, #12200; any tool's remembered brush).
+        crate::paint_mouse::sync_tool_brush(app);
     }
     // Space held: the Crop tool moves the frame being drawn, a marquee, lasso or shape
     // being drawn moves instead of growing (hold_keys.rs). Like a modifier flag, it may be
@@ -1446,6 +1461,25 @@ fn secondary_menu_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &Pointer
     secondary_transform_or_crop_took(app, ctx, g, s) || secondary_canvas_menu_took(app, ctx, g, s)
 }
 
+/// The tool a gesture's right button belongs to, as `hold_keys` decides it in the app (#11271):
+/// Space holds the Hand over the selected tool, ⌘Space or ⌥Space the Zoom (whose right button
+/// opens no view menu). Space types while text is edited or a text field has focus, and
+/// repositions a crop frame, a pen drag or a shape, marquee or lasso being drawn: the selected
+/// tool keeps the button then.
+fn held_tool(app: &PhotocraftApp, ctx: &egui::Context, g: &PointerGesture) -> Tool {
+    let drawing = crate::crop_ui::active(app)
+        || app.ui.pen.as_ref().is_some_and(|pen| pen.dragging && !pen.curvature)
+        || app.drag.as_ref().is_some_and(|d| crate::hold_keys::repositions(d.tool))
+        || crate::type_transform::active(app);
+    if !g.space || app.ui.text_edit.is_some() || ctx.text_edit_focused() || drawing {
+        app.ui.tool
+    } else if g.mods.command || g.mods.alt {
+        Tool::Zoom
+    } else {
+        Tool::Hand
+    }
+}
+
 fn secondary_transform_or_crop_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &PointerGesture, s: &PointerSample) -> bool {
     let (x, y) = (s.x, s.y);
     let down = matches!(s.ev, ToolEvent::Down { .. });
@@ -1457,14 +1491,15 @@ fn secondary_transform_or_crop_took(app: &mut PhotocraftApp, ctx: &egui::Context
         return true;
     }
     // Right-click with the Move tool, or ⌘/Ctrl+right-click: list the layers there.
-    if crate::layer_pick_ui::is_gesture(app.ui.tool, g.mods) {
+    let held = held_tool(app, ctx, g);
+    if crate::layer_pick_ui::is_gesture(held, g.mods) {
         if down {
             app.ui.canvas_tool_menu = None;
             crate::layer_pick_ui::open(app, ctx, screen_point(app, x, y), x, y);
         }
         return true;
     }
-    if app.ui.tool != crate::state::Tool::Crop {
+    if held != Tool::Crop {
         return false;
     }
     // No menu over the agent's own crop frame or Straighten line still being
@@ -1488,15 +1523,17 @@ fn secondary_canvas_menu_took(app: &mut PhotocraftApp, ctx: &egui::Context, g: &
     if crate::canvas_tool_menu::magnetic_drawing(app) {
         return true;
     }
-    if crate::canvas_tool_menu::pasteboard_at(app, app.ui.tool, [x, y]) {
+    let held = held_tool(app, ctx, g);
+    if crate::canvas_tool_menu::pasteboard_at(app, held, [x, y]) {
         if down {
-            crate::canvas_tool_menu::open_pasteboard(app, ctx, app.ui.tool, screen_point(app, x, y));
+            crate::canvas_tool_menu::open_pasteboard(app, ctx, held, screen_point(app, x, y));
         }
         return true;
     }
-    if crate::canvas_tool_menu::is_view_tool(app.ui.tool) {
-        if down {
-            crate::canvas_tool_menu::open_view(app, ctx, app.ui.tool, screen_point(app, x, y), [x, y]);
+    if crate::canvas_tool_menu::is_view_tool(held) {
+        // The selected Zoom or Hand, or the Hand Space holds: the held Zoom has no menu.
+        if down && (held == app.ui.tool || held == Tool::Hand) {
+            crate::canvas_tool_menu::open_view(app, ctx, held, screen_point(app, x, y), [x, y]);
         }
         return true;
     }
@@ -1540,6 +1577,7 @@ fn forward_pointer_event(app: &mut PhotocraftApp, g: &PointerGesture, s: Pointer
 
 // ---- the application: open, save, quit ----
 
+/// The application-level control methods: open, save and quit.
 fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest) -> Option<Outcome> {
     let p = &req.params;
     Some(match req.method.as_str() {
@@ -1554,7 +1592,11 @@ fn app_methods(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlReques
         "app.save" => match crate::FormatChoices::from_params(p, "app.save") {
             Ok(choices) => {
                 let path = str_param(p, "path").map(str::to_string);
-                run_waiting(app, wait_param(p), move |app| app.save_automation_with(path, choices))
+                run_waiting(app, wait_param(p), move |app| {
+                    // Saving bypasses `menus::invoke`: a Type box drag in progress applies its box first.
+                    crate::type_box_preview::end_drag(app);
+                    app.save_automation_with(path, choices)
+                })
             }
             Err(e) => err(e),
         },
@@ -1577,12 +1619,17 @@ fn app_open(app: &mut PhotocraftApp, path: &str, approved: bool) -> Outcome {
         Some(read) => read(path),
         None => Err("automation read authority is not configured".into()),
     };
-    wrap(opened.and_then(|(name, bytes)| {
+    wrap(opened.and_then(|crate::AutomationReadResult { name, bytes, save_path }| {
         let name = app.open_name(&name);
         let warnings = app.open_automation_bytes_with_approval(&name, &bytes, approved)?;
         // Brushes/gradients go to the preset libraries: no document, no Open Recent entry.
         if !crate::preset_files_ui::is_preset_file(&name) {
             app.opened_from(path);
+            if let Some(state) = app.session.active_mut()
+                && state.path.is_some()
+            {
+                state.path = save_path;
+            }
         }
         Ok(json!({"path": path, "name": name, "warnings": warnings}))
     }))

@@ -257,7 +257,7 @@ pub(super) fn apply_lab(adj: &Adjustment, buf: &mut Buffer, depth: Option<Sample
                 std::array::from_fn(|i| (c[i] + after[i] - before[i]).clamp(0.0, 1.0))
             })
         }
-        Adjustment::GradientMap { stops, reverse, dither } => {
+        Adjustment::GradientMap { stops, reverse, dither, .. } => {
             let (w, x0, y0) = (buf.rect.width().max(1) as usize, buf.rect.x0, buf.rect.y0);
             for (i, p) in buf.px.iter_mut().enumerate() {
                 if p[3] <= 0.0 {

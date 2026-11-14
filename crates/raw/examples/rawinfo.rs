@@ -9,18 +9,16 @@
 
 use std::time::Instant;
 
-use photocraft_raw::{Demosaic, DevelopOptions, decode, develop_sensor, dump_structure, embedded_preview, embedded_preview_color_space, identify};
+use photocraft_raw::{Demosaic, DevelopOptions, decode, develop_sensor, embedded_preview, embedded_preview_color_space, identify};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mut dump = false;
     let mut ppm: Option<String> = None;
     let mut png: Option<String> = None;
     let mut opts = DevelopOptions::default();
     let mut files = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--dump" => dump = true,
             "--ppm" => ppm = args.next(),
             "--png" => png = args.next(),
             "--demosaic" => opts.demosaic = args.next().and_then(|s| Demosaic::from_id(&s)).unwrap_or_default(),
@@ -72,20 +70,11 @@ fn main() {
             }
         };
         println!("== {f}: {:?}", identify(&bytes));
-        if dump {
-            println!("{}", dump_structure(&bytes));
-        }
         if let Some(p) = embedded_preview(&bytes) {
-            println!(
-                "   preview: {}x{} JPEG, {} bytes, colour space stated by the file: {:?}",
-                p.width,
-                p.height,
-                p.jpeg.len(),
-                embedded_preview_color_space(&bytes)
-            );
+            println!("   preview: {} JPEG bytes, colour space stated by the file: {:?}", p.len(), embedded_preview_color_space(&bytes));
             if let Some(dir) = png.as_ref().filter(|d| std::path::Path::new(d).is_dir()) {
                 let stem = std::path::Path::new(&f).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                let _ = std::fs::write(format!("{dir}/{stem}.preview.jpg"), p.jpeg);
+                let _ = std::fs::write(format!("{dir}/{stem}.preview.jpg"), p);
             }
         }
         let t0 = Instant::now();
@@ -247,11 +236,13 @@ fn write_png(path: &str, dev: &photocraft_raw::Developed) {
             }
         }
     }
-    let Ok(f) = std::fs::File::create(path) else { return eprintln!("{path}: cannot create") };
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), ow as u32, oh as u32);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    if let Err(e) = enc.write_header().and_then(|mut w| w.write_image_data(&out)) {
-        eprintln!("{path}: {e}");
+    let img = photocraft_codecs::Image::from_u8(ow as u32, oh as u32, photocraft_codecs::ChannelLayout::Rgb, out).unwrap();
+    match photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &Default::default()) {
+        Ok(png) => {
+            if let Err(e) = std::fs::write(path, png) {
+                eprintln!("{path}: {e}");
+            }
+        }
+        Err(e) => eprintln!("{path}: {e}"),
     }
 }

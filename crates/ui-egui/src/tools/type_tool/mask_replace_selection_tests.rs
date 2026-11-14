@@ -15,7 +15,7 @@ const COMBOS: [Modifiers; 4] = [Modifiers::NONE, Modifiers::SHIFT, Modifiers::AL
 
 /// A document with a selection away from the text, so Add, Subtract and Intersect would each
 /// leave something other than the text outline.
-fn new_app() -> PhotocraftApp {
+pub(super) fn new_app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 800, "height": 400})).unwrap();
     app.run("select.rect", json!({"x": 600, "y": 250, "width": 100, "height": 100})).unwrap();
@@ -26,7 +26,7 @@ fn new_app() -> PhotocraftApp {
     app
 }
 
-fn click(app: &mut PhotocraftApp, x: f64, y: f64, mods: Modifiers) {
+pub(super) fn click(app: &mut PhotocraftApp, x: f64, y: f64, mods: Modifiers) {
     tool_event(app, ToolEvent::Down { x, y, pressure: 1.0 }, mods);
     tool_event(app, ToolEvent::Up { x, y }, mods);
 }
@@ -43,11 +43,11 @@ fn mask_with(app: &mut PhotocraftApp, at: (f64, f64), s: &str, mods: Modifiers) 
     super::insert(app, s);
 }
 
-fn selection(app: &PhotocraftApp) -> Option<Surface> {
+pub(super) fn selection(app: &PhotocraftApp) -> Option<Surface> {
     app.session.active().unwrap().doc.selection.clone()
 }
 
-fn bounds(s: &Option<Surface>) -> Option<photocraft_geom::Rect> {
+pub(super) fn bounds(s: &Option<Surface>) -> Option<photocraft_geom::Rect> {
     s.as_ref().map(Surface::content_bounds)
 }
 

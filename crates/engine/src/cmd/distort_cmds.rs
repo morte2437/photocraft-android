@@ -160,14 +160,24 @@ fn interp(p: &Value) -> Interp {
 // ---------- pixel operations ----------
 
 /// Mixes `new` over `old` by the selection's coverage (premultiplied when there is alpha).
-fn mix_by_selection(old: &Surface, new: &Surface, sel: &Surface) -> Surface {
-    let area = old.content_bounds().union(&new.content_bounds());
-    let mut out = new.clone();
+///
+/// Where the selection covers nothing the result is `old`, so only the part of the content
+/// bounds the selection reaches is blended into a copy of `old`: a small selection over distant
+/// sparse content no longer expands the empty space between them. Refused, before any dense
+/// buffer, when that part would still pass the working budget.
+fn mix_by_selection(old: &Surface, new: &Surface, sel: &Surface) -> Result<Surface> {
+    let content = old.content_bounds().union(&new.content_bounds());
+    // Outside its tiles the selection's coverage is its default: an empty default lets the
+    // blend keep to the selection's bounds.
+    let sel_default_empty = sel.default_pixel().first().is_none_or(|v| *v <= 0.0);
+    let area = if sel_default_empty { content.intersect(&sel.content_bounds()) } else { content };
+    let mut out = old.clone();
     if area.is_empty() {
-        return out;
+        return Ok(out);
     }
     let fmt = old.format();
     let n = fmt.channels();
+    crate::allocation::check_dense(area, (n as u64).saturating_mul(12), "blending Liquify through the selection")?;
     let (o, w) = (old.read_region(area), new.read_region(area));
     let mut r = vec![0.0f32; o.len()];
     let aw = area.width() as usize;
@@ -189,7 +199,7 @@ fn mix_by_selection(old: &Surface, new: &Surface, sel: &Surface) -> Surface {
     }
     out.write_region(area, &r);
     out.prune();
-    out
+    Ok(out)
 }
 
 /// Liquifies a surface over `canvas` (the field's extent).
@@ -344,7 +354,7 @@ fn liquify(s: &mut Session, p: &Value) -> Result<Value> {
         &|surf, sel, _| {
             let out = apply_liquify(surf, &field);
             Ok(match sel {
-                Some(sel) => mix_by_selection(surf, &out, sel),
+                Some(sel) => mix_by_selection(surf, &out, sel)?,
                 None => out,
             })
         },

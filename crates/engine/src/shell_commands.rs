@@ -58,6 +58,8 @@ pub const SHELL_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("view.fitOnScreen", "Fit on Screen", &["View"], Some("Cmd+0")),
     ("view.actualPixels", "100%", &["View"], Some("Cmd+1")),
     ("view.rotateView", "Rotate View", &[], None),
+    ("view.rotateLeft", "Rotate View Left", &["View"], Some("Alt+Shift+,")),
+    ("view.rotateRight", "Rotate View Right", &["View"], Some("Alt+Shift+.")),
     ("view.resetView", "Reset View", &["View"], None),
     ("window.newWindowForDocument", "New Window", &["Window", "Arrange"], None),
     ("window.toggle.layers", "Layers", &["Window"], Some("F7")),

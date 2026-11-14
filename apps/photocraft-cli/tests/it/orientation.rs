@@ -10,7 +10,7 @@ use photocraft_codecs::{ChannelLayout, DecodeOptions, EncodeOptions, Format, Ima
 use serde_json::Value;
 
 fn bin() -> Command {
-    Command::new(crate::binary())
+    crate::command()
 }
 
 fn tmp(name: &str) -> PathBuf {

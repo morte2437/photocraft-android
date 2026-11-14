@@ -96,7 +96,7 @@ fn a_first_use_starts_with_the_tip() {
 
 #[test]
 fn other_tools_and_session_strokes_keep_their_tips() {
-    for tool in [Tool::Pencil, Tool::Eraser] {
+    for tool in [Tool::Eraser, Tool::Blur] {
         let mut a = app();
         pick(&mut a, tool);
         scramble(&mut a);

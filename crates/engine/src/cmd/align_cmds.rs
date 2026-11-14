@@ -171,9 +171,12 @@ fn auto_align(s: &mut Session, p: &Value) -> Result<Value> {
 const MAX_BLEND_BYTES: u64 = 4 << 30;
 
 /// What Auto-Blend's buffers hold per work-area pixel, as f32: each layer's pixels, luminance,
-/// alpha and mask weight, plus the merged picture and the depth map.
-fn blend_bytes_per_pixel(layers: u64, channels: u64) -> u64 {
-    layers.saturating_mul(channels.saturating_add(3)).saturating_add(channels.saturating_mul(2)).saturating_mul(4)
+/// alpha and mask weight, plus the merged picture and the depth map. A `stack` blend also holds
+/// `fuse_stack`'s pyramids when `fuse` (a `stack` blend with Seamless Tones; 4/3 of a level 0
+/// each): the accumulated and the current image's (`channels` each), and about seven single-channel ones (luma, alpha, energies, winners, halo).
+fn blend_bytes_per_pixel(layers: u64, channels: u64, fuse: bool) -> u64 {
+    let pyramids = if fuse { channels.saturating_mul(2).saturating_add(7).saturating_mul(4).div_ceil(3) } else { 0 };
+    layers.saturating_mul(channels.saturating_add(3)).saturating_add(channels.saturating_mul(2)).saturating_add(pyramids).saturating_mul(4)
 }
 
 /// Auto-Blend's buffers, for allocation errors.
@@ -218,11 +221,22 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
     // whose buffers would exceed `MAX_BLEND_BYTES`, keep to the canvas.
     let canvas = doc.bounds();
     let channels = ids.iter().filter_map(|id| doc.layer(*id).and_then(|l| l.surface()).map(|s| s.channels() as u64)).max().unwrap_or(4);
-    let per_px = blend_bytes_per_pixel(ids.len() as u64, channels);
+    let per_px = blend_bytes_per_pixel(ids.len() as u64, channels, method == "stack" && seamless);
     let fits = px_of(&union).saturating_mul(per_px) <= MAX_BLEND_BYTES && px_of(&union) <= content_px.max(px_of(&canvas)).saturating_mul(2);
     let area = if fits { union } else { union.intersect(&canvas) };
     if area.is_empty() {
         return Err(EngineError::Other("the selected layers are empty".into()));
+    }
+    // The fallback (the canvas) can still be past the budget: a huge canvas, or sparse layers
+    // whose content bounds fill it. Refuse before any layer is expanded into dense buffers.
+    if px_of(&area).saturating_mul(per_px) > MAX_BLEND_BYTES {
+        return Err(EngineError::Other(format!(
+            "Auto-Blend would need more than {} MB for {} layers over {} x {} px; blend fewer or smaller layers",
+            MAX_BLEND_BYTES >> 20,
+            ids.len(),
+            area.width(),
+            area.height()
+        )));
     }
     let (w, h) = (area.width() as usize, area.height() as usize);
     let mut imgs: Vec<Vec<f32>> = Vec::new();

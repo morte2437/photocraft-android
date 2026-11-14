@@ -1,6 +1,6 @@
 use super::{
-    BlendMode, Document, EngineError, FadeTarget, Rect, Result, Session, Surface, Value, bad, blend_from_str, f32_or, from_rgba_into, json, str_or, surface_of,
-    surface_of_mut, to_rgba,
+    BlendMode, Document, EngineError, FadeSource, FadeTarget, Rect, Result, Session, Surface, Value, bad, blend_from_str, f32_or, from_rgba_into, json, str_or,
+    surface_of, surface_of_mut, to_rgba,
 };
 
 // ------------------------------------------------------------------ Fade
@@ -8,7 +8,7 @@ use super::{
 pub(super) fn can_fade(s: &Session) -> std::result::Result<(), String> {
     let st = s.active().ok_or("no document open")?;
     let f = s.edit_state.fade.as_ref().ok_or("nothing to fade")?;
-    if f.doc != st.doc.id || f.revision != st.revision || !st.history.can_undo() {
+    if f.doc != st.doc.id || f.revision != st.revision || before_state(st, f).is_none() {
         return Err("Fade is only available right after a filter, adjustment or painting step".into());
     }
     if surface_of(&st.doc, f.target).is_none() {
@@ -20,17 +20,38 @@ pub(super) fn can_fade(s: &Session) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// The state before the faded step, which Fade blends back towards, while the history holds it.
+pub(super) fn before_state(st: &crate::DocState, f: &FadeSource) -> Option<std::sync::Arc<Document>> {
+    let i = st.history.row_of(f.before?)?;
+    if i < st.history.past_len() { st.history.state(i) } else { None }
+}
+
 /// Blend `after` back towards `before` over `area`: `before + opacity × (B(before, after) − before)`
-/// with blend mode `mode` (premultiplied, so alpha changes fade too).
+/// with blend mode `mode` (premultiplied, so alpha changes fade too). Dissolve instead takes, per
+/// pixel, `after` or `before` whole, with `opacity` as the odds of `after`.
 pub fn fade_surface(before: &Surface, after: &mut Surface, area: Rect, mode: BlendMode, opacity: f32) -> Result<()> {
     let fmt = after.format();
     let n = fmt.channels();
-    if area.is_empty() || n == 0 {
+    let k = opacity.clamp(0.0, 1.0);
+    // Dissolve at 100 % keeps every pixel of the step's result.
+    if area.is_empty() || n == 0 || (mode == BlendMode::Dissolve && k >= 1.0) {
         return Ok(());
     }
     let b = crate::allocation::read_region(before, area, "fading pixels")?;
     let mut a = crate::allocation::read_region(after, area, "fading pixels")?;
-    let k = opacity.clamp(0.0, 1.0);
+    if mode == BlendMode::Dissolve {
+        // Dissolve: each pixel is the step's result or the pixel before it, alpha included, never
+        // a mix; the opacity is the odds of the result. The noise follows the pixel's position,
+        // so the pick is the same across tiles and between the preview and OK (#13809).
+        let at = (area.y0..area.y1).flat_map(|y| (area.x0..area.x1).map(move |x| (x, y)));
+        for ((pa, pb), (x, y)) in a.chunks_exact_mut(n).zip(b.chunks_exact(n)).zip(at) {
+            if photocraft_color::dither_noise(x, y) >= k {
+                pa.copy_from_slice(pb);
+            }
+        }
+        after.try_write_region(area, &a)?;
+        return Ok(());
+    }
     let lerp_premul = |pb: &[f32], pa: &[f32], out: &mut [f32], alpha: bool| {
         let m = out.len();
         if !alpha {
@@ -84,7 +105,7 @@ fn fade_job(s: &Session, p: &Value) -> Result<FadeJob> {
     let opacity = f32_or(p, "opacity", 100.0).clamp(0.0, 100.0) / 100.0;
     let mode = blend_from_str(str_or(p, "mode", "normal")).ok_or_else(|| bad(cmd, "unknown blend mode"))?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
-    let prev = st.history.past_len().checked_sub(1).and_then(|i| st.history.state(i)).ok_or_else(|| bad(cmd, "no previous state"))?;
+    let prev = before_state(st, &src).ok_or_else(|| bad(cmd, "no previous state"))?;
     let before = surface_of(&prev, src.target).cloned().ok_or_else(|| EngineError::Other("the layer or channel did not exist before this step".into()))?;
     let now = surface_of(&st.doc, src.target).ok_or_else(|| EngineError::Other("the faded layer or channel no longer exists".into()))?;
     if now.format() != before.format() {
@@ -135,3 +156,7 @@ pub fn fade_preview(s: &Session, p: &Value) -> Result<FadePreview> {
     let doc = Document::clone(&s.active().ok_or(EngineError::NoDocument)?.doc);
     Ok(FadePreview { doc, job })
 }
+
+#[cfg(test)]
+#[path = "fade_dissolve_tests.rs"]
+mod dissolve_tests;

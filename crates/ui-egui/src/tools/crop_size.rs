@@ -33,6 +33,15 @@ pub const PX_PER_CM: &str = "px/cm";
 /// The largest number a length or resolution field keeps (well past any canvas or ppi limit,
 /// which `image.crop` enforces with its own message).
 const MAX_FIELD: f64 = 1e9;
+/// Perspective Crop's W and H take 1 to 300000 px, its resolution 1 to 29999.999 px/in (#11977).
+pub const PCROP_MAX_PX: f64 = 300_000.0;
+pub const PCROP_MAX_PPI: f64 = 29_999.999;
+/// Perspective Crop's alerts for a W or H, and a resolution, out of range; `{min}` and `{max}`
+/// with three decimals and the system's decimal separator.
+pub const LENGTH_RANGE_ALERT: &str = "A value between {min} {unit} and {max} {unit} is required. Closest value inserted.";
+pub const RESOLUTION_RANGE_ALERT: &str = "A number between {min} and {max} is required. Closest value inserted.";
+/// Perspective Crop's alert for a field that doesn't hold a number.
+pub const INVALID_ENTRY_ALERT: &str = "Invalid numeric entry. Restored last valid value.";
 
 /// Photoshop's built-in crop presets: (dropdown key, label, width, height, resolution in px/in).
 pub const PRESETS: &[(&str, &str, &str, &str, &str)] = &[
@@ -69,6 +78,12 @@ fn unit_of(suffix: &str) -> Option<Unit> {
 /// A typed length: a positive number and an optional unit ("4 in", "4in", "10,5 cm", "1024").
 /// A bare number takes `fallback`. `None` for anything else (empty, zero, negative, unknown unit).
 pub fn parse_length(text: &str, fallback: Unit) -> Option<(f64, Unit)> {
+    let (v, unit) = parse_number(text, fallback)?;
+    (v > 0.0 && v <= MAX_FIELD).then_some((v, unit))
+}
+
+/// A typed number of any sign with an optional unit, as [`parse_length`] reads it.
+fn parse_number(text: &str, fallback: Unit) -> Option<(f64, Unit)> {
     let text = text.trim();
     if text.is_empty() || text.len() > 64 {
         return None;
@@ -77,7 +92,80 @@ pub fn parse_length(text: &str, fallback: Unit) -> Option<(f64, Unit)> {
     let (num, suffix) = (text.get(..split)?.trim(), text.get(split..)?.trim());
     let v = crate::widgets::parse_num(&num.replace(',', "."))?;
     let unit = if suffix.is_empty() { fallback } else { unit_of(suffix)? };
-    (v.is_finite() && v > 0.0 && v <= MAX_FIELD).then_some((v, unit))
+    v.is_finite().then_some((v, unit))
+}
+
+/// A limit in an alert: three decimals with the system's decimal separator ("300000.000").
+fn alert_number(v: f64) -> String {
+    let text = format!("{v:.3}");
+    match crate::i18n::decimal_separator() {
+        Some(',') => text.replace('.', ","),
+        _ => text,
+    }
+}
+
+fn unit_name(unit: Unit) -> &'static str {
+    match unit {
+        Unit::Pixels => tl!("Pixels"),
+        Unit::Inches => tl!("Inches"),
+        Unit::Centimeters => tl!("Centimeters"),
+        Unit::Millimeters => tl!("Millimeters"),
+        Unit::Points => tl!("Points"),
+        Unit::Picas => tl!("Picas"),
+        Unit::Percent => tl!("Percent"),
+    }
+}
+
+/// What a Perspective Crop W or H field keeps once typed, and the alert to show (#11977): a length
+/// out of 1 to 300000 px gets the closest one (the limits converted into its unit at `dpi` and
+/// `pt_per_in`), text that isn't a number the previous value, empty stays empty.
+pub fn clamp_length(typed: &str, previous: &str, dpi: f64, pt_per_in: f64) -> (String, Option<String>) {
+    if typed.trim().is_empty() {
+        return (String::new(), None);
+    }
+    let Some((v, unit)) = parse_number(typed, field_unit(previous)) else {
+        return (previous.to_string(), Some(tl!(INVALID_ENTRY_ALERT).to_string()));
+    };
+    let (lo, hi) = (unit.from_px(1.0, dpi, 0.0, pt_per_in), unit.from_px(PCROP_MAX_PX, dpi, 0.0, pt_per_in));
+    if !(lo.is_finite() && hi.is_finite() && lo <= hi) {
+        return (previous.to_string(), Some(tl!(INVALID_ENTRY_ALERT).to_string()));
+    }
+    if (lo..=hi).contains(&v) {
+        return (format_length(v, unit), None);
+    }
+    let alert = crate::i18n::fmt(tl!(LENGTH_RANGE_ALERT), &[("min", &alert_number(lo)), ("max", &alert_number(hi)), ("unit", unit_name(unit))]);
+    (format_length(v.clamp(lo, hi), unit), Some(alert))
+}
+
+/// What the Perspective Crop resolution field keeps once typed, and the alert to show (#11977):
+/// 1 to 29999.999 px/in (divided by 2.54 for px/cm), the closest limit outside it.
+pub fn clamp_resolution(typed: &str, previous: &str, per_cm: bool) -> (String, Option<String>) {
+    if typed.trim().is_empty() {
+        return (String::new(), None);
+    }
+    let Some(v) = crate::widgets::parse_num(&typed.trim().replace(',', ".")).filter(|v| v.is_finite()) else {
+        return (previous.to_string(), Some(tl!(INVALID_ENTRY_ALERT).to_string()));
+    };
+    let (lo, hi) = resolution_limits(per_cm);
+    if (lo..=hi).contains(&v) {
+        return (fit_resolution(v, per_cm), None);
+    }
+    let alert = crate::i18n::fmt(tl!(RESOLUTION_RANGE_ALERT), &[("min", &alert_number(lo)), ("max", &alert_number(hi))]);
+    (fit_resolution(v, per_cm), Some(alert))
+}
+
+/// Perspective Crop's resolution range in px/in, or in px/cm (the per-inch limits divided by 2.54).
+fn resolution_limits(per_cm: bool) -> (f64, f64) {
+    if per_cm { (1.0 / 2.54, PCROP_MAX_PPI / 2.54) } else { (1.0, PCROP_MAX_PPI) }
+}
+
+/// A resolution as the Perspective Crop field keeps it: three decimals, so the top limit is kept as
+/// it is, and clamped to the limits rounded inwards, so the stored text never converts past them
+/// (Front Image on a 30000 ppi document keeps 29999.999).
+pub fn fit_resolution(v: f64, per_cm: bool) -> String {
+    let (lo, hi) = resolution_limits(per_cm);
+    let (lo, hi) = ((lo * 1000.0).ceil() / 1000.0, (hi * 1000.0).floor() / 1000.0);
+    crate::widgets::fmt_num_prec(((v * 1000.0).round() / 1000.0).clamp(lo, hi), 3)
 }
 
 /// "4 in", "1024 px", "8.5 in", "2.54 cm": the number (up to its unit's decimals) and the unit.
@@ -286,7 +374,7 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 
 /// A text field for a length or the resolution: what is typed is kept while it has focus and
 /// normalised into `value` (by `normalize(typed, previous)`) when it loses it. Returns true then.
-fn text_field(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, width: f32, normalize: fn(&str, &str) -> String) -> bool {
+fn text_field(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, width: f32, normalize: impl Fn(&str, &str) -> String) -> bool {
     let t = Tokens::get(ui.ctx());
     let id = ui.scope_id().with(id);
     let mut buf = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| value.clone());
@@ -317,15 +405,50 @@ fn text_field(ui: &mut egui::Ui, id: &str, value: &mut String, hint: &str, width
 /// The W x H x Resolution fields of the options bar: W, ⇄, H, the resolution and its unit.
 /// Returns true when ⇄ swapped W and H, so the Crop tool turns its frame with them.
 pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) -> bool {
-    text_field(ui, "crop-width", &mut o.crop_width, tl!("Width"), 64.0, normalize_length);
+    fields_with(o, ui, None).0
+}
+
+/// The same fields for Perspective Crop, with its limits and alerts (#11977): lengths convert at
+/// the typed resolution or `doc_dpi`, points and picas at `pt_per_in`. Returns the alert to show.
+pub fn perspective_fields(o: &mut ToolOptions, ui: &mut egui::Ui, doc_dpi: f64, pt_per_in: f64) -> Option<String> {
+    fields_with(o, ui, Some((doc_dpi, pt_per_in))).1
+}
+
+/// The fields; with `limits` (Perspective Crop's document resolution and point size) they clamp
+/// and return an alert.
+fn fields_with(o: &mut ToolOptions, ui: &mut egui::Ui, limits: Option<(f64, f64)>) -> (bool, Option<String>) {
+    let alert = std::cell::Cell::new(None);
+    let dpi = limits.map(|(doc_dpi, ppi)| (resolution_ppi(o).unwrap_or(doc_dpi), ppi));
+    let per_cm = o.crop_resolution_unit == PX_PER_CM;
+    let length = |typed: &str, previous: &str| match dpi {
+        Some((dpi, ppi)) => {
+            let (kept, a) = clamp_length(typed, previous, dpi, ppi);
+            if a.is_some() {
+                alert.set(a);
+            }
+            kept
+        }
+        None => normalize_length(typed, previous),
+    };
+    let resolution = |typed: &str, previous: &str| match limits {
+        Some(_) => {
+            let (kept, a) = clamp_resolution(typed, previous, per_cm);
+            if a.is_some() {
+                alert.set(a);
+            }
+            kept
+        }
+        None => normalize_resolution(typed, previous),
+    };
+    text_field(ui, "crop-width", &mut o.crop_width, tl!("Width"), 64.0, length);
     // Always swaps (Perspective Crop shows the fields without the mode); true in W x H x Resolution
     // mode, where the Crop tool turns its frame with W and H.
     let swapped = crate::icons::button(ui, "arrow-left-right", 22.0, false, tl!("Swaps height and width")).clicked() && {
         swap_fields(o);
         o.crop_ratio == WHR
     };
-    text_field(ui, "crop-height", &mut o.crop_height, tl!("Height"), 64.0, normalize_length);
-    text_field(ui, "crop-resolution", &mut o.crop_resolution, tl!("Resolution"), 64.0, normalize_resolution);
+    text_field(ui, "crop-height", &mut o.crop_height, tl!("Height"), 64.0, length);
+    text_field(ui, "crop-resolution", &mut o.crop_resolution, tl!("Resolution"), 64.0, resolution);
     let units = [(PX_PER_IN.to_string(), "px/in"), (PX_PER_CM.to_string(), "px/cm")];
     let before = o.crop_resolution_unit.clone();
     if crate::widgets::dropdown(ui, "crop-resolution-unit", tl!("Resolution"), &mut o.crop_resolution_unit, &units, 64.0) && before != o.crop_resolution_unit {
@@ -335,7 +458,7 @@ pub fn fields(o: &mut ToolOptions, ui: &mut egui::Ui) -> bool {
             o.crop_resolution = crate::widgets::fmt_num2(v);
         }
     }
-    swapped
+    (swapped, alert.take())
 }
 
 #[cfg(test)]

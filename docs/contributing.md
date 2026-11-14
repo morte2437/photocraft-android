@@ -6,7 +6,7 @@
 - **Never crash:** non-test code must not panic: no `unwrap`/`expect`/`panic!`/`unreachable!`/`todo!`/`unimplemented!` and no `unsafe`. Errors go through `Result` and `?`, input-derived indices and sizes are checked, and every crash fix ships with a regression test. See *Never crash* in `AGENTS.md`.
 - **Commands, not handlers:** new features are engine commands with tests, and the UI calls them (checklist below).
 - **Layering:** `cargo xtask layers` must pass. Register new crates in `xtask/src/layers.rs`.
-- **Tests:** required for every change. Format code needs round-trip and malformed-input tests. Pixel code is tested at 8, 16 and 32-bit. If you touch psd, io, codecs, compose, gpu, text or format, also run the real-file corpus tests: `cargo xtask test-corpus` (fetches the pinned corpora, including our Photoshop oracles from https://github.com/storytold/photocraft-corpus, then runs the `corpus`-feature tests; CI always runs them). Never commit corpus files; see `docs/development.md` › Test corpora. Tests never require a string to be translated: a missing translation shows in English, so no test may fail because a catalog lacks a row (`cargo xtask i18n-coverage` lists the gaps instead).
+- **Tests:** required for every change. Format code needs round-trip and malformed-input tests. Pixel code is tested at 8, 16 and 32-bit. If you touch psd, io, codecs, compose, gpu, text or format, also run the real-file corpus tests: `cargo xtask test-corpus` (fetches the pinned corpora, including our Photoshop oracles from https://github.com/storytold/photocraft-corpus, then runs the `corpus`-feature tests; CI always runs them). Never commit corpus files; see `docs/development.md` › Test corpora. Tests never require a string to be translated: a missing translation shows in English, so no test may fail because a catalog lacks a row (`cargo xtask i18n-report` lists the gaps instead).
 - **Style:** `cargo fmt`, and `cargo clippy -- -D warnings`. Match surrounding code. Comments explain *why*.
 - **UI:** use `theme::Tokens` and `widgets::*`. Verify visually (offscreen `snapshot` example or the control channel) before submitting, and attach before/after screenshots to PRs.
 - **Commits:** small, focused, with a clear subject line.
@@ -14,7 +14,7 @@
 ## Adding a command
 
 1. **Find the id.** Search `crates/ui-egui/src/menu_catalog.rs` for the Photoshop menu item. Using its id makes the menu item live with no UI work. Commands without a Photoshop menu entry use a descriptive id in the same style (`layer.smartFilter.delete`) and an empty menu path.
-2. **Algorithm** goes in the lowest crate that fits (`algo` for imaging, `paint`, `vector`, `text`, `cms`), with unit tests. It takes depth-agnostic surfaces (`photocraft-raster`), works per tile, and is deterministic (seeded randomness).
+2. **Algorithm** goes in the lowest crate that fits (`algo` for imaging, `paint`, `vector`, `text`; colour management is `craft-cms` in craft-libs), with unit tests. It takes depth-agnostic surfaces (`photocraft-raster`), works per tile, and is deterministic (seeded randomness).
 3. **Command** goes in an engine module (`crates/engine/src/<area>_cmds.rs`) exposing `specs()`, registered with `v.extend(...)` in `commands.rs`. Fill in:
    - `id`, `label`, `menu` path and Photoshop's default `shortcut`,
    - a params doc string such as `{"radius":px=4,"mode":"a|b"="a"}` (this is what agents read through `commands` / `command_list`),

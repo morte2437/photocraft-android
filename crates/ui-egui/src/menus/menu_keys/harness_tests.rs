@@ -283,6 +283,9 @@ fn underlined_text_marks_the_mnemonic_once_and_keeps_the_prefix() {
 /// Access keys preserve visible spelling and underline only the locale-correct I pair.
 #[test]
 fn azerbaijani_and_turkish_mnemonics_keep_the_two_i_pairs_distinct() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     for code in ["az", "tr"] {
         let lang = crate::i18n::Lang::from_code(code).unwrap();
         crate::i18n::with_language(lang, || {
@@ -386,6 +389,114 @@ fn a_command_shortcut_leaves_the_bar_and_runs() {
     assert_eq!(Keys::current(&h.ctx).focus, None, "and takes the keyboard off the bar");
     assert!(!crate::menu_keys::is_focused(&h.ctx));
     assert!(!is_open(&h.ctx), "no menu opened");
+}
+
+/// A command shortcut pressed with a menu open closes the menu and runs, as with Photoshop's
+/// menus (#9065); the open menu's own keys (letters, arrows, Esc) still drive it.
+#[test]
+fn a_command_shortcut_closes_an_open_menu_and_runs() {
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 720.0)).build_ui_state(
+        |ui, app| {
+            crate::shortcuts::handle(app, ui.ctx());
+            crate::menus::menu_bar(app, ui);
+        },
+        app(),
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(3);
+    h.state_mut().run("select.all", json!({})).unwrap();
+    h.get_by_label("Edit").click();
+    h.run_steps(4);
+    assert!(is_open(&h.ctx) && h.query_by_label_contains("Undo").is_some(), "Edit is open");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(3);
+    assert!(h.state().session.active().unwrap().doc.selection.is_none(), "⌘D deselects with the menu open");
+    assert!(!is_open(&h.ctx), "and closes the menu");
+    assert!(h.query_by_label_contains("Undo").is_none(), "Edit's rows are gone");
+}
+
+/// #9314 review: Help opens with its search field focused, and a command shortcut that isn't a
+/// text-editing key (⌘D) still closes the menu and runs; ⌘A stays the field's and keeps it open.
+#[test]
+fn a_command_shortcut_runs_from_the_help_search_field() {
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = app();
+        app.services.native_menu = None;
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().run("select.all", json!({})).unwrap();
+    h.state_mut().run("select.deselect", json!({})).unwrap();
+    h.get_by_label("Help").click();
+    h.run_steps(4);
+    let field = egui::Id::unique("help-menu-search").with("field");
+    assert!(is_open(&h.ctx) && h.ctx.memory(|m| m.focused()) == Some(field), "Help is open with its field focused");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(3);
+    assert!(is_open(&h.ctx), "⌘A edits the field and keeps Help open");
+    assert!(h.state().session.active().unwrap().doc.selection.is_none(), "⌘A didn't select the canvas");
+    // macOS's Control (not ⌘) editing keys, which egui gives the field: Ctrl+W deletes a word.
+    let control = egui::Modifiers { ctrl: true, ..Default::default() };
+    for k in [egui::Key::W, egui::Key::H, egui::Key::K, egui::Key::U, egui::Key::E] {
+        h.key_press_modifiers(control, k);
+        h.run_steps(3);
+        assert!(is_open(&h.ctx), "Control+{k:?} edits the field and keeps Help open");
+    }
+    h.state_mut().run("select.all", json!({})).unwrap();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(3);
+    assert!(!is_open(&h.ctx), "⌘D closes Help");
+    assert!(h.state().session.active().unwrap().doc.selection.is_none(), "and deselects");
+}
+
+/// #9314 review: an Alt-modified letter (⌘⌥C, Canvas Size) isn't one of the field's editing
+/// keys, as [`crate::shortcut_dispatch::Focus::allows`] has it, so it closes Help and runs.
+#[test]
+fn an_alt_modified_letter_shortcut_runs_from_the_help_search_field() {
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = app();
+        app.services.native_menu = None;
+        app
+    });
+    h.run_steps(4);
+    h.get_by_label("Help").click();
+    h.run_steps(4);
+    let field = egui::Id::unique("help-menu-search").with("field");
+    assert!(is_open(&h.ctx) && h.ctx.memory(|m| m.focused()) == Some(field), "Help is open with its field focused");
+    assert!(h.state().ui.dialogs.is_empty());
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::ALT, egui::Key::C);
+    h.run_steps(3);
+    assert!(!is_open(&h.ctx), "⌘⌥C closes Help");
+    assert!(!h.state().ui.dialogs.is_empty(), "and opens Canvas Size");
+}
+
+/// #9314 review: ⌘Z and ⌘C are the Help search field's own editing keys (undo, copy): they stay
+/// with the field, keeping Help open, instead of closing it and undoing or copying in the
+/// document.
+#[test]
+fn undo_and_copy_shortcuts_stay_with_the_help_search_field() {
+    let mut h = Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_max_steps(64).build_eframe(|cc| {
+        PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut app = app();
+        app.services.native_menu = None;
+        app
+    });
+    h.run_steps(4);
+    h.state_mut().run("select.all", json!({})).unwrap();
+    let steps = h.state().session.active().unwrap().history.past_len();
+    h.get_by_label("Help").click();
+    h.run_steps(4);
+    let field = egui::Id::unique("help-menu-search").with("field");
+    assert!(is_open(&h.ctx) && h.ctx.memory(|m| m.focused()) == Some(field), "Help is open with its field focused");
+    for k in [egui::Key::Z, egui::Key::C] {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, k);
+        h.run_steps(3);
+        assert!(is_open(&h.ctx) && h.ctx.memory(|m| m.focused()) == Some(field), "⌘{k:?} stays with the field and keeps Help open");
+    }
+    let st = h.state().session.active().unwrap();
+    assert!(st.doc.selection.is_some() && st.history.past_len() == steps, "⌘Z didn't undo Select All");
 }
 
 /// Checked, unchecked and plain rows (and submenu headers) start their label at the same x, in

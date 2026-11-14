@@ -24,12 +24,17 @@ fn harness() -> Harness<'static, PhotocraftApp> {
 }
 
 fn geometry(h: &Harness<'_, PhotocraftApp>) -> (Rect, Rect) {
+    geometry_of(h, "Hardness")
+}
+
+/// The `caption` label and the number field right of it.
+fn geometry_of(h: &Harness<'_, PhotocraftApp>, caption: &str) -> (Rect, Rect) {
     // The visible caption, not the number field it names: kittest returns the labelled control
     // for `get_by_label`, whose rect would put the drag inside the numeric editor.
     let label = h
-        .query_all(egui_kittest::kittest::by().label("Hardness").include_labels())
+        .query_all(egui_kittest::kittest::by().label(caption).include_labels())
         .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Label)
-        .expect("the Hardness caption")
+        .unwrap_or_else(|| panic!("the {caption} caption"))
         .rect();
     let field = h
         .get_all_by_role(egui::accesskit::Role::SpinButton)
@@ -195,16 +200,17 @@ fn options_gesture_keeps_its_start_owner_when_crossing_regions() {
 }
 
 #[test]
-fn options_tab_moves_from_hardness_to_opacity_without_a_caption_stop() {
+fn options_tab_moves_from_opacity_to_flow_without_a_caption_stop() {
+    // Opacity and Flow are neighbours in every theme; Hardness sits beside Size outside Pro (#9784).
     let mut h = harness();
-    let (_, f) = geometry(&h);
+    let (_, f) = geometry_of(&h, "Opacity");
     click(&mut h, f.center());
     h.key_press(egui::Key::Tab);
     h.run_steps(2);
     h.key_press(egui::Key::ArrowDown);
     h.run_steps(2);
-    assert_eq!(h.state().session.tools.brush.hardness, 0.5);
-    assert!((h.state().session.tools.brush.opacity - 0.99).abs() < 0.0001);
+    assert_eq!(h.state().session.tools.brush.opacity, 1.0);
+    assert!((h.state().session.tools.brush.flow - 0.99).abs() < 0.0001);
 }
 
 // Regression test for #3425: the options bar drew its own 1 px top and bottom separator inside

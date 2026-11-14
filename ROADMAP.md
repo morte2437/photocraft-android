@@ -86,7 +86,8 @@ Rows and evidence: [target-app-parity › Feature areas](docs/target-app-parity.
 
 ## Languages
 
-Measured with the `cargo xtask i18n-coverage` key universe (1,608 keys). `partial` everywhere
+Measured before the craft-i18n cutover with the former `cargo xtask i18n-coverage` key universe
+(1,608 keys); `cargo xtask i18n-report` now reports coverage. `partial` everywhere
 because engine messages are still English. Detail: [localization-parity](docs/localization-parity.md).
 
 | Language | Code | UI strings | Status |

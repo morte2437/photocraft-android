@@ -1,6 +1,6 @@
 //! CR3 preview extraction never mistakes encoded sensor data for a JPEG.
 use photocraft_raw::testgen::cr3_preview;
-use photocraft_raw::{RawFormat, embedded_preview, embedded_previews, identify, orientation};
+use photocraft_raw::{RawFormat, embedded_jpeg_preview, embedded_preview, identify, orientation};
 
 fn jpeg() -> Vec<u8> {
     vec![0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 20, 0, 32, 1, 1, 0x11, 0, 0xff, 0xd9]
@@ -15,10 +15,8 @@ fn full_size_jpeg_and_orientation_are_read_from_their_boxes() {
     let j = jpeg();
     let b = cr3_preview(&j, 6);
     assert_eq!(identify(&b), Some(RawFormat::Cr3));
-    let p = embedded_preview(&b).unwrap();
-    assert_eq!((p.width, p.height), (32, 20));
-    assert_eq!(p.jpeg, j);
-    assert_eq!(embedded_previews(&b).len(), 1);
+    assert_eq!(embedded_jpeg_preview(&b).unwrap(), j);
+    assert!(embedded_preview(&b).is_some());
     assert_eq!(orientation(&b), Some(6));
 }
 
@@ -39,7 +37,7 @@ fn variable_sizes_and_32_bit_chunk_offsets_work() {
     let off = u64::from_be_bytes(b[at + 12..at + 20].try_into().unwrap()) + 4;
     b[at..at + 4].copy_from_slice(b"stco");
     b[at + 12..at + 16].copy_from_slice(&(off as u32).to_be_bytes());
-    assert_eq!(embedded_preview(&b).unwrap().jpeg, jpeg());
+    assert_eq!(embedded_jpeg_preview(&b).unwrap(), jpeg());
 }
 
 #[test]
@@ -65,7 +63,7 @@ fn broken_tables_and_raw_codec_tracks_are_not_used() {
 fn truncations_and_corrupted_box_lengths_never_panic() {
     let b = cr3_preview(&jpeg(), 8);
     for n in 0..b.len() {
-        let _ = embedded_previews(&b[..n]);
+        let _ = embedded_preview(&b[..n]);
         let _ = orientation(&b[..n]);
     }
     for marker in [b"ftyp", b"moov", b"trak", b"mdat"] {
@@ -73,7 +71,7 @@ fn truncations_and_corrupted_box_lengths_never_panic() {
             let mut corrupt = b.clone();
             let at = position(&b, marker) - 4;
             corrupt[at..at + 4].copy_from_slice(&len.to_be_bytes());
-            let _ = embedded_previews(&corrupt);
+            let _ = embedded_preview(&corrupt);
         }
     }
 }
@@ -88,7 +86,7 @@ fn extended_mdat_length_is_supported() {
     let off = position(&b, b"co64") + 12;
     let n = u64::from_be_bytes(b[off..off + 8].try_into().unwrap()) + 8;
     b[off..off + 8].copy_from_slice(&n.to_be_bytes());
-    assert_eq!(embedded_preview(&b).unwrap().jpeg, jpeg());
+    assert_eq!(embedded_jpeg_preview(&b).unwrap(), jpeg());
 }
 
 #[test]
@@ -104,7 +102,7 @@ fn prvw_is_used_when_no_jpeg_track_exists() {
     uuid.extend([0; 8]);
     uuid.extend(bx(b"PRVW", &body));
     let b = [ftyp, bx(b"uuid", &uuid)].concat();
-    assert_eq!(embedded_preview(&b).unwrap().jpeg, jpeg());
+    assert_eq!(embedded_jpeg_preview(&b).unwrap(), jpeg());
     assert_eq!(orientation(&b), None);
 }
 
@@ -115,5 +113,5 @@ fn deeply_nested_containers_are_bounded() {
         b = [((b.len() + 8) as u32).to_be_bytes().as_slice(), b"moov", &b].concat();
     }
     let ftyp = [24u32.to_be_bytes().as_slice(), b"ftypcrx \0\0\0\x01crx isom"].concat();
-    assert!(embedded_previews(&[ftyp, b].concat()).is_empty());
+    assert!(embedded_preview(&[ftyp, b].concat()).is_none());
 }

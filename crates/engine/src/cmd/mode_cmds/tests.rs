@@ -145,6 +145,44 @@ fn rotate_arbitrary_rotates_grouped_locked_children_and_preserves_lock() {
 }
 
 /// Rotating the whole image turns every layer mask, linked or not, as Rotate 180° does (#9201).
+/// Image Rotation › Arbitrary turns the pixels of type in a font that isn't installed instead of
+/// re-rendering it in a substitute face (#8860), inside groups too. Type in an installed font
+/// still re-renders.
+#[test]
+fn rotate_arbitrary_keeps_the_pixels_of_type_in_a_missing_font() {
+    for depth in [8, 16, 32] {
+        for (font, kept) in [("No Such Font 8860", true), ("", false)] {
+            let mut s = Session::new();
+            s.execute("file.new", json!({"width": 100, "height": 60, "depth": depth})).unwrap();
+            let cache = s
+                .edit("type", |doc, _| {
+                    let mut t = photocraft_doc::TextLayer { text: "Hello!".into(), font_family: font.into(), size_pt: 26.0, ..Default::default() };
+                    t.transform = Affine::translate(10.0, 40.0);
+                    // Deliberately not what PhotoCraft would draw, so a re-render shows.
+                    let fmt = doc.pixel_format();
+                    let mut cache = Surface::new(fmt);
+                    cache.fill_rect(Rect::new(10, 20, 90, 40), &photocraft_raster::from_rgba(&fmt, [0.4, 0.2, 0.6, 1.0]));
+                    t.cache = Some(cache.clone());
+                    let ty = Layer::new("Hello!", LayerContent::Text(t));
+                    doc.insert_above(None, Layer::group("Group", vec![ty]));
+                    Ok(cache)
+                })
+                .unwrap();
+            s.execute("image.rotation.arbitrary", json!({"angle": 30, "interpolation": "bilinear"})).unwrap();
+            let LayerContent::Group(g) = &doc(&s).layers.last().unwrap().content else { panic!("group") };
+            let LayerContent::Text(t) = &g.children[0].content else { panic!("type layer") };
+            // The edit's map: 30° clockwise about the centres of the old and new canvases.
+            let new = doc(&s).size;
+            let (sn, cs) = 30f64.to_radians().sin_cos();
+            let (nx, ny) = (f64::from(new.width) / 2.0, f64::from(new.height) / 2.0);
+            let a = [cs, sn, -sn, cs, nx - (cs * 50.0 - sn * 30.0), ny - (sn * 50.0 + cs * 30.0)];
+            let h = Homography([a[0], a[2], a[4], a[1], a[3], a[5], 0.0, 0.0, 1.0]);
+            let turned = photocraft_algo::transform::warp_surface(&cache, cache.content_bounds(), &h, Interp::Bilinear).unwrap();
+            assert_eq!(t.cache.as_ref() == Some(&turned), kept, "font {font:?}, depth {depth}");
+        }
+    }
+}
+
 #[test]
 fn rotate_arbitrary_turns_unlinked_layer_masks() {
     for depth in [8, 16] {
@@ -273,7 +311,7 @@ fn indexed_exact_preserves_profile_and_samples_through_default_rgb() {
             assert_eq!(doc(&s).icc_profile, source_profile);
             s.execute("edit.undo", json!({})).unwrap();
             s.execute("image.mode.rgb", json!({"profile": "srgb"})).unwrap();
-            assert_eq!(doc(&s).icc_profile, Some(photocraft_cms::Builtin::Srgb.profile().to_bytes()), "an explicit target still converts");
+            assert_eq!(doc(&s).icc_profile, Some(craft_cms::Builtin::Srgb.profile().to_bytes()), "an explicit target still converts");
             if profile != "none" {
                 assert_ne!(doc(&s).layers[0].surface().unwrap().rgba(0, 0), indexed_pixel);
             }
@@ -323,7 +361,7 @@ fn indexed_matte_blends_edges_without_replacing_clear_pixels() {
 
 #[test]
 fn indexed_matte_converts_working_rgb_to_document_profile_at_every_depth() {
-    use photocraft_cms::Transform;
+    use craft_cms::Transform;
 
     for depth in [8, 16, 32] {
         for (matte, color) in [("foreground", [0.0, 1.0, 0.0]), ("background", [1.0, 0.0, 0.0])] {
@@ -340,7 +378,7 @@ fn indexed_matte_converts_working_rgb_to_document_profile_at_every_depth() {
                 let destination = crate::color_cmds::document_profile(doc(&s));
                 let transform = Transform::new(&source, &destination, s.color.settings.intent(), bpc).unwrap();
                 let mut converted = [0.0; 16];
-                transform.eval(&color, &mut converted);
+                transform.eval(&color, &mut converted).unwrap();
                 let expected = [0, 1, 2].map(|i| ((pixel[i] * pixel[3] + converted[i].clamp(0.0, 1.0) * (1.0 - pixel[3])) * 255.0).round() as u8);
                 s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte})).unwrap();
                 let edge = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
@@ -579,6 +617,68 @@ fn add_pattern(s: &mut Session, name: &str, w: u32, h: u32, levels: &[u8]) {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+/// Compare cross-band Bitmap thresholds with independent full-pattern ranks, including shared tie ranks.
+fn bitmap_custom_pattern_ranks_across_row_bands() {
+    let mut s = session(1, 1, 8, "grayscale");
+    let levels: Vec<u8> = (0..2 * 513).map(|i| [220, 40, 120][(i / 257) % 3]).collect();
+    add_pattern(&mut s, "Across bands", 2, 513, &levels);
+    let (map, w, h) = custom_pattern_map(&s, "image.mode.bitmap", &json!({"pattern": "Across bands"})).unwrap();
+    assert_eq!((w, h), (2, 513));
+    for (&value, &level) in map.iter().zip(&levels) {
+        let less = levels.iter().filter(|v| **v < level).count();
+        let equal = levels.iter().filter(|v| **v == level).count();
+        let expected = 1. - (less as f32 + equal as f32 / 2.) / levels.len() as f32;
+        assert_eq!(value, expected);
+    }
+}
+
+#[test]
+/// Accept a paintable compact pattern beyond the dense RGBA cap and retain its global threshold ordering.
+fn bitmap_custom_pattern_accepts_compact_pattern_past_full_rgba_limit() {
+    let mut s = session(1, 1, 8, "grayscale");
+    let (w, h) = (4097u32, 4096u32);
+    let mut surface = photocraft_raster::Surface::new(PixelFormat::RGBA8);
+    surface.write_pixel(0, 0, &[0., 0., 0., 1.]);
+    surface.write_pixel(w as i32 - 1, h as i32 - 1, &[0., 0., 0., 1.]);
+    let pattern = photocraft_doc::Pattern { id: "compact".into(), name: "Compact".into(), width: w, height: h, surface };
+    assert!(pattern.is_paintable());
+    assert!(pattern.pixel_count() * 16 > photocraft_doc::pattern::MAX_WORKING_BYTES);
+    s.edit("pattern", |doc, _| {
+        doc.patterns.push(pattern);
+        Ok(())
+    })
+    .unwrap();
+    let (map, mw, mh) = custom_pattern_map(&s, "image.mode.bitmap", &json!({"pattern": "compact"})).unwrap();
+    assert_eq!((mw, mh), (w as usize, h as usize));
+    assert_eq!(map.len(), mw * mh);
+    let n = map.len() as f32;
+    assert_eq!(map[0], 1. - 1. / n);
+    assert_eq!(*map.last().unwrap(), map[0]);
+    assert!((map[1] - (0.5 - 1. / n)).abs() < 1e-7);
+}
+
+/// Refuse ranking workspace before expanding a sparse, otherwise paintable large pattern.
+#[test]
+fn bitmap_custom_pattern_rejects_excessive_ranking_workspace_before_reading_pixels() {
+    let mut s = session(1, 1, 8, "grayscale");
+    let pattern = photocraft_doc::Pattern {
+        id: "large-rank".into(),
+        name: "Large rank".into(),
+        width: 6000,
+        height: 5000,
+        surface: photocraft_raster::Surface::new(PixelFormat::RGBA8),
+    };
+    assert!(pattern.is_paintable());
+    s.edit("pattern", |doc, _| {
+        doc.patterns.push(pattern);
+        Ok(())
+    })
+    .unwrap();
+    let error = custom_pattern_map(&s, "image.mode.bitmap", &json!({"pattern": "large-rank"})).unwrap_err();
+    assert!(error.to_string().contains("threshold ranking exceeds the 256 MiB"), "{error}");
 }
 
 #[test]
@@ -878,7 +978,7 @@ fn modes_round_trip_through_pcraft() {
 /// the displayed ink colours, through the destination profile. Grayscale drops the inks.
 #[test]
 fn duotone_to_colour_modes_keeps_the_ink_colours() {
-    use photocraft_cms::{Builtin, Transform};
+    use craft_cms::{Builtin, Transform};
     let configs = [
         json!({"type": "duotone"}),
         json!({"type": "monotone", "inks": [{"name": "Orange", "color": "#ff8000", "curve": [[0, 0], [100, 100]]}]}),
@@ -917,7 +1017,7 @@ fn duotone_to_colour_modes_keeps_the_ink_colours() {
                         vec![gray[x as usize]]
                     } else {
                         let mut o = [0.0f32; 16];
-                        t.eval(&shown[x as usize][..3], &mut o);
+                        t.eval(&shown[x as usize][..3], &mut o).unwrap();
                         o[..target.color_channels()].to_vec()
                     };
                     // The display's gradient map samples the inks at 33 stops; dark CMYK

@@ -1,7 +1,7 @@
 use super::*;
-use photocraft_psd::descriptor::UnicodeString;
-use photocraft_psd::resources::VersionInfo;
-use photocraft_psd::{Compression, ImageData, ImageResource, PsdError, Version, testgen};
+use craft_psd::descriptor::UnicodeString;
+use craft_psd::resources::VersionInfo;
+use craft_psd::{Compression, ImageData, ImageResource, PsdError, Version, testgen};
 
 /// #5200: the Multichannel fallback checks its RGBA output against the budget before
 /// allocating it (here a 2x2 image, 16 bytes, against caps of 15 and 16 bytes).
@@ -26,7 +26,7 @@ fn flat_fallback_does_not_retry_an_over_budget_composite() {
     file.header.width = 60_000;
     file.header.height = 60_000;
     let merged = Ok(vec![0u8; 16]);
-    let cap = photocraft_psd::compression::MAX_DECODED_BYTES;
+    let cap = craft_psd::compression::MAX_DECODED_BYTES;
     assert!(matches!(flat_composite(&file, Some(&merged), cap), Err(PsdError::LimitExceeded(_))));
 }
 
@@ -118,7 +118,7 @@ fn version_info_cs6(has_real_merged_data: bool) -> Vec<u8> {
 
 /// The 1057 PhotoCraft writes since 0.8.2: Photoshop 2026's bytes, no NUL.
 fn version_info_2026(has_real_merged_data: bool) -> Vec<u8> {
-    photocraft_psd::resources::version_info_resource(has_real_merged_data).data
+    craft_psd::resources::version_info_resource(has_real_merged_data).data
 }
 
 /// An opaque 4 × 1 RGB document with the Photoshop spot oracles' channels in their order:
@@ -151,7 +151,7 @@ fn spots(doc: &Document) -> Vec<bool> {
 /// straight (the maximum = solid ink), no 1053, and `version_info` as resource 1057. `padded`
 /// lays DisplayInfo out in the 14-byte records of 0.1.0 to 0.7.0.
 fn as_earlier_photocraft_saved(doc: &Document, version_info: Vec<u8>, padded: bool) -> Vec<u8> {
-    let mut file = crate::psd_export::document_to_psd(doc);
+    let mut file = crate::psd_export::document_to_psd(doc).unwrap();
     assert!(!file.merged_has_alpha());
     file.resources.retain(|r| r.id != crate::channel_map::ALPHA_IDENTIFIERS);
     for r in &mut file.resources {
@@ -259,7 +259,7 @@ fn other_files_without_alpha_identifiers_use_photoshop_polarity() {
     ];
     for (what, info) in cases {
         // Photoshop's polarity, as this version writes it, without 1053.
-        let mut file = crate::psd_export::document_to_psd(&doc);
+        let mut file = crate::psd_export::document_to_psd(&doc).unwrap();
         file.resources.retain(|r| r.id != crate::channel_map::ALPHA_IDENTIFIERS && r.id != ids::VERSION_INFO);
         file.resources.extend(info.map(|d| ImageResource::new(ids::VERSION_INFO, d)));
         let bytes = file.to_bytes().unwrap();
@@ -292,7 +292,7 @@ fn the_earlier_photocraft_rule_needs_a_spot_and_no_alpha_identifiers() {
 /// those channels' planes as Photoshop stored them (it had read and written them straight),
 /// and stored the channels added after them straight.
 fn as_earlier_photocraft_resaved(doc: &Document, stale_ids: &[u32], kept: usize) -> Vec<u8> {
-    let mut file = crate::psd_export::document_to_psd(doc);
+    let mut file = crate::psd_export::document_to_psd(doc).unwrap();
     file.resources.retain(|r| r.id != crate::channel_map::ALPHA_IDENTIFIERS && r.id != ids::VERSION_INFO);
     file.resources.push(ImageResource::new(crate::channel_map::ALPHA_IDENTIFIERS, stale_ids.iter().flat_map(|id| id.to_be_bytes()).collect()));
     file.resources.push(ImageResource::new(ids::VERSION_INFO, version_info_2026(true)));
@@ -390,11 +390,11 @@ fn layer_bands_end_on_tile_rows_and_cover_the_layer() {
 }
 
 // Tall, narrow masks cross tile bands while keeping these cases only a few KiB.
-fn banded_mask_file(depth: u16, compression: Compression, version: Version, real: bool) -> (PsdFile, Vec<u8>, photocraft_psd::Rect) {
-    use photocraft_psd::{ChannelData, LayerMask as PsdMask, MaskData, MaskParameters, RealMask};
+fn banded_mask_file(depth: u16, compression: Compression, version: Version, real: bool) -> (PsdFile, Vec<u8>, craft_psd::Rect) {
+    use craft_psd::{ChannelData, LayerMask as PsdMask, MaskData, MaskParameters, RealMask};
     let mut file = testgen::layered(version, PsdMode::Rgb, depth, compression);
     file.layer_info.as_mut().unwrap().layers.truncate(1);
-    let rect = photocraft_psd::Rect::from_xywh(-3, -17, 5, 600);
+    let rect = craft_psd::Rect::from_xywh(-3, -17, 5, 600);
     let mut plane = Vec::new();
     for i in 0..3000 {
         match depth {
@@ -411,7 +411,7 @@ fn banded_mask_file(depth: u16, compression: Compression, version: Version, real
     record.channels.retain(|c| c.id != CHANNEL_USER_MASK && c.id != CHANNEL_REAL_USER_MASK);
     let id = if real {
         // Different synthetic bounds/defaults ensure -3's own metadata is selected.
-        mask.rect = photocraft_psd::Rect::from_xywh(1, 1, 1, 1);
+        mask.rect = craft_psd::Rect::from_xywh(1, 1, 1, 1);
         mask.real = Some(RealMask { flags: 3, background: 255, rect });
         record.channels.push(ChannelData::encode(CHANNEL_USER_MASK, compression, &vec![0; usize::from(depth / 8)], 1, 1, depth, version).unwrap());
         CHANNEL_REAL_USER_MASK
@@ -423,7 +423,7 @@ fn banded_mask_file(depth: u16, compression: Compression, version: Version, real
     (file, plane, rect)
 }
 
-fn assert_banded_mask(file: &PsdFile, plane: &[u8], rect: photocraft_psd::Rect, real: bool) {
+fn assert_banded_mask(file: &PsdFile, plane: &[u8], rect: craft_psd::Rect, real: bool) {
     let (doc, warnings, damaged) = psd_to_document_decoded_integrity(file, &photocraft_raster::Interrupt::NONE, None).unwrap();
     assert!(!damaged, "{warnings:?}");
     let mask = doc.layers[0].mask.as_ref().unwrap();
@@ -447,7 +447,7 @@ fn mask_bands_preserve_samples_bounds_defaults_and_parameters() {
                     assert_banded_mask(&file, &plane, rect, real);
                     let bytes = file.to_bytes().unwrap();
                     let eager = PsdFile::from_bytes(&bytes).unwrap();
-                    let lazy = PsdFile::from_source(photocraft_psd::Source::new(bytes)).unwrap();
+                    let lazy = PsdFile::from_source(craft_psd::Source::new(bytes)).unwrap();
                     assert_banded_mask(&eager, &plane, rect, real);
                     assert_banded_mask(&lazy, &plane, rect, real);
                 }
@@ -458,7 +458,7 @@ fn mask_bands_preserve_samples_bounds_defaults_and_parameters() {
 
 #[test]
 fn raw_and_rle_mask_sources_are_read_in_bands() {
-    use photocraft_psd::{ReadAt, Source, Stored};
+    use craft_psd::{ReadAt, Source, Stored};
     use std::sync::{Arc, Mutex};
     struct Reads {
         bytes: Vec<u8>,
@@ -468,7 +468,7 @@ fn raw_and_rle_mask_sources_are_read_in_bands() {
         fn len(&self) -> u64 {
             self.bytes.len() as u64
         }
-        fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> craft_psd::Result<()> {
             self.sizes.lock().unwrap().push(buf.len());
             self.bytes.read_at(offset, buf)
         }
@@ -524,7 +524,7 @@ fn a_damaged_later_mask_band_discards_earlier_bands() {
 /// channel, asked for after the import was already reported as failing.
 #[test]
 fn a_fatal_layer_error_skips_the_extra_channel_conversion() {
-    use photocraft_psd::ReadAt;
+    use craft_psd::ReadAt;
     struct Failing {
         bytes: Vec<u8>,
         data: Vec<(u64, u64)>,
@@ -534,7 +534,7 @@ fn a_fatal_layer_error_skips_the_extra_channel_conversion() {
         fn len(&self) -> u64 {
             self.bytes.len() as u64
         }
-        fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> craft_psd::Result<()> {
             let end = offset + buf.len() as u64;
             if self.armed.load(std::sync::atomic::Ordering::SeqCst) && self.data.iter().any(|&(a, b)| offset < b && end > a) {
                 return Err(PsdError::Read("the drive went away".into()));
@@ -542,19 +542,19 @@ fn a_fatal_layer_error_skips_the_extra_channel_conversion() {
             self.bytes.as_slice().read_at(offset, buf)
         }
     }
-    let bytes = crate::psd_export::document_to_psd(&channels_document(SampleType::U8)).to_bytes().unwrap();
+    let bytes = crate::psd_export::document_to_psd(&channels_document(SampleType::U8)).unwrap().to_bytes().unwrap();
     let whole = PsdFile::from_bytes(&bytes).unwrap();
     assert!(merged_needed(&whole), "the extra channels come from the merged image");
     let converted = psd_to_document_global(&whole, &photocraft_raster::Interrupt::NONE, None, Vec::new(), false).unwrap();
     assert!(converted.3.is_none() && converted.0.channels.len() == 3, "the control file converts its channels");
 
-    let lazy = PsdFile::from_source(photocraft_psd::Source::new(bytes.clone())).unwrap();
+    let lazy = PsdFile::from_source(craft_psd::Source::new(bytes.clone())).unwrap();
     let data: Vec<(u64, u64)> =
         lazy.layers().iter().flat_map(|l| &l.channels).filter_map(|c| c.stored.as_ref()).filter(|s| s.len > 0).map(|s| (s.offset, s.offset + s.len)).collect();
     assert!(!data.is_empty());
     // Reads fail only once the file is parsed: the layers decode lazily from the source.
     let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let file = PsdFile::from_source(photocraft_psd::Source::new(Failing { bytes, data, armed: armed.clone() })).unwrap();
+    let file = PsdFile::from_source(craft_psd::Source::new(Failing { bytes, data, armed: armed.clone() })).unwrap();
     armed.store(true, std::sync::atomic::Ordering::SeqCst);
     let (doc, _, _, fatal) = psd_to_document_global(&file, &photocraft_raster::Interrupt::NONE, None, Vec::new(), false).unwrap();
     assert!(matches!(fatal, Some(crate::IoError::Read(_))), "{fatal:?}");
@@ -608,7 +608,7 @@ fn only_allocation_failures_are_fatal_to_a_layer_channel() {
 fn legacy_conversion_refuses_before_waiting_for_the_decode_gate() {
     let mut file = testgen::small(Version::Psd, Compression::Zip);
     // 30,000² tiles are several GiB: far past the hard budget of the 4 GiB machine below.
-    file.layers_mut()[0].rect = photocraft_psd::Rect::from_xywh(0, 0, 30_000, 30_000);
+    file.layers_mut()[0].rect = craft_psd::Rect::from_xywh(0, 0, 30_000, 30_000);
     let snapshot = crate::memory::MemorySnapshot { available_ram: Some(4 << 30), swap_free: None, commit_headroom: None };
     let ctl = photocraft_raster::Interrupt::NONE;
     let _guard = crate::psd_gate::acquire_decode_admission(&ctl).expect("active decode");

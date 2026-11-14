@@ -1,13 +1,13 @@
 //! Paste Layer Style applies group eligibility consistently and preserves the ATN flag.
 
+use craft_psd::{
+    atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
+    descriptor::{Class, Descriptor, Id, UnicodeString, Value as D},
+};
 use photocraft_color::{BlendMode, Color, ColorMode, SampleType};
 use photocraft_doc::{BlendRange, Document, Effect, Layer, LayerId};
 use photocraft_engine::{Session, actions_cmds::Action, atn_cmds, layer_multi_cmds};
 use photocraft_geom::Size;
-use photocraft_psd::{
-    atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
-    descriptor::{Class, Descriptor, Id, UnicodeString, Value as D},
-};
 use serde_json::{Value, json};
 
 const CMD: &str = "layer.layerStyle.pasteLayerStyle";

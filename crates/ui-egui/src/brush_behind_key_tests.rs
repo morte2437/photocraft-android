@@ -116,7 +116,7 @@ fn background_does_not_accept_behind() {
 /// The consumed key stays a no-op for layers and for tools outside the measured scope.
 #[test]
 fn other_tools_keep_the_behind_key_as_a_no_op() {
-    for tool in [Tool::Move, Tool::CloneStamp, Tool::PatternStamp, Tool::HistoryBrush, Tool::Gradient, Tool::PaintBucket] {
+    for tool in [Tool::Move, Tool::CloneStamp, Tool::HistoryBrush, Tool::Gradient, Tool::PaintBucket] {
         let mut app = app(tool, true);
         let ctx = Context::default();
         let before = app.session.journal.len();

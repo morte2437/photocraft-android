@@ -44,6 +44,9 @@ mod tests {
     /// Unicode Turkic mappings keep the two I pairs distinct, including decomposed input.
     #[test]
     fn azerbaijani_and_turkish_case_mapping_handles_combining_dots() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         for code in ["az", "tr"] {
             let lang = Lang::from_code(code).unwrap();
             assert_eq!(lang.lowercase("Iİıi"), "ıiıi");

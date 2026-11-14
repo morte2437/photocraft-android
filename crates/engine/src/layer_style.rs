@@ -512,7 +512,7 @@ pub fn contour_from_param(v: &Value) -> Option<Contour> {
 /// The contours of an `.shc` contour preset file (Contour Editor › Load…), as `contour` params.
 /// Points are rescaled from the file's `0..=255` levels; unusable curves are skipped.
 pub fn contours_from_shc(bytes: &[u8]) -> Result<Vec<Value>> {
-    let file = photocraft_psd::shc::parse(bytes).map_err(|e| EngineError::Other(format!("not a contour file: {e}")))?;
+    let file = craft_psd::shc::parse(bytes).map_err(|e| EngineError::Other(format!("not a contour file: {e}")))?;
     Ok(file
         .into_iter()
         .filter_map(|c| {
@@ -533,7 +533,7 @@ pub fn contour_to_shc(contour: &Contour) -> Result<Vec<u8>> {
 
 /// An `.shc` file holding every contour of `list` (Save Contours…).
 pub fn contour_to_shc_all(list: &[&Contour]) -> Result<Vec<u8>> {
-    let file: Vec<photocraft_psd::shc::ShcContour> = list
+    let file: Vec<craft_psd::shc::ShcContour> = list
         .iter()
         .map(|contour| {
             let (name, points) = match contour {
@@ -543,12 +543,12 @@ pub fn contour_to_shc_all(list: &[&Contour]) -> Result<Vec<u8>> {
             let points = points
                 .iter()
                 .enumerate()
-                .map(|(i, p)| photocraft_psd::shc::ShcPoint { input: p.input * 255.0, output: p.output * 255.0, continuous: !contour.is_corner(i) })
+                .map(|(i, p)| craft_psd::shc::ShcPoint { input: p.input * 255.0, output: p.output * 255.0, continuous: !contour.is_corner(i) })
                 .collect();
-            photocraft_psd::shc::ShcContour { name, points }
+            craft_psd::shc::ShcContour { name, points }
         })
         .collect();
-    photocraft_psd::shc::write(&file).map_err(|e| EngineError::Other(format!("can't write the contour: {e}")))
+    craft_psd::shc::write(&file).map_err(|e| EngineError::Other(format!("can't write the contour: {e}")))
 }
 
 /// An effect of `kind` with its factory settings (before params are applied).

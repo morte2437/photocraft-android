@@ -632,7 +632,12 @@ fn family_name_matches(font: &skrifa::FontRef<'_>, family: &str, budget: &mut us
 fn face_tables_are_readable(font: &skrifa::raw::FontRef<'_>) -> bool {
     let directory = font.table_directory();
     let records = directory.table_records();
-    !records.is_empty() && records.len() == usize::from(directory.num_tables()) && records.iter().all(|record| font.table_data(record.tag()).is_some())
+    // Each record's own range against the file, in one pass: `table_data(tag)` searches the
+    // (unsorted) directory per tag, which is quadratic in the table count.
+    let len = u64::try_from(font.data().len()).unwrap_or(u64::MAX);
+    !records.is_empty()
+        && records.len() == usize::from(directory.num_tables())
+        && records.iter().all(|record| u64::from(record.offset()) + u64::from(record.length()) <= len)
 }
 
 /// Whether face `index` of a font file or collection has a complete, in-bounds table directory.
@@ -659,7 +664,7 @@ pub fn font_file_is_readable(bytes: &[u8]) -> bool {
 
     match FileRef::new(bytes) {
         Ok(FileRef::Font(font)) => face_tables_are_readable(&font),
-        Ok(FileRef::Collection(faces)) => faces.iter().any(|face| face.is_ok_and(|font| face_tables_are_readable(&font))),
+        Ok(FileRef::Collection(faces)) => faces.iter().take(MAX_COLLECTION_FACES).any(|face| face.is_ok_and(|font| face_tables_are_readable(&font))),
         Err(_) => false,
     }
 }
@@ -938,6 +943,28 @@ mod tests {
         // The first directory record begins at 12; its offset occupies bytes 20..24.
         missing_table[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(!font_file_is_readable(&missing_table), "a complete directory cannot point outside the file");
+    }
+
+    #[test]
+    fn a_directory_of_many_tables_is_validated_in_one_pass() {
+        // 60000 distinct tags, all in range: a per-tag directory search would be quadratic.
+        let n = 60_000u32;
+        let mut font = 0x0001_0000u32.to_be_bytes().to_vec();
+        font.extend((n as u16).to_be_bytes());
+        font.extend([0u8; 6]);
+        let data_at = 12 + 16 * n;
+        for i in 0..n {
+            font.extend([b'a' + (i / 26 / 26 / 26 % 26) as u8, b'a' + (i / 26 / 26 % 26) as u8, b'a' + (i / 26 % 26) as u8, b'a' + (i % 26) as u8]);
+            font.extend(0u32.to_be_bytes());
+            font.extend(data_at.to_be_bytes());
+            font.extend(4u32.to_be_bytes());
+        }
+        font.extend([0u8; 4]);
+        let start = std::time::Instant::now();
+        assert!(font_file_is_readable(&font));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        font[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(!font_file_is_readable(&font));
     }
 
     /// A readable collection can contain a malformed non-selected face, so the file-level check

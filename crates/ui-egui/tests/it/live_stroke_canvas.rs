@@ -158,11 +158,39 @@ fn frames(h: &mut Harness, c: Case) -> (Pixels, Pixels, Pixels, bool) {
     times.sort_by(f64::total_cmp);
     // Pointer move → stroke rendered → frame built (canvas refresh and upload included).
     eprintln!("{c:?}: move-to-frame median {:.2} ms, max {:.2} ms", times[times.len() / 2], times[times.len() - 1]);
-    let drawing = canvas(h);
+    // The pointer stays held at its last point, as a mouse held still repeats its position.
+    let held = |h: &mut Harness| {
+        control(h, "ui.pointer", json!({"events": [{"kind": "move", "x": last.0, "y": last.1, "pressure": pressure(1.0)}]}));
+        canvas(h)
+    };
+    let drawing = settled(h, held);
     let gpu = h.state().perf.gpu && !c.flip;
     control(h, "ui.pointer", json!({"events": [{"kind": "up", "x": last.0, "y": last.1}]}));
     let done = canvas(h);
     (before, drawing, done, gpu)
+}
+
+/// The canvas once the live stroke has stopped changing (#13477). The stroke paints on its own
+/// thread and a frame waits only a few real ms for it, so on a slow machine its newest step
+/// arrives late, and only a later pointer event shows it; release would then paint the rest.
+/// `picture` holds the pointer still and takes a picture, with short real waits between them,
+/// until the stroke is idle and three pictures in a row match (matching pixels alone don't prove
+/// a slow step has finished): at most `TRIES` times, so a canvas that never settles fails
+/// instead of hanging or comparing an unsettled picture.
+fn settled(h: &mut Harness, picture: impl Fn(&mut Harness) -> Pixels) -> Pixels {
+    const TRIES: usize = 80;
+    let mut last = picture(h);
+    let mut unchanged = 0;
+    for _ in 0..TRIES {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        let next = picture(h);
+        unchanged = if next == last { unchanged + 1 } else { 0 };
+        last = next;
+        if unchanged >= 2 && !h.state().live_stroke_busy() {
+            return last;
+        }
+    }
+    panic!("the live stroke did not settle before release");
 }
 
 fn max_diff(a: &[[u8; 4]], b: &[[u8; 4]]) -> u8 {

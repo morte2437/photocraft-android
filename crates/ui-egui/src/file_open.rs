@@ -34,6 +34,77 @@ pub enum DropTarget {
     Elsewhere,
 }
 
+impl DropTarget {
+    /// What a dropped file called `name` does here. Preset files (brushes, gradients) go to their
+    /// libraries wherever they land, so only a canvas drop of anything else is placed. This is the
+    /// whole routing decision, apart from where the pointer is ([`target_at`]).
+    pub fn route(self, name: &str) -> DropRoute {
+        if self == DropTarget::Canvas && !crate::preset_files_ui::is_preset_file(name) { DropRoute::Place } else { DropRoute::Open }
+    }
+}
+
+/// What happens to one dropped file, by [`DropTarget::route`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropRoute {
+    /// Placed on the active document's canvas (File › Place Embedded), in Free Transform.
+    Place,
+    /// Opened like File › Open (at the drop's tab position when it landed on the tab strip).
+    Open,
+}
+
+/// Where a drop at `at` lands, from what the last frame drew: the tab strip, the canvas (a drop
+/// is placed only while a document is open) and whether `at` is free of windows and dialogs above
+/// the workspace (`uncovered`). No pointer, a covered one, or none of those regions means
+/// [`DropTarget::Elsewhere`]: the files open like File › Open, which is also what a drop onto the
+/// Home screen or an empty workspace does (#10492).
+pub(crate) fn target_at(
+    at: Option<egui::Pos2>,
+    uncovered: bool,
+    tabs: Option<&crate::canvas::TabStrip>,
+    canvas: Option<egui::Rect>,
+    has_document: bool,
+) -> DropTarget {
+    let Some(p) = at.filter(|_| uncovered) else {
+        return DropTarget::Elsewhere;
+    };
+    if let Some(strip) = tabs.filter(|s| s.rect.contains(p)) {
+        return DropTarget::Tabs(strip.slot(p.x));
+    }
+    // The canvas shown last frame may belong to a document closed since.
+    if has_document && canvas.is_some_and(|r| r.contains(p)) {
+        return DropTarget::Canvas;
+    }
+    DropTarget::Elsewhere
+}
+
+/// Why a dropped `path` can't be opened or placed when it is a folder, for a clear message in
+/// place of the operating system's (Windows says "Access is denied" for reading a directory).
+/// `None` for anything else, including a path that can't be inspected: the open reports that.
+pub(crate) fn folder_error(path: &std::path::Path) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Some(tl!("it is a folder, not a file; drop the files inside it instead").to_string());
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = path;
+    None
+}
+
+/// Log, once per drag, that files are being dragged over the window (`hovering` of them). Together
+/// with the line `open_dropped` logs for a drop, it shows how far a drag got: nothing logged
+/// means the operating system never offered the files to PhotoCraft (a window running as
+/// administrator is not offered files from a File Explorer that isn't, #10492).
+pub(crate) fn log_drag_over(ctx: &egui::Context, hovering: usize) {
+    let id = egui::Id::unique("log-drag-over");
+    let was = ctx.data_mut(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if (hovering > 0) != was {
+        ctx.data_mut(|d| d.insert_temp(id, hovering > 0));
+        if hovering > 0 {
+            log::info!("{hovering} file(s) dragged over the window");
+        }
+    }
+}
+
 /// A file dropped on the canvas, waiting its turn to be placed in the document it was dropped on
 /// (queued with its [`DocId`] in `drop_places`).
 pub(crate) enum DropPlace {
@@ -307,6 +378,9 @@ impl PhotocraftApp {
     /// absolute path, read in bounded reads (#375) rather than egui's whole-file read.
     pub fn open_dropped(&mut self, ctx: &egui::Context, files: Vec<egui::DroppedFileHandle>, at: Option<egui::Pos2>) {
         let target = self.drop_target(ctx, at);
+        // The log tells a drop that never reached the app (the operating system, or an elevated
+        // process, refused it) from one the app routed (#10492). File names stay out of it.
+        log::info!("{} file(s) dropped on the window: {target:?}, pointer {}", files.len(), if at.is_some() { "known" } else { "unknown" });
         let frame = at.and_then(|at| crate::canvas::ViewXform::active(self).map(|xf| xf.to_doc(at))).and_then(|p| crate::frame_tool::frame_at(self, p));
         let mut slot = match target {
             DropTarget::Tabs(slot) => Some(slot),
@@ -315,12 +389,20 @@ impl PhotocraftApp {
         // A box still open from an earlier drop (or any Free Transform) is applied first (#4833):
         // the queue below places the next file only once no box is open, so a separate drop
         // would otherwise wait unseen for ↩. Files dropped together still go one by one.
-        if target == DropTarget::Canvas && self.ui.transform.is_some() && files.iter().any(|f| !crate::preset_files_ui::is_preset_file(&dropped_name(f))) {
+        if target == DropTarget::Canvas && self.ui.transform.is_some() && files.iter().any(|f| target.route(&dropped_name(f)) == DropRoute::Place) {
             crate::transform_tool::commit(self);
         }
         for f in files {
             let name = dropped_name(&f);
-            if target == DropTarget::Canvas && !crate::preset_files_ui::is_preset_file(&name) {
+            let route = target.route(&name);
+            if let Some(why) = folder_error(f.path()) {
+                match route {
+                    DropRoute::Place => self.failed(crate::i18n::fmt(tl!("Couldn't place {name}: {error}"), &[("name", &name), ("error", &why)])),
+                    DropRoute::Open => self.open_failed(&name, &why),
+                }
+                continue;
+            }
+            if route == DropRoute::Place {
                 if let Some(doc) = self.session.active().map(|st| st.doc.id) {
                     self.queue_drop(doc, DropPlace::At { source: Box::new(DropPlace::File(f)), frame });
                 }
@@ -351,30 +433,17 @@ impl PhotocraftApp {
     pub fn dropped_on_canvas(&mut self, ctx: &egui::Context, names: &[String]) -> Vec<bool> {
         let at = self.cursor_pos(ctx);
         let canvas = self.drop_target(ctx, at) == DropTarget::Canvas;
-        let places: Vec<bool> = names.iter().map(|n| canvas && !crate::preset_files_ui::is_preset_file(n)).collect();
-        if places.contains(&true) {
-            // The shell reads the files after this returns: they go to this document even if the
-            // tab changes before they arrive.
-            if self.ui.transform.is_some() {
-                crate::transform_tool::commit(self);
-            }
+        let places: Vec<bool> = names.iter().map(|n| canvas && DropTarget::Canvas.route(n) == DropRoute::Place).collect();
+        if places.contains(&true) && self.ui.transform.is_some() {
+            crate::transform_tool::commit(self);
         }
         places
     }
 
     /// Where a drop at `at` lands. Over a window or dialog it's neither the canvas nor the tabs.
     pub(crate) fn drop_target(&self, ctx: &egui::Context, at: Option<egui::Pos2>) -> DropTarget {
-        let Some(p) = at.filter(|p| ctx.layer_id_at(*p).is_none_or(|l| l.order == egui::Order::Background)) else {
-            return DropTarget::Elsewhere;
-        };
-        if let Some(strip) = self.tab_strip.as_ref().filter(|s| s.rect.contains(p)) {
-            return DropTarget::Tabs(strip.slot(p.x));
-        }
-        // The canvas shown last frame may belong to a document closed since.
-        if self.session.active().is_some() && self.drop_canvas_rect.is_some_and(|r| r.contains(p)) {
-            return DropTarget::Canvas;
-        }
-        DropTarget::Elsewhere
+        let uncovered = at.is_some_and(|p| ctx.layer_id_at(p).is_none_or(|l| l.order == egui::Order::Background));
+        target_at(at, uncovered, self.tab_strip.as_ref(), self.drop_canvas_rect, self.session.active().is_some())
     }
 
     /// Open one dropped file; with `slot`, its tab goes there (at once, or when a held prompt is
