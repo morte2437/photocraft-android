@@ -153,7 +153,7 @@ impl CameraRawDialog {
         let rgb = [q[0], q[1], q[2]];
         let values = if lab {
             let mut l = [0.0; 3];
-            self.lab_transform.eval(&rgb, &mut l);
+            self.lab_transform.eval(&rgb, &mut l).ok()?;
             [l[0] * 100.0, l[1] * 255.0 - 128.0, l[2] * 255.0 - 128.0]
         } else {
             rgb.map(|v| v * 255.0)
@@ -166,8 +166,7 @@ impl CameraRawDialog {
         let rgb = [q[0], q[1], q[2]];
         let hue_saturation = if vectorscope {
             let mut scope_rgb = [0.0; 3];
-            self.scope_transform.eval(&rgb, &mut scope_rgb);
-            if scope_rgb.iter().all(|x| x.is_finite()) {
+            if self.scope_transform.eval(&rgb, &mut scope_rgb).is_ok() && scope_rgb.iter().all(|x| x.is_finite()) {
                 let (h, s) = photocraft_algo::vectorscope::hue_saturation(scope_rgb.map(|x| x.clamp(0.0, 1.0)));
                 Some([h, s])
             } else {
@@ -201,7 +200,8 @@ impl CameraRawDialog {
             })
             .map(|(_, p)| {
                 let mut rgb = [0.0; 3];
-                self.scope_transform.eval(&p[..3], &mut rgb);
+                // An RGB → RGB transform over an RGB pixel; were it refused, the sample plots as black.
+                let _ = self.scope_transform.eval(&p[..3], &mut rgb);
                 [rgb[0], rgb[1], rgb[2], p[3]]
             })
             .collect();

@@ -26,6 +26,70 @@ pub const XTRANS: [u8; 36] = [
     0, 2, 1, 2, 0, 1,
 ];
 
+/// Emits an all-zero Fujifilm compressed stripe stream for fixtures. This lives with the
+/// fixture writers; runtime decoding is provided by `craft-raw`.
+fn zero_stream(bits: u32, xtrans: bool, groups: usize, quantizers: Option<&[u8]>) -> Vec<u8> {
+    const MASKS: [[u8; 2]; 6] = [[10, 15], [15, 10], [14, 10], [15, 11], [11, 15], [10, 14]];
+    if !matches!(bits, 12 | 14 | 16) || quantizers.is_some_and(|q| q.len() != groups) {
+        return Vec::new();
+    }
+    let mut bitstream = Vec::new();
+    let mut main = [[(1u32 << (bits - 6), 1u32); 2]; 3];
+    let mut fine = main;
+    let mut previous = None;
+    for group in 0..groups {
+        let q = quantizers.and_then(|q| q.get(group)).copied().unwrap_or(0);
+        if previous != Some(q) {
+            main = [[(1u32 << (bits - 6), 1u32); 2]; 3];
+            previous = Some(q);
+        }
+        for pair in 0..6 {
+            let width = if xtrans { 512 } else { 384 };
+            for even in (0usize..width + 8).step_by(2) {
+                for (parity, column) in [(0, Some(even)), (1, even.checked_sub(7))] {
+                    let Some(column) = column.filter(|&x| x < width) else { continue };
+                    for &mask in &MASKS[pair % 6] {
+                        if xtrans && (mask >> (column % 4)) & 1 == 0 {
+                            continue;
+                        }
+                        let states = if q == 0 { &mut main } else { &mut fine };
+                        let (sum, count) = &mut states[pair % 3][parity];
+                        let k = 32 - (sum.saturating_sub(1) / *count).leading_zeros();
+                        bitstream.push(true);
+                        bitstream.extend(std::iter::repeat_n(false, k as usize));
+                        if *count == 64 {
+                            *sum /= 2;
+                            *count /= 2;
+                        }
+                        *count += 1;
+                    }
+                }
+            }
+        }
+    }
+    let stream: Vec<u8> = bitstream.chunks(8).map(|chunk| chunk.iter().enumerate().fold(0, |b, (i, bit)| b | (u8::from(*bit) << (7 - i)))).collect();
+    let mut out = b"IS".to_vec();
+    out.extend_from_slice(&[u8::from(quantizers.is_none()), if xtrans { 16 } else { 0 }, bits as u8]);
+    for v in [groups as u16 * 6, 1536, 780, 768] {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+    out.push(2);
+    out.extend_from_slice(&(groups as u16).to_be_bytes());
+    for _ in 0..2 {
+        out.extend_from_slice(&(stream.len() as u32).to_be_bytes());
+    }
+    out.resize(32, 0);
+    if let Some(q) = quantizers {
+        for _ in 0..2 {
+            out.extend_from_slice(q);
+            out.resize(out.len() + q.len().div_ceil(16) * 16 - q.len(), 0);
+        }
+    }
+    out.extend_from_slice(&stream);
+    out.extend_from_slice(&stream);
+    out
+}
+
 /// A synthetic Fujifilm RAF.
 #[derive(Debug, Clone)]
 pub struct RafSpec {
@@ -109,7 +173,7 @@ impl RafSpec {
             RafPacking::Compressed { lossy } => {
                 assert!(self.width == 780 && self.height.is_multiple_of(6) && self.data.iter().all(|&v| v == 0), "see RafPacking::Compressed");
                 let quantizers: Vec<u8> = (0..self.height / 6).map(|g| [2, 0, 5][g % 3]).collect();
-                crate::rafc::zero_stream(self.bits, self.cfa.len() == 36, self.height / 6, lossy.then_some(quantizers.as_slice()))
+                zero_stream(self.bits, self.cfa.len() == 36, self.height / 6, lossy.then_some(quantizers.as_slice()))
             }
         }
     }

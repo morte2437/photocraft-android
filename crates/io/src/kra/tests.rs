@@ -1,5 +1,5 @@
-use super::tiles::{Space, lzf_decompress};
 use super::*;
+use craft_kra::tiles::{Space, lzf_decompress};
 use photocraft_codecs::{ChannelLayout, Format, Image, SampleType as CSample};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_format::zip::ZipWriter;

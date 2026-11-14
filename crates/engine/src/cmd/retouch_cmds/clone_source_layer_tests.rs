@@ -265,7 +265,7 @@ fn clone_sources_work_between_documents_with_preview_live_commit_and_undo() {
 /// Compatible profiles convert through CMS while identical profiles preserve native ink values.
 #[test]
 fn clone_cross_document_matching_color_modes_and_profiles_use_cms() {
-    use photocraft_cms::{Builtin, TransformOptions};
+    use craft_cms::{Builtin, TransformOptions};
     for (from, to) in [("rgb", "rgb"), ("gray", "gray"), ("cmyk", "cmyk"), ("lab", "lab")] {
         let (mut s, source, _) = setup(32, from);
         if from == "rgb" {
@@ -285,13 +285,13 @@ fn clone_cross_document_matching_color_modes_and_profiles_use_cms() {
             // Identical profiles preserve native ink values; a CMYK PCS round trip is lossy.
             want[..native.len()].copy_from_slice(&native);
         } else {
-            let transform = photocraft_cms::transform::cached(
+            let transform = craft_cms::transform::cached(
                 &from_profile,
                 &to_profile,
                 TransformOptions { intent: s.color.settings.intent(), bpc: s.color.settings.bpc, ..Default::default() },
             )
             .unwrap();
-            transform.eval(&native, &mut want);
+            transform.eval(&native, &mut want).unwrap();
         }
         s.execute("paint.cloneStamp", json!({"points": [[48,48]], "size": 8, "hardness": 100})).unwrap();
         let st = s.active().unwrap();

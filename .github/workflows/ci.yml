@@ -170,6 +170,9 @@ jobs:
       # A panic still names its file and line; only backtrace frames lose theirs (Linux keeps
       # line-tables-only, so a backtrace with lines is one OS away).
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # The Windows compiler command line carries one -L path per built dependency; keep each
+      # target path short enough for CreateProcess when the graph is large.
+      CARGO_TARGET_DIR: 'D:\t'
       # The all-language UI tests shape real Japanese, Chinese, Korean and Devanagari labels
       # with kittest's strict `MissingGlyphPolicy::Panic`. A hosted Windows image has no
       # guaranteed Japanese or Simplified Chinese system font, and egui 0.37 panics on a
@@ -296,7 +299,7 @@ jobs:
           tool: cargo-nextest@0.9.150
 
       - name: Test without heif
-        run: cargo nextest run -p photocraft-codecs -p photocraft-io --locked --profile ci
+        run: cargo nextest run -p photocraft-io --locked --profile ci
 
   corpus:
     if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'

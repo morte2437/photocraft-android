@@ -807,8 +807,8 @@ fn check_profile_only_export(width: u32, height: u32) -> std::time::Duration {
     let start = std::time::Instant::now();
     let converted = default_export_document(&doc, &fields, None).unwrap();
     let elapsed = start.elapsed();
-    let profile = photocraft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
-    assert!(profile.same_bytes(photocraft_cms::Builtin::Srgb.profile()));
+    let profile = craft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
+    assert!(profile.same_bytes(craft_cms::Builtin::Srgb.profile()));
     let source = doc.layers[0].surface().unwrap();
     let output = converted.layers[0].surface().unwrap();
     assert!(source.tile_count() > 0);
@@ -851,8 +851,8 @@ fn untagged_jpeg_export_embeds_the_requested_srgb_profile() {
         let converted = default_export_document(&doc, &fields, None).unwrap();
         let bytes = photocraft_io::export(&converted, "out.jpg", &settings(&fields).io_options()).unwrap().bytes;
         let reloaded = photocraft_io::import("out.jpg", &bytes).unwrap().document;
-        let profile = photocraft_cms::Profile::parse(reloaded.icc_profile.as_deref().expect("explicit sRGB export must embed its profile")).unwrap();
-        assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()), "{depth:?}");
+        let profile = craft_cms::Profile::parse(reloaded.icc_profile.as_deref().expect("explicit sRGB export must embed its profile")).unwrap();
+        assert!(profile.same_colors(craft_cms::Builtin::Srgb.profile()), "{depth:?}");
         fields.insert("embedProfile".into(), json!(false));
         let bytes = photocraft_io::export(&converted, "out.jpg", &settings(&fields).io_options()).unwrap().bytes;
         assert!(photocraft_io::import("out.jpg", &bytes).unwrap().document.icc_profile.is_none(), "embedding remains optional");
@@ -866,7 +866,7 @@ fn untagged_jpeg_export_embeds_the_requested_srgb_profile() {
 
 #[test]
 fn preview_cache_tracks_working_profiles_but_prefers_embedded_profiles() {
-    use photocraft_cms::Builtin;
+    use craft_cms::Builtin;
     use photocraft_doc::{Color, SampleType, Size};
     for embedded in [false, true] {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -947,7 +947,7 @@ fn preview_workers_keep_the_captured_source_profile() {
 
 #[test]
 fn replay_converts_untagged_pixels_from_the_original_working_profile() {
-    use photocraft_cms::{Builtin, Intent};
+    use craft_cms::{Builtin, Intent};
     use photocraft_doc::{Color, ColorMode, SampleType, Size};
     for working in [Builtin::DisplayP3, Builtin::AdobeRgbCompat] {
         for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -973,7 +973,7 @@ fn replay_converts_untagged_pixels_from_the_original_working_profile() {
             replay(&mut app, &json!({"path": "out.png", "format": "png", "profile": "srgb", "transparency": true})).unwrap();
             let actual = captured.lock().unwrap().take().unwrap();
             assert_eq!(actual.layers[0].surface().unwrap().pixel(0, 0), expected_pixel, "{working:?} {depth:?}");
-            let profile = photocraft_cms::Profile::parse(actual.icc_profile.as_deref().unwrap()).unwrap();
+            let profile = craft_cms::Profile::parse(actual.icc_profile.as_deref().unwrap()).unwrap();
             assert!(profile.same_bytes(Builtin::Srgb.profile()));
             assert_eq!(app.session.active().unwrap().doc, source);
         }
@@ -982,7 +982,7 @@ fn replay_converts_untagged_pixels_from_the_original_working_profile() {
 
 #[test]
 fn profile_and_metadata_follow_the_existing_exporter() {
-    use photocraft_cms::Builtin;
+    use craft_cms::Builtin;
 
     let mut f = Map::new();
     f.insert("format".into(), json!("jpg"));
@@ -1016,7 +1016,7 @@ fn profile_and_metadata_follow_the_existing_exporter() {
     f.insert("metadata".into(), json!("none"));
     f.insert("embedProfile".into(), json!(false));
     let converted = default_export_document(&doc, &f, None).unwrap();
-    let parsed = photocraft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
+    let parsed = craft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
     assert!(parsed.same_colors(Builtin::Srgb.profile()), "Convert to sRGB replaces the document profile");
     let stripped = photocraft_io::export(&converted, "out.jpg", &settings(&f).io_options()).unwrap().bytes;
     assert!(!stripped.windows(b"ICC_PROFILE".len()).any(|w| w == b"ICC_PROFILE"));

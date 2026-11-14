@@ -29,7 +29,7 @@ pub struct Prompt {
 
 /// `true` when `path` names a DDS texture.
 pub fn wants_prompt(path: &str) -> bool {
-    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) == Some(photocraft_codecs::Format::Dds)
+    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_formats::from_extension(&e)) == Some(photocraft_formats::Format::Dds)
 }
 
 /// The DDS options a command or control call asks for (`"ddsCompression"`, `"ddsMipmaps"`),

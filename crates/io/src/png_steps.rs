@@ -55,6 +55,13 @@ impl PngImport {
     /// which reads the header and refuses what the import refuses; `None` for any other file,
     /// which only [`crate::import_with_options_and_interrupt`] reads. The decoder shares `bytes`.
     pub fn new(name: &str, bytes: &Arc<Vec<u8>>) -> Result<Option<Self>, IoError> {
+        // A native bundle suffix must never start the PNG streaming path, even when the bytes
+        // are a PNG (for example, an invalid `.pcraft` file). The ordinary importer still uses
+        // content detection and can open a PNG copied to a bare name.
+        let extension = name.rsplit(['/', '\\']).next().and_then(|file| file.rsplit_once('.')).map(|(_, ext)| ext);
+        if extension.is_some_and(|ext| photocraft_formats::from_extension(ext) == Some(photocraft_formats::Format::Pcraft)) {
+            return Ok(None);
+        }
         if crate::route(name, bytes) != Route::Flat || codecs::detect(bytes) != Some(Format::Png) {
             return Ok(None);
         }

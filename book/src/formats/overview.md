@@ -5,7 +5,7 @@ External bytes enter PhotoCraft through four main paths:
 - `craft-psd` parses and writes PSD and PSB structures.
 - `photocraft-codecs` decodes and encodes flat raster formats.
 - `photocraft-format` loads and saves the native `.pcraft` bundle.
-- `photocraft-affinity` reads native Affinity documents (`.af`, `.afdesign`, `.afphoto`, `.afpub`): layers, artboards, vectors, text, images and masks; it does not write them.
+- `craft-affinity` reads native Affinity documents (`.af`, `.afdesign`, `.afphoto`, `.afpub`): layers, artboards, vectors, text, images and masks; it does not write them.
 
 `photocraft-io` maps PSD and flat images into the document model and exports documents back to those formats. It is the integration layer; parsing limits remain the responsibility of the underlying format crates.
 

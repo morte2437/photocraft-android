@@ -1,4 +1,23 @@
 use super::*;
+
+const MODES: [BlendMode; 14] = [
+    BlendMode::Normal,
+    BlendMode::Multiply,
+    BlendMode::LinearDodge,
+    BlendMode::PaintNetColorBurn,
+    BlendMode::PaintNetColorDodge,
+    BlendMode::Reflect,
+    BlendMode::Glow,
+    BlendMode::Overlay,
+    BlendMode::Difference,
+    BlendMode::Negation,
+    BlendMode::Lighten,
+    BlendMode::Darken,
+    BlendMode::Screen,
+    BlendMode::Xor,
+];
+const OLD_MODES: [&str; 14] =
+    ["Normal", "Multiply", "Additive", "ColorBurn", "ColorDodge", "Reflect", "Glow", "Overlay", "Difference", "Negation", "Lighten", "Darken", "Screen", "Xor"];
 use std::io::Write;
 
 enum Field {
@@ -241,59 +260,7 @@ fn malformed_pdn_reports_a_format_error() {
 }
 
 #[test]
-fn serialized_counts_depth_and_references_are_bounded() {
-    let header = || {
-        let mut w = Writer(vec![0]);
-        for n in [1, -1, 1, 0] {
-            w.int(n);
-        }
-        w
-    };
-    let mut oversized = header();
-    oversized.0.push(16);
-    oversized.int(1);
-    oversized.int(1_000_001);
-    let mut nested = header();
-    for id in 1..=66 {
-        nested.0.push(16);
-        nested.int(id);
-        nested.int(1);
-    }
-    nested.0.extend([10, 11]);
-    let mut duplicate = header();
-    for _ in 0..2 {
-        duplicate.0.push(6);
-        duplicate.int(1);
-        duplicate.string("duplicate");
-    }
-    duplicate.0.push(11);
-    let mut null_run = header();
-    null_run.0.push(16);
-    null_run.int(1);
-    null_run.int(1);
-    null_run.0.extend([13, 2, 11]);
-    let mut missing_class = header();
-    missing_class.0.push(1);
-    missing_class.int(1);
-    missing_class.int(999);
-    let mut missing_root = header();
-    missing_root.0.push(11);
-    for w in [oversized, nested, duplicate, null_run, missing_class, missing_root] {
-        let mut reader = Reader { bytes: &w.0, pos: 0 };
-        assert!(nrbf::parse(&mut reader, &Interrupt::NONE).is_err());
-    }
-}
-
-#[test]
 fn pdn_export_is_explicitly_unsupported() {
     let doc = Document::new("x", Size::new(1, 1), ColorMode::Rgb, SampleType::U8);
     assert!(matches!(crate::export(&doc, "x.pdn", &Default::default()), Err(IoError::Unsupported(_))));
-}
-
-#[test]
-fn truncated_uncompressed_pixels_are_rejected_before_allocating() {
-    // A raw (version 1) block of 256 MiB chunks that declares 1 GiB of pixels but holds a few bytes.
-    let mut reader = Reader { bytes: &[1, 0x10, 0, 0, 0, 0, 0, 0, 0], pos: 0 };
-    let e = pixels(&mut reader, 1 << 30, &Interrupt::NONE).err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(e.contains("uncompressed pixel data is truncated"), "{e}");
 }

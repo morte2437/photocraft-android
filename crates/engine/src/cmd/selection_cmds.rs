@@ -170,10 +170,10 @@ fn parse_color(p: &Value) -> [f32; 3] {
 }
 
 /// Composite RGB (the compositor's output profile for the document) → CIE Lab D50.
-fn lab_transform(s: &Session) -> Result<std::sync::Arc<photocraft_cms::Transform>> {
+fn lab_transform(s: &Session) -> Result<std::sync::Arc<craft_cms::Transform>> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let src = crate::color_cmds::composite_profile(&d.doc);
-    photocraft_cms::cached(&src, photocraft_cms::Builtin::LabD50.profile(), photocraft_cms::TransformOptions::default())
+    craft_cms::cached(&src, craft_cms::Builtin::LabD50.profile(), craft_cms::TransformOptions::default())
         .map_err(|e| EngineError::Other(format!("colour management: {e}")))
 }
 
@@ -182,17 +182,19 @@ fn decode_lab(v: [f32; 3]) -> [f32; 3] {
     [v[0] * 100.0, v[1] * 255.0 - 128.0, v[2] * 255.0 - 128.0]
 }
 
-fn colour_to_lab(t: &photocraft_cms::Transform, rgb: [f32; 3]) -> [f32; 3] {
+fn colour_to_lab(t: &craft_cms::Transform, rgb: [f32; 3]) -> [f32; 3] {
     let mut out = [0.0f32; 3];
-    t.eval(&rgb.map(|v| v.clamp(0.0, 1.0)), &mut out);
+    // `t` is an RGB → Lab transform, which takes three values and gives three.
+    let _ = t.eval(&rgb.map(|v| v.clamp(0.0, 1.0)), &mut out);
     decode_lab(out)
 }
 
 /// RGBA pixels → Lab + alpha (L, a, b, alpha).
-fn pixels_to_lab(t: &photocraft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]> {
+fn pixels_to_lab(t: &craft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]> {
     let src: Vec<[f32; 4]> = px.iter().map(|p| [p[0].clamp(0.0, 1.0), p[1].clamp(0.0, 1.0), p[2].clamp(0.0, 1.0), p[3]]).collect();
     let mut out = vec![[0.0f32; 4]; px.len()];
-    t.convert_f32(src.as_flattened(), 4, out.as_flattened_mut(), 4, true);
+    // Whole RGBA pixels in and out of an RGB → Lab transform: never refused.
+    let _ = t.convert_f32(src.as_flattened(), 4, out.as_flattened_mut(), 4, true);
     for p in &mut out {
         let [l, a, b] = decode_lab([p[0], p[1], p[2]]);
         *p = [l, a, b, p[3]];
@@ -203,7 +205,7 @@ fn pixels_to_lab(t: &photocraft_cms::Transform, px: &[[f32; 4]]) -> Vec<[f32; 4]
 /// Prepared Sampled Colors query shared by the command and its interactive preview.
 /// Samples always come from the original document; reducing an image must not change them.
 pub struct ColorRangeSamples {
-    to_lab: std::sync::Arc<photocraft_cms::Transform>,
+    to_lab: std::sync::Arc<craft_cms::Transform>,
     range: sel::LabRange,
     grid: bool,
     fuzziness: f32,
@@ -303,7 +305,7 @@ impl ColorRangeSamples {
         // 8-bit documents are compared on the 8-bit Lab grid, samples and pixels alike.
         let grid = s.active().is_some_and(|d| d.doc.depth == photocraft_doc::SampleType::U8);
         let q = |c: [f32; 3]| if grid { sel::quantize_lab8(c) } else { c };
-        let colour_to_lab = |t: &photocraft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
+        let colour_to_lab = |t: &craft_cms::Transform, c: [f32; 3]| q(colour_to_lab(t, c));
         let foreground = || {
             let [r, g, b, _] = s.tools.foreground;
             sel::LabRange::point(colour_to_lab(&to_lab, [r, g, b]))

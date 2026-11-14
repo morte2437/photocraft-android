@@ -40,12 +40,13 @@ fn non_strict_embedded_svg_records_isolation_failure_but_omits_invalid_images() 
         fontless_text: false,
         strict: false,
         error: None,
+        resolver: Arc::new(craft_svg::tree::ImageResolver::new(tree_limits(MAX_XML_DEPTH, MAX_RASTER_PIXELS))),
     }));
-    let opt = options(Arc::new(usvg::fontdb::Database::new()), MAX_XML_DEPTH);
-    assert!(bounded_data_image("image/svg+xml", Arc::new(b"<not-svg/>".to_vec()), &opt, &budget, 0, MAX_XML_DEPTH, false).is_none());
+    let invalid = image_svg(&embedded_image("image/svg+xml", b"<not-svg/>"));
+    parse_image_bounded_with(invalid.as_bytes(), budget.clone(), MAX_XML_DEPTH, inter_only, false).unwrap();
     assert!(budget.lock().unwrap().error.is_none(), "ordinary invalid images are still omitted");
     let svg = image_svg("<text>x</text>");
-    let error = parse_image_bounded_with(svg.as_bytes(), budget.clone(), 1, MAX_XML_DEPTH, panic_fonts, false).unwrap_err();
+    let error = parse_image_bounded_with(svg.as_bytes(), budget.clone(), 2, panic_fonts, false).unwrap_err();
     assert!(error.to_string().contains("bounded SVG worker failed"));
     assert_eq!(budget.lock().unwrap().error.as_deref(), Some(error.to_string().as_str()));
 }
@@ -177,7 +178,7 @@ fn embedded_images_share_budget_and_nested_svg_cannot_hide_raster_bombs() {
     // leaves out an image it can't read; the drawing still opens.
     let malformed = image_svg(&embedded_image("image/png", b"\x89PNG\r\n\x1a\n"));
     assert!(!parse_bounded(malformed.as_bytes(), MAX_RASTER_PIXELS).unwrap().tree.root().has_children());
-    assert_eq!(gif_frame_size(b"GIF89a\x01\0\x01\0\0\0\0\x21\xfe\xff"), None, "truncated extension has no frame");
+    assert!(photocraft_codecs::probe_allocation_size(b"GIF89a\x01\0\x01\0\0\0\0\x21\xfe\xff").is_err(), "truncated extension has no frame");
 }
 
 #[test]
@@ -186,7 +187,7 @@ fn webp_container_cannot_hide_a_larger_lossy_frame() {
     webp.extend_from_slice(b"VP8 \x0a\0\0\0\0\0\0\x9d\x01\x2a");
     webp.extend_from_slice(&8000u16.to_le_bytes());
     webp.extend_from_slice(&8000u16.to_le_bytes());
-    assert_eq!(imagesize::blob_size(&webp).unwrap().width, 1, "container claims one pixel");
+    assert_eq!(photocraft_codecs::probe_allocation_size(&webp).unwrap(), (8000, 8000), "shared probe sees the coded frame beyond the canvas");
     let svg = image_svg(&embedded_image("image/webp", &webp));
     assert!(parse_bounded(svg.as_bytes(), MAX_RASTER_PIXELS).unwrap_err().to_string().contains("decoded pixel budget"));
 }
@@ -330,8 +331,7 @@ fn transformed_text_lands_where_resvg_draws_it() {
         let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60">{c}</svg>"#);
         let parsed = parse_with(svg.as_bytes(), inter).unwrap();
         assert!(!parsed.fontless_text, "{c}");
-        let mut reference = tiny_skia::Pixmap::new(120, 60).unwrap();
-        resvg::render(&parsed.tree, tiny_skia::Transform::default(), &mut reference.as_mut());
+        let reference = draw::render(&parsed.tree, usvg::Transform::default(), 120, 60, 0, MAX_PEAK_PIXEL_BYTES).unwrap();
         let r = import_parsed("t", parsed, MAX_GROUP_DEPTH, None, false).unwrap();
         let [layer] = r.document.layers.as_slice() else { panic!("one text layer, got {}: {c}", r.document.layers.len()) };
         assert!(matches!(layer.content, LayerContent::Group(_)), "text stays outline shapes: {c}");
@@ -383,8 +383,7 @@ fn a_single_path_clip_becomes_the_groups_vector_mask() {
     // Pixel for pixel what resvg draws, but for anti-aliasing along the edges.
     let ours = photocraft_compose::flatten(&r.document).to_rgba8().pixels;
     let tree = parse(svg).unwrap().tree;
-    let mut pm = tiny_skia::Pixmap::new(64, 64).unwrap();
-    resvg::render(&tree, tiny_skia::Transform::default(), &mut pm.as_mut());
+    let pm = draw::render(&tree, usvg::Transform::default(), 64, 64, 0, MAX_PEAK_PIXEL_BYTES).unwrap();
     let theirs: Vec<u8> = pm
         .pixels()
         .iter()
@@ -861,7 +860,7 @@ fn resolve_data_rejects_oversized_and_malformed_embedded_png_and_webp() {
 }
 
 #[test]
-fn jpeg_dimensions_come_from_the_frame_header_and_oversized_jpegs_are_refused() {
+fn jpeg_allocation_probe_uses_the_frame_header_and_oversized_jpegs_are_refused() {
     // SOI, an APP0 segment of length 4, then SOF0 (length 11): 8 bits, height 40000, width 30000.
     let jpeg = |h: u16, w: u16| {
         let mut v = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0, 0, 0xFF, 0xC0, 0x00, 0x0B, 8];
@@ -870,9 +869,9 @@ fn jpeg_dimensions_come_from_the_frame_header_and_oversized_jpegs_are_refused() 
         v.extend([1, 1, 0x11, 0]);
         v
     };
-    assert_eq!(jpeg_dimensions(&jpeg(40_000, 30_000)), Some((30_000, 40_000)));
-    assert_eq!(jpeg_dimensions(&[0xFF, 0xD8, 0xFF, 0xDA, 0, 2]), None);
-    assert_eq!(jpeg_dimensions(&[0xFF, 0xD8]), None);
+    assert_eq!(photocraft_codecs::probe_allocation_size(&jpeg(400, 300)).unwrap(), (300, 400));
+    assert!(photocraft_codecs::probe_allocation_size(&[0xFF, 0xD8, 0xFF, 0xDA, 0, 2]).is_err());
+    assert!(photocraft_codecs::probe_allocation_size(&[0xFF, 0xD8]).is_err());
     let opt = options(Arc::new(usvg::fontdb::Database::new()), MAX_XML_DEPTH);
     let resolve = &opt.image_href_resolver.resolve_data;
     // 1.2 billion pixels would be 4.8 GB of RGBA before resvg scaled anything down.
@@ -915,7 +914,8 @@ fn bounded_svg_rejects_nested_gzip_at_top_level_and_inside_data_urls() {
     let once = gz(svg);
     let twice = gz(&once);
     assert!(parse_bounded(&once, 64).is_ok(), "ordinary SVGZ remains accepted");
-    assert!(parse_bounded(&twice, 64).unwrap_err().to_string().contains("UTF-8"));
+    // craft-svg refuses gzip inside gzip when it unpacks the file, before any text is read.
+    assert!(parse_bounded(&twice, 64).unwrap_err().to_string().contains("another compressed file"));
     assert!(rasterize_bounded(&twice, 1.0, 64).is_err());
     assert!(bounded_canvas_bounds(&twice, 64).is_err());
     for mime in ["image/svg+xml", "text/plain"] {
@@ -1045,7 +1045,14 @@ fn the_deepest_chain_of_embedded_svg_images_fits_a_small_stack() {
             for levels in 1..=MAX_EMBEDDED_SVG_DEPTH + 1 {
                 match rasterize_bounded(chain(levels).as_bytes(), 1.0, MAX_RASTER_PIXELS) {
                     Ok(buf) => {
-                        assert!(buf.px[4 * 8 + 4][3] > 0.99, "{levels} levels: the innermost rect draws through every level");
+                        let drawn = buf.px[4 * 8 + 4][3] > 0.99;
+                        if levels > MAX_EMBEDDED_SVG_DEPTH {
+                            // A chain past the limit is left out rather than rejected; it must not
+                            // still draw its innermost image through the exhausted depth budget.
+                            assert!(!drawn, "{levels} levels: the too-deep image is left out");
+                            break;
+                        }
+                        assert!(drawn, "{levels} levels: the innermost rect draws through every level");
                         accepted = levels;
                     }
                     Err(_) => assert!(accepted > 0, "a one-level chain renders"),
@@ -1336,8 +1343,16 @@ fn nested_shared_patterns_add_up_their_depth() {
     let body: String = (0..k).rev().map(|i| format!("<rect width=\"10\" height=\"10\" fill=\"url(#D{i})\"/>")).collect();
     let svg = format!("<svg {NS} width=\"100\" height=\"100\"><defs>{defs}</defs>{body}</svg>");
     // 9,500 nested groups: usvg's conversion overflows the 2 MiB test-thread stack on Windows.
-    let err = std::thread::Builder::new().stack_size(64 << 20).spawn(move || check_only(&svg, 100, 100).unwrap_err()).unwrap().join().unwrap();
-    assert!(err.message.contains("layers"), "{err:?}");
+    let msg = std::thread::Builder::new()
+        .stack_size(64 << 20)
+        .spawn(move || match parse(svg.as_bytes()) {
+            Err(e) => e.to_string(),
+            Ok(p) => limits::check(p.tree.root().children(), tiny_skia::Transform::identity(), 100, 100, 0).unwrap_err().message,
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(msg.contains("layers"), "{msg}");
 }
 
 /// usvg makes the layer the union of a group's filter regions and every unary primitive on it keeps

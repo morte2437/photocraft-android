@@ -42,7 +42,7 @@ thiserror = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tempfile = "=3.27.0"
-roxmltree = "0.21"
+craft-xml = { workspace = true }
 craft-update = { workspace = true }
 rfd = { workspace = true }
 arboard = { version = "3.7", features = ["wayland-data-control"] }
@@ -84,7 +84,7 @@ plist = { version = "=1.10.3", features = ["enable_unstable_features_that_may_br
 
 # Drop position on X11 (`cursor.rs`): pure-Rust X client, already in Cargo.lock; pinned exactly.
 [target.'cfg(target_os = "linux")'.dependencies]
-photocraft-cms = { workspace = true }
+craft-cms = { workspace = true }
 # The print portal's PDF: a private (0600) temporary file, removed when the dialog is done.
 tempfile = "3"
 x11rb = { version = "=0.13.2", default-features = false, features = ["image", "randr", "xkb"] }
@@ -94,8 +94,8 @@ wl-clipboard-rs = { version = "=0.9.4", default-features = false }
 # Wayland desktop color selection through the existing XDG portal transport.
 zbus = "=5.19.0"
 # Caption button glyphs from the desktop's icon theme (`caption_style.rs`): SVG paths only, no
-# text or images. Already in Cargo.lock (photocraft-io); pinned exactly.
-resvg = { version = "=0.45.1", default-features = false }
+# text or images. Already in Cargo.lock (photocraft-io).
+craft-svg = { workspace = true }
 # Already used by the portal stack; bounded waits let cancelling close the OS request.
 futures-lite = "=2.6.1"
 async-io = "=2.6.0"

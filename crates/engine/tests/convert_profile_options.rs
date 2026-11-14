@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use photocraft_cms::Builtin;
+use craft_cms::Builtin;
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{
     Document, Effect, Effects, FxCommon, FxPaint, Layer, LayerContent, LayerId, LayerMask, Path, SmartFilter, SmartObject, SmartSource, StrokeFx,

@@ -454,7 +454,7 @@ fn printer_profile_can_be_an_installed_icc_file() {
     let dir = tmp("icc");
     let icc = format!("{dir}/My Paper.icc");
     let output = format!("{dir}/managed.pdf");
-    std::fs::write(&icc, photocraft_cms::Builtin::CoatedCmyk.profile().to_bytes().as_slice()).unwrap();
+    std::fs::write(&icc, craft_cms::Builtin::CoatedCmyk.profile().to_bytes().as_slice()).unwrap();
     let mut s = session("rgb", 16);
     let r = s
         .execute("file.print", json!({"output": output, "dryRun": true, "colorHandling": "photocraftManages", "printerProfile": icc, "emulsionDown": true}))

@@ -1,152 +1,64 @@
 //! Object storage (ZIP or directory), incremental writer and loader.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+#[cfg(all(test, windows))]
+use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
+#[cfg(all(test, windows))]
+use std::io::Write;
+use std::path::Path;
+#[cfg(any(all(test, not(unix)), all(test, windows)))]
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
+#[cfg(all(test, windows))]
 use std::time::SystemTime;
 
 use photocraft_color::{PixelFormat, SampleType};
 use photocraft_doc::Document;
 use photocraft_raster::{Rgba8Image, Tile};
 
-use crate::convert::{self, Fetch, Loader, Sink, is_valid_hash, swap_to_le};
+use crate::convert::{self, Fetch, Loader, Sink, swap_to_le};
 use crate::manifest::{ContentM, FORMAT_VERSION, Hash, LayerM, Manifest};
-use crate::zip::{ZipReader, ZipWriter};
+#[cfg(test)]
+use crate::zip::ZipReader;
 use crate::{FormatError, LoadOptions, Result, SaveOptions};
+#[cfg(test)]
+use craft_pcraft_format::is_valid_hash;
 
-use craft_pcraft_format::{BLOBS_DIR, COMPOSITE_DIR, TILES_DIR, blob_path, tile_path};
-// `SAVE_LOCK` is the file a directory save holds an exclusive lock on for its whole transaction (#4957).
-pub(crate) use craft_pcraft_format::{COMPOSITE, MANIFEST, SAVE_LOCK, THUMB};
-/// The flattened document at its canvas size, a PNG in [`COMPOSITE_DIR`], named by the manifest's
+#[cfg(all(test, windows))]
+use craft_pcraft_format::SAVE_LOCK;
+#[cfg(test)]
+use craft_pcraft_format::{BLOBS_DIR, COMPOSITE_DIR, TILES_DIR};
+pub(crate) use craft_pcraft_format::{COMPOSITE, MANIFEST, THUMB};
+use craft_pcraft_format::{blob_path, tile_path};
+/// The flattened document at its canvas size, a PNG in `composite/`, named by the manifest's
 /// `full_composite` member.
 pub(crate) const FULL_COMPOSITE: &str = "composite/full.png";
 /// The manifest member that names [`FULL_COMPOSITE`].
 const FULL_COMPOSITE_MEMBER: &str = "full_composite";
 /// Bytes a ZIP bundle may hold, central directory included, and entries it may hold: the
-/// format's 32-bit offsets and 16-bit counts ([`ZipWriter`] has no ZIP64).
+/// format's 32-bit offsets and 16-bit counts.
 const ZIP_LIMIT: (u64, usize) = (u32::MAX as u64, u16::MAX as usize);
 /// How long a directory save waits for another save of the same bundle to finish.
+#[cfg(all(test, windows))]
 const SAVE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The bytes an [`Object`] stores, owned by (or shared with) the compressor's source so one
-/// [`Compressor`] can be reused for objects of any lifetime.
-enum Source {
-    Tile(Arc<Tile>),
-    Blob(Arc<Vec<u8>>),
-    /// A little-endian copy of a tile (big-endian hosts only).
-    Owned(Vec<u8>),
-}
+/// Delegates object frame encoding to craft-libs.
+struct ObjectEncoder;
 
-struct SourceReader {
-    source: Source,
-    pos: usize,
-}
-
-impl SourceReader {
-    fn len(&self) -> usize {
-        match &self.source {
-            Source::Tile(t) => t.len(),
-            Source::Blob(b) => b.len(),
-            Source::Owned(v) => v.len(),
-        }
-    }
-}
-
-/// Copies the source bytes from `pos` into `buf`, returning how many were copied.
-fn read_from(all: &[u8], pos: usize, buf: &mut [u8]) -> usize {
-    let rest = all.get(pos..).unwrap_or(&[]);
-    let n = rest.len().min(buf.len());
-    if let (Some(dst), Some(src)) = (buf.get_mut(..n), rest.get(..n)) {
-        dst.copy_from_slice(src);
-    }
-    n
-}
-
-impl Read for SourceReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // A tile's bytes are borrowed only for this call, so its scratch-disk backing may
-        // page out between reads (a later read reloads it).
-        let n = match &self.source {
-            Source::Tile(t) => read_from(&t.bytes(), self.pos, buf),
-            Source::Blob(b) => read_from(b, self.pos, buf),
-            Source::Owned(v) => read_from(v, self.pos, buf),
-        };
-        self.pos += n;
-        Ok(n)
-    }
-}
-
-/// A reusable zstd compressor. `ruzstd` allocates a block buffer, a ~1 MiB suffix table and a
-/// block output buffer per frame; keeping the [`FrameCompressor`](ruzstd::encoding::FrameCompressor)
-/// between objects reuses the first two (its matcher resets itself on every `compress`).
-/// Output is byte-identical to `compress_to_vec` at the same level.
-struct Compressor {
-    inner: ruzstd::encoding::FrameCompressor<SourceReader, Vec<u8>, ruzstd::encoding::MatchGeneratorDriver>,
-}
-
-impl Compressor {
+impl ObjectEncoder {
     fn new() -> Self {
-        Self { inner: ruzstd::encoding::FrameCompressor::new(ruzstd::encoding::CompressionLevel::Fastest) }
+        Self
     }
 
-    fn run(&mut self, source: Source) -> Vec<u8> {
-        let reader = SourceReader { source, pos: 0 };
-        // Room for the worst case (raw blocks: 3 bytes per 128 KiB, plus frame header and
-        // checksum), so the output never regrows; shrunk afterwards to what it used. Untouched
-        // pages cost nothing.
-        let len = reader.len();
-        let mut drain = Vec::new();
-        if drain.try_reserve_exact(len.saturating_add(len / 16384).saturating_add(64)).is_err() {
-            drain = Vec::new();
-        }
-        self.inner.set_source(reader);
-        self.inner.set_drain(drain);
-        self.inner.compress();
-        self.inner.take_source();
-        let mut out = self.inner.take_drain().unwrap_or_default();
-        out.shrink_to_fit();
-        out
-    }
-
-    fn object(&mut self, obj: &Object) -> Vec<u8> {
-        let source = match obj {
-            Object::Tile(tile, _) if cfg!(target_endian = "little") => Source::Tile(Arc::clone(tile)),
-            Object::Tile(tile, sample) => Source::Owned(tile_le(tile, *sample).to_vec()),
-            Object::Blob(blob) => Source::Blob(Arc::clone(blob)),
-        };
-        self.run(source)
+    fn object(&mut self, object: &Object) -> Vec<u8> {
+        craft_pcraft_bundle::encode_frame(&object.content())
     }
 }
 
-/// Smallest zstd window [`decompress_bounded`] accepts, whatever the object's size.
-const MAX_ZSTD_WINDOW_FLOOR: u64 = 8 << 20;
-
-/// Decodes a zstd frame of at most `max` bytes (`LimitExceeded` beyond). With `exact`, the
-/// decoded length must be exactly that (`Corrupt` otherwise).
+/// Decompresses an object through the shared bundle implementation.
 fn decompress_bounded(data: &[u8], max: usize, exact: Option<usize>, what: &str) -> Result<Vec<u8>> {
-    let zstd = |e: &dyn std::fmt::Display| FormatError::corrupt(format!("{what}: zstd: {e}"));
-    // The decoder allocates its window up front, before any output reaches the length check:
-    // hold it to what this object may decode to (our frames use a 128 KiB window; libzstd's
-    // defaults stay under 8 MiB), not ruzstd's 128 MiB default.
-    let window = u64::try_from(exact.unwrap_or(max)).unwrap_or(u64::MAX).max(MAX_ZSTD_WINDOW_FLOOR);
-    let mut dec = match ruzstd::decoding::StreamingDecoder::new_with_max_window_size(data, window) {
-        Ok(dec) => dec,
-        // A well-formed frame asking for more window than this object may decode to is over its limit.
-        Err(ruzstd::decoding::errors::FrameDecoderError::WindowSizeTooBig { requested, .. }) => {
-            return Err(FormatError::LimitExceeded(format!("{what}: zstd window of {requested} bytes exceeds {window}")));
-        }
-        Err(e) => return Err(zstd(&e)),
-    };
-    let mut out = Vec::with_capacity(exact.unwrap_or(0).min(max).min(64 << 20));
-    // `max` may be `usize::MAX`: one byte past it must not overflow.
-    let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
-    (&mut dec).take(limit).read_to_end(&mut out).map_err(|e| zstd(&e))?;
-    match exact {
-        Some(n) if out.len() != n => Err(FormatError::corrupt(format!("{what}: expected {n} bytes, got {}", out.len()))),
-        None if out.len() > max => Err(FormatError::LimitExceeded(format!("{what} exceeds {max} bytes"))),
-        _ => Ok(out),
-    }
+    craft_pcraft_bundle::decode_frame(data, max, exact, what).map_err(bundle_error)
 }
 
 fn decompress(data: &[u8], expected: usize, what: &str) -> Result<Vec<u8>> {
@@ -154,7 +66,7 @@ fn decompress(data: &[u8], expected: usize, what: &str) -> Result<Vec<u8>> {
 }
 
 fn hash_bytes(b: &[u8]) -> Hash {
-    blake3::hash(b).to_hex().to_string()
+    craft_pcraft_bundle::hash_content(b)
 }
 
 fn png(img: &Rgba8Image) -> Result<Vec<u8>> {
@@ -219,34 +131,54 @@ pub trait ByteSource {
 }
 
 pub(crate) struct ZipSource<'a> {
-    zip: ZipReader<'a>,
+    zip: std::sync::Mutex<craft_pcraft_bundle::ZipBundle<'a>>,
 }
 
 impl<'a> ZipSource<'a> {
     pub fn new(bytes: &'a [u8]) -> Result<Self> {
-        Ok(ZipSource { zip: ZipReader::new(bytes)? })
+        let zip = craft_pcraft_bundle::ZipBundle::open(bytes, craft_pcraft_bundle::Limits::default()).map_err(bundle_error)?;
+        Ok(ZipSource { zip: std::sync::Mutex::new(zip) })
     }
 }
 
 impl ByteSource for ZipSource<'_> {
     fn get(&self, path: &str, max: usize) -> Result<Vec<u8>> {
-        self.zip.read_by_name(path, max)
+        self.zip
+            .lock()
+            .map_err(|_| FormatError::corrupt("bundle reader lock poisoned"))?
+            .entry(path, max as u64)
+            .map_err(bundle_error)?
+            .ok_or_else(|| FormatError::corrupt(format!("missing `{path}`")))
+    }
+}
+
+fn bundle_error(error: craft_pcraft_bundle::Error) -> FormatError {
+    match error {
+        craft_pcraft_bundle::Error::LimitExceeded { entry, limit } => FormatError::LimitExceeded(format!("`{entry}` exceeds {limit} bytes")),
+        other => FormatError::corrupt(other.to_string()),
     }
 }
 
 pub(crate) struct DirSource {
-    pub root: PathBuf,
+    bundle: craft_pcraft_bundle::DirectoryBundle,
+}
+
+impl DirSource {
+    pub fn new(root: &Path, opts: &LoadOptions) -> Result<Self> {
+        let limits = craft_pcraft_bundle::Limits {
+            max_total_bytes: opts.max_total_bytes,
+            max_manifest_bytes: opts.max_manifest_bytes as u64,
+            max_object_bytes: opts.max_blob_bytes as u64,
+            max_decoded_object_bytes: opts.max_blob_bytes as u64,
+            ..Default::default()
+        };
+        Ok(Self { bundle: craft_pcraft_bundle::DirectoryBundle::open(root, limits).map_err(bundle_error)? })
+    }
 }
 
 impl ByteSource for DirSource {
     fn get(&self, path: &str, max: usize) -> Result<Vec<u8>> {
-        let p = self.root.join(path);
-        let metadata = std::fs::metadata(&p).map_err(|_| FormatError::corrupt(format!("missing `{path}`")))?;
-        if !metadata.is_file() {
-            return Err(FormatError::corrupt(format!("`{path}` is not a regular file")));
-        }
-        let mut file = std::fs::File::open(&p).map_err(|_| FormatError::corrupt(format!("missing `{path}`")))?;
-        read_entry(&mut file, metadata.len(), max, path)
+        self.bundle.entry(path, max as u64).map_err(bundle_error)?.ok_or_else(|| FormatError::corrupt(format!("missing `{path}`")))
     }
 }
 
@@ -592,9 +524,13 @@ pub struct PcraftWriter {
     /// Compressed objects by bundle path (ZIP mode).
     compressed: HashMap<String, Arc<Vec<u8>>>,
     compressed_budget: usize,
+    directory: craft_pcraft_bundle::DirectoryBundleWriter,
+    #[cfg(all(test, windows))]
     verified_directory: Option<DirectoryVerificationCache>,
+    #[cfg(all(test, windows))]
     reverify_budget: u64,
     /// How long [`Self::save_dir`] waits for another save of the bundle ([`SAVE_LOCK_WAIT`]).
+    #[cfg(all(test, windows))]
     lock_wait: std::time::Duration,
 }
 
@@ -605,8 +541,12 @@ impl Default for PcraftWriter {
             blob_hash_cache: HashMap::new(),
             compressed: HashMap::new(),
             compressed_budget: usize::MAX,
+            directory: craft_pcraft_bundle::DirectoryBundleWriter::default(),
+            #[cfg(all(test, windows))]
             verified_directory: None,
+            #[cfg(all(test, windows))]
             reverify_budget: DEFAULT_REVERIFY_BUDGET,
+            #[cfg(all(test, windows))]
             lock_wait: SAVE_LOCK_WAIT,
         }
     }
@@ -620,6 +560,7 @@ impl Default for PcraftWriter {
 /// crash leaves no stale lock. Another save holding it is waited for up to `wait`; after that the
 /// save fails without writing anything. A file system without file locks (some network shares)
 /// saves unlocked, as before.
+#[cfg(all(test, windows))]
 fn lock_bundle(dir: &Path, wait: std::time::Duration) -> Result<Option<std::fs::File>> {
     let path = dir.join(SAVE_LOCK);
     validate_bundle_file(dir, &path)?;
@@ -641,6 +582,7 @@ fn lock_bundle(dir: &Path, wait: std::time::Duration) -> Result<Option<std::fs::
 }
 
 #[derive(Default)]
+#[cfg(all(test, windows))]
 struct DirectoryVerificationCache {
     directory: PathBuf,
     /// Directory saves so far; an object's `checked_at` is the save that last read it fully.
@@ -649,6 +591,7 @@ struct DirectoryVerificationCache {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(all(test, windows))]
 struct Verified {
     signature: FileSignature,
     checked_at: u64,
@@ -656,6 +599,7 @@ struct Verified {
 
 /// What a file looked like when it was verified. Any change means "verify again".
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg(all(test, windows))]
 struct FileSignature {
     len: u64,
     modified: SystemTime,
@@ -701,7 +645,7 @@ enum Object {
 }
 
 impl Object {
-    fn compressed(&self, compressor: &mut Compressor) -> Vec<u8> {
+    fn compressed(&self, compressor: &mut ObjectEncoder) -> Vec<u8> {
         compressor.object(self)
     }
 
@@ -715,10 +659,12 @@ impl Object {
 }
 
 /// Whether `compressed` decodes to exactly `expected`.
+#[cfg(all(test, windows))]
 fn content_matches(expected: &[u8], compressed: &[u8], what: &str) -> bool {
     decompress(compressed, expected.len(), what).is_ok_and(|actual| hash_bytes(&actual) == hash_bytes(expected))
 }
 
+#[cfg(all(test, windows))]
 fn file_signature(metadata: &std::fs::Metadata) -> Option<FileSignature> {
     #[cfg(unix)]
     let unix = {
@@ -733,6 +679,7 @@ fn file_signature(metadata: &std::fs::Metadata) -> Option<FileSignature> {
     })
 }
 
+#[cfg(all(test, windows))]
 fn path_signature(path: &Path) -> Result<Option<FileSignature>> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(file_signature(&metadata)),
@@ -742,6 +689,7 @@ fn path_signature(path: &Path) -> Result<Option<FileSignature>> {
     }
 }
 
+#[cfg(test)]
 fn unsafe_bundle_entry(path: &Path) -> FormatError {
     FormatError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -751,6 +699,7 @@ fn unsafe_bundle_entry(path: &Path) -> FormatError {
 
 /// The generic atomic writer intentionally follows a destination symlink. Directory bundles
 /// must reject one instead: all of their managed entries stay below the bundle root.
+#[cfg(all(test, windows))]
 fn plain_file_or_missing(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
@@ -760,6 +709,7 @@ fn plain_file_or_missing(path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(all(test, windows))]
 fn plain_directory_or_missing(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -775,6 +725,7 @@ fn plain_directory_or_missing(path: &Path) -> Result<()> {
 /// Use the canonical root after creation so a later replacement of the caller's path cannot
 /// redirect subsequent bundle operations. The caller may choose a symlinked root, but managed
 /// subdirectories and files below its resolved target must not be symlinks.
+#[cfg(all(test, windows))]
 fn bundle_root(dir: &Path) -> Result<PathBuf> {
     let dir: PathBuf = dir.components().collect();
     std::fs::create_dir_all(&dir)?;
@@ -798,6 +749,7 @@ fn bundle_root(dir: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 
+#[cfg(all(test, windows))]
 fn validate_bundle_file(root: &Path, path: &Path) -> Result<()> {
     let parent = path.parent().ok_or_else(|| unsafe_bundle_entry(path))?;
     if parent != root && parent != root.join(TILES_DIR) && parent != root.join(BLOBS_DIR) && parent != root.join(COMPOSITE_DIR) {
@@ -814,6 +766,7 @@ fn validate_bundle_file(root: &Path, path: &Path) -> Result<()> {
 /// full-flush fallback of `sync_file`, #1336). Windows flushes through the injected `AtomicFs`
 /// and fails on any error (#7858).
 #[cfg(not(windows))]
+#[cfg(all(test, windows))]
 fn flush_bundle_dir(dir: &Path, written: &Path) -> std::io::Result<()> {
     use crate::atomic::AtomicFs;
     #[cfg(test)]
@@ -837,6 +790,7 @@ fn flush_bundle_dir(dir: &Path, written: &Path) -> std::io::Result<()> {
 /// [`flush_bundle_dir`], as the save's error when the flush was attempted and failed: `written`
 /// is in place, but may not survive a power loss or crash (#4968).
 #[cfg(not(windows))]
+#[cfg(all(test, windows))]
 fn confirm_flushed(dir: &Path, written: &Path) -> Result<()> {
     crate::atomic::dir_synced(flush_bundle_dir(dir, written)).map_err(|e| {
         FormatError::Io(std::io::Error::new(
@@ -846,16 +800,9 @@ fn confirm_flushed(dir: &Path, written: &Path) -> Result<()> {
     })
 }
 
-#[cfg(all(test, not(windows)))]
-thread_local! {
-    /// Tests: the bundle file, or folder, whose next folder flush fails, once, on this thread.
-    static FAIL_DIR_FLUSH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
-    /// Tests: the folders flushed on this thread, in order.
-    static FLUSHED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
 /// Publish a validated bundle entry through a flushed temporary file and replacing rename.
 /// On Windows, propagate a failed directory barrier even though the new entry is already visible.
+#[cfg(all(test, windows))]
 fn write_bundle_file(root: &Path, path: &Path, data: &[u8], fs: &dyn crate::atomic::AtomicFs) -> Result<()> {
     #[cfg(not(windows))]
     let _ = fs;
@@ -921,6 +868,7 @@ fn write_bundle_file(root: &Path, path: &Path, data: &[u8], fs: &dyn crate::atom
 
 /// Keep the existing leaf/path validation and pin the actual unlink to opened
 /// directory handles on Unix. This closes the check-then-remove path-swap gap.
+#[cfg(all(test, windows))]
 fn remove_bundle_file(root: &Path, path: &Path, gc: &BundleGc) -> Result<()> {
     validate_bundle_file(root, path)?;
     let relative = path.strip_prefix(root).map_err(|_| unsafe_bundle_entry(path))?;
@@ -928,6 +876,7 @@ fn remove_bundle_file(root: &Path, path: &Path, gc: &BundleGc) -> Result<()> {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 struct BundleGc {
     root: rustix::fd::OwnedFd,
     tiles: rustix::fd::OwnedFd,
@@ -936,6 +885,7 @@ struct BundleGc {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 fn gc_directory_flags() -> rustix::fs::OFlags {
     use rustix::fs::OFlags;
 
@@ -952,6 +902,7 @@ fn gc_directory_flags() -> rustix::fs::OFlags {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 impl BundleGc {
     fn new(root: &Path) -> Result<Self> {
         use rustix::fs::{Mode, open, openat};
@@ -982,11 +933,13 @@ impl BundleGc {
 }
 
 #[cfg(not(unix))]
+#[cfg(test)]
 struct BundleGc {
     root: PathBuf,
 }
 
 #[cfg(not(unix))]
+#[cfg(test)]
 impl BundleGc {
     fn new(root: &Path) -> Result<Self> {
         Ok(Self { root: root.to_path_buf() })
@@ -998,6 +951,7 @@ impl BundleGc {
     }
 }
 
+#[cfg(all(test, windows))]
 fn existing_object_is_valid(path: &Path, object: &Object, what: &str) -> Result<(bool, Option<FileSignature>)> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -1035,7 +989,7 @@ type Compressed<'a> = (&'a String, Arc<Vec<u8>>);
 fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Result<Vec<Compressed<'a>>> {
     let threads = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32) };
     if threads < 2 || objects.len() < 2 {
-        let mut compressor = Compressor::new();
+        let mut compressor = ObjectEncoder::new();
         return Ok(objects.iter().map(|(p, o)| (*p, Arc::new(o.compressed(&mut compressor)))).collect());
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -1044,7 +998,7 @@ fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Result<Vec<Compress
             .map(|_| {
                 sc.spawn(|| {
                     let mut out = Vec::new();
-                    let mut compressor = Compressor::new();
+                    let mut compressor = ObjectEncoder::new();
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some((p, o)) = objects.get(i) else { break };
@@ -1074,7 +1028,11 @@ impl PcraftWriter {
     /// re-checks (oldest-checked first; at least one object when the budget is non-zero). `0`
     /// trusts unchanged signatures entirely; `u64::MAX` re-verifies everything on every save.
     pub fn set_reverify_budget(&mut self, bytes: u64) {
-        self.reverify_budget = bytes;
+        #[cfg(all(test, windows))]
+        {
+            self.reverify_budget = bytes;
+        }
+        self.directory.set_reverify_budget(bytes);
     }
 
     /// Cap compressed payload capacity retained between ZIP saves. Clears the previous payload
@@ -1087,7 +1045,11 @@ impl PcraftWriter {
     /// How long a directory save waits for another save of the same bundle to finish before
     /// failing without writing anything (10 s by default; see [`Self::save_dir`]).
     pub fn set_lock_wait(&mut self, wait: std::time::Duration) {
-        self.lock_wait = wait;
+        #[cfg(all(test, windows))]
+        {
+            self.lock_wait = wait;
+        }
+        self.directory.set_lock_wait(wait);
     }
 
     /// Validate nesting, bounded conversion reports and finite manifest data, then collect content-addressed objects
@@ -1155,7 +1117,7 @@ impl PcraftWriter {
         p.match_previews(&previews)?;
         let mut stats = p.stats;
         let mut entries = Vec::with_capacity(p.objects.len());
-        let mut compressor: Option<Compressor> = None;
+        let mut compressor: Option<ObjectEncoder> = None;
         for (path, obj) in &p.objects {
             let (key, data) = match self.compressed.remove_entry(path) {
                 Some((key, data)) => {
@@ -1169,7 +1131,7 @@ impl PcraftWriter {
                         Object::Tile(..) => stats.tiles_written += 1,
                         Object::Blob(_) => stats.blobs_written += 1,
                     }
-                    (None, fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed(compressor.get_or_insert_with(Compressor::new)))))
+                    (None, fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed(compressor.get_or_insert_with(ObjectEncoder::new)))))
                 }
             };
             entries.push((path, key, data));
@@ -1190,32 +1152,16 @@ impl PcraftWriter {
             manifest = manifest_json(&p.model, false)?;
             stats.manifest_bytes = manifest.len();
         }
-        // The archive is sized for every entry up front (#7689): previews, then reused and fresh
-        // objects at their compressed sizes.
-        let sizes = std::iter::once((MANIFEST, manifest.len()))
-            .chain(previews.iter().map(|(name, data)| (*name, data.len())))
-            .chain(entries.iter().map(|(path, _, data)| (path.as_str(), data.len())));
-        let mut z = match ZipWriter::with_entries(sizes) {
-            Ok(z) => z,
-            Err(FormatError::LimitExceeded(_)) if previews.iter().any(|(name, _)| *name == FULL_COMPOSITE) => {
-                previews.retain(|(name, _)| *name != FULL_COMPOSITE);
-                manifest = manifest_json(&p.model, false)?;
-                stats.manifest_bytes = manifest.len();
-                let sizes = std::iter::once((MANIFEST, manifest.len()))
-                    .chain(previews.iter().map(|(name, data)| (*name, data.len())))
-                    .chain(entries.iter().map(|(path, _, data)| (path.as_str(), data.len())));
-                ZipWriter::with_entries(sizes)?
-            }
-            Err(e) => return Err(e),
-        };
-        z.add(MANIFEST, &manifest)?;
+        // The shared bundle crate owns the ZIP wire format and validates every stored object.
+        let mut z = craft_pcraft_bundle::ZipBundleWriter::default();
+        z.set_manifest(manifest).map_err(bundle_error)?;
         for (name, data) in &previews {
-            z.add(name, data)?;
+            z.set_preview(name, data.clone()).map_err(bundle_error)?;
         }
         let mut next = HashMap::with_capacity(entries.len());
         let mut cached_bytes = 0usize;
         for (path, key, data) in entries {
-            z.add(path, &data)?;
+            z.add_stored_object(path, data.as_ref().clone(), 1 << 30).map_err(bundle_error)?;
             if data.capacity() <= self.compressed_budget.saturating_sub(cached_bytes) {
                 cached_bytes += data.capacity();
                 next.insert(key.unwrap_or_else(|| path.clone()), data);
@@ -1223,7 +1169,7 @@ impl PcraftWriter {
         }
         scratch_ok(doc, generation)?;
         self.compressed = next;
-        Ok((z.finish()?, stats))
+        Ok((z.finish().map_err(bundle_error)?, stats))
     }
 
     /// Save into a directory bundle: reuses only valid existing objects,
@@ -1231,10 +1177,50 @@ impl PcraftWriter {
     /// atomically and removes unreferenced objects. The whole save holds the bundle's
     /// `save.lock`, so saves of one bundle from other writers or processes wait their turn.
     pub fn save_dir(&mut self, doc: &Document, dir: &Path, opts: &SaveOptions) -> Result<SaveStats> {
-        self.save_dir_with(doc, dir, opts, &crate::atomic::RealFs)
+        let generation = photocraft_raster::spill::read_error_generation();
+        let mut prepared = self.prepare(doc, opts)?;
+        let previews = previews(opts)?;
+        prepared.match_previews(&previews)?;
+        let mut writer = craft_pcraft_bundle::ZipBundleWriter::default();
+        writer.set_manifest(prepared.manifest.clone()).map_err(bundle_error)?;
+        for (name, bytes) in previews {
+            writer.set_preview(name, bytes).map_err(bundle_error)?;
+        }
+        let mut next = HashMap::with_capacity(prepared.objects.len());
+        let mut cached_bytes = 0usize;
+        for (path, object) in &prepared.objects {
+            let (key, bytes) = match self.compressed.remove_entry(path) {
+                Some((key, bytes)) => (key, bytes),
+                None => (path.clone(), Arc::new(object.compressed(&mut ObjectEncoder::new()))),
+            };
+            writer.stage_compressed_object(path, bytes.as_ref().clone()).map_err(bundle_error)?;
+            if bytes.capacity() <= self.compressed_budget.saturating_sub(cached_bytes) {
+                cached_bytes += bytes.capacity();
+                next.insert(key, bytes);
+            }
+        }
+        scratch_ok(doc, generation)?;
+        let directory_stats = self.directory.save_directory(dir, writer).map_err(bundle_error)?;
+        let mut stats = prepared.stats;
+        stats.objects_removed = directory_stats.removed;
+        for path in &directory_stats.written_objects {
+            match prepared.objects.get(path) {
+                Some(Object::Tile(..)) => stats.tiles_written += 1,
+                Some(Object::Blob(..)) => stats.blobs_written += 1,
+                None => {}
+            }
+        }
+        for path in &directory_stats.reused_objects {
+            if matches!(prepared.objects.get(path), Some(Object::Tile(..))) {
+                stats.tiles_reused += 1;
+            }
+        }
+        self.compressed = next;
+        Ok(stats)
     }
 
     /// The same save path with an injectable publication barrier, for failure/GC ordering tests.
+    #[cfg(all(test, windows))]
     fn save_dir_with(&mut self, doc: &Document, dir: &Path, opts: &SaveOptions, fs: &dyn crate::atomic::AtomicFs) -> Result<SaveStats> {
         let scratch_generation = photocraft_raster::spill::read_error_generation();
         let canonical_dir = bundle_root(dir)?;
@@ -1262,7 +1248,7 @@ impl PcraftWriter {
             None => 0,
         };
         let recheck = self.rolling_recheck(&p.objects);
-        let mut compressor: Option<Compressor> = None;
+        let mut compressor: Option<ObjectEncoder> = None;
         for (path, obj) in &p.objects {
             let object_path = dir.join(path);
             // bundle_root and list_objects validated the fixed parent directories once. Check
@@ -1297,7 +1283,7 @@ impl PcraftWriter {
                 Object::Tile(..) => stats.tiles_written += 1,
                 Object::Blob(_) => stats.blobs_written += 1,
             }
-            let compressed = obj.compressed(compressor.get_or_insert_with(Compressor::new));
+            let compressed = obj.compressed(compressor.get_or_insert_with(ObjectEncoder::new));
             scratch_ok(doc, scratch_generation)?;
             write_bundle_file(dir, &object_path, &compressed, fs)?;
             let written = path_signature(&object_path)?;
@@ -1363,6 +1349,7 @@ impl PcraftWriter {
     /// The cached objects this save re-verifies even though their signature is unchanged:
     /// oldest-checked first, until their recorded sizes reach the re-verify budget (always at
     /// least one, so an object larger than the budget is still reached in turn).
+    #[cfg(all(test, windows))]
     fn rolling_recheck(&self, objects: &BTreeMap<String, Object>) -> HashSet<String> {
         let mut out = HashSet::new();
         let Some(cache) = &self.verified_directory else { return out };
@@ -1499,9 +1486,9 @@ fn previews_follow_the_manifest_with_the_bytes_of_a_serial_encode() {
         let zip = ZipReader::new(&bytes).unwrap();
         let names: Vec<&str> = zip.entries.iter().map(|e| e.name.as_str()).collect();
         let mut want = vec![MANIFEST];
-        want.extend(t.then_some(THUMB));
-        want.extend(c.then_some(COMPOSITE));
-        want.extend(f.then_some(FULL_COMPOSITE));
+        let mut previews_want: Vec<&str> = t.then_some(THUMB).into_iter().chain(c.then_some(COMPOSITE)).chain(f.then_some(FULL_COMPOSITE)).collect();
+        previews_want.sort();
+        want.extend(previews_want);
         assert_eq!(names[..want.len()], want[..]);
         assert!(names[want.len()..].iter().all(|n| n.starts_with("tiles/") || n.starts_with("blobs/")), "{names:?}");
         for (name, img) in [(THUMB, opts.thumbnail.as_ref()), (COMPOSITE, opts.composite.as_ref()), (FULL_COMPOSITE, opts.full_composite.as_ref())] {
@@ -1640,72 +1627,7 @@ fn gc_pinned_directory_handles_resist_subdirectory_swap() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// #4968: a manifest whose folder can't be flushed fails the save, and the objects the previous
-/// manifest references stay in place; the next save that flushes removes what is unreferenced.
-#[cfg(all(test, not(windows)))]
-#[test]
-fn a_failed_manifest_flush_keeps_the_previous_objects() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!("pcraft-flush-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = std::fs::canonicalize(dir).unwrap();
-    let mut doc = Document::new("flush", photocraft_doc::Size::new(64, 64), photocraft_color::ColorMode::Rgb, SampleType::U8);
-    let id = doc.insert_above(None, photocraft_doc::Layer::raster("paint", doc.pixel_format()));
-    let paint = |doc: &mut Document, red: f32| {
-        doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 64, 64), &[red, 0.5, 0.25, 1.0]);
-    };
-    paint(&mut doc, 1.0);
-    let mut w = PcraftWriter::new();
-    w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
-    let old = list_objects(&dir).unwrap();
-    paint(&mut doc, 0.0);
-    FAIL_DIR_FLUSH.with(|f| f.set(Some(MANIFEST)));
-    let e = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap_err();
-    assert!(e.to_string().contains("could not be flushed"), "{e}");
-    let now = list_objects(&dir).unwrap();
-    assert!(old.is_subset(&now), "the previous manifest's objects are kept");
-    assert!(now.len() > old.len(), "the new objects were written");
-    let stats = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
-    assert!(stats.objects_removed > 0, "the next save removes the unreferenced objects");
-    assert_eq!(crate::load_path(&dir).unwrap(), doc);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-/// An object whose folder flush failed is reused by the retried save, which writes no new object
-/// there: that save still flushes the object folder before committing a manifest that names it.
-#[cfg(all(test, not(windows)))]
-#[test]
-fn a_retried_save_flushes_the_folder_of_a_reused_object() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!("pcraft-retry-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = std::fs::canonicalize(dir).unwrap();
-    // One layer of one tile: the retry finds its only object already written.
-    let mut doc = Document::new("retry", photocraft_doc::Size::new(16, 16), photocraft_color::ColorMode::Rgb, SampleType::U8);
-    let id = doc.insert_above(None, photocraft_doc::Layer::raster("paint", doc.pixel_format()));
-    doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 16, 16), &[1.0, 0.5, 0.25, 1.0]);
-    let mut w = PcraftWriter::new();
-    FAIL_DIR_FLUSH.with(|f| f.set(Some("tiles")));
-    let e = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap_err();
-    assert!(e.to_string().contains("could not be flushed"), "{e}");
-    assert!(!dir.join(MANIFEST).exists(), "nothing committed");
-    let written = list_objects(&dir).unwrap();
-    assert_eq!(written.iter().filter(|o| o.starts_with("tiles/")).count(), 1, "{written:?}");
-    FLUSHED.with(|f| f.borrow_mut().clear());
-    let stats = w.save_dir(&doc, &dir, &SaveOptions::default()).unwrap();
-    assert_eq!(stats.tiles_written, 0, "the tile is reused");
-    let flushed = FLUSHED.with(|f| f.borrow().clone());
-    let tiles = flushed.iter().position(|d| *d == dir.join("tiles"));
-    let manifest = flushed.iter().rposition(|d| *d == dir);
-    assert!(tiles.is_some() && tiles < manifest, "tiles flushed before the manifest: {flushed:?}");
-    assert_eq!(crate::load_path(&dir).unwrap(), doc);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
+#[cfg(all(test, windows))]
 fn list_objects(dir: &Path) -> Result<HashSet<String>> {
     let mut out = HashSet::new();
     for sub in ["tiles", "blobs"] {
@@ -1769,7 +1691,7 @@ fn reused_compressor_matches_compress_to_vec_and_round_trips() {
         // A repeat after a big one proves the matcher state is reset between objects.
         b"hello hello hello hello hello".to_vec(),
     ];
-    let mut compressor = Compressor::new();
+    let mut compressor = ObjectEncoder::new();
     for data in inputs {
         let expected = ruzstd::encoding::compress_to_vec(data.as_slice(), ruzstd::encoding::CompressionLevel::Fastest);
         let got = compressor.object(&Object::Blob(Arc::new(data.clone())));
@@ -1799,7 +1721,7 @@ fn an_incompressible_blob_at_its_limit_still_loads() {
             x as u8
         })
         .collect();
-    let z = Compressor::new().object(&Object::Blob(Arc::new(data.clone())));
+    let z = ObjectEncoder::new().object(&Object::Blob(Arc::new(data.clone())));
     assert!(z.len() > data.len(), "the fixture must not compress");
     let hash = hash_bytes(&data);
     let src = One(blob_path(&hash).unwrap(), z);

@@ -237,7 +237,7 @@ fn save_for_web_impl(s: &mut Session, p: &Value, write: &mut dyn FnMut(&str, &[u
     let bw = wdoc.size.width as usize;
     // An untagged document is treated as sRGB (see [`web_document`]); with Embed Color Profile
     // on, the file says so, as Photoshop's does (#9325).
-    let srgb = (st.embed_icc && wdoc.icc_profile.is_none()).then(|| photocraft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
+    let srgb = (st.embed_icc && wdoc.icc_profile.is_none()).then(|| craft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
     let icc = wdoc.icc_profile.as_deref().map(|v| v.as_slice()).or(srgb.as_deref());
     let xmp = web_xmp(&doc, st.metadata);
     let exif = web_exif(&doc, st.metadata);

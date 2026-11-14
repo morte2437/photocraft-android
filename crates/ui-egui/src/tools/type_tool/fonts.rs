@@ -796,11 +796,9 @@ pub(crate) fn family_picker_in(
     }
     if !open && !escape && ui.is_enabled() {
         let notches = if had_focus { f32::from(u8::from(up)) - f32::from(u8::from(down)) } else { 0.0 };
-        let hovered = input.hovered() || arrow.hovered();
-        if hovered {
-            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
-        }
-        let notches = notches + crate::widgets::wheel_notches_of(ui, field.with("family-wheel"), hovered, 1.0);
+        // A gesture that started over the field, not one scrolling the panel past it (#11353).
+        let wheel = crate::field_wheel::hover_notches(ui, field.with("family-wheel"), rect, 1.0);
+        let notches = notches + wheel;
         // Closed-field navigation stays alphabetical, independent of recent picks (#3350, #7407).
         let (rows, _) = font_menu_rows(families, labels, "", &[]);
         if let Some(i) = rows.iter().position(|(f, _)| *f == current)
