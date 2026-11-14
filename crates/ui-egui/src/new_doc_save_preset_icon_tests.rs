@@ -52,8 +52,10 @@ fn the_save_icon_sits_right_of_name_and_the_old_button_is_gone() {
 fn the_icon_opens_save_document_preset_proposing_saved_1_selected() {
     let mut h = harness(&[]);
     assert!(h.query_by_label("PRESET DETAILS").is_some());
+    let create = h.get_by_label("Create").rect();
     open_save(&mut h);
     assert!(h.query_by_label("SAVE DOCUMENT PRESET").is_some());
+    assert_eq!(h.get_by_label("Create").rect(), create, "the dialog keeps its size while saving");
     assert!(h.query_by_label("PRESET DETAILS").is_none(), "the header turns into SAVE DOCUMENT PRESET");
     assert!(h.query_by_label("Save Preset").is_some());
     assert!(h.query_by_label("Cancel").is_some());

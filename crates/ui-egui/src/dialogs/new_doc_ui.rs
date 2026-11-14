@@ -668,7 +668,13 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
         // Right: Preset Details.
         ui.vertical(|ui| {
             ui.set_width(260.0);
+            // The Save Document Preset pane keeps the height Preset Details had, so the dialog
+            // doesn't shrink and jump while saving.
+            let details_height = egui::Id::unique("new-document-details-height");
             if saving_preset(f) {
+                if let Some(h) = ui.ctx().data(|d| d.get_temp::<f32>(details_height)) {
+                    ui.set_min_height(h);
+                }
                 save_preset(app, ui, f);
                 return;
             }
@@ -883,6 +889,8 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
             }
             ui.add_space(12.0);
             preset_error(ui, f);
+            let h = ui.min_rect().height();
+            ui.ctx().data_mut(|d| d.insert_temp(details_height, h));
         });
     });
     create
