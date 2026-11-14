@@ -59,8 +59,11 @@ fn boundary_spaces_stay() {
 }
 
 #[test]
-fn names_of_only_dots_and_spaces_fall_back_to_layer() {
-    assert_eq!(layer_export_name(" . "), "layer");
+fn names_of_only_dots_and_whitespace_fall_back_to_layer() {
+    for name in ["...", "   ", "\u{3000}", ". \u{a0}."] {
+        let (file, path) = suggested_for(name);
+        assert_eq!(file, "layer.png", "{name:?}: {path}");
+    }
     assert_eq!(layer_export_name(""), "layer");
-    assert_eq!(layer_export_name("a/b:c*?"), "a_b_c__");
+    assert_eq!(layer_export_name("\u{3000}"), "layer", "an ideographic space is blank too");
 }

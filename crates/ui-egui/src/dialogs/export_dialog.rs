@@ -237,17 +237,24 @@ pub fn quick_export_selected_layers_png(app: &mut PhotocraftApp) -> Result<Value
     })
 }
 
+/// The first 80 characters of `name`, each control character and each character a file name
+/// can't hold (`< > : " / \ | ? *`) turned into `_`.
+fn file_name_chars(name: &str) -> String {
+    name.chars().take(80).map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect()
+}
+
 fn export_name(name: &str) -> String {
-    let name: String = name.chars().take(80).map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    let name = file_name_chars(name);
     let name = name.trim().trim_matches('.');
     if name.is_empty() { "layer".into() } else { name.into() }
 }
 
-/// A single layer's export name: like [`export_name`], but boundary spaces stay as the name holds
-/// them; only a name that is empty or nothing but dots and spaces falls back to "layer".
+/// A single layer's export name: like [`export_name`], but boundary spaces and dots stay as the
+/// name holds them; only a name that is empty or nothing but dots and whitespace falls back to
+/// "layer".
 fn layer_export_name(name: &str) -> String {
-    let name: String = name.chars().take(80).map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
-    if name.chars().all(|c| c == ' ' || c == '.') { "layer".into() } else { name }
+    let name = file_name_chars(name);
+    if name.chars().all(|c| c.is_whitespace() || c == '.') { "layer".into() } else { name }
 }
 
 /// The files a multi-layer export writes: the chosen path, then numbered siblings named after
