@@ -79,6 +79,7 @@ pub const CATEGORIES: &[(&str, &[Preset])] = &[
 ];
 
 const DEPTH_OPTIONS: &[(u64, &str, &str)] = &[(8, "8 bit", "Integer"), (16, "16 bit", "Integer"), (32, "32 bit (float)", "Floating point")];
+
 /// A Bitmap document's only depth (#14030).
 const BITMAP_DEPTH_OPTIONS: &[(u64, &str, &str)] = &[(1, "1 bit", "Integer")];
 

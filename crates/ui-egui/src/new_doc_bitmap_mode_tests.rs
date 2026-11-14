@@ -35,8 +35,8 @@ fn bitmap_offers_only_one_bit() {
     let bitmap: Vec<(u64, &str)> = depth_options("bitmap").iter().map(|(v, l, _)| (*v, *l)).collect();
     assert_eq!(bitmap, [(1, "1 bit")]);
     for mode in ["gray", "rgb", "cmyk", "lab"] {
-        let labels: Vec<&str> = depth_options(mode).iter().map(|(_, l, _)| *l).collect();
-        assert_eq!(labels, ["8 bit", "16 bit", "32 bit (float)"], "{mode}");
+        let depths: Vec<u64> = depth_options(mode).iter().map(|(v, _, _)| *v).collect();
+        assert_eq!(depths, [8, 16, 32], "{mode}");
     }
 }
 
