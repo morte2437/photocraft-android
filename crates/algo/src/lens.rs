@@ -581,3 +581,7 @@ mod tests {
 
 #[cfg(test)]
 mod shared_sample_tests;
+
+#[cfg(test)]
+#[path = "lens_auto_scale_tests.rs"]
+mod lens_auto_scale_tests;
