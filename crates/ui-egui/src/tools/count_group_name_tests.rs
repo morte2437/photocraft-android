@@ -182,3 +182,37 @@ fn deleting_a_group_drops_the_rename_dialog() {
     assert!(h.state().ui.analysis.dialog.is_none(), "the dialog is dropped");
     assert_eq!(groups(&h), vec!["B".to_string(), "C".to_string()], "no group renamed");
 }
+
+/// CodeRabbit on #14707: groups may share a name, so the rename dialog can't tell them apart by
+/// name. With `[A, B, B]` and the dialog on the first B, deleting A shifts the second B into that
+/// index: any change to the group list drops the dialog.
+#[test]
+fn deleting_a_group_drops_the_rename_dialog_with_duplicate_names() {
+    let mut h = harness();
+    h.state_mut().run("count.newGroup", json!({"name": "B"})).unwrap();
+    h.state_mut().run("count.newGroup", json!({"name": "B"})).unwrap();
+    assert_eq!(groups(&h), vec!["Count Group 1".to_string(), "B".to_string(), "B".to_string()]);
+    crate::count_group_name_ui::open_rename(h.state_mut(), 1);
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_some());
+    h.state_mut().run("count.deleteGroup", json!({"group": 0})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_none(), "the dialog is dropped");
+    assert_eq!(groups(&h), vec!["B".to_string(), "B".to_string()], "no group renamed");
+}
+
+/// CodeRabbit on #14707: closing the document the dialog was opened on and opening another drops
+/// it (a new activation, whatever id the new document gets).
+#[test]
+fn closing_the_document_and_opening_another_drops_the_dialog() {
+    let mut h = harness();
+    h.get_by_label("Create a new count group").click();
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_some());
+    h.state_mut().session.close(0);
+    h.state_mut().run("file.new", json!({"width": 100, "height": 100})).unwrap();
+    h.state_mut().run("count.newGroup", json!({"name": "Mine"})).unwrap();
+    h.run_steps(3);
+    assert!(h.state().ui.analysis.dialog.is_none(), "the dialog is dropped");
+    assert_eq!(groups(&h), vec!["Mine".to_string()], "the new document's groups are untouched");
+}
