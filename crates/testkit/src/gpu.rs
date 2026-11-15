@@ -21,6 +21,10 @@
 //! So every test that builds a GPU harness (or its own wgpu device) holds [`gpu_lock`] for its
 //! whole run, harness included. Under nextest each test is its own process and the lock costs
 //! nothing; `.config/nextest.toml` caps how many of those run at once instead.
+//!
+//! The lock alone left a segfault in libvulkan about once in 20 runs of a large test binary: the
+//! last wgpu instance going away tears Vulkan down, and the next one can find it half gone.
+//! [`gpu_lock`] keeps one instance for the rest of the process, so that never happens.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -30,12 +34,69 @@ static GPU_LOCK: Mutex<()> = Mutex::new(());
 /// line (`let _gpu = gpu_lock();`) so it is released last. A test that failed while holding it
 /// doesn't block the rest.
 pub fn gpu_lock() -> MutexGuard<'static, ()> {
-    GPU_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    let guard = GPU_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    #[cfg(target_os = "linux")]
+    keep_vulkan();
+    guard
+}
+
+/// Creates the Vulkan instance that stays for the rest of the process, unless `WGPU_BACKEND`
+/// leaves Vulkan out (to keep a broken Vulkan driver out of the tests).
+#[cfg(target_os = "linux")]
+fn keep_vulkan() {
+    use wgpu::{Backends, Instance, InstanceDescriptor};
+    static KEPT: std::sync::OnceLock<Option<Instance>> = std::sync::OnceLock::new();
+    KEPT.get_or_init(|| {
+        kept_backends(Backends::from_env()).map(|backends| Instance::new(InstanceDescriptor { backends, ..InstanceDescriptor::new_without_display_handle() }))
+    });
+}
+
+/// The backends of the kept instance for a `WGPU_BACKEND` of `env`: Vulkan, if it allows it.
+#[cfg(target_os = "linux")]
+fn kept_backends(env: Option<wgpu::Backends>) -> Option<wgpu::Backends> {
+    let vulkan = env.unwrap_or(wgpu::Backends::VULKAN) & wgpu::Backends::VULKAN;
+    (!vulkan.is_empty()).then_some(vulkan)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without the kept instance, creating and dropping instances on several threads segfaults in
+    /// libvulkan within a second, an abort no test can catch. Skipped when `WGPU_BACKEND` leaves
+    /// Vulkan out: nothing is kept then, and that is how a broken driver is kept out of the tests.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn instances_can_come_and_go_on_several_threads() {
+        use wgpu::{Backends, Instance, InstanceDescriptor};
+        if kept_backends(Backends::from_env()).is_none() {
+            eprintln!("skipping: WGPU_BACKEND leaves Vulkan out");
+            return;
+        }
+        drop(gpu_lock());
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..10 {
+                        drop(Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..InstanceDescriptor::new_without_display_handle() }));
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            assert!(t.join().is_ok());
+        }
+    }
+
+    /// `WGPU_BACKEND=gl` keeps Vulkan out of the tests: no Vulkan instance is kept then.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_kept_instance_follows_wgpu_backend() {
+        use wgpu::Backends;
+        assert_eq!(kept_backends(None), Some(Backends::VULKAN));
+        assert_eq!(kept_backends(Some(Backends::GL)), None);
+        assert_eq!(kept_backends(Some(Backends::GL | Backends::VULKAN)), Some(Backends::VULKAN));
+    }
 
     #[test]
     fn a_panicked_holder_does_not_block_the_next_test() {

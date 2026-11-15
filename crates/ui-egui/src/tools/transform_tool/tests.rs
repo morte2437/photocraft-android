@@ -4120,6 +4120,41 @@ fn the_warp_bar_greys_its_fields_for_a_cylinder() {
 }
 
 #[test]
+fn a_multi_layer_box_follows_opacity_and_visibility_edits() {
+    let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
+    let red = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(40, 40, 56, 56), &[0.0, 0.0, 1.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    let blue = app.session.active().unwrap().active_layer.unwrap();
+    app.session.execute("layer.select", json!({"layer": red.0, "mode": "add"})).unwrap();
+    app.sync_views();
+    begin(&mut app, &egui::Context::default()).unwrap();
+    let texel = |app: &PhotocraftApp, x: usize, y: usize| app.transform_preview.as_ref().unwrap().texture.texel(x, y).unwrap();
+    // The box is (8, 8)-(56, 56): red at its top-left texel, blue at (32, 32).
+    assert_eq!(texel(&app, 0, 0).a(), 255);
+    assert_eq!(texel(&app, 40, 40).a(), 255);
+    app.session
+        .edit("opacity", |doc, _| {
+            doc.layer_mut(red).unwrap().opacity = 0.5;
+            doc.layer_mut(blue).unwrap().visible = false;
+            Ok(())
+        })
+        .unwrap();
+    follow_edits(&mut app);
+    let a = texel(&app, 0, 0).a();
+    assert!((120..=135).contains(&a), "half-opaque red: {a}");
+    assert_eq!(texel(&app, 40, 40).a(), 0, "hidden blue drops out of the preview");
+    let pv = app.transform_preview.as_ref().unwrap();
+    assert!(!pv.doc.layer(red).unwrap().visible && !pv.doc.layer(blue).unwrap().visible, "both still hidden under the box");
+    assert_eq!(app.ui.transform.as_ref().unwrap().layers, vec![red.0, blue.0]);
+}
+
+#[test]
 fn several_layers_reuse_the_transform_interpolation_preference() {
     let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
     let st = app.session.active_mut().unwrap();

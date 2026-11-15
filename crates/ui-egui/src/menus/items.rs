@@ -41,7 +41,9 @@ pub fn is_live(id: &str) -> bool {
 const PLACE_AFTER: &[(&str, &str)] = &[
     ("file.newFromClipboard", "file.new"),
     ("filter.render.relight", "filter.render.lightingEffects"),
-    ("view.resetView", "view.flipHorizontal"),
+    ("view.rotateLeft", "view.flipHorizontal"),
+    ("view.rotateRight", "view.rotateLeft"),
+    ("view.resetView", "view.rotateRight"),
     ("filter.other.colorToAlpha", "filter.other.offset"),
 ];
 

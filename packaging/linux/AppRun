@@ -25,6 +25,29 @@ case "${ARGV0:-}" in
   photocraft-cli | */photocraft-cli) exec "$APPDIR/usr/bin/photocraft-cli" "$@" ;;
 esac
 
+# A damaged snapshot is not evidence that an absent user key was newly added.
+# Treat it like a legacy installation and preserve the existing launcher.
+valid_baseline() {
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -s "$1" ] || return 1
+  awk '
+    /^\[/ { group = $0; if (group == "[Desktop Entry]") sections++; next }
+    /^[ \t]*($|#)/ { next }
+    /^[^= \t][^=]*=/ {
+      name = $0; sub(/=.*/, "", name)
+      k = group SUBSEP name
+      if (seen[k]++) bad = 1
+      if (group == "[Desktop Entry]") {
+        if ($0 == "Type=Application") type = 1
+        if ($0 ~ /^Name=.+$/) title = 1
+        if ($0 ~ /^Exec=".+" %F$/) executable = 1
+      }
+      next
+    }
+    { bad = 1 }
+    END { exit !(sections == 1 && type && title && executable && !bad) }
+  ' "$1"
+}
+
 integrate() {
   case "${PHOTOCRAFT_NO_DESKTOP_INTEGRATION:-}" in
     1 | true | yes) return 0 ;;
@@ -54,6 +77,8 @@ integrate() {
   # "already integrated" left the menu with no entry (#5534).
   apps="$data/applications"
   mkdir -p "$apps" 2>/dev/null || return 0
+  desktop="$apps/$DESK_ID.desktop"
+  baseline="$apps/.$DESK_ID.generated"
   external=0
   for f in "$apps"/*.desktop; do
     if [ ! -f "$f" ] || [ "$f" = "$apps/$DESK_ID.desktop" ]; then
@@ -74,10 +99,19 @@ integrate() {
       break
     fi
   done
-  if [ "$external" = 1 ]; then
-    if [ -f "$apps/$DESK_ID.desktop" ]; then
-      rm -f "$apps/$DESK_ID.desktop" 2>/dev/null || true
-      command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
+  if [ -L "$desktop" ] || [ -L "$baseline" ] ||
+    { [ -e "$desktop" ] && [ ! -f "$desktop" ]; } ||
+    { [ -e "$baseline" ] && [ ! -f "$baseline" ]; }; then
+    # A link (including a dangling one) or special file is not our installation.
+    # Leave both launcher and snapshot alone; icons may still be installed below.
+    :
+  elif [ "$external" = 1 ]; then
+    # Only a byte-identical, valid generated snapshot proves this is ours to
+    # remove. A customized or legacy launcher belongs to the user.
+    if [ -f "$desktop" ] && valid_baseline "$baseline" && cmp -s "$baseline" "$desktop" && [ ! -L "$desktop" ]; then
+      if rm -f "$desktop" 2>/dev/null; then
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
+      fi
     fi
   else
     # Rewrite Exec to this AppImage (the binary is not on the host PATH) and drop
@@ -85,19 +119,93 @@ integrate() {
     tmp="$apps/.$DESK_ID.tmp.$$"
     esc="$(printf '%s' "$appimage" | sed 's/[\\&|]/\\&/g')"
     if sed -e "s|^Exec=.*|Exec=\"$esc\" %F|" -e '/^TryExec=/d' "$src_desktop" 2>/dev/null >"$tmp"; then
-      if cmp -s "$tmp" "$apps/$DESK_ID.desktop"; then
+      generated="$tmp.generated"
+      cp "$tmp" "$generated" 2>/dev/null || { rm -f "$tmp"; return 0; }
+      if [ -f "$desktop" ]; then
+        # Three-way merge: update shipped keys only if the user has not changed
+        # them. Keep custom keys, comments and deletions. The snapshot is hidden
+        # and has no .desktop suffix, so desktop menus do not discover it.
+        # For older installs without a snapshot, the current template is the
+        # conservative baseline. An unknown previous executable is left alone.
+        previous="$baseline"
+        bootstrap=0
+        if ! valid_baseline "$previous"; then
+          previous="$tmp.previous"
+          cp "$generated" "$previous" 2>/dev/null || { rm -f "$tmp" "$generated"; return 0; }
+          bootstrap=1
+        fi
+        if ! awk -v bootstrap="$bootstrap" '
+          function key(line) {
+            if (line ~ /^\[/) { group = line; return "" }
+            if (line ~ /^[^#= \t][^=]*=/) {
+              name = line; sub(/=.*/, "", name); return group SUBSEP name
+            }
+            return ""
+          }
+          FNR == 1 { group = "" }
+          FILENAME == ARGV[1] {
+            k = key($0); if (k != "") old[k] = $0
+            if (group == "[Desktop Entry]" && $0 ~ /^Exec=".*" %F$/)
+              old_exec = substr($0, 6, length($0) - 8)
+            next
+          }
+          FILENAME == ARGV[2] {
+            k = key($0); if (k != "") { fresh[k] = $0; order[++n] = k }
+            if (group == "[Desktop Entry]" && $0 ~ /^Exec=/)
+              new_exec = substr($0, 6, length($0) - 8)
+            next
+          }
+          function additions( i, k) {
+            for (i = 1; i <= n; i++) {
+              k = order[i]
+              if (index(k, "[Desktop Entry]" SUBSEP) == 1 && !(k in old) && !(k in seen))
+                print fresh[k]
+            }
+          }
+          {
+            if ($0 ~ /^\[/ && group == "[Desktop Entry]") additions()
+            k = key($0)
+            if (k != "") {
+              seen[k] = 1
+              if (k in old && $0 == old[k]) {
+                if (k in fresh) print fresh[k]
+                next
+              }
+              if (group == "[Desktop Entry]" && name == "Exec") {
+                # Literal substitution, never a regex or shell evaluation: keep
+                # environment wrappers and arguments around the managed path.
+                pos = index($0, old_exec)
+                prefix = substr($0, 1, pos - 1)
+                if (old_exec != "" && pos > 0 && prefix ~ /^Exec=(env[ \t]+([^ \t=]+=[^ \t]*[ \t]+)*)?$/)
+                  $0 = substr($0, 1, pos - 1) new_exec substr($0, pos + length(old_exec))
+              }
+            }
+            print
+          }
+          END { if (group == "[Desktop Entry]") additions() }
+        ' "$previous" "$generated" "$desktop" >"$tmp"; then
+          rm -f "$tmp" "$generated"
+          [ "$bootstrap" = 0 ] || rm -f "$previous"
+          return 0
+        fi
+        [ "$bootstrap" = 0 ] || rm -f "$previous"
+      fi
+      if cmp -s "$tmp" "$desktop"; then
         rm -f "$tmp"
       else
-        if mv -f "$tmp" "$apps/$DESK_ID.desktop" 2>/dev/null; then
+        if mv -f "$tmp" "$desktop" 2>/dev/null; then
           command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" >/dev/null 2>&1
         else
-          rm -f "$tmp"
+          rm -f "$tmp" "$generated"
+          return 0
         fi
       fi
+      mv -f "$generated" "$baseline" 2>/dev/null || rm -f "$generated"
     else
       rm -f "$tmp"
       return 0
     fi
+
   fi
 
   # Icons: per-file compare so an unchanged install costs a handful of cmp calls.

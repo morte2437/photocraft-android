@@ -67,8 +67,10 @@ Automation is a privilege boundary because requests can cause filesystem access,
   or command-duration/cancellation budget;
 - one thread per accepted TCP connection;
 - no structured security audit event stream;
-- desktop screenshot capture/encoding and document import/export have no automation-specific
-  operation budgets; the desktop transport limits replies after their creation;
+- desktop screenshots are admission-bounded (4 outstanding requests, 128 MiB per image, 256 MiB
+  aggregate, 8 s deadline), which is far above the 8 MiB JSON reply cap; document import/export
+  have no automation-specific operation budgets, and the desktop transport limits replies after
+  their creation;
 - expensive engine commands are not charged to a session budget.
 
 Reply rejection can happen after a command has changed state. Such errors report that the

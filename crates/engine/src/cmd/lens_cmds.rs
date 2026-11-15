@@ -438,6 +438,10 @@ fn lens_batch(s: &mut Session, p: &Value) -> Result<Value> {
         if scratch.active().is_some_and(|d| d.doc.layers.len() > 1) {
             scratch.execute("layer.flattenImage", json!({}))?;
         }
+        // Photoshop's batch hands back a Grayscale 8-bit source as RGB 8-bit, whatever the File Type.
+        if scratch.active().is_some_and(|d| d.doc.mode == ColorMode::Grayscale && d.doc.depth == SampleType::U8) {
+            scratch.execute("image.mode.rgb", json!({}))?;
+        }
         scratch.execute(LENS, params.clone())?;
         Ok(())
     });
@@ -491,6 +495,9 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
+#[cfg(test)]
+#[path = "lens_batch_gray_tests.rs"]
+mod lens_batch_gray_tests;
 #[cfg(test)]
 mod tests {
 

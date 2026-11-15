@@ -126,3 +126,24 @@ fn image_processor_source_picker_hides_folder_fields_for_open_documents() {
     assert_eq!(field(&h, "source"), Some(json!("open")));
     assert_eq!(h.query_all_by_label("Browse…").count(), 1);
 }
+
+#[test]
+fn scratch_disk_browse_sets_only_the_selected_draft_and_cancel_keeps_it() {
+    let (mut h, asked) = harness(vec![Some(FileDialogAnswer::FolderTo("/tmp/scratch".into())), None]);
+    let id = crate::prefs_ui::open_preferences(h.state_mut(), "scratchDisks");
+    h.run_steps(4);
+    assert_eq!(h.query_all_by_label("Browse…").count(), 0, "system temp is not browsable");
+    h.get_by_label("Add disk").click();
+    h.run_steps(3);
+    h.get_by_label("Browse…").click();
+    h.run_steps(4);
+    let values = &h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["values"];
+    assert_eq!(values["scratchDisks"]["disks"][0]["path"], "(system temp)");
+    assert_eq!(values["scratchDisks"]["disks"][1]["path"], "/tmp/scratch");
+    assert_eq!(h.state().session.prefs().scratch_disks.disks.len(), 1, "selection edits only the draft");
+    h.get_by_label("Browse…").click();
+    h.run_steps(4);
+    let values = &h.state().ui.dialogs.iter().find(|d| d.id == id).unwrap().fields["values"];
+    assert_eq!(values["scratchDisks"]["disks"][1]["path"], "/tmp/scratch");
+    assert!(matches!(asked.borrow().as_slice(), [FileDialogRequest::Folder { .. }, FileDialogRequest::Folder { .. }]));
+}
