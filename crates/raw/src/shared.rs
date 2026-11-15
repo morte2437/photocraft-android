@@ -99,6 +99,9 @@ fn warnings(image: &craft_raw::RawImage) -> Vec<String> {
             out.push("raw white level not recorded in a documented tag; assumed full sample range".into());
         }
     }
+    if image.notices.gain_table_omitted {
+        out.push("the raw camera profile's invalid gain table map was omitted".to_string());
+    }
     for op in image.opcodes.list1.iter().chain(&image.opcodes.list2).chain(&image.opcodes.list3) {
         if !matches!(op, craft_raw::Opcode::GainMap { .. } | craft_raw::Opcode::MapPolynomial { .. }) {
             out.push("some raw correction opcodes are not applied by PhotoCraft".to_string());

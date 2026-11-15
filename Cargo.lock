@@ -5808,6 +5808,7 @@ version = "0.23.1"
 dependencies = [
  "memory-stats",
  "serde_json",
+ "wgpu",
 ]
 
 [[package]]

@@ -155,8 +155,7 @@ impl ByteSource for ZipSource<'_> {
 fn bundle_error(error: craft_pcraft_bundle::Error) -> FormatError {
     match error {
         craft_pcraft_bundle::Error::LimitExceeded { entry, limit } => FormatError::LimitExceeded(format!("`{entry}` exceeds {limit} bytes")),
-        craft_pcraft_bundle::Error::Zip(error) if error.is_limit() => FormatError::LimitExceeded(error.to_string()),
-        craft_pcraft_bundle::Error::Io(message) => FormatError::Io(std::io::Error::other(message)),
+        craft_pcraft_bundle::Error::Zip(error) => crate::zip::map_read_error(error),
         other => FormatError::corrupt(other.to_string()),
     }
 }
@@ -166,8 +165,8 @@ mod bundle_error_tests {
     use super::*;
 
     #[test]
-    fn shared_io_errors_keep_the_native_io_type_and_message() {
-        let error = bundle_error(craft_pcraft_bundle::Error::Io("manifest publication failed".into()));
+    fn shared_save_io_errors_keep_the_native_io_type_and_message() {
+        let error = save_error(craft_pcraft_bundle::Error::Io("manifest publication failed".into()));
         let FormatError::Io(error) = error else { panic!("I/O failure must remain typed") };
         assert_eq!(error.kind(), std::io::ErrorKind::Other);
         assert_eq!(error.to_string(), "manifest publication failed");
@@ -183,7 +182,7 @@ mod bundle_error_tests {
             craft_zip::Error::EntryTooLarge { name: "manifest.json".into(), limit: 16 },
             craft_zip::Error::BudgetSpent { name: "manifest.json".into(), limit: 16 },
         ] {
-            let message = error.to_string();
+            let message = format!("zip: {error}");
             assert!(matches!(bundle_error(craft_pcraft_bundle::Error::Zip(error)), FormatError::LimitExceeded(found) if found == message));
         }
     }
@@ -191,15 +190,27 @@ mod bundle_error_tests {
     #[test]
     fn malformed_paths_archives_and_hashes_remain_corrupt() {
         for error in [
+            craft_pcraft_bundle::Error::Io("invalid compressed frame".into()),
             craft_pcraft_bundle::Error::InvalidPath("../manifest.json".into()),
             craft_pcraft_bundle::Error::InvalidBundle("missing manifest".into()),
             craft_pcraft_bundle::Error::HashMismatch("tiles/object.zst".into()),
             craft_pcraft_bundle::Error::Zip(craft_zip::Error::NotZip("truncated".into())),
             craft_pcraft_bundle::Error::Zip(craft_zip::Error::Entry { name: "manifest.json".into(), msg: "checksum".into() }),
         ] {
-            let message = error.to_string();
+            let message = match &error {
+                craft_pcraft_bundle::Error::Zip(e) => format!("zip: {e}"),
+                _ => error.to_string(),
+            };
             assert!(matches!(bundle_error(error), FormatError::Corrupt(found) if found == message));
         }
+    }
+}
+
+/// Save failures are I/O errors; read-time decompression errors remain corrupt data.
+fn save_error(error: craft_pcraft_bundle::Error) -> FormatError {
+    match error {
+        craft_pcraft_bundle::Error::Io(message) => FormatError::Io(std::io::Error::other(message)),
+        other => bundle_error(other),
     }
 }
 
@@ -733,7 +744,6 @@ fn path_signature(path: &Path) -> Result<Option<FileSignature>> {
     }
 }
 
-#[cfg(test)]
 fn unsafe_bundle_entry(path: &Path) -> FormatError {
     FormatError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
@@ -743,7 +753,6 @@ fn unsafe_bundle_entry(path: &Path) -> FormatError {
 
 /// The generic atomic writer intentionally follows a destination symlink. Directory bundles
 /// must reject one instead: all of their managed entries stay below the bundle root.
-#[cfg(all(test, windows))]
 fn plain_file_or_missing(path: &Path) -> Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
@@ -1244,7 +1253,10 @@ impl PcraftWriter {
             }
         }
         scratch_ok(doc, generation)?;
-        let directory_stats = self.directory.save_directory(dir, writer).map_err(bundle_error)?;
+        // craft-pcraft-bundle refuses a symlinked manifest only when it publishes it, after the
+        // objects are written. Refusing it first leaves the folder as it was.
+        plain_file_or_missing(&dir.join(MANIFEST))?;
+        let directory_stats = self.directory.save_directory(dir, writer).map_err(save_error)?;
         let mut stats = prepared.stats;
         stats.objects_removed = directory_stats.removed;
         for path in &directory_stats.written_objects {

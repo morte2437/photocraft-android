@@ -45,10 +45,10 @@ fn metadata() {
     assert_eq!(sensor.active, Rect::new(0, 0, 16, 12));
     assert_eq!(sensor.black, BlackLevels::uniform(4096.0));
     assert_eq!(sensor.white, [64763.0; 3]);
-    let wb = sensor.camera_wb.unwrap();
-    assert!((wb[0] - 1.0 / 0.375).abs() < 1e-9, "{wb:?}");
-    assert!((wb[2] - 1.0 / 0.617).abs() < 1e-9, "{wb:?}");
-    assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("X2D II 100C")));
+    // craft-raw reads AsShotNeutral as the DNG colour tag; development turns it into multipliers.
+    let neutral = sensor.color.as_shot_neutral.unwrap();
+    assert!((neutral[0] - 0.375).abs() < 1e-9 && (neutral[2] - 0.617).abs() < 1e-9, "{neutral:?}");
+    assert_eq!((sensor.make.as_deref(), sensor.model.as_deref()), (Some("Hasselblad"), Some("Hasselblad X2D II 100C")));
     assert_eq!(sensor.orientation, 1);
     // This real-layout fixture deliberately has no CFAPattern tag. All source
     // metadata is retained, while the decoder discloses its assumed RGGB phase.
@@ -65,14 +65,6 @@ fn develops() {
         let d = develop(&b, &DevelopOptions { demosaic: m, ..Default::default() }).unwrap_or_else(|e| panic!("{m:?}: {e}"));
         assert_eq!((d.width, d.height), (12, 8), "{m:?}");
     }
-}
-
-#[test]
-fn unknown_body_warns_about_the_assumed_phase() {
-    let mut s = spec();
-    s.model = "X2D 100C".into();
-    let sensor = decode(&s.build(), &Limits::default()).unwrap();
-    assert!(sensor.warnings.iter().any(|w| w.contains("Bayer phase")), "{:?}", sensor.warnings);
 }
 
 #[test]
@@ -133,12 +125,13 @@ fn an_active_area_outside_the_plane_is_ignored() {
     assert_eq!((sensor.active, sensor.crop), (Rect::new(0, 0, 16, 12), Rect::new(0, 0, 16, 12)));
 }
 
+/// Refuse truncated sensor data rather than silently inventing black pixels.
 #[test]
-fn truncated_strip_is_malformed() {
+fn truncated_strip_is_refused() {
     let mut b = spec().build();
     // The preview blob sits past the strip; cutting 60 bytes eats into the strip.
     b.truncate(b.len() - 60);
-    assert!(matches!(decode(&b, &Limits::default()), Err(RawError::Malformed(_))));
+    assert!(matches!(decode(&b, &Limits::default()), Err(photocraft_raw::RawError::Malformed(_))));
 }
 
 #[test]
@@ -146,4 +139,12 @@ fn zero_dimensions_are_malformed() {
     let mut s = spec();
     s.width = 0;
     assert!(matches!(decode(&s.build(), &Limits::default()), Err(RawError::Malformed(_))));
+}
+
+#[test]
+fn unknown_body_warns_about_the_assumed_phase() {
+    let mut s = spec();
+    s.model = "X2D 100C".into();
+    let sensor = decode(&s.build(), &Limits::default()).unwrap();
+    assert!(sensor.warnings.iter().any(|w| w.contains("Bayer phase")), "{:?}", sensor.warnings);
 }

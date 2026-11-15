@@ -6,7 +6,7 @@ use photocraft_raw::*;
 
 const RGGB: [u8; 4] = [0, 1, 1, 2];
 
-/// A 30×18 X-Trans RAF with a 2-pixel masked border.
+/// A 30×18 X-Trans RAF with a 2-pixel masked border, exercising padded rows.
 fn xtrans(packing: RafPacking, bits: u32) -> RafSpec {
     let (w, h) = (30, 18);
     let white = ((1u32 << bits) - 1) as u16;

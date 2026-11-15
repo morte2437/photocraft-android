@@ -698,7 +698,8 @@ fn directory_save_rejects_manifest_symlink_without_overwriting_target() {
 
     assert!(PcraftWriter::new().save_dir(&doc, &dir, &SaveOptions::default()).is_err());
     assert_eq!(std::fs::read(&external_manifest).unwrap(), b"keep manifest");
-    assert_eq!(std::fs::read_dir(dir.join("tiles")).unwrap().count(), 0);
+    // Refused before any object is written: `tiles/` is missing or empty.
+    assert_eq!(std::fs::read_dir(dir.join("tiles")).map_or(0, |entries| entries.count()), 0);
 
     std::fs::remove_dir_all(dir).unwrap();
     std::fs::remove_dir_all(outside).unwrap();
@@ -808,7 +809,8 @@ fn bundles_without_the_full_composite_still_open() {
     }
     let older = z.finish().unwrap();
     assert_eq!(read_full_composite(&older).unwrap(), None);
-    // The shared manifest reader refuses a noncanonical full-composite reference.
+    // A member that names any other entry is refused, and so is the bundle: craft-pcraft-format
+    // treats it like a `thumbnail` or `composite` that names another entry. No writer does that.
     manifest["full_composite"] = serde_json::Value::from("thumb.png");
     let mut z = zip::ZipWriter::new();
     z.add("manifest.json", &serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();

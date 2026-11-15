@@ -60,6 +60,18 @@ fn image_svg(images: &str) -> String {
     format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\">{images}</svg>")
 }
 
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
 fn png_dimensions(width: u32, height: u32) -> Vec<u8> {
     let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
     bytes.extend_from_slice(&width.to_be_bytes());
@@ -1032,17 +1044,6 @@ fn bounded_embedded_svg_gets_only_the_nesting_depth_the_drawing_left() {
 /// main-thread size); deeper ones are refused.
 #[test]
 fn the_deepest_chain_of_embedded_svg_images_fits_a_small_stack() {
-    fn base64(bytes: &[u8]) -> String {
-        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
-            for i in 0..4 {
-                out.push(if i <= chunk.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
-            }
-        }
-        out
-    }
     let chain = |levels: usize| {
         let mut svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><rect width=\"8\" height=\"8\"/></svg>".to_string();
         for _ in 0..levels {
@@ -1078,6 +1079,131 @@ fn the_deepest_chain_of_embedded_svg_images_fits_a_small_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// An `<image>` holding an 8 × 8 rect inside `levels` SVG images, each gzipped: small at any
+/// depth, so the byte budget never ends the chain.
+fn gzipped_chain_image(levels: usize) -> String {
+    let mut svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><rect width=\"8\" height=\"8\"/></svg>".to_string();
+    for level in 0..levels {
+        let image = format!("<image width=\"8\" height=\"8\" href=\"data:image/svg+xml;base64,{}\"/>", base64(&gzip(svg.as_bytes())));
+        if level + 1 == levels {
+            return image;
+        }
+        svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">{image}</svg>");
+    }
+    String::new()
+}
+
+fn chain_svg(images: &str) -> String {
+    format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">{images}</svg>")
+}
+
+/// One image past [`MAX_EMBEDDED_SVG_DEPTH`] is refused, not parsed with the innermost left out.
+/// (Drawing such a chain is refused past craft-svg's own, lower limit of 24.)
+#[test]
+fn a_chain_of_svg_images_past_the_nesting_cap_is_refused() {
+    let deepest = chain_svg(&gzipped_chain_image(MAX_EMBEDDED_SVG_DEPTH));
+    assert!(deepest.len() < 1 << 20, "far below the byte budget: {} bytes", deepest.len());
+    let (_, chain_length) = parse_bounded_inner(deepest.as_bytes(), MAX_RASTER_PIXELS).unwrap();
+    assert_eq!(chain_length, MAX_EMBEDDED_SVG_DEPTH as u64, "every level parses");
+    let error = parse_bounded(chain_svg(&gzipped_chain_image(MAX_EMBEDDED_SVG_DEPTH + 1)).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+}
+
+/// A chain that fits the cap beside an image only nested too deeply in XML: that image is left
+/// out, as on its own, and the chain still parses.
+#[test]
+fn a_chain_at_the_nesting_cap_beside_an_image_too_deep_in_xml_still_parses() {
+    let deep = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\">{}<rect width=\"8\" height=\"8\"/>{}</svg>",
+        "<g>".repeat(MAX_XML_DEPTH - 1),
+        "</g>".repeat(MAX_XML_DEPTH - 1)
+    );
+    let too_deep = embedded_image("image/svg+xml", deep.as_bytes());
+    assert!(parse_bounded(image_svg(&too_deep).as_bytes(), MAX_RASTER_PIXELS).is_ok(), "on its own it is left out");
+    let svg = chain_svg(&format!("{}{too_deep}", gzipped_chain_image(MAX_EMBEDDED_SVG_DEPTH)));
+    let (_, chain_length) = parse_bounded_inner(svg.as_bytes(), MAX_RASTER_PIXELS).unwrap();
+    assert_eq!(chain_length, MAX_EMBEDDED_SVG_DEPTH as u64);
+}
+
+/// An embedded SVGZ whose gzip stream is cut short is left out like any unreadable image, though
+/// craft-svg charges it the rest of the byte budget. A small image refused for bytes after it is
+/// left out too; one past the whole budget on its own still fails the drawing.
+#[test]
+fn a_damaged_embedded_svgz_is_left_out() {
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\"/></svg>";
+    let compressed = gzip(svg.as_bytes());
+    let damaged = embedded_image("image/svg+xml", &compressed[..compressed.len() / 2]);
+    let after = embedded_image("image/svg+xml", svg.as_bytes());
+    let parsed = parse_bounded(image_svg(&format!("{damaged}{after}")).as_bytes(), MAX_RASTER_PIXELS).unwrap();
+    assert!(!parsed.tree.root().has_children(), "both images are left out");
+    let mut huge = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">".to_vec();
+    huge.resize(usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap() + 1024, b' ');
+    huge.extend_from_slice(b"</svg>");
+    let huge = embedded_image("image/svg+xml", &gzip(&huge));
+    let error = parse_bounded(image_svg(&format!("{damaged}{huge}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+    // A stored preview must draw completely, so it is still refused there.
+    assert!(parse_bounded_work_with(image_svg(&damaged).as_bytes(), MAX_RASTER_PIXELS, true, fonts).is_err());
+}
+
+/// Latin-1 bytes may fit while their decoded UTF-8 text exceeds the shared budget.
+/// Refuse the drawing even when this is its only child, rather than silently omitting it.
+#[test]
+fn a_latin1_embedded_svg_that_decodes_past_the_budget_is_refused() {
+    let budget = usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap();
+    let mut latin1 = b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><!--".to_vec();
+    latin1.resize(budget * 5 / 8, 0xe9);
+    latin1.extend_from_slice(b"--></svg>");
+    let wide = embedded_image("image/svg+xml", &gzip(&latin1));
+    let small = embedded_image("image/svg+xml", b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"/>");
+    let error = parse_bounded(image_svg(&wide).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+    let error = parse_bounded(image_svg(&format!("{wide}{small}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+}
+
+/// After a damaged image spent the budget, images refused for bytes are unpacked again to tell
+/// whether they are too large themselves, but at most one budget's worth in all: past that the
+/// drawing is refused rather than unpacking each one.
+#[test]
+fn images_after_a_damaged_svgz_are_unpacked_again_within_one_budget() {
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\"/></svg>";
+    let compressed = gzip(svg.as_bytes());
+    let damaged = embedded_image("image/svg+xml", &compressed[..compressed.len() / 2]);
+    let mut large = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">".to_vec();
+    large.resize(usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap() * 5 / 8, b' ');
+    large.extend_from_slice(b"</svg>");
+    let large = embedded_image("image/svg+xml", &gzip(&large));
+    assert!(parse_bounded(image_svg(&format!("{damaged}{large}")).as_bytes(), MAX_RASTER_PIXELS).is_ok(), "one is left out");
+    let error = parse_bounded(image_svg(&format!("{damaged}{large}{large}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+}
+
+/// Each image unpacked again is charged at least what was unpacked, refused ones included, so
+/// however many follow a damaged image the unpacking adds up to one budget, not one each.
+#[test]
+fn unpacking_images_again_adds_up_to_one_budget_however_many_there_are() {
+    let budget = usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap();
+    let mut huge = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">".to_vec();
+    huge.resize(budget * 2, b' ');
+    huge.extend_from_slice(b"</svg>");
+    let huge = gzip(&huge);
+    // A damaged image was charged the whole budget; every later image is refused for size.
+    let refusals = SvgRefusals { unread_charges: AtomicUsize::new(budget), ..SvgRefusals::default() };
+    for _ in 0..64 {
+        note_byte_refusal(&huge, budget, &refusals);
+        assert!(refusals.over_budget.load(Ordering::Relaxed), "too large without the charges");
+        assert_eq!(refusals.rechecked.load(Ordering::Relaxed), budget);
+    }
 }
 
 /// Only a stored display preview is strict about an embedded image it can't read; an edited SVG

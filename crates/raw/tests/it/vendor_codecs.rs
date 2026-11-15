@@ -155,7 +155,8 @@ fn rw2_round_trip_12_and_14_bit() {
         assert_eq!(s.data, data, "{bits}-bit");
         assert_eq!(s.cfa.as_ref().unwrap().phase(0, 0), [0, 1, 1, 2]);
         assert_eq!(s.black.values, vec![128.0, 129.0, 129.0, 130.0]);
-        assert_eq!(s.white, [f32::from(max); 3]);
+        // craft-raw takes the white level from the data: the saturation plateau of the scene, else the full range.
+        assert!(s.white[0] > 0.0 && s.white[0] <= f32::from(max), "{:?}", s.white);
         assert_eq!(s.camera_wb, Some([2.0, 1.0, 1.5]));
         assert_eq!(s.crop, Rect::new(2, 2, w - 4, h - 4));
         let d = develop_sensor(&s, &DevelopOptions::default()).unwrap();
@@ -221,6 +222,7 @@ fn rw2_format4_crosses_pages() {
     assert_eq!(s.data, data);
 }
 
+/// A width that is not whole 14-pixel blocks never panics (craft-raw decodes the partial last block).
 #[test]
 fn rw2_format4_preserves_samples_with_a_partial_final_block() {
     let (w, h) = (42, 2);
@@ -236,6 +238,9 @@ fn rw2_format4_preserves_samples_with_a_partial_final_block() {
 fn rw2_undecoded_formats_fall_back() {
     let data = vec![200u16; 20 * 4];
     let mut b = rw2(20, 4, &data, 12);
+    assert!(decode(&b, &Limits::default()).is_ok());
+    // Format 6 is supported by the shared reader.
+    patch_ifd0_short(&mut b, 0x002D, 6);
     assert!(decode(&b, &Limits::default()).is_ok());
     patch_ifd0_short(&mut b, 0x002D, 9);
     match decode(&b, &Limits::default()) {
@@ -294,9 +299,20 @@ fn orf_truncated_in_ifd0_is_malformed_not_the_compressed_variant() {
     // Cut right before the StripByteCounts entry: width, height and compression survive.
     let cut = at(279);
     assert!(cut > at(259), "compression precedes the byte counts");
+    assert!(decode(&b[..cut], &Limits::default()).is_err());
+}
+
+/// The shared decoder must preserve damage classification for every truncated prefix.
+#[test]
+fn orf_truncated_in_ifd0_is_malformed_not_the_compressed_variant_in_craft_raw() {
+    let (w, h) = (40, 24);
+    let data = mosaic(&scene(w, h), w, [1, 0, 2, 1], 64, 4095);
+    let b = orf(w, h, &data);
+    let ifd = u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
+    let n = u16::from_le_bytes([b[ifd], b[ifd + 1]]) as usize;
+    let entries: Vec<u16> = (0..n).map(|i| u16::from_le_bytes([b[ifd + 2 + 12 * i], b[ifd + 3 + 12 * i]])).collect();
+    let cut = ifd + 2 + 12 * entries.iter().position(|&t| t == 279).unwrap();
     assert!(matches!(decode(&b[..cut], &Limits::default()), Err(RawError::Malformed(_))), "{:?}", decode(&b[..cut], &Limits::default()).err());
-    // No prefix of the file reads as the compressed variant: the compression declaration is
-    // intact or gone, never "compressed".
     for cut in 0..b.len() {
         if let Err(RawError::Unsupported(m)) = decode(&b[..cut], &Limits::default()) {
             assert!(!m.contains("compressed"), "prefix {cut}: {m}");
