@@ -36,9 +36,6 @@ const FILTER_ID: i32 = super::code(b"Dspl");
 pub(super) const TEMPLATE_KEY: &str = "__displacePsd";
 /// The embedded map (raw data).
 const MAP_KEY: &str = "DspD";
-/// `tdta` header: height, width (u32 LE) and mode (u16 LE).
-#[cfg(test)]
-const HEADER: usize = 10;
 /// The only map layout seen in Photoshop files: two 8-bit planes.
 #[cfg(test)]
 const MODE_TWO_PLANES: u16 = 3;
