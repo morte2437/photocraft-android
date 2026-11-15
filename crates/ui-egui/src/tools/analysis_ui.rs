@@ -700,9 +700,18 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             let next = photocraft_doc::CountGroup::default();
             let g = group.map_or(&next, |gi| &m.count_groups[gi]);
             if let Some(mut gi) = group {
-                let opts: Vec<(usize, &str)> = m.count_groups.iter().enumerate().map(|(i, g)| (i, g.name.as_str())).collect();
-                if crate::widgets::dropdown(ui, "count-group", tl!("Group"), &mut gi, &opts, 150.0) {
-                    let _ = app.run("count.setGroup", json!({"group": gi, "active": true}));
+                // The groups, a separator, then Rename… for the current group (#11766).
+                const RENAME: usize = usize::MAX;
+                let mut opts: Vec<(usize, &str)> = m.count_groups.iter().enumerate().map(|(i, g)| (i, g.name.as_str())).collect();
+                opts.push((RENAME, tl!("Rename…")));
+                let current = gi;
+                let (chosen, _) = crate::widgets::dropdown_wheel_grouped(ui, "count-group", tl!("Group"), &mut gi, &opts, 150.0, |v| *v == RENAME);
+                match chosen.last().copied() {
+                    Some(RENAME) => crate::count_group_name_ui::open_rename(app, current),
+                    Some(g) => {
+                        let _ = app.run("count.setGroup", json!({"group": g, "active": true}));
+                    }
+                    None => {}
                 }
             } else {
                 ui.add_enabled_ui(false, |ui| crate::widgets::dropdown(ui, "count-group", tl!("Group"), &mut 0usize, &[(0, tl!("Count Group"))], 150.0));
@@ -713,8 +722,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             {
                 let _ = app.run("count.setGroup", json!({"group": gi, "visible": !g.visible}));
             }
+            // The "Count Group Name" dialog names the new group (#11766).
             if crate::icons::button(ui, "folder-plus", 22.0, false, tl!("Create a new count group")).clicked() {
-                let _ = app.run("count.newGroup", json!({}));
+                crate::count_group_name_ui::open_new(app);
             }
             // The last group can't be deleted from here (`count.deleteGroup` still can).
             let trash = ui.add_enabled_ui(m.count_groups.len() >= 2, |ui| {
@@ -1127,6 +1137,7 @@ pub fn dialog_command(kind: &str, f: &Map<String, Value>) -> Option<(&'static st
             }
         }
         "dataPoints" => ("image.analysis.selectDataPoints", json!({"selection": f.get("selection"), "ruler": f.get("ruler"), "count": f.get("count")})),
+        crate::count_group_name_ui::KIND => return crate::count_group_name_ui::command(f),
         "scaleMarker" => (
             "image.analysis.placeScaleMarker",
             json!({"length": f.get("length"), "fontSize": f.get("fontSize"), "displayText": f.get("displayText"), "textPosition": f.get("textPosition"), "color": f.get("color")}),
@@ -1137,10 +1148,15 @@ pub fn dialog_command(kind: &str, f: &Map<String, Value>) -> Option<(&'static st
 
 fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let Some((kind, mut f)) = app.ui.analysis.dialog.clone() else { return };
+    if kind == crate::count_group_name_ui::KIND && crate::count_group_name_ui::stale(app, &f) {
+        app.ui.analysis.dialog = None;
+        return;
+    }
     let t = Tokens::get(ctx);
     let title = match kind.as_str() {
         "scale" => "Measurement Scale",
         "dataPoints" => "Select Data Points",
+        crate::count_group_name_ui::KIND => crate::count_group_name_ui::TITLE,
         _ => "Measurement Scale Marker",
     };
     let mut result: Option<bool> = None;
@@ -1175,6 +1191,7 @@ fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     let text = if custom { format!("{pl} pixels = {ll:.4} {u}") } else { "1 pixels = 1.0000 pixels".into() };
                     ui.label(RichText::new(tl!(&text)).color(t.text_dim).size(11.0));
                 }
+                crate::count_group_name_ui::KIND => result = crate::count_group_name_ui::body(ui, &mut f).or(result),
                 "dataPoints" => {
                     ui.horizontal_top(|ui| {
                         for (source, label) in [("selection", tl!("Selections")), ("ruler", tl!("Ruler Tool")), ("count", tl!("Count Tool"))] {
@@ -1247,6 +1264,9 @@ fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[cfg(test)]
+#[path = "count_group_name_tests.rs"]
+mod count_group_name_tests;
 #[cfg(test)]
 mod sampler_drag_tests;
 

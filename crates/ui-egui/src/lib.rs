@@ -141,6 +141,7 @@ pub(crate) use dialogs::color_picker_preview;
 pub use dialogs::color_picker_ui;
 pub use dialogs::color_range_ui;
 pub use dialogs::color_table_ui;
+pub use dialogs::count_group_name_ui;
 pub use dialogs::credits;
 pub use dialogs::dds_options_ui;
 pub use dialogs::delete_layer_prompt;
