@@ -74,10 +74,25 @@ fn decode_text(data: &[u8]) -> String {
     s.trim_end_matches('\0').replace("\r\n", "\n").replace('\r', "\n")
 }
 
+fn normalized_text(s: &str) -> impl Iterator<Item = char> + '_ {
+    let mut previous_cr = false;
+    s.chars().filter_map(move |c| {
+        let skip = previous_cr && c == '\n';
+        previous_cr = c == '\r';
+        if skip { None } else { Some(if c == '\n' { '\r' } else { c }) }
+    })
+}
+
+fn text_bytes(s: &str, limit: usize) -> Option<usize> {
+    normalized_text(s).try_fold(2usize, |bytes, c| bytes.checked_add(c.len_utf16() * 2).filter(|&n| n <= limit))
+}
+
 fn encode_text(s: &str) -> Vec<u8> {
     let mut out = vec![0xFE, 0xFF];
-    for u in s.replace("\r\n", "\n").replace('\n', "\r").encode_utf16() {
-        out.extend_from_slice(&u.to_be_bytes());
+    for c in normalized_text(s) {
+        for u in c.encode_utf16(&mut [0; 2]) {
+            out.extend_from_slice(&u.to_be_bytes());
+        }
     }
     out
 }
@@ -117,7 +132,7 @@ pub fn parse_anno(data: &[u8]) -> Option<Vec<Note>> {
 fn write_note(n: &Note) -> craft_psd::Result<Vec<u8>> {
     let limits = craft_psd::annotations::Limits::default();
     // Bound temporary text normalization before the shared fallible writer allocates.
-    if n.text.len().checked_mul(2).and_then(|n| n.checked_add(2)).is_none_or(|n| n > limits.bytes) {
+    if text_bytes(&n.text, limits.bytes).is_none() {
         return Err(craft_psd::PsdError::LimitExceeded("annotation text"));
     }
     let (x, y) = (n.position[0].round() as i32, n.position[1].round() as i32);
@@ -188,6 +203,11 @@ pub fn export_blocks(doc: &Document, mut blocks: Vec<photocraft_doc::PsdGlobalBl
     let raw = at.map(|i| blocks[i].2.clone());
     let entries = raw.as_deref().and_then(|d| parse_entries(d));
     let parsed: Option<Vec<Note>> = entries.as_ref().map(|e| e.iter().filter_map(|e| if let Entry::Text(n) = e { Some(n.clone()) } else { None }).collect());
+    // Unedited decoded notes retain the original bounded block, even when its legacy
+    // single-byte text would exceed the UTF-16 writer budget after conversion.
+    if parsed.as_deref() == Some(doc.notes.as_slice()) || (entries.is_none() && doc.notes.is_empty()) {
+        return Ok(blocks);
+    }
     // Compare in stored precision (colours are 16-bit, positions whole pixels, empty popups get a
     // default rectangle).
     let want = parse_anno(&write_anno(&doc.notes, &[]).map_err(|e| crate::IoError::Unsupported(e.to_string()))?);

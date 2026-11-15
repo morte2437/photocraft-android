@@ -90,3 +90,34 @@ fn text_cannot_cross_declared_record_boundary() {
     block[8..12].copy_from_slice(&(length - 2).to_be_bytes());
     assert!(parse_entries(&block).is_none());
 }
+
+#[test]
+fn normalized_utf16_budget_counts_units_not_utf8_bytes() {
+    assert_eq!(text_bytes("✓✓✓", 8), Some(8));
+    assert_eq!(text_bytes("𝄞", 6), Some(6));
+    assert_eq!(text_bytes("a\r\nb\nc\r", 14), Some(14));
+    assert_eq!(text_bytes("✓✓✓", 7), None);
+    assert_eq!(text_bytes("𝄞", 5), None);
+    let note = Note { text: "✓".repeat(3 * 1024 * 1024), ..Default::default() };
+    assert!(write_anno(&[note], &[]).is_ok());
+}
+
+#[test]
+fn unchanged_legacy_text_keeps_raw_bytes_without_utf16_rewrite() {
+    let mut block = legacy_anno(&[Note { text: "x".into(), ..Default::default() }], &[]);
+    let key = block.windows(4).position(|w| w == b"txtC").unwrap();
+    block.truncate(key + 8);
+    block.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    let size = u32::try_from(block.len() - key - 8).unwrap();
+    block[key + 4..key + 8].copy_from_slice(&size.to_be_bytes());
+    block[key - 4..key].copy_from_slice(&(size + 12).to_be_bytes());
+    let record = u32::try_from(block.len() - 8).unwrap();
+    block[8..12].copy_from_slice(&record.to_be_bytes());
+    let mut doc = Document::new("notes", photocraft_doc::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
+    doc.notes = parse_anno(&block).unwrap();
+    assert!(write_anno(&doc.notes, &[]).is_err());
+    let blocks = vec![(*b"8BIM", ANNO, Arc::new(block))];
+    assert_eq!(export_blocks(&doc, blocks.clone()).unwrap(), blocks);
+    doc.notes[0].text.push('x');
+    assert!(export_blocks(&doc, blocks).is_err());
+}
