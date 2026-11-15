@@ -70,11 +70,11 @@ fn icc_profile(bytes: Vec<u8>) -> Option<Vec<u8>> {
     if bytes.is_empty() || bytes.len() > MAX_ICC_PROFILE_BYTES {
         return None;
     }
-    let profile = match photocraft_cms::Profile::parse(&bytes) {
+    let profile = match craft_cms::Profile::parse(&bytes) {
         Ok(profile) => profile,
         Err(_) => return None,
     };
-    (profile.color_space == photocraft_cms::ColorSpace::Rgb).then_some(bytes)
+    (profile.color_space == craft_cms::ColorSpace::Rgb).then_some(bytes)
 }
 #[cfg(target_os = "linux")]
 fn icc_profile_atom<C: x11rb::connection::RequestConnection>(conn: &C, name: &str) -> Option<u32> {
@@ -434,13 +434,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn x11_screen_capture_accepts_only_bounded_rgb_icc_profiles() {
-        let rgb = photocraft_cms::Builtin::Srgb.profile().to_bytes();
+        let rgb = craft_cms::Builtin::Srgb.profile().to_bytes();
         let bytes = rgb.as_ref().clone();
         assert_eq!(icc_profile(bytes.clone()), Some(bytes));
 
         assert!(icc_profile(Vec::new()).is_none());
         assert!(icc_profile(vec![0; MAX_ICC_PROFILE_BYTES + 1]).is_none());
-        let cmyk = photocraft_cms::Builtin::CoatedCmyk.profile().to_bytes();
+        let cmyk = craft_cms::Builtin::CoatedCmyk.profile().to_bytes();
         assert!(icc_profile(cmyk.as_ref().clone()).is_none());
     }
     #[cfg(target_os = "linux")]

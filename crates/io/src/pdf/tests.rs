@@ -406,7 +406,7 @@ fn the_plates_are_described_in_xmp_with_their_ink_colour_and_solidity() {
     assert!(pos("/Separation /Black#20#28Ink") < pos("/Separation /Underbase#20White"));
     // One packet, well-formed enough for an XML parser.
     assert_eq!(xmp.matches("<?xpacket begin").count(), 1);
-    assert!(crate::xml::parse(&xmp[xmp.find("<x:xmpmeta").unwrap()..xmp.rfind("</x:xmpmeta>").unwrap() + 12], Default::default()).is_ok(), "{xmp}");
+    assert!(craft_xml::parse(&xmp.as_bytes()[xmp.find("<x:xmpmeta").unwrap()..xmp.rfind("</x:xmpmeta>").unwrap() + 12]).is_ok(), "{xmp}");
 }
 
 #[test]
@@ -442,15 +442,24 @@ fn the_plate_description_joins_the_rdf_element_however_the_packet_spells_it() {
     d.channels.push(spot("Varnish", photocraft_color::Color::rgb(0.9, 0.9, 0.6), &[1.0; 8]));
     // The packet must parse as namespaced XML with the plates a description inside its RDF element.
     let plates_in_rdf = |xmp: &str| {
-        let tree = crate::xml::parse(xmp.trim_start_matches('\u{feff}'), roxmltree::ParsingOptions::default()).unwrap_or_else(|e| panic!("{e}: {xmp}"));
-        let plates = tree
-            .descendants()
-            .find(|n| n.tag_name().namespace() == Some(crate::pdf::SPOT_PLATES_NS) && n.tag_name().name() == "plates")
-            .unwrap_or_else(|| panic!("no pcsp:plates: {xmp}"));
-        let description = plates.parent_element().unwrap();
-        assert_eq!((description.tag_name().namespace(), description.tag_name().name()), (Some(RDF), "Description"), "{xmp}");
-        let rdf = description.parent_element().unwrap();
-        assert_eq!((rdf.tag_name().namespace(), rdf.tag_name().name()), (Some(RDF), "RDF"), "{xmp}");
+        let canon = craft_xml::Canonical::new(&[("rdf", RDF), ("pcsp", crate::pdf::SPOT_PLATES_NS)]);
+        let tree = craft_xml::Options::canonical(&canon).parse(xmp.trim_start_matches('\u{feff}').as_bytes()).unwrap_or_else(|e| panic!("{e}: {xmp}"));
+        fn child_els(el: &craft_xml::El) -> impl Iterator<Item = &craft_xml::El> {
+            el.children.iter().filter_map(|n| match n {
+                craft_xml::Node::El(e) => Some(e),
+                _ => None,
+            })
+        }
+        let mut stack = vec![&tree];
+        let mut found = false;
+        while let Some(el) = stack.pop() {
+            if el.name == "rdf:RDF" && child_els(el).any(|d| d.name == "rdf:Description" && child_els(d).any(|p| p.name == "pcsp:plates")) {
+                found = true;
+                break;
+            }
+            stack.extend(child_els(el));
+        }
+        assert!(found, "no rdf:RDF/rdf:Description/pcsp:plates: {xmp}");
         assert_eq!(xmp.matches("<?xpacket begin").count(), 1, "one packet, not two: {xmp}");
     };
     let head = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n";
@@ -613,7 +622,7 @@ fn a_text_layer_refused_at_emission_keeps_the_upper_vectors_and_stays_raster() {
     // Pin the fixture to the intended path: accepted by `prepare`, refused by `ops`.
     let LayerContent::Text(lower_text) = &lower.content else { panic!("the fixture is a text layer") };
     let prepared = super::text::prepare(lower_text, ColorMode::Rgb, d.resolution_dpi).expect("prepare accepts the truncated box");
-    let lower_font = super::selection::SelectionFont::new(std::iter::once(lower_text.text.as_str()));
+    let lower_font = super::SelectionFont::new(std::iter::once(lower_text.text.as_str()));
     assert!(super::text::ops(&prepared, ColorMode::Rgb, &lower_font).is_none(), "emission must refuse the unrepresented source text");
     d.layers.push(lower);
     d.layers.push(Layer::new(

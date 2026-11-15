@@ -109,7 +109,9 @@ fn new_frame(s: &mut Session, p: &Value) -> Result<Value> {
                 Some(child)
             }
         };
-        let mut g = Layer::group(name.unwrap_or_else(|| doc.next_layer_name("Frame")), vec![]);
+        // A frame drawn around a layer is named after it ("Red Frame"); an empty one is "Frame N".
+        let name = name.unwrap_or_else(|| child.as_ref().map_or_else(|| doc.next_layer_name("Frame"), |c| format!("{} Frame", c.name)));
+        let mut g = Layer::group(name, vec![]);
         g.blend = BlendMode::Normal;
         g.frame = Some(Box::new(f));
         refresh(&mut g);
@@ -391,5 +393,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec("layer.frame.fit", "Fit Frame / Content", r#"{"layer":id?,"mode":"contentToFrame|frameToContent"="contentToFrame"}"#, has_doc, fit),
     ]
 }
+#[cfg(test)]
+mod content_name_tests;
 #[cfg(test)]
 mod tests;

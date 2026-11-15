@@ -3,7 +3,7 @@
 //! - `brush.presets.importAbr` adds the presets of an `.abr` file (v1, v2, v6+) to the brush
 //!   library as one group named after the file, with the file's own folders nested inside it
 //!   as Photoshop does (Brushes panel › Import Brushes…, Preset Manager). Parsing lives in
-//!   `craft-psd` (`abr`), the mapping onto [`BrushSettings`] in `photocraft-io` (`abr_map`).
+//!   `photocraft-psd` (`abr`), the mapping onto [`BrushSettings`] in `photocraft-io` (`abr_map`).
 //! - `brush.presets.importImage` turns an image file (anything File › Open reads: PNG, JPEG,
 //!   TIFF, PSD…) into a sampled-tip brush preset, as Edit › Define Brush Preset does with a
 //!   selection: dark pixels paint, white and transparent ones don't (TOOL-213-12).
@@ -30,7 +30,7 @@ pub const MAX_FILE_BYTES: u64 = 512 << 20;
 /// Largest accepted `.abr` file: brush libraries of large sampled tips outgrow [`MAX_FILE_BYTES`].
 /// Tied to the decoder's sample budget (1 GiB, 512 MiB on 32-bit targets) so it never refuses
 /// what this accepts.
-pub const MAX_ABR_FILE_BYTES: u64 = craft_psd::abr::MAX_TOTAL_BYTES as u64;
+pub const MAX_ABR_FILE_BYTES: u64 = if cfg!(target_pointer_width = "64") { 1 << 30 } else { 512 << 20 };
 
 /// File bytes from `data` (base64) or `path`, plus a default group name.
 pub(crate) fn file_bytes(p: &Value, cmd: &str, what: &str) -> Result<(Vec<u8>, String)> {
@@ -849,8 +849,8 @@ mod tests {
 
     #[test]
     fn abr_files_get_a_larger_size_cap() {
-        // Match craft-psd's aggregate decoded-sample budget: 2 GiB on 64-bit, 512 MiB on 32-bit.
-        const WANT: u64 = if cfg!(target_pointer_width = "64") { 2 << 30 } else { 512 << 20 };
+        // 1 GiB on 64-bit; 32-bit (wasm) keeps 512 MiB so a big file fails cleanly instead of aborting.
+        const WANT: u64 = if cfg!(target_pointer_width = "64") { 1 << 30 } else { 512 << 20 };
         const _: () = assert!(MAX_ABR_FILE_BYTES == WANT && MAX_ABR_FILE_BYTES >= MAX_FILE_BYTES);
         let dir = std::env::temp_dir().join(format!("pc-abr-cap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

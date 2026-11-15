@@ -53,14 +53,6 @@ pub fn invert(m: &Mat3) -> Option<Mat3> {
     o.iter().flatten().all(|v| v.is_finite()).then_some(o)
 }
 
-/// A row-major 3×3 matrix from 9 values.
-pub fn from_slice(v: &[f64]) -> Option<Mat3> {
-    if v.len() < 9 || v[..9].iter().any(|x| !x.is_finite()) {
-        return None;
-    }
-    Some([[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]])
-}
-
 pub fn xy_to_xyz(xy: [f64; 2]) -> [f64; 3] {
     let y = xy[1].max(1e-6);
     [xy[0] / y, 1.0, (1.0 - xy[0] - xy[1]) / y]

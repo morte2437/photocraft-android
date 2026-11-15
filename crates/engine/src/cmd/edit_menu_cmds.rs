@@ -363,7 +363,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Fade…",
             ["Edit"],
             Some("Cmd+Shift+F"),
-            r##"{"opacity":0..100=100,"mode":"normal|multiply|screen|overlay|softLight|hardLight|darken|lighten|difference|color|luminosity"}"##,
+            r##"{"opacity":0..100=100,"mode":"normal|dissolve|darken|multiply|colorBurn|linearBurn|darkerColor|lighten|screen|colorDodge|linearDodge|lighterColor|overlay|softLight|hardLight|vividLight|linearLight|pinLight|hardMix|difference|exclusion|subtract|divide|hue|saturation|color|luminosity"}"##,
             can_fade,
             fade
         ),

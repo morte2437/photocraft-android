@@ -61,7 +61,7 @@ fn mesh_three_value_shaper_is_applied() {
                 }
             }
         }
-        let lut = photocraft_cms::lutfile::parse_3dl(&text).unwrap();
+        let lut = craft_cms::lutfile::parse_3dl(&text).unwrap();
         let mid = ((lut.size / 2 * lut.size + lut.size / 2) * lut.size + lut.size / 2) * 3;
         assert!((lut.data[mid] - expected).abs() < 0.002, "{shaper}: {}", lut.data[mid]);
     }

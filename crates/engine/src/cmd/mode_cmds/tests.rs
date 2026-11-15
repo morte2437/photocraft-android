@@ -311,7 +311,7 @@ fn indexed_exact_preserves_profile_and_samples_through_default_rgb() {
             assert_eq!(doc(&s).icc_profile, source_profile);
             s.execute("edit.undo", json!({})).unwrap();
             s.execute("image.mode.rgb", json!({"profile": "srgb"})).unwrap();
-            assert_eq!(doc(&s).icc_profile, Some(photocraft_cms::Builtin::Srgb.profile().to_bytes()), "an explicit target still converts");
+            assert_eq!(doc(&s).icc_profile, Some(craft_cms::Builtin::Srgb.profile().to_bytes()), "an explicit target still converts");
             if profile != "none" {
                 assert_ne!(doc(&s).layers[0].surface().unwrap().rgba(0, 0), indexed_pixel);
             }
@@ -361,7 +361,7 @@ fn indexed_matte_blends_edges_without_replacing_clear_pixels() {
 
 #[test]
 fn indexed_matte_converts_working_rgb_to_document_profile_at_every_depth() {
-    use photocraft_cms::Transform;
+    use craft_cms::Transform;
 
     for depth in [8, 16, 32] {
         for (matte, color) in [("foreground", [0.0, 1.0, 0.0]), ("background", [1.0, 0.0, 0.0])] {
@@ -378,7 +378,7 @@ fn indexed_matte_converts_working_rgb_to_document_profile_at_every_depth() {
                 let destination = crate::color_cmds::document_profile(doc(&s));
                 let transform = Transform::new(&source, &destination, s.color.settings.intent(), bpc).unwrap();
                 let mut converted = [0.0; 16];
-                transform.eval(&color, &mut converted);
+                transform.eval(&color, &mut converted).unwrap();
                 let expected = [0, 1, 2].map(|i| ((pixel[i] * pixel[3] + converted[i].clamp(0.0, 1.0) * (1.0 - pixel[3])) * 255.0).round() as u8);
                 s.execute("image.mode.indexedColor", json!({"palette": "exact", "forced": "none", "dither": "none", "matte": matte})).unwrap();
                 let edge = doc(&s).layers[0].surface().unwrap().rgba(0, 0);
@@ -978,7 +978,7 @@ fn modes_round_trip_through_pcraft() {
 /// the displayed ink colours, through the destination profile. Grayscale drops the inks.
 #[test]
 fn duotone_to_colour_modes_keeps_the_ink_colours() {
-    use photocraft_cms::{Builtin, Transform};
+    use craft_cms::{Builtin, Transform};
     let configs = [
         json!({"type": "duotone"}),
         json!({"type": "monotone", "inks": [{"name": "Orange", "color": "#ff8000", "curve": [[0, 0], [100, 100]]}]}),
@@ -1017,7 +1017,7 @@ fn duotone_to_colour_modes_keeps_the_ink_colours() {
                         vec![gray[x as usize]]
                     } else {
                         let mut o = [0.0f32; 16];
-                        t.eval(&shown[x as usize][..3], &mut o);
+                        t.eval(&shown[x as usize][..3], &mut o).unwrap();
                         o[..target.color_channels()].to_vec()
                     };
                     // The display's gradient map samples the inks at 33 stops; dark CMYK

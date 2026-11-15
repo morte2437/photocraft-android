@@ -108,10 +108,14 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 /// Use fallback only when the exclusive rename primitive itself is unsupported.
 fn unsupported_rename(error: &io::Error) -> bool {
     #[cfg(unix)]
-    if matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::INVAL.raw_os_error() || code == rustix::io::Errno::NOSYS.raw_os_error()) {
-        return true;
+    {
+        error.kind() == io::ErrorKind::Unsupported
+            || matches!(error.raw_os_error(), Some(code) if code == rustix::io::Errno::INVAL.raw_os_error() || code == rustix::io::Errno::NOSYS.raw_os_error())
     }
-    error.kind() == io::ErrorKind::Unsupported
+    #[cfg(not(unix))]
+    {
+        error.kind() == io::ErrorKind::Unsupported
+    }
 }
 
 /// Linking claims an absent destination atomically; a later unlink failure is already published.

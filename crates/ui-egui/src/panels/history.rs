@@ -198,7 +198,8 @@ pub(crate) fn step_icon(step: &str) -> &'static str {
         // The selections the Patch tool draws (select.lasso's historyName).
         "Patch Tool" => "square-dashed",
         s if s.contains("Fill") => "paint-bucket",
-        "Open" => "image",
+        // The opening state: "Open" for a file, "New" for a document from File › New (#14029).
+        "Open" | "New" => "image",
         _ => "sliders-horizontal",
     }
 }

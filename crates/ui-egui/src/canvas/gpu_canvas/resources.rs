@@ -79,7 +79,7 @@ pub(super) fn lut_bind_group(
     bgl: &wgpu::BindGroupLayout,
     size: u32,
     bytes: &[u8],
-    shaper: Option<&photocraft_cms::GpuMatrixShaper>,
+    shaper: Option<&craft_cms::GpuMatrixShaper>,
 ) -> wgpu::BindGroup {
     let extent = wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size };
     let texture = device.create_texture(&wgpu::TextureDescriptor {

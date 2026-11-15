@@ -88,6 +88,17 @@ impl PreviewTextures {
         }
     }
 
+    /// Level-zero texel for preview regressions.
+    #[cfg(test)]
+    pub fn texel(&self, x: usize, y: usize) -> Option<egui::Color32> {
+        let images = self.images.lock().ok()?;
+        let image = images.first()?;
+        if x >= image.size[0] || y >= image.size[1] {
+            return None;
+        }
+        image.pixels.get(y.checked_mul(image.size[0])?.checked_add(x)?).copied()
+    }
+
     /// Build mip levels off the UI thread (`true`) or in the frame that first needs them.
     #[cfg(test)]
     pub(crate) fn set_background_builds(&mut self, on: bool) {

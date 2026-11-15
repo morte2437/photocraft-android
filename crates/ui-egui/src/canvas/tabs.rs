@@ -564,7 +564,14 @@ pub(crate) fn tab_title_at(app: &PhotocraftApp, i: usize, zoom: f32) -> String {
     let layer = active_layer.map(|l| format!("{}, ", l.name)).unwrap_or_default();
     // A save in progress: "name @ 100% (Layer 1, RGB/16) - Saving 45%", as Photoshop does (#3389).
     let saving = crate::jobs_ui::save_progress(app, st.doc.id).map(|s| format!(" - {s}")).unwrap_or_default();
-    format!("{} @ {}% ({layer}{model}/{}){}{saving}", st.doc.name, fmt_zoom(zoom), st.doc.depth.bits(), if st.is_dirty() { "*" } else { "" })
+    format!("{} @ {}% ({layer}{model}/{}){}{saving}", titled_name(st), fmt_zoom(zoom), st.doc.depth.bits(), if st.is_dirty() { "*" } else { "" })
+}
+
+/// The document's name as its tab and window title show it: "© name" when File Info marks it
+/// Copyrighted, as Photoshop does (#13821).
+fn titled_name(st: &photocraft_engine::DocState) -> String {
+    let copyrighted = photocraft_engine::file_cmds::copyright_marked(st.doc.metadata.xmp.as_deref());
+    format!("{}{}", if copyrighted { "\u{a9} " } else { "" }, st.doc.name)
 }
 
 /// The Studio strip's tab name: "name *" when unsaved, "name * - Saving 45%" while it saves (#3389).
@@ -812,7 +819,7 @@ pub fn extra_windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let wins = app.ui.windows.clone();
     for w in wins.into_iter().filter(|w| w.open) {
         let Some(st) = app.session.documents().get(w.document) else { continue };
-        let title = format!("{} — window {}", st.doc.name, w.id);
+        let title = format!("{} — window {}", titled_name(st), w.id);
         let vid = egui::ViewportId::from_hash_of(("docwin", w.id));
         let mut builder = crate::os_window::builder().with_title(title).with_inner_size([800.0, 600.0]);
         if let Some([x, y]) = w.position {
@@ -909,3 +916,7 @@ pub(super) fn move_target_after_filter(visible: &[usize], from: usize, to: usize
         None => document_count.saturating_sub(1),
     }
 }
+
+#[cfg(test)]
+#[path = "../file_info_copyright_title_tests.rs"]
+mod file_info_copyright_title_tests;

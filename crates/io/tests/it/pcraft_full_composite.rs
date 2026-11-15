@@ -90,7 +90,7 @@ fn a_document_larger_than_the_preview_keeps_its_full_size() {
 
 #[test]
 fn the_full_composite_carries_the_profile_of_its_pixels() {
-    use photocraft_cms::{Builtin, ColorSpace, Profile};
+    use craft_cms::{Builtin, ColorSpace, Profile};
     let full_icc = |d: &Document| {
         let bytes = export(d, "a.pcraft", &on()).expect("export").bytes;
         let png = ZipReader::new(&bytes).expect("zip").read_by_name("composite/full.png", usize::MAX).expect("entry");

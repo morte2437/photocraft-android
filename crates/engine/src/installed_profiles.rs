@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use photocraft_cms::{ColorSpace, Profile, ProfileClass};
+use craft_cms::{ColorSpace, Profile, ProfileClass};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
@@ -189,7 +189,7 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use photocraft_cms::Builtin;
+    use craft_cms::Builtin;
 
     fn temp_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("pc-installed-{tag}-{}", std::process::id()));

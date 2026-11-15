@@ -42,7 +42,7 @@ fn q16(v: u16) -> f32 {
 fn adjustments() -> Vec<(Adjustment, bool)> {
     let pts = |v: &[(u8, u8)]| v.iter().map(|&(i, o)| CurvePoint { input: g(i), output: g(o) }).collect::<Vec<_>>();
     let lc = |a: u8, b: u8, gamma: f32| LevelsChannel { in_black: g(a), in_white: g(b), gamma, out_black: g(5), out_white: g(250) };
-    let lut = photocraft_cms::lutfile::LutFile::from_fn("t", 5, |c| [c[1], c[2] * 0.5, 1.0 - c[0]]);
+    let lut = craft_cms::lutfile::LutFile::from_fn("t", 5, |c| [c[1], c[2] * 0.5, 1.0 - c[0]]).unwrap();
     let all = vec![
         (Adjustment::BrightnessContrast { brightness: 30.0, contrast: -20.0, legacy: false }, true),
         (Adjustment::BrightnessContrast { brightness: -40.0, contrast: 50.0, legacy: true }, true),
@@ -84,7 +84,7 @@ fn adjustments() -> Vec<(Adjustment, bool)> {
         (
             Adjustment::ColorLookup {
                 name: "Look.cube".into(),
-                source: Some(adjust::LutSource { format: adjust::LutFormat::Cube, bytes: Arc::new(photocraft_cms::lutfile::write_cube(&lut).into_bytes()) }),
+                source: Some(adjust::LutSource { format: adjust::LutFormat::Cube, bytes: Arc::new(craft_cms::lutfile::write_cube(&lut).into_bytes()) }),
                 lut: Some(Arc::new(lut.data)),
                 size: 5,
                 tetrahedral: false,
@@ -217,7 +217,7 @@ fn every_adjustment_kind_round_trips_16bit() {
 /// save must say so (#1347). Trilinear saves without a warning.
 #[test]
 fn color_lookup_tetrahedral_warns_on_psd_save() {
-    let lut = photocraft_cms::lutfile::LutFile::from_fn("t", 2, |c| if c == [1.0; 3] { [1.0; 3] } else { [0.0; 3] });
+    let lut = craft_cms::lutfile::LutFile::from_fn("t", 2, |c| if c == [1.0; 3] { [1.0; 3] } else { [0.0; 3] }).unwrap();
     for tetrahedral in [true, false] {
         let adj =
             Adjustment::ColorLookup { name: "test.cube".into(), lut: Some(Arc::new(lut.data.clone())), size: 2, tetrahedral, dither: false, source: None };

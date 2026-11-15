@@ -1,6 +1,6 @@
 //! Selecting an EXR part must interpret its linear samples like ordinary File > Open.
 
-use photocraft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
+use craft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
 use photocraft_codecs::{self as codecs, ChannelLayout, Format, Image, SampleType as CodecSample};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::Document;
@@ -51,7 +51,7 @@ fn selected_gray_exr_part_keeps_linear_profile_and_float_samples() {
             let expected = codecs::decode(&bytes).unwrap().convert(ChannelLayout::GrayA, CodecSample::F32).to_f32_samples().unwrap();
             assert_eq!(samples(doc), expected, "{layout:?} {depth:?}: samples and alpha stay unchanged");
             assert_eq!(samples(doc), samples(&ordinary.document));
-            assert_eq!(doc.icc_profile, Some(photocraft_cms::builtin::linear_gray().to_bytes()), "{layout:?} {depth:?}: linear luminance");
+            assert_eq!(doc.icc_profile, Some(craft_cms::builtin::linear_gray().to_bytes()), "{layout:?} {depth:?}: linear luminance");
             assert_eq!(doc.icc_profile, ordinary.document.icc_profile);
 
             // The tagged samples convert to display gray, rather than being interpreted as sGray.
@@ -59,7 +59,7 @@ fn selected_gray_exr_part_keeps_linear_profile_and_float_samples() {
             assert_eq!(profile.color_space, ColorSpace::Gray);
             let transform = Transform::new(&profile, Builtin::SGray.profile(), Intent::RelativeColorimetric, false).unwrap();
             let mut display = samples(doc);
-            transform.apply(&mut display, 2);
+            transform.apply(&mut display, 2).unwrap();
             for i in [1, 2] {
                 let expected_gray = photocraft_color::convert::linear_to_srgb(expected[i * 2]);
                 assert!((display[i * 2] - expected_gray).abs() < 1e-4, "{layout:?} {depth:?}: display gray");

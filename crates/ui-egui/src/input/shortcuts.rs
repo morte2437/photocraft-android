@@ -738,19 +738,23 @@ fn handle_pen_and_work_path_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
         crate::shape_bounds_box::cancel(app);
         return true;
     }
-    // An anchor selected with the Add Anchor Point tool: ⌫/Delete removes it and its two segments,
-    // as in Photoshop (#12703), never the active layer.
+    // An anchor selected with Direct Selection or the Add / Delete Anchor Point tool: ⌫/Delete
+    // removes it and its two segments (#12703, #13203); a segment selected with Direct Selection
+    // goes on its own (#13203). As in Photoshop, never the active layer.
     if focus != crate::shortcut_dispatch::Focus::DeletingWidget
-        && let Some((target, [s, k])) = crate::vector_ui::delete_key_deletes_anchor(app)
+        && let Some((target, cmd, mut params)) = crate::vector_ui::delete_key_deletes_anchor(app)
+            .map(|(target, [s, k])| (target, "path.deleteAnchor", json!({"subpath": s, "knot": k, "segments": true})))
+            .or_else(|| {
+                crate::vector_ui::delete_key_deletes_segment(app).map(|(target, [s, k])| (target, "path.deleteSegment", json!({"subpath": s, "knot": k})))
+            })
     {
         let mods = ctx.input(|i| i.modifiers);
         if !mods.command && !mods.ctrl && !mods.shift && !mods.alt && ctx.input_mut(|i| i.consume_key(mods, Key::Backspace) || i.consume_key(mods, Key::Delete))
         {
-            let mut params = json!({"subpath": s, "knot": k, "segments": true});
             if let (Some(p), Some(t)) = (params.as_object_mut(), target.params(app).as_object()) {
                 p.extend(t.clone());
             }
-            match app.run("path.deleteAnchor", params) {
+            match app.run(cmd, params) {
                 // The anchors shift: the selection would point at the wrong ones.
                 Ok(_) => app.ui.direct_selection = crate::direct_select::DirectSelection::default(),
                 Err(e) => {
@@ -761,13 +765,16 @@ fn handle_pen_and_work_path_keys(app: &mut PhotocraftApp, ctx: &egui::Context, f
             return true;
         }
     }
-    // A finished work path shown by the Pen or Path Selection: ⌫/Delete deletes it, as in
-    // Photoshop (#5702), never Edit › Clear on the pixels under it.
-    if focus != crate::shortcut_dispatch::Focus::DeletingWidget && crate::vector_ui::delete_key_deletes_work_path(app) {
+    // A finished work path shown by the Pen or Path Selection (#5702), or the path Direct
+    // Selection targets with nothing selected on it (#13203): ⌫/Delete deletes it, as in
+    // Photoshop, never Edit › Clear on the pixels under it or the active layer.
+    if focus != crate::shortcut_dispatch::Focus::DeletingWidget
+        && let Some((cmd, params)) = crate::vector_ui::delete_key_deletes_path(app)
+    {
         let mods = ctx.input(|i| i.modifiers);
         if !mods.command && !mods.ctrl && !mods.shift && !mods.alt && ctx.input_mut(|i| i.consume_key(mods, Key::Backspace) || i.consume_key(mods, Key::Delete))
         {
-            if let Err(e) = app.run("path.delete", json!({"name": "work"})) {
+            if let Err(e) = app.run(cmd, params) {
                 app.ui.status = e;
                 app.ui.status_error = true;
             }

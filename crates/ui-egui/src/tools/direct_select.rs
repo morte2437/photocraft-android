@@ -1011,10 +1011,16 @@ mod convert_point_tolerance_tests;
 mod convert_point_drag_segment_tests;
 
 #[cfg(test)]
+mod delete_key_tests;
+
+#[cfg(test)]
 mod history_names_tests;
 
 #[cfg(test)]
 mod shift_angle_tests;
+
+#[cfg(test)]
+mod options_bar_tests;
 
 #[cfg(test)]
 mod freeform_command_tests {

@@ -400,9 +400,9 @@ fn cmyk_channel_views_use_the_document_profile() {
     s.execute("channel.setVisible", json!({"channel": "black", "visible": false})).unwrap();
     let st = s.active().unwrap();
     let params =
-        photocraft_cms::synth::CmykParams { description: "Test Uncoated".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() };
+        craft_cms::synth::CmykParams { description: "Test Uncoated".into(), tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() };
     let mut doc = (*st.doc).clone();
-    doc.icc_profile = Some(photocraft_cms::synth::cmyk_profile(&params).to_bytes());
+    doc.icc_profile = Some(craft_cms::synth::cmyk_profile(&params).unwrap().to_bytes());
     let space = photocraft_compose::cmyk_space(&doc).expect("a profile other than the built-in one");
     let fmt = doc.pixel_format();
     let inks: Vec<f32> = [0.0, 0.5, 0.5, 0.0].into_iter().chain(fmt.alpha.then_some(1.0)).collect();
@@ -627,18 +627,18 @@ fn uninked_spot_draws_no_texture() {
 /// canvas around them does.
 #[test]
 fn printed_inks_follow_the_display_transform() {
-    use photocraft_cms::{Builtin, TransformOptions};
+    use craft_cms::{Builtin, TransformOptions};
     let doc = spot_doc(ColorMode::Rgb, photocraft_color::SampleType::U8, 1.0, 1.0);
     let mut v = ChannelView::default();
     v.set_alpha_visible(0, true);
     let plain = render(&doc, &v, doc.bounds(), 1, Look::default(), None).unwrap();
-    let t = photocraft_cms::transform::cached(Builtin::Srgb.profile(), Builtin::DisplayP3.profile(), TransformOptions::default()).unwrap();
+    let t = craft_cms::transform::cached(Builtin::Srgb.profile(), Builtin::DisplayP3.profile(), TransformOptions::default()).unwrap();
     let screen = Screen { encode_srgb: false, transform: Some(t.clone()) };
     let shown =
         render_with_source(&doc, &v, doc.bounds(), 1, Look::default(), None, CompositeSource { cached: None, fresh: &mut None, screen: &screen }).unwrap();
     // x 0: solid teal; x 2: no ink of channel 0, so transparent either way.
     let mut teal = [0.0f32, 0.6, 0.65, 1.0];
-    t.apply(&mut teal, 4);
+    t.apply(&mut teal, 4).unwrap();
     assert_ne!(plain[0], shown[0]);
     assert_eq!(shown[0], Color32::from_rgb(q(teal[0]), q(teal[1]), q(teal[2])));
     assert_eq!((plain[2], shown[2]), (Color32::TRANSPARENT, Color32::TRANSPARENT));
@@ -650,7 +650,7 @@ fn printed_inks_follow_the_display_transform() {
 #[test]
 fn printed_inks_keep_their_colour_in_a_linear_document() {
     let mut doc = spot_doc(ColorMode::Rgb, photocraft_color::SampleType::F32, 1.0, 1.0);
-    doc.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+    doc.icc_profile = Some(craft_cms::Builtin::LinearSrgb.profile().to_bytes());
     let mut v = ChannelView::default();
     v.set_alpha_visible(0, true);
     let encoded = Screen { encode_srgb: true, transform: None };

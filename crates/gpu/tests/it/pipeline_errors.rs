@@ -12,7 +12,7 @@ use photocraft_gpu::{Compositor, render_to_vec};
 use crate::GPU_LOCK;
 
 fn device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
+    let instance = crate::instance();
     let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
         eprintln!("skipping: no adapter");
         return None;
@@ -67,7 +67,7 @@ fn parallel_compositor_builds_leave_the_shader_cache_intact() {
     let var = |name: &str, default: u32| std::env::var(name).ok().and_then(|v| v.parse::<u32>().ok()).filter(|&n| n > 0).unwrap_or(default);
     let (rounds, builds) = (var("PC_BUILD_ROUNDS", 4), var("PC_BUILDS_PER_DEVICE", 8));
     for round in 0..rounds {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance = crate::instance();
         let Ok(adapter) = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(&instance, None)) else {
             eprintln!("skipping: no adapter");
             return;

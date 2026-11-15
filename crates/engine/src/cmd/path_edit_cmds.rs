@@ -213,6 +213,14 @@ fn delete_anchor(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
+/// ⌫ / Delete on a segment selected with Direct Selection: the segment goes, its anchors stay.
+/// Photoshop names the step Delete Anchor Point (#13203).
+fn delete_segment(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "path.deleteSegment";
+    let k = knot(CMD, p)?;
+    edit_path(s, CMD, p, "Delete Anchor Point", |path| edit::delete_segment(path, k))
+}
+
 /// Merge Shape Components on a path (the Pen's and Path Selection's Path Operations menu): the
 /// components' operations are baked into plain combined outlines, as for a shape layer.
 fn merge_components(s: &mut Session, p: &Value) -> Result<Value> {
@@ -320,6 +328,12 @@ pub fn specs() -> Vec<CommandSpec> {
             "Delete Anchor Point",
             r#""subpath":i,"knot":j,"segments":bool=false (its neighbours are joined, keeping their handles; segments = ⌫/Delete on a selected anchor: its two segments go too, so a closed subpath opens there and an open one splits; a subpath's last anchor removes the subpath; the path's only anchor empties a saved path and is refused elsewhere) (the result also has subpathRemoved:bool)"#.into(),
             delete_anchor,
+        ),
+        spec(
+            "path.deleteSegment",
+            "Delete Segment",
+            r#""subpath":i,"knot":j (the segment leaving it) (⌫/Delete on a segment selected with Direct Selection: the anchors stay; a closed subpath opens there, starting at the segment's end; an open one splits in two) (History: Delete Anchor Point)"#.into(),
+            delete_segment,
         ),
         spec(
             "path.mergeShapeComponents",
@@ -508,6 +522,34 @@ mod tests {
         assert_eq!(s.active().unwrap().history.undo_label(), Some("Delete Anchor Point"));
         assert!(s.undo());
         assert_eq!(work(&s), before);
+    }
+
+    #[test]
+    fn deleting_a_segment_opens_the_subpath_in_one_step_and_refuses_bad_params() {
+        let mut s = session();
+        s.execute("path.set", json!({"path": square()})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        s.execute("path.deleteSegment", json!({"subpath": 0, "knot": 1})).unwrap();
+        let sp = &work(&s).subpaths[0];
+        assert_eq!((sp.knots.len(), sp.closed), (4, false), "every anchor stays");
+        assert_eq!(sp.knots[0].anchor, before.subpaths[0].knots[2].anchor, "it starts at the segment's end");
+        assert_eq!(s.active().unwrap().history.entries().len(), steps + 1);
+        assert_eq!(s.active().unwrap().history.undo_label(), Some("Delete Anchor Point"));
+        assert!(s.undo());
+        assert_eq!(work(&s), before);
+        for p in
+            [json!({}), json!({"subpath": 0}), json!({"subpath": 0, "knot": 9}), json!({"subpath": -1, "knot": 0}), json!({"name": 3, "subpath": 0, "knot": 0})]
+        {
+            assert!(s.execute("path.deleteSegment", p.clone()).is_err(), "{p}");
+        }
+        assert_eq!(work(&s), before, "refusals change nothing");
+        // #13606: an open Intersect subpath's halves aren't measured, so it doesn't split.
+        let line = json!({"subpaths": [{"closed": true, "knots": [[10, 10], [60, 10], [60, 60], [10, 60]]},
+            {"closed": false, "knots": [[20, 80], [50, 80], [80, 80]], "op": "Intersect"}]});
+        s.execute("path.set", json!({"path": line})).unwrap();
+        let (before, steps) = (work(&s), s.active().unwrap().history.entries().len());
+        assert!(s.execute("path.deleteSegment", json!({"subpath": 1, "knot": 0})).is_err());
+        assert_eq!((work(&s), s.active().unwrap().history.entries().len()), (before, steps), "no step, no change");
     }
 
     #[test]
