@@ -8,6 +8,9 @@ pub const MIN_GPU_BUDGET: u64 = 512 << 20;
 /// CPU compositor.
 pub const OVER_BUDGET: &str = photocraft_gpu::OVER_BUDGET;
 
+/// Why a full refresh goes to the CPU compositor while the GPU one is still being built.
+pub const COMPOSITOR_BUILDING: &str = "GPU compositor is building";
+
 /// GPU memory the wgpu compositor may hold for layer pages and effect maps.
 ///
 /// `fixed` (Preferences › Performance › GPU Memory, bytes) sets it when it isn't 0, within

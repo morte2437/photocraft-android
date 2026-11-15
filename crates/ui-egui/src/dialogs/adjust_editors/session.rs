@@ -1,4 +1,4 @@
-use super::basic::reset_color_balance;
+use super::basic::{apply_auto, reset_color_balance};
 use super::gradient_map::{gradient_presets, is_gray, swatches};
 use super::{Adjustment, EditorCx, HistSource, LayerId, PhotocraftApp, RichText, Tokens, Value, adjust_params, editor, json, needs_histogram, space_of, tone};
 
@@ -85,7 +85,6 @@ pub fn layer_editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: LayerId, adj
     let t = Tokens::get(ui.ctx());
     let kind = photocraft_engine::commands::adjustment_kind(adj);
     match adj {
-        Adjustment::SelectiveColor { .. } => return crate::adjust_ui::selective_color_editor(app, ui, id, adj),
         Adjustment::ColorLookup { .. } => return crate::adjust_ui::color_lookup_editor(app, ui, id, adj),
         Adjustment::Invert => {
             ui.label(RichText::new(tl!("Invert has no settings.")).color(t.text_faint));
@@ -122,9 +121,12 @@ pub fn layer_editor(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: LayerId, adj
     if matches!(kind, "levels" | "curves") {
         crate::layer_picker::controls(app, ui, id);
     }
-    let e = editor(ui, kind, &mut values, &cx);
+    let mut e = editor(ui, kind, &mut values, &cx);
     if e.import_gradients {
         crate::preset_files_ui::import_gradients_dialog(app);
+    }
+    if e.auto {
+        apply_auto(app, &mut values, Some(id), None, &mut e);
     }
     if e.changed {
         app.live_adjust = Some((id, values.clone()));

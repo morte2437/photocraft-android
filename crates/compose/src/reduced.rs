@@ -26,15 +26,20 @@ pub fn thumbnail_size(doc: &Document, max_side: u32) -> (u32, u32) {
 
 /// [`thumbnail`] as straight-alpha floats (for callers that colour-convert it first).
 pub fn thumbnail_buffer(doc: &Document, max_side: u32) -> Buffer {
+    let (w, h) = thumbnail_size(doc, max_side);
+    match thumbnail_proxy(doc, max_side) {
+        Some(proxy) => render_reduced(&proxy, w, h),
+        None => render_reduced(doc, w, h),
+    }
+}
+
+/// The downsampled proxy [`thumbnail`] reduces `doc` from (about twice the thumbnail's size), or
+/// `None` when it reduces the document itself.
+pub fn thumbnail_proxy(doc: &Document, max_side: u32) -> Option<Document> {
     let b = doc.bounds();
     let longest = b.width().max(b.height()).max(1);
-    let (w, h) = thumbnail_size(doc, max_side);
     let k = longest / max_side.max(1).saturating_mul(2);
-    if k >= 2 && doc.size.area() > PROXY_THUMBNAIL_PIXELS && proxy::proxy_faithful(doc) {
-        render_reduced(&proxy::proxy_document(doc, k), w, h)
-    } else {
-        render_reduced(doc, w, h)
-    }
+    (k >= 2 && doc.size.area() > PROXY_THUMBNAIL_PIXELS && proxy::proxy_faithful(doc)).then(|| proxy::proxy_document(doc, k))
 }
 
 /// The document's composite area-averaged (premultiplied) down to `w`×`h` (clamped to the

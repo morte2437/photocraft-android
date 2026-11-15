@@ -141,6 +141,119 @@ fn global_light_blending_options_scale_effects() {
 }
 
 #[test]
+fn scale_effects_scales_the_bevel_texture_with_the_pattern_overlay() {
+    let mut s = session(8, "rgb");
+    paint(&mut s, disc);
+    s.execute("layer.layerStyle.patternOverlay", json!({"scale": 100})).unwrap();
+    s.execute("layer.layerStyle.bevelEmboss", json!({"texture": "Bubbles", "textureScale": 100})).unwrap();
+    s.execute("layer.layerStyle.scaleEffects", json!({"scale": 50})).unwrap();
+    let fx = &active(&s).effects.items;
+    let overlay = fx.iter().find_map(|e| match e {
+        Effect::PatternOverlay { scale, .. } => Some(*scale),
+        _ => None,
+    });
+    let texture = fx.iter().find_map(|e| match e {
+        Effect::BevelEmboss(b) => b.texture.as_ref().map(|t| t.scale),
+        _ => None,
+    });
+    // Both patterns tile at half size, so a texture aligned with the overlay stays aligned.
+    assert_eq!((overlay, texture), (Some(0.5), Some(0.5)));
+}
+
+/// The pattern scales of Pattern Overlay, the Bevel & Emboss Texture and a pattern Stroke, in
+/// that order.
+fn pattern_scales(s: &Session) -> (Option<f32>, Option<f32>, Option<f32>) {
+    let fx = &active(s).effects.items;
+    let overlay = fx.iter().find_map(|e| match e {
+        Effect::PatternOverlay { scale, .. } => Some(*scale),
+        _ => None,
+    });
+    let texture = fx.iter().find_map(|e| match e {
+        Effect::BevelEmboss(b) => b.texture.as_ref().map(|t| t.scale),
+        _ => None,
+    });
+    let stroke = fx.iter().find_map(|e| match e {
+        Effect::Stroke(st) => match &st.paint {
+            photocraft_doc::FxPaint::Pattern { scale, .. } => Some(*scale),
+            _ => None,
+        },
+        _ => None,
+    });
+    (overlay, texture, stroke)
+}
+
+/// A layer with a Pattern Overlay, a Bevel & Emboss Texture and a pattern Stroke, all at `pct` %.
+fn pattern_styled(pct: f64) -> Session {
+    let mut s = session(8, "rgb");
+    paint(&mut s, disc);
+    s.execute("layer.layerStyle.patternOverlay", json!({"scale": pct})).unwrap();
+    s.execute("layer.layerStyle.bevelEmboss", json!({"texture": "Bubbles", "textureScale": pct})).unwrap();
+    s.execute("layer.layerStyle.stroke", json!({"size": 3})).unwrap();
+    s.edit("pattern stroke", |doc, active| {
+        let layer = doc.layer_mut(active.unwrap()).unwrap();
+        for e in &mut layer.effects.items {
+            if let Effect::Stroke(st) = e {
+                st.paint = photocraft_doc::FxPaint::Pattern { name: "Bubbles".into(), id: String::new(), scale: pct as f32 / 100.0 };
+            }
+        }
+        Ok(())
+    })
+    .unwrap();
+    s
+}
+
+#[test]
+fn scale_effects_keeps_pattern_scales_within_the_dialog_range() {
+    // 10 % reduced to 1 % would be 0.1 %: the patterns stop at the dialog's 1 %.
+    let mut s = pattern_styled(10.0);
+    s.execute("layer.layerStyle.scaleEffects", json!({"scale": 1})).unwrap();
+    assert_eq!(pattern_scales(&s), (Some(0.01), Some(0.01), Some(0.01)));
+    // 500 % enlarged to 1000 % would be 5000 %: they stop at 1000 %.
+    let mut s = pattern_styled(500.0);
+    s.execute("layer.layerStyle.scaleEffects", json!({"scale": 1000})).unwrap();
+    assert_eq!(pattern_scales(&s), (Some(10.0), Some(10.0), Some(10.0)));
+    // Inside the range nothing is clamped: 200 % halved is 100 %.
+    let mut s = pattern_styled(200.0);
+    s.execute("layer.layerStyle.scaleEffects", json!({"scale": 50})).unwrap();
+    assert_eq!(pattern_scales(&s), (Some(1.0), Some(1.0), Some(1.0)));
+}
+
+/// Previews at a reduced resolution scale the patterns exactly, past the dialog's range: only
+/// commands that store the style clamp them.
+#[test]
+fn preview_scaling_leaves_pattern_scales_unclamped() {
+    let s = pattern_styled(2.0);
+    let mut fx = active(&s).effects.clone();
+    crate::image_cmds::scale_effects_preview(&mut fx, 0.25);
+    let mut clamped = active(&s).effects.clone();
+    crate::image_cmds::scale_effects(&mut clamped, 0.25);
+    let scales = |fx: &photocraft_doc::Effects| {
+        fx.items
+            .iter()
+            .filter_map(|e| match e {
+                Effect::PatternOverlay { scale, .. } => Some(*scale),
+                Effect::BevelEmboss(b) => b.texture.as_ref().map(|t| t.scale),
+                Effect::Stroke(st) => match &st.paint {
+                    photocraft_doc::FxPaint::Pattern { scale, .. } => Some(*scale),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(scales(&fx), vec![0.005; 3]);
+    assert_eq!(scales(&clamped), vec![0.01; 3]);
+}
+
+#[test]
+fn image_size_scale_styles_keeps_pattern_scales_within_the_dialog_range() {
+    // 40x30 -> 400x300 with Scale Styles multiplies by 10: 500 % would become 5000 %.
+    let mut s = pattern_styled(500.0);
+    s.execute("image.imageSize", json!({"width": 400, "height": 300, "scaleStyles": true})).unwrap();
+    assert_eq!(pattern_scales(&s), (Some(10.0), Some(10.0), Some(10.0)));
+}
+
+#[test]
 fn global_light_rejects_numbers_beyond_f32() {
     let mut s = session(8, "rgb");
     // In-range values still wrap into -180..=180 and clamp to 0..=90.

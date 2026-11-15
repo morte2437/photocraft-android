@@ -476,8 +476,9 @@ fn system_printers(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- PDF ----------
 
-/// Paper sizes in points (portrait).
-pub const PAPERS: [(&str, f64, f64); 8] = [
+/// Paper sizes in points (portrait). The original list keeps its order and sizes; the Japanese
+/// photo, postcard and JIS sizes follow it (millimetres × 72/25.4).
+pub const PAPERS: &[(&str, f64, f64)] = &[
     ("letter", 612.0, 792.0),
     ("legal", 612.0, 1008.0),
     ("tabloid", 792.0, 1224.0),
@@ -486,7 +487,75 @@ pub const PAPERS: [(&str, f64, f64); 8] = [
     ("a5", 419.53, 595.28),
     ("4x6", 288.0, 432.0),
     ("5x7", 360.0, 504.0),
+    // Japanese postcards (はがき and 往復はがき), the JIS B series that Japanese printing and
+    // Excel use (B5 182×257, B4 257×364 mm), A6 and the photo sizes L判, 2L判, KG判, 六切, 四切.
+    ("postcard", 283.46, 419.53),
+    ("double-postcard", 419.53, 566.93),
+    ("b5", 515.91, 728.50),
+    ("b4", 728.50, 1031.81),
+    ("a6", 297.64, 419.53),
+    ("l", 252.28, 360.00),
+    ("2l", 360.00, 504.57),
+    ("kg", 289.13, 430.87),
+    ("6cut", 575.43, 720.00),
+    ("4cut", 720.00, 864.57),
 ];
+
+/// Japanese customary names and other spellings for the papers in [`PAPERS`], matched after
+/// [`normalize_paper`]: `はがき` is `postcard`, `L判` is `l`, `JIS B5` is `b5`, and so on.
+const PAPER_ALIASES: &[(&str, &str)] = &[
+    ("はがき", "postcard"),
+    ("ハガキ", "postcard"),
+    ("葉書", "postcard"),
+    ("ポストカード", "postcard"),
+    ("往復はがき", "double-postcard"),
+    ("往復ハガキ", "double-postcard"),
+    ("JIS B5", "b5"),
+    ("B5 (JIS)", "b5"),
+    ("JIS B4", "b4"),
+    ("B4 (JIS)", "b4"),
+    ("L判", "l"),
+    ("Lサイズ", "l"),
+    ("L-size", "l"),
+    ("2L判", "2l"),
+    ("2Lサイズ", "2l"),
+    ("KG判", "kg"),
+    ("KGサイズ", "kg"),
+    ("六切", "6cut"),
+    ("6切", "6cut"),
+    ("四切", "4cut"),
+    ("4切", "4cut"),
+];
+
+/// The form [`paper_size`] matches names in: lower case, with whitespace and punctuation ignored
+/// and `×`/`*` read as `x`, so `L判`, `l-size` and `l` are one name, `4 × 6` is `4x6`, and
+/// `B5（JIS）` and `JIS B5.` are `b5`.
+fn normalize_paper(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '×' | '*' => 'x',
+            c => c,
+        })
+        .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !matches!(c, '（' | '）' | '、' | '。' | '，' | '．'))
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// The portrait size in points of a named paper, `None` for unknown names. Case, spaces and
+/// punctuation don't matter, and the Japanese customary names (`はがき`, `L判`, `六切`, …) and the
+/// JIS spelling (`JIS B5`) are aliases of the papers above.
+pub fn paper_size(name: &str) -> Option<(f64, f64)> {
+    let n = normalize_paper(name);
+    if n.is_empty() {
+        return None;
+    }
+    let canonical = PAPERS
+        .iter()
+        .find(|p| normalize_paper(p.0) == n)
+        .map(|p| p.0)
+        .or_else(|| PAPER_ALIASES.iter().find(|(alias, _)| normalize_paper(alias) == n).map(|(_, name)| *name))?;
+    PAPERS.iter().find(|p| p.0 == canonical).map(|p| (p.1, p.2))
+}
 
 /// The image placed on a print page.
 pub struct PrintImage {
@@ -770,11 +839,9 @@ fn print_image(doc: &Document, p: &Value, cmd: &str) -> Result<(PrintImage, Valu
 fn paper(p: &Value, cmd: &str) -> Result<(f64, f64)> {
     let (w, h) = match p.get("paper") {
         None => (612.0, 792.0),
-        Some(Value::String(name)) => PAPERS
-            .iter()
-            .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, w, h)| (*w, *h))
-            .ok_or_else(|| bad(cmd, format!("unknown paper `{name}` ({})", PAPERS.map(|p| p.0).join("|"))))?,
+        Some(Value::String(name)) => {
+            paper_size(name).ok_or_else(|| bad(cmd, format!("unknown paper `{name}` ({})", PAPERS.iter().map(|p| p.0).collect::<Vec<_>>().join("|"))))?
+        }
         Some(Value::Array(a)) if a.len() == 2 => (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)),
         _ => return Err(bad(cmd, "paper is a name or [width, height] in points")),
     };
@@ -1458,26 +1525,34 @@ fn package(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------- Paths to Illustrator ----------
 
-/// The document's paths as an Illustrator 3 PostScript file. `which`: "all", "work" or a path
-/// name. Coordinates are points (pixels at the document resolution), y up.
+/// `s` with line terminators and other control characters replaced by spaces, so a name stays
+/// inside its one PostScript comment line instead of ending it and adding instructions.
+fn ps_comment_text(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+/// The document's paths as an Illustrator 3 PostScript file. `which`: "documentBounds" (the
+/// frame alone, no path: header, bounding box and trailer), "all", "work" or a path name.
+/// Coordinates are points (pixels at the document resolution), y up.
 pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
     let dpi = f64::from(doc.resolution_dpi.max(1.0));
     let k = 72.0 / dpi;
     let (w, h) = (f64::from(doc.size.width) * k, f64::from(doc.size.height) * k);
-    let mut chosen: Vec<(String, &photocraft_doc::Path)> = Vec::new();
+    let mut chosen: Vec<&photocraft_doc::Path> = Vec::new();
     match which {
         "all" => {
-            chosen.extend(doc.paths.iter().map(|p| (p.name.clone(), &p.path)));
+            chosen.extend(doc.paths.iter().map(|p| &p.path));
             if let Some(wp) = &doc.work_path {
-                chosen.push(("Work Path".into(), wp));
+                chosen.push(wp);
             }
         }
-        "work" => chosen.extend(doc.work_path.iter().map(|wp| ("Work Path".to_string(), wp))),
-        name => chosen.extend(doc.paths.iter().filter(|p| p.name == name).map(|p| (p.name.clone(), &p.path))),
+        "work" => chosen.extend(doc.work_path.iter()),
+        "documentBounds" => {}
+        name => chosen.extend(doc.paths.iter().filter(|p| p.name == name).map(|p| &p.path)),
     }
     let mut s = String::new();
     s.push_str("%!PS-Adobe-2.0 EPSF-1.2\n%%Creator: PhotoCraft\n");
-    s.push_str(&format!("%%Title: ({})\n", doc.name.replace([')', '('], "_")));
+    s.push_str(&format!("%%Title: ({})\n", ps_comment_text(&doc.name).replace([')', '('], "_")));
     s.push_str(&format!(
         "%%BoundingBox: 0 0 {} {}\n%%HiResBoundingBox: 0 0 {w:.4} {h:.4}\n%AI3_Cropmarks: 0 0 {w:.4} {h:.4}\n",
         w.ceil() as i64,
@@ -1486,18 +1561,28 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
     s.push_str("%%DocumentProcessColors: Black\n%%EndComments\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n");
     let pt = |x: f64, y: f64| (x * k, h - y * k);
     let mut n = 0;
-    for (name, path) in &chosen {
+    for path in &chosen {
         let subs: Vec<_> = path.subpaths.iter().filter(|sp| !sp.knots.is_empty()).collect();
         if subs.is_empty() {
             continue;
         }
         n += 1;
-        s.push_str(&format!("%%Note: {name}\n"));
-        let compound = subs.len() > 1;
-        if compound {
-            s.push_str("*u\n");
-        }
+        // One marked block per path, one group per subpath. A `Join` subpath belongs to the
+        // component before it, so it writes that component's note (union when none precedes).
+        s.push_str("%Adobe_Photoshop_Path_Begin:<< /defaultFill false >>\n");
+        let mut component_op = photocraft_doc::PathOp::Combine;
         for sp in subs {
+            if sp.op != photocraft_doc::PathOp::Join {
+                component_op = sp.op;
+            }
+            s.push_str("*u\n");
+            s.push_str(match component_op {
+                photocraft_doc::PathOp::Exclude => "%AI3_Note:<< /operation /xor /defaultFill false >>\n",
+                photocraft_doc::PathOp::Subtract => "%AI3_Note:<< /operation /subtract >>\n",
+                photocraft_doc::PathOp::Intersect => "%AI3_Note:<< /operation /intersect >>\n",
+                photocraft_doc::PathOp::Combine | photocraft_doc::PathOp::Join => "%AI3_Note:<< /operation /union >>\n",
+            });
+            s.push_str("1 XR\n");
             let (x, y) = pt(sp.knots[0].anchor.x, sp.knots[0].anchor.y);
             s.push_str(&format!("{x:.4} {y:.4} m\n"));
             for seg in sp.segments() {
@@ -1514,10 +1599,9 @@ pub fn paths_to_ai(doc: &Document, which: &str) -> Result<(String, usize)> {
             }
             // Unpainted: `n` closes the path, `N` leaves it open.
             s.push_str(if sp.closed { "n\n" } else { "N\n" });
-        }
-        if compound {
             s.push_str("*U\n");
         }
+        s.push_str("%Adobe_Photoshop_Path_End\n");
     }
     s.push_str("%%PageTrailer\n%%Trailer\n%%EOF\n");
     Ok((s, n))
@@ -1528,7 +1612,8 @@ fn paths_to_illustrator(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let which = p.get("paths").and_then(Value::as_str).unwrap_or("all");
     let (text, n) = paths_to_ai(&d.doc, which)?;
-    if n == 0 {
+    // Document Bounds writes the frame alone (#13771); any other choice must match a path.
+    if n == 0 && which != "documentBounds" {
         return Err(bad(cmd, format!("no paths match `{which}`")));
     }
     match p.get("path").and_then(Value::as_str).filter(|v| !v.is_empty()) {
@@ -1540,9 +1625,9 @@ fn paths_to_illustrator(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-fn has_paths(s: &Session) -> std::result::Result<(), String> {
-    let d = s.active().ok_or("no document open")?;
-    if d.doc.paths.is_empty() && d.doc.work_path.is_none() { Err("the document has no paths".into()) } else { Ok(()) }
+/// Enabled for every open document, with or without paths: Document Bounds needs none (#13771).
+fn has_document(s: &Session) -> std::result::Result<(), String> {
+    s.active().map(|_| ()).ok_or_else(|| "no document open".into())
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -1608,8 +1693,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "Paths to Illustrator…",
             &["File", "Export"],
             None,
-            r##"{"path":str? (.ai; omit to return the text),"paths":"all|work|<path name>"="all"} → {path, paths}"##,
-            has_paths,
+            r##"{"path":str? (.ai; omit to return the text),"paths":"documentBounds|all|work|<path name>"="all" (documentBounds: the file frame with the canvas as bounding box and no path)} → {path, paths}"##,
+            has_document,
             paths_to_illustrator
         ),
     ]
@@ -1618,3 +1703,11 @@ pub fn specs() -> Vec<CommandSpec> {
 #[cfg(test)]
 #[path = "print_cmds/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "print_cmds/paths_export_document_bounds_tests.rs"]
+mod paths_export_document_bounds_tests;
+
+#[cfg(test)]
+#[path = "print_cmds/paths_export_path_blocks_tests.rs"]
+mod paths_export_path_blocks_tests;

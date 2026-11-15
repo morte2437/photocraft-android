@@ -124,6 +124,12 @@ pub fn filter_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, doc: &Document, l
     let rows = std::iter::once(None).chain((0..sm.smart_filters.len()).rev().map(Some));
     for index in rows {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), if index.is_none() { header_height } else { SUB_ROW_H }), Sense::click_and_drag());
+        // Off screen: keep the row's place but skip its painting, widgets and drop (#13118), as
+        // effect rows do. The drawn marker below still records `l`, so a selected filter that
+        // scrolled away stays selected.
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
         if let Some((to, action)) = reorder_drop(ui, l, sm.smart_filters.len(), index, rect) {
             // The moved filter ends up selected, with its smart object active, as after a click.
             ui.ctx().data_mut(|d| d.insert_temp::<FilterDrag>(selected_key(doc.id), (l.id.0, Some(to))));
@@ -411,7 +417,9 @@ fn reorder_drop(ui: &egui::Ui, l: &Layer, n: usize, row: Option<usize>, rect: Re
     let ctx = ui.ctx();
     let (from, src) = ctx.data(|d| d.get_temp::<FilterDrag>(drag_key()))?;
     let (src, p) = (src?, ctx.input(|i| i.pointer.interact_pos())?);
-    if from != l.id.0 || !rect.contains(p) {
+    // Only the part of the row the list shows: one half scrolled under the panel's header takes
+    // no drop there (#13118, as masks since #10485).
+    if from != l.id.0 || !rect.intersect(ui.clip_rect()).contains(p) {
         return None;
     }
     let above = p.y < rect.center().y;
@@ -496,12 +504,15 @@ pub fn open_editor(app: &mut PhotocraftApp, ctx: &egui::Context, layer: u64, sm:
             return;
         }
     };
-    let Some(id) = crate::adjust_dialog::open(app, &f.command).or_else(|| {
+    let Some(id) = crate::adjust_dialog::open_smart_filter(app, &f.command, &f.params, target.clone()).or_else(|| {
         let id = crate::filter_dialog::has_dialog(&f.command).then(|| crate::filter_dialog::open(app, &f.command)).flatten()?;
         // The filter dialog opens on the user's last-used values; a recorded filter that lacks a
         // key must show (and save) the schema default instead.
         let mut fields = app.ui.dialog_mut(id)?.fields.clone();
         crate::filter_dialog::reset_fields(app, &mut fields);
+        if let Value::Object(p) = &f.params {
+            fields.extend(p.iter().filter(|(key, _)| !key.starts_with("__")).map(|(key, value)| (key.clone(), value.clone())));
+        }
         app.ui.dialog_mut(id)?.fields = fields;
         Some(id)
     }) else {
@@ -509,13 +520,6 @@ pub fn open_editor(app: &mut PhotocraftApp, ctx: &egui::Context, layer: u64, sm:
     };
     if let Some(d) = app.ui.dialog_mut(id) {
         d.fields.insert("__smartFilter".into(), target);
-        if let Value::Object(p) = &f.params {
-            for (k, v) in p {
-                if !k.starts_with("__") {
-                    d.fields.insert(k.clone(), v.clone());
-                }
-            }
-        }
     }
 }
 
@@ -776,6 +780,61 @@ mod tests {
         assert_eq!(sm.smart_filters.len(), 1, "no filter was stacked");
         assert_eq!(sm.smart_filters[0].params.get("brightness").and_then(Value::as_f64), Some(40.0));
         assert_eq!(sm.smart_filters[0].params.get("contrast").and_then(Value::as_f64), Some(-10.0));
+    }
+
+    /// #11463: a Selective Color smart filter recorded in the single-colour form, re-edited. Its
+    /// old `cyan` and `relative` must not survive replacement and override the edit when the filter
+    /// renders and reopens.
+    #[test]
+    fn a_selective_color_smart_filter_in_the_old_form_keeps_its_edit() {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s.execute("edit.fill", json!({"contents": "color", "color": "#2030c0"})).unwrap();
+        let id = s.execute("layer.smartObjects.convertToSmartObject", json!({})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("image.adjustments.selectiveColor", json!({"colors": "blues", "cyan": 30, "relative": false})).unwrap();
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        app.background_jobs = false;
+        let recorded = |app: &PhotocraftApp| match &app.session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().content {
+            LayerContent::Smart(sm) => sm.clone(),
+            other => panic!("expected a smart object, got {other:?}"),
+        };
+        let sm = recorded(&app);
+        assert_eq!(sm.smart_filters[0].params.get("cyan").and_then(Value::as_f64), Some(30.0), "recorded in the old form");
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1200.0, 900.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        let ctx = h.ctx.clone();
+        open_editor(h.state_mut(), &ctx, id, &sm, 0);
+        let dialog = h.state().ui.dialogs.last().unwrap().id;
+        h.run_steps(3);
+        let fields = &h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+        assert!(!fields.contains_key("cyan") && !fields.contains_key("relative"), "folded: {fields:?}");
+        assert_eq!(fields["colors"], json!("blues"), "normalization keeps the selected colour");
+        assert_eq!(fields["blues"][0].as_f64(), Some(30.0));
+        assert_eq!(fields["method"], json!("absolute"));
+        // Edit the row and the Method, then OK.
+        let fields = &mut h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+        fields.insert("blues".into(), json!([10.0, 0.0, 0.0, 0.0]));
+        fields.insert("method".into(), json!("relative"));
+        h.run_steps(2);
+        crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+        let sm = recorded(h.state());
+        assert_eq!(sm.smart_filters.len(), 1, "no filter was stacked");
+        let photocraft_doc::Adjustment::SelectiveColor { relative, adjustments } =
+            photocraft_engine::adjust_cmds::selective_from_params(&sm.smart_filters[0].params, None).unwrap()
+        else {
+            panic!("Selective Color params");
+        };
+        assert!(relative, "the edited Method renders");
+        assert_eq!(adjustments[4], [10.0, 0.0, 0.0, 0.0], "the edited row renders");
+        // And reopens as edited.
+        open_editor(h.state_mut(), &ctx, id, &sm, 0);
+        let dialog = h.state().ui.dialogs.last().unwrap().id;
+        h.run_steps(3);
+        let fields = &h.state_mut().ui.dialog_mut(dialog).unwrap().fields;
+        assert_eq!(fields["colors"], json!("blues"), "reopening keeps the selected colour");
+        assert_eq!(fields["blues"][0].as_f64(), Some(10.0));
+        assert_eq!(fields["method"], json!("relative"));
     }
 
     /// #6324: a smart filter opened for editing previews, and its preview replaces the filter in

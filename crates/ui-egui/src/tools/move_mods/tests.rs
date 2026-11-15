@@ -90,7 +90,7 @@ fn alt_drag_duplicates_and_moves_the_copy_in_one_step() {
     assert_eq!(bounds(&app, copy), photocraft_geom::Rect::new(18, 13, 34, 29));
     let st = app.session.active().unwrap();
     assert_eq!(st.history.past_len(), h0 + 1, "one undo step");
-    assert_eq!(st.history.undo_label(), Some(DUPLICATE_MOVE_LABEL));
+    assert_eq!(st.history.undo_label(), Some("Move"));
     assert!(app.session.undo());
     assert_eq!(app.session.active().unwrap().doc.layers.len(), n0);
     assert_eq!(bounds(&app, orig), photocraft_geom::Rect::new(8, 8, 24, 24));
@@ -115,7 +115,7 @@ fn alt_drag_keeps_the_later_states_in_non_linear_history() {
     assert!(app.session.undo());
     let mut expected = app.session.active().unwrap().history.entries();
     expected.extend(app.session.active().unwrap().history.redo_labels().map(str::to_string));
-    expected.push(DUPLICATE_MOVE_LABEL.into());
+    expected.push("Move".into());
     drag(&mut app, &[[16.0, 16.0], [20.0, 16.0], [26.0, 21.0]], egui::Modifiers::ALT);
     assert_eq!(app.session.active().unwrap().history.entries(), expected, "the later state stays");
 }
@@ -328,11 +328,33 @@ fn a_run_of_arrow_nudges_is_one_history_step() {
     assert!(press_at(&mut app, egui::Key::ArrowDown, egui::Modifiers::SHIFT, 7.6));
     assert_eq!(bounds(&app, id), photocraft_geom::Rect::new(20, 18, 36, 34));
     assert_eq!(history(&app), h0 + 1, "thirteen presses, one state");
-    assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Move"));
+    assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Nudge"));
     assert!(app.session.undo());
     assert_eq!(bounds(&app, id), photocraft_geom::Rect::new(8, 8, 24, 24), "one Undo takes back the run");
     assert!(app.session.redo());
     assert_eq!(bounds(&app, id), photocraft_geom::Rect::new(20, 18, 36, 34), "and one Redo does it again");
+}
+
+/// #9511: zoomed out, where each press moves several document pixels, a run of nudges is still
+/// one History state.
+#[test]
+fn a_run_of_arrow_nudges_is_one_history_step_zoomed_out() {
+    let mut app = app_with_layer();
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    app.ui.views[0].zoom = 0.5;
+    let h0 = history(&app);
+    // Twelve taps of 2 px each at 50 %, then ⇧ for ten more px: still the same run.
+    for i in 0..12 {
+        assert!(press_at(&mut app, egui::Key::ArrowRight, egui::Modifiers::NONE, 5.0 + 0.2 * f64::from(i)));
+    }
+    assert!(press_at(&mut app, egui::Key::ArrowDown, egui::Modifiers::SHIFT, 7.6));
+    assert_eq!(bounds(&app, id), photocraft_geom::Rect::new(32, 18, 48, 34));
+    assert_eq!(history(&app), h0 + 1, "thirteen presses, one state");
+    assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Nudge"));
+    assert!(app.session.undo());
+    assert_eq!(bounds(&app, id), photocraft_geom::Rect::new(8, 8, 24, 24), "one Undo takes back the run");
+    assert!(app.session.redo());
+    assert_eq!(bounds(&app, id), photocraft_geom::Rect::new(32, 18, 48, 34), "and one Redo does it again");
 }
 
 /// A pause longer than Nudge Bundle Pause starts a new run; a longer pause setting keeps it.
@@ -434,7 +456,7 @@ fn alt_nudges_do_not_join_a_run() {
     press(&mut app, egui::Key::ArrowRight, egui::Modifiers::ALT);
     press(&mut app, egui::Key::ArrowRight, egui::Modifiers::NONE);
     assert_eq!(history(&app), h0 + 3);
-    assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Move"), "the run after the copy is a state of its own");
+    assert_eq!(app.session.active().unwrap().history.undo_label(), Some("Nudge"), "the run after the copy is a state of its own");
 }
 
 /// #2259: nudges of the selection outline bundle the same way.
@@ -500,6 +522,19 @@ fn free_transform_nudges_bundle_into_one_undo_step() {
     assert_eq!(quad(&app), moved(2.0, 0.0));
 }
 
+/// #9511: Free Transform keeps Photoshop's 1 document pixel per arrow press at any zoom; only
+/// the Move tool's nudge is one screen pixel.
+#[test]
+fn free_transform_nudges_one_document_pixel_zoomed_out() {
+    let mut app = app_with_layer();
+    app.ui.views[0].zoom = 0.5;
+    let ctx = egui::Context::default();
+    crate::transform_tool::begin(&mut app, &ctx).unwrap();
+    let q0 = app.ui.transform.as_ref().unwrap().quad;
+    assert!(press(&mut app, egui::Key::ArrowRight, egui::Modifiers::NONE));
+    assert_eq!(app.ui.transform.as_ref().unwrap().quad, q0.map(|q| [q[0] + 1.0, q[1]]), "→ at 50 % moves the box 1 px");
+}
+
 /// Arrow keys while editing text must not nudge layers, leaving the keys to the type tool (#5355).
 #[test]
 fn arrow_keys_ignored_during_text_edit() {
@@ -522,4 +557,38 @@ fn arrow_keys_ignored_during_text_edit() {
     assert!(!press(&mut app, egui::Key::ArrowDown, egui::Modifiers::SHIFT));
     assert!(!press(&mut app, egui::Key::ArrowLeft, egui::Modifiers::ALT));
     assert_eq!(bounds(&app, id), b0, "arrow keys do not nudge while editing text");
+}
+
+/// #9511: as in Photoshop, a plain arrow nudge is one screen pixel, so zoomed out it moves the
+/// layer several document pixels (floor of 1 / zoom: 4 at 25 %, 2 at 50 %, 1 at 66.7 %, 1 at
+/// 100 % and above, up to 1600 %); ⇧ is 10 document pixels at any zoom.
+#[test]
+fn a_nudge_is_one_screen_pixel() {
+    for (zoom, step) in [(0.25, 4), (0.5, 2), (2.0 / 3.0, 1), (1.0, 1), (2.0, 1), (16.0, 1)] {
+        let mut app = app_with_layer();
+        let id = app.session.active().unwrap().active_layer.unwrap();
+        app.ui.views[0].zoom = zoom;
+        assert!(press(&mut app, egui::Key::ArrowRight, egui::Modifiers::NONE));
+        assert_eq!(left_edge(&app, id), 8 + step, "→ at {zoom}");
+        assert!(press(&mut app, egui::Key::ArrowLeft, egui::Modifiers::SHIFT));
+        assert_eq!(left_edge(&app, id), 8 + step - 10, "⇧← at {zoom}");
+    }
+}
+
+/// #9511: below 0.1 % (a large document zooms out until its shorter side is 2 px) the nudge is
+/// still one screen pixel: 6000 document pixels at a 12,000 × 12,000 px document's lowest zoom,
+/// not capped at 1000. The ladder's f32 rungs (0.1 %, 0.2 %) still give whole steps (1000,
+/// not 999).
+#[test]
+fn a_nudge_is_one_screen_pixel_below_a_tenth_of_a_percent() {
+    let lowest = crate::zoom_levels::min([12_000, 12_000]);
+    // 0.3333334 is just above a third, off the ladder (pinch, Zoom tool drag): 2.9999994 screen
+    // pixels' worth floors to 2, while the ladder's own f32 third still gives 3 (#10438 review).
+    for (zoom, step) in [(0.002, 500), (0.001, 1000), (0.0005, 2000), (lowest, 6000), (0.333_333_4, 2), (1.0 / 3.0, 3)] {
+        let mut app = app_with_layer();
+        let id = app.session.active().unwrap().active_layer.unwrap();
+        app.ui.views[0].zoom = zoom;
+        assert!(press(&mut app, egui::Key::ArrowRight, egui::Modifiers::NONE));
+        assert_eq!(left_edge(&app, id), 8 + step, "→ at {zoom}");
+    }
 }

@@ -67,8 +67,9 @@ impl WarpStyle {
         WarpStyle::Twist,
     ];
 
-    /// The styles the Warp menus list: none, custom and the presets. [`WarpStyle::Cylinder`] is
-    /// read from PSDs and taken by commands, but has no editor yet.
+    /// The styles every Warp menu lists: none, custom and the presets. [`WarpStyle::Cylinder`] is
+    /// not one of them: Transform Warp's menu adds it after these (it has its own editor there),
+    /// while Warp Text has no cylinder.
     pub fn all() -> impl Iterator<Item = WarpStyle> {
         [WarpStyle::None, WarpStyle::Custom].into_iter().chain(Self::PRESETS)
     }

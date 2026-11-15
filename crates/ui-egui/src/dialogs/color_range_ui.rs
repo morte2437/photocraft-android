@@ -401,7 +401,7 @@ fn radio(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
 }
 
 /// Eyedropper button: the pipette icon with a +/− badge; labelled for accessibility.
-fn eyedropper(ui: &mut egui::Ui, badge: &str, selected: bool, label: &str) -> egui::Response {
+pub(crate) fn eyedropper(ui: &mut egui::Ui, badge: &str, selected: bool, label: &str) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let r = crate::icons::button(ui, "pipette", 26.0, selected, label);
     if !badge.is_empty() {
@@ -528,7 +528,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 });
                 let (add, sub) = (points(f, "points").len(), points(f, "subtractPoints").len());
                 let what = match (add, sub) {
-                    (0, 0) => tl!("Sample: foreground colour").to_string(),
+                    (0, 0) => tl!("Sample: foreground color").to_string(),
                     (a, 0) => crate::i18n::trn(crate::i18n::current(), a as u64, "{n} sample", "{n} samples"),
                     (a, s) => crate::i18n::fmt(
                         tl!("{added}, {removed} subtracted"),
@@ -571,7 +571,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
         }
     });
     if app.session.active().is_none() {
-        ui.label(egui::RichText::new(tl!("Open a document to select a colour range.")).color(t.text_faint));
+        ui.label(egui::RichText::new(tl!("Open a document to select a color range.")).color(t.text_faint));
     }
 }
 

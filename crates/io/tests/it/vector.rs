@@ -7,6 +7,8 @@ use std::path::{Path as FsPath, PathBuf};
 #[cfg(feature = "corpus")]
 use std::sync::Arc;
 
+#[cfg(feature = "corpus")]
+use craft_psd::PsdFile;
 use photocraft_color::{Color, ColorMode, SampleType};
 use photocraft_doc::{
     Document, Fill, Knot, Layer, LayerContent, LineCap, LineJoin, LiveShape, NamedPath, Path, PathOp, ShapeLayer, ShapeStroke, Size, StrokeAlign, Subpath,
@@ -14,8 +16,6 @@ use photocraft_doc::{
 };
 use photocraft_geom::{Point, Rect};
 use photocraft_io::*;
-#[cfg(feature = "corpus")]
-use photocraft_psd::PsdFile;
 
 fn roundtrip(d: &Document) -> Document {
     let r = export(d, "x.psd", &ExportOptions::default()).unwrap();
@@ -222,7 +222,7 @@ fn shape_density_and_feather_roundtrip_through_mask_parameters() {
             sh.cache = Some(photocraft_vector::render_shape(&sh, d.pixel_format(), d.bounds()));
             d.layers.push(Layer::new("Shape", LayerContent::Shape(sh)));
             let bytes = export(&d, "x.psd", &ExportOptions::default()).unwrap().bytes;
-            let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+            let file = craft_psd::PsdFile::from_bytes(&bytes).unwrap();
             let rec = file.layers().last().unwrap();
             let p = rec.layer_mask().and_then(|m| m.parameters).expect("mask parameters");
             assert_eq!((p.vector_density, p.vector_feather), (Some(128), Some(6.0)), "{depth:?}");
@@ -241,7 +241,7 @@ fn shape_density_and_feather_roundtrip_through_mask_parameters() {
     let mut d = doc();
     d.layers.push(shape_layer(ShapeLayer { path: square, fill: Some(Fill::Solid(Color::BLACK)), ..ShapeLayer::default() }));
     let bytes = export(&d, "x.psd", &ExportOptions::default()).unwrap().bytes;
-    let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+    let file = craft_psd::PsdFile::from_bytes(&bytes).unwrap();
     assert!(file.layers().last().unwrap().layer_mask().and_then(|m| m.parameters).is_none());
     let LayerContent::Shape(back) = &import("x.psd", &bytes).unwrap().document.layers[1].content else { panic!("a shape") };
     assert_eq!((back.density, back.feather), (1.0, 0.0));

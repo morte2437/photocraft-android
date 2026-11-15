@@ -33,8 +33,13 @@ pub(crate) use thumbs::layer_thumb_frame;
 pub use thumbs::surface_fingerprint;
 
 impl PhotocraftApp {
+    /// Creates a new application state managing the engine session and UI services; the session
+    /// keeps the services' automation policy as the gate actions automation wrote play under.
     pub fn new(mut session: Session, mut services: Services) -> Self {
         session.updates.check = services.check_updates.take();
+        // Actions automation wrote keep this gate when the user plays them. Batch and droplets
+        // copy steps instead of the action, so they do not keep the gate yet.
+        session.automation_gate = session.automation_gate.or(services.automation_authorize);
         let mut app = Self {
             session,
             ui: UiState::default(),
@@ -78,12 +83,14 @@ impl PhotocraftApp {
             last_stroke_end: None,
             brush_resize: None,
             quick_pick: false,
+            move_pick: None,
             brush_resize_armed: false,
             alt_sampling: false,
             mixer_sampling: false,
             caps_lock: false,
             opacity_keys: None,
             control_rx: None,
+            agent_link: crate::AgentLinkStatus::default(),
             captures: crate::screenshot::Captures::default(),
             type_ime: type_tool::ImeState::default(),
             input_waiters: Vec::new(),
@@ -98,6 +105,7 @@ impl PhotocraftApp {
             fonts_ready: false,
             last_canvas_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0)),
             arrange_start: 0,
+            drawing_window: None,
             ppp: 1.0,
             drop_canvas_rect: None,
             tab_strip: None,
@@ -126,11 +134,13 @@ impl PhotocraftApp {
             color_range: None,
             adjust_preview: None,
             live_adjust_preview: None,
+            levels_clipping: None,
             synthetic: Vec::new(),
             synthetic_batch: None,
             synthetic_reinject: false,
             synthetic_snapshot: None,
             automation_input: false,
+            programmatic_playback: false,
             run_depth: 0,
             paused_playbacks: Default::default(),
             channel_thumbs: None,
@@ -138,10 +148,13 @@ impl PhotocraftApp {
             type_layout: None,
             type_clicks: None,
             type_transform_preview: None,
+            type_path_damage: None,
+            type_box_preview: None,
             type_font_preview: None,
             color_picker_preview: None,
             guide_drag: None,
             layer_box: None,
+            finished_pens: Vec::new(),
             crop: Default::default(),
             pcrop: Default::default(),
             hover_doc: None,
@@ -156,6 +169,8 @@ impl PhotocraftApp {
             clip_read_for_paste: false,
             smart_svg: Default::default(),
             transform_preview: None,
+            transform_area: None,
+            transform_preparing: None,
             move_mods: Default::default(),
             nudge_bundle: Default::default(),
             style_preview: None,
@@ -167,7 +182,7 @@ impl PhotocraftApp {
             distort: Default::default(),
             gradient: Default::default(),
             camera_raw: None,
-            pending_raw_open: None,
+            raw_shelf: Vec::new(),
             raw_redevelop: Vec::new(),
             wide_angle: None,
             dialog_edits: Default::default(),
@@ -179,6 +194,7 @@ impl PhotocraftApp {
             doc_hist_preview: None,
             hist_job: None,
             hist_uncached: None,
+            hist_sel_key: None,
             gpu: None,
             window_device: None,
             window_lost: false,
@@ -206,6 +222,8 @@ impl PhotocraftApp {
             held_memory_prompts: Default::default(),
             prompt_order: Default::default(),
             held_preset_import: None,
+            held_record_again: None,
+            held_insert_menu: None,
             allow_close: false,
             stylus: Default::default(),
             control_click: Default::default(),
@@ -222,7 +240,6 @@ impl PhotocraftApp {
         histogram_panel::restore_options(&mut app);
         // After the saved preferences, which say whether the set was already offered.
         kys_import::offer_import(&mut app);
-        notices::wayland_file_drop_guidance(&mut app);
         // File › Scripts › Script Events Manager: "Start Application".
         photocraft_engine::automate_cmds::fire_event(&mut app.session, "startApplication");
         app
@@ -232,7 +249,7 @@ impl PhotocraftApp {
 impl eframe::App for PhotocraftApp {
     fn on_exit(&mut self) {
         if let Err(err) = tool_memory::save_on_exit(self) {
-            log::warn!("Preferences: could not save the final tool selection: {err}");
+            log::warn!("Preferences: could not save the final tool state: {err}");
         }
         // Release a pending screenshot's image budget and answer its control request; the
         // callback is inert afterwards (it holds only a weak slot).
@@ -245,8 +262,12 @@ impl eframe::App for PhotocraftApp {
         self.finish_type_reset_logic(ctx);
     }
 
+    /// Drain the platform's optional WinTab queue before the frame's input is processed.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         let frame_start = gpu_canvas::now_ms();
+        if let Some(tablet_poll) = self.services.tablet_poll.as_mut() {
+            tablet_poll(raw_input.focused);
+        }
         // An undecorated window gets its caption back when the toolkit changes its flags
         // (maximize, restore, …): take it off again before the frame is laid out (#2246).
         if let Some(window_frame) = self.services.window_frame.as_mut() {

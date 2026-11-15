@@ -13,7 +13,7 @@ fn a_background_is_written_without_a_transparency_channel() {
     let size = photocraft_geom::Size::new(8, 6);
     let mut doc = Document::with_background("bg", size, ColorMode::Rgb, SampleType::U8, Color::rgb(0.2, 0.4, 0.6));
     doc.layers.push(Layer::raster("Layer 1", doc.pixel_format()));
-    let file = document_to_psd(&doc);
+    let file = document_to_psd(&doc).unwrap();
     let layers = &file.layer_info.as_ref().unwrap().layers;
     let ids = |i: usize| layers[i].channels.iter().map(|c| c.id).collect::<Vec<_>>();
     assert_eq!(ids(0), vec![0, 1, 2], "the Background has no -1 channel");
@@ -27,23 +27,23 @@ fn a_background_is_written_without_a_transparency_channel() {
     // A bottom layer with transparency (or unlocked) is not a Background.
     let mut holey = doc.clone();
     holey.layers[0].surface_mut().unwrap().write_pixel(2, 2, &[0.0, 0.0, 0.0, 0.0]);
-    assert!(document_to_psd(&holey).layer_info.unwrap().layers[0].channels.iter().any(|c| c.id == -1));
+    assert!(document_to_psd(&holey).unwrap().layer_info.unwrap().layers[0].channels.iter().any(|c| c.id == -1));
     let mut unlocked = doc.clone();
     unlocked.layers[0].locks.position = false;
-    assert!(document_to_psd(&unlocked).layer_info.unwrap().layers[0].channels.iter().any(|c| c.id == -1));
+    assert!(document_to_psd(&unlocked).unwrap().layer_info.unwrap().layers[0].channels.iter().any(|c| c.id == -1));
 }
 
 /// A flat 1-bit Bitmap file (no layers) opens in Photoshop as its Background; so does it in
 /// PhotoCraft, and it is written back as one (no transparency channel).
 #[test]
 fn a_flat_bitmap_file_opens_and_saves_as_a_background() {
-    let file = photocraft_psd::testgen::merged_only(Version::Psd, PsdMode::Bitmap, 1, Compression::Raw, 8, 4);
+    let file = craft_psd::testgen::merged_only(Version::Psd, PsdMode::Bitmap, 1, Compression::Raw, 8, 4);
     let doc = crate::import("flat.psd", &file.to_bytes().unwrap()).unwrap().document;
     let bg = &doc.layers[0];
     assert!(bg.name == "Background" && bg.locks.transparency && bg.locks.position, "{:?}", bg.locks);
     // Bitmap has no layers in Photoshop (#4814): the file is saved flat in Bitmap mode, without
     // a layer section, and opens as a Background again.
-    let out = document_to_psd(&doc);
+    let out = document_to_psd(&doc).unwrap();
     assert_eq!(out.header.color_mode, PsdMode::Bitmap);
     assert!(out.layer_info.as_ref().is_none_or(|li| li.layers.is_empty()));
     let back = crate::import("flat.psd", &out.to_bytes().unwrap()).unwrap().document;
@@ -88,7 +88,7 @@ fn alpha_ids(file: &PsdFile) -> Option<Vec<u32>> {
 #[test]
 fn psd_stores_spot_ink_as_photoshop_does() {
     let doc = spot_and_alpha_document();
-    let file = PsdFile::from_bytes(&document_to_psd(&doc).to_bytes().unwrap()).unwrap();
+    let file = PsdFile::from_bytes(&document_to_psd(&doc).unwrap().to_bytes().unwrap()).unwrap();
     assert_eq!(extra_planes(&file, 2), [0, 191, 64, 255, 255, 64, 191, 0], "spot, then alpha");
     assert_eq!(file.global_layer_mask.as_ref().map(|m| m.data.len()), Some(0));
     let flags: Vec<u8> = file.layers().iter().map(|l| l.flags.0 & LayerFlags::BIT4_USEFUL).collect();
@@ -110,16 +110,16 @@ fn psd_alpha_identifiers_number_the_channels_as_photoshop_does() {
     let size = photocraft_geom::Size::new(4, 1);
     for mode in [ColorMode::Rgb, ColorMode::Cmyk, ColorMode::Grayscale, ColorMode::Lab] {
         let mut doc = Document::with_background("bg", size, mode, SampleType::U8, Color::rgb(1.0, 1.0, 1.0));
-        assert_eq!(alpha_ids(&document_to_psd(&doc)), None, "{mode:?} without channels");
+        assert_eq!(alpha_ids(&document_to_psd(&doc).unwrap()), None, "{mode:?} without channels");
         doc.channels = spot_and_alpha_document().channels;
-        let file = document_to_psd(&doc);
+        let file = document_to_psd(&doc).unwrap();
         assert!(!file.merged_has_alpha(), "{mode:?}");
         assert_eq!(alpha_ids(&file), Some(vec![3, 4]), "{mode:?}");
         doc.quick_mask = Some(photocraft_doc::AlphaChannel::new("Quick Mask", Surface::new(PixelFormat::GRAY8)));
-        assert_eq!(alpha_ids(&document_to_psd(&doc)), Some(vec![3, 4, 5]), "{mode:?} with a Quick Mask");
+        assert_eq!(alpha_ids(&document_to_psd(&doc).unwrap()), Some(vec![3, 4, 5]), "{mode:?} with a Quick Mask");
     }
     // The empty layer leaves the composite transparent.
-    let file = document_to_psd(&spot_and_alpha_document());
+    let file = document_to_psd(&spot_and_alpha_document()).unwrap();
     assert!(file.merged_has_alpha());
     assert_eq!(alpha_ids(&file), Some(vec![0, 3, 4]));
 }
@@ -132,7 +132,7 @@ fn psd_alpha_identifiers_number_the_channels_as_photoshop_does() {
 #[test]
 fn a_kept_alpha_identifiers_resource_is_not_written() {
     let kept = || (crate::channel_map::ALPHA_IDENTIFIERS, String::new(), std::sync::Arc::new([0, 0, 0, 3, 0, 0, 0, 2].to_vec()));
-    let mut file = document_to_psd(&spot_and_alpha_document());
+    let mut file = document_to_psd(&spot_and_alpha_document()).unwrap();
     file.resources.retain(|r| r.id != crate::channel_map::ALPHA_IDENTIFIERS);
     file.resources.push(ImageResource::new(kept().0, kept().2.to_vec()));
     let mut opened = crate::import("ps.psd", &file.to_bytes().unwrap()).unwrap().document;
@@ -142,7 +142,7 @@ fn a_kept_alpha_identifiers_resource_is_not_written() {
     assert_eq!(again.resources.iter().filter(|r| r.id == crate::channel_map::ALPHA_IDENTIFIERS).count(), 1);
     assert_eq!(alpha_ids(&again), Some(vec![0, 3, 4]));
     opened.channels.clear();
-    assert_eq!(alpha_ids(&document_to_psd(&opened)), None, "no channels left");
+    assert_eq!(alpha_ids(&document_to_psd(&opened).unwrap()), None, "no channels left");
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn group_divider_id_wraps_without_colliding_with_imported_layer_ids() {
     group.psd_id = Some(u32::MAX);
     doc.layers.push(group);
 
-    let file = document_to_psd(&doc);
+    let file = document_to_psd(&doc).unwrap();
     let ids: Vec<u32> = file.layers().iter().filter_map(|layer| layer.layer_id()).collect();
     let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
     assert_eq!(ids.len(), 3, "group, child and closing divider");
@@ -182,7 +182,7 @@ fn layer_block_follows_a_kept_merged_transparency_marker() {
         s.fill_rect(photocraft_geom::Rect::new(1, 1, 5, 4), &[0.5, 0.2, 0.9, 1.0]);
         doc.layers.push(Layer::new("Layer 1", LayerContent::Raster(s)));
         doc.metadata.psd_global_blocks = vec![(*b"8BIM", *b"Patt", std::sync::Arc::new(Vec::new())), (*b"8BIM", marker, std::sync::Arc::new(Vec::new()))];
-        let saved = PsdFile::from_bytes(&document_to_psd(&doc).to_bytes().unwrap()).unwrap();
+        let saved = PsdFile::from_bytes(&document_to_psd(&doc).unwrap().to_bytes().unwrap()).unwrap();
         let LayerInfoPlacement::GlobalBlock { index, key: written, .. } = saved.layer_info_placement else { panic!("{depth:?}: a global layer block") };
         assert_eq!(written, key);
         let at = saved.global_blocks.iter().position(|b| b.key == marker).expect("the marker is kept");
@@ -192,7 +192,7 @@ fn layer_block_follows_a_kept_merged_transparency_marker() {
     let mut doc = Document::new("t", photocraft_geom::Size::new(8, 6), ColorMode::Rgb, SampleType::F32);
     doc.layers.push(Layer::new("Layer 1", LayerContent::Raster(Surface::new(doc.pixel_format()))));
     doc.metadata.psd_global_blocks = vec![(*b"8BIM", *b"Patt", std::sync::Arc::new(Vec::new()))];
-    let saved = PsdFile::from_bytes(&document_to_psd(&doc).to_bytes().unwrap()).unwrap();
+    let saved = PsdFile::from_bytes(&document_to_psd(&doc).unwrap().to_bytes().unwrap()).unwrap();
     assert!(matches!(saved.layer_info_placement, LayerInfoPlacement::GlobalBlock { index: 0, .. }));
 }
 
@@ -203,11 +203,11 @@ fn a_kept_txt2_goes_with_the_last_type_layer() {
     let mut doc = Document::new("t", photocraft_geom::Size::new(8, 6), ColorMode::Rgb, SampleType::U8);
     doc.layers.push(Layer::new("Layer 1", LayerContent::Raster(Surface::new(doc.pixel_format()))));
     doc.metadata.psd_global_blocks = vec![(*b"8BIM", *b"Txt2", std::sync::Arc::new(b"<< /0 << /1 (stale) >> >>".to_vec()))];
-    let file = document_to_psd(&doc);
+    let file = document_to_psd(&doc).unwrap();
     assert!(!file.global_blocks.iter().any(|b| b.key == *b"Txt2"), "no type layers: no Txt2");
 
     doc.layers.push(Layer::new("T", LayerContent::Text(photocraft_doc::TextLayer::default())));
-    let file = document_to_psd(&doc);
+    let file = document_to_psd(&doc).unwrap();
     assert!(file.global_blocks.iter().any(|b| b.key == *b"Txt2"), "a type layer keeps its Txt2");
 }
 
@@ -224,7 +224,7 @@ fn an_opaque_save_drops_a_kept_merged_transparency_marker() {
         doc.layers.push(Layer::new("Layer 1", LayerContent::Raster(s)));
         doc.channels.push(photocraft_doc::AlphaChannel::new("Alpha 1", Surface::new(PixelFormat::GRAY8)));
         doc.metadata.psd_global_blocks = vec![(*b"8BIM", marker, std::sync::Arc::new(Vec::new()))];
-        let file = document_to_psd(&doc);
+        let file = document_to_psd(&doc).unwrap();
         assert!(!file.global_blocks.iter().any(TaggedBlock::is_merged_transparency_marker), "{case}");
         assert!(!file.merged_has_alpha(), "{case}");
         let back = crate::import("a.psd", &file.to_bytes().unwrap()).unwrap().document;
@@ -236,13 +236,13 @@ fn an_opaque_save_drops_a_kept_merged_transparency_marker() {
 #[test]
 fn unreadable_lr16_warns_on_import_and_is_not_saved_twice() {
     // #2700: a 16-bit file whose Lr16 block claims five layers but holds none.
-    let mut file = photocraft_psd::testgen::merged_only(Version::Psd, PsdMode::Rgb, 16, Compression::Raw, 8, 6);
+    let mut file = craft_psd::testgen::merged_only(Version::Psd, PsdMode::Rgb, 16, Compression::Raw, 8, 6);
     file.global_layer_mask = Some(GlobalLayerMask::default());
     file.global_blocks.push(TaggedBlock::new(*b"Lr16", vec![0, 5, 0, 0]));
     let imported = crate::import("broken.psd", &file.to_bytes().unwrap()).unwrap();
     assert!(imported.warnings.iter().any(|w| w.contains("Lr16") && w.contains("could not be read")), "{:?}", imported.warnings);
 
-    let saved = PsdFile::from_bytes(&document_to_psd(&imported.document).to_bytes().unwrap()).unwrap();
+    let saved = PsdFile::from_bytes(&document_to_psd(&imported.document).unwrap().to_bytes().unwrap()).unwrap();
     let ours = matches!(saved.layer_info_placement, LayerInfoPlacement::GlobalBlock { key, .. } if key == *b"Lr16");
     let kept = saved.global_blocks.iter().filter(|b| b.key == *b"Lr16").count();
     assert_eq!((ours, kept), (true, 0), "exactly one Lr16 block: the document's own layers");
@@ -266,7 +266,7 @@ fn photo_filter_psd_is_four_byte_aligned_and_round_trips() {
         assert_eq!(&data[17..], &[0, 0, 0], "three padding bytes after the 17-byte payload");
     };
 
-    let exported = document_to_psd(&doc);
+    let exported = document_to_psd(&doc).unwrap();
     assert_phfl(&exported);
     let encoded = exported.to_bytes().unwrap();
     let parsed = PsdFile::from_bytes(&encoded).unwrap();
@@ -281,7 +281,7 @@ fn photo_filter_psd_is_four_byte_aligned_and_round_trips() {
     layer.psd_blocks = vec![(*b"phfl", std::sync::Arc::new(legacy))];
     doc.layers.pop();
     doc.layers.push(layer);
-    let repaired = document_to_psd(&doc);
+    let repaired = document_to_psd(&doc).unwrap();
     assert_phfl(&repaired);
     let repaired_bytes = repaired.to_bytes().unwrap();
     assert_phfl(&PsdFile::from_bytes(&repaired_bytes).unwrap());
@@ -298,7 +298,7 @@ fn photo_filter_version_3_is_kept_until_edited() {
     layer.psd_blocks = vec![(*b"phfl", std::sync::Arc::new(v3.clone()))];
     doc.layers.push(layer);
     let phfl = |doc: &Document| {
-        let file = PsdFile::from_bytes(&document_to_psd(doc).to_bytes().unwrap()).unwrap();
+        let file = PsdFile::from_bytes(&document_to_psd(doc).unwrap().to_bytes().unwrap()).unwrap();
         let records = &file.layer_info.as_ref().unwrap().layers;
         records.iter().flat_map(|r| r.blocks.iter()).find(|b| b.key == *b"phfl").map(|b| b.data.clone()).expect("Photo Filter adjustment data")
     };
@@ -320,7 +320,7 @@ fn photo_filter_version_3_is_kept_until_edited() {
 fn light_adjustment_is_kept_verbatim_and_warned() {
     // #6542: Photoshop 2026's Light layer is a `brit` block whose `CgEd` descriptor carries
     // more than Brightness/Contrast. Synthetic block: the extra key names are placeholders.
-    use photocraft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
+    use craft_psd::descriptor::{Descriptor, Value, VersionedDescriptor};
     let brit = vec![0, 0, 0xff, 0xfe, 0, 127, 0, 0];
     let d = Descriptor::new("null")
         .with("Vrsn", Value::Integer(1))
@@ -340,11 +340,11 @@ fn light_adjustment_is_kept_verbatim_and_warned() {
         let records = &file.layer_info.as_ref().unwrap().layers;
         records.iter().flat_map(|r| r.blocks.iter()).find(|b| b.key == *key).map(|b| b.data.clone())
     };
-    let file = PsdFile::from_bytes(&document_to_psd(&doc).to_bytes().unwrap()).unwrap();
+    let file = PsdFile::from_bytes(&document_to_psd(&doc).unwrap().to_bytes().unwrap()).unwrap();
     let (restored, warnings) = crate::psd_import::psd_to_document(&file);
     assert!(warnings.iter().any(|w| w.contains("\"Light 1\"") && w.contains("Light settings")), "{warnings:?}");
     // Saved again unchanged, both blocks are written back byte for byte.
-    let again = PsdFile::from_bytes(&document_to_psd(&restored).to_bytes().unwrap()).unwrap();
+    let again = PsdFile::from_bytes(&document_to_psd(&restored).unwrap().to_bytes().unwrap()).unwrap();
     assert_eq!(block(&again, b"brit").as_deref(), Some(&brit[..]));
     assert_eq!(block(&again, b"CgEd").as_deref(), Some(&cged[..]));
     // A plain Brightness/Contrast descriptor still reads as Brightness/Contrast.
@@ -436,7 +436,7 @@ fn the_size_limit_is_the_exact_encoded_length() {
     assert_eq!(export_sized(&doc, len + PSD_SAVE_HEADROOM - 1).0.written_version(), Version::Psb);
     // The real limit: a small document stays PSD, a forced one is PSB.
     let small = document(1, 1);
-    assert_eq!(document_to_psd(&small).written_version(), Version::Psd);
+    assert_eq!(document_to_psd(&small).unwrap().written_version(), Version::Psd);
     assert_eq!(document_to_psd_with(&small, &PsdExportOptions { force_psb: true, ..Default::default() }).0.written_version(), Version::Psb);
     assert_eq!(psd_version(&document(30_001, 1), false), Version::Psb);
 }
@@ -567,7 +567,7 @@ fn alpha_names_count_the_merged_transparency() {
     let mut a = photocraft_doc::AlphaChannel::new("Alpha 1", photocraft_raster::Surface::new(PixelFormat::GRAY8));
     a.opacity = 0.5;
     doc.channels.push(a);
-    let file = document_to_psd(&doc);
+    let file = document_to_psd(&doc).unwrap();
     let header_extra = usize::from(file.header.channels) - 3;
     let names = |id| file.resources.iter().find(|r| r.id == id).map(|r| r.data.clone()).unwrap();
     let pascal = names(1006);

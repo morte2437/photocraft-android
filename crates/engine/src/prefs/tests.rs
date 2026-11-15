@@ -116,6 +116,25 @@ fn appearance_defaults_and_legacy_theme_migrate() {
     }
 }
 
+/// The Serbian interface language was saved as `sr` before the catalogs moved to craft-i18n,
+/// where it is `sr-latn`: a saved `sr` (any case) loads as `sr-latn` and is saved as `sr-latn`.
+/// Other codes, and `auto`, load as saved.
+#[test]
+fn a_saved_serbian_language_migrates_to_sr_latn() {
+    for saved in ["sr", "SR"] {
+        let mut s = Session::new();
+        s.load_prefs_json(&json!({"interface": {"language": saved}}).to_string()).unwrap();
+        assert_eq!(s.prefs().interface.language, "sr-latn", "{saved}");
+        let resaved: Value = serde_json::from_str(&s.prefs_to_json()).unwrap();
+        assert_eq!(resaved["interface"]["language"], "sr-latn", "saved under the new code");
+    }
+    for kept in ["sr-latn", "bs", "auto", "en"] {
+        let mut s = Session::new();
+        s.load_prefs_json(&json!({"interface": {"language": kept}}).to_string()).unwrap();
+        assert_eq!(s.prefs().interface.language, kept);
+    }
+}
+
 #[test]
 fn legacy_theme_migration_preserves_saved_theme_slots() {
     for (legacy, slot, saved) in [("proMedium", "darkTheme", "solarizedDark"), ("studioLight", "lightTheme", "adwaita")] {
@@ -510,6 +529,20 @@ fn svg_group_rasterization_threshold_is_bounded_by_document_depth() {
     assert_eq!(s.prefs().file_handling.rasterize_svg_groups_deeper_than, 0, "zero disables the preference threshold");
     assert!(s.execute("prefs.set", json!({"path": pref, "value": photocraft_doc::MAX_GROUP_DEPTH + 1})).is_err());
     assert_eq!(s.prefs().file_handling.rasterize_svg_groups_deeper_than, 0, "out-of-range preferences leave the valid value unchanged");
+}
+
+#[test]
+fn tablet_input_pref_defaults_to_windows_ink() {
+    let mut s = session();
+    assert_eq!(s.prefs().tools.tablet_input, TabletInput::WindowsInk);
+    assert_eq!(s.execute("prefs.get", json!({"path": "tools.tabletInput"})).unwrap(), json!("windowsInk"));
+    assert_eq!(choices("tools.tabletInput"), Some(TabletInput::NAMES));
+    s.execute("prefs.set", json!({"path": "tools.tabletInput", "value": "winTab"})).unwrap();
+    assert_eq!(s.prefs().tools.tablet_input, TabletInput::WinTab);
+    for bad in [json!("ink"), json!(1), json!(true), json!(null)] {
+        assert!(s.execute("prefs.set", json!({"path": "tools.tabletInput", "value": bad})).is_err());
+    }
+    assert_eq!(s.prefs().tools.tablet_input, TabletInput::WinTab, "rejected values change nothing");
 }
 
 #[test]
@@ -1026,6 +1059,25 @@ fn a_wrongly_typed_value_resets_only_that_field() {
 }
 
 #[test]
+fn the_removed_enable_animations_preference_still_loads_and_is_unknown() {
+    // #9479: Interface › Enable animations is gone (Photoshop has no such setting). Files saved
+    // with it still load whole, without a reported bad value, and the key isn't written back.
+    let mut s = Session::new();
+    let invalid =
+        s.load_prefs_json(r#"{"version": 2, "interface": {"enableAnimations": false, "showTooltips": false}, "performance": {"historyStates": 20}}"#).unwrap();
+    assert!(invalid.is_empty(), "{invalid:?}");
+    assert!(!s.prefs().interface.show_tooltips, "its neighbours load");
+    assert_eq!(s.prefs().performance.history_states, 20);
+    assert!(!s.prefs_to_json().contains("enableAnimations"));
+    for value in [json!(true), json!(false), json!("nope")] {
+        let e = s.execute("prefs.set", json!({"values": {"interface.enableAnimations": value}})).unwrap_err();
+        assert!(e.to_string().contains("unknown preference"), "{e}");
+        assert!(s.execute("prefs.set", json!({"path": "interface.enableAnimations", "value": value})).is_err());
+    }
+    assert!(s.execute("prefs.get", json!({"path": "interface.enableAnimations"})).is_err());
+}
+
+#[test]
 fn a_wrongly_typed_section_or_colour_setting_resets_only_that_part() {
     let mut s = Session::new();
     let invalid = s
@@ -1080,6 +1132,19 @@ fn the_web_build_caps_memory_usage() {
         assert_eq!(honoured_memory_usage_mb(stored, true), honoured, "web, {stored} MB");
         assert_eq!(honoured_memory_usage_mb(stored, false), stored, "desktop, {stored} MB");
     }
+}
+
+#[test]
+fn paths_with_empty_segments_cannot_skip_the_alternate_shortcut_limit() {
+    let mut prefs = Preferences::default();
+    let many: Vec<String> = (1..=100).map(|n| format!("F{n}")).collect();
+    for path in [".alternateShortcuts", "alternateShortcuts..", ".alternateShortcuts.file.save", "interface..systemTitleBar"] {
+        assert!(prefs.set(path, json!({"file.save": many})).is_err(), "{path}");
+    }
+    assert!(prefs.set("alternateShortcuts.file.save", json!(many)).is_err());
+    assert!(prefs.alternate_shortcuts.is_empty());
+    prefs.alternate_shortcuts.insert("file.save".into(), (1..=100).map(|n| format!("F{n}")).collect());
+    assert!(prefs.alternates("file.save", None).len() <= MAX_ALTERNATES);
 }
 
 /// The effect cache budget is the stored MB in bytes, at least 16 MB (a hand-edited 0 included),
@@ -1151,4 +1216,22 @@ fn an_effect_cache_above_the_cap_loads_clamped_and_does_not_block_apply() {
         s.execute("prefs.set", json!({"path": "", "value": values})).unwrap();
         assert_eq!(s.execute("prefs.get", json!({"path": "fileHandling.recentFileCount"})).unwrap(), json!(7), "{saved} MB");
     }
+}
+
+/// A file from before the agents switch whose Control Port started the control server keeps
+/// it on; one without a port, or that already says, is left as it is.
+#[test]
+fn a_saved_control_port_turns_the_agent_connection_on() {
+    let load = |text: &str| {
+        let mut session = Session::new();
+        session.load_prefs_json(text).unwrap();
+        session.prefs().integrations.clone()
+    };
+    let legacy = load(r#"{"integrations":{"allowAgentControl":true,"controlPort":7878}}"#);
+    assert!(legacy.connect_agents);
+    assert_eq!(legacy.control_port, 7878);
+    assert!(!load(r#"{"integrations":{"controlPort":0}}"#).connect_agents);
+    assert!(!load(r#"{"integrations":{"controlPort":70000}}"#).connect_agents, "not a usable port");
+    assert!(!load(r#"{"integrations":{"controlPort":7878,"connectAgents":false}}"#).connect_agents, "an explicit choice wins");
+    assert!(!load("{}").connect_agents, "off by default");
 }

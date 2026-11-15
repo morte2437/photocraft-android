@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
+use craft_psd::PsdFile;
+use craft_psd::metadata::{layer_xmp, put_layer_xmp};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, Size};
 use photocraft_io::{ExportOptions, export, import};
-use photocraft_psd::PsdFile;
-use photocraft_psd::metadata::{layer_xmp, put_layer_xmp};
 
 const A: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:app="http://example.com/app/1.0/"><app:arc>120</app:arc></rdf:Description></rdf:RDF></x:xmpmeta>"#;
 const G: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:app="http://example.com/app/1.0/"><app:name>Café 🎨</app:name></rdf:Description></rdf:RDF></x:xmpmeta>"#;

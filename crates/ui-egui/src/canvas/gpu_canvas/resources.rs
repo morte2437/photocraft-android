@@ -79,7 +79,7 @@ pub(super) fn lut_bind_group(
     bgl: &wgpu::BindGroupLayout,
     size: u32,
     bytes: &[u8],
-    shaper: Option<&photocraft_cms::GpuMatrixShaper>,
+    shaper: Option<&craft_cms::GpuMatrixShaper>,
 ) -> wgpu::BindGroup {
     let extent = wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -173,11 +173,11 @@ pub(super) struct Tile {
     pub(super) page: Option<(u64, u32)>,
 }
 
-fn uniform_entry(binding: u32, size: u64, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+fn uniform_entry(binding: u32, size: u64, vis: wgpu::ShaderStages, dynamic: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: vis,
-        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: NonZeroU64::new(size) },
+        ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: dynamic, min_binding_size: NonZeroU64::new(size) },
         count: None,
     }
 }
@@ -236,17 +236,21 @@ fn pipeline(
 }
 
 impl Resources {
+    /// Create the shared canvas pipelines, layouts and display resources.
     pub(super) fn new(device: &wgpu::Device, queue: &wgpu::Queue, target: wgpu::TextureFormat, high: bool) -> Self {
         let module =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pc_canvas"), source: wgpu::ShaderSource::Wgsl(CANVAS_WGSL.into()) });
         let vis = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
+        // Dynamic offset zero avoids WARP/DX12 aliasing copied uniform descriptors
+        // between views (https://github.com/gfx-rs/wgpu/issues/1002).
         let view_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_canvas_view"),
-            entries: &[uniform_entry(0, VIEW_UNIFORM_SIZE, vis), sampler_entry(1)],
+            entries: &[uniform_entry(0, VIEW_UNIFORM_SIZE, vis, true), sampler_entry(1)],
         });
+        // Avoid reusing the last tile's placement on software DX12.
         let tile_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_canvas_tile"),
-            entries: &[texture_entry(0), uniform_entry(1, TILE_UNIFORM_SIZE, vis)],
+            entries: &[texture_entry(0), uniform_entry(1, TILE_UNIFORM_SIZE, vis, true)],
         });
         let lut_entry = wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -270,7 +274,7 @@ impl Resources {
         };
         let lut_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_display_lut"),
-            entries: &[lut_entry, curves_entry, uniform_entry(2, 48, wgpu::ShaderStages::FRAGMENT)],
+            entries: &[lut_entry, curves_entry, uniform_entry(2, 48, wgpu::ShaderStages::FRAGMENT, false)],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pc_canvas"),
@@ -333,7 +337,7 @@ impl Resources {
         };
         let encode_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_encode"),
-            entries: &[unfilterable, uniform_entry(1, 16, wgpu::ShaderStages::FRAGMENT)],
+            entries: &[unfilterable, uniform_entry(1, 16, wgpu::ShaderStages::FRAGMENT, true)],
         });
         let encode_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pc_encode"),

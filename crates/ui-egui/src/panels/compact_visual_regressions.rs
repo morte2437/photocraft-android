@@ -94,7 +94,7 @@ fn tall_toolbar_keeps_the_colour_chips_under_the_tools() {
     for kind in theme::ThemeKind::ALL {
         let harness = toolbar_harness_sized(kind, 1.0, 1600.0);
         let last = harness.get_by_label("Edit Toolbar…").rect();
-        let swap = harness.get_by_label("Swap colours (X)").rect();
+        let swap = harness.get_by_label("Switch Foreground and Background Colors (X)").rect();
         assert!(swap.top() - last.bottom() < 80.0, "{kind:?}: the chips {swap:?} sit far below the last tool {last:?}");
     }
 }

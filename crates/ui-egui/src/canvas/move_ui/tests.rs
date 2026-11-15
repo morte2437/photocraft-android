@@ -110,6 +110,50 @@ fn dragging_a_shape_past_the_canvas_edge_leaves_no_trail() {
     }
 }
 
+/// #9329: an adjustment's mask slides over layers that stay put, so a Move drag of it changes
+/// pixels away from where its bound in place sits. Every pixel that differs between two drag
+/// frames' full composites must be inside the preview's damage (`None` redraws everything).
+#[test]
+fn dragging_a_masked_adjustment_redraws_the_layers_its_mask_slides_over() {
+    for depth in [8, 32] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64, "background": "transparent", "depth": depth})).unwrap();
+        app.sync_views();
+        // A small static layer at (8..16)², and an Invert masked to x 24..56, clear of it.
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 8, "height": 8})).unwrap();
+        app.session.execute("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        app.session.execute("select.rect", json!({"x": 24, "y": 0, "width": 32, "height": 64})).unwrap();
+        app.session.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap();
+        app.ui.tool = Tool::Move;
+        app.ui.tool_options.move_auto_select = false;
+        app.ui.extras.snap = false;
+        app.ui.view.show.smart_guides = false;
+        let m = egui::Modifiers::NONE;
+        crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 40.0, y: 32.0, pressure: 1.0 }, m);
+        let mut frames = Vec::new();
+        // At -2 the mask (22..54) misses the small layer; at -20 (4..36) it covers it.
+        for x in [38.0, 20.0] {
+            crate::canvas::tool_event(&mut app, ToolEvent::Move { x, y: 32.0, pressure: 1.0 }, m);
+            frames.push(super::display_doc(&mut app, 0).unwrap());
+        }
+        let st = app.session.active().unwrap();
+        let r = super::damage(&app, st.doc.id, st.revision, frames[0].1, frames[1].1);
+        let canvas = st.doc.bounds();
+        let (a, b) = (photocraft_compose::render(&frames[0].0, canvas), photocraft_compose::render(&frames[1].0, canvas));
+        let w = canvas.width() as usize;
+        let mut changed = 0;
+        for (i, (pa, pb)) in a.px.iter().zip(&b.px).enumerate() {
+            if pa != pb {
+                changed += 1;
+                let (x, y) = (canvas.x0 + (i % w) as i32, canvas.y0 + (i / w) as i32);
+                assert!(r.is_none_or(|r| r.contains(x, y)), "{depth}-bit: ({x}, {y}) changed outside the redrawn {r:?}");
+            }
+        }
+        assert!(changed > 0, "{depth}-bit: the mask sliding over the small layer changes pixels");
+    }
+}
+
 /// Dragging with an unlinked mask targeted moves the mask alone, shown live and committed;
 /// with the mask linked (or the pixels targeted) the layer moves.
 #[test]
@@ -609,4 +653,46 @@ fn move_tool_drag_onto_another_artboard_nests_the_layer_there() {
     assert_ne!(copy, red, "the copy is active");
     assert_eq!(board(&app, copy), Some(a), "the copy joined board A");
     assert_eq!(board(&app, red), Some(b), "the original stayed on board B");
+}
+
+/// View › Pattern Preview: dragging a block off the right edge shows it coming in on the left,
+/// and the release commits that wrap (#10293).
+#[test]
+fn pattern_preview_drag_wraps_pixels_across_the_canvas_edge() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.execute("file.new", json!({"width": 32, "height": 16, "background": "transparent"})).unwrap();
+    app.sync_views();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(28, 4, 32, 12), &[0.0, 0.0, 1.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    app.ui.view.pattern_preview = true;
+    app.ui.tool = Tool::Move;
+    app.ui.extras.snap = false;
+    app.ui.view.show.smart_guides = false;
+    let m = egui::Modifiers::NONE;
+    crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 30.0, y: 8.0, pressure: 1.0 }, m);
+    crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 36.0, y: 8.0, pressure: 1.0 }, m);
+    let id = app.session.active().unwrap().active_layer.unwrap();
+    let blue = |d: &photocraft_doc::Document, x: i32| d.layer(id).and_then(|l| l.surface()).is_some_and(|s| s.pixel(x, 6)[2] > 0.9);
+    let (shown, wrapped_key) = super::display_doc(&mut app, 0).expect("a wrapped preview");
+    let st = app.session.active().unwrap();
+    let damage = super::damage(&app, st.doc.id, st.revision, 0, wrapped_key);
+    assert!(damage.is_none_or(|r| r.contains(2, 6) && r.contains(30, 6)), "damage covers both changed edges");
+    assert!(blue(&shown, 2), "the preview brings the block in on the left");
+    assert!(!blue(&shown, 30), "the preview clears where the block was");
+    app.ui.view.pattern_preview = false;
+    let (shown, raw_key) = super::display_doc(&mut app, 0).expect("a rebuilt preview");
+    assert_ne!(wrapped_key, raw_key, "the rebuilt preview does not reuse the wrapped cache key");
+    let st = app.session.active().unwrap();
+    assert!(super::damage(&app, st.doc.id, st.revision, wrapped_key, raw_key).is_none(), "old-mode keys force a full redraw");
+    assert!(!blue(&shown, 2), "turning Pattern Preview off mid-drag stops wrapping");
+    assert!(blue(&shown, 34), "the block sits at the raw offset");
+    app.ui.view.pattern_preview = true;
+    crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 36.0, y: 8.0 }, m);
+    let committed = &app.session.active().unwrap().doc;
+    assert!(blue(committed, 2) && !blue(committed, 30), "release commits the wrap");
 }

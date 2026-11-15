@@ -1,6 +1,7 @@
 //! Bounded reads from the repeating document tile used by Pattern Preview.
 
-use super::{BlendMode, BrushSettings, Document, LayerId, Rect, Region, Result, SampleLayers, StrokePoint, Surface, alpha_index, apply_coverage, bad};
+use super::clone::apply_clone_coverage;
+use super::{BlendMode, BrushSettings, Document, LayerId, PixelFormat, Rect, Region, Result, SampleLayers, Stroke, StrokePoint, Surface, alpha_index, bad};
 
 /// At most four disjoint rectangles in the document tile. Projecting the dirty area separately
 /// from the stroke bounds avoids scanning the whole document when a small dab crosses a seam.
@@ -23,6 +24,34 @@ pub(super) fn project(rect: Rect, tile: Rect) -> Vec<Rect> {
     ys.into_iter().flat_map(|(y0, y1)| xs.iter().map(move |&(x0, x1)| Rect::new(x0, y0, x1, y1))).collect()
 }
 
+/// A composite tool's stroke wrapped around the document: `paint` gives the pixels for a
+/// rectangle in the stroke's own coordinates, from the target as it was before the stroke, and
+/// they go on through the stroke's coverage wherever it repeats on the document.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stroke(
+    pre: &Document,
+    target: &mut Surface,
+    stroke: &Stroke,
+    selection: Option<&Surface>,
+    lock: bool,
+    mode: BlendMode,
+    cmd: &str,
+    paint_format: PixelFormat,
+    mut paint: impl FnMut(&Surface, Rect) -> Result<Region>,
+) -> Result<Rect> {
+    let mut renderer = photocraft_paint::StrokeRenderer::new(&stroke.brush, None, 1.0);
+    renderer.push(&stroke.points);
+    renderer.finish();
+    let before = target.clone();
+    let bounds = renderer.bounds();
+    Composite { target, before: &before, tile: pre.bounds(), opacity: stroke.brush.opacity, selection, lock, mode, cmd, paint_format }.draw(
+        bounds,
+        &stroke.brush,
+        &stroke.points,
+        |r| paint(&before, r),
+    )
+}
+
 /// Composite periodic copies of one stroke, restoring each dirty patch from pre-stroke pixels.
 /// Each dab wraps once, then builds flow towards its opacity ceiling. Stroke opacity and
 /// selection are applied once after all dabs, including repeated visits through other tiles.
@@ -34,9 +63,14 @@ pub(super) struct Composite<'a> {
     pub selection: Option<&'a Surface>,
     pub lock: bool,
     pub mode: BlendMode,
+    /// The command an over-budget stroke's error names.
+    pub cmd: &'a str,
+    /// The sampled native channels, including temporary coverage for opaque pixel layers.
+    pub paint_format: PixelFormat,
 }
 
 impl Composite<'_> {
+    /// Fold dabs into bounded destination patches before applying selection, opacity and blending.
     pub fn draw(&mut self, dirty: Rect, brush: &BrushSettings, points: &[StrokePoint], mut paint: impl FnMut(Rect) -> Result<Region>) -> Result<Rect> {
         let ctx = photocraft_paint::BrushContext::new(brush);
         let mut generator = photocraft_paint::dynamics::DabGenerator::new(brush, 1.0);
@@ -67,9 +101,9 @@ impl Composite<'_> {
                 while x < rect.x1 {
                     let x1 = x.saturating_add(64).min(rect.x1);
                     let dst = Rect::new(x, y, x1, y1);
-                    let mut stroke = PatchStroke::new(dst, self.target.channels());
+                    let mut stroke = PatchStroke::new(dst, self.paint_format.channels());
                     let mut dual_stroke = PatchStroke::new(dst, 1);
-                    let alpha = alpha_index(&self.target.format());
+                    let alpha = alpha_index(&self.paint_format);
                     for (dab, bounds) in &primary {
                         if !project(*bounds, self.tile).iter().any(|r| !r.intersect(&dst).is_empty()) {
                             continue;
@@ -98,7 +132,7 @@ impl Composite<'_> {
                         }
                     }
                     self.target.write_region(dst, &self.before.read_region(dst));
-                    apply_coverage(self.target, dst, &stroke.coverage, self.opacity, self.selection, self.lock, &stroke.paint, self.mode);
+                    apply_clone_coverage(self.target, dst, &stroke.coverage, self.opacity, self.selection, self.lock, &stroke.paint, self.mode);
                     damage = damage.union(&dst);
                     x = x1;
                 }
@@ -109,6 +143,7 @@ impl Composite<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Gather one dab's periodic copies using its strongest coverage at each destination pixel.
     fn fold_dab(
         &self,
         ctx: &photocraft_paint::BrushContext,
@@ -119,7 +154,7 @@ impl Composite<'_> {
         paint: &mut impl FnMut(Rect) -> Result<Region>,
         work: &mut u64,
     ) -> Result<PatchStroke> {
-        let mut result = PatchStroke::new(dst, if dual { 1 } else { self.target.channels() });
+        let mut result = PatchStroke::new(dst, if dual { 1 } else { self.paint_format.channels() });
         let (w, h) = (i64::from(self.tile.width()), i64::from(self.tile.height()));
         let nx0 = (i64::from(bounds.x0) - i64::from(dst.x1)).div_euclid(w) + 1;
         let nx1 = (i64::from(bounds.x1) - 1 - i64::from(dst.x0)).div_euclid(w);
@@ -138,7 +173,7 @@ impl Composite<'_> {
                 );
                 *work = work.saturating_add(r.width() as u64 * r.height() as u64);
                 if *work > 64 * 1024 * 1024 {
-                    return Err(bad("paint.cloneStamp", "wrapped stroke exceeds its coverage budget"));
+                    return Err(bad(self.cmd, "wrapped stroke exceeds its coverage budget"));
                 }
                 ctx.rasterize_into(dab, dual, r, &mut values, wet.then_some(&mut depths));
                 let mut sampled = None;
@@ -188,6 +223,7 @@ impl PatchStroke {
         Self { coverage: vec![0.0; len], depth: vec![0.0; len], paint: Region::new(rect, channels) }
     }
 
+    /// Accumulate flow-weighted, premultiplied native colours and independent source alpha.
     fn accumulate(&mut self, dab: &photocraft_paint::Dab, footprint: &PatchStroke, alpha: Option<usize>) {
         let rect = self.paint.rect;
         for y in rect.y0..rect.y1 {
@@ -216,6 +252,7 @@ impl PatchStroke {
         }
     }
 
+    /// Recover straight colours while keeping stroke coverage separate from source alpha.
     fn normalize(&mut self, alpha: Option<usize>) {
         let rect = self.paint.rect;
         for y in rect.y0..rect.y1 {
@@ -234,14 +271,18 @@ impl PatchStroke {
 }
 
 pub(super) fn sample(pre: &Document, id: Option<LayerId>, surf: &Surface, which: SampleLayers, rect: Rect, cmd: &str) -> Result<Region> {
-    let tile = pre.bounds();
+    sample_with(pre.bounds(), surf.channels(), rect, cmd, |r| Ok(super::sample(pre, id, surf, which, r)))
+}
+
+/// Repeat `read` using the source document's bounds, even when the target is a different size.
+pub(super) fn sample_with(tile: Rect, n: usize, rect: Rect, cmd: &str, mut read: impl FnMut(Rect) -> Result<Region>) -> Result<Region> {
     if tile.is_empty() {
         return Err(bad(cmd, "cannot repeat an empty document"));
     }
     if rect.is_empty() {
-        return Ok(Region::new(Rect::EMPTY, surf.channels()));
+        return Ok(Region::new(Rect::EMPTY, n));
     }
-    let (w, h, n) = (rect.width() as usize, rect.height() as usize, surf.channels());
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
     let len = w
         .checked_mul(h)
         .and_then(|v| v.checked_mul(n))
@@ -258,7 +299,7 @@ pub(super) fn sample(pre: &Document, id: Option<LayerId>, surf: &Surface, which:
         while dx < w {
             let sx = (i64::from(rect.x0) + dx as i64 - i64::from(tile.x0)).rem_euclid(i64::from(tile.width())) as i32 + tile.x0;
             let cols = (w - dx).min((tile.x1 - sx) as usize);
-            let part = super::sample(pre, id, surf, which, Rect::new(sx, sy, sx + cols as i32, sy + rows as i32));
+            let part = read(Rect::new(sx, sy, sx + cols as i32, sy + rows as i32))?;
             for (dst, src) in out.data.chunks_exact_mut(w * n).skip(dy).take(rows).zip(part.data.chunks_exact(cols * n)) {
                 if let Some(dst) = dst.get_mut(dx * n..(dx + cols) * n) {
                     dst.copy_from_slice(src);

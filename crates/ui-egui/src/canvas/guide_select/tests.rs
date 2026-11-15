@@ -230,6 +230,31 @@ fn edit_selected_guides_opens_new_guide_on_the_guide_and_applies_the_edit() {
     assert_eq!(selected(&app), Some((true, 1)), "the edited guide stays selected");
 }
 
+/// #10440: Edit Selected Guides' position takes arithmetic as New Guide's does, a leading bare
+/// number in the ruler unit.
+#[test]
+fn edit_selected_guides_takes_arithmetic_in_the_position() {
+    let mut app = app();
+    app.run("prefs.set", json!({"path": "unitsAndRulers.rulers", "value": "percent"})).unwrap();
+    click(&mut app, 50.0, 70.0);
+    let id = crate::new_guide_ui::open_edit(&mut app).unwrap();
+    let mut edited = app.ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+    // "30 + 10" with percent rulers is 40 % of the 200 px width.
+    edited.insert("position".into(), json!("30 + 10"));
+    assert_eq!(crate::new_guide_ui::params(&app, &edited)["position"], "30 % + 10");
+    app.ui.dialogs.retain(|d| d.id != id);
+    crate::new_guide_ui::confirm(&mut app, &edited).unwrap();
+    assert_eq!(guides(&app), (vec![80.0], vec![30.0]));
+    assert_eq!(selected(&app), Some((true, 0)), "the edited guide stays selected");
+    // A unit on the first operand wins: 100 % of the width less 50 px.
+    let id = crate::new_guide_ui::open_edit(&mut app).unwrap();
+    let mut edited = app.ui.dialogs.iter().find(|d| d.id == id).unwrap().fields.clone();
+    edited.insert("position".into(), json!("100% - 50px"));
+    app.ui.dialogs.retain(|d| d.id != id);
+    crate::new_guide_ui::confirm(&mut app, &edited).unwrap();
+    assert_eq!(guides(&app), (vec![150.0], vec![30.0]));
+}
+
 #[test]
 fn editing_an_uncoloured_guide_keeps_the_preference_colour_unless_one_is_chosen() {
     let mut app = app();

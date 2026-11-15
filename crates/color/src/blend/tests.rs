@@ -2,6 +2,145 @@ use super::*;
 
 const E: f32 = 1e-5;
 
+#[test]
+/// Bound extreme separable HDR blends while preserving ordinary finite F32 bits and integer-depth behavior.
+fn separable_hdr_extremes_stay_finite_and_keep_ordinary_f32_bits() {
+    let max = f32::MAX;
+    let values = [-max, -max / 2., -2e19, -4., -1., -0., 0., f32::from_bits(1), 1e-20, 0.25, 0.5, 0.75, 1., 4., 2e19, max / 2., max];
+    for mode in std::iter::once(BlendMode::PassThrough).chain(BlendMode::layer_modes()).filter(|m| m.is_separable()) {
+        for cb in values {
+            for cs in values {
+                let ordinary = channel(mode, cb, cs, max);
+                let actual = blend_channel_hdr(mode, cb, cs);
+                assert!(actual.is_finite(), "{mode:?}: {cb}, {cs} -> {actual}");
+                if ordinary.is_finite() {
+                    assert_eq!(actual.to_bits(), ordinary.to_bits(), "{mode:?}: ordinary rounding changed for {cb}, {cs}");
+                }
+            }
+        }
+        let rgb = blend_rgb_hdr(mode, [max, -max, 0.5], [-max, max, max]);
+        assert!(rgb.iter().all(|v| v.is_finite()), "{mode:?}: {rgb:?}");
+        // Standard-range calls keep the integer API's results except its intentional Add/Divide cap.
+        for cb in [0., 0.25, 0.5, 0.75, 1.] {
+            for cs in [0., 0.25, 0.5, 0.75, 1.] {
+                if !matches!(mode, BlendMode::LinearDodge | BlendMode::Divide) {
+                    assert_eq!(blend_channel_hdr(mode, cb, cs).to_bits(), blend_channel(mode, cb, cs).to_bits(), "{mode:?}: {cb}, {cs}");
+                }
+            }
+        }
+    }
+    assert_eq!(blend_channel(BlendMode::LinearDodge, 0.75, 0.75), 1.);
+    assert_eq!(blend_channel_hdr(BlendMode::LinearDodge, 0.75, 0.75), 1.5);
+    assert_eq!(blend_channel(BlendMode::Divide, 0.75, 0.25), 1.);
+    assert_eq!(blend_channel_hdr(BlendMode::Divide, 0.75, 0.25), 3.);
+}
+
+#[test]
+/// Pin signed saturation and blend identities when finite HDR operands require a wide retry.
+fn overflowing_hdr_retries_keep_signed_results_and_blend_identities() {
+    use BlendMode::*;
+    let max = f32::MAX;
+    for (mode, b, s, expected) in [
+        (Exclusion, max, max, -max),
+        (Exclusion, max, 0.5, 0.5),
+        (Exclusion, -max, 0.5, 0.5),
+        (HardLight, max, 0., 0.),
+        (HardLight, max, 0.5, max),
+        (HardLight, 1., max, 1.),
+        (Overlay, 0., max, 0.),
+        (Overlay, 0.5, max, max),
+        (Overlay, max, 1., 1.),
+        (SoftLight, max, 0.5, max),
+        (SoftLight, max, 1., max.sqrt()),
+        (SoftLight, 1., max, 1.),
+        (Difference, max, -max, max),
+        (Subtract, max, -max, max),
+        (LinearBurn, max, max, max),
+        (LinearBurn, max, -max, 0.),
+        (LinearDodge, -max, -max, -max),
+        (Divide, -max, f32::from_bits(1), -max),
+        (PinLight, 0., -max, -max),
+        (PinLight, 0., max, max),
+        (Negation, max, max, -max),
+        (PaintNetColorBurn, max, f32::from_bits(1), max),
+        (PaintNetColorDodge, -max, 0.5, -max),
+    ] {
+        assert_eq!(blend_channel_hdr(mode, b, s), expected, "{mode:?}: {b}, {s}");
+    }
+}
+
+#[test]
+/// Retain tiny and subnormal source hue ordering when the backdrop approaches the F32 limit.
+fn overflowing_hdr_hue_keeps_even_subnormal_source_channel_ordering() {
+    let max = f32::MAX;
+    let cb = [max, -max / 2., 0.];
+    // Backdrop luminosity is .005 * MAX. Pure green at that luminosity is
+    // .005/.59 * MAX, irrespective of the positive source's magnitude.
+    for tiny in [1e-20, f32::from_bits(1)] {
+        let out = blend_rgb_hdr(BlendMode::Hue, cb, [0., tiny, 0.]);
+        assert!(out.iter().all(|v| v.is_finite()), "{tiny}: {out:?}");
+        assert!(out[1] > out[0] && out[1] > out[2], "tiny green hue became gray: {out:?}");
+        assert!((out[1] / max - 0.005 / 0.59).abs() < 1e-6, "{out:?}");
+        assert!((out[0] / max).abs() < 1e-6 && (out[2] / max).abs() < 1e-6, "{out:?}");
+    }
+}
+
+#[test]
+/// Retry only overflowing HDR Screen results while retaining ordinary F32 and integer-entry arithmetic.
+fn hdr_screen_replays_only_nonfinite_results_in_wide_arithmetic() {
+    let max = f32::MAX;
+    assert_eq!(blend_channel_hdr(BlendMode::Screen, 2e19, 2e19), -max);
+    assert_eq!(blend_channel_hdr(BlendMode::Screen, max, max), -max);
+    let values = [-max, -2e19, -1., -0., 0., f32::from_bits(1), 0.25, 1., 2e19, max];
+    for cb in values {
+        for cs in values {
+            let ordinary = cb + cs - cb * cs;
+            let actual = blend_channel_hdr(BlendMode::Screen, cb, cs);
+            assert!(actual.is_finite(), "{cb}, {cs}: {actual}");
+            if ordinary.is_finite() {
+                assert_eq!(actual.to_bits(), ordinary.to_bits(), "ordinary F32 rounding changed for {cb}, {cs}");
+            } else {
+                let (b, s) = (f64::from(cb), f64::from(cs));
+                let expected = (b + s - b * s).clamp(-f64::from(max), f64::from(max)) as f32;
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{cb}, {cs}");
+            }
+            // The integer-depth entry point retains its established arithmetic.
+            assert_eq!(blend_channel(BlendMode::Screen, cb, cs).to_bits(), ordinary.to_bits());
+        }
+    }
+    assert_eq!(blend_rgb_hdr(BlendMode::Screen, [max, -max, 2e19], [max, max, 2e19]), [-max, max, -max]);
+}
+
+#[test]
+/// Keep nonseparable blends finite at signed F32 extremes without changing ordinary blend results.
+fn finite_signed_extreme_nonseparable_hdr_does_not_publish_infinity_or_nan() {
+    let max = f32::MAX;
+    let gray = [max; 3];
+    let signed = [max, -max, 0.];
+    // The original SetLum subtraction overflowed before gamut clipping could produce white.
+    for (mode, cb, cs) in [(BlendMode::Color, gray, signed), (BlendMode::Luminosity, signed, gray)] {
+        let out = blend_rgb_hdr(mode, cb, cs);
+        assert!(out.iter().all(|v| v.is_finite()), "{mode:?}: {out:?}");
+        for value in out {
+            assert!((value / max - 1.).abs() < E, "{mode:?}: {out:?}");
+        }
+    }
+    let values = [-max, 0., max];
+    for mode in [BlendMode::Hue, BlendMode::Saturation, BlendMode::Color, BlendMode::Luminosity] {
+        for b in 0..27 {
+            let cb = [values[b % 3], values[b / 3 % 3], values[b / 9]];
+            for s in 0..27 {
+                let cs = [values[s % 3], values[s / 3 % 3], values[s / 9]];
+                let out = blend_rgb_hdr(mode, cb, cs);
+                assert!(out.iter().all(|v| v.is_finite()), "{mode:?}: {cb:?}, {cs:?} -> {out:?}");
+            }
+        }
+        for (cb, cs) in [([0.2, 0.7, 0.4], [0.8, 0.3, 0.6]), ([-0.5, 2., 4.], [8., 0.25, -1.])] {
+            assert_eq!(blend_rgb_hdr(mode, cb, cs), blend_rgb_within(mode, cb, cs, max));
+        }
+    }
+}
+
 fn close(a: f32, b: f32) -> bool {
     (a - b).abs() < E
 }
@@ -186,6 +325,10 @@ fn add_and_divide_clip_at_integer_depths_but_not_in_float() {
     assert_eq!(blend_channel_hdr(BlendMode::Divide, 3.0, -1.0), 1.0);
     assert_eq!(blend_channel_hdr(BlendMode::Divide, f32::MAX, 1e-30), f32::MAX);
     assert_eq!(blend_channel_hdr(BlendMode::LinearDodge, f32::MAX, f32::MAX), f32::MAX);
+    assert_eq!(blend_channel_hdr(BlendMode::Multiply, f32::MAX, 2.0), f32::MAX);
+    assert_eq!(blend_channel_hdr(BlendMode::Multiply, f32::MAX, -2.0), -f32::MAX);
+    assert_eq!(blend_channel_hdr(BlendMode::Multiply, -f32::MAX, -2.0), f32::MAX);
+    assert_eq!(blend_channel(BlendMode::Multiply, f32::MAX, 2.0), f32::MAX);
     assert!(blend_channel_hdr(BlendMode::LinearDodge, f32::INFINITY, 1.0).is_finite());
     // Every other separable mode is unchanged (the non-separable ones keep values above 1:
     // blend_rgb_within), and the in-range results agree.

@@ -789,22 +789,681 @@ fn the_reason_a_stale_workspace_closed_is_reported() {
     }
 }
 
+/// The ants of `selection` over the reduced copy `area`, `k` document px per copy px.
+fn shown_ants(selection: Surface, area: Rect, k: u32) -> Ants {
+    let bounds = trace_bounds(Some(&selection), area);
+    Ants { selection, bounds, k, outline: None }
+}
+
+fn ants_mut(app: &mut PhotocraftApp) -> &mut Ants {
+    ws_mut(app).preview.ants.as_mut().unwrap()
+}
+
 #[test]
-fn sparse_large_preview_counts_coverage_without_a_dense_canvas_mask() {
+fn sparse_large_preview_keeps_its_ants() {
     let area = Rect::new(0, 0, 100_000, 100_000);
     let mut selection = Surface::new(photocraft_color::PixelFormat::GRAY8);
     selection.write_pixel(99_999, 99_999, &[1.0]);
     selection.write_pixel(2, 3, &[0.5]);
     selection.write_pixel(-1, -1, &[1.0]);
     assert_eq!(selected_pixels(Some(&selection), area), 2);
-    assert_eq!(preview_ants(Some(&selection), area, 1.0).unwrap().len(), 8);
     let small = Rect::new(0, 0, 10, 10);
     assert_eq!(selected_pixels(Some(&selection), small), 1);
-    assert_eq!(preview_ants(Some(&selection), small, 1.0).unwrap().len(), 4);
+    // At 100 % around the far corner: the one pixel there, outlined by four lines. The old ants
+    // were unit edges of a canvas-sized mask, dropped past 4 MP.
+    let mut ants = shown_ants(selection, area, 1);
+    let segs = ant_outline(&mut ants, (1.0, [99_500.0, 99_500.0, 100_500.0, 100_500.0]), false);
+    assert_eq!(segs.len(), 4, "{segs:?}");
+    assert!(segs.iter().all(|(a, b)| [a, b].iter().all(|p| (99_999..=100_000).contains(&p[0]) && (99_999..=100_000).contains(&p[1]))));
 
     let mut inverted = Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[1.0]);
     inverted.write_pixel(2, 3, &[0.0]);
     let smaller = Rect::new(0, 0, 1000, 1000);
     assert_eq!(selected_pixels(Some(&inverted), smaller), 999_999);
     assert_eq!(selected_pixels(None, area), 0);
+}
+
+/// The workspace in a harness on `tool`, and a point over the image.
+fn resize_harness(tool: &str) -> (egui_kittest::Harness<'static, PhotocraftApp>, egui::Pos2) {
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    ui(&mut app, json!({"tool": tool}));
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            crate::distort_ui::keys(app, &ctx);
+            keys(app, &ctx);
+            show(app, &ctx);
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(4);
+    (h, egui::Pos2::new(LEFT_W + 300.0, BAR_H + TAB_H + 300.0))
+}
+
+/// Presses `button` at `at` with `modifiers` held.
+fn pointer_down(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, at: egui::Pos2, button: egui::PointerButton, modifiers: Modifiers) {
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.event(egui::Event::PointerMoved(at));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: at, button, pressed: true, modifiers });
+    h.run_steps(1);
+}
+
+/// Moves the held pointer from `from` by `by`, in four steps.
+fn pointer_move(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, from: egui::Pos2, by: egui::Vec2) {
+    for k in 1..=4 {
+        h.event(egui::Event::PointerMoved(from + by * (k as f32 / 4.0)));
+        h.run_steps(1);
+    }
+}
+
+fn tap_key(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, key: Key, pressed: bool) {
+    h.event(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+}
+
+/// A whole drag of `button` from `at` by `by` with `modifiers` held.
+fn pointer_drag(h: &mut egui_kittest::Harness<'_, PhotocraftApp>, at: egui::Pos2, button: egui::PointerButton, modifiers: Modifiers, by: egui::Vec2) {
+    pointer_down(h, at, button, modifiers);
+    pointer_move(h, at, by);
+    h.event(egui::Event::PointerButton { pos: at + by, button, pressed: false, modifiers });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+}
+
+/// Alt+right-drag (and Control+Alt-drag) on the image resizes the current brush tool instead of
+/// selecting, as on the main canvas (#10497): only that tool's size changes, the Brush's hardness
+/// follows vertical motion, nothing is painted, and the next Alt-drag still subtracts.
+#[test]
+fn alt_right_drag_resizes_the_workspace_brush() {
+    use egui::PointerButton;
+    let (mut h, over) = resize_harness("brush");
+    let zoom = h.state().distort.select_mask.as_ref().unwrap().zoom;
+    pointer_drag(&mut h, over, PointerButton::Secondary, Modifiers::ALT, vec2(40.0, -60.0));
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    let want = (30.0 + 2.0 * f64::from(40.0 / zoom)).round();
+    assert_eq!(w.brush_size, want, "horizontal motion sets the diameter (zoom {zoom})");
+    let soft = (100.0 - 60.0 * 100.0 / crate::brush_resize::HARDNESS_TRAVEL).round();
+    assert_eq!(w.hardness, soft, "upward motion softens the brush, at the canvas HUD's rate");
+    assert_eq!((w.quick_size, w.refine_size), (30.0, 30.0), "the other tools keep their sizes");
+    assert!(w.strokes.is_empty() && w.edits.is_empty() && w.undo.is_empty(), "resizing selected nothing");
+    assert!(w.resize.is_none(), "the gesture ends with the button");
+    // Alt with the left button is still the subtracting stroke.
+    pointer_drag(&mut h, over, PointerButton::Primary, Modifiers::ALT, vec2(30.0, 0.0));
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    // A Brush stroke is an edit (Quick Selection's are strokes).
+    assert_eq!(w.edits.len(), 1, "Alt+left-drag selects");
+    assert_eq!(w.edits[0]["mode"], json!("subtract"));
+    assert_eq!(w.brush_size, want, "and doesn't resize");
+    // Control+Alt-drag (the macOS gesture) resizes Quick Selection on its own.
+    h.state_mut().distort.select_mask.as_mut().unwrap().pick(SmTool::Quick);
+    pointer_drag(&mut h, over, PointerButton::Primary, Modifiers::CTRL | Modifiers::ALT, vec2(-10.0, 0.0));
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!(w.quick_size, (30.0 - 2.0 * f64::from(10.0 / zoom)).round().max(1.0));
+    assert_eq!((w.brush_size, w.hardness), (want, soft), "the Brush keeps its size and hardness");
+    assert!(w.strokes.is_empty() && w.edits.len() == 1, "resizing Quick Selection selected nothing");
+}
+
+/// Space pressed mid-resize pans, and the button released before Space still ends the resize
+/// (CodeRabbit on #10559): a Space-drag that goes on after Space comes up paints, as any
+/// Space-drag does, instead of resizing the brush from the old anchor.
+#[test]
+fn a_resize_released_while_space_pans_lets_the_next_drag_paint() {
+    use egui::PointerButton;
+    let (mut h, over) = resize_harness("brush");
+    let zoom = h.state().distort.select_mask.as_ref().unwrap().zoom;
+    pointer_down(&mut h, over, PointerButton::Secondary, Modifiers::ALT);
+    pointer_move(&mut h, over, vec2(40.0, 0.0));
+    tap_key(&mut h, Key::Space, true);
+    h.event(egui::Event::PointerButton { pos: over + vec2(40.0, 0.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::ALT });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    let want = (30.0 + 2.0 * f64::from(40.0 / zoom)).round();
+    assert_eq!(h.state().distort.select_mask.as_ref().unwrap().brush_size, want);
+    // Space+drag pans; Space comes up mid-drag and the drag goes on.
+    pointer_down(&mut h, over, PointerButton::Primary, Modifiers::NONE);
+    pointer_move(&mut h, over, vec2(0.0, 20.0));
+    tap_key(&mut h, Key::Space, false);
+    pointer_move(&mut h, over + vec2(0.0, 20.0), vec2(30.0, 0.0));
+    h.event(egui::Event::PointerButton { pos: over + vec2(30.0, 20.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!(w.brush_size, want, "the drag doesn't resize the brush");
+    assert_eq!(w.edits.len(), 1, "the drag's rest paints");
+    assert_eq!(w.edits[0]["mode"], json!("add"));
+    assert!(w.resize.is_none());
+}
+
+/// A resize belongs to the tool it began on (CodeRabbit on #10559): if another tool is picked
+/// mid-drag, the rest of the drag neither resizes that tool nor selects with it.
+#[test]
+fn picking_another_tool_mid_resize_neither_resizes_nor_selects() {
+    use egui::PointerButton;
+    let (mut h, over) = resize_harness("brush");
+    let zoom = h.state().distort.select_mask.as_ref().unwrap().zoom;
+    let want = (30.0 + 2.0 * f64::from(40.0 / zoom)).round();
+    // Alt+right-drag the Brush larger, let go of Alt, press W (Quick Selection) and drag on.
+    pointer_down(&mut h, over, PointerButton::Secondary, Modifiers::ALT);
+    pointer_move(&mut h, over, vec2(40.0, 0.0));
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    tap_key(&mut h, Key::W, true);
+    tap_key(&mut h, Key::W, false);
+    assert_eq!(h.state().distort.select_mask.as_ref().unwrap().tool, SmTool::Quick);
+    pointer_move(&mut h, over + vec2(40.0, 0.0), vec2(40.0, 0.0));
+    h.event(egui::Event::PointerButton { pos: over + vec2(80.0, 0.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!((w.brush_size, w.quick_size), (want, 30.0), "Quick Selection keeps its size");
+    assert!(w.strokes.is_empty() && w.edits.is_empty() && w.undo.is_empty(), "nothing was selected");
+    // The same with the Lasso (not a brush) picked mid-drag: the rest of the drag draws no lasso.
+    tap_key(&mut h, Key::B, true);
+    tap_key(&mut h, Key::B, false);
+    pointer_down(&mut h, over, PointerButton::Secondary, Modifiers::ALT);
+    pointer_move(&mut h, over, vec2(20.0, 0.0));
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    tap_key(&mut h, Key::L, true);
+    tap_key(&mut h, Key::L, false);
+    assert_eq!(h.state().distort.select_mask.as_ref().unwrap().tool, SmTool::Lasso);
+    pointer_move(&mut h, over + vec2(20.0, 0.0), vec2(0.0, 60.0));
+    pointer_move(&mut h, over + vec2(20.0, 60.0), vec2(-60.0, 0.0));
+    h.event(egui::Event::PointerButton { pos: over + vec2(-40.0, 60.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert!(w.strokes.is_empty() && w.edits.is_empty() && w.undo.is_empty(), "the Lasso selected nothing");
+    assert!(w.resize.is_none(), "the gesture ends with the button");
+}
+
+/// A resize ends when its own button comes up, even while the middle button pans (CodeRabbit on
+/// #10559): a left-drag begun before the middle button is let go doesn't resize the brush from
+/// the old anchor when the pan ends.
+#[test]
+fn a_resize_released_while_the_middle_button_pans_ends_with_its_button() {
+    use egui::PointerButton;
+    let (mut h, over) = resize_harness("brush");
+    let zoom = h.state().distort.select_mask.as_ref().unwrap().zoom;
+    let want = (30.0 + 2.0 * f64::from(40.0 / zoom)).round();
+    pointer_down(&mut h, over, PointerButton::Secondary, Modifiers::ALT);
+    pointer_move(&mut h, over, vec2(40.0, 0.0));
+    let at = over + vec2(40.0, 0.0);
+    h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Middle, pressed: true, modifiers: Modifiers::ALT });
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::ALT });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    assert_eq!(h.state().distort.select_mask.as_ref().unwrap().brush_size, want);
+    // The left button goes down while the middle one still pans, then the middle one comes up
+    // and the left drag goes on.
+    pointer_move(&mut h, at, vec2(0.0, 20.0));
+    let at = at + vec2(0.0, 20.0);
+    h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    pointer_move(&mut h, at, vec2(30.0, -20.0));
+    let at = at + vec2(30.0, -20.0);
+    h.event(egui::Event::PointerButton { pos: at, button: PointerButton::Middle, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    pointer_move(&mut h, at, vec2(60.0, -40.0));
+    h.event(egui::Event::PointerButton { pos: at + vec2(60.0, -40.0), button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!((w.brush_size, w.hardness), (want, 100.0), "the later drag doesn't resize the brush");
+    assert!(w.resize.is_none(), "the gesture ended with its button");
+}
+
+/// Esc mid-resize puts the brush back and ends only the resize, as in Photoshop (FredApps on
+/// #10559): the workspace stays open, the rest of that drag neither resizes nor selects, and the
+/// next drag selects as usual.
+#[test]
+fn escape_mid_resize_restores_the_brush_and_keeps_the_workspace() {
+    use egui::PointerButton;
+    let (mut h, over) = resize_harness("brush");
+    pointer_down(&mut h, over, PointerButton::Secondary, Modifiers::ALT);
+    pointer_move(&mut h, over, vec2(40.0, -60.0));
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert!(w.resize.is_some() && w.brush_size > 30.0 && w.hardness < 100.0, "the drag resizes");
+    // Esc with Alt and the right button still held.
+    h.event(egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT });
+    h.run_steps(1);
+    h.event(egui::Event::Key { key: Key::Escape, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::ALT });
+    h.run_steps(1);
+    let w = h.state().distort.select_mask.as_ref().expect("Esc ends the resize, not the workspace");
+    assert_eq!((w.brush_size, w.hardness), (30.0, 100.0), "the brush is as it was");
+    assert!(w.resize.is_none());
+    // The drag goes on with Alt and the right button held: it does nothing.
+    pointer_move(&mut h, over + vec2(40.0, -60.0), vec2(40.0, 40.0));
+    h.event(egui::Event::PointerButton { pos: over + vec2(80.0, -20.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::ALT });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!((w.brush_size, w.hardness), (30.0, 100.0), "the rest of the drag doesn't resize");
+    assert!(w.strokes.is_empty() && w.edits.is_empty() && w.undo.is_empty(), "nor select");
+    assert!(w.resize.is_none());
+    // The next drag selects with the brush as it was.
+    pointer_drag(&mut h, over, PointerButton::Primary, Modifiers::NONE, vec2(30.0, 0.0));
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!((w.brush_size, w.hardness), (30.0, 100.0), "the next drag doesn't resize");
+    assert_eq!(w.edits.len(), 1, "it selects");
+    assert_eq!(w.edits[0]["mode"], json!("add"));
+    // Control+Alt-drag (the macOS gesture) on Quick Selection, Esc with both still held.
+    let ctrl_alt = Modifiers::CTRL | Modifiers::ALT;
+    h.state_mut().distort.select_mask.as_mut().unwrap().pick(SmTool::Quick);
+    pointer_down(&mut h, over, PointerButton::Primary, ctrl_alt);
+    pointer_move(&mut h, over, vec2(30.0, 0.0));
+    assert!(h.state().distort.select_mask.as_ref().unwrap().quick_size > 30.0, "the drag resizes");
+    h.event(egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: ctrl_alt });
+    h.run_steps(1);
+    let w = h.state().distort.select_mask.as_ref().expect("the workspace stays open");
+    assert_eq!(w.quick_size, 30.0, "Quick Selection's size is as it was");
+    assert!(w.resize.is_none());
+    pointer_move(&mut h, over + vec2(30.0, 0.0), vec2(30.0, 0.0));
+    h.event(egui::Event::PointerButton { pos: over + vec2(60.0, 0.0), button: PointerButton::Primary, pressed: false, modifiers: ctrl_alt });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    assert_eq!(w.quick_size, 30.0, "the rest of the drag doesn't resize");
+    assert!(w.strokes.is_empty() && w.edits.len() == 1, "nor select");
+}
+
+/// The brush circles drawn last frame (the black outline's centre and radius).
+fn brush_circles(h: &egui_kittest::Harness<'_, PhotocraftApp>) -> Vec<(egui::Pos2, f32)> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|c| match &c.shape {
+            egui::Shape::Circle(s) if s.stroke == Stroke::new(1.5, Color32::BLACK) => Some((s.center, s.radius)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// While the brush is resized its circle stays where the drag began, at the new size, and the
+/// Diameter/Hardness readout follows the pointer, as on the main canvas (FredApps on #10559).
+#[test]
+fn the_resize_circle_stays_put_while_the_readout_follows_the_pointer() {
+    use egui::PointerButton;
+    let (mut h, over) = resize_harness("brush");
+    let zoom = h.state().distort.select_mask.as_ref().unwrap().zoom;
+    let readout = || egui::Id::unique("select-mask-brush-resize-readout");
+    h.event(egui::Event::PointerMoved(over));
+    h.run_steps(2);
+    assert_eq!(brush_circles(&h), [(over, 15.0 * zoom)], "hovering, the circle is at the pointer");
+    pointer_down(&mut h, over, PointerButton::Secondary, Modifiers::ALT);
+    for by in [vec2(40.0, -60.0), vec2(60.0, -60.0)] {
+        pointer_move(&mut h, over, by);
+        // The cursor is drawn before the frame's input, so it shows the new size a frame later.
+        h.run_steps(1);
+        let at = over + by;
+        let w = h.state().distort.select_mask.as_ref().unwrap();
+        let (size, hardness) = (w.brush_size, w.hardness);
+        assert_eq!(brush_circles(&h), [(over, size as f32 * 0.5 * zoom)], "the circle stays at the anchor at the new size ({by:?})");
+        let rect = h.ctx.memory(|m| m.area_rect(readout())).expect("the readout shows");
+        assert_eq!(rect.min, at + vec2(16.0, 18.0), "the readout is beside the pointer");
+        assert!(h.query_by_label(&format!("{} px", size.round() as i64)).is_some(), "it shows the diameter");
+        assert!(h.query_by_label(&format!("{}%", hardness.round() as i64)).is_some(), "and the hardness");
+    }
+    h.event(egui::Event::PointerButton { pos: over + vec2(60.0, -60.0), button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::ALT });
+    h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    h.run_steps(2);
+    let size = h.state().distort.select_mask.as_ref().unwrap().brush_size;
+    assert_eq!(brush_circles(&h), [(over + vec2(60.0, -60.0), size as f32 * 0.5 * zoom)], "after the drag the circle follows the pointer again");
+    assert!(h.query_by_label("Diameter:").is_none(), "and the readout is gone");
+}
+
+/// A selection of the rectangle `r` (reduced-copy px).
+fn rect_selection(r: Rect) -> Surface {
+    let mut s = Surface::new(photocraft_color::PixelFormat::GRAY8);
+    s.fill_rect(r, &[1.0]);
+    s
+}
+
+/// The Marching Ants view outlines the refined selection as the canvas does: merged runs (4 lines
+/// for a rectangle, not one per pixel edge), on the document's pixel edges at the copy's scale.
+#[test]
+fn marching_ants_trace_merged_runs_like_the_canvas() {
+    let area = Rect::new(0, 0, 100, 60);
+    let sel = rect_selection(Rect::new(5, 5, 25, 15));
+    let whole = crate::outline::outline(&sel, sel.content_bounds());
+    let mut ants = shown_ants(sel, area, 2);
+    let segs = ant_outline(&mut ants, (1.0, [0.0, 0.0, 200.0, 120.0]), false).to_vec();
+    assert_eq!(segs, whole);
+    assert_eq!(segs.len(), 4, "{segs:?}");
+    for (a, b) in segs {
+        for p in [a, b].map(|p| [p[0] * 2, p[1] * 2]) {
+            let on_x = (p[0] == 10 || p[0] == 50) && (10..=30).contains(&p[1]);
+            let on_y = (p[1] == 10 || p[1] == 30) && (10..=50).contains(&p[0]);
+            assert!(on_x || on_y, "{p:?} lies on the document rectangle (10, 10)–(50, 30)");
+        }
+    }
+}
+
+/// Frames reuse the trace while the view stays within its quantised region; a zoom traces again.
+#[test]
+fn ant_outline_is_cached_per_view() {
+    let mut ants = shown_ants(rect_selection(Rect::new(10, 10, 90, 50)), Rect::new(0, 0, 100, 60), 1);
+    let first = ant_outline(&mut ants, (1.0, [0.0, 0.0, 100.0, 60.0]), false).as_ptr();
+    let key = ants.outline.as_ref().unwrap().0;
+    let panned = ant_outline(&mut ants, (1.0, [3.0, 2.0, 103.0, 62.0]), false).as_ptr();
+    assert_eq!(first, panned, "a small pan keeps the trace");
+    assert_eq!(ants.outline.as_ref().unwrap().0, key);
+    let zoomed = ant_outline(&mut ants, (0.25, [0.0, 0.0, 400.0, 240.0]), false).len();
+    assert_eq!(ants.outline.as_ref().unwrap().0.step, 4, "zoomed out to 25 %: one sample per 4 px");
+    assert_eq!(zoomed, 4);
+}
+
+/// The preview job traces the outline for the view it was asked for, so a new preview (one per
+/// move with Real-Time Refinement) costs the UI thread no trace.
+#[test]
+fn the_preview_job_traces_the_outline_for_the_view() {
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    let area = ERect::from_min_size(pos2(50.0, 60.0), vec2(800.0, 500.0));
+    let w = ws_mut(&mut app);
+    (w.view_area, w.zoom, w.center) = (Some((area, 1.5)), 2.0, [80.0, 50.0]);
+    // The other views keep no refined selection.
+    ui(&mut app, json!({"waitPreview": true}));
+    upload(&mut app, &egui::Context::default());
+    assert!(ws(&app).preview.ants.is_none(), "Onion Skin");
+    ui(&mut app, json!({"view": "marchingAnts", "waitPreview": true}));
+    upload(&mut app, &egui::Context::default());
+    let w = ws_mut(&mut app);
+    let view = ant_view(View { area, zoom: w.zoom, center: w.center }, 1.5);
+    let ants = w.preview.ants.as_mut().unwrap();
+    let traced = ants.outline.as_ref().map(|(key, segs)| (*key, segs.as_ptr())).expect("traced in the job");
+    assert_eq!(traced.0, outline_key(ants.k, ants.bounds, view));
+    assert_eq!(ant_outline(ants, view, false).as_ptr(), traced.1, "drawn without tracing again");
+    assert_eq!(ants.outline.as_ref().unwrap().1.len(), 4, "the 20 × 20 selection");
+}
+
+/// Until the preview at the new scale arrives, the ants keep the scale of the preview they outline.
+#[test]
+fn the_outline_keeps_its_previews_scale_while_high_quality_is_toggled() {
+    let mut app = app_sized(3300, 60);
+    app.session.execute("select.rect", json!({"x": 30, "y": 15, "width": 30, "height": 30})).unwrap();
+    open(&mut app).unwrap();
+    ui(&mut app, json!({"view": "marchingAnts", "waitPreview": true}));
+    upload(&mut app, &egui::Context::default());
+    ui(&mut app, json!({"highQualityPreview": true}));
+    assert_eq!(ws(&app).proxy_k(), 1);
+    let ants = ants_mut(&mut app);
+    assert_eq!(ants.k, 3);
+    let k = ants.k as i32;
+    let segs = ant_outline(ants, (1.0, [0.0, 0.0, 3300.0, 60.0]), false);
+    let mut doc: Vec<_> = segs.iter().map(|(a, b)| ([a[0] * k, a[1] * k], [b[0] * k, b[1] * k])).collect();
+    doc.sort();
+    assert_eq!(doc, vec![([30, 15], [30, 45]), ([30, 15], [60, 15]), ([30, 45], [60, 45]), ([60, 15], [60, 45])]);
+}
+
+/// An inverted selection (selected by default) is outlined along the canvas border too, on a
+/// canvas past the old ants' 4 MP limit.
+#[test]
+fn an_inverted_selection_outlines_the_canvas_border() {
+    let area = Rect::new(0, 0, 3000, 2000);
+    let mut inverted = Surface::with_default(photocraft_color::PixelFormat::GRAY8, &[1.0]);
+    inverted.fill_rect(Rect::new(1000, 800, 1400, 1200), &[0.0]);
+    let mut ants = shown_ants(inverted, area, 1);
+    assert_eq!(ants.bounds, area);
+    let segs = ant_outline(&mut ants, (0.25, [0.0, 0.0, 3000.0, 2000.0]), false);
+    assert_eq!(segs.len(), 8, "{segs:?}");
+    for border in [([0, 0], [3000, 0]), ([0, 2000], [3000, 2000]), ([0, 0], [0, 2000]), ([3000, 0], [3000, 2000])] {
+        assert!(segs.contains(&border), "{border:?} in {segs:?}");
+    }
+}
+
+/// The reduced copy covers whole blocks of `k` px, past the canvas when its size isn't a multiple
+/// of `k`; the ants stay on the canvas border, not on the pasteboard beyond it.
+#[test]
+fn the_border_ants_stay_on_the_canvas_of_a_reduced_copy() {
+    let mut app = app_sized(3301, 60);
+    open(&mut app).unwrap();
+    ui(&mut app, json!({"invert": true, "view": "marchingAnts", "waitPreview": true}));
+    upload(&mut app, &egui::Context::default());
+    let canvas = ws(&app).canvas;
+    let ants = ants_mut(&mut app);
+    assert_eq!(ants.k, 3);
+    let k = ants.k;
+    let segs = ant_outline(ants, (0.5, [0.0, 0.0, 3301.0, 60.0]), false);
+    let points: Vec<[f64; 2]> = segs.iter().flat_map(|(a, b)| [*a, *b]).map(|p| ant_point(p, k, canvas)).collect();
+    assert!(points.iter().all(|p| (0.0..=3301.0).contains(&p[0]) && (0.0..=60.0).contains(&p[1])), "{points:?}");
+    assert!(points.iter().any(|p| p[0] == 3301.0) && points.iter().any(|p| p[1] == 60.0), "the right and bottom border: {points:?}");
+}
+
+/// A document edit while the workspace is open drops the old preview's ants with its image.
+#[test]
+fn a_document_edit_clears_the_old_ants() {
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    ui(&mut app, json!({"view": "marchingAnts", "waitPreview": true}));
+    upload(&mut app, &egui::Context::default());
+    assert!(!ant_outline(ants_mut(&mut app), (1.0, [0.0, 0.0, 160.0, 100.0]), false).is_empty());
+    app.session
+        .edit("paint", |doc, _| {
+            doc.layers[0].surface_mut().unwrap().fill_rect(Rect::new(0, 0, 4, 4), &[0.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    follow_revision(&mut app);
+    assert!(ws(&app).preview.ants.is_none());
+}
+
+/// With nothing selected the Marching Ants view draws no ants, and drawing it doesn't panic.
+#[test]
+fn marching_ants_without_a_selection_draw_nothing() {
+    let empty = Surface::new(photocraft_color::PixelFormat::GRAY8);
+    assert!(ant_outline(&mut shown_ants(empty, Rect::new(0, 0, 100, 100), 1), (1.0, [0.0, 0.0, 100.0, 100.0]), true).is_empty());
+    let mut app = app_with_selection();
+    open(&mut app).unwrap();
+    ui(&mut app, json!({"clearSelection": true, "view": "marchingAnts", "waitPreview": true}));
+    assert_eq!(ws(&app).describe()["selectedProxyPixels"].as_u64(), Some(0));
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                show(app, &ctx);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(4);
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    let outline = w.preview.ants.as_ref().and_then(|a| a.outline.as_ref());
+    assert!(outline.is_some_and(|(_, segs)| segs.is_empty()), "traced, and nothing to outline");
+}
+
+type GpuHarness = egui_kittest::Harness<'static, PhotocraftApp>;
+
+/// A rendered frame: RGBA8, device pixels.
+struct Frame {
+    w: u32,
+    h: u32,
+    px: Vec<u8>,
+}
+
+impl Frame {
+    fn luma(&self, x: i64, y: i64) -> Option<u8> {
+        if x < 0 || y < 0 || x >= i64::from(self.w) || y >= i64::from(self.h) {
+            return None;
+        }
+        let i = (y as usize * self.w as usize + x as usize) * 4;
+        let p = self.px.get(i..i + 3)?;
+        Some(((u16::from(p[0]) * 3 + u16::from(p[1]) * 6 + u16::from(p[2])) / 10) as u8)
+    }
+}
+
+/// The workspace open on a white 400 × 300 document with (100, 80)–(300, 220) selected, in the
+/// Marching Ants view at 100 %, on an offscreen wgpu harness, and the frame time the workspace
+/// opened at (after three frames); `None` without a GPU adapter.
+fn ants_harness(ppp: f32, step_dt: f32) -> Option<(GpuHarness, f64)> {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.run("file.new", json!({"width": 400, "height": 300, "background": "white"})).unwrap();
+    app.run("select.rect", json!({"x": 100, "y": 80, "width": 200, "height": 140})).unwrap();
+    app.sync_views();
+    // `wgpu()` creates the render state and panics when no adapter is found.
+    let builder = std::panic::catch_unwind(|| {
+        egui_kittest::Harness::<PhotocraftApp>::builder().with_size(vec2(1000.0, 700.0)).with_pixels_per_point(ppp).with_step_dt(step_dt).wgpu()
+    })
+    .ok()?;
+    let mut h = builder.build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                show(app, &ctx);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    // The canvas's clock runs a few frames before the dialog opens, so a clock of the dialog's
+    // own, started when it opens, would be out of phase with it.
+    h.run_steps(3);
+    let opened = h.ctx.input(|i| i.time);
+    open(h.state_mut()).unwrap();
+    ui(h.state_mut(), json!({"view": "marchingAnts", "waitPreview": true}));
+    h.run_steps(4);
+    let w = h.state_mut().distort.select_mask.as_mut().unwrap();
+    (w.zoom, w.center) = (1.0, [200.0, 150.0]);
+    h.run_steps(2);
+    Some((h, opened))
+}
+
+fn frame(h: &mut GpuHarness) -> Frame {
+    let img = h.render().unwrap();
+    Frame { w: img.width(), h: img.height(), px: img.into_raw() }
+}
+
+/// Device pixel of document point `p`.
+fn device(h: &GpuHarness, ppp: f32, p: [f64; 2]) -> (i64, i64) {
+    let w = h.state().distort.select_mask.as_ref().unwrap();
+    let (area, _) = w.view_area.unwrap();
+    let s = View { area, zoom: w.zoom, center: w.center }.to_screen(p) * ppp;
+    (s.x.round() as i64, s.y.round() as i64)
+}
+
+/// Along the edge from device pixel `a` to `b` (12 px in from each end): the offsets across it
+/// (±6) of the dark pixels at each step, and how many pixels of the band are grey.
+fn scan(img: &Frame, a: (i64, i64), b: (i64, i64)) -> (Vec<Vec<i64>>, usize) {
+    let vertical = a.0 == b.0;
+    let (lo, hi) = if vertical { (a.1.min(b.1), a.1.max(b.1)) } else { (a.0.min(b.0), a.0.max(b.0)) };
+    let mut across = Vec::new();
+    let mut greys = 0;
+    for t in lo + 12..hi - 12 {
+        let mut dark = Vec::new();
+        for o in -6..=6 {
+            let (x, y) = if vertical { (a.0 + o, t) } else { (t, a.1 + o) };
+            let l = img.luma(x, y).unwrap_or(255);
+            if l < 64 {
+                dark.push(o);
+            }
+            if (24..232).contains(&l) {
+                greys += 1;
+            }
+        }
+        across.push(dark);
+    }
+    (across, greys)
+}
+
+/// #10506: the Marching Ants view draws the canvas's ants: every edge `w` device px thick, crisp
+/// black and white, dashes of 4·w px. They were 1-point antialiased lines, grey and uneven.
+#[test]
+fn select_and_mask_ants_match_the_canvas() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    for ppp in [1.0f32, 1.25] {
+        let Some((mut h, _)) = ants_harness(ppp, 1.0 / 60.0) else { return };
+        let img = frame(&mut h);
+        let w = ppp.ceil() as usize;
+        let [tl, tr, br, bl] = [[100.0, 80.0], [300.0, 80.0], [300.0, 220.0], [100.0, 220.0]].map(|p| device(&h, ppp, p));
+        for (name, (a, b)) in [("top", (tl, tr)), ("right", (tr, br)), ("bottom", (bl, br)), ("left", (tl, bl))] {
+            let (across, greys) = scan(&img, a, b);
+            assert_eq!(greys, 0, "@{ppp}x {name}: crisp black and white");
+            let max = across.iter().map(Vec::len).max().unwrap_or(0);
+            assert_eq!(max, w, "@{ppp}x {name}: {w} px thick");
+            let dark: usize = across.iter().map(Vec::len).sum();
+            let frac = dark as f32 / (across.len() * w) as f32;
+            assert!((0.45..=0.55).contains(&frac), "@{ppp}x {name}: {frac:.2} of the line is black");
+            let rows: std::collections::BTreeSet<i64> = across.iter().flatten().copied().collect();
+            for row in rows {
+                let mut runs = vec![0usize];
+                for d in &across {
+                    match (d.contains(&row), runs.last_mut()) {
+                        (true, Some(n)) => *n += 1,
+                        (false, Some(0)) => {}
+                        _ => runs.push(0),
+                    }
+                }
+                let inner = runs.get(1..runs.len().saturating_sub(1)).unwrap_or(&[]);
+                assert!(inner.iter().all(|&n| n == 4 * w), "@{ppp}x {name} row {row}: dashes {runs:?}, want {} px", 4 * w);
+            }
+        }
+    }
+}
+
+/// #10506: the ants march along the edge. They used to swap black and white 8 times a second.
+#[test]
+fn select_and_mask_ants_march_rather_than_blink() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some((mut h, _)) = ants_harness(1.0, 0.125) else { return };
+    let row = |h: &mut GpuHarness| {
+        let img = frame(h);
+        let ((x0, y), (x1, _)) = (device(h, 1.0, [100.0, 80.0]), device(h, 1.0, [300.0, 80.0]));
+        // The darkest row of the band along the top edge (grey counts as dark here, so an
+        // antialiased line is still read).
+        let line = |dy: i64| (x0 + 12..x1 - 12).map(|x| img.luma(x, y + dy).is_some_and(|l| l < 160)).collect::<Vec<bool>>();
+        let best = (-2..=2).max_by_key(|dy| line(*dy).iter().filter(|b| **b).count()).unwrap();
+        (line(best), h.ctx.input(|i| i.time))
+    };
+    let (a, ta) = row(&mut h);
+    h.step();
+    let (b, tb) = row(&mut h);
+    assert!((tb - ta - 0.125).abs() < 1e-6, "frames {ta} and {tb}");
+    // How far the canvas's ants march between the two frames.
+    let ((pa, period), (pb, _)) = (crate::ants::Style::new(1.0, ta).march(), crate::ants::Style::new(1.0, tb).march());
+    let shift = (pb - pa).rem_euclid(period) as usize;
+    assert!(shift > 0, "the pattern moves");
+    let dark = a.iter().filter(|d| **d).count();
+    assert!((a.len() * 2..=a.len() * 8).contains(&(dark * 10)), "the edge has dashes: {dark} of {} px dark", a.len());
+    let n = b.len() - shift;
+    let shifted = (0..n).filter(|&i| b[i] != a[i + shift]).count();
+    let inverted = (0..n).filter(|&i| b[i] != a[i]).count();
+    assert!(shifted * 10 < n, "the dashes shift by {shift} px: {shifted} of {n} pixels don't");
+    assert!(inverted * 10 < n * 9, "black and white don't swap: {inverted} of {n} pixels changed");
+}
+
+/// #10506: at 100 % and 200 % the dialog's ants are the canvas's ants at the frame's time: every
+/// pixel of the top edge's band is black exactly where `ants::Style::new(ppp, time)` puts a dash.
+/// The dialog reads the same frame clock as the canvas, so the pattern doesn't restart when it
+/// opens; and it is fixed to the screen, so the two line up.
+#[test]
+fn select_and_mask_ants_have_the_canvas_phase() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    for ppp in [1.0f32, 2.0] {
+        // 0.31 s steps, so the march has a phase that isn't zero or a whole dash at the frame, nor
+        // zero when the dialog opens.
+        let Some((mut h, opened)) = ants_harness(ppp, 0.31) else { return };
+        // A clock restarted when the dialog opened would be off by the canvas's phase then.
+        let (at_open, period) = crate::ants::Style::new(ppp, opened).march();
+        assert!(at_open.rem_euclid(period) != 0, "@{ppp}x: phase {at_open} when the dialog opened at {opened} s");
+        let img = frame(&mut h);
+        let time = h.ctx.input(|i| i.time);
+        let (phase, period) = crate::ants::Style::new(ppp, time).march();
+        let (dash, w) = (period / 2, period / 8);
+        assert_eq!(w, ppp.ceil() as i64);
+        assert!(phase % dash != 0, "@{ppp}x: phase {phase} at {time} s");
+        let ((x0, ay), (x1, _)) = (device(&h, ppp, [100.0, 80.0]), device(&h, ppp, [300.0, 80.0]));
+        let mut wrong = Vec::new();
+        for y in ay - w / 2..ay - w / 2 + w {
+            for x in x0 + 12..x1 - 12 {
+                let black = (x + w * y + phase).rem_euclid(period) < dash;
+                let l = img.luma(x, y).unwrap_or(128);
+                if (l < 64) != black || (24..232).contains(&l) {
+                    wrong.push((x, y, l));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "@{ppp}x phase {phase}: {} pixels differ from the canvas's ants, first {:?}", wrong.len(), wrong.first());
+    }
 }

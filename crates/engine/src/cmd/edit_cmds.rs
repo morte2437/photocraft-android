@@ -69,6 +69,7 @@ fn scratch_doc(doc: &Document) -> Document {
     copies.icc_profile = doc.icc_profile.clone();
     copies.resolution_dpi = doc.resolution_dpi;
     copies.patterns = doc.patterns.clone();
+    copies.text_styles = doc.text_styles.clone();
     copies
 }
 
@@ -576,8 +577,10 @@ fn paste_layers(s: &mut Session, layers: &Document, dx: i32, dy: i32, board: Opt
             linked.push((*signature, *key, missing));
         }
     }
+    let styles = std::mem::take(&mut copies.text_styles);
     let id = s.edit("Paste", |doc, active| {
         doc.patterns.extend(patterns);
+        crate::layer_copy_cmds::land_text_styles(doc, styles);
         doc.metadata.psd_global_blocks.extend(linked);
         // The first pasted layer goes where a new layer would; the rest stack above it.
         let mut place = crate::layer_place::Place::AutoEditable;
@@ -986,12 +989,16 @@ fn guide_position(s: &Session, p: &Value, vertical: bool) -> Result<Option<f64>>
     let px = match (v.as_f64(), v.as_str()) {
         (Some(n), _) => n,
         (None, Some(text)) => {
-            let (n, unit) = crate::prefs::Unit::parse_length(text).ok_or_else(|| {
-                EngineError::Other(format!("`position` {text:?} is not a length: give a number of pixels, or a number with px, in, cm, mm, pt, pc or %"))
-            })?;
             let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
             let extent = if vertical { doc.size.width } else { doc.size.height };
-            unit.unwrap_or(crate::prefs::Unit::Pixels).to_px(n, doc.resolution_dpi as f64, extent as f64, s.prefs().units_and_rulers.point_size.per_inch())
+            let per_inch = s.prefs().units_and_rulers.point_size.per_inch();
+            // A length, or arithmetic on lengths as Photoshop's field takes ("100% / 3", #10440).
+            let to_px = |n: f64, unit: crate::prefs::Unit| unit.to_px(n, doc.resolution_dpi as f64, extent as f64, per_inch);
+            crate::prefs::Unit::eval_length(text, crate::prefs::Unit::Pixels, to_px).ok_or_else(|| {
+                EngineError::Other(format!(
+                    "`position` {text:?} is not a length: give a number of pixels, a number with px, in, cm, mm, pt, pc or %, or arithmetic on them (+ - * /)"
+                ))
+            })?
         }
         _ => return Err(EngineError::Other("`position` must be a number of pixels or text with a unit".into())),
     };
@@ -1260,8 +1267,8 @@ pub fn specs() -> Vec<CommandSpec> {
             has_clip,
             |s, p| paste(s, p, true)
         ),
-        spec!("layer.new.layerViaCopy", "Layer via Copy", &["Layer", "New"], Some("Cmd+J"), "{}", has_doc, |s, _| layer_via(s, false)),
-        spec!("layer.new.layerViaCut", "Layer via Cut", &["Layer", "New"], Some("Cmd+Shift+J"), "{}", has_pixels, |s, _| layer_via(s, true)),
+        spec!("layer.new.layerViaCopy", "Layer Via Copy", &["Layer", "New"], Some("Cmd+J"), "{}", has_doc, |s, _| layer_via(s, false)),
+        spec!("layer.new.layerViaCut", "Layer Via Cut", &["Layer", "New"], Some("Cmd+Shift+J"), "{}", has_pixels, |s, _| layer_via(s, true)),
         spec!("layer.mergeVisible", "Merge Visible", &["Layer"], Some("Cmd+Shift+E"), "{}", has_doc, |s, _| merge_visible(s)),
         spec!("image.autoTone", "Auto Tone", &["Image"], Some("Cmd+Shift+L"), "{}", has_pixels, |s, _| auto_adjust(s, "tone")),
         spec!("image.autoContrast", "Auto Contrast", &["Image"], Some("Cmd+Alt+Shift+L"), "{}", has_pixels, |s, _| auto_adjust(s, "contrast")),

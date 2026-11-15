@@ -1,11 +1,11 @@
+use craft_psd::atn;
 use photocraft_engine::{Session, paint::tile::b64_encode};
-use photocraft_psd::atn;
 use serde_json::json;
 
 /// Legacy descriptor syntax must reach the same commands and parameters as version 16.
 #[test]
 fn legacy_v12_commands_import_like_v16() {
-    let bytes = include_bytes!("../../../psd/tests/fixtures/atn/v12-commands.atn");
+    let bytes = include_bytes!("../fixtures/atn/v12-commands.atn");
     let modern = atn::write(&atn::parse(bytes).unwrap()).unwrap();
     let expected = vec![
         ("filter.blur.gaussianBlur".into(), json!({"radius": 2.5})),

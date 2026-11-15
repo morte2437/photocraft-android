@@ -30,8 +30,10 @@ pub mod atomic;
 pub mod autosave;
 mod convert;
 mod finite;
+mod import_conversion;
 pub mod manifest;
 mod migrate;
+mod noreplace;
 pub mod read;
 mod store;
 pub mod zip;
@@ -41,12 +43,13 @@ use std::path::Path;
 use photocraft_doc::Document;
 use photocraft_raster::Rgba8Image;
 
-pub use atomic::{atomic_write, atomic_write_progress, atomic_write_stream, atomic_write_stream_progress};
+pub use atomic::{atomic_write, atomic_write_no_follow, atomic_write_progress, atomic_write_stream, atomic_write_stream_progress};
 #[cfg(not(target_arch = "wasm32"))]
 pub use autosave::RecoveryStore;
 pub use autosave::{Autosaver, RecoveryEntry, discard_recovery, list_recovery, recover};
 pub use convert::MAX_GROUP_DEPTH;
 pub use manifest::{FORMAT_VERSION, Manifest};
+pub use noreplace::{PublishNewError, rename_noreplace, write_noreplace};
 pub use read::{read_file, read_file_limited};
 pub use store::{ByteSource, DEFAULT_REVERIFY_BUDGET, PcraftWriter, SaveStats, read_entry};
 
@@ -114,7 +117,8 @@ pub struct LoadOptions {
     pub max_manifest_bytes: usize,
     /// Maximum size of one decompressed blob.
     pub max_blob_bytes: usize,
-    /// Maximum total decompressed tile + blob bytes.
+    /// Maximum total decompressed tile + blob bytes. The default follows the machine
+    /// ([`total_budget`]).
     pub max_total_bytes: u64,
     /// Keep document and layer ids from the file (the id counter is advanced
     /// past them). When `false`, fresh ids are assigned.
@@ -148,6 +152,24 @@ pub const BROWSER_MAX_BLOB_BYTES: usize = 512 << 20;
 #[cfg(target_arch = "wasm32")]
 pub const BROWSER_MAX_TOTAL_BYTES: u64 = 1 << 30;
 
+/// The least [`total_budget`] gives a machine whose memory is known, so a load isn't refused
+/// because RAM is briefly short.
+pub const MIN_TOTAL_BUDGET: u64 = 1 << 30;
+
+/// The default [`LoadOptions::max_total_bytes`] (#8595): `cap` (the format's own limit), lowered to
+/// what this machine can hold, the available RAM plus the room left on the scratch disk, but not
+/// below [`MIN_TOTAL_BUDGET`]. Decoded tiles start in RAM and spill to the scratch disk as memory
+/// fills, so both count. A bundle names each tile's decoded size, so a small file of nearly empty,
+/// highly compressed tiles can ask for far more than the machine has; past this budget the load
+/// stops with an error before decoding more, instead of the process running out of memory. With
+/// neither figure known (the browser, an unknown platform), `cap` stands.
+pub fn total_budget(cap: u64, available_ram: Option<u64>, scratch_room: Option<u64>) -> u64 {
+    match (available_ram, scratch_room) {
+        (None, None) => cap,
+        (ram, scratch) => ram.unwrap_or(0).saturating_add(scratch.unwrap_or(0)).max(MIN_TOTAL_BUDGET).min(cap),
+    }
+}
+
 impl Default for LoadOptions {
     fn default() -> Self {
         #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
@@ -157,10 +179,11 @@ impl Default for LoadOptions {
             limits.max_blob_bytes = limits.max_blob_bytes.min(BROWSER_MAX_BLOB_BYTES);
             limits.max_total_bytes = limits.max_total_bytes.min(BROWSER_MAX_TOTAL_BYTES);
         }
+        let ram = photocraft_raster::memory::system::current().available_ram;
         LoadOptions {
             max_manifest_bytes: limits.max_manifest_bytes,
             max_blob_bytes: limits.max_blob_bytes,
-            max_total_bytes: limits.max_total_bytes,
+            max_total_bytes: total_budget(limits.max_total_bytes, ram, photocraft_raster::spill::scratch_capacity()),
             preserve_ids: true,
             max_canvas_side: MAX_CANVAS_SIDE,
             max_canvas_pixels: MAX_CANVAS_PIXELS,
@@ -172,16 +195,7 @@ impl Default for LoadOptions {
 ///
 /// Bundles written here place the manifest first; re-zipped bundles may reorder entries.
 pub fn is_pcraft(bytes: &[u8]) -> bool {
-    if !bytes.starts_with(b"PK\x03\x04") {
-        return false;
-    }
-    if bytes.len() >= 30 {
-        let name_len = u16::from_le_bytes([bytes[26], bytes[27]]) as usize;
-        if bytes.get(30..30 + name_len) == Some(b"manifest.json") {
-            return true;
-        }
-    }
-    zip::ZipReader::new(bytes).is_ok_and(|archive| archive.find("manifest.json").is_some())
+    craft_pcraft_bundle::is_pcraft_zip(bytes)
 }
 
 /// Save to an in-memory ZIP bundle (one-shot; use [`PcraftWriter`] for
@@ -200,6 +214,14 @@ pub fn load_from_bytes_with(bytes: &[u8], opts: &LoadOptions) -> Result<Document
     store::load(&src, opts)
 }
 
+/// Load while reporting the tile/blob bytes already counted by the native loader.
+/// Nested-document consumers can share a byte allowance across embedded bundles, rather than
+/// granting the full per-bundle allowance at every nesting level. This is not process RSS.
+pub fn load_from_bytes_measured(bytes: &[u8], opts: &LoadOptions) -> Result<(Document, u64)> {
+    let src = store::ZipSource::new(bytes)?;
+    store::load_measured(&src, opts)
+}
+
 /// Load a bundle from a path: a directory bundle or a ZIP file.
 pub fn load_path(path: &Path) -> Result<Document> {
     load_path_with(path, &LoadOptions::default())
@@ -213,7 +235,8 @@ pub fn load_bytes_source(src: &dyn ByteSource, opts: &LoadOptions) -> Result<Doc
 
 pub fn load_path_with(path: &Path, opts: &LoadOptions) -> Result<Document> {
     if path.is_dir() {
-        store::load(&store::DirSource { root: path.to_path_buf() }, opts)
+        let source = store::DirSource::new(path, opts)?;
+        store::load(&source, opts)
     } else {
         let bytes = read::read_file(path)?;
         load_from_bytes_with(&bytes, opts)

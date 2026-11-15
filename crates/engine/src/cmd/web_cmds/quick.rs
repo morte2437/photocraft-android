@@ -106,6 +106,9 @@ pub(super) fn quick_export(s: &mut Session, p: &Value) -> Result<Value> {
         "jpg" => {
             o.insert("format".into(), json!("jpeg"));
             o.insert("quality".into(), json!(prefs.jpeg_quality.min(100)));
+            // Quick Export JPGs are progressive (SOF2) at every quality, as the reference
+            // application writes them; Save for Web keeps its own checkbox (#13787).
+            o.insert("progressive".into(), json!(true));
         }
         "gif" => {
             o.insert("format".into(), json!("gif"));
@@ -114,7 +117,12 @@ pub(super) fn quick_export(s: &mut Session, p: &Value) -> Result<Value> {
             // WebP uses the regular exporter. Its optional quality is in the Photoshop-style
             // 0–12 save scale: invert that mapping so the codec receives the chosen 1–100.
             // Keeping quality absent preserves the historical lossless Quick Export behavior.
-            let (wdoc, _, _) = web_document(&doc, &json!({}), &WebSettings { convert_to_srgb: prefs.convert_to_srgb, ..Default::default() })?;
+            let st = WebSettings::from_params(&Value::Object(o.clone()), cmd)?;
+            let (mut wdoc, _, _) = web_document(&doc, &json!({}), &st)?;
+            // The regular exporter embeds the document's XMP and EXIF as they are: give it only
+            // what the metadata choice keeps, as the Save for Web formats get.
+            wdoc.metadata.xmp = web_xmp(&doc, st.metadata).map(std::sync::Arc::from);
+            wdoc.metadata.exif = web_exif(&doc, st.metadata).map(|e| std::sync::Arc::new(e.to_vec()));
             let quality = if prefs.webp_lossless { None } else { Some((f64::from(prefs.webp_quality.clamp(1, 100)) - 1.0) * 12.0 / 99.0) };
             let warnings = crate::file_cmds::save_doc(&wdoc, &path, quality)?;
             crate::automate_cmds::fire_event(s, "export");
@@ -145,3 +153,7 @@ pub(super) fn quick_export(s: &mut Session, p: &Value) -> Result<Value> {
     crate::automate_cmds::fire_event(s, "export");
     Ok(json!({"path": path, "format": fmt, "bytes": opt.bytes.len(), "warnings": web_warnings(&st, exif, wdoc.resolution_dpi)}))
 }
+
+#[cfg(test)]
+#[path = "quick_jpg_progressive_tests.rs"]
+mod quick_jpg_progressive_tests;

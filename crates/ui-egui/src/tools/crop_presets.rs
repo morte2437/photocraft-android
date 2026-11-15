@@ -157,36 +157,35 @@ pub fn dropdown(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let can_new = savable(o).is_some();
     let mut chosen: Option<Choice> = None;
     let parent_layer = ui.layer_id();
-    let combo =
-        craft_ui::ComboBox::from_id_salt("crop-ratio").selected_text(label).width(140.0).height(420.0).icon(crate::widgets::chevron_icon).show_ui(ui, |ui| {
-            crate::press_menu::above_parent_ui(parent_layer, ui);
-            if selection_entry && ui.selectable_label(true, tl!("Selection")).clicked() {
-                chosen = Some(Choice::Selection);
+    let combo = crate::widgets::combo_list(ui, "crop-ratio", label, 140.0, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+        crate::press_menu::above_parent_ui(parent_layer, ui);
+        if selection_entry && ui.selectable_label(true, tl!("Selection")).clicked() {
+            chosen = Some(Choice::Selection);
+        }
+        let (before, after): (Vec<_>, Vec<_>) = builtin.iter().partition(|(k, _)| k != crop_size::FRONT);
+        for (k, l) in &before {
+            if ui.selectable_label(!selection_entry && current_user.is_none() && *k == o.crop_ratio, tl!(l)).clicked() {
+                chosen = Some(Choice::Builtin(k.clone()));
             }
-            let (before, after): (Vec<_>, Vec<_>) = builtin.iter().partition(|(k, _)| k != crop_size::FRONT);
-            for (k, l) in &before {
-                if ui.selectable_label(!selection_entry && current_user.is_none() && *k == o.crop_ratio, tl!(l)).clicked() {
-                    chosen = Some(Choice::Builtin(k.clone()));
-                }
+        }
+        for (name, _) in &users {
+            if ui.selectable_label(!selection_entry && current_user.as_deref() == Some(name), name.as_str()).clicked() {
+                chosen = Some(Choice::User(name.clone()));
             }
-            for (name, _) in &users {
-                if ui.selectable_label(!selection_entry && current_user.as_deref() == Some(name), name.as_str()).clicked() {
-                    chosen = Some(Choice::User(name.clone()));
-                }
+        }
+        for (k, l) in &after {
+            if ui.selectable_label(false, tl!(l)).clicked() {
+                chosen = Some(Choice::Builtin(k.clone()));
             }
-            for (k, l) in &after {
-                if ui.selectable_label(false, tl!(l)).clicked() {
-                    chosen = Some(Choice::Builtin(k.clone()));
-                }
-            }
-            ui.separator();
-            if ui.add_enabled(can_new, egui::Button::selectable(false, tl!("New Crop Preset…"))).clicked() {
-                chosen = Some(Choice::New);
-            }
-            if ui.add_enabled(!users.is_empty(), egui::Button::selectable(false, tl!("Delete Crop Preset…"))).clicked() {
-                chosen = Some(Choice::Delete);
-            }
-        });
+        }
+        ui.separator();
+        if ui.add_enabled(can_new, egui::Button::selectable(false, tl!("New Crop Preset…"))).clicked() {
+            chosen = Some(Choice::New);
+        }
+        if ui.add_enabled(!users.is_empty(), egui::Button::selectable(false, tl!("Delete Crop Preset…"))).clicked() {
+            chosen = Some(Choice::Delete);
+        }
+    });
     let _ = combo.response.accessible_name(tl!("Aspect Ratio"));
     if let Some(c) = chosen {
         apply_choice(app, c);
@@ -576,6 +575,8 @@ mod tests {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut app = app();
             whr(&mut app, "", "", "", PX_PER_IN);
+            // Only the options bar's dropdown: the contextual task bar shows the same one (#10890).
+            app.ui.panels.context_task_bar = false;
             app
         });
         h.run_steps(4);

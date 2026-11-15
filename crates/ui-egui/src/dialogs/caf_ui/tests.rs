@@ -473,6 +473,45 @@ fn strokes_past_the_engines_limits_are_refused_at_the_brush() {
     assert!(d["error"].as_str().is_some_and(|e| e.contains("at most")), "{d}");
 }
 
+/// A plan over `rect` whose fill area is the union of `parts`.
+fn base_with_hole(rect: Rect, parts: &[Rect]) -> Base {
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
+    let mut hole = vec![false; w * h];
+    for (i, cell) in hole.iter_mut().enumerate() {
+        let (x, y) = (rect.x0 + (i % w) as i32, rect.y0 + (i / w) as i32);
+        *cell = parts.iter().any(|p| p.contains(x, y));
+    }
+    Base { window: rect, rect, hole, base: vec![false; w * h] }
+}
+
+/// #10506: the fill area is outlined by merged runs, as the canvas outlines a selection, so it
+/// is drawn with the canvas's ants (it was one 1-point line per pixel edge, blinking).
+#[test]
+fn fill_area_outline_is_merged_runs() {
+    let rect = Rect::new(10, 20, 210, 180);
+    let mut square = outline(&base_with_hole(rect, &[Rect::new(50, 60, 90, 100)])).unwrap();
+    square.sort();
+    assert_eq!(square, vec![([50, 60], [50, 100]), ([50, 60], [90, 60]), ([50, 100], [90, 100]), ([90, 60], [90, 100])]);
+    let mut l = outline(&base_with_hole(rect, &[Rect::new(20, 30, 40, 90), Rect::new(20, 70, 100, 90)])).unwrap();
+    l.sort();
+    assert_eq!(l, vec![([20, 30], [20, 90]), ([20, 30], [40, 30]), ([20, 90], [100, 90]), ([40, 30], [40, 70]), ([40, 70], [100, 70]), ([100, 70], [100, 90])]);
+    // At the plan's edge too, and nothing for no fill area.
+    assert_eq!(outline(&base_with_hole(rect, &[rect])).map(|s| s.len()), Some(4));
+    assert_eq!(outline(&base_with_hole(rect, &[])), Some(Vec::new()));
+}
+
+/// A speckled fill area past the cap falls back to its bounding box.
+#[test]
+fn a_speckled_fill_area_falls_back_to_its_bounds() {
+    let rect = Rect::new(0, 0, 1000, 1000);
+    let mut b = base_with_hole(rect, &[]);
+    for (i, cell) in b.hole.iter_mut().enumerate() {
+        *cell = (i % 1000).is_multiple_of(2) && (i / 1000).is_multiple_of(2);
+    }
+    assert!(outline(&b).is_none());
+    assert_eq!(lifecycle::bounds(&b), Rect::new(0, 0, 999, 999), "the box drawn instead");
+}
+
 fn press(app: &mut PhotocraftApp, ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers) {
     let ev = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
     let input = egui::RawInput { events: vec![ev], ..Default::default() };

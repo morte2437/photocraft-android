@@ -18,7 +18,7 @@ pub(crate) enum Item {
     Separator,
     /// The tool's blend mode.
     Blend(BlendMode),
-    /// Painting-only: paint behind the layer's pixels (Brush and Pencil).
+    /// Painting-only: paint behind the layer's pixels (Brush, Pencil and Pattern Stamp).
     Behind,
     /// Painting-only: paint transparency (Brush, Pencil, Paint Bucket).
     Clear,
@@ -67,12 +67,33 @@ pub(crate) fn choices() -> Vec<((Option<BlendMode>, bool), &'static str)> {
     choices
 }
 
+/// The Pattern Stamp's Mode list in the options bar's order: [`choices`] without Clear, which the
+/// reference application's list doesn't have (#12879).
+pub(crate) fn pattern_stamp_choices() -> Vec<((Option<BlendMode>, bool), &'static str)> {
+    choices().into_iter().filter(|c| c.0 != (None, false)).collect()
+}
+
+/// What a pick in the Pattern Stamp's Mode dropdown sets, from `from` to `to` (both `(mode,
+/// behind)` of [`pattern_stamp_choices`]). With Behind greyed (`behind_enabled` false, the
+/// Background), a wheel notch or a key that lands on Behind steps on to the next mode the same
+/// way, so the greyed entry is never picked.
+pub(crate) fn pattern_stamp_pick(from: (Option<BlendMode>, bool), to: (Option<BlendMode>, bool), behind_enabled: bool) -> (Option<BlendMode>, bool) {
+    if behind_enabled || !to.1 {
+        return to;
+    }
+    let list = pattern_stamp_choices();
+    let at = |m: (Option<BlendMode>, bool)| list.iter().position(|c| c.0 == m);
+    let (Some(a), Some(b)) = (at(from), at(to)) else { return from };
+    let next = if a > b { b.checked_sub(1) } else { b.checked_add(1) };
+    next.and_then(|i| list.get(i)).map_or(from, |c| c.0)
+}
+
 /// The blend modes in their menu groups (a separator before Darken, Lighten, Overlay, Difference
 /// and Hue), with Behind and/or Clear after Dissolve.
 fn blend_items(behind: bool, clear: bool) -> Vec<Item> {
     let mut out = Vec::new();
     for m in BlendMode::LAYER_MODES {
-        if matches!(m, BlendMode::Darken | BlendMode::Lighten | BlendMode::Overlay | BlendMode::Difference | BlendMode::Hue) {
+        if crate::panels::starts_blend_group(m) {
             out.push(Item::Separator);
         }
         out.push(Item::Blend(m));
@@ -90,13 +111,14 @@ fn blend_items(behind: bool, clear: bool) -> Vec<Item> {
 
 /// `tool`'s menu, top to bottom. Empty for a tool without one (its Shift+right-click keeps its
 /// other route). Only what the tool's options bar offers is listed: the reference application's
-/// Behind for the stamps, History Brush, Gradient and Paint Bucket, the Blur, Sharpen and Smudge
+/// Behind for the Clone Stamp, History Brush, Gradient and Paint Bucket, the Blur, Sharpen and Smudge
 /// modes, the Spot Healing modes and the Healing Brush's source and Replace have no setting here.
 pub(crate) fn items(tool: Tool) -> Vec<Item> {
     let with_brush = |rest: Vec<Item>| std::iter::once(Item::EditBrush).chain(std::iter::once(Item::Separator)).chain(rest).collect::<Vec<_>>();
     match tool {
         Tool::Brush | Tool::Pencil => with_brush(blend_items(true, true)),
-        Tool::CloneStamp | Tool::PatternStamp | Tool::HistoryBrush => with_brush(blend_items(false, false)),
+        Tool::PatternStamp => with_brush(blend_items(true, false)),
+        Tool::CloneStamp | Tool::HistoryBrush => with_brush(blend_items(false, false)),
         Tool::MixerBrush | Tool::ColorReplacement | Tool::BackgroundEraser | Tool::Blur | Tool::Sharpen | Tool::Smudge => vec![Item::EditBrush],
         Tool::Eraser => ["brush", "pencil", "block"].into_iter().map(Item::Eraser).collect(),
         Tool::Dodge | Tool::Burn => with_brush(["shadows", "midtones", "highlights"].into_iter().map(Item::Range).collect()),
@@ -141,7 +163,8 @@ pub(crate) fn current(app: &PhotocraftApp, tool: Tool) -> Option<Item> {
     let item = match tool {
         Tool::Brush => painting(o.brush_clear),
         Tool::Pencil => painting(o.pencil_clear),
-        Tool::CloneStamp | Tool::PatternStamp | Tool::HistoryBrush | Tool::Healing => Item::Blend(crate::blend_keys::brush_tool_mode(tool, brush.mode)),
+        Tool::PatternStamp => painting(false),
+        Tool::CloneStamp | Tool::HistoryBrush | Tool::Healing => Item::Blend(crate::blend_keys::brush_tool_mode(tool, brush.mode)),
         Tool::Gradient => Item::Blend(o.gradient_blend_mode),
         Tool::PaintBucket if o.bucket_clear => Item::Clear,
         Tool::PaintBucket => Item::Blend(o.bucket_blend_mode),
@@ -164,6 +187,21 @@ fn ui_value(app: &PhotocraftApp, item: Item) -> Option<bool> {
 /// Does the active tool have a menu for this gesture (Shift, without Alt, Ctrl or Command)?
 pub(crate) fn is_gesture(tool: Tool, mods: egui::Modifiers) -> bool {
     mods.shift && !mods.alt && !mods.ctrl && !mods.command && !mods.mac_cmd && !items(tool).is_empty()
+}
+
+/// Does a right-click with `mods` at document point `doc` open the menu? The Shift gesture for
+/// every tool that has one, and a plain right-click with the Eraser in Block mode, where the Brush
+/// Preset picker's Size and Hardness mean nothing (#11937), or with the Paint Bucket (#12530), as
+/// in the reference application.
+/// A plain right-click opens it only where it would otherwise open the picker or nothing: with the
+/// Erase preference it still erases, and on the pasteboard its colour menu opens.
+pub(crate) fn opens_on(app: &PhotocraftApp, tool: Tool, mods: egui::Modifiers, doc: Option<[f64; 2]>) -> bool {
+    let plain = !mods.shift && !mods.alt && !mods.ctrl && !mods.command && !mods.mac_cmd;
+    let block = tool == Tool::Eraser && app.ui.tool_options.eraser_mode == "block";
+    let pasteboard = doc.is_some_and(|d| crate::canvas_tool_menu::pasteboard_at(app, tool, d));
+    // An open Free Transform box owns the plain right-click: its transform menu opens instead.
+    let bucket = tool == Tool::PaintBucket && app.ui.transform.is_none();
+    is_gesture(tool, mods) || (plain && (block || bucket) && !crate::paint_mouse::right_erases(app, tool) && !pasteboard)
 }
 
 /// The modifiers that decide a right-button gesture: the ones held when the button went down.
@@ -194,11 +232,25 @@ pub(crate) fn menu_id() -> Id {
     Id::unique("canvas-brush-mode-menu")
 }
 
-/// Opens the active tool's menu at screen point `pos`.
-pub(crate) fn open(app: &mut PhotocraftApp, ctx: &Context, pos: [f32; 2]) {
+/// Temp data: was the open menu opened by a plain right-click (not the Shift gesture)?
+fn plain_id() -> Id {
+    menu_id().with("plain")
+}
+
+/// The row drawn checked. The Paint Bucket's plain right-click menu checks none, as in the
+/// reference application; its Shift+right-click menu checks the current mode.
+pub(crate) fn checked(app: &PhotocraftApp, ctx: &Context, tool: Tool) -> Option<Item> {
+    let plain = ctx.data(|d| d.get_temp::<bool>(plain_id())).unwrap_or(false);
+    if plain && tool == Tool::PaintBucket { None } else { current(app, tool) }
+}
+
+/// Opens the active tool's menu at screen point `pos`, for a right-click with `mods`.
+pub(crate) fn open(app: &mut PhotocraftApp, ctx: &Context, pos: [f32; 2], mods: egui::Modifiers) {
     if !pos.iter().all(|v| v.is_finite()) || items(app.ui.tool).is_empty() {
         return;
     }
+    let plain = !is_gesture(app.ui.tool, mods);
+    ctx.data_mut(|d| d.insert_temp(plain_id(), plain));
     // The checked row reads the tool's own brush.
     crate::paint_mouse::sync_tool_brush(app);
     app.ui.brush_picker = None;
@@ -266,14 +318,14 @@ pub(crate) fn blocks_control(app: &mut PhotocraftApp, ctx: &Context, ev: crate::
 }
 
 /// The engine command a row runs, if any: a brush-based tool's mode goes through
-/// `tools.setBrush`, as its options-bar dropdown does. The Brush and Pencil also set or clear
-/// Behind (Clear keeps the underlying mode, as the options bar does).
+/// `tools.setBrush`, as its options-bar dropdown does. The Brush, Pencil and Pattern Stamp also
+/// set or clear Behind (Clear keeps the underlying mode, as the options bar does).
 pub(crate) fn engine_call(app: &PhotocraftApp, tool: Tool, item: Item) -> Option<(&'static str, Value)> {
     let brush = match (tool, item) {
-        (Tool::Brush | Tool::Pencil, Item::Blend(m)) => json!({"mode": m, "behind": false}),
-        (Tool::Brush | Tool::Pencil, Item::Behind) => json!({"mode": BlendMode::Normal, "behind": true}),
+        (Tool::Brush | Tool::Pencil | Tool::PatternStamp, Item::Blend(m)) => json!({"mode": m, "behind": false}),
+        (Tool::Brush | Tool::Pencil | Tool::PatternStamp, Item::Behind) => json!({"mode": BlendMode::Normal, "behind": true}),
         (Tool::Brush | Tool::Pencil, Item::Clear) => json!({"mode": app.session.tools.brush.mode, "behind": false}),
-        (Tool::CloneStamp | Tool::PatternStamp | Tool::HistoryBrush | Tool::Healing, Item::Blend(m)) => json!({"mode": m}),
+        (Tool::CloneStamp | Tool::HistoryBrush | Tool::Healing, Item::Blend(m)) => json!({"mode": m}),
         _ => return None,
     };
     Some(("tools.setBrush", json!({ "brush": brush })))
@@ -344,7 +396,7 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &Context) {
     crate::paint_mouse::sync_tool_brush(app);
     let tool = app.ui.tool;
     let rows: Vec<(Item, bool)> = items(tool).into_iter().map(|i| (i, enabled(app, i))).collect();
-    let current = current(app, tool);
+    let current = checked(app, ctx, tool);
     let screen = crate::work_area::visible_rect(ctx);
     let id = menu_id();
     let margin = ctx.global_style().spacing.menu_margin.sum() + egui::Vec2::splat(2.0);
@@ -382,3 +434,15 @@ pub(crate) fn show(app: &mut PhotocraftApp, ctx: &Context) {
         close(app);
     }
 }
+
+#[cfg(test)]
+#[path = "eraser_block_right_click_tests.rs"]
+mod eraser_block_right_click_tests;
+
+#[cfg(test)]
+#[path = "pattern_stamp_behind_tests.rs"]
+mod pattern_stamp_behind_tests;
+
+#[cfg(test)]
+#[path = "paint_bucket_right_click_menu_tests.rs"]
+mod paint_bucket_right_click_menu_tests;

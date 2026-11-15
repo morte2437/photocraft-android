@@ -114,6 +114,7 @@ fn edit_section(i: usize, b: &mut BrushSettings) {
                 sample_all_layers: true,
                 load_after_stroke: false,
                 clean_after_stroke: false,
+                solid_colors_only: true,
             };
         }
         7 => {
@@ -430,6 +431,8 @@ fn options_bar_harness(tool: crate::state::Tool) -> Harness<'static, PhotocraftA
 #[test]
 fn clone_stamp_opacity_and_flow_are_journaled_per_gesture() {
     let mut h = options_bar_harness(crate::state::Tool::CloneStamp);
+    // The Clone Stamp's own starting brush: a tool swap is not a journaled command.
+    let start = h.state().session.tools.brush.clone();
     for (label, field) in [("Opacity", "opacity"), ("Flow", "flow")] {
         let n = h.state().session.journal.len();
         let rect = caption_rect(&h, label);
@@ -453,11 +456,12 @@ fn clone_stamp_opacity_and_flow_are_journaled_per_gesture() {
         assert_eq!(id, "tools.setBrush");
         assert_eq!(params["brush"][field].as_f64().map(|v| v as f32), Some(value));
     }
-    h.state_mut().ui.clone_source = Some([0.0, 0.0]);
+    crate::retouch_ui::set_source(h.state_mut(), 0.0, 0.0);
     let params = crate::retouch_ui::clone_params(h.state()).unwrap();
     assert_eq!(params["opacity"], json!(h.state().session.tools.brush.opacity * 100.0));
     assert_eq!(params["flow"], json!(h.state().session.tools.brush.flow * 100.0));
     let mut replay = photocraft_engine::Session::new();
+    replay.tools.brush = start;
     for (id, params) in &h.state().session.journal {
         replay.execute(id, params.clone()).unwrap();
     }
@@ -656,7 +660,7 @@ fn mixer_brush_clean_brush_and_the_automatic_load_keep_the_foreground_out() {
     assert_eq!(h.state().session.tools.mixer.reservoir, None);
 
     // The stroke the canvas commits on release lays down only the red it picks up.
-    crate::retouch_ui::finish_stroke(h.state_mut(), crate::state::Tool::MixerBrush, &[[5.0, 20.0, 1.0], [195.0, 20.0, 1.0]], egui::Modifiers::NONE);
+    crate::retouch_ui::finish_stroke(h.state_mut(), crate::state::Tool::MixerBrush, &[[5.0, 20.0, 1.0], [195.0, 20.0, 1.0]], egui::Modifiers::NONE, false);
     let d = h.state().session.active().unwrap();
     let c = d.doc.layer(d.active_layer.unwrap()).unwrap().surface().unwrap().rgba(100, 20);
     assert!(c[3] > 0.1 && c[0] > 0.99 && c[2] < 0.01, "the stroke carries no foreground: {c:?}");
@@ -1364,6 +1368,9 @@ fn app_harness_with_language(lang: crate::i18n::Lang) -> Harness<'static, Photoc
 
 #[test]
 fn brush_sections_paint_simplified_chinese_labels() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     fn collect_text(shape: &egui::Shape, out: &mut Vec<String>) {
         match shape {
             egui::Shape::Text(text) => out.push(text.galley.job.text.clone()),
@@ -1875,4 +1882,153 @@ fn checkboxes_show_a_pressed_state_from_their_label() {
     h.run();
     assert!(*h.state(), "the release checks it");
     assert_eq!(fill(&h), Some(widgets::check_box_fill(true, false, &t)));
+}
+
+#[test]
+fn spacing_row_edits_route_only_the_changed_fields_through_the_brush_command() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    let mut h = harness(0, 0);
+    h.state_mut().run("tools.setBrush", json!({"brush": {"spacing": 0.427, "spacingEnabled": false}})).unwrap();
+    h.run_steps(2);
+    let journal = h.state().session.journal.len();
+    let spacing = h.state().session.tools.brush.spacing;
+    let checkbox = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Spacing");
+    checkbox.click();
+    h.run_steps(2);
+    assert!(h.state().session.tools.brush.spacing_enabled);
+    assert_eq!(h.state().session.tools.brush.spacing, spacing);
+    assert_eq!(last_journal(h.state()).unwrap().0, "tools.setBrush");
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"spacingEnabled": true}));
+    let field = h.query_all_by_role(egui::accesskit::Role::SpinButton).find(|node| node.accesskit_node().numeric_value() == Some(43.0)).unwrap();
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    assert_eq!(h.state().session.tools.brush.spacing, 0.44);
+    assert_eq!(last_journal(h.state()).unwrap().0, "tools.setBrush");
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"spacing": 0.44_f32}));
+    let checkbox = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Spacing");
+    checkbox.click();
+    h.run_steps(2);
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"spacingEnabled": false}));
+    let field = h.query_all_by_role(egui::accesskit::Role::SpinButton).find(|node| node.accesskit_node().numeric_value() == Some(44.0)).unwrap();
+    assert!(field.accesskit_node().is_disabled());
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    assert_eq!(h.state().session.tools.brush.spacing, 0.44);
+    assert_eq!(h.state().session.journal.len(), journal + 3, "disabled input adds no command");
+    let checkbox = h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Spacing");
+    checkbox.click();
+    h.run_steps(2);
+    assert_eq!(h.state().session.tools.brush.spacing, 0.44);
+    assert_eq!(h.state().session.journal.len(), journal + 4);
+}
+
+#[test]
+fn scatter_header_edits_route_to_the_correct_brush_block_and_disabled_sections_ignore_input() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    for section in [2, 4] {
+        let block = if section == 2 { "scattering" } else { "dualBrush" };
+        let mut h = harness(0, section);
+        let mut initial = json!({});
+        initial[block] = if section == 2 {
+            json!({"enabled": true, "bothAxes": false, "scatter": {"jitter": 2.137, "control": "penPressure"}, "count": 5})
+        } else {
+            json!({"enabled": true, "bothAxes": false, "scatter": 2.137, "count": 7})
+        };
+        h.state_mut().run("tools.setBrush", json!({"brush": initial})).unwrap();
+        h.run_steps(3);
+        let journal = h.state().session.journal.len();
+        let before = h.state().session.tools.brush.clone();
+        h.get_by_label("Both Axes").click();
+        h.run_steps(2);
+        let mut expected = json!({});
+        expected[block] = json!({"bothAxes": true});
+        assert_eq!(last_journal(h.state()).unwrap().0, "tools.setBrush");
+        assert_eq!(last_journal(h.state()).unwrap().1["brush"], expected);
+        let mut after = before;
+        if section == 2 {
+            after.scattering.both_axes = true;
+        } else {
+            after.dual_brush.both_axes = true;
+        }
+        assert_eq!(h.state().session.tools.brush, after, "toggle changes only the matching axis flag");
+        let field = h.query_all_by_role(Role::SpinButton).find(|node| node.accesskit_node().numeric_value() == Some(214.0)).unwrap();
+        field.click();
+        h.key_press(egui::Key::ArrowUp);
+        h.run_steps(2);
+        expected[block] = if section == 2 { json!({"scatter": {"jitter": 2.15_f32}}) } else { json!({"scatter": 2.15_f32}) };
+        assert_eq!(last_journal(h.state()).unwrap().1["brush"], expected);
+        if section == 2 {
+            after.scattering.scatter.jitter = 2.15;
+        } else {
+            after.dual_brush.scatter = 2.15;
+        }
+        assert_eq!(h.state().session.tools.brush, after);
+        assert_eq!(h.state().session.journal.len(), journal + 2);
+        let mut off = json!({});
+        off[block] = json!({"enabled": false});
+        h.state_mut().run("tools.setBrush", json!({"brush": off})).unwrap();
+        h.run_steps(2);
+        let before = h.state().session.tools.brush.clone();
+        let journal = h.state().session.journal.len();
+        let field = h.query_all_by_role(Role::SpinButton).find(|node| node.accesskit_node().numeric_value() == Some(215.0)).unwrap();
+        assert!(field.accesskit_node().is_disabled());
+        field.click();
+        h.key_press(egui::Key::ArrowUp);
+        h.event(egui::Event::Text("999".into()));
+        h.key_press(egui::Key::Enter);
+        h.get_by_label("Both Axes").click();
+        h.run_steps(2);
+        assert_eq!(h.state().session.tools.brush, before, "the disabled header retains both values");
+        assert_eq!(h.state().session.journal.len(), journal, "disabled edits add no command");
+    }
+}
+
+#[test]
+fn tip_geometry_edits_and_arrow_drag_route_only_changed_fields_through_the_brush_command() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    fn centre(shape: &egui::Shape) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Circle(c) if c.radius == 40.0 => Some(c.center),
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(centre),
+            _ => None,
+        }
+    }
+    let mut h = harness(0, 0);
+    h.state_mut().run("tools.setBrush", json!({"brush": {"angle": -23.0, "roundness": 0.473, "hardness": 0.65, "spacing": 0.31, "flipX": true}})).unwrap();
+    h.run_steps(3);
+    let mut expected = h.state().session.tools.brush.clone();
+    let journal = h.state().session.journal.len();
+    let field = h.query_all_by_role(Role::SpinButton).find(|n| n.accesskit_node().numeric_value() == Some(-23.0)).unwrap();
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    expected.angle = -22.0;
+    assert_eq!(h.state().session.tools.brush, expected);
+    assert_eq!(last_journal(h.state()).unwrap().0, "tools.setBrush");
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"angle": -22.0_f32}));
+    let field = h.query_all_by_role(Role::SpinButton).find(|n| n.accesskit_node().numeric_value() == Some(47.0)).unwrap();
+    field.click();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_steps(2);
+    expected.roundness = 0.48;
+    assert_eq!(h.state().session.tools.brush, expected);
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"roundness": 0.48_f32}));
+    let c = h.output().shapes.iter().find_map(|shape| centre(&shape.shape)).unwrap();
+    let a = expected.angle.to_radians();
+    h.drag_at(c + vec2(a.cos(), -a.sin()) * 35.0);
+    h.run_steps(1);
+    h.hover_at(c + vec2(0.0, -35.0));
+    h.run_steps(2);
+    h.drop_at(c + vec2(0.0, -35.0));
+    h.run_steps(2);
+    expected.angle = 90.0;
+    assert_eq!(h.state().session.tools.brush, expected);
+    assert_eq!(last_journal(h.state()).unwrap().1["brush"], json!({"angle": 90.0_f32}));
+    assert_eq!(h.state().session.journal.len(), journal + 3, "one command per field edit and arrow gesture");
 }

@@ -12,11 +12,11 @@
 
 use crate::common;
 
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::text::TextShape;
 use photocraft_doc::{Document, Layer, LayerContent, Size, TextLayer};
 use photocraft_geom::{Affine, Rect};
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use photocraft_raster::Surface;
 use photocraft_text::engine_data::Value as E;
 use photocraft_text::psd::{TySh, write_tysh};
@@ -246,7 +246,7 @@ fn import_case(c: &Case) -> (Rect, TextLayer, Document, Vec<[f32; 4]>) {
     t.psd_raw = Some(std::sync::Arc::new(data));
     doc.layers.push(Layer::new(c.name, LayerContent::Text(t)));
     let bytes = photocraft_io::export(&doc, "t.psd", &Default::default()).unwrap().bytes;
-    let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+    let file = craft_psd::PsdFile::from_bytes(&bytes).unwrap();
     let merged = photocraft_io::merged_composite(&file).unwrap();
     let back = photocraft_io::import("t.psd", &bytes).unwrap().document;
     let LayerContent::Text(bt) = &back.layers[0].content else { panic!("{}: not a type layer", c.name) };
@@ -370,10 +370,10 @@ fn hostile_type_sizes_without_pixels_import_without_a_huge_render() {
         let Some(mut t) = photocraft_text::psd::text_layer_from_tysh(&data, 72.0) else {
             // Unsafe affine data is now rejected at the boundary (#4758). Exercise the
             // actual file import too: with no saved pixels it must remain empty and safe.
-            let mut file = photocraft_psd::testgen::small(photocraft_psd::Version::Psd, photocraft_psd::Compression::Raw);
-            file.layers_mut().push(photocraft_psd::LayerRecord {
+            let mut file = craft_psd::testgen::small(craft_psd::Version::Psd, craft_psd::Compression::Raw);
+            file.layers_mut().push(craft_psd::LayerRecord {
                 name: b"hostile".to_vec(),
-                blocks: vec![photocraft_psd::TaggedBlock::new(*b"TySh", data)],
+                blocks: vec![craft_psd::TaggedBlock::new(*b"TySh", data)],
                 ..Default::default()
             });
             let back = photocraft_io::import("t.psd", &file.to_bytes().unwrap()).unwrap();

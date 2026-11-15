@@ -1,5 +1,5 @@
 use super::open::import_at_raw_ppi;
-use super::paths::{extension, file_name, join, list_files, list_images, read_file, stem, write_file};
+use super::paths::{extension, file_name, join, list_files, list_images, read_file, sanitize, stem, write_file};
 use super::processing::parse_steps;
 use super::save::{SaveOpts, encode, save_doc, save_doc_as};
 use super::{Arc, Document, EngineError, Result, Session, Value, batch_naming, json, str_param};
@@ -175,7 +175,7 @@ pub fn same_format(path: &str) -> String {
     const IMPORT_ONLY: &[&str] =
         &["pdn", "kra", "krz", "af", "afdesign", "afphoto", "afpub", "heic", "heif", "hif", "svg", "svgz", "cin", "pcx", "xpm", "xcf", "xcfgz", "gz", "psdt"];
     let ext = extension(path).unwrap_or_else(|| "png".into());
-    let no_writer = photocraft_codecs::from_extension(&ext).is_some_and(|f| !f.caps().write);
+    let no_writer = photocraft_formats::from_extension(&ext).is_some_and(|f| f.capabilities().write != photocraft_formats::Availability::Available);
     if photocraft_io::raw::EXTENSIONS.contains(&ext.as_str()) || IMPORT_ONLY.contains(&ext.as_str()) || no_writer { "psd".into() } else { ext }
 }
 
@@ -192,7 +192,9 @@ fn same_format_takes_the_file_names_extension() {
     for name in ["/in/scan.dcm", "/in/scan.DICOM", "/in/scan.dc3", "/in/page.xcf", "/in/page.xcf.gz", "/in/page.xcfgz", "/in/card.psdt"] {
         assert_eq!(same_format(name), "psd", "{name}");
     }
-    for f in photocraft_codecs::Format::ALL.into_iter().filter(|f| f.caps().read && !f.caps().write) {
+    for f in photocraft_formats::Format::ALL.into_iter().filter(|f| {
+        f.capabilities().read == photocraft_formats::Availability::Available && f.capabilities().write != photocraft_formats::Availability::Available
+    }) {
         for ext in f.extensions() {
             assert_eq!(same_format(&format!("/in/a.{ext}")), "psd", "{f:?} .{ext}");
         }
@@ -222,6 +224,10 @@ impl FileFailure {
     fn value(&self, key: &str, input: &str) -> Value {
         let mut failure = json!({"error": self.error.to_string()});
         failure[key] = json!(input);
+        // Marks a nesting or playback-budget stop, which an enclosing batch step must not swallow.
+        if matches!(self.error, EngineError::BatchLimit(_)) {
+            failure["limit"] = json!(true);
+        }
         if let Some(result) = &self.result {
             failure["result"] = result.clone();
         }
@@ -239,10 +245,13 @@ fn process_outputs<'a>(
     // The scratch sessions have default preferences; a raw opens at the user's Raw Defaults.
     let raw_ppi = s.prefs().raw_defaults.resolution;
     let action_prefs = s.prefs().actions.clone();
+    let authorize = s.authorize;
     let mut files = Vec::new();
     let mut errors = Vec::new();
     let mut written = OutputClaims::default();
     let run = |scratch: &mut Session, out: &str| {
+        // Nested commands answer to the initiating session's authorization hook.
+        scratch.authorize = authorize;
         scratch.prefs.edit(|prefs| prefs.actions = action_prefs.clone());
         f(scratch, out).map_err(FileFailure::from)
     };
@@ -260,6 +269,59 @@ fn process_outputs<'a>(
 }
 
 type PrepareInput<'a> = &'a dyn Fn(&mut Session, &str) -> Result<()>;
+
+/// Process the current in-memory images in scratch sessions: unsaved edits are included and
+/// resizing never touches the open documents' pixels, selection, history or save state.
+/// Untitled names use the shared filename sanitizer before becoming output stems.
+pub(super) fn process_document_copies(
+    s: &Session,
+    documents: &[&crate::DocState],
+    output: &str,
+    format: &str,
+    save: SaveOpts,
+    f: &dyn Fn(&mut Session, &str) -> Result<bool>,
+) -> Value {
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    let mut written = OutputClaims::default();
+    for state in documents {
+        // Export resolves stored links against this source, including non-active documents.
+        let _document = crate::doc_path::scope(state.path.as_deref().map(std::path::Path::new));
+        // An untitled document's name is a label, not a path: keep it as one portable component.
+        let path = state.path.clone().unwrap_or_else(|| format!("{}.psd", sanitize(&state.doc.name)));
+        let ext = if format == "same" { same_format(&path) } else { format.trim_start_matches('.').to_ascii_lowercase() };
+        let out = join(output, &format!("{}.{ext}", stem(&path)));
+        // Copies must not overwrite any open source file, including aliases of its path.
+        if s.documents().iter().filter_map(|doc| doc.path.as_deref()).any(|source| super::paths::same_destination(source, &out)) {
+            errors.push(json!({"file": path, "error": format!("output would replace an open source file: {out}; choose a different output folder")}));
+            continue;
+        }
+        let prepare = |scratch: &mut Session, _: &str| {
+            scratch.authorize = s.authorize;
+            scratch.prefs.edit(|prefs| *prefs = s.prefs().clone());
+            scratch.add_document(state.doc.as_ref().clone(), state.path.clone());
+            // The moved selection belongs to the displayed image; commit it only in the copy.
+            if let Some(floating) = crate::float_cmds::floating(state).cloned() {
+                let copy = scratch.active_mut().ok_or(EngineError::NoDocument)?;
+                copy.floating = Some(crate::float_cmds::Floating { revision: copy.revision, ..floating });
+                crate::float_cmds::drop_floating(scratch)?;
+            }
+            Ok(())
+        };
+        let notices = std::cell::RefCell::new(Vec::new());
+        let input = InputPolicy { prepare: &prepare, notices: &notices };
+        let run = |scratch: &mut Session, out: &str| f(scratch, out).map_err(FileFailure::from);
+        let options = ProcessOptions { format: Some(&ext), written: Some(&written), ctx: None, input: Some(&input) };
+        match process_one(s.prefs().raw_defaults.resolution, &path, &out, save, options, &run) {
+            Ok(()) => {
+                written.record(&out, &path);
+                files.push(out);
+            }
+            Err(error) => errors.push(error.value("file", &path)),
+        }
+    }
+    json!({"files": files, "errors": errors})
+}
 
 struct InputPolicy<'a> {
     prepare: PrepareInput<'a>,
@@ -608,6 +670,18 @@ pub(crate) fn batch_keeps_step(id: &str) -> bool {
     (batch_save_point(id) || !crate::actions_cmds::shell_save_command(id)) && !crate::actions_cmds::shell_view_command(id)
 }
 
+/// Refuses a batch or droplet nested past [`MAX_BATCH_DEPTH`](crate::actions_cmds::MAX_BATCH_DEPTH),
+/// before it reads or decodes anything: each level keeps its parent's scratch document open.
+pub(crate) fn check_batch_depth(s: &Session, cmd: &str) -> Result<()> {
+    if s.actions.batch_depth >= crate::actions_cmds::MAX_BATCH_DEPTH {
+        return Err(EngineError::BatchLimit(format!(
+            "invalid parameters for `{cmd}`: batches and droplets are nested more than {} deep",
+            crate::actions_cmds::MAX_BATCH_DEPTH
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
     const CMD: &str = "file.automate.batch";
     if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
@@ -627,6 +701,7 @@ pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> R
 /// Named actions carry their recursion context and both routes normalize recorded parameters.
 pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
+    check_batch_depth(s, cmd)?;
     let quiet_raw = match p.get("suppressOpenOptions") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -757,17 +832,19 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // A batch inside a played action charges its inputs × steps (at least one each: an input is read,
     // decoded and saved even with no steps) to the playback tree it is in and
     // hands the count on, so nested batches cannot multiply past the limit. A top-level named
-    // action starts fresh; standalone explicit steps retain their existing behavior.
+    // action starts fresh; standalone explicit steps retain their existing behavior. A batch nested
+    // in another batch (a droplet a droplet runs) is charged the same way, so the levels share one budget.
     let named = called_name.is_some();
+    let nested = s.actions.playing > 0 || s.actions.batch_depth > 0;
     let mut playback_steps = 0;
-    if s.actions.playing > 0 || named {
-        let spent = if s.actions.playing > 0 { s.actions.playback_steps } else { 0 };
+    if nested || named {
+        let spent = if nested { s.actions.playback_steps } else { 0 };
         playback_steps =
             spent.saturating_add((steps.len().max(1) as u64).saturating_mul(if source == "open" { s.documents().len() } else { inputs.len() } as u64));
         if playback_steps > crate::actions_cmds::MAX_PLAYBACK_STEPS {
-            return Err(EngineError::BadParams { cmd: cmd.into(), msg: "this batch would exceed the action playback step limit".into() });
+            return Err(EngineError::BatchLimit(format!("invalid parameters for `{cmd}`: this batch would exceed the action playback step limit")));
         }
-        if s.actions.playing > 0 {
+        if nested {
             s.actions.playback_steps = playback_steps;
         }
     }
@@ -780,6 +857,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         playback_steps,
         script_depth: s.actions.script_depth,
         script_steps: s.actions.script_steps,
+        budget_shared: nested,
+        batch_depth: s.actions.batch_depth.saturating_add(1),
         ..Default::default()
     };
     if source == "open" {
@@ -796,6 +875,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         let previous_playing = std::mem::replace(&mut s.actions.playing, actions.playing);
         let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
         let previous_steps = std::mem::replace(&mut s.actions.playback_steps, actions.playback_steps);
+        // The nesting depth and shared budget of the levels above travel with the run too.
+        let previous_shared = std::mem::replace(&mut s.actions.budget_shared, actions.budget_shared);
+        let previous_depth = std::mem::replace(&mut s.actions.batch_depth, actions.batch_depth);
         let previous_list = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list));
         let owns_history = s.action_history.is_none() && s.prefs().actions.create_single_history_state;
         if owns_history {
@@ -807,10 +889,12 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         }
         s.actions.playing = previous_playing;
         s.actions.playback_stack = previous_stack;
+        s.actions.budget_shared = previous_shared;
+        s.actions.batch_depth = previous_depth;
         if let Some(previous) = previous_list {
             s.actions.list = previous;
         }
-        if previous_playing == 0 {
+        if previous_playing == 0 && !previous_shared {
             s.actions.playback_steps = previous_steps;
         }
         if named {
@@ -849,7 +933,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     #[cfg(not(target_arch = "wasm32"))]
     validate_flat_outputs(&outputs)?;
     validate_error_log(&policy, outputs.iter().map(|(path, _)| path.clone()), outputs.iter().map(|(_, path)| path.clone()))?;
-    let was_playing = s.actions.playing > 0;
+    let was_playing = nested;
     #[cfg(test)]
     let history_observer = s.batch_history_observer;
     crate::jobs::run(
@@ -915,7 +999,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     && !extension(out).is_some_and(|ext| {
                         ext == encode_format
                             && (matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora")
-                                || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write))
+                                || photocraft_formats::from_extension(&ext)
+                                    .is_some_and(|format| format.capabilities().write == photocraft_formats::Availability::Available))
                     })
                 {
                     return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")).into());
@@ -940,7 +1025,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     // All recorded Opens passed their gates before inspecting the original source,
                     // including when this result is a saved snapshot whose document has been closed.
                     preserve_source(out)?;
-                    let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
+                    let tiff = extension(out).and_then(|ext| photocraft_formats::from_extension(&ext)) == Some(photocraft_formats::Format::Tiff);
                     if tiff {
                         if !matches!(
                             doc.pixel_format().mode,
@@ -974,6 +1059,10 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                         // A recorded Save is a step too: Batch writes the output for it.
                         charge_script_step(scratch)?;
                         if batch_save_point(id) {
+                            // The scratch session never executes a save point, so the gate would not see it.
+                            if let Some(gate) = scratch.authorize {
+                                gate(id, params)?;
+                            }
                             let st = scratch.active_mut().ok_or(EngineError::NoDocument)?;
                             saved = Some(st.doc.clone());
                             // Batch performs the action's Save / Save As (to its destination), so the
@@ -987,6 +1076,12 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                         }
                         let params = crate::actions_cmds::playback_params(scratch, id, params)?;
                         let r = scratch.execute(id, params)?;
+                        // A nested batch, droplet or played action that hit the nesting or shared playback
+                        // limit fails this input too, instead of saving it unprocessed.
+                        if let Some(limit) = crate::actions_cmds::limit_stop(&r) {
+                            // The child result stays, so the files it wrote before the stop are reported.
+                            return Err(FileFailure { error: EngineError::BatchLimit(limit), result: Some(r) });
+                        }
                         ctx.publish_batch_preview(&source_path, scratch.active().map(|state| state.doc.clone()));
                         // A failed step inside a called action makes this file an error, not a saved result.
                         if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
@@ -1220,7 +1315,7 @@ fn preserve_source(path: &str) -> Result<()> {
     if photocraft_codecs::has_unretained_source_data(&bytes).map_err(|e| EngineError::Other(format!("cannot inspect source data: {e}")))? {
         return Err(EngineError::Other("Save and Close cannot preserve additional source data; save to a separate output folder".into()));
     }
-    if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::OpenExr) {
+    if photocraft_formats::detect(path, &bytes) == Some(photocraft_formats::Format::OpenExr) {
         preserve_exr(&bytes)?;
     }
     Ok(())

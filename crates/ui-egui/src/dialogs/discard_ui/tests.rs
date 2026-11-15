@@ -188,6 +188,20 @@ fn mnemonic_labels_bracket_the_key() {
     assert_eq!(button_label(false, "保存", Some(Key::S)), "保存 (S)");
 }
 
+/// Fixed ASCII access keys do not mistake a dotted Azerbaijani i for dotless I.
+#[test]
+fn azerbaijani_dialog_button_mnemonics_use_locale_casing() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
+    let az = crate::i18n::Lang::from_code("az").unwrap();
+    crate::i18n::with_language(az, || {
+        assert_eq!(button_label(false, "i", Some(Key::I)), "i (I)");
+        assert_eq!(button_label(false, "ı", Some(Key::I)), "(ı)");
+        assert_eq!(button_label(false, "İ", Some(Key::I)), "İ (I)");
+    });
+}
+
 type Prompted = egui_kittest::Harness<'static, PhotocraftApp>;
 
 /// The unsaved-changes prompt for `command` over `app`'s dirty documents, as `os` draws it (with
@@ -224,17 +238,24 @@ fn drawn_order<'a>(h: &Prompted, labels: [&'a str; 3]) -> Vec<&'a str> {
 }
 
 /// Tab walks `labels` left to right from the focused default answer, `labels[default]`, and
-/// wraps; Shift+Tab steps back.
+/// wraps; Shift+Tab steps back. When the prompt offers "Apply to All", that box is one more
+/// stop, in front of the answers.
 fn tab_walks(h: &mut Prompted, labels: [&str; 3], default: usize) {
-    assert_eq!(focused(h, &labels), Some(labels[default]));
-    for step in 1..=3 {
+    use egui_kittest::kittest::Queryable;
+    let mut stops = labels.to_vec();
+    if h.query_by_label("Apply to All").is_some() {
+        stops.insert(0, "Apply to All");
+    }
+    let (n, at) = (stops.len(), default + stops.len() - 3);
+    assert_eq!(focused(h, &stops), Some(stops[at]));
+    for step in 1..=n {
         h.key_press(Key::Tab);
         h.run_steps(2);
-        assert_eq!(focused(h, &labels), Some(labels[(default + step) % 3]));
+        assert_eq!(focused(h, &stops), Some(stops[(at + step) % n]));
     }
     h.key_press_modifiers(egui::Modifiers::SHIFT, Key::Tab);
     h.run_steps(2);
-    assert_eq!(focused(h, &labels), Some(labels[(default + 2) % 3]));
+    assert_eq!(focused(h, &stops), Some(stops[(at + n - 1) % n]));
 }
 
 fn docs_left(h: &Prompted) -> Option<usize> {
@@ -285,6 +306,111 @@ fn windows_and_linux_ask_yes_no_cancel_with_the_default_first() {
         assert!(h.state().discard.is_none());
         assert_eq!(h.state().session.documents().len(), 1, "Cancel keeps the unanswered document");
     }
+}
+
+/// "Apply to All" (a checkbox, as in Photoshop) gives the answer to every document still to ask about.
+#[test]
+fn apply_to_all_discards_the_rest_without_asking_again() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = prompt_on(egui::os::OperatingSystem::Windows);
+    h.get_by_label("Apply to All").click();
+    h.run_steps(2);
+    h.key_press(Key::N);
+    h.run_steps(8);
+    assert!(h.state().discard.is_none());
+    assert!(h.state().session.documents().is_empty(), "No was applied to both unsaved documents");
+}
+
+#[test]
+fn apply_to_all_is_only_offered_while_several_documents_are_left() {
+    use egui_kittest::kittest::Queryable;
+    let mut one_dirty = app_with_docs(2);
+    make_dirty(&mut one_dirty, 0);
+    let h = prompt_for(one_dirty, "file.closeAll", egui::os::OperatingSystem::Windows);
+    assert!(h.query_by_label("Apply to All").is_none(), "only one document is unsaved");
+    let h = prompt_on(egui::os::OperatingSystem::Windows);
+    assert!(h.query_by_label("Apply to All").is_some());
+}
+
+/// A save that was cancelled or failed brings its document back: asking again beats retrying forever.
+#[test]
+fn a_document_that_comes_back_after_apply_to_all_is_asked_about_again() {
+    let mut h = prompt_on(egui::os::OperatingSystem::Windows);
+    let first = doc_id(h.state(), 0);
+    if let Some(p) = h.state_mut().discard.as_mut() {
+        (p.apply_all, p.auto, p.auto_answered) = (true, Some(Answer::Save), Some(first));
+    }
+    h.run_steps(3);
+    let prompt = h.state().discard.as_ref().unwrap();
+    assert!(prompt.auto.is_none() && !prompt.apply_all);
+    assert_eq!(docs_left(&h), Some(2), "both documents are still waiting for an answer");
+}
+
+/// Apply to All answers for the documents the prompt opened with, not for ones dirtied since.
+#[test]
+fn a_document_dirtied_after_apply_to_all_is_asked_about() {
+    let mut app = app_with_docs(3);
+    make_dirty(&mut app, 0);
+    make_dirty(&mut app, 1);
+    let mut h = prompt_for(app, "file.closeAll", egui::os::OperatingSystem::Windows);
+    let late = doc_id(h.state(), 2);
+    make_dirty(h.state_mut(), 2);
+    if let Some(p) = h.state_mut().discard.as_mut() {
+        (p.apply_all, p.auto) = (true, Some(Answer::Discard));
+    }
+    h.run_steps(8);
+    let prompt = h.state().discard.as_ref().unwrap();
+    assert_eq!(prompt.docs, vec![late], "the two unsaved documents were discarded, the late one is asked about");
+    assert!(prompt.auto.is_none() && !prompt.apply_all);
+    assert_eq!(h.state().session.documents().len(), 1);
+}
+
+#[test]
+fn control_clients_can_answer_for_all() {
+    let mut app = app_with_docs(3);
+    for i in 0..3 {
+        make_dirty(&mut app, i);
+    }
+    let mut h = prompt_for(app, "file.closeAll", egui::os::OperatingSystem::Windows);
+    let choices = inspect(h.state()).unwrap()["fields"]["choices"].clone();
+    assert_eq!(choices, json!(["save", "saveAll", "dontSave", "dontSaveAll", "cancel"]));
+    let ctx = h.ctx.clone();
+    answer_control(h.state_mut(), &ctx, "dontSaveAll").unwrap();
+    h.run_steps(8);
+    assert!(h.state().discard.is_none());
+    assert!(h.state().session.documents().is_empty());
+}
+
+/// A client answering one document isn't overruled by an Apply to All whose save just failed.
+#[test]
+fn a_control_answer_clears_a_stale_apply_to_all() {
+    let mut app = app_with_docs(3);
+    for i in 0..3 {
+        make_dirty(&mut app, i);
+    }
+    let mut h = prompt_for(app, "file.closeAll", egui::os::OperatingSystem::Windows);
+    let (first, last) = (doc_id(h.state(), 0), doc_id(h.state(), 2));
+    if let Some(p) = h.state_mut().discard.as_mut() {
+        (p.apply_all, p.auto, p.auto_answered) = (true, Some(Answer::Discard), Some(first));
+    }
+    let ctx = h.ctx.clone();
+    answer_control(h.state_mut(), &ctx, "dontSave").unwrap();
+    h.run_steps(8);
+    let prompt = h.state().discard.as_ref().unwrap();
+    assert_eq!(prompt.docs.len(), 2, "only the answered document was closed");
+    assert!(prompt.docs.contains(&last) && prompt.auto.is_none());
+}
+
+#[test]
+fn the_all_answers_need_more_than_one_document_left() {
+    let mut app = app_with_docs(1);
+    make_dirty(&mut app, 0);
+    let ctx = egui::Context::default();
+    crate::menus::invoke(&mut app, &ctx, "file.close", json!({})).unwrap();
+    assert_eq!(inspect(&app).unwrap()["fields"]["choices"], json!(["save", "dontSave", "cancel"]));
+    let err = answer_control(&mut app, &ctx, "saveAll").unwrap_err();
+    assert!(err.contains("unknown choice `saveAll`") && err.ends_with("save, dontSave or cancel"), "{err}");
+    assert!(app.discard.is_some(), "a refused answer leaves the prompt up");
 }
 
 /// Whether the prompt is asking about the document called `name`.
@@ -357,6 +483,9 @@ fn macos_hides_mnemonics_but_other_platforms_keep_them() {
 fn one_dialog_shows_every_key_in_the_same_style() {
     let buttons = [("Yes", Some(Key::Y)), ("No", Some(Key::N)), ("Cancel", Some(Key::C))];
     assert_eq!(button_labels(false, &buttons), ["(Y)es", "(N)o", "(C)ancel"]);
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let german = crate::i18n::Lang::from_code("de").unwrap();
     crate::i18n::with_language(german, || {
         let shown: Vec<&str> = buttons.iter().map(|(label, _)| crate::i18n::tr(german, label)).collect();
@@ -380,6 +509,60 @@ fn macos_asks_dont_save_cancel_save_with_the_default_last() {
     h.run_steps(2);
     assert!(h.state().discard.is_none());
     assert_eq!(h.state().session.documents().len(), 1, "Cancel keeps the unanswered document");
+}
+
+/// ⌘D is Don't Save on macOS, as in Photoshop's prompt (#11282). The Windows prompt (Yes / No /
+/// Cancel) has no such key, and nor has Revert's.
+#[test]
+fn macos_command_d_is_dont_save() {
+    let mut h = prompt_on(egui::os::OperatingSystem::Mac);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::D);
+    h.run_steps(2);
+    assert_eq!(docs_left(&h), Some(1), "⌘D answered the first document");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::D);
+    h.run_steps(2);
+    assert!(h.state().discard.is_none());
+    assert!(h.state().session.documents().is_empty(), "both documents closed unsaved");
+    let mut h = prompt_on(egui::os::OperatingSystem::Windows);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::D);
+    h.run_steps(2);
+    assert_eq!(docs_left(&h), Some(2), "Ctrl+D is no answer on Windows");
+    let mut app = app_with_docs(1);
+    make_dirty(&mut app, 0);
+    let mut h = prompt_for(app, "file.revert", egui::os::OperatingSystem::Mac);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::D);
+    h.run_steps(2);
+    assert_eq!(docs_left(&h), Some(1), "Revert / Cancel has no Don't Save for ⌘D to press");
+}
+
+/// Beneath the prompt the shortcuts hold their keys, so ⌘D with a selection on the document
+/// answers Don't Save rather than running Select › Deselect (or refusing it in the status bar).
+#[test]
+fn command_d_answers_the_prompt_rather_than_deselecting() {
+    let mut app = app_with_docs(2);
+    make_dirty(&mut app, 0);
+    make_dirty(&mut app, 1);
+    app.run("select.all", json!({})).unwrap();
+    let selected = app.session.active().map(|st| st.doc.id).unwrap();
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(
+        |ui, app| {
+            crate::shortcuts::handle(app, ui.ctx());
+            show(app, ui.ctx());
+            app.poll_file_dialog(ui.ctx(), None);
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.ctx.set_os(egui::os::OperatingSystem::Mac);
+    assert!(intercept(h.state_mut(), "file.close", &json!({"document": 0})));
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, Key::D);
+    h.run_steps(2);
+    assert!(h.state().discard.is_none(), "⌘D answered the prompt");
+    assert_eq!(h.state().session.documents().len(), 1, "the asked-about document closed unsaved");
+    assert!(!h.state().ui.status_error, "{}", h.state().ui.status);
+    let kept = h.state().session.documents().iter().find(|d| d.doc.id == selected);
+    assert!(kept.is_some_and(|d| d.doc.selection.is_some()), "the selection on the other document is still there");
 }
 
 #[test]
@@ -573,6 +756,42 @@ fn saving_from_the_prompt_closes_after_an_unconfirmed_write() {
     assert_eq!(*written.borrow(), ["/pics/kept.psd"]);
     assert!(h.state().discard.is_none());
     assert!(h.state().session.documents().is_empty(), "closed after one write");
+}
+
+/// Synthetic input pressing the drawn prompt's Save key (Y) goes through `show()` and is judged
+/// as `file.save`: a policy that refuses it writes nothing, keeps the prompt and the document,
+/// and reports the refusal in the status bar.
+#[test]
+fn a_synthetic_save_press_on_the_drawn_prompt_is_refused_and_reported() {
+    use std::{cell::RefCell, rc::Rc};
+    let written: Rc<RefCell<Vec<String>>> = Rc::default();
+    let w = written.clone();
+    let mut app = app_with_docs(1);
+    make_dirty(&mut app, 0);
+    app.session.active_mut().unwrap().path = Some("/pics/kept.psd".into());
+    app.services.export = Some(Box::new(|_: &photocraft_doc::Document, _: &str, _: &crate::ExportSettings| Ok((b"out".to_vec(), Vec::new()))));
+    app.services.write = Some(Box::new(move |p: &str, _: &[u8]| {
+        w.borrow_mut().push(p.to_string());
+        Ok(())
+    }));
+    app.services.automation_command =
+        Some(Box::new(|id: &str, _: &Value| if id == "file.save" { Err(format!("automation command `{id}` is disabled")) } else { Ok(()) }));
+    let mut h = prompt_for(app, "file.close", egui::os::OperatingSystem::Windows);
+    // Queue Y as synthetic input and feed its step to the harness, as an offscreen host does.
+    let key = |pressed: bool| egui::Event::Key { key: Key::Y, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+    h.state_mut().synthetic.extend([key(true), key(false)]);
+    let step = h.state_mut().take_synthetic_step();
+    assert_eq!(step.len(), 2, "press and release in one step");
+    assert!(h.state().automation_input, "the step is marked as automation input");
+    for event in step {
+        h.event(event);
+    }
+    h.run_steps(3);
+    assert!(written.borrow().is_empty(), "nothing is written: {:?}", written.borrow());
+    assert_eq!(docs_left(&h), Some(1), "the prompt stays up");
+    assert_eq!(h.state().session.documents().len(), 1, "the document stays open");
+    assert!(h.state().ui.status.contains("file.save"), "status: {:?}", h.state().ui.status);
+    assert!(h.state().ui.status_error, "the refusal is shown as an error");
 }
 
 #[path = "tests/tiff_tests.rs"]

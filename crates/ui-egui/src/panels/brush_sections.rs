@@ -54,6 +54,33 @@ fn signed_pct(ui: &mut egui::Ui, label: &str, v: &mut f32, min: f32, max: f32) -
     changed
 }
 
+/// The checkbox labels the spacing field; toggling it must retain imported fractional values.
+fn spacing_row(ui: &mut egui::Ui, b: &mut BrushSettings) {
+    let mut percent = (b.spacing * 100.0).round();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        widgets::checkbox(ui, &mut b.spacing_enabled, tl!("Spacing")).on_hover_text(tl!("Off: the speed of the pointer sets the spacing"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            changed = ui
+                .add_enabled_ui(b.spacing_enabled, |ui| widgets::value_field(ui, &mut percent, 1.0..=1000.0, "%", 74.0).accessible_name(tl!("Spacing")))
+                .inner
+                .changed();
+        });
+    });
+    changed |= ui
+        .add_enabled_ui(b.spacing_enabled, |ui| {
+            let s = widgets::slider(ui, &mut percent, 1.0..=1000.0, None);
+            s.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(percent), tl!("Spacing")));
+            s
+        })
+        .inner
+        .changed();
+    if changed {
+        b.spacing = (percent.round() / 100.0).clamp(0.01, 10.0);
+    }
+    ui.add_space(4.0);
+}
+
 fn num(ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) -> bool {
     let mut x = *v;
     let changed = widgets::slider_row(ui, label, &mut x, range.clone(), suffix, None).changed();
@@ -186,8 +213,9 @@ pub fn ellipse_drag(grab: EllipseGrab, rel: egui::Vec2, angle: f32, roundness: f
     }
 }
 
-/// Photoshop's angle/roundness widget: drag the arrow to rotate, the dots to squash.
-fn ellipse_widget(ui: &mut egui::Ui, angle: &mut f32, roundness: &mut f32) -> bool {
+/// Photoshop's angle/roundness widget: drag the arrow to rotate, the dots to squash. Also at the
+/// Brush Preset picker's top left (#11821).
+pub(crate) fn ellipse_widget(ui: &mut egui::Ui, angle: &mut f32, roundness: &mut f32) -> bool {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(84.0, 84.0), Sense::click_and_drag());
     let c = rect.center();
@@ -325,36 +353,37 @@ fn tip_shape(ui: &mut egui::Ui, b: &mut BrushSettings, presets: &[BrushPreset], 
     });
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ellipse_widget(ui, &mut b.angle, &mut b.roundness);
-        ui.add_space(8.0);
-        ui.vertical(|ui| {
+        // Reserve the widget's column so both numeric rows share the same right edge.
+        let fields_width = (ui.available_width() - 84.0 - ui.spacing().item_spacing.x).max(0.0);
+        ui.allocate_ui_with_layout(vec2(fields_width, 84.0), egui::Layout::top_down(egui::Align::Max), |ui| {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(vec2(72.0, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| dim(ui, tl!("Angle:")));
-                let mut a = b.angle;
-                if widgets::value_field(ui, &mut a, -180.0..=180.0, "°", 70.0).accessible_name(tl!("Angle:")).changed() {
-                    b.angle = a.round().clamp(-180.0, 180.0);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut a = b.angle;
+                    if widgets::value_field(ui, &mut a, -180.0..=180.0, "°", 70.0).accessible_name(tl!("Angle:")).changed() {
+                        b.angle = a.round().clamp(-180.0, 180.0);
+                    }
+                    ui.allocate_ui_with_layout(vec2(72.0, 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| dim(ui, tl!("Angle:")));
+                });
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(vec2(72.0, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| dim(ui, tl!("Roundness:")));
-                let mut r = (b.roundness * 100.0).round();
-                if widgets::value_field(ui, &mut r, 1.0..=100.0, "%", 70.0).accessible_name(tl!("Roundness:")).changed() {
-                    b.roundness = (r.round() / 100.0).clamp(0.01, 1.0);
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut r = (b.roundness * 100.0).round();
+                    if widgets::value_field(ui, &mut r, 1.0..=100.0, "%", 70.0).accessible_name(tl!("Roundness:")).changed() {
+                        b.roundness = (r.round() / 100.0).clamp(0.01, 1.0);
+                    }
+                    ui.allocate_ui_with_layout(vec2(72.0, 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| dim(ui, tl!("Roundness:")));
+                });
             });
         });
+        ellipse_widget(ui, &mut b.angle, &mut b.roundness);
     });
     ui.add_space(6.0);
     ui.add_enabled_ui(matches!(b.tip, TipShape::Round), |ui| {
         pct(ui, tl!("Hardness"), &mut b.hardness, 1.0);
     });
-    // Unchecked, the pointer's speed sets the spacing (Photoshop).
-    widgets::checkbox(ui, &mut b.spacing_enabled, tl!("Spacing")).on_hover_text(tl!("Off: the speed of the pointer sets the spacing"));
-    ui.add_space(2.0);
-    let on = b.spacing_enabled;
-    ui.add_enabled_ui(on, |ui| signed_pct(ui, tl!("Spacing"), &mut b.spacing, 0.01, 10.0));
+    spacing_row(ui, b);
     None
 }
 
@@ -378,10 +407,35 @@ fn shape_dynamics(ui: &mut egui::Ui, b: &mut BrushSettings) {
     widgets::checkbox(ui, &mut sd.brush_projection, tl!("Brush Projection")).on_hover_text(tl!("Apply the pen's tilt and rotation to the tip shape"));
 }
 
+/// Both scatter controls put their axis switch between the label and percentage field.
+fn scatter_row(ui: &mut egui::Ui, amount: &mut f32, both_axes: &mut bool) {
+    let t = Tokens::get(ui.ctx());
+    let mut percent = (*amount * 100.0).round();
+    let mut changed = false;
+    let label = ui
+        .horizontal(|ui| {
+            let label = ui.label(RichText::new(tl!("Scatter")).color(t.text_dim));
+            widgets::scrub_label_within(ui, &label, f32::INFINITY);
+            widgets::checkbox(ui, both_axes, tl!("Both Axes"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                changed = widgets::value_field(ui, &mut percent, 0.0..=1000.0, "%", 74.0).changed();
+            });
+            label.id
+        })
+        .inner;
+    // Named by its caption, like every `slider_row` slider.
+    let slider = widgets::slider(ui, &mut percent, 0.0..=1000.0, None);
+    slider.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), f64::from(percent), tl!("Scatter")));
+    changed |= slider.labelled_by(label).changed();
+    if changed {
+        *amount = (percent.round() / 100.0).clamp(0.0, 10.0);
+    }
+    ui.add_space(4.0);
+}
+
 fn scattering(ui: &mut egui::Ui, b: &mut BrushSettings) {
     let sc = &mut b.scattering;
-    pct(ui, tl!("Scatter"), &mut sc.scatter.jitter, 10.0);
-    widgets::checkbox(ui, &mut sc.both_axes, tl!("Both Axes"));
+    scatter_row(ui, &mut sc.scatter.jitter, &mut sc.both_axes);
     ui.add_space(2.0);
     control_row(ui, "brush-scatter-ctl", &mut sc.scatter, false);
     ui.add_space(6.0);
@@ -523,8 +577,7 @@ fn dual_brush(ui: &mut egui::Ui, b: &mut BrushSettings, presets: &[BrushPreset])
     let orig = d.tip.bitmap_size().map(|(w, h)| w.max(h) as f32);
     size_row(ui, tl!("Size"), &mut d.size, 2500.0, orig);
     signed_pct(ui, tl!("Spacing"), &mut d.spacing, 0.01, 10.0);
-    pct(ui, tl!("Scatter"), &mut d.scatter, 10.0);
-    widgets::checkbox(ui, &mut d.both_axes, tl!("Both Axes"));
+    scatter_row(ui, &mut d.scatter, &mut d.both_axes);
     ui.add_space(4.0);
     let mut c = d.count as f32;
     if num(ui, tl!("Count"), &mut c, 1.0..=16.0, "") {

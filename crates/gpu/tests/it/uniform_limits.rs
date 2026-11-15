@@ -20,7 +20,7 @@ fn fills_size(count: usize, size: Size) -> Document {
 }
 
 fn constrained_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let instance = crate::instance();
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
         Ok(adapter) => adapter,
         Err(error) => {

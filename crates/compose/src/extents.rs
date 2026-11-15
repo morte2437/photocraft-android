@@ -1,6 +1,6 @@
 use super::content::{render_content, surface_to_buffer};
 use super::ctx::Ctx;
-use super::{BlendMode, Document, Layer, LayerContent, Rect, advanced, bounds, effects, masks, shape_split};
+use super::{BlendMode, Document, Layer, LayerContent, Rect, adjustment_quantum, advanced, bounds, effects, masks, shape_split};
 
 /// Bounds of a layer's own pixels (union over group children; the canvas
 /// for fill layers; an artboard's board).
@@ -379,11 +379,16 @@ pub fn composite_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
     if !transparent_outside(layer) {
         return None;
     }
+    let m = if effects::has_effects(layer) { effects::margin(layer) } else { 0 };
     let own = match &layer.content {
-        LayerContent::Group(g) if g.artboard.is_none() => {
-            let mut acc = frame_stroke_bounds(layer, canvas);
+        // A shapeless group's effects cover the whole layer: `layer_bounds` gives the canvas.
+        LayerContent::Group(g) if g.artboard.is_none() && !advanced::shapeless(layer) => {
+            // Children up to its effects' reach off the canvas still cast them onto it (group
+            // effects are built past the canvas).
+            let near = canvas.inflate(m);
+            let mut acc = frame_stroke_bounds(layer, near);
             for c in g.children.iter().filter(|c| c.visible) {
-                let b = composite_bounds(c, canvas)?;
+                let b = composite_bounds(c, near)?;
                 if !b.is_empty() {
                     acc = if acc.is_empty() { b } else { acc.union(&b) };
                 }
@@ -396,7 +401,6 @@ pub fn composite_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
     if own.is_empty() {
         return Some(Rect::EMPTY);
     }
-    let m = if effects::has_effects(layer) { effects::margin(layer) } else { 0 };
     Some(own.inflate(m).intersect(&canvas))
 }
 
@@ -424,23 +428,47 @@ pub fn change_bounds(layer: &Layer, canvas: Rect) -> Option<Rect> {
     composite_bounds(layer, canvas)
 }
 
-/// [`change_bounds`] of `layers[k]` in its sibling list (bottom→top), which also bounds a clipped
-/// adjustment layer: it changes only its clip base's pixels, so it reaches as far as showing,
-/// hiding or restyling that base does (#6535). Still `None` when there is no base below it (the
-/// compositor then draws it as an ordinary adjustment) or the base is an adjustment itself
-/// (layers clipped to one composite atop the adjusted backdrop, everywhere). `outer` is the list
-/// holding the group whose children `layers` are, and that group's index there (`None` at the
-/// top level): a pass-through group that is a clip base renders isolated while it holds a visible
-/// adjustment, so showing or hiding one inside can change the whole group.
-pub fn change_bounds_in(layers: &[Layer], k: usize, outer: Option<(&[Layer], usize)>, canvas: Rect) -> Option<Rect> {
+/// The lists holding the groups around a sibling list, outermost first: each list, and the
+/// group's index there (empty at the top level).
+pub type Ancestors<'a> = [(&'a [Layer], usize)];
+
+/// The union of two bounds, either of which may be empty.
+fn join(a: Rect, b: Rect) -> Rect {
+    if a.is_empty() {
+        b
+    } else if b.is_empty() {
+        a
+    } else {
+        a.union(&b)
+    }
+}
+
+/// [`change_bounds`] of `layers[k]` in its sibling list (bottom→top), which also bounds:
+/// - a clipped adjustment layer: it changes only its clip base's pixels, so it reaches as far as
+///   showing, hiding or restyling that base does (#6535). Still `None` when there is no base below
+///   it (the compositor then draws it as an ordinary adjustment) or the base is an adjustment
+///   itself (layers clipped to one composite atop the adjusted backdrop, everywhere). A
+///   pass-through group that is a clip base renders isolated while it holds a visible
+///   adjustment, so showing or hiding one inside can change the whole group.
+/// - an unclipped adjustment layer, and a pass-through group holding one (see
+///   [`adjustment_reach`]).
+///
+/// `ancestors` are the lists holding the groups around `layers`, outermost first; `depth` is the
+/// document's, which decides whether adjustments round the backdrop ([`adjustment_quantum`]).
+///
+/// The result is an **in-place** bound: what changes if the layer changes where it is. For an
+/// adjustment it covers the layers beneath it (or its clip base), which don't move with it, so it
+/// must never be translated, as a Move drag preview would. Use the context-free [`change_bounds`],
+/// which moves with the layer, for that.
+pub fn change_bounds_in(layers: &[Layer], k: usize, ancestors: &Ancestors, depth: photocraft_color::SampleType, canvas: Rect) -> Option<Rect> {
     let layer = layers.get(k)?;
     if layer.clipped && matches!(layer.content, LayerContent::Adjustment(_)) {
         let base = layers.get(..k)?.iter().rev().find(|l| !l.clipped)?;
         if matches!(base.content, LayerContent::Adjustment(_)) {
             return None;
         }
-        if let Some((outer, g)) = outer
-            && let Some(group) = outer.get(g)
+        if let Some((outer, g)) = ancestors.last()
+            && let Some(group) = outer.get(*g)
             && group.blend == BlendMode::PassThrough
             && !group.clipped
             && outer.get(g + 1).is_some_and(|above| above.clipped)
@@ -450,7 +478,138 @@ pub fn change_bounds_in(layers: &[Layer], k: usize, outer: Option<(&[Layer], usi
         }
         return change_bounds(base, canvas);
     }
-    change_bounds(layer, canvas)
+    match &layer.content {
+        LayerContent::Adjustment(_) => adjustment_reach(layers, k, ancestors, depth, canvas),
+        LayerContent::Group(g) if layer.blend == BlendMode::PassThrough && !layer.clipped && change_bounds(layer, canvas).is_none() => {
+            // Its own pixels, plus where each adjustment inside reaches.
+            let mut acc = composite_bounds(layer, canvas)?;
+            let mut inner = ancestors.to_vec();
+            inner.push((layers, k));
+            for (j, c) in g.children.iter().enumerate() {
+                if matches!(c.content, LayerContent::Adjustment(_)) || matches!(c.content, LayerContent::Group(_)) && c.blend == BlendMode::PassThrough {
+                    acc = join(acc, change_bounds_in(&g.children, j, &inner, depth, canvas)?);
+                }
+            }
+            Some(acc)
+        }
+        _ => change_bounds(layer, canvas),
+    }
+}
+
+/// Where showing, hiding or restyling the unclipped adjustment `layers[k]` can change the
+/// document, or `None` for anywhere. It changes only pixels already drawn beneath it in its
+/// isolation scope: the visible layers below it, and inside a pass-through group the layers below
+/// the group too, up to the top level or the first isolated group (a pass-through group the
+/// compositor isolates reaches less, so this still covers it). Adjustments draw no alpha of their
+/// own, so what is transparent there stays so.
+///
+/// In a 32-bit document it also changes only where its layer mask lets it through (an enabled
+/// mask that hides by default at full density, grown by the feather). An integer document rounds
+/// the whole backdrop to its levels after every visible adjustment layer, masked or not (#9033),
+/// so there the mask bounds nothing. Layers clipped to an adjustment composite atop the adjusted
+/// backdrop wherever they draw, and a knockout reveals what lies beneath it: both stay `None`.
+pub fn adjustment_reach(layers: &[Layer], k: usize, ancestors: &Ancestors, depth: photocraft_color::SampleType, canvas: Rect) -> Option<Rect> {
+    let layer = layers.get(k)?;
+    if layers.get(k + 1).is_some_and(|above| above.clipped) || layer.advanced.knockout != photocraft_doc::Knockout::None {
+        return None;
+    }
+    let mask = adjustment_quantum(depth).is_none().then(|| adjustment_mask_bounds(layer)).flatten();
+    let below = beneath(layers, k, ancestors, canvas);
+    let reach = match (mask, below) {
+        (Some(m), Some(b)) => m.intersect(&b).intersect(&canvas),
+        (Some(m), None) => m.intersect(&canvas),
+        (None, b) => b?,
+    };
+    // A pass-through group that is a clip base renders isolated while it holds a visible
+    // adjustment, so showing or hiding the last one switches how the whole group composites: the
+    // two agree outside `beneath` only up to float rounding. The clipped branch of
+    // [`change_bounds_in`] covers the group the same way.
+    if let Some((outer, g)) = ancestors.last()
+        && let Some(group) = outer.get(*g)
+        && group.blend == BlendMode::PassThrough
+        && !group.clipped
+        && outer.get(g + 1).is_some_and(|above| above.clipped)
+    {
+        return Some(join(reach, composite_bounds(group, canvas)?));
+    }
+    Some(reach)
+}
+
+/// Where an adjustment's layer mask can let it through: an enabled mask that hides by default at
+/// full density, so outside its painted tiles (grown by its feather, or a vector mask's, since
+/// the two multiply) it hides the layer.
+fn adjustment_mask_bounds(layer: &Layer) -> Option<Rect> {
+    let m = layer.mask.as_ref().filter(|m| m.enabled && m.density >= 1.0)?;
+    if !m.surface.default_pixel().first().is_some_and(|v| *v <= 0.0) {
+        return None;
+    }
+    let vector = layer.vector_mask.as_ref().filter(|v| v.enabled).map_or(0.0, |v| photocraft_vector::feather::feather_sigma(v.feather));
+    let sigma = photocraft_vector::feather::feather_sigma(m.feather).max(vector);
+    let tiles = m.surface.tile_bounds();
+    Some(if sigma > 0.0 { photocraft_vector::feather::grow(tiles, sigma) } else { tiles })
+}
+
+/// The union of [`composite_bounds`] of the visible layers below `layers[k]`, continuing below a
+/// pass-through group into the list holding it; `None` when any may draw anywhere.
+fn beneath(layers: &[Layer], k: usize, ancestors: &Ancestors, canvas: Rect) -> Option<Rect> {
+    let mut acc = Rect::EMPTY;
+    for l in layers.get(..k)?.iter().filter(|l| l.visible) {
+        acc = join(acc, composite_bounds(l, canvas)?);
+    }
+    if let Some((&(outer, g), rest)) = ancestors.split_last()
+        && let Some(group) = outer.get(g)
+        && group.blend == BlendMode::PassThrough
+    {
+        if group.clipped {
+            return None;
+        }
+        // An artboard's background lies beneath its layers.
+        if let LayerContent::Group(gr) = &group.content
+            && let Some(ab) = gr.artboard.as_ref().filter(|ab| ab.background.rgba().is_some())
+        {
+            acc = join(acc, ab.rect.intersect(&canvas));
+        }
+        acc = join(acc, beneath(outer, g, rest, canvas)?);
+    }
+    Some(acc)
+}
+
+/// Where a layer sits: its sibling list, its index there, and the lists around it ([`Ancestors`]).
+pub type Placement<'a> = (&'a [Layer], usize, Vec<(&'a [Layer], usize)>);
+
+/// Where layer `id` sits in `doc` ([`Placement`]).
+pub fn siblings_of(doc: &Document, id: photocraft_doc::LayerId) -> Option<Placement<'_>> {
+    fn find<'a>(layers: &'a [Layer], id: photocraft_doc::LayerId, path: &mut Vec<(&'a [Layer], usize)>) -> Option<(&'a [Layer], usize)> {
+        for (k, l) in layers.iter().enumerate() {
+            if l.id == id {
+                return Some((layers, k));
+            }
+            if let Some(c) = l.children() {
+                path.push((layers, k));
+                if let Some(hit) = find(c, id, path) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        None
+    }
+    let mut path = Vec::new();
+    let (layers, k) = find(&doc.layers, id, &mut path)?;
+    Some((layers, k, path))
+}
+
+/// [`change_bounds_in`] of layer `id` where it sits in `doc`, grown by the reach of the effects
+/// of the groups around it (a parent's drop shadow), or `None` for anywhere (or no such layer).
+/// An in-place bound: never translate it (see [`change_bounds_in`]).
+pub fn layer_change_bounds(doc: &Document, id: photocraft_doc::LayerId) -> Option<Rect> {
+    let (layers, k, ancestors) = siblings_of(doc, id)?;
+    let reach = ancestors.iter().filter_map(|(ls, g)| ls.get(*g)).filter(|l| effects::has_effects(l)).fold(0i32, |r, l| r.saturating_add(effects::margin(l)));
+    // Bounded within that reach of the canvas, not on it: a layer just off the canvas still
+    // moves a parent's shadow onto it (group effects are built past the canvas).
+    let canvas = doc.bounds();
+    let r = change_bounds_in(layers, k, &ancestors, doc.depth, canvas.inflate(reach))?;
+    Some(if r.is_empty() { r } else { r.inflate(reach).intersect(&canvas) })
 }
 
 /// Whether the layer's content is transparent outside its bounds (every surface it draws from

@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use craft_psd::{PsdFile, TaggedBlock};
 use photocraft_color::{BlendMode, ColorMode, SampleType};
 use photocraft_doc::{Document, Layer, LayerContent, SmartContentsId, SmartFilter, SmartObject, SmartSource};
 use photocraft_geom::{Affine, Size};
 use photocraft_io::{ExportOptions, export, import, linked, smart_map};
-use photocraft_psd::{PsdFile, TaggedBlock};
 use photocraft_raster::Surface;
 
 fn fixture() -> Document {
@@ -133,7 +133,7 @@ fn duplicated_imported_layer_keeps_source_but_gets_its_own_placement() {
         assert_eq!(original.placed, colliding);
         assert_ne!(original.placed, duplicate.placed);
         let filter_cache = after.global_blocks.iter().find(|b| &b.key == b"FEid").unwrap();
-        let filter_cache = photocraft_psd::filter_effects::FilterEffects::parse(&filter_cache.data).unwrap();
+        let filter_cache = craft_psd::filter_effects::FilterEffects::parse(&filter_cache.data).unwrap();
         assert_eq!(filter_cache.items.len(), 1);
         assert_eq!(filter_cache.items[0].id, duplicate.placed);
         assert_eq!(after.layers().iter().find(|l| l.name() == "original").unwrap().block(b"SoLd").unwrap().data, original_raw);

@@ -115,7 +115,7 @@ pub fn complete_with(
     p: &CompleteParams,
     ctl: &photocraft_raster::Interrupt,
 ) -> Result<Option<Vec<f32>>, photocraft_raster::Cancelled> {
-    assert_eq!(hole.len(), w * h);
+    assert_eq!(w.checked_mul(h), Some(hole.len()));
     let px: Vec<Px> = hole.iter().map(|h| if *h { Px::Hole } else { Px::Source }).collect();
     complete_masked(w, h, ch, img, &px, p, ctl)
 }
@@ -159,8 +159,13 @@ fn complete_cow<'a>(
     p: &CompleteParams,
     ctl: &photocraft_raster::Interrupt,
 ) -> Result<Result<Vec<f32>, Cow<'a, [f32]>>, photocraft_raster::Cancelled> {
-    assert_eq!(img.len(), w * h * ch);
-    assert_eq!(px.len(), w * h);
+    // Checked: wrapped products must not let tiny buffers pass for a huge `h`.
+    assert_eq!(w.checked_mul(h), Some(px.len()));
+    assert_eq!(w.checked_mul(h).and_then(|n| n.checked_mul(ch)), Some(img.len()));
+    if w == 0 || h == 0 {
+        // Nothing to fill; no per-row tables for a zero-width image of any height.
+        return Ok(Ok(img.into_owned()));
+    }
     let Some(hb0) = hole_bounds(w, h, px) else { return Ok(Ok(img.into_owned())) };
     if ch == 0 {
         return Ok(Ok(Vec::new()));

@@ -123,10 +123,12 @@ fn color_to_alpha_sits_in_filter_other_after_offset() {
     let (offset, c2a) = (at("filter.other.offset"), at("filter.other.colorToAlpha"));
     assert_eq!(c2a, offset + 1);
     assert_eq!(items[c2a].path, items[offset].path);
+    assert_eq!(items[offset].path, ["Filter", "Other"]);
     assert_eq!(items[c2a].label, "Color to Alpha…");
     assert!(items[c2a].enabled, "the Background becomes a layer when the filter runs");
     let others: Vec<_> = items.iter().filter(|i| i.path.first().is_some_and(|p| p == "Filter") && i.path.len() == 2).map(|i| &i.path[1]).collect();
-    assert!(!others.iter().any(|p| p.as_str() == "Other"), "no duplicate Other submenu: {others:?}");
+    assert!(others.iter().any(|p| p.as_str() == "Other"), "the catalogue's Other submenu: {others:?}");
+    assert!(!others.iter().any(|p| p.as_str() == "Other…"), "no second submenu spelled Other…: {others:?}");
 }
 
 #[test]
@@ -301,13 +303,32 @@ fn help_search_finds_commands_by_any_word() {
 /// In another UI language both the translated and the English names match.
 #[test]
 fn help_search_matches_the_ui_language_and_english() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let items = menu_items(&app);
-    let Some(fr) = crate::i18n::Lang::from_code("fr") else { return };
+    let fr = crate::i18n::Lang::from_code("fr").expect("fr registered");
     let ids = |q: &str| search_items(&items, q, fr).iter().map(|i| i.id.clone()).collect::<Vec<_>>();
     assert!(!ids(&crate::i18n::tr(fr, "Layer").to_lowercase()).is_empty(), "French menu name");
     assert!(ids("distort").contains(&"edit.transform.distort".to_string()), "English still matches");
     assert!(ids("zzzzqqq").is_empty());
+}
+
+/// Azerbaijani menu text and paths keep dotted I distinct; English aliases still work.
+#[test]
+fn azerbaijani_help_search_uses_the_language_of_each_alias() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
+    let az = crate::i18n::Lang::from_code("az").unwrap();
+    let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    let items = menu_items(&app);
+    let hits = |query: &str| search_items(&items, query, az).iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    assert!(!hits("ŞƏKİL").is_empty(), "uppercase dotted I matches Şəkil paths");
+    assert_eq!(hits("ŞƏKİL"), hits("şəkil"));
+    assert!(hits("ŞƏKIL").is_empty(), "dotless I must not match dotted i");
+    assert!(hits("DISTORT").contains(&"edit.transform.distort".to_string()), "English aliases keep English casing");
 }
 
 /// #1447, #1438: a click on Help leaves its search field focused, so typing searches at once,
@@ -534,4 +555,56 @@ fn proof_setup_presets_and_checkmarks() {
     let spec = photocraft_engine::commands::find("edit.convertToProfile").unwrap();
     let params = crate::filter_dialog::parse_spec(spec.params);
     assert!(matches!(&params[0].kind, crate::filter_dialog::Kind::Choice { options, .. } if options[0] == "srgb" && !options.iter().any(|v| v.contains('/'))));
+}
+
+/// Layer › Copy CSS puts the layer's CSS on the clipboard, as Photoshop's does (#9372).
+#[test]
+fn copy_css_puts_the_layers_css_on_the_clipboard() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.execute("file.new", json!({"width": 400, "height": 300})).unwrap();
+    app.session.execute("layer.new.layer", json!({"name": "Box"})).unwrap();
+    app.session
+        .edit("paint", |doc, active| {
+            doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(100, 80, 300, 220), &[0.2, 0.4, 0.8, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    app.sync_views();
+    assert!(crate::menus::menu_items(&app).iter().any(|i| i.id == "layer.copyCSS" && i.path == ["Layer"]), "Layer › Copy CSS");
+    let ctx = egui::Context::default();
+    let mut result = None;
+    let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+        result = Some(invoke(&mut app, ui.ctx(), "layer.copyCSS", json!({})));
+    });
+    out.textures_delta.clear();
+    let css = result.unwrap().unwrap()["css"].as_str().unwrap().to_string();
+    assert!(css.starts_with(".Box {\n  background-image: url(\"Box.png\");\n"), "{css}");
+    assert_eq!(out.platform_output.commands, [egui::OutputCommand::CopyText(css)]);
+}
+
+/// Edit › Transform › Warp is checked while the active layer is warped, as the reference's is:
+/// a smart object with a stored warp, or a Warp box open (#9798).
+#[test]
+fn transform_warp_is_checked_for_a_warped_layer() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    assert_eq!(checked(&app, "edit.transform.warp"), Some(false), "no document");
+    app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+    app.sync_views();
+    app.session.execute("layer.new.layer", json!({})).unwrap();
+    app.session
+        .edit("paint", |doc, a| {
+            doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(checked(&app, "edit.transform.warp"), Some(false), "a plain layer");
+    let ctx = egui::Context::default();
+    crate::transform_tool::begin_warp(&mut app, &ctx).unwrap();
+    assert_eq!(checked(&app, "edit.transform.warp"), Some(true), "a Warp box is open");
+    crate::transform_tool::cancel(&mut app);
+    assert_eq!(checked(&app, "edit.transform.warp"), Some(false));
+    app.run("layer.smartObjects.convertToSmartObject", json!({})).unwrap();
+    assert_eq!(checked(&app, "edit.transform.warp"), Some(false), "a smart object without a warp");
+    app.run("layer.smartObjects.warp", json!({"style": "cylinder", "values": [8, 32, 32, 8, 0.5, 0.5, 0.85], "rect": [8, 8, 32, 32]})).unwrap();
+    assert_eq!(checked(&app, "edit.transform.warp"), Some(true), "a stored warp");
 }

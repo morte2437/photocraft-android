@@ -1,10 +1,10 @@
 use super::begin::{moving_layers, warps_type};
 use super::commit::{commit, committing, moves_type};
+use super::cylinder::cylinder_cursor;
 use super::drag_modes::{apply_drag, apply_mode_drag, drag_mods, handle_indicator, mode_allows, mode_mods};
 use super::warp::{quick_split_kind, split_cursor, surface_at, warp_hit, warp_pointer};
 use super::{
-    CursorIcon, HANDLE_PX, Homography, LayerContent, PhotocraftApp, ToolEvent, TransformMode, TransformPreview, TransformSession, ViewXform, WarpStyle,
-    handle_tolerance,
+    CursorIcon, HANDLE_PX, Homography, LayerContent, PhotocraftApp, ToolEvent, TransformMode, TransformSession, ViewXform, WarpStyle, handle_tolerance,
 };
 
 /// Which part of the box a document point hits.
@@ -17,8 +17,106 @@ pub(crate) enum Hit {
     Outside,
 }
 
-/// The nearest handle within `tol` (on a small box their grab areas overlap), else inside or
-/// outside the box.
+/// Screen-sized corner and outward edge bands, shared with Move's unopened controls.
+impl TransformSession {
+    /// Classify a document point with screen-sized corner and outward edge zones.
+    /// On and outward from an edge, the nearest corner or midpoint wins, with the corner
+    /// reach capped along the edge. Inside and beyond the edge ends use the corner radius.
+    pub(crate) fn box_hit(quad: &[[f64; 2]; 4], p: [f64; 2], tol: f64) -> Hit {
+        // `tol` is the existing 12 pt handle tolerance, divided by the view zoom.
+        let corner_radius = tol * (8.0 / HANDLE_PX);
+        let edge_width = tol * (11.0 / HANDLE_PX);
+        // Canvas coordinates round through f32. Treat only sub-pixel projection noise as
+        // the line itself; a point one screen pixel inside still belongs to the interior.
+        let line_epsilon = tol.abs() * (1e-3 / HANDLE_PX);
+        let distance = |q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        let interior = inside(quad, p);
+        let edge = (0..4)
+            .filter_map(|i| {
+                let (u, q) = edge_projection(quad, i, p)?;
+                let d = distance(q);
+                (d <= edge_width && (!interior || d <= line_epsilon)).then_some((i, u, d))
+            })
+            .min_by(|a, b| a.2.total_cmp(&b.2));
+        if let Some((i, u, _)) = edge
+            && (0.0..=1.0).contains(&u)
+        {
+            let next = (i + 1) % 4;
+            let (a, b) = (quad[i], quad[next]);
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let quarter = length * 0.25;
+            let tie_epsilon = line_epsilon.min(quarter * 0.5);
+            // Projected distances rank the handles along this edge. At the measured
+            // quarter-point ties, prefer the earlier handle in edge order.
+            let from_start = u * length;
+            let from_end = (1.0 - u) * length;
+            if from_start <= quarter + tie_epsilon && from_start <= edge_width + line_epsilon {
+                return Hit::Corner(i);
+            }
+            if from_end < quarter - tie_epsilon && from_end <= edge_width + line_epsilon {
+                return Hit::Corner(next);
+            }
+            return Hit::Edge(i);
+        }
+        if let Some((i, _)) = quad.iter().enumerate().map(|(i, &q)| (i, distance(q))).filter(|(_, d)| *d <= corner_radius).min_by(|a, b| a.1.total_cmp(&b.1)) {
+            return Hit::Corner(i);
+        }
+        match edge {
+            Some((i, _, _)) => Hit::Edge(i),
+            None if interior => Hit::Inside,
+            None => Hit::Outside,
+        }
+    }
+
+    /// Into the nearest edge or corner: eight orientations for an upright rectangle, following
+    /// the actual quad when it is rotated, flipped or distorted.
+    pub(crate) fn box_turn_direction(quad: &[[f64; 2]; 4], p: [f64; 2]) -> Option<[f64; 2]> {
+        if p.iter().chain(quad.iter().flatten()).any(|v| !v.is_finite()) {
+            return None;
+        }
+        let (i, u, _) = (0..4)
+            .filter_map(|i| {
+                let (u, q) = edge_projection(quad, i, p)?;
+                Some((i, u, (p[0] - q[0]).hypot(p[1] - q[1])))
+            })
+            .min_by(|a, b| a.2.total_cmp(&b.2))?;
+        let unit = |v: [f64; 2]| {
+            let len = v[0].hypot(v[1]);
+            (len.is_finite() && len > 1e-9).then(|| [v[0] / len, v[1] / len])
+        };
+        let toward = if u <= 0.0 || u >= 1.0 {
+            let i = if u >= 1.0 { (i + 1) % 4 } else { i };
+            let direction = |j: usize| unit([quad[j][0] - quad[i][0], quad[j][1] - quad[i][1]]);
+            let (a, b) = (direction((i + 1) % 4)?, direction((i + 3) % 4)?);
+            [a[0] + b[0], a[1] + b[1]]
+        } else {
+            let (a, b) = (quad[i], quad[(i + 1) % 4]);
+            let normal = [a[1] - b[1], b[0] - a[0]];
+            // Winding orients every edge, even when a concave quad's mean corner position
+            // lies on the wrong side of this edge. Translate before taking the area.
+            let cross = |i: usize, j: usize| (quad[i][0] - quad[0][0]) * (quad[j][1] - quad[0][1]) - (quad[i][1] - quad[0][1]) * (quad[j][0] - quad[0][0]);
+            let sign = (cross(1, 2) + cross(2, 3)).signum();
+            normal.map(|v| v * sign)
+        };
+        unit(toward)
+    }
+}
+
+/// The unclamped projection parameter and the nearest point on the segment. Degenerate
+/// edges have no band or normal; the other edges and corner handles remain usable.
+fn edge_projection(quad: &[[f64; 2]; 4], i: usize, p: [f64; 2]) -> Option<(f64, [f64; 2])> {
+    let (a, b) = (quad[i], quad[(i + 1) % 4]);
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    if !len2.is_finite() || len2 <= 1e-18 {
+        return None;
+    }
+    let u = ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2;
+    let on_segment = u.clamp(0.0, 1.0);
+    Some((u, [a[0] + on_segment * d[0], a[1] + on_segment * d[1]]))
+}
+
+/// The shared box zones, retaining the nearest pivot's existing grab priority on small boxes.
 pub(crate) fn hit(t: &TransformSession, p: [f64; 2], tol: f64) -> Hit {
     hit_with(t, p, tol, true)
 }
@@ -35,22 +133,26 @@ fn hit_with(t: &TransformSession, p: [f64; 2], tol: f64, pivot: bool) -> Hit {
         let (a, b) = (t.quad[i], t.quad[(i + 1) % 4]);
         [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]
     };
+    let h = TransformSession::box_hit(&t.quad, p, tol);
+    let handle_distance = match h {
+        Hit::Corner(i) => d(t.quad[i]),
+        Hit::Edge(i) => d(mid(i)),
+        _ => f64::INFINITY,
+    };
+    if pivot {
+        // A shown reference point wins ties with handles, including when it sits on one.
+        let distance = d(t.pivot);
+        return if distance < tol && distance <= handle_distance { Hit::Pivot } else { h };
+    }
     // With the reference point hidden, the box centre is a move target in its place, so a press
     // at the centre of a box smaller than two grab areas moves it instead of grabbing an edge.
     let centre = [t.quad.iter().map(|q| q[0]).sum::<f64>() / 4.0, t.quad.iter().map(|q| q[1]).sum::<f64>() / 4.0];
-    // A shown reference point comes first: where it sits on a handle (the options bar's locator
-    // or its pull to the box's points put it there), a press drags the point, not the handle, as
-    // in the reference application.
-    let (first, last) = if pivot { (Some((t.pivot, Hit::Pivot)), None) } else { (None, Some((centre, Hit::Inside))) };
-    let handles = first.into_iter().chain((0..4).map(|i| (t.quad[i], Hit::Corner(i)))).chain((0..4).map(|i| (mid(i), Hit::Edge(i)))).chain(last);
-    let nearest = handles.map(|(q, h)| (d(q), h)).filter(|(dist, _)| *dist < tol).min_by(|a, b| a.0.total_cmp(&b.0));
-    match nearest {
-        Some((_, h)) => h,
-        None if inside(&t.quad, p) => Hit::Inside,
-        None => Hit::Outside,
-    }
+    let distance = d(centre);
+    if distance < tol && distance < handle_distance { Hit::Inside } else { h }
 }
 
+/// Even-odd quad membership, independent of winding and valid for concave boxes.
+/// Handles and edge-rounding tolerance are classified separately by the caller.
 fn inside(q: &[[f64; 2]; 4], p: [f64; 2]) -> bool {
     let mut c = false;
     for i in 0..4 {
@@ -81,6 +183,30 @@ pub(super) fn accepts_outside_click(g: Gesture, end: [f64; 2], tol: f64) -> bool
 /// Whether a document point is outside the document, on the pasteboard around the canvas.
 fn on_pasteboard(app: &PhotocraftApp, p: [f64; 2]) -> bool {
     app.session.active().is_some_and(|st| p[0] < 0.0 || p[1] < 0.0 || p[0] >= f64::from(st.doc.size.width) || p[1] >= f64::from(st.doc.size.height))
+}
+
+/// Whether a document point lands on pixels of a layer the box doesn't move: the frontmost hit
+/// there, skipping the moved layers and fully locked ones as Auto-Select does, is a visible
+/// top-level layer that is not the Background. As measured in the reference application
+/// (#11100, #8208), a click there commits a layer transform and leaves the selection as it was;
+/// a second click picks that layer. Not measured, so the box stays open as before: Transform
+/// Selection, a path or mask target, and hidden, locked or grouped layers (also when a grouped
+/// layer covers a top-level one at the click).
+fn on_other_layer(app: &PhotocraftApp, t: &TransformSession, p: [f64; 2]) -> bool {
+    if t.selection || t.path.is_some() || t.target.is_some() || !p[0].is_finite() || !p[1].is_finite() {
+        return false;
+    }
+    let Some(st) = app.session.active() else { return false };
+    let doc = &st.doc;
+    // The layers the commit moves: `edit.transform` takes the link group along as it is then, so a
+    // layer linked after the box opened counts as moved too.
+    let moved = photocraft_engine::transform_cmds::box_targets(doc, &super::begin::moving_layers(t));
+    let moved = |id: photocraft_doc::LayerId| id.0 == t.layer || moved.contains(&id);
+    // `as` saturates out-of-range floats; `layers_at` returns nothing off the canvas.
+    photocraft_engine::pick_cmds::layers_at(doc, p[0].floor() as i32, p[1].floor() as i32)
+        .into_iter()
+        .find(|id| !moved(*id) && !doc.effective_locks(*id).all)
+        .is_some_and(|id| !doc.is_background(id) && doc.layers.iter().any(|l| l.id == id && l.artboard().is_none()))
 }
 
 /// Pointer input while transforming. Returns false when no transform is active.
@@ -118,16 +244,18 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             if matches!(ev, ToolEvent::Up { .. }) {
                 pv.gesture = None;
             }
-            // Clicking the pasteboard (outside the document) commits; a click outside the box on the
-            // image does nothing and the box stays open (#11100). Dragging the rotation zone and
-            // Option-clicking to move the pivot keep their existing behavior.
+            // Clicking the pasteboard (outside the document) or another layer's pixels commits; a
+            // click outside the box where only the Background has pixels does nothing and the box
+            // stays open (#11100). The commit doesn't pick the layer under the click: as in the
+            // reference application, that takes a second click (#8208). Dragging the rotation
+            // zone and Option-clicking to move the pivot keep their existing behavior.
             // The press decides: a click that starts on the image and jitters past the edge
             // before the release is still a click on the image.
             if matches!(ev, ToolEvent::Up { .. })
                 && let Some(g) = g
                 && accepts_outside_click(g, [x, y], tol)
             {
-                if on_pasteboard(app, g.start) {
+                if on_pasteboard(app, g.start) || on_other_layer(app, &t, g.start) {
                     commit(app);
                 } else if let Some(s) = app.ui.transform.as_mut() {
                     // Jitter before the release may have turned the box a little: put it back.
@@ -242,16 +370,12 @@ pub(super) fn carry_pivot(quad0: [[f64; 2]; 4], quad: [[f64; 2]; 4], pivot0: [f6
     if x.is_finite() && y.is_finite() { [x, y] } else { pivot0 }
 }
 
-/// True just outside a corner: rotate handle feedback lives here, not over the entire
-/// empty canvas. The actual rotation gesture continues to work farther away.
-pub(super) fn near_rotate_corner(t: &TransformSession, p: [f64; 2], tol: f64) -> bool {
+/// Rotation feedback uses the same hit as the gesture, including the held hit while dragging.
+pub(super) fn near_rotate_corner(t: &TransformSession, h: Hit) -> bool {
     t.warp.is_none()
-        && t.mode != TransformMode::Distort
-        && {
-            let h = hit(t, p, tol);
-            h == Hit::Outside || (t.mode == TransformMode::Rotate && matches!(h, Hit::Corner(_) | Hit::Edge(_)))
-        }
-        && t.quad.iter().any(|q| (p[0] - q[0]).hypot(p[1] - q[1]) <= tol * 3.0)
+        && t.content_aware.is_none()
+        && !matches!(t.mode, TransformMode::Distort | TransformMode::Skew)
+        && (h == Hit::Outside || (t.mode == TransformMode::Rotate && matches!(h, Hit::Corner(_) | Hit::Edge(_))))
 }
 
 /// Clockwise degrees in canvas coordinates (positive Y points down).
@@ -262,40 +386,18 @@ pub(super) fn rotation_degrees(quad: [[f64; 2]; 4]) -> f64 {
 }
 
 /// Where the rotate cursor's arc bends at document point `p`, or `None` outside the rotate zone:
-/// just outside a corner, or anywhere while a rotate drag is on. It points into the box along the
-/// bisector of the nearest corner, so each corner gets its own arrow and they turn with the box.
+/// anywhere outside, or while a rotate drag is on. It follows the nearest edge or corner.
 pub(crate) fn rotate_cursor_dir(app: &PhotocraftApp, p: [f64; 2]) -> Option<[f64; 2]> {
-    rotate_dir(app.ui.transform.as_ref()?, app.transform_preview.as_ref(), p, handle_tolerance(app))
+    let t = app.ui.transform.as_ref()?;
+    rotate_dir(t, handle_at(app, t, p, handle_tolerance(app)), p)
 }
 
-pub(super) fn rotate_dir(t: &TransformSession, pv: Option<&TransformPreview>, p: [f64; 2], tol: f64) -> Option<[f64; 2]> {
-    // Content-Aware Scale's box only scales, and Skew doesn't rotate: no rotate arrow.
-    if !(p[0].is_finite() && p[1].is_finite())
-        || t.warp.is_some()
-        || t.content_aware.is_some()
-        || matches!(t.mode, TransformMode::Distort | TransformMode::Skew)
-    {
+/// Follow the nearest edge or corner during a rotation hover or drag.
+fn rotate_dir(t: &TransformSession, h: Hit, p: [f64; 2]) -> Option<[f64; 2]> {
+    if !near_rotate_corner(t, h) {
         return None;
     }
-    // During a drag the arrow shows only while it rotates: not when a handle that scales, skews
-    // or distorts strays past a corner (#5405).
-    match pv.and_then(|pv| pv.gesture) {
-        Some(g) if g.hit == Hit::Outside || (t.mode == TransformMode::Rotate && matches!(g.hit, Hit::Corner(_) | Hit::Edge(_))) => {}
-        Some(_) => return None,
-        None if !near_rotate_corner(t, p, tol) => return None,
-        None => {}
-    }
-    let dist = |q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
-    let i = (0..4).min_by(|&a, &b| dist(t.quad[a]).total_cmp(&dist(t.quad[b])))?;
-    let unit = |to: [f64; 2]| {
-        let d = [to[0] - t.quad[i][0], to[1] - t.quad[i][1]];
-        let l = d[0].hypot(d[1]);
-        (l.is_finite() && l > 1e-9).then(|| [d[0] / l, d[1] / l])
-    };
-    let (a, b) = (unit(t.quad[(i + 1) % 4])?, unit(t.quad[(i + 3) % 4])?);
-    let s = [a[0] + b[0], a[1] + b[1]];
-    let l = s[0].hypot(s[1]);
-    (l.is_finite() && l > 1e-9).then(|| [s[0] / l, s[1] / l])
+    TransformSession::box_turn_direction(&t.quad, p)
 }
 
 /// The handle a drag in progress holds, else the one under document point `p`.
@@ -311,6 +413,9 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], mods: egui::Modi
     if let Some(w) = &t.warp {
         if warps_type(app) {
             return Some(CursorIcon::Default);
+        }
+        if w.style == WarpStyle::Cylinder {
+            return Some(cylinder_cursor(w, p, tol, xf));
         }
         let armed = app.transform_preview.as_ref().and_then(|pv| pv.split_tool);
         let quick_split = mods.alt || mods.command;
@@ -336,7 +441,7 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], mods: egui::Modi
         return Some(CursorIcon::Default);
     }
     // A ⌘-drag outside the box still rotates, so ⌘ keeps the curved arrow there.
-    if rotate_cursor_dir(app, p).is_some() {
+    if rotate_dir(t, h, p).is_some() {
         // The canvas draws the curved rotate arrow (`rotate_cursor_dir`), also during the drag.
         return Some(CursorIcon::None);
     }
@@ -356,7 +461,6 @@ pub fn cursor(app: &PhotocraftApp, xf: &ViewXform, p: [f64; 2], mods: egui::Modi
         Hit::Corner(i) => crate::tool_cursor::corner_resize(&t.quad, i, xf),
         Hit::Edge(i) => resize(edge_mid(i + 2), edge_mid(i)),
         Hit::Pivot => CursorIcon::Crosshair,
-        Hit::Inside => CursorIcon::Move,
-        Hit::Outside => CursorIcon::Alias,
+        Hit::Inside | Hit::Outside => CursorIcon::Default,
     })
 }

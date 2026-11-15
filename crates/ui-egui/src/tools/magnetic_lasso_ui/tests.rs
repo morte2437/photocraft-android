@@ -25,6 +25,8 @@ fn app() -> PhotocraftApp {
         })
         .unwrap();
     app.ui.tool = Tool::MagneticLasso;
+    // Frequency 100 (a point about every 24 px with the button up, #11687): the 80 x 70 square is small.
+    app.ui.tool_options.magnetic_frequency = 100.0;
     app
 }
 
@@ -77,7 +79,7 @@ fn tracing_around_a_shape_selects_it() {
     assert!(on_square(m.path[0], 0.01), "the first point snaps onto the edge: {:?}", m.path[0]);
     hover_along(&mut app, &AROUND[..5]);
     let m = &app.ui.magnetic;
-    // Points fastened by themselves on the way (about every 47 px at Frequency 57).
+    // Points fastened by themselves on the way (about every 24 px at Frequency 100).
     assert!(m.anchors.len() >= 5, "{:?}", m.anchors);
     for p in m.path.iter().chain(&m.live) {
         assert!(on_square(*p, 1.0), "{p:?} is off the square's edge");
@@ -199,16 +201,16 @@ fn agents_see_the_border_in_progress() {
 fn switching_tools_or_documents_drops_the_border() {
     let mut app = app();
     click(&mut app, 52.0, 37.0, Modifiers::NONE);
-    frame(&mut app);
+    frame(&mut app, true, true);
     assert!(app.ui.magnetic.active());
     app.ui.tool = Tool::Lasso;
-    frame(&mut app);
+    frame(&mut app, true, true);
     assert!(!app.ui.magnetic.active());
     app.ui.tool = Tool::MagneticLasso;
     click(&mut app, 52.0, 37.0, Modifiers::NONE);
     app.run("file.new", json!({"width": 50, "height": 50})).unwrap();
     app.sync_views();
-    frame(&mut app);
+    frame(&mut app, true, true);
     assert!(!app.ui.magnetic.active());
 }
 
@@ -242,6 +244,41 @@ fn width_follows_pen_pressure_only_when_asked_and_only_with_a_pen() {
     assert_eq!(settings(&app, 0.5).width, 11.0);
     assert_eq!(settings(&app, 1.0).width, 1.0);
     assert_eq!(settings(&app, f32::NAN).width, 21.0);
+}
+
+/// Starts a border at the top edge of the square, presses the button, then lets `release` end the
+/// press; walks along the edge in 2 px steps and returns how many fastening points the border has.
+fn points_after_walk(release: impl FnOnce(&mut PhotocraftApp)) -> usize {
+    let mut a = app();
+    tool_event(&mut a, ToolEvent::Down { x: 50.0, y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+    release(&mut a);
+    for x in (52..=128).step_by(2) {
+        tool_event(&mut a, ToolEvent::Move { x: f64::from(x), y: 40.0, pressure: 1.0 }, Modifiers::NONE);
+    }
+    a.ui.magnetic.anchors.len()
+}
+
+#[test]
+fn the_button_up_spacing_applies_after_a_release_the_temporary_move_took() {
+    // Baseline: an ordinary release, then the button-up spacing (~24 px at Frequency 100).
+    let plain = points_after_walk(|a| tool_event(a, ToolEvent::Up { x: 50.0, y: 40.0 }, Modifiers::NONE));
+    assert!(plain <= 6, "button up: {plain} points");
+    // The release arrives while the temporary Move (Ctrl held) is the active tool.
+    let moved = points_after_walk(|a| {
+        a.tool_override = Some(Tool::Move);
+        tool_event(a, ToolEvent::Up { x: 50.0, y: 40.0 }, Modifiers::COMMAND);
+        a.tool_override = None;
+    });
+    assert!(moved <= 6, "after a release taken by the Move: {moved} points");
+    // The canvas frame also clears it: the button is up, whoever saw the release.
+    let framed = points_after_walk(|a| frame(a, false, true));
+    assert!(framed <= 6, "after a frame with the button up: {framed} points");
+    // Another (inactive) canvas with its own button up leaves a live drag alone.
+    let other = points_after_walk(|a| frame(a, false, false));
+    assert!(other > 10, "an inactive canvas's frame must not end the hold: {other} points");
+    // A frame with the button still down keeps the held-button spacing.
+    let held = points_after_walk(|a| frame(a, true, true));
+    assert!(held > 10, "button held: {held} points");
 }
 
 #[test]
@@ -379,6 +416,44 @@ fn on_the_canvas_the_border_follows_the_hovering_pointer_and_keys_work() {
     assert!(!h.state().ui.magnetic.active());
     let area = selected_area(h.state());
     assert!((area - 5600.0).abs() < 120.0, "{area}");
+}
+
+/// #9841: the hover moves are a pointer-only gesture. Two things must hold: they keep running on
+/// frames with no button event at all (the freeze the main-merge regression reintroduced), and a
+/// consumed menu-dismissal gesture must not track the pointer.
+///
+/// A canvas menu cannot be open over a live border — `canvas_tool_menu::magnetic_drawing` refuses
+/// one for a Magnetic Lasso border in progress (#11689), on the canvas and through the control
+/// channel alike — so the `menu_dismiss_press` check on the hover block is a guard rather than a
+/// sequence a pointer can reach. The dismissal state is staged directly here, with the button held
+/// as the real gesture has it: the flag is scoped to a held button (a frame with every button up
+/// clears it), so a pointer-up frame would clear it before the gate reads it and test nothing.
+#[test]
+fn on_the_canvas_hover_moves_survive_a_menu_dismissal_and_resume() {
+    let mut h = harness();
+    ui_click(&mut h, 52.0, 37.0);
+    assert!(h.state().ui.magnetic.active());
+    h.run_steps(2);
+    // Button up: the border follows the pointer with no button event at all.
+    ui_hover(&mut h, &[[52.0, 37.0], [100.0, 36.0]]);
+    let m = &h.state().ui.magnetic;
+    let end = m.live.last().or(m.path.last()).copied().unwrap();
+    assert!((end[0] - 100.0).abs() < 1.5 && (end[1] - 40.0).abs() < 0.01, "hover tracks with the button up: {end:?}");
+    // A consumed dismissal gesture with its button still down: the hover must not advance.
+    let far = screen(&h, 150.0, 130.0);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.state_mut().ui.canvas_tool_menu_dismissed = true;
+    let held = h.state().ui.magnetic.clone();
+    ui_hover(&mut h, &[[100.0, 36.0], [130.0, 36.0]]);
+    assert_eq!(h.state().ui.magnetic, held, "a consumed dismissal gesture must not track the pointer");
+    // Released: the very next pointer move tracks again.
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    ui_hover(&mut h, &[[130.0, 36.0], [120.0, 36.0]]);
+    let m = &h.state().ui.magnetic;
+    let end = m.live.last().or(m.path.last()).copied().unwrap();
+    assert!((end[0] - 120.0).abs() < 1.5 && (end[1] - 40.0).abs() < 0.01, "hover resumes once released: {end:?}");
 }
 
 #[test]

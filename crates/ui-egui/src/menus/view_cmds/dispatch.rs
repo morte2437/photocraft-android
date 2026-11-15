@@ -51,6 +51,8 @@ pub fn handles(id: &str) -> bool {
             | "view.patternPreview"
             | "view.pixelArtPreview"
             | "view.rotateView"
+            | "view.rotateLeft"
+            | "view.rotateRight"
             | "view.resetView"
             | "window.panel.layers"
             | "window.panel.history"
@@ -86,7 +88,13 @@ pub(super) fn is_enabled_with_engine(app: &PhotocraftApp, id: &str, engine_enabl
         // (#9349); with none open, Cycle can only bring a full screen mode back to Standard.
         "view.screenMode.cycle" => app.ui.text_edit.is_none() && (doc || app.ui.view.screen_mode != "standard"),
         "view.screenMode.fullScreen" | "view.screenMode.fullScreenWithMenuBar" => doc,
-        "view.twoHundredPercent" | "view.printSize" | "view.fitLayersOnScreen" | "view.rotateView" | "view.resetView" => doc,
+        "view.twoHundredPercent"
+        | "view.printSize"
+        | "view.fitLayersOnScreen"
+        | "view.rotateView"
+        | "view.rotateLeft"
+        | "view.rotateRight"
+        | "view.resetView" => doc,
         "view.fitArtboardOnScreen" => app.session.active().is_some_and(|d| d.doc.has_artboards()),
         i if i.starts_with("window.arrange.") => match &i["window.arrange.".len()..] {
             "consolidateAllToTabs" => true,
@@ -223,6 +231,7 @@ fn wraps(id: &str) -> bool {
     matches!(
         id,
         "file.openAs"
+            | "file.openAsSmartObject"
             | "file.openExrParts"
             | "file.saveACopy"
             | "file.placeEmbedded"
@@ -314,6 +323,9 @@ fn run(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, p: &Value) -> Res
     }
     if id == "view.rotateView" {
         return crate::rotate_view::command(app, p);
+    }
+    if matches!(id, "view.rotateLeft" | "view.rotateRight") {
+        return crate::rotate_view::step(app, id == "view.rotateRight", p);
     }
     if id == "view.resetView" {
         return crate::rotate_view::reset(app);

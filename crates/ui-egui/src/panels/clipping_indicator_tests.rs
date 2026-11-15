@@ -200,6 +200,7 @@ fn panel_adjustment_clips_to_selected_layer_and_scope_undoes_at_all_depths() {
 #[test]
 #[ignore = "writes synthetic compact adjustment-panel screenshots to log/adjustment-scope"]
 fn write_adjustment_scope_preview() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let phase = std::env::var("PHOTOCRAFT_EVIDENCE_PHASE").unwrap_or_else(|_| "after".into());
     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../log/adjustment-scope");
     std::fs::create_dir_all(&output).unwrap();

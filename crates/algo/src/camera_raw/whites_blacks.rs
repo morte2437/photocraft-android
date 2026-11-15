@@ -25,9 +25,66 @@ use crate::photo_util::par_rows;
 
 /// Grey levels the curves are sampled at: 0, 1/32, …, 1 (sRGB-encoded).
 pub(crate) const STEPS: usize = 33;
-/// The first row's internal amount; rows are 10 apart.
+/// The first row's internal amount; rows are [`ROW_STEP`] apart.
 const WHITES_FROM: f32 = -100.0;
 const BLACKS_FROM: f32 = -100.0;
+const ROW_STEP: f32 = 10.0;
+/// The image's points are measured on cells of a copy at most this many pixels across.
+pub(crate) const POINTS_SIDE: usize = 256;
+/// The black point's quantile of the cells' luminance, the white point's of their brightest
+/// channel.
+pub(crate) const POINT_QUANTILES: [f32; 2] = [0.03, 0.995];
+/// Internal amounts the sliders reach: Whites, then Blacks.
+const WHITES_RANGE: [f32; 2] = [-100.0, 270.0];
+const BLACKS_RANGE: [f32; 2] = [-100.0, 100.0];
+
+/// Whites and Blacks' tables and how an image's points choose from them, for another
+/// implementation (the GPU preview measures the points after Shadows and Highlights itself).
+#[derive(Clone, Copy, Debug)]
+pub struct Model {
+    /// Whites curves over grey levels 0, 1/32, …, 1, at internal amounts `whites_from`,
+    /// `whites_from + row_step`, ….
+    pub whites: &'static [[f32; STEPS]],
+    pub whites_from: f32,
+    /// Blacks curves, likewise.
+    pub blacks: &'static [[f32; STEPS]],
+    pub blacks_from: f32,
+    pub row_step: f32,
+    /// Black points and white points of the adaptation tables' rows and columns.
+    pub black_points: &'static [f32],
+    pub white_points: &'static [f32],
+    /// How much the clipping directions adapt (Whites up, Blacks down), by black and white point.
+    pub whites_adapt: &'static [[f32; 8]; 9],
+    pub blacks_adapt: &'static [[f32; 8]; 9],
+    /// The least Blacks adaptation on photographs.
+    pub photo_blacks: f32,
+    /// Internal amounts the Whites and Blacks sliders reach.
+    pub whites_range: [f32; 2],
+    pub blacks_range: [f32; 2],
+    /// See [`POINTS_SIDE`] and [`POINT_QUANTILES`].
+    pub points_side: usize,
+    pub point_quantiles: [f32; 2],
+}
+
+/// The tables [`amounts`], [`whites_row`] and [`blacks_row`] read.
+pub(crate) fn model() -> Model {
+    Model {
+        whites: &WHITES,
+        whites_from: WHITES_FROM,
+        blacks: &BLACKS,
+        blacks_from: BLACKS_FROM,
+        row_step: ROW_STEP,
+        black_points: &BPS,
+        white_points: &WPS,
+        whites_adapt: &AW,
+        blacks_adapt: &AB,
+        photo_blacks: PHOTO_BLACKS,
+        whites_range: WHITES_RANGE,
+        blacks_range: BLACKS_RANGE,
+        points_side: POINTS_SIDE,
+        point_quantiles: POINT_QUANTILES,
+    }
+}
 // Measured levels; some happen to lie near π/8 and π/4.
 /// Whites curves at internal amounts -100, -90, …, 270 (rows) over grey levels 0, 1/32, …, 1.
 #[allow(clippy::approx_constant)]
@@ -303,7 +360,7 @@ fn curve(rows: &[[f32; STEPS]], from: f32, x: f32, v: f32) -> f32 {
     if v >= 1.0 {
         return 1.0;
     }
-    let r = ((x - from) / 10.0).clamp(0.0, (rows.len() - 1) as f32);
+    let r = ((x - from) / ROW_STEP).clamp(0.0, (rows.len() - 1) as f32);
     let i = (r as usize).min(rows.len() - 2);
     let t = r - i as f32;
     let at = |row: &[f32; STEPS]| {
@@ -318,7 +375,7 @@ fn curve(rows: &[[f32; STEPS]], from: f32, x: f32, v: f32) -> f32 {
 /// The curve at a fractional internal amount `x` as one row: `curve(rows, from, x, v)` is this
 /// row interpolated at `v`, because both interpolations are linear.
 fn row_at(rows: &[[f32; STEPS]], from: f32, x: f32) -> [f32; STEPS] {
-    let r = ((x - from) / 10.0).clamp(0.0, (rows.len() - 1) as f32);
+    let r = ((x - from) / ROW_STEP).clamp(0.0, (rows.len() - 1) as f32);
     let i = (r as usize).min(rows.len() - 2);
     let t = r - i as f32;
     std::array::from_fn(|j| rows[i][j] * (1.0 - t) + rows[i + 1][j] * t)
@@ -367,7 +424,7 @@ pub(crate) fn amounts(whites: f32, blacks: f32, bp: f32, wp: f32) -> (f32, f32) 
     // On photographs Photoshop's Blacks is about 1.2 times the block images' amount even where
     // their black point is 0 (ten public-domain photos: 1.08–1.36).
     let b = if blacks < 0.0 { blacks * adapt(&AB, bp, wp).max(PHOTO_BLACKS) } else { blacks };
-    (w.clamp(-100.0, 270.0), b.clamp(-100.0, 100.0))
+    (w.clamp(WHITES_RANGE[0], WHITES_RANGE[1]), b.clamp(BLACKS_RANGE[0], BLACKS_RANGE[1]))
 }
 
 /// Applies Whites and Blacks (internal amounts `w`, `b`) to straight RGBA pixels (`width` per

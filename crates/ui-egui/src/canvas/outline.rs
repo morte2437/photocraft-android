@@ -25,6 +25,31 @@ pub(crate) fn bounded_step(bounds: Rect, mut step: u32) -> u32 {
     step
 }
 
+/// The trace step for a view of `device_zoom` device px per document px, of a mask reduced by `k`:
+/// about one sample per device pixel, a power of two in 1..=64.
+pub(crate) fn view_step(device_zoom: f32, k: u32) -> u32 {
+    (1.0 / (device_zoom * k.max(1) as f32).max(1e-3)).log2().floor().exp2().clamp(1.0, 64.0) as u32
+}
+
+/// The part of a mask reduced by `k` to trace for the document rectangle `[x0, y0, x1, y1]` in
+/// view: quantised to 256 cells of `step` so small pans keep it, and padded by that so the cut
+/// edges of a trace fall outside the view.
+pub(crate) fn view_region(view: [f64; 4], k: u32, step: u32) -> Rect {
+    let k = f64::from(k.max(1));
+    let q = 256 * step.clamp(1, 64) as i32;
+    // The view centre can be any finite number. Past ±2³⁰ there is no document to outline, and
+    // the padding (at most 2 · 256 · 64) can't overflow i32 from there.
+    let px = |v: f64| v.clamp(-f64::from(1 << 30), f64::from(1 << 30)) as i32;
+    let (x0, x1) = (view[0].min(view[2]) / k, view[0].max(view[2]) / k);
+    let (y0, y1) = (view[1].min(view[3]) / k, view[1].max(view[3]) / k);
+    Rect::new(
+        px(x0.floor()).div_euclid(q) * q - q,
+        px(y0.floor()).div_euclid(q) * q - q,
+        (px(x1.ceil()).div_euclid(q) + 2) * q,
+        (px(y1.ceil()).div_euclid(q) + 2) * q,
+    )
+}
+
 /// Extract the boundary of `mask` (> 0.5 = selected) as merged horizontal and vertical segments.
 pub fn outline(mask: &Surface, bounds: Rect) -> Vec<Segment> {
     outline_scaled(mask, bounds, 1)
@@ -206,6 +231,26 @@ mod tests {
                 let parallel = outline_scaled(&mask, bounds, step);
                 let serial = outline_scaled_serial(&mask, bounds, step);
                 assert_eq!(serial, parallel, "outline differs at step {step}, bounds {bounds:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn view_step_and_region_quantise_and_survive_hostile_views() {
+        assert_eq!(view_step(1.0, 1), 1);
+        assert_eq!(view_step(0.25, 1), 4);
+        assert_eq!(view_step(0.5, 2), 1, "a copy reduced by 2 seen at 50 % is at its own size");
+        assert_eq!(view_region([10.0, 20.0, 300.0, 200.0], 1, 1), Rect::new(-256, -256, 768, 512));
+        assert_eq!(view_region([0.0, 0.0, 1024.0, 512.0], 2, 1), Rect::new(-256, -256, 1024, 768));
+        for zoom in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e9, 1e-30] {
+            for k in [0, 1, 3, u32::MAX] {
+                assert!((1..=64).contains(&view_step(zoom, k)), "zoom {zoom}, k {k}");
+            }
+        }
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e30, -1e30] {
+            for step in [0, 1, 64, u32::MAX] {
+                let r = view_region([v, -v, v, 1e30], 1, step);
+                assert!(r.x0 <= r.x1 && r.y0 <= r.y1, "{v}, {step}: {r:?}");
             }
         }
     }

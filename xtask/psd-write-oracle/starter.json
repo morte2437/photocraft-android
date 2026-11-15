@@ -136,6 +136,30 @@
           "op": "changed_to",
           "path": "/text/runs/1/style/tracking",
           "value": -60.0
+        },
+        {
+          "op": "unchanged",
+          "path": "/text/runs/0/style/tracking"
+        },
+        {
+          "op": "equals",
+          "path": "/text/runs/2/style/tracking",
+          "value": 200.0
+        },
+        {
+          "op": "equals",
+          "path": "/text/runs/0/len",
+          "value": 1
+        },
+        {
+          "op": "equals",
+          "path": "/text/runs/1/len",
+          "value": 2
+        },
+        {
+          "op": "equals",
+          "path": "/text/runs/2/len",
+          "value": 5
         }
       ]
     },

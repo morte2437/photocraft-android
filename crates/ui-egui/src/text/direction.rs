@@ -54,6 +54,11 @@ pub fn direction_scope(dir: Dir) -> impl Drop {
 }
 
 fn env_override() -> Option<Dir> {
+    // Unit tests follow the language or a `direction_scope`, whatever the developer's shell sets
+    // (the value is cached per process, so a test can't clear it).
+    if cfg!(test) {
+        return None;
+    }
     static ENV: OnceLock<Option<Dir>> = OnceLock::new();
     *ENV.get_or_init(|| parse_dir(&std::env::var("PHOTOCRAFT_UI_DIRECTION").ok()?))
 }

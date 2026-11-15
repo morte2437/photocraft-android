@@ -240,7 +240,18 @@ pub enum TextShape {
     /// (text-space pixels, before the layer transform) by arc length and turned to follow the
     /// curve. `start` is the arc-length offset (px) of the text origin along the path; `flip`
     /// puts the text on the other side of the path.
-    Path { path: super::vector::Subpath, start: f32, flip: bool },
+    Path {
+        path: super::vector::Subpath,
+        start: f32,
+        /// Unwrapped arc-length end offset in text-space pixels, measured in the current
+        /// travel direction (`flip` reverses that direction). It may exceed the path length
+        /// on closed paths: for a 100 px loop, start 80 and end 120 cross the seam by 20 px.
+        /// End equal to start is empty; start plus the path length permits one full lap.
+        /// `None` preserves legacy unbounded clipping and alignment around the start anchor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<f32>,
+        flip: bool,
+    },
     /// Area type: paragraph text that wraps inside the closed subpaths of `path` (text-space
     /// pixels, before the layer transform), combined with their path operations and fill rule.
     /// Text that doesn't fit is hidden, as in a text box.
@@ -286,6 +297,15 @@ pub struct TextWarp {
 
 #[cfg(test)]
 mod tests {
+    /// Ensures `TextShape::Path` serializes backward-compatibly without an `"end"` field when `end` is `None`.
+    #[test]
+    fn path_end_is_backward_compatible() {
+        let shape = super::TextShape::Path { path: Default::default(), start: 2.0, end: None, flip: false };
+        let value = serde_json::to_value(&shape).unwrap();
+        assert!(value.get("Path").unwrap().get("end").is_none());
+        assert_eq!(serde_json::from_value::<super::TextShape>(value).unwrap(), shape);
+    }
+
     use super::*;
     use crate::TextLayer;
 

@@ -372,7 +372,7 @@ mod tests {
         let mut s = session();
         let first = s.active().unwrap().history.state(0).unwrap();
         s.execute("history.deleteState", json!({"state": 1})).unwrap();
-        assert_eq!(entries(&s), vec!["Open".to_string()]);
+        assert_eq!(entries(&s), vec!["New".to_string()]);
         assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &first));
         assert!(!s.active().unwrap().history.can_redo());
         // Redo states after an undo go too.

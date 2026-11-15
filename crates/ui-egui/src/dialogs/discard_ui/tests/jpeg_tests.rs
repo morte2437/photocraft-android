@@ -148,7 +148,7 @@ fn jpeg_options_writes_the_choice_or_cancels() {
     h.run_steps(3);
     assert!(h.state().jpeg_options.is_none());
     assert_eq!(writes.borrow().len(), 1, "cancelled: nothing more written");
-    assert_eq!(h.state().ui.status, "Save cancelled");
+    assert_eq!(h.state().ui.status, "Save canceled");
 }
 
 /// Scripts choose with `quality` or `jpegFormat` and are never asked; a bad value writes nothing;
@@ -220,10 +220,11 @@ fn recorded_jpeg_saves_keep_their_options_and_replay_without_asking() {
         steps,
         &[
             ("file.saveAs".into(), json!({"path": "p.jpg", "quality": 10, "jpegFormat": "optimized"})),
-            ("file.saveACopy".into(), json!({"path": "copy.jpg", "quality": 6, "jpegFormat": "baseline"})),
+            // The Save a Copy prompt starts at the format just chosen (it is remembered).
+            ("file.saveACopy".into(), json!({"path": "copy.jpg", "quality": 6, "jpegFormat": "optimized"})),
         ]
     );
-    let expected = [("p.jpg".to_string(), asked(pct(10), JpegFormat::Optimized)), ("copy.jpg".to_string(), asked(pct(6), JpegFormat::Baseline))];
+    let expected = [("p.jpg".to_string(), asked(pct(10), JpegFormat::Optimized)), ("copy.jpg".to_string(), asked(pct(6), JpegFormat::Optimized))];
     assert_eq!(writes.borrow().as_slice(), &expected);
     writes.borrow_mut().clear();
     let played = h.state_mut().run("actions.play", json!({"action": 0})).unwrap();
@@ -269,4 +270,78 @@ fn a_save_can_choose_where_the_prompt_starts() {
     h.state_mut().run("actions.stop", json!({})).unwrap();
     assert_eq!(writes.borrow().as_slice(), &[("s.jpg".to_string(), asked(Some(70), JpegFormat::Progressive))]);
     assert_eq!(h.state().session.actions.list[0].steps, [("file.saveAs".into(), json!({"path": "s.jpg", "jpegFormat": "progressive"}))]);
+}
+
+/// The JPEG Options dialog starts at what it was last answered with (#9631): the quality and the
+/// format, for a document that isn't an opened JPEG. Cancel remembers nothing.
+#[test]
+fn the_next_dialog_starts_at_the_last_answer() {
+    let (mut h, writes) = jpeg_app("unused.jpg");
+    let ctx = h.ctx.clone();
+    h.state_mut().save_as(Some("a.jpg".into())).unwrap();
+    h.run_steps(2);
+    h.state_mut().jpeg_options.as_mut().unwrap().quality = 6;
+    h.run_steps(2);
+    h.get_by_label("Progressive").click();
+    h.run_steps(2);
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(writes.borrow().is_empty());
+    h.state_mut().save_as(Some("b.jpg".into())).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().jpeg_options.as_ref().map(|p| (p.quality, p.format)), Some((10, JpegFormat::Baseline)), "a cancelled dialog is not an answer");
+    h.state_mut().jpeg_options.as_mut().unwrap().quality = 6;
+    h.run_steps(2);
+    h.get_by_label("Progressive").click();
+    h.run_steps(2);
+    h.get_by_label("OK").click();
+    h.run_steps(3);
+    crate::menus::invoke(h.state_mut(), &ctx, "file.saveACopy", json!({})).unwrap();
+    h.run_steps(3);
+    assert_eq!(h.state().jpeg_options.as_ref().map(|p| (p.quality, p.format, p.own_quality)), Some((6, JpegFormat::Progressive, None)));
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    let expected = [("b.jpg".to_string(), asked(pct(6), JpegFormat::Progressive)), ("unused.jpg".to_string(), asked(pct(6), JpegFormat::Progressive))];
+    assert_eq!(writes.borrow().as_slice(), &expected);
+}
+
+/// An opened JPEG still starts at its own quality (File › Save keeps it, #4032) but at the last
+/// format; left on its own quality, the answer doesn't replace the quality remembered for other
+/// documents.
+#[test]
+fn an_opened_jpeg_starts_at_its_own_quality_and_the_last_format() {
+    let (mut h, _writes) = jpeg_app("unused.jpg");
+    h.state_mut().session.prefs.edit(|p| {
+        p.dialogs.insert("file.jpegOptions".into(), json!({"quality": 3, "jpegFormat": "progressive"}));
+    });
+    std::sync::Arc::make_mut(&mut h.state_mut().session.active_mut().unwrap().doc).file_encoding.jpeg_quality = Some(95);
+    h.state_mut().save_as(Some("p.jpg".into())).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().jpeg_options.as_ref().map(|p| (p.quality, p.format, p.own_quality)), Some((11, JpegFormat::Progressive, Some(95))));
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    let saved = h.state().session.prefs().dialogs.get("file.jpegOptions").cloned();
+    assert_eq!(saved, Some(json!({"quality": 3, "jpegFormat": "progressive"})), "the own quality is not an answer");
+}
+
+/// A remembered answer that no longer fits (a hand-edited preferences file) is ignored, value by
+/// value.
+#[test]
+fn a_bad_remembered_answer_is_ignored() {
+    for (saved, expected) in [
+        (json!({"quality": 13, "jpegFormat": "progressive"}), (10, JpegFormat::Progressive)),
+        (json!({"quality": "8", "jpegFormat": "fast"}), (10, JpegFormat::Baseline)),
+        (json!({"quality": -1}), (10, JpegFormat::Baseline)),
+        (json!({"quality": 2.5, "jpegFormat": 1}), (10, JpegFormat::Baseline)),
+        (json!("not an object"), (10, JpegFormat::Baseline)),
+        (json!({"quality": 0, "jpegFormat": "optimized"}), (0, JpegFormat::Optimized)),
+    ] {
+        let (mut h, _writes) = jpeg_app("unused.jpg");
+        h.state_mut().session.prefs.edit(|p| {
+            p.dialogs.insert("file.jpegOptions".into(), saved.clone());
+        });
+        h.state_mut().save_as(Some("p.jpg".into())).unwrap();
+        h.run_steps(2);
+        assert_eq!(h.state().jpeg_options.as_ref().map(|p| (p.quality, p.format)), Some(expected), "{saved}");
+    }
 }

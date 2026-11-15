@@ -77,6 +77,11 @@ pub(super) fn purge(s: &mut Session, what: &str) -> Result<Value> {
             freed = freed.saturating_add(strokes);
             items.push("shape stroke cache");
         }
+        let luts = photocraft_compose::lut_rows::purge_cache();
+        if luts > 0 {
+            freed = freed.saturating_add(luts);
+            items.push("adjustment table cache");
+        }
     }
     s.edit_state.fade = None;
     let msg = if items.is_empty() { "nothing to purge".to_string() } else { format!("purged {}", items.join(", ")) };
@@ -102,6 +107,7 @@ pub(super) fn can_purge_all(s: &Session) -> std::result::Result<(), String> {
             || crate::smart_cmds::stack_cache_bytes() > 0
             || crate::smart_cmds::source_cache_bytes() > 0
             || photocraft_paint::mip_cache_bytes() > 0
+            || photocraft_compose::lut_rows::cache_bytes() > 0
         {
             Ok(())
         } else {

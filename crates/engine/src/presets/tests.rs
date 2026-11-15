@@ -246,7 +246,8 @@ fn paint_gradient_honours_explicit_transparency_stops() {
         ] {
             let mut s = Session::new();
             s.execute("file.new", json!({"width": 16, "height": 16, "depth": depth, "background": "transparent"})).unwrap();
-            let mut p = json!({"from": [0, 0], "to": [0, 15], "transparency": transparency});
+            // Pixel 15 is sampled at 14.5 (#12018), so a drag to 14 ends on it.
+            let mut p = json!({"from": [0, 0], "to": [0, 14], "transparency": transparency});
             for (k, v) in extra.as_object().unwrap() {
                 p[k] = v.clone();
             }
@@ -612,6 +613,61 @@ fn tool_presets_save_filter_select() {
     assert!(s.execute("tool.presets.new", json!({"name": "x"})).is_err());
 }
 
+#[test]
+fn tool_presets_reject_invalid_colors_before_applying_the_brush() {
+    let mut invalid = vec![
+        json!(null),
+        json!(true),
+        json!(7),
+        json!("red"),
+        json!({}),
+        json!([]),
+        json!([1]),
+        json!([1, 0]),
+        json!([1, 0, 0, 1, 0]),
+        json!([null, 0.4, 0.6]),
+    ];
+    for channel in 0..4 {
+        for bad_channel in [json!(1e100), json!(-1e100), json!(null), json!("red"), json!(true), json!({}), json!([])] {
+            let mut values = json!([0.2, 0.4, 0.6, 0.8]);
+            values[channel] = bad_channel;
+            invalid.push(values);
+        }
+    }
+    for values in invalid {
+        let mut s = Session::new();
+        s.execute("tools.setColors", json!({"foreground": [0.2, 0.4, 0.6, 0.8]})).unwrap();
+        let color = s.tools.foreground;
+        let brush = s.tools.brush.clone();
+        let brush_rev = s.tools.brush_rev;
+        s.execute(
+            "tool.presets.new",
+            json!({
+                "name": "Invalid", "tool": "brush", "options": {"brush": {"size": 77}, "foreground": values}
+            }),
+        )
+        .unwrap();
+        assert!(s.execute("tool.presets.select", json!({"preset": "Invalid"})).is_err(), "{values}");
+        assert_eq!(s.tools.foreground, color, "{values}");
+        assert_eq!(s.tools.brush, brush, "{values}");
+        assert_eq!(s.tools.brush_rev, brush_rev, "{values}");
+    }
+}
+
+#[test]
+fn tool_presets_keep_finite_hdr_colors_and_leave_absent_colors_unchanged() {
+    let mut s = Session::new();
+    for (options, expected) in [
+        (json!({"foreground": [1.5, -0.1, 0.6, 0.8]}), [1.5, -0.1, 0.6, 0.8]),
+        (json!({"foreground": [0.2, 0.4, 0.6]}), [0.2, 0.4, 0.6, 1.0]),
+        (json!({}), [0.2, 0.4, 0.6, 1.0]),
+    ] {
+        let preset = s.execute("tool.presets.new", json!({"tool": "move", "options": options})).unwrap();
+        s.execute("tool.presets.select", json!({"preset": preset["name"]})).unwrap();
+        assert_eq!(s.tools.foreground, expected);
+    }
+}
+
 /// An Art History Brush preset captures the brush's opacity and selecting it restores it.
 #[test]
 fn art_history_brush_preset_carries_the_opacity() {
@@ -761,9 +817,8 @@ fn clone_source_flip_scale_rotation() {
     let px = layer_px(&s, 42, 24);
     assert!((px[0] - 18.0 / 63.0).abs() < 0.02, "{px:?}");
     s.execute("cloneSource.resetTransform", json!({})).unwrap();
-    s.execute("cloneSource.set", json!({"source": [20, 20], "width": 200, "height": 200})).unwrap();
     let mut s2 = clone_doc(16);
-    s2.presets.clone = s.presets.clone.clone();
+    s2.execute("cloneSource.set", json!({"source": [20, 20], "width": 200, "height": 200})).unwrap();
     s2.execute("paint.cloneStamp", json!({"points": [[40, 24]], "size": 21, "hardness": 100})).unwrap();
     // 200 %: 4 px right of the anchor samples 2 px right of the source.
     let px = layer_px(&s2, 44, 24);
@@ -938,4 +993,21 @@ fn export_presets_survive_a_presets_json_round_trip() {
     assert_eq!(restored.presets.export_presets.len(), 1);
     assert_eq!(restored.presets.export_presets[0].name, "Web");
     assert_eq!(restored.presets.export_presets[0].settings.format, "jpg");
+}
+
+/// A nested command a preset command runs answers to the session's authorization hook: a denied one
+/// does not run, an ungated call still succeeds.
+#[test]
+fn nested_preset_commands_answer_to_the_authorization_gate() {
+    fn deny_select_all(id: &str, _: &Value) -> crate::Result<()> {
+        if id == "select.all" { Err(crate::EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+    }
+    let mut s = session(8);
+    s.authorize = Some(deny_select_all);
+    let e = super::call(&mut s, "select.all", json!({})).unwrap_err().to_string();
+    assert!(e.contains("is disabled"), "{e}");
+    assert!(s.active().unwrap().doc.selection.is_none(), "the denied command did not run");
+    s.authorize = None;
+    super::call(&mut s, "select.all", json!({})).unwrap();
+    assert!(s.active().unwrap().doc.selection.is_some());
 }

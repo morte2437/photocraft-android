@@ -1,11 +1,11 @@
 //! Photoshop's mixed-order Intel TIFF type blocks and unsafe/unresolved type fallback (#4758).
 
+use craft_psd::descriptor::{Value, VersionedDescriptor};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::text::{CharStyle, TextRun};
 use photocraft_doc::{Document, Layer, LayerContent, Size, TextLayer};
 use photocraft_geom::Affine;
 use photocraft_io::{ExportOptions, PsdExportOptions, document_to_psd_with, export, import, psd_to_document};
-use photocraft_psd::descriptor::{Value, VersionedDescriptor};
 
 fn document() -> Document {
     document_in(ColorMode::Rgb, SampleType::U8)
@@ -36,7 +36,7 @@ fn photoshop_mixed_order_tiff_import_keeps_editable_geometry_and_pixels() {
     let blocks = image.meta.photoshop_layers.as_mut().unwrap();
     let at = blocks.windows(8).position(|b| b == b"MIB8hSyT").unwrap() + 12;
     // Only the text version/descriptor switch order; warp and bounds remain little-endian.
-    let (_, used) = photocraft_psd::descriptor::VersionedDescriptor::parse_prefix(&canonical[52..]).unwrap();
+    let (_, used) = craft_psd::descriptor::VersionedDescriptor::parse_prefix(&canonical[52..]).unwrap();
     blocks[at + 50..at + 52 + used].copy_from_slice(&canonical[50..52 + used]);
     let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::Tiff, &Default::default()).unwrap();
     let opened = import("photoshop.tif", &bytes).unwrap();

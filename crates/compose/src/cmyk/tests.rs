@@ -60,7 +60,11 @@ fn over(b: Cmyka, s: Cmyka, opacity: f32) -> Cmyka {
     }
     let mut o = [0.0; 5];
     for i in 0..4 {
-        o[i] = (s[i] * sa + b[i] * b[4] * (1.0 - sa)) / a;
+        // Over nothing, under a covering source, or where both inks agree, the result is the
+        // source's ink exactly: `s * sa / sa` can be one ulp off, which a later mode or
+        // rounding step can turn into a whole level.
+        let shows_through = b[4] > 0.0 && sa < 1.0;
+        o[i] = if !shows_through || b[i] == s[i] { s[i] } else { (s[i] * sa + b[i] * b[4] * (1.0 - sa)) / a };
     }
     o[4] = a;
     o
@@ -760,6 +764,37 @@ fn clips_onto_pass_through(layers: &[LayerSpec]) -> bool {
         matches!(w[0], LayerSpec::Group { pass_through: true, fill, .. } if fill >= 1.0)
             && matches!(w[1], LayerSpec::Pixels { clipped: true, visible: true, .. })
     }) || layers.iter().any(|l| matches!(l, LayerSpec::Group { children, .. } if clips_onto_pass_through(children)))
+}
+
+/// A proptest case from main's CI: a masked shape below 100% Fill, then Posterize in Color
+/// Burn (Paint.NET) inside an isolated group. The burned brightness is exactly 73.5/255.
+#[test]
+fn posterize_in_paint_net_color_burn_on_a_rounding_tie_matches_the_reference() {
+    let shape = LayerSpec::Pixels {
+        kind: Kind::Shape,
+        blend: BlendMode::Normal,
+        fills: vec![(Rect::new(0, 0, 1, 1), [0.47422728, 0.0, 0.0, 0.0, 1.0])],
+        opacity: 1.0,
+        fill: 0.876696,
+        clipped: false,
+        visible: true,
+        mask: Some(MaskSpec { rects: vec![], default: 0.06425183, density: 1.0, enabled: true }),
+    };
+    let posterize = LayerSpec::Pixels {
+        kind: Kind::Adjust(AdjSpec::Posterize(4)),
+        blend: BlendMode::PaintNetColorBurn,
+        fills: vec![(Rect::new(0, 0, 1, 1), [0.0; 5])],
+        opacity: 1.0,
+        fill: 1.0,
+        clipped: false,
+        visible: true,
+        mask: None,
+    };
+    let group = LayerSpec::Group { children: vec![shape, posterize], pass_through: false, blend: BlendMode::Normal, opacity: 1.0, fill: 1.0, mask: None };
+    let s = Spec { w: 8, h: 6, layers: vec![group] };
+    let mut d = doc(s.w as u32, s.h as u32);
+    d.layers = s.layers.iter().map(build).collect();
+    assert_matches_reference(&d);
 }
 
 proptest! {
@@ -1830,13 +1865,14 @@ fn flattening_keeps_exact_inks() {
 /// threads) and a Color Overlay on the split path (its stand-ins).
 #[test]
 fn rgb_colours_become_ink_through_the_document_profile() {
-    let profile = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
+    let profile = craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams {
         description: "Test Uncoated".into(),
         tvi: [0.26, 0.26, 0.26, 0.3],
         grid_a2b: 5,
         grid_b2a: 9,
         ..Default::default()
-    });
+    })
+    .unwrap();
     let bytes = profile.to_bytes();
     let space = photocraft_color::convert::CmykSpace::for_profile(Some(&bytes));
     assert!(space.is_some(), "a profile other than the built-in one");

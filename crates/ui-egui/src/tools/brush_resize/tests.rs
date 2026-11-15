@@ -22,7 +22,7 @@ fn history(app: &PhotocraftApp) -> usize {
 #[test]
 fn mapping_is_bounded() {
     assert_eq!(resized((40.0, 0.5), 10.0, 0.0, 1.0), (60.0, 0.5), "the edge follows the pointer");
-    assert_eq!(resized((40.0, 0.5), 0.0, 50.0, 2.0), (40.0, 1.0), "down is harder, in screen points");
+    assert_eq!(resized((40.0, 0.5), 0.0, f64::from(HARDNESS_TRAVEL / 4.0), 2.0), (40.0, 1.0), "down is harder, in screen points");
     assert_eq!(resized((40.0, 0.5), -1e9, -1e9, 1.0), (1.0, 0.0));
     assert_eq!(resized((40.0, 0.5), 1e9, 1e9, 1.0), (MAX_BRUSH_SIZE, 1.0));
     assert_eq!(resized((40.0, 0.5), f64::NAN, f64::INFINITY, f32::NAN), (40.0, 0.5));
@@ -41,11 +41,11 @@ fn ctrl_alt_drag_resizes_every_brush_tool_without_painting_or_history() {
         // Right grows the size.
         tool_event(&mut app, ToolEvent::Move { x: 130.0, y: 100.0, pressure: 1.0 }, CTRL_ALT);
         assert_eq!(app.session.tools.brush.size, 100.0, "{tool:?}");
-        // Down raises the hardness (at 100 %, 200 points take it from 0 to 100 %).
-        tool_event(&mut app, ToolEvent::Move { x: 130.0, y: 160.0, pressure: 1.0 }, CTRL_ALT);
+        // Down raises the hardness (at 100 %, 385 points take it from 0 to 100 %, #11891).
+        tool_event(&mut app, ToolEvent::Move { x: 130.0, y: 215.5, pressure: 1.0 }, CTRL_ALT);
         assert_eq!(app.session.tools.brush.hardness, 0.5, "{tool:?}");
         // Letting go of the keys mid-drag keeps resizing until the button is released.
-        tool_event(&mut app, ToolEvent::Up { x: 120.0, y: 180.0 }, Modifiers::NONE);
+        tool_event(&mut app, ToolEvent::Up { x: 120.0, y: 254.0 }, Modifiers::NONE);
         let b = &app.session.tools.brush;
         assert_eq!((b.size, b.hardness), (80.0, 0.6), "{tool:?}");
         assert!(app.brush_resize.is_none() && app.drag.is_none());
@@ -297,9 +297,11 @@ fn vary_round_brush_hardness_on_hud_switches_the_vertical_target() {
             app.run("prefs.set", json!({"path": "tools.varyRoundBrushHardnessOnHud", "value": false})).unwrap();
         }
         let (h0, o0) = (app.session.tools.brush.hardness, app.session.tools.brush.opacity);
+        // 20 % of each travel: 77 points for the hardness, 40 for the opacity, which keeps its rate.
+        let y = if vary { 177.0 } else { 140.0 };
         tool_event(&mut app, ToolEvent::Down { x: 100.0, y: 100.0, pressure: 1.0 }, CTRL_ALT);
-        tool_event(&mut app, ToolEvent::Move { x: 100.0, y: 140.0, pressure: 1.0 }, CTRL_ALT);
-        tool_event(&mut app, ToolEvent::Up { x: 100.0, y: 140.0 }, CTRL_ALT);
+        tool_event(&mut app, ToolEvent::Move { x: 100.0, y, pressure: 1.0 }, CTRL_ALT);
+        tool_event(&mut app, ToolEvent::Up { x: 100.0, y }, CTRL_ALT);
         let b = &app.session.tools.brush;
         if vary {
             assert_eq!((b.hardness, b.opacity), (h0 + 0.2, o0), "hardness moves with the drag");
@@ -330,16 +332,16 @@ fn drag_in_view(rotation: f32, flip: bool, dx: f64, dy: f64) -> (f32, f32) {
 fn a_rotated_view_keeps_horizontal_for_size_and_vertical_for_hardness() {
     // Unrotated, with and without View › Flip Horizontal: unchanged.
     assert_eq!(drag_in_view(0.0, false, 30.0, 0.0), (100.0, 0.2), "right grows");
-    assert_eq!(drag_in_view(0.0, false, 0.0, 40.0), (40.0, 0.4), "down hardens");
+    assert_eq!(drag_in_view(0.0, false, 0.0, 77.0), (40.0, 0.4), "down hardens");
     assert_eq!(drag_in_view(0.0, true, -30.0, 0.0), (100.0, 0.2), "flipped: screen right grows");
-    assert_eq!(drag_in_view(0.0, true, 0.0, 40.0), (40.0, 0.4), "flipped: down hardens");
+    assert_eq!(drag_in_view(0.0, true, 0.0, 77.0), (40.0, 0.4), "flipped: down hardens");
     // 90° clockwise: document +y points screen-left and document +x screen-down.
     assert_eq!(drag_in_view(90.0, false, 0.0, 10.0), (20.0, 0.2), "screen-left shrinks, the hardness stays");
     assert_eq!(drag_in_view(90.0, false, 0.0, -30.0), (100.0, 0.2), "screen-right grows");
-    assert_eq!(drag_in_view(90.0, false, 40.0, 0.0), (40.0, 0.4), "screen-down hardens, the size stays");
+    assert_eq!(drag_in_view(90.0, false, 77.0, 0.0), (40.0, 0.4), "screen-down hardens, the size stays");
     // 180°: document -x is screen right.
     assert_eq!(drag_in_view(180.0, false, -30.0, 0.0), (100.0, 0.2), "screen right still grows");
-    assert_eq!(drag_in_view(180.0, false, 0.0, -40.0), (40.0, 0.4), "screen down still hardens");
+    assert_eq!(drag_in_view(180.0, false, 0.0, -77.0), (40.0, 0.4), "screen down still hardens");
     // 90° and flipped: document +y points screen-right.
     assert_eq!(drag_in_view(90.0, true, 0.0, 30.0), (100.0, 0.2), "rotated and flipped: screen right grows");
 }

@@ -82,6 +82,12 @@ pub fn pressed(app: &mut PhotocraftApp, letter: char, before: Tool, plain: bool,
     app.ui.spring = (before.key() != letter).then(|| Spring { previous: before, tool, keys: vec![letter], since: now, used: false, released: false });
 }
 
+/// Is `tool` in effect only while its letter is held (or its drag finishes)? A tap that turns out
+/// permanent has no spring left by then (`tick`).
+pub fn holds(app: &PhotocraftApp, tool: Tool) -> bool {
+    app.ui.tool == tool && app.ui.spring.as_ref().is_some_and(|s| s.tool == tool)
+}
+
 /// The canvas was pressed: a held letter's tool becomes temporary.
 pub fn note_canvas_press(app: &mut PhotocraftApp) {
     if let Some(s) = app.ui.spring.as_mut().filter(|s| !s.released) {

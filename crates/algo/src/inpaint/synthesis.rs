@@ -261,7 +261,8 @@ pub fn best_offset(w: usize, h: usize, ch: usize, img: &[f32], hole: &[bool], ri
 pub fn synthesize(w: usize, h: usize, ch: usize, img: &[f32], hole: &[bool], block: usize, seed: u64) -> Vec<f32> {
     let mut out = img.to_vec();
     let Some((bx0, by0, bx1, by1)) = hole_bbox(w, h, hole) else { return out };
-    let b = block.max(4) as i32;
+    // A block larger than the image fits no candidate either way: the clamp keeps the i32 math in range.
+    let b = block.clamp(4, w.max(h).max(4)) as i32;
     let ov = (b / 3).max(1);
     let hs = integral(w, h, hole);
     // Candidate block origins: whole block (with overlap) inside the grid and outside the hole.

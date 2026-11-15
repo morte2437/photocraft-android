@@ -34,6 +34,7 @@ pub fn check(app: &mut PhotocraftApp, ctx: &egui::Context) {
         if fault.is_out_of_memory() && app.gpu_oom_retries < OOM_AUTO_RETRIES && can_retry_now(app) {
             app.gpu_oom_retries += 1;
             if retry_now(app) {
+                app.retry_compositor(ctx);
                 log::warn!("{fault}; rebuilt the GPU canvas (automatic retry {} of {OOM_AUTO_RETRIES})", app.gpu_oom_retries);
                 app.ui.gpu_fallback_notice = None;
             }
@@ -292,10 +293,12 @@ pub fn show_fallback(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 }
             });
         });
-    if let Some(retry) = choice
-        && let Err(error) = choose_recovery(app, retry)
-    {
-        crate::notices::error(app, error);
+    if let Some(retry) = choice {
+        match choose_recovery(app, retry) {
+            Ok(()) if retry => app.retry_compositor(ctx),
+            Ok(()) => (),
+            Err(error) => crate::notices::error(app, error),
+        }
     }
 }
 
@@ -305,6 +308,9 @@ mod tests {
 
     #[test]
     fn system_info_copy_and_api_stay_english_in_czech_ui() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.perf.gpu_info.adapter = "Test GPU".into();
         app.perf.gpu_info.preference = "auto".into();
@@ -326,6 +332,9 @@ mod tests {
 
     #[test]
     fn system_info_translates_empty_and_stored_auto_only_for_display() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         // Hardware names are opaque even when they happen to match a lookup key.
         app.perf.gpu_info.adapter = "auto".into();

@@ -79,7 +79,7 @@ fn psd_merged_image_matches_composite_and_drops_near_opaque_alpha() {
     // Alpha 0.999 rounds to 255: no alpha channel, so the merged image must not be matted.
     for alpha in [1.0, 0.999, 0.5] {
         let d = layered(400, 300, SampleType::U8, alpha);
-        let file = document_to_psd(&d);
+        let file = document_to_psd(&d).unwrap();
         assert_eq!(file.merged_has_alpha(), alpha < 0.99, "alpha {alpha}");
         let merged = merged_composite(&file).unwrap();
         let want = photocraft_compose::flatten(&d).into_px();

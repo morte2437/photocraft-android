@@ -152,6 +152,32 @@ fn write_stream_seeks_back_and_keeps_the_original_on_failure() {
     assert_eq!(std::fs::read(inside.join("notes.txt")).unwrap(), b"keep");
 }
 
+/// #14355: files PhotoCraft can read but never writes (notes, data, rich text, read-only image
+/// formats such as XPM or DICOM) are not "a kind PhotoCraft writes", by name or by their bytes (#9439).
+#[test]
+fn write_refuses_to_replace_files_photocraft_reads_but_does_not_write() {
+    let (inside, _, workspace) = roots("read-only-kinds");
+    let files: [(&str, &[u8]); 7] = [
+        ("notes.md", b"# keep"),
+        ("data.csv", b"a,b\n1,2\n"),
+        ("letter.rtf", b"{\\rtf1 keep}"),
+        ("README", b"{\\rtf1 keep}"),
+        ("icon.xpm", b"/* XPM */ keep"),
+        ("scan.dcm", b"keep"),
+        ("TODO", b"/* XPM */ keep"),
+    ];
+    let replaced: Vec<&str> = files
+        .into_iter()
+        .filter(|(name, bytes)| {
+            std::fs::write(inside.join(name), bytes).unwrap();
+            workspace.write(name, b"\x89PNG\r\n\x1a\n").is_ok() || std::fs::read(inside.join(name)).unwrap() != *bytes
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert!(replaced.is_empty(), "replaced: {replaced:?}");
+    assert!(temp_files(&inside).is_empty());
+}
+
 /// A writer that panics leaves the original and no temporary file behind.
 #[test]
 fn write_stream_cleans_up_after_a_panicking_writer() {
@@ -371,6 +397,275 @@ fn windows_junction_escape_is_rejected_when_supported() {
     let _ = std::fs::remove_dir(link);
 }
 
+/// #10317: below a UNC root (`\\wsl.localhost\...`, any share) `cap-std`'s Windows rename,
+/// remove and mkdir fail with `ERROR_PATH_NOT_FOUND`, so a save left only its `.pcsave.tmp`
+/// behind, an export into a new directory failed, and a cancelled export leaked its frames.
+/// There a save still goes through its temporary file and is renamed into place on the
+/// canonical root path below pinned directories, cleanup deletes through handles opened
+/// relative to the export directory, and directory creation goes through the root path the
+/// same pinned way. The administrative share of the temp directory's drive stands in for a
+/// network share; a runner without one has nothing to check here.
+#[cfg(windows)]
+#[test]
+fn windows_unc_root_writes_and_exports_when_supported() {
+    let (inside, outside, _) = roots("unc-root");
+    let Some(unc) = loopback_unc(&inside) else { return };
+    if std::fs::metadata(&unc).is_err() {
+        return;
+    }
+    let canonical = std::fs::canonicalize(&unc).unwrap();
+    assert!(matches!(canonical.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::VerbatimUNC(..))), "{}", canonical.display());
+    let workspace = AuthorizedWorkspace::new(Some(&unc), Some(&unc)).unwrap();
+
+    workspace.write("out.png", b"first").unwrap();
+    workspace.write("out.png", b"second").unwrap();
+    std::fs::create_dir(inside.join("sub")).unwrap();
+    workspace.write("sub/nested.png", b"nested").unwrap();
+    assert_eq!(std::fs::read(inside.join("out.png")).unwrap(), b"second");
+    assert_eq!(std::fs::read(inside.join("sub/nested.png")).unwrap(), b"nested");
+    assert!(temp_files(&inside).is_empty());
+    assert!(temp_files(&inside.join("sub")).is_empty());
+    // Still atomic: a writer that fails leaves the previous bytes and no temporary file.
+    let failed = workspace.write_stream("out.png", &mut |w| {
+        w.write_all(b"partial")?;
+        Err(std::io::Error::other("encoder gave up"))
+    });
+    assert!(failed.is_err());
+    assert_eq!(std::fs::read(inside.join("out.png")).unwrap(), b"second");
+    assert!(temp_files(&inside).is_empty());
+    // A large streamed save takes the same route as everywhere else.
+    workspace.write_stream("sub/streamed.png", &mut |w| w.write_all(&[7u8; 1 << 20])).unwrap();
+    assert_eq!(std::fs::metadata(inside.join("sub/streamed.png")).unwrap().len(), 1 << 20);
+    assert!(temp_files(&inside.join("sub")).is_empty());
+    // A missing parent is still an error, with nothing left behind, as on every other root.
+    assert!(workspace.write("missing/out.png", b"no parent").is_err());
+    assert!(!inside.join("missing").exists());
+
+    let mut export = workspace.export_sequence("frames/nested").unwrap();
+    export.write("clip_0000.png", b"frame").unwrap();
+    assert_eq!(std::fs::read(inside.join("frames/nested/clip_0000.png")).unwrap(), b"frame");
+    export.cleanup().unwrap();
+    assert!(!inside.join("frames/nested/clip_0000.png").exists());
+    let mut export = workspace.export_sequence("frames/nested").unwrap();
+    export.write("clip_0001.png", b"kept").unwrap();
+    export.commit();
+    drop(export);
+    assert_eq!(std::fs::read(inside.join("frames/nested/clip_0001.png")).unwrap(), b"kept");
+    // The share honours the held ancestors' share mode: no swap while the chain is open.
+    let root = workspace.write.as_ref().unwrap();
+    let chain = held_directory_chain(root, Path::new("frames/nested/deeper")).unwrap();
+    assert!(std::fs::rename(inside.join("frames"), inside.join("frames-moved")).is_err());
+    assert!(inside.join("frames/nested/deeper").is_dir());
+    drop(chain);
+
+    // Neither the rename into place nor directory creation follows a link out of the root.
+    let link = inside.join("junction");
+    if std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(&link).arg(&outside).status().is_ok_and(|status| status.success()) {
+        assert!(workspace.write("junction/escape.png", b"blocked").is_err());
+        assert!(workspace.export_sequence("junction/frames").is_err());
+        assert!(!outside.join("escape.png").exists());
+        assert!(!outside.join("frames").exists());
+        assert!(temp_files(&outside).is_empty());
+        let _ = std::fs::remove_dir(link);
+    }
+}
+
+/// The handle-relative helpers that stand in for `cap-std`'s path-concatenating Windows
+/// operations below a UNC root (#10317) behave like the operations they replace, on any root.
+#[cfg(windows)]
+#[test]
+fn windows_handle_relative_helpers_match_the_capability_operations() {
+    let (inside, _outside, workspace) = roots("unc-helpers");
+    let root = workspace.write.as_ref().unwrap();
+    assert!(!is_unc_root(root));
+
+    std::fs::write(inside.join("gone.png"), b"x").unwrap();
+    delete_on_close(&root.dir, Path::new("gone.png")).unwrap();
+    assert!(!inside.join("gone.png").exists());
+    std::fs::write(inside.join("gone.png"), b"x").unwrap();
+    remove_file_in(&root.dir, Path::new("gone.png")).unwrap();
+    assert!(!inside.join("gone.png").exists());
+    assert_eq!(delete_on_close(&root.dir, Path::new("missing.png")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(remove_file_in(&root.dir, Path::new("missing.png")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    std::fs::create_dir(inside.join("dir")).unwrap();
+    assert!(delete_on_close(&root.dir, Path::new("dir")).is_err());
+    assert!(inside.join("dir").is_dir());
+}
+
+/// The ambient rename that stands in for the capability's below a UNC root (#10317).
+#[cfg(windows)]
+#[test]
+fn windows_rename_unc_matches_the_capability_rename() {
+    let (inside, outside, workspace) = roots("unc-rename");
+    let root = workspace.write.as_ref().unwrap();
+    std::fs::create_dir(inside.join("dir")).unwrap();
+    // The ambient rename on the canonical root path behaves like the capability's: it creates,
+    // replaces a file, replaces a link instead of writing through it, and refuses a directory.
+    std::fs::write(inside.join("plain.tmp"), b"the longer first version").unwrap();
+    rename_unc(root, Path::new("plain.tmp"), Path::new("plain.png")).unwrap();
+    std::fs::write(inside.join("plain.tmp"), b"short").unwrap();
+    rename_unc(root, Path::new("plain.tmp"), Path::new("plain.png")).unwrap();
+    rename_in(root, Path::new("plain.png"), Path::new("plain.png")).unwrap();
+    assert_eq!(std::fs::read(inside.join("plain.png")).unwrap(), b"short");
+    assert!(!inside.join("plain.tmp").exists());
+    assert_eq!(rename_unc(root, Path::new("absent.tmp"), Path::new("plain.png")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(rename_unc(root, Path::new("plain.png"), Path::new("missing/plain.png")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert!(!inside.join("missing").exists());
+    std::fs::write(inside.join("plain.tmp"), b"x").unwrap();
+    assert!(rename_unc(root, Path::new("plain.tmp"), Path::new("dir")).is_err());
+    assert!(inside.join("dir").is_dir());
+    std::fs::write(outside.join("target.png"), b"outside").unwrap();
+    if std::os::windows::fs::symlink_file(outside.join("target.png"), inside.join("linked.png")).is_ok() {
+        rename_unc(root, Path::new("plain.tmp"), Path::new("linked.png")).unwrap();
+        assert_eq!(std::fs::read(inside.join("linked.png")).unwrap(), b"x");
+        assert_eq!(std::fs::read(outside.join("target.png")).unwrap(), b"outside");
+    }
+    let _ = std::fs::remove_file(inside.join("plain.tmp"));
+}
+
+/// The directory walk that stands in for the capability's `create_dir_all` below a UNC root
+/// (#10317) creates, refuses files on the way and never follows a junction outside.
+#[cfg(windows)]
+#[test]
+fn windows_create_dir_all_unc_matches_the_capability_operation() {
+    let (inside, outside, workspace) = roots("unc-dirs");
+    let root = workspace.write.as_ref().unwrap();
+    create_dir_all_unc(root, Path::new("a/b/c")).unwrap();
+    assert!(inside.join("a/b/c").is_dir());
+    create_dir_all_unc(root, Path::new("a/b/c")).unwrap();
+    assert_eq!(held_directory_chain(root, Path::new("a/b/c")).unwrap().len(), 3);
+    std::fs::write(inside.join("a/file"), b"x").unwrap();
+    assert_eq!(create_dir_all_unc(root, Path::new("a/file")).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(create_dir_all_unc(root, Path::new("a/file/below")).is_err());
+    assert!(inside.join("a/file").is_file());
+    assert!(ensure_export_dir(root, Path::new("a/b/d")).is_ok());
+    assert!(inside.join("a/b/d").is_dir());
+
+    let link = inside.join("junction");
+    if std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(&link).arg(&outside).status().is_ok_and(|status| status.success()) {
+        assert!(create_dir_all_unc(root, Path::new("junction")).is_err());
+        assert!(create_dir_all_unc(root, Path::new("junction/frames")).is_err());
+        assert!(!outside.join("frames").exists());
+        assert_eq!(pinned_directory_chain(root, Path::new("junction")).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        std::fs::write(inside.join("escape.tmp"), b"blocked").unwrap();
+        assert_eq!(rename_unc(root, Path::new("escape.tmp"), Path::new("junction/escape.png")).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(rename_unc(root, Path::new("junction/source.png"), Path::new("escape.png")).is_err());
+        assert!(!outside.join("escape.png").exists());
+        assert!(inside.join("escape.tmp").is_file());
+        let _ = std::fs::remove_dir(link);
+    }
+}
+
+/// The ancestor-swap race against [`create_dir_all_unc`]: between verifying an ancestor and the
+/// ambient `create_dir`, an attacker renames the ancestor away and puts a junction to the
+/// outside in its place. The walk holds a handle on every verified ancestor, opened by
+/// `cap-std` without `FILE_SHARE_DELETE`, so the rename (and a removal) fails with
+/// `ERROR_SHARING_VIOLATION` for as long as the chain is held, and the directory is created
+/// inside the root. A junction that is already in place is refused before anything is created.
+#[cfg(windows)]
+#[test]
+fn windows_held_ancestors_cannot_be_swapped_during_directory_creation() {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let (inside, outside, workspace) = roots("unc-held-chain");
+    let root = workspace.write.as_ref().unwrap();
+    std::fs::create_dir(inside.join("a")).unwrap();
+
+    let chain = held_directory_chain(root, Path::new("a/b")).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert!(inside.join("a/b").is_dir());
+    let swap = std::fs::rename(inside.join("a"), inside.join("a-moved"));
+    assert_eq!(swap.unwrap_err().raw_os_error(), Some(ERROR_SHARING_VIOLATION));
+    assert_eq!(std::fs::remove_dir(inside.join("a/b")).unwrap_err().raw_os_error(), Some(ERROR_SHARING_VIOLATION));
+    // With the ancestors pinned, the one ambient step lands inside the root.
+    let held_parent = &chain[1];
+    open_or_create_plain_dir(held_parent, Path::new("c"), Path::new("a/b/c"), &root.path.join("a/b/c")).unwrap();
+    assert!(inside.join("a/b/c").is_dir());
+    assert!(inside.join("a").is_dir());
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    drop(chain);
+    // The chain that guards the rename pins the same way, and creates nothing.
+    let pinned = pinned_directory_chain(root, Path::new("a/b/c")).unwrap();
+    assert_eq!(pinned.len(), 3);
+    assert_eq!(std::fs::rename(inside.join("a"), inside.join("a-moved")).unwrap_err().raw_os_error(), Some(ERROR_SHARING_VIOLATION));
+    assert_eq!(pinned_directory_chain(root, Path::new("a/b/c/d")).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert!(!inside.join("a/b/c/d").exists());
+    std::fs::write(inside.join("a/b/c/new.tmp"), b"renamed below pinned ancestors").unwrap();
+    rename_unc(root, Path::new("a/b/c/new.tmp"), Path::new("a/b/c/new.png")).unwrap();
+    assert_eq!(std::fs::read(inside.join("a/b/c/new.png")).unwrap(), b"renamed below pinned ancestors");
+    drop(pinned);
+    std::fs::rename(inside.join("a"), inside.join("a-moved")).unwrap();
+
+    // The swap already done: the junction is seen through the parent handle and refused.
+    let link = inside.join("a");
+    if std::process::Command::new("cmd.exe").args(["/D", "/C", "mklink", "/J"]).arg(&link).arg(&outside).status().is_ok_and(|status| status.success()) {
+        let refused = open_or_create_plain_dir(&root.dir, Path::new("a"), Path::new("a"), &root.path.join("a"));
+        assert_eq!(refused.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(held_directory_chain(root, Path::new("a/b/c")).is_err());
+        assert!(pinned_directory_chain(root, Path::new("a/b/c")).is_err());
+        assert!(ensure_export_dir(root, Path::new("a/b/c")).is_err());
+        assert!(workspace.export_sequence("a/b/c").is_err());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        let _ = std::fs::remove_dir(link);
+    }
+}
+
+/// The rules that do not depend on the root hold below a UNC root too (#10317): `..` is refused
+/// in a request and climbs no further than the root in the configured spelling, a directory at
+/// the target is refused before it is opened and survives, and a path past `MAX_PATH` works,
+/// since the canonical root is verbatim (`\\?\UNC\...`) and every step below it goes through a
+/// handle or that verbatim root path.
+#[cfg(windows)]
+#[test]
+fn windows_unc_root_refuses_traversal_and_accepts_long_paths_when_supported() {
+    let (inside, outside, _) = roots("unc-rules");
+    let Some(unc) = loopback_unc(&inside) else { return };
+    if std::fs::metadata(&unc).is_err() {
+        return;
+    }
+    let workspace = AuthorizedWorkspace::new(Some(&unc), Some(&unc)).unwrap();
+
+    for path in ["../escape.png", "sub/../../escape.png", r"sub\..\..\escape.png", r"..\frames"] {
+        assert!(workspace.write(path, b"no").is_err(), "write accepted {path:?}");
+        assert!(workspace.export_sequence(path).is_err(), "export accepted {path:?}");
+    }
+    let spelled = unc.join("..").join("inside");
+    let aliased = AuthorizedWorkspace::new(Some(&spelled), Some(&spelled)).unwrap();
+    aliased.write("spelled.png", b"same grant").unwrap();
+    assert_eq!(std::fs::read(inside.join("spelled.png")).unwrap(), b"same grant");
+    assert!(aliased.write(&spelled.join("..").join("outside").join("climb.png").to_string_lossy(), b"no").is_err());
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+
+    std::fs::create_dir(inside.join("adir")).unwrap();
+    assert!(workspace.write("adir", b"x").is_err());
+    assert!(inside.join("adir").is_dir());
+    assert!(temp_files(&inside).is_empty());
+
+    let long = format!("frames/{}/{}", "x".repeat(120), "y".repeat(120));
+    assert!(unc.join(&long).as_os_str().len() > 260);
+    let mut export = workspace.export_sequence(&long).unwrap();
+    export.write("clip_0000.png", b"deep").unwrap();
+    export.commit();
+    drop(export);
+    assert_eq!(std::fs::read(inside.join(&long).join("clip_0000.png")).unwrap(), b"deep");
+    workspace.write(&format!("{long}/saved.png"), b"long save").unwrap();
+    assert_eq!(std::fs::read(inside.join(&long).join("saved.png")).unwrap(), b"long save");
+    assert!(temp_files(&inside.join(&long)).is_empty());
+}
+
+/// `\\localhost\C$\...` for a path on drive `C:`; `None` for a path without a drive letter.
+#[cfg(windows)]
+fn loopback_unc(path: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else { return None };
+    let drive = match prefix.kind() {
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => char::from(drive),
+        _ => return None,
+    };
+    let mut unc = PathBuf::from(format!(r"\\localhost\{drive}$"));
+    unc.extend(components.filter(|component| matches!(component, Component::Normal(_))));
+    Some(unc)
+}
+
 #[test]
 fn filesystem_commands_fail_closed() {
     for id in [
@@ -533,6 +828,10 @@ fn automation_rejects_ambient_path_commands_and_preferences() {
         "fileHandling.lutFolder",
         "fileHandling",
         "scratchDisks.disks",
+        "integrations",
+        "integrations.readRoot",
+        "integrations.writeRoot",
+        ".integrations.writeRoot",
         ".",
         "..historyLog.filePath",
     ] {
@@ -543,6 +842,12 @@ fn automation_rejects_ambient_path_commands_and_preferences() {
     );
     assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "interface.language", "value": "fr"})).is_ok());
     assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "fileHandling.autosave", "value": false})).is_ok());
+    assert!(
+        authorize_engine_command("prefs.set", &serde_json::json!({"values": {"integrations.controlPort": 7878, "integrations.writeRoot": "/outside"}}))
+            .is_err(),
+        "a batch may not grant automation roots either"
+    );
+    assert!(authorize_engine_command("prefs.set", &serde_json::json!({"path": "integrations.controlPort", "value": 7878})).is_ok());
 }
 
 #[test]
@@ -732,7 +1037,9 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "path.info"
             | "path.addToSelection"
             | "path.subtractFromSelection"
+            | "path.intersectWithSelection"
             | "path.set"
+            | "actions.insertPath"
             | "path.transform"
             | "path.moveAnchors"
             | "path.moveHandle"
@@ -740,12 +1047,15 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "path.convertPoint"
             | "path.addAnchor"
             | "path.deleteAnchor"
+            | "path.deleteSegment"
             | "path.mergeShapeComponents"
             | "path.setOperation"
             | "path.clippingPath.set"
             | "path.rename"
             | "path.stroke"
+            | "path.toShape"
             | "type.attachToPath"
+            | "type.setPathPlacement"
             | "type.fillPath"
             | "type.detachFromPath"
             | "select.toWorkPath"
@@ -762,6 +1072,8 @@ fn documents_filesystem_path_params(id: &str, params: &str) -> bool {
             | "layer.combineShapes.excludeOverlappingShapes"
             | "layer.combineShapes.mergeShapeComponents"
             | "layer.new.frame"
+            // `"stepName":"Transform Path"` names the History step, not a host file.
+            | "edit.transform"
     ) || id.starts_with("layer.newFillLayer.")
         || id.starts_with("layer.newAdjustmentLayer.")
     {
@@ -1071,6 +1383,165 @@ fn absolute_paths_are_checked_against_the_authority_s_own_root() {
 }
 
 #[test]
+fn ordered_read_roots_keep_write_authority_and_save_provenance_separate() {
+    let (library, work, _) = roots("multiple-roots");
+    std::fs::write(library.join("photo.txt"), b"library").unwrap();
+    std::fs::write(work.join("draft.txt"), b"draft").unwrap();
+    std::fs::write(library.join("same.txt"), b"first").unwrap();
+    std::fs::write(work.join("same.txt"), b"second").unwrap();
+    let workspace = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path(), library.as_path()], Some(&work)).unwrap();
+    assert_eq!(workspace.read_with_save_path("photo.txt").unwrap(), (b"library".to_vec(), None));
+    assert_eq!(workspace.read_with_save_path("draft.txt").unwrap(), (b"draft".to_vec(), Some("draft.txt".into())));
+    assert_eq!(workspace.read("same.txt").unwrap(), b"first");
+    let absolute = work.join("same.txt").to_string_lossy().into_owned();
+    assert_eq!(workspace.read_with_save_path(&absolute).unwrap(), (b"second".to_vec(), Some(absolute)));
+    let reverse = AuthorizedWorkspace::with_read_roots([work.as_path(), library.as_path()], Some(&work)).unwrap();
+    assert_eq!(reverse.read("same.txt").unwrap(), b"second");
+    // Identical configured spellings share the held handle, including the write grant.
+    assert!(Arc::ptr_eq(&workspace.read[0].dir, &workspace.read[2].dir));
+    assert!(Arc::ptr_eq(&workspace.read[1].dir, &workspace.write.as_ref().unwrap().dir));
+    workspace.write("result.txt", b"output").unwrap();
+    assert_eq!(std::fs::read(work.join("result.txt")).unwrap(), b"output");
+    assert!(!library.join("result.txt").exists());
+    assert!(workspace.write(&library.join("photo.txt").to_string_lossy(), b"blocked").is_err());
+    assert_eq!(std::fs::read(library.join("photo.txt")).unwrap(), b"library");
+    let error = workspace.read("missing.txt").unwrap_err().to_string();
+    assert!(error.contains("NotFound"), "{error}");
+}
+
+#[test]
+fn streamed_save_follows_read_provenance_across_ordered_roots() {
+    let (library, work, _) = roots("stream-provenance");
+    std::fs::write(library.join("same.png"), b"library").unwrap();
+    std::fs::write(work.join("same.png"), b"work").unwrap();
+    std::fs::write(work.join("draft.png"), b"draft").unwrap();
+    let workspace = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path()], Some(&work)).unwrap();
+    // Read from the library root: no implicit save, so a streamed save needs an explicit target.
+    assert_eq!(workspace.read_with_save_path("same.png").unwrap(), (b"library".to_vec(), None));
+    // Read from the root that shares the write handle: the streamed save replaces that file only.
+    let (_, save_path) = workspace.read_with_save_path("draft.png").unwrap();
+    let save_path = save_path.unwrap();
+    workspace.write_stream(&save_path, &mut |w| w.write_all(b"streamed")).unwrap();
+    assert_eq!(std::fs::read(work.join("draft.png")).unwrap(), b"streamed");
+    assert!(!library.join("draft.png").exists());
+    // An absolute library path never reaches the write root, streamed or not.
+    assert!(workspace.write_stream(&library.join("same.png").to_string_lossy(), &mut |w| w.write_all(b"blocked")).is_err());
+    assert_eq!(std::fs::read(library.join("same.png")).unwrap(), b"library");
+    assert_eq!(std::fs::read(work.join("same.png")).unwrap(), b"work");
+}
+
+#[test]
+fn every_read_root_is_validated_and_write_roots_never_imply_reads() {
+    let (library, work, _) = roots("root-validation");
+    std::fs::write(work.join("file.txt"), b"work").unwrap();
+    for invalid in [library.join("missing"), work.join("file.txt"), PathBuf::new()] {
+        assert!(AuthorizedWorkspace::with_read_roots([library.as_path(), invalid.as_path(), work.as_path()], Some(&work)).is_err());
+    }
+    let write_only = AuthorizedWorkspace::with_read_roots(std::iter::empty(), Some(&work)).unwrap();
+    assert!(write_only.read("file.txt").is_err());
+    assert!(write_only.read(&work.join("file.txt").to_string_lossy()).is_err());
+    let read_only = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path()], None).unwrap();
+    assert_eq!(read_only.read_with_save_path("file.txt").unwrap(), (b"work".to_vec(), None));
+    assert!(read_only.write("file.txt", b"blocked").is_err());
+}
+
+#[test]
+fn an_earlier_directory_or_invalid_path_never_falls_back_to_a_later_file() {
+    let (library, work, _) = roots("root-errors");
+    std::fs::create_dir(library.join("same.txt")).unwrap();
+    std::fs::write(work.join("same.txt"), b"later").unwrap();
+    let workspace = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path()], Some(&work)).unwrap();
+    assert!(workspace.read("same.txt").is_err());
+    for invalid in ["", "../same.txt", "a/../same.txt", "a\\same.txt", "a//same.txt", "NUL", "same.txt:stream"] {
+        assert!(workspace.read(invalid).is_err(), "accepted {invalid:?}");
+        assert!(workspace.write(invalid, b"blocked").is_err(), "wrote {invalid:?}");
+    }
+    let traversal = library.join("../outside/same.txt");
+    assert!(workspace.read(&traversal.to_string_lossy()).is_err());
+    assert_eq!(std::fs::read(work.join("same.txt")).unwrap(), b"later");
+}
+
+#[cfg(unix)]
+#[test]
+fn multiple_roots_do_not_allow_link_escapes_or_alias_save_back() {
+    use std::os::unix::fs::symlink;
+    let (library, work, _) = roots("multi-root-links");
+    std::fs::write(work.join("photo.txt"), b"work").unwrap();
+    symlink(&work, library.join("escape")).unwrap();
+    std::fs::create_dir(work.join("escape")).unwrap();
+    std::fs::write(work.join("escape/photo.txt"), b"later").unwrap();
+    let workspace = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path()], Some(&work)).unwrap();
+    // Being separately granted does not allow following a link out of the selected root.
+    assert!(workspace.read("escape/photo.txt").is_err());
+    assert_eq!(workspace.read("photo.txt").unwrap(), b"work");
+    let alias = library.join("alias");
+    symlink(&work, &alias).unwrap();
+    let aliased = AuthorizedWorkspace::new(Some(&alias), Some(&work)).unwrap();
+    assert_eq!(aliased.read_with_save_path("photo.txt").unwrap(), (b"work".to_vec(), None));
+    let nested = AuthorizedWorkspace::new(Some(&work.join("escape")), Some(&work)).unwrap();
+    assert_eq!(nested.read_with_save_path("photo.txt").unwrap(), (b"later".to_vec(), None));
+    symlink(&library, work.join("escape-write")).unwrap();
+    assert!(workspace.write("escape-write/output.txt", b"blocked").is_err());
+    assert!(!library.join("output.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn same_root_leaf_link_save_replaces_the_link_without_writing_its_target() {
+    let (inside, _, workspace) = roots("leaf-link");
+    std::fs::write(inside.join("target.txt"), b"target").unwrap();
+    std::os::unix::fs::symlink("target.txt", inside.join("link.png")).unwrap();
+    let (bytes, save_path) = workspace.read_with_save_path("link.png").unwrap();
+    assert_eq!(bytes, b"target");
+    workspace.write(&save_path.unwrap(), b"replacement").unwrap();
+    assert_eq!(std::fs::read(inside.join("target.txt")).unwrap(), b"target");
+    assert_eq!(std::fs::read(inside.join("link.png")).unwrap(), b"replacement");
+    assert!(!std::fs::symlink_metadata(inside.join("link.png")).unwrap().file_type().is_symlink());
+}
+
+/// A hardlink inside a root names the outside inode, so it reads that content. Writing over it is
+/// an atomic replace of the directory entry: the other name and its inode keep their bytes.
+#[cfg(unix)]
+#[test]
+fn hardlink_inside_a_root_reads_the_target_but_write_over_replaces_the_link() {
+    let (inside, outside, workspace) = roots("hardlink");
+    let target = outside.join("target.png");
+    std::fs::write(&target, b"outside").unwrap();
+    std::fs::hard_link(&target, inside.join("linked.png")).unwrap();
+
+    assert_eq!(workspace.read("linked.png").unwrap(), b"outside");
+    workspace.write("linked.png", b"replacement").unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"outside", "the outside inode is not modified");
+    assert_eq!(std::fs::read(inside.join("linked.png")).unwrap(), b"replacement");
+}
+
+#[test]
+fn directory_pcraft_uses_ordered_roots_without_falling_back_after_selection() {
+    let (library, work, _) = roots("pcraft-ordered");
+    let save = |root: &Path, name: &str| {
+        let doc = photocraft_doc::Document::new(name, photocraft_doc::Size::new(4, 4), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
+        photocraft_format::PcraftWriter::new().save_dir(&doc, &root.join("native.pcraft"), &photocraft_format::SaveOptions::default()).unwrap();
+    };
+    save(&work, "Later");
+    let workspace = AuthorizedWorkspace::with_read_roots([library.as_path(), work.as_path()], Some(&work)).unwrap();
+    assert_eq!(workspace.open_pcraft("native.pcraft").unwrap().unwrap().name, "Later");
+    save(&library, "First");
+    assert_eq!(workspace.open_pcraft("native.pcraft").unwrap().unwrap().name, "First");
+    assert_eq!(workspace.open_pcraft(&work.join("native.pcraft").to_string_lossy()).unwrap().unwrap().name, "Later");
+    std::fs::remove_dir_all(library.join("native.pcraft")).unwrap();
+    std::fs::write(library.join("native.pcraft"), b"zip placeholder").unwrap();
+    assert!(workspace.open_pcraft("native.pcraft").unwrap().is_none());
+    std::fs::remove_file(library.join("native.pcraft")).unwrap();
+    std::fs::create_dir(library.join("native.pcraft")).unwrap();
+    assert!(workspace.open_pcraft("native.pcraft").is_err());
+    for invalid in ["../native.pcraft", "a//native.pcraft", "a\\native.pcraft"] {
+        assert!(workspace.open_pcraft(invalid).is_err());
+    }
+    let write_only = AuthorizedWorkspace::with_read_roots(std::iter::empty(), Some(&work)).unwrap();
+    assert!(write_only.open_pcraft("native.pcraft").is_err());
+}
+
+#[test]
 fn csh_import_requires_inline_data_in_automation() {
     let id = "shape.presets.importCsh";
     for path in ["/outside/set.csh", "set.csh", "../set.csh", ""] {
@@ -1090,7 +1561,7 @@ fn csh_import_requires_inline_data_in_automation() {
 
 /// A one-shape CSH set (version 2) named `name`, with a single open one-knot subpath.
 fn one_shape_csh(name: &str) -> Vec<u8> {
-    use photocraft_psd::path::{PathData, PsdKnot, PsdSubpath};
+    use craft_psd::path::{PathData, PsdKnot, PsdSubpath};
     let mut bytes = b"cush".to_vec();
     bytes.extend_from_slice(&2u32.to_be_bytes());
     bytes.extend_from_slice(&1u32.to_be_bytes());

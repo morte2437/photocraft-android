@@ -7,7 +7,7 @@
 //! - `style.presets.exportAsl` writes styles (all, one group or named ones) as an `.asl`, with the
 //!   patterns their effects use.
 //!
-//! The container lives in `photocraft-psd` (`asl`), the mapping onto effects in `photocraft-io`
+//! The container lives in `craft-psd` (`asl`), the mapping onto effects in `photocraft-io`
 //! (`asl_map`).
 
 use serde_json::{Value, json};

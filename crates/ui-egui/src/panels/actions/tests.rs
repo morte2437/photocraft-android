@@ -2,9 +2,9 @@ use super::*;
 
 /// A small valid Photoshop set, generated without external action files.
 fn action_set_bytes(set: &str, action: &str) -> Vec<u8> {
-    use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
-    use photocraft_psd::descriptor::UnicodeString;
-    photocraft_psd::atn::write(&AtnFile {
+    use craft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
+    use craft_psd::descriptor::UnicodeString;
+    craft_psd::atn::write(&AtnFile {
         name: UnicodeString::new_nul(set),
         actions: vec![AtnAction {
             name: UnicodeString::new_nul(action),
@@ -247,9 +247,9 @@ fn bulk_load_keeps_selection_order_and_earlier_warnings_and_errors() {
     let first = dir.path().join("z-first.atn");
     let broken = dir.path().join("broken.atn");
     let last = dir.path().join("a-last.atn");
-    let mut unsupported = photocraft_psd::atn::parse(&action_set_bytes("Same set", "Old")).unwrap();
-    unsupported.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
-    std::fs::write(&first, photocraft_psd::atn::write(&unsupported).unwrap()).unwrap();
+    let mut unsupported = craft_psd::atn::parse(&action_set_bytes("Same set", "Old")).unwrap();
+    unsupported.actions[0].items[0].event = craft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    std::fs::write(&first, craft_psd::atn::write(&unsupported).unwrap()).unwrap();
     std::fs::write(&broken, b"not an action file").unwrap();
     std::fs::write(&last, action_set_bytes("Same set", "Replacement")).unwrap();
     let paths = [first, broken, last].map(|p| p.to_string_lossy().into_owned()).to_vec();
@@ -282,9 +282,9 @@ fn bulk_load_status(app: &mut PhotocraftApp, files: Vec<(String, Vec<u8>)>) -> S
 /// what the panel holds afterwards and says which set was replaced.
 fn bulk_load_summary_counts_a_replaced_set_once() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set 1", "A")).unwrap();
-    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
-    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
+    let mut a = craft_psd::atn::parse(&action_set_bytes("Set 1", "A")).unwrap();
+    a.actions[0].items[0].event = craft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), craft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
     let status = bulk_load_status(&mut app, files);
     assert_eq!(app.session.actions.list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["B"]);
     assert!(!app.ui.status_error, "{status}");
@@ -307,6 +307,9 @@ fn bulk_load_summary_counts_distinct_sets_and_pluralises_files() {
 #[test]
 /// The multi-file summary is translated like the rest of the Actions panel.
 fn bulk_load_summary_is_translated() {
+    if !crate::i18n::needs_catalogs() {
+        return;
+    }
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     let files = vec![("a.atn".into(), action_set_bytes("Set 1", "A")), ("b.atn".into(), action_set_bytes("Set 1", "B"))];
     let status = crate::i18n::with_language(crate::i18n::Lang::from_code("de").unwrap(), || bulk_load_status(&mut app, files));
@@ -931,8 +934,8 @@ fn recorded_save_never_flattens_layers_over_a_flat_file() {
 /// Photoshop's "save in directory", `out` itself) and plays it on each PSD in `sources`.
 /// Returns the played results, whether any PSD changed on disk and the files in `out`.
 fn play_imported_save_as(dest: &str, in_folder: bool, sources: &[&str]) -> (Vec<Value>, bool, Vec<String>) {
-    use photocraft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
-    use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
+    use craft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
+    use craft_psd::descriptor::{Descriptor, UnicodeString, Value as D};
     let dir = std::env::temp_dir().join(format!("photocraft-atn-save-as-{dest}-{in_folder}-{}", std::process::id()));
     let out = dir.join("out");
     std::fs::create_dir_all(&out).unwrap();
@@ -974,7 +977,7 @@ fn play_imported_save_as(dest: &str, in_folder: bool, sources: &[&str]) -> (Vec<
         app.save_as(Some(src.clone())).unwrap();
         before.push(std::fs::read(src).unwrap());
     }
-    app.run("actions.load", json!({"data": photocraft_engine::paint::tile::b64_encode(&photocraft_psd::atn::write(&set).unwrap())})).unwrap();
+    app.run("actions.load", json!({"data": photocraft_engine::paint::tile::b64_encode(&craft_psd::atn::write(&set).unwrap())})).unwrap();
     let mut played = Vec::new();
     for src in &sources {
         app.open_path(src).unwrap();
@@ -2036,6 +2039,37 @@ fn a_dialog_toggled_step_pauses_playback_and_resumes_on_ok() {
     assert!(v.get("paused").is_none());
 }
 
+#[test]
+fn equalize_step_with_a_selection_opens_its_choices() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+    app.run("layer.new.layer", json!({})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 16, "height": 8})).unwrap();
+    app.run("edit.fill", json!({"color": [0.4, 0.4, 0.4]})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 8, "width": 16, "height": 8})).unwrap();
+    app.run("edit.fill", json!({"color": [0.5, 0.5, 0.5]})).unwrap();
+    app.run("select.rect", json!({"x": 0, "y": 0, "width": 8, "height": 16})).unwrap();
+    let mut action = Action::new("Equalize", vec![(crate::equalize_ui::COMMAND.into(), json!({}))]);
+    action.dialogs.insert(0);
+    app.session.actions.list.push(action);
+    let gray = |app: &PhotocraftApp, x: i32, y: i32| {
+        let st = app.session.active().unwrap();
+        st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().pixel(x, y)[0]
+    };
+
+    let result = play(&mut app, &json!({"action": "Equalize"})).unwrap();
+    let id = result["paused"]["dialog"].as_u64().unwrap();
+    let fields = &app.ui.dialog_mut(id).unwrap().fields;
+    assert!(crate::equalize_ui::owns(fields));
+    assert_eq!(fields["selectedAreaOnly"], true);
+    assert!((gray(&app, 12, 1) - 0.4).abs() < 0.01, "nothing changes before OK");
+
+    // OK with the entire image chosen maps the pixels outside the selection too.
+    app.ui.dialog_mut(id).unwrap().fields.insert("selectedAreaOnly".into(), json!(false));
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert!(gray(&app, 12, 1) < 0.05 && gray(&app, 12, 12) > 0.95, "outside the selection too");
+}
+
 /// An 8×6 document, a Child action whose first step (a blur) shows its dialog and whose
 /// second step adds a "Suffix" layer, and recording into Owner started.
 fn recording_with_dialog_child() -> PhotocraftApp {
@@ -2273,18 +2307,33 @@ fn a_displace_step_resumes_and_records_its_call_once_after_choosing_a_map() {
     assert_displace_call_finished(&mut app, 1);
 }
 
+/// Recorded dialogs use sanitized public parameters and retain server-owned command and playback context.
 #[test]
 fn a_step_dialog_takes_only_the_steps_values() {
-    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
-    let mut a = Action::new("Blur", vec![("filter.blur.gaussianBlur".into(), json!({"radius": 2, "__command": "select.all", "__label": "Other"}))]);
-    a.dialogs.insert(0);
-    app.session.actions.list.push(a);
-    let v = play(&mut app, &json!({"action": "Blur"})).unwrap();
-    let d = app.ui.dialog_mut(v["paused"]["dialog"].as_u64().unwrap()).unwrap();
-    assert_eq!(d.fields["radius"], 2);
-    assert_eq!(d.fields["__command"], "filter.blur.gaussianBlur");
-    assert_ne!(d.fields["__label"], "Other");
+    for (command, key, value) in
+        [("filter.blur.gaussianBlur", "radius", 2), ("image.adjustments.curves", "smooth", 2), ("image.adjustments.levels", "gamma", 2)]
+    {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let mut params = json!({"__command": "select.all", "__label": "Other", "__adjust": "invert", "__resumeAction": 999999, "__insertStop": true, "__smartFilter": {"layer": 1}});
+        params[key] = json!(value);
+        let mut a = Action::new("Step", vec![(command.into(), params)]);
+        a.dialogs.insert(0);
+        app.session.actions.list.push(a);
+        let v = play(&mut app, &json!({"action": "Step"})).unwrap();
+        let id = v["paused"]["dialog"].as_u64().unwrap();
+        let d = app.ui.dialog_mut(id).unwrap();
+        assert_eq!(d.fields[key], value);
+        assert_eq!(d.fields["__command"], command);
+        assert_ne!(d.fields["__label"], "Other");
+        assert_eq!(d.fields.get("__adjust").and_then(Value::as_str), command.strip_prefix("image.adjustments."));
+        assert!(!d.fields.contains_key("__insertStop"));
+        assert!(!d.fields.contains_key("__smartFilter"));
+        assert_ne!(d.fields[RESUME], 999999);
+        crate::dialogs::confirm(&mut app, id).unwrap();
+        assert!(app.ui.dialogs.is_empty());
+        assert!(app.paused_playbacks.paused.is_empty());
+    }
 }
 
 fn deny_blur(id: &str, _: &Value) -> photocraft_engine::Result<()> {
@@ -2790,6 +2839,87 @@ fn a_paused_playback_keeps_its_automation_gate_when_the_dialog_is_confirmed() {
     assert!(app.ui.status.contains("select.all denied"), "{}", app.ui.status);
 }
 
+/// An action automation wrote, bound to a key, plays under the desktop's automation policy
+/// when the user presses the key: its file step is refused, not run with the user's access.
+#[test]
+fn a_users_key_plays_an_action_automation_wrote_under_its_gate() {
+    /// The automation policy this test stands in for: every `file.` command is refused.
+    fn deny_file(id: &str, _: &Value) -> photocraft_engine::Result<()> {
+        if id.starts_with("file.") { Err(photocraft_engine::EngineError::Other(format!("automation command `{id}` is disabled"))) } else { Ok(()) }
+    }
+    let services = crate::Services { automation_authorize: Some(deny_file), ..Default::default() };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    let mut planted = Action::new("Backup", vec![("file.openAs".into(), json!({"path": "/outside/secret.png"}))]);
+    planted.automation = true;
+    app.session.actions.list.push(planted);
+    assign_shortcut(&mut app, "Backup", "F9").unwrap();
+    crate::shortcut_dispatch::dispatch(&mut app, &egui::Context::default(), &shortcut_id("Backup"));
+    assert!(app.session.documents().is_empty());
+    assert!(app.ui.status.contains("disabled"), "the refusal is reported: {}", app.ui.status);
+    assert!(app.session.authorize.is_none(), "the kept gate is removed after playback");
+}
+
+/// CodeRabbit on #9783: the kept gate of an action automation wrote stays with that action. A set
+/// the user plays pauses at the marked action's step dialog; after OK the marked action's tail
+/// still plays under the gate (its refused step is refused), and once that tail passes, the
+/// user's own action after it in the set keeps the user's access.
+#[test]
+fn a_kept_gate_does_not_carry_into_the_rest_of_a_set_after_a_pause() {
+    use egui_kittest::kittest::Queryable;
+    /// The automation policy this test stands in for: it refuses only layers named `a2` and `b`.
+    fn deny_a2_and_b(id: &str, p: &Value) -> photocraft_engine::Result<()> {
+        match p.get("name").and_then(Value::as_str) {
+            Some(name @ ("a2" | "b")) if id == "layer.new.layer" => Err(photocraft_engine::EngineError::Other(format!("layer {name} denied"))),
+            _ => Ok(()),
+        }
+    }
+    let services = crate::Services { automation_authorize: Some(deny_a2_and_b), ..Default::default() };
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+    app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+    let mut a = Action::new(
+        "A",
+        vec![
+            ("layer.new.layer".into(), json!({"name": "a"})),
+            ("filter.blur.gaussianBlur".into(), json!({"radius": 1})),
+            ("layer.new.layer".into(), json!({"name": "a2"})),
+        ],
+    );
+    a.set = Some("S".into());
+    a.dialogs.insert(1);
+    a.automation = true;
+    let mut b = Action::new("B", vec![("layer.new.layer".into(), json!({"name": "b"}))]);
+    b.set = Some("S".into());
+    app.session.actions.list.extend([a, b]);
+    let mut h = egui_kittest::Harness::builder().with_size(vec2(360.0, 400.0)).build_ui_state(|ui, app| panel(app, ui), app);
+    h.run_steps(2);
+    h.get_by_label("S").click();
+    h.run_steps(2);
+
+    // The marked action's tail after OK: its `a2` step meets the kept gate, and the set stops.
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["a"]);
+    let dialog = h.state().ui.dialogs.last().map(|d| d.id).expect("the blur's dialog");
+    let _confirmed = crate::dialogs::confirm(h.state_mut(), dialog);
+    h.run_steps(2);
+    assert_eq!(layer_names(h.state()), ["a"], "a2 was refused after OK: {}", h.state().ui.status);
+    assert!(h.state().ui.status.contains("a2 denied"), "the refusal is reported: {}", h.state().ui.status);
+    assert!(h.state().session.authorize.is_none(), "no gate is left installed");
+
+    // With that step off, the tail passes, and the user's own action after it plays with the
+    // user's access.
+    h.state_mut().session.actions.list[0].disabled.insert(2);
+    h.get_by_label("Play selection").click();
+    h.run_steps(2);
+    let dialog = h.state().ui.dialogs.last().map(|d| d.id).expect("the blur's dialog");
+    crate::dialogs::confirm(h.state_mut(), dialog).unwrap();
+    h.run_steps(2);
+    let names = layer_names(h.state());
+    assert!(names.iter().any(|n| n == "b"), "B played with the user's access: {names:?} {}", h.state().ui.status);
+    assert!(!names.iter().any(|n| n == "a2"), "{names:?}");
+    assert!(h.state().session.authorize.is_none(), "no gate is left installed");
+}
+
 /// The dialog names only its pause: changing its fields can't resume another action.
 #[test]
 fn a_step_dialog_resumes_only_the_playback_that_paused_it() {
@@ -2835,8 +2965,8 @@ fn button_mode_plays_the_clicked_action_and_hides_its_steps() {
 /// document (#7367).
 #[test]
 fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
-    use photocraft_psd::atn::{self, AtnEvent, AtnItem};
-    use photocraft_psd::descriptor::{Descriptor, Id, Value as D};
+    use craft_psd::atn::{self, AtnEvent, AtnItem};
+    use craft_psd::descriptor::{Descriptor, Id, Value as D};
     use std::{cell::RefCell, rc::Rc};
     // A one-step .atn: Close (`Cls `) with Save: Yes.
     let seed = Action::new("Seed", vec![("layer.new.layer".into(), json!({}))]);
@@ -2903,9 +3033,9 @@ fn save_hook_closing_the_target_stops_an_imported_close_with_save() {
 /// one in a set a later file replaced (CodeRabbit on #10776).
 fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-    let mut a = photocraft_psd::atn::parse(&action_set_bytes("Set A", "A")).unwrap();
-    a.actions[0].items[0].event = photocraft_psd::atn::AtnEvent::Code(*b"Xxxx");
-    let files = vec![("a.atn".into(), photocraft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set B", "B"))];
+    let mut a = craft_psd::atn::parse(&action_set_bytes("Set A", "A")).unwrap();
+    a.actions[0].items[0].event = craft_psd::atn::AtnEvent::Code(*b"Xxxx");
+    let files = vec![("a.atn".into(), craft_psd::atn::write(&a).unwrap()), ("b.atn".into(), action_set_bytes("Set B", "B"))];
     let status = bulk_load_status(&mut app, files);
     assert!(status.contains("1 step has no PhotoCraft equivalent yet"), "{status}");
     assert!(!app.ui.status_error, "{status}");

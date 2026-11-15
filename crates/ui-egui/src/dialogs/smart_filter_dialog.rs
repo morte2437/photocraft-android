@@ -134,7 +134,12 @@ pub(crate) fn edit_command(app: &PhotocraftApp, fields: &Map<String, Value>) -> 
         }
         Ok((COMMAND.into(), params))
     } else {
-        Ok(("layer.smartFilter.setParams".into(), json!({"layer": layer.0, "index": index, "params": crate::filter_dialog::params_of(fields)})))
+        // An adjustment's dialog opens on all the recorded settings and may remove keys, so OK
+        // replaces them: merged, a removed one stays stored and can override the edit (a stale
+        // Channel Mixer `gray` is read over `red`, a stale Color Lookup `data` over `lut`).
+        let replace = fields.get("__command").and_then(Value::as_str).is_some_and(|c| c.starts_with("image.adjustments."));
+        let params = crate::adjust_dialog::smart_filter_params(app, fields)?;
+        Ok(("layer.smartFilter.setParams".into(), json!({"layer": layer.0, "index": index, "params": params, "replace": replace})))
     }
 }
 

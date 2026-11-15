@@ -153,7 +153,8 @@ fn type_controls_fill_the_panel_at_every_width_and_scale() {
                 .map(|n| n.rect())
                 .find(|r| r.top() >= header.bottom() && r.left() >= header.left() - 1.0)
                 .expect("editable family field");
-            let mut family = name.expand2(egui::vec2(6.0, 2.0));
+            // The editor covers the field's box but the popup arrow's space (#12302).
+            let mut family = name;
             family.max.x += crate::widgets::POPUP_ARROW_W;
             assert!((family.left() - header.left()).abs() <= 2.0 && (family.right() - header.right()).abs() <= 2.0, "{what}: {family:?} vs {header:?}");
             let combos: Vec<Rect> = h
@@ -361,4 +362,96 @@ fn background_in_a_multiple_selection_keeps_align_and_distribute() {
     let b = st.doc.layer(LayerId(block)).unwrap().surface().unwrap().content_bounds();
     assert_eq!((b.x0 + b.x1) / 2, 150, "centred on the Background, which spans the canvas: {b:?}");
     assert_eq!(b.y0, 30, "only horizontally");
+}
+
+/// Shape layers use the registered vector icon; raster and text mappings stay unchanged.
+#[test]
+fn shape_properties_uses_vector_shape_icon() {
+    let (session, layers) = kinds();
+    let app = PhotocraftApp::new(session, crate::Services::default());
+
+    assert!(crate::icons::exists("vector-shape"));
+
+    for (kind, id) in layers {
+        let layer = layer_of(&app, id);
+        let icon = kind_icon(&layer.content);
+
+        let expected_icon = match kind {
+            "pixel" => "image",
+            "shape" => "vector-shape",
+            "type" => "type",
+            _ => panic!("Unexpected layer kind: {kind}"),
+        };
+
+        assert_eq!(icon, expected_icon, "{kind}: Properties icon");
+    }
+}
+
+/// Headers paint the expected 15 px icons, and the shape glyph has four hollow anchors.
+#[test]
+fn shape_header_paints_correct_icon() {
+    let (session, layers) = kinds();
+    let app = PhotocraftApp::new(session, crate::Services::default());
+
+    for (kind, id) in layers {
+        let layer = layer_of(&app, id);
+        let icon = kind_icon(&layer.content);
+        let mut ready = false;
+        let mut h = Harness::new_ui(move |ui| {
+            if !ready {
+                crate::theme::install_fonts(ui.ctx());
+                egui_extras::install_image_loaders(ui.ctx());
+                ready = true;
+                return;
+            }
+            header(ui, &layer);
+        });
+        h.run_steps(4);
+
+        let icon_sizes: Vec<_> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect.size()),
+                _ => None,
+            })
+            .collect();
+
+        let expected = 15.0;
+
+        assert_eq!(icon_sizes, vec![vec2(expected, expected)], "{kind}: Properties header icon size");
+
+        let expected_texture = h
+            .ctx
+            .try_load_texture(
+                &format!("bytes://icons/{icon}.svg"),
+                Default::default(),
+                egui::load::SizeHint::Size { width: expected as u32, height: expected as u32, maintain_aspect_ratio: false },
+            )
+            .unwrap()
+            .texture_id()
+            .expect("icon texture loaded");
+
+        let painted_texture = h.output().shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) => rect.brush.as_ref().map(|brush| brush.fill_texture_id),
+            _ => None,
+        });
+
+        assert_eq!(painted_texture, Some(expected_texture), "{kind}: Properties header must paint {icon}");
+
+        if kind == "shape" {
+            let image = crate::icons::rasterize_svg(icon, 15, 15).expect("shape icon rasterized");
+            assert!(image.pixels.iter().any(|pixel| pixel.a() > 0), "shape icon must have nontransparent pixels");
+
+            // Native SVG dimensions keep anchor centres clear of antialiased edges.
+            let anchors = crate::icons::rasterize_svg(icon, 24, 24).expect("shape anchors rasterized");
+            for (x, y) in [(6, 6), (18, 6), (6, 18), (18, 18)] {
+                assert_eq!(anchors[(x, y)].a(), 0, "anchor at ({x}, {y}) must be hollow");
+                for (edge_x, edge_y) in [(x - 2, y), (x + 2, y), (x, y - 2), (x, y + 2)] {
+                    assert!(anchors[(edge_x, edge_y)].a() > 0, "anchor at ({x}, {y}) must have four visible sides");
+                }
+            }
+        }
+    }
 }

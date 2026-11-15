@@ -1,6 +1,7 @@
 //! The crate's integration tests, linked into one test binary.
 
 mod gallery_reach_extreme;
+mod liquify_extreme_stroke;
 mod liquify_freeze_formats;
 mod liquify_source_footprint;
 mod retouch_blur_exact;

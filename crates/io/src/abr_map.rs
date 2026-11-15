@@ -1,6 +1,6 @@
 //! Photoshop brushes (`.abr`) → brush presets.
 //!
-//! [`photocraft_psd::abr`] reads the file; this module maps its tips and `brushPreset`
+//! [`craft_psd::abr`] reads the file; this module maps its tips and `brushPreset`
 //! descriptors onto [`BrushSettings`] (Brush Tip Shape, Shape Dynamics, Scattering, Texture,
 //! Dual Brush, Color Dynamics, Transfer, Brush Pose, Noise, Wet Edges, Build-up, Smoothing and
 //! the captured tool options). Settings without an equivalent are listed in
@@ -9,12 +9,12 @@
 
 use std::collections::BTreeSet;
 
+use craft_psd::abr::{self, AbrFile, AbrSample, LegacyTip};
+use craft_psd::descriptor::{Descriptor, Value};
+use craft_psd::patterns::PsdPattern;
 use photocraft_paint::{
     BrushPreset, BrushSettings, Control, DualBrush, Dynamic, GrayTile, MaskMode, MixerSettings, Pattern, PatternStyle, Pose, ShapeDynamics, TipShape, Transfer,
 };
-use photocraft_psd::abr::{self, AbrFile, AbrSample, LegacyTip};
-use photocraft_psd::descriptor::{Descriptor, Value};
-use photocraft_psd::patterns::PsdPattern;
 
 /// Largest sampled tip edge kept as is; bigger tips are downsampled to it.
 pub const MAX_TIP_EDGE: u32 = 2500;

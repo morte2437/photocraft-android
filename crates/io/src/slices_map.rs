@@ -1,4 +1,4 @@
-//! Document slices ↔ PSD resource 1050 (see `photocraft_psd::slices`).
+//! Document slices ↔ PSD resource 1050 (see `craft_psd::slices`).
 //!
 //! Import keeps user and layer-based slices (auto slices are regenerated from them) and links
 //! layer-based slices to the layer whose `lyid` they name. Export writes the preserved resource
@@ -7,12 +7,12 @@
 
 use std::collections::HashMap;
 
+use craft_psd::slices::{SliceRecord, SlicesResource};
 use photocraft_doc::slices::{self, Slice, SliceKind, SliceOrigin, Slices};
 use photocraft_doc::{Document, LayerId, Rect};
-use photocraft_psd::slices::{SliceRecord, SlicesResource};
 
 /// Image resource id of the slices.
-pub const SLICES: u16 = photocraft_psd::slices::SLICES;
+pub const SLICES: u16 = craft_psd::slices::SLICES;
 
 fn raw(doc: &Document) -> Option<&[u8]> {
     doc.metadata.psd_resources.iter().find(|(id, _, _)| *id == SLICES).map(|(_, _, d)| d.as_slice())

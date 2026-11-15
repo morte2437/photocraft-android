@@ -10,8 +10,16 @@
 //! where it started), in the frame's space; `/2 /2` maps the frame's space to the `TySh` text
 //! space. On a closed path Photoshop sets the type from the path's last anchor (the circle's
 //! glyph 0 sits on its fourth anchor and runs on through the first), on an open path from its
-//! first. Neither oracle has a moved start or flipped type, so those are written into the path
-//! itself (see [`frame_path`]).
+//! first.
+//!
+//! The type's range on the path is `/2 /6` (`[start end]`), in curve-segment units: segment `i`
+//! at Bézier parameter `t` is `i + t`, and `-1` is the default (the start described above, the
+//! path's end). Observed in ag-psd's `text-path` (CS6: `[0.0 0.32983]`, the end a third into the
+//! first segment, so only "so" of "some text" is drawn) and `text-path-26`/`-27` (2024:
+//! `[0.07689 2.0]` on a two-segment path, the start moved and the end at the path's end).
+//! `/2 /11 /0` is true for flipped type (ag-psd calls it `reversed`); no reference file has it, so
+//! flipped type is still written into the path itself (see [`frame_path`]) and a file's flag is
+//! read as the same range on the path run backwards.
 
 use photocraft_doc::text::TextShape;
 use photocraft_doc::vector::{Knot, PathOp, Subpath};
@@ -54,10 +62,9 @@ fn knot(in_ctrl: Point, anchor: Point, out_ctrl: Point) -> Knot {
     Knot { anchor, in_ctrl, out_ctrl, smooth: smooth(anchor, in_ctrl, out_ctrl) }
 }
 
-/// The type path of a path frame `frame` (the entry's `/0`), in the `TySh` text space, with the
-/// type starting at its first knot. `Err` says why it can't be read (the caller keeps the box or
-/// point text EngineData describes).
-pub(crate) fn read(frame: &E) -> Result<Subpath, String> {
+/// The cubic segments of a path frame `frame` (the entry's `/0`) in the `TySh` text space, in the
+/// file's order, and whether they close. `Err` says why they can't be read.
+fn segments(frame: &E) -> Result<(Vec<[Point; 4]>, bool), String> {
     let raw = frame.path(&["1", "0"]).ok_or("the frame has no path")?;
     let v = numbers(raw).ok_or("a path coordinate is not a number")?;
     if v.is_empty() || v.len() % 8 != 0 {
@@ -95,6 +102,12 @@ pub(crate) fn read(frame: &E) -> Result<Subpath, String> {
         return Err("its path has no length".into());
     }
     let closed = same(last[3], first[0]);
+    Ok((segs, closed))
+}
+
+/// The knots of the segments `segs` (closing when `closed`), the first knot first.
+fn knots_of(segs: &[[Point; 4]], closed: bool) -> Vec<Knot> {
+    let Some(last) = segs.last() else { return Vec::new() };
     let mut knots: Vec<Knot> = Vec::with_capacity(segs.len() + 1);
     for (i, s) in segs.iter().enumerate() {
         let prev = match i.checked_sub(1).and_then(|j| segs.get(j)) {
@@ -104,13 +117,164 @@ pub(crate) fn read(frame: &E) -> Result<Subpath, String> {
         };
         knots.push(knot(prev, s[0], s[1]));
     }
+    if !closed {
+        knots.push(knot(last[2], last[3], last[3]));
+    }
+    knots
+}
+
+/// The type path of a path frame `frame` (the entry's `/0`), in the `TySh` text space, with the
+/// type's default start at its first knot. `Err` says why it can't be read (the caller keeps the
+/// box or point text EngineData describes).
+pub(crate) fn read(frame: &E) -> Result<Subpath, String> {
+    let (segs, closed) = segments(frame)?;
+    let mut knots = knots_of(&segs, closed);
     if closed {
         // The type starts on the closing segment: from the last anchor.
         knots.rotate_right(1);
-    } else {
-        knots.push(knot(last[2], last[3], last[3]));
     }
     Ok(Subpath { closed, knots, op: PathOp::Combine })
+}
+
+/// The flattening [`crate::warp`] measures type paths with: the cumulative arc length at each of
+/// the `n` equal parameter steps of segment `s`, starting with 0.
+fn flattened(s: &[Point; 4]) -> Vec<f64> {
+    let poly = (s[1].x - s[0].x).hypot(s[1].y - s[0].y) + (s[2].x - s[1].x).hypot(s[2].y - s[1].y) + (s[3].x - s[2].x).hypot(s[3].y - s[2].y);
+    let n = if poly.is_finite() { ((poly / 2.0).ceil() as usize).clamp(4, 128) } else { 4 };
+    let mut cum = Vec::with_capacity(n + 1);
+    let mut acc = 0.0;
+    let mut prev = s[0];
+    cum.push(0.0);
+    for i in 1..=n {
+        let p = cubic(s, i as f64 / n as f64);
+        acc += (p.x - prev.x).hypot(p.y - prev.y);
+        prev = p;
+        cum.push(acc);
+    }
+    cum
+}
+
+/// Arc lengths along a path's segments, as type on it measures them, to convert between arc
+/// length and the `/6` range's segment units.
+struct Measure {
+    /// Per segment, the cumulative lengths of [`flattened`].
+    segs: Vec<Vec<f64>>,
+    /// Arc length at the start of each segment, then the total.
+    at: Vec<f64>,
+}
+
+impl Measure {
+    fn new(segs: &[[Point; 4]]) -> Measure {
+        let segs: Vec<Vec<f64>> = segs.iter().map(flattened).collect();
+        let mut at = Vec::with_capacity(segs.len() + 1);
+        let mut acc = 0.0;
+        at.push(0.0);
+        for s in &segs {
+            acc += s.last().copied().unwrap_or(0.0);
+            at.push(acc);
+        }
+        Measure { segs, at }
+    }
+
+    fn count(&self) -> f64 {
+        self.segs.len() as f64
+    }
+
+    fn length(&self) -> f64 {
+        self.at.last().copied().unwrap_or(0.0)
+    }
+
+    /// The arc length at range position `p` (segment index plus parameter), clamped to the path.
+    fn arc(&self, p: f64) -> f64 {
+        let p = p.clamp(0.0, self.count());
+        let i = (p.floor() as usize).min(self.segs.len().saturating_sub(1));
+        let (Some(cum), Some(base)) = (self.segs.get(i), self.at.get(i)) else { return 0.0 };
+        let steps = cum.len().saturating_sub(1).max(1) as f64;
+        let u = ((p - i as f64) * steps).clamp(0.0, steps);
+        let k = (u.floor() as usize).min(cum.len().saturating_sub(2));
+        let (a, b) = (cum.get(k).copied().unwrap_or(0.0), cum.get(k + 1).copied().unwrap_or(0.0));
+        base + a + (b - a) * (u - k as f64)
+    }
+
+    /// The range position (segment index plus parameter) at arc length `s`, clamped to the path.
+    fn position(&self, s: f64) -> f64 {
+        let s = if s.is_finite() { s.clamp(0.0, self.length()) } else { 0.0 };
+        for (i, cum) in self.segs.iter().enumerate() {
+            let (Some(base), Some(next)) = (self.at.get(i), self.at.get(i + 1)) else { break };
+            if s > *next && i + 1 < self.segs.len() {
+                continue;
+            }
+            let left = s - base;
+            let steps = cum.len().saturating_sub(1).max(1);
+            for (k, w) in cum.windows(2).enumerate() {
+                let [a, b] = [w[0], w[1]];
+                if left <= b || k + 1 == steps {
+                    let f = if b > a { ((left - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
+                    return i as f64 + (k as f64 + f) / steps as f64;
+                }
+            }
+            return i as f64 + 1.0;
+        }
+        self.count()
+    }
+}
+
+/// How close (px) two arc lengths must be to count as the same placement.
+const SAME_ARC: f64 = 1e-3;
+
+/// The `/6` range of `frame`: start and end in segment units, each `None` when it is the default
+/// (`-1`) or not a number on the path (a hostile file gets the default).
+fn range(frame: &E, count: f64) -> [Option<f64>; 2] {
+    let v = frame.path(&["2", "6"]).and_then(numbers).unwrap_or_default();
+    let at = |i: usize| v.get(i).copied().filter(|p| (0.0..=count).contains(p));
+    [at(0), at(1)]
+}
+
+/// Type on a path from a path frame `frame` (the entry's `/0`): its path in the `TySh` text space
+/// and the type's range on it (`/2 /6`, flipped with `/2 /11 /0`). `Err` says why the path can't
+/// be read (the caller keeps the box or point text EngineData describes).
+pub(crate) fn read_shape(frame: &E) -> Result<TextShape, String> {
+    let (segs, closed) = segments(frame)?;
+    let measure = Measure::new(&segs);
+    let count = measure.count();
+    let length = measure.length();
+    let [a, b] = range(frame, count);
+    let flip = frame.path(&["2", "11", "0"]).and_then(E::as_bool).unwrap_or(false);
+    let (path, s, e) = if closed && a.is_none() && b.is_none() {
+        // The default: one lap from the last anchor, the path's first knot (see `read`).
+        (read(frame)?, 0.0, length)
+    } else {
+        let s = measure.arc(a.unwrap_or(if closed { count - 1.0 } else { 0.0 }));
+        let e = match b.map(|b| measure.arc(b)) {
+            // A closed range runs on from its start, past the seam if it must. Equal ends are an
+            // empty range, not a lap: a full lap is written with its end a lap on (`frame_parts`).
+            Some(e) if closed => {
+                s + if e - s >= -SAME_ARC && e - s <= SAME_ARC {
+                    0.0
+                } else if e - s > 0.0 {
+                    e - s
+                } else {
+                    e - s + length
+                }
+            }
+            Some(e) => e.max(s),
+            None if closed => s + length,
+            None => length,
+        };
+        (Subpath { closed, knots: knots_of(&segs, closed), op: PathOp::Combine }, s, e)
+    };
+    // Flipped type is the same stretch of path measured from the other end.
+    let (s, e) = if flip {
+        let s2 = length - e;
+        let s2 = if closed { s2.rem_euclid(length) } else { s2.max(0.0) };
+        (s2, s2 + (e - s))
+    } else {
+        (s, e)
+    };
+    // An explicit end stays explicit even when it reaches the path's end: it aligns center and
+    // right type within the span, where no end aligns it around the start.
+    let explicit = b.is_some();
+    Ok(TextShape::Path { path, start: s as f32, end: explicit.then_some(e as f32), flip })
 }
 
 /// `path` with its knots in the opposite order (the segments run backwards).
@@ -206,23 +370,60 @@ fn starting_at(path: &Subpath, s: f64) -> Subpath {
     Subpath { closed: path.closed, knots, op: path.op }
 }
 
-/// The path a frame is written with for `TextShape::Path { path, start, flip }`: flipped type is
-/// the path run backwards and a moved start the path from there on (exactly how PhotoCraft lays
-/// type on a path out), so Photoshop, which starts at the path's beginning, sets the same type.
+/// The path a frame is written with for `TextShape::Path { path, start, flip }` with its range
+/// left at the default: flipped type is the path run backwards and a moved start the path from
+/// there on (exactly how PhotoCraft lays type on a path out), so the reference editor, which
+/// starts at the path's beginning, sets the same type.
 pub(crate) fn frame_path(path: &Subpath, start: f32, flip: bool) -> Subpath {
     let path = if flip { reversed(path) } else { path.clone() };
     starting_at(&path, f64::from(start))
+}
+
+/// What a path frame is written with for `shape`: the path, whether its segment list starts at
+/// the second knot (a closed path read from the last anchor, see [`segment_list`]), and the `/6`
+/// range. Flipped type is always the path run backwards (see the module docs). An open path keeps
+/// all of itself and puts a moved start and an end limit in the range, as the reference editor
+/// does. A closed path takes its start into the path (the files only show a closed path's default
+/// range) and, when its end is limited, the range from that start, never past one lap.
+fn frame_parts(path: &Subpath, start: f32, end: Option<f32>, flip: bool) -> (Subpath, bool, [f64; 2]) {
+    const DEFAULT: [f64; 2] = [-1.0, -1.0];
+    let start = if start.is_finite() { start } else { 0.0 };
+    let end = end.map(f64::from).filter(|e| e.is_finite());
+    if path.closed {
+        let path = frame_path(path, start, flip);
+        let start = f64::from(start);
+        let measure = Measure::new(&path.segments());
+        let length = measure.length();
+        return match end.map(|e| (e - start).max(0.0)) {
+            // A lap or more is an explicit end at the seam, apart from the default (no end).
+            Some(span) if span >= length - SAME_ARC => (path, false, [0.0, measure.count()]),
+            Some(span) => (path, false, [0.0, measure.position(span)]),
+            None => (path, true, DEFAULT),
+        };
+    }
+    let base = if flip { reversed(path) } else { path.clone() };
+    let measure = Measure::new(&base.segments());
+    let length = measure.length();
+    let start = f64::from(start).clamp(0.0, length);
+    let end = end.map(|e| e.clamp(start, length));
+    let range = match end {
+        None if start <= SAME_ARC => DEFAULT,
+        // A default end keeps legacy anchor alignment even when the start has moved.
+        None => [measure.position(start), -1.0],
+        Some(e) => [measure.position(start), measure.position(e)],
+    };
+    (base, false, range)
 }
 
 fn real(v: f64) -> E {
     E::Real(v)
 }
 
-/// The segment list (`/1 /0`) Photoshop reads `path` from: on a closed path the type starts at
-/// the last anchor, so the first knot goes last.
-fn segment_list(path: &Subpath) -> Option<Vec<E>> {
+/// The segment list (`/1 /0`) the reference editor reads `path` from: on a closed path with the
+/// default range the type starts at the last anchor, so with `rotate` the first knot goes last.
+fn segment_list(path: &Subpath, rotate: bool) -> Option<Vec<E>> {
     let mut knots = path.knots.clone();
-    if path.closed && !knots.is_empty() {
+    if rotate && path.closed && !knots.is_empty() {
         knots.rotate_left(1);
     }
     let segs = Subpath { closed: path.closed, knots, op: path.op }.segments();
@@ -235,6 +436,25 @@ fn same_path(a: &Subpath, b: &Subpath) -> bool {
     a.closed == b.closed
         && a.knots.len() == b.knots.len()
         && a.knots.iter().zip(&b.knots).all(|(p, q)| same(p.anchor, q.anchor) && same(p.in_ctrl, q.in_ctrl) && same(p.out_ctrl, q.out_ctrl))
+}
+
+/// Whether two type-on-path shapes place the type the same: the same path within [`SAME`] and the
+/// same range within [`SAME_ARC`].
+fn same_shape(a: &TextShape, b: &TextShape) -> bool {
+    let close = |x: f32, y: f32| (f64::from(x) - f64::from(y)).abs() <= SAME_ARC * 10.0;
+    match (a, b) {
+        (TextShape::Path { path: p, start: s, end: e, flip: f }, TextShape::Path { path: q, start: t, end: g, flip: h }) => {
+            f == h
+                && same_path(p, q)
+                && close(*s, *t)
+                && match (e, g) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => close(*x, *y),
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
 }
 
 /// The point-text frame Photoshop writes (`<< /0 << /2 << /6 [ -1.0 -1.0 ] /11 << /4 -1 /7 false
@@ -264,18 +484,27 @@ pub(crate) fn update_frame(entry: &mut E, shape: &TextShape) {
     let frame = entry.get("0");
     let kind = frame.map_or(0, frame_kind);
     match shape {
-        TextShape::Path { path, start, flip } => {
-            let path = frame_path(path, *start, *flip);
-            if kind == PATH_FRAME && frame.and_then(|f| read(f).ok()).is_some_and(|p| same_path(&p, &path)) {
+        TextShape::Path { path, start, end, flip } => {
+            let (path, rotate, range) = frame_parts(path, *start, *end, *flip);
+            let Some(list) = segment_list(&path, rotate) else { return };
+            let fresh = E::Dict(vec![
+                ("1".into(), E::Dict(vec![("0".into(), E::Array(list.clone()))])),
+                ("2".into(), E::Dict(vec![("0".into(), E::Int(PATH_FRAME)), ("6".into(), E::Array(range.map(real).to_vec()))])),
+            ]);
+            if kind == PATH_FRAME && frame.and_then(|f| read_shape(f).ok()).zip(read_shape(&fresh).ok()).is_some_and(|(a, b)| same_shape(&a, &b)) {
                 return;
             }
-            let Some(list) = segment_list(&path) else { return };
             // Keep the other keys of a path frame; anything else becomes one.
             let mut data = match frame.and_then(|f| f.get("2")) {
                 Some(d @ E::Dict(_)) if kind == PATH_FRAME => d.clone(),
                 _ => E::Dict(vec![("6".into(), E::Array(vec![real(-1.0), real(-1.0)]))]),
             };
             data.set("0", E::Int(PATH_FRAME));
+            data.set("6", E::Array(range.map(real).to_vec()));
+            // The written path is never flipped (see the module docs).
+            if let Some(path_data @ E::Dict(_)) = data.get_mut("11") {
+                path_data.set("0", E::Bool(false));
+            }
             // The path is written in text space.
             data.set("2", E::Array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0].map(real).to_vec()));
             let mut frame = match frame {

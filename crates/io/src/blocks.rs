@@ -1,11 +1,11 @@
 //! Tagged-block helpers: the preserved block-list encoding, fills, text,
 //! smart objects, locks and label colors.
 
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
+use craft_psd::layer::BlendingRanges;
 use photocraft_color::{Color, ColorMode};
 use photocraft_doc::{AdvancedBlending, BlendIf, BlendRange, Fill, GradientStyle, Knockout, LabelColor, Locks};
 use photocraft_geom::Affine;
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
-use photocraft_psd::layer::BlendingRanges;
 
 /// `brst` (channel blending restrictions): a list of big-endian u32 channel indices left out of
 /// blending → a bit mask (bit `i` = channel `i`; indices above 31 are ignored).

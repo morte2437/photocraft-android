@@ -6,12 +6,12 @@
 #[cfg(feature = "corpus")]
 use std::path::PathBuf;
 
+use craft_psd::PsdFile;
+use craft_psd::resources::ImageResource;
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{AlphaChannel, Document};
 use photocraft_geom::{Rect, Size};
 use photocraft_io::{ExportOptions, export, import};
-use photocraft_psd::PsdFile;
-use photocraft_psd::resources::ImageResource;
 use photocraft_raster::Surface;
 
 const W: u32 = 8;

@@ -13,10 +13,10 @@
 //! `--raw` store tips uncompressed (bigger files). Each file stays under the reader's decoded cap (1 GiB; 512 MiB on 32-bit).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use craft_psd::abr::{AbrSample, MAX_TOTAL_BYTES, write_v6};
+use craft_psd::descriptor::{Descriptor, UnicodeString, Value};
 use photocraft_paint::procedural::{bristle_tip, chalk_tip, charcoal_tip, grass_tip, leaf_tip, rake_tip, spatter_tip, sponge_tip, star_tip};
 use photocraft_paint::tile::GrayTile;
-use photocraft_psd::abr::{AbrSample, MAX_TOTAL_BYTES, write_v6};
-use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -90,7 +90,7 @@ fn main() {
     let num = |name: &str, default: u32| arg(name).map_or(default, |v| v.parse().expect("numeric option"));
     let out = PathBuf::from(arg("--out").unwrap_or_else(|| "target/abr-library".into()));
     let brushes = num("--brushes", 600);
-    let max_edge = num("--edge", 2000).clamp(16, photocraft_psd::abr::MAX_EDGE);
+    let max_edge = num("--edge", 2000).clamp(16, craft_psd::abr::MAX_EDGE);
     let min_edge = num("--min-edge", 800).clamp(16, max_edge);
     let depth = num("--depth", 16) as u16;
     assert!(matches!(depth, 8 | 16), "--depth must be 8 or 16");

@@ -63,7 +63,11 @@ pub fn sample_stops(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
     }
 }
 
-/// Composites `color(i)` over `area` of the surface with per-pixel coverage.
+/// Composites `color(i)` over `area` of the surface with per-pixel coverage. Where the coverage is
+/// zero, `rim(x, y)` (when given) is the strength of a bucket's transparent-seed fringe there: the
+/// pixel takes the fill at coverage `rim × (1 − α)`, its own transparency (#11354 review; see
+/// [`bucket_fill_inks`]). Lock Transparent Pixels and Clear ignore it.
+#[allow(clippy::too_many_arguments)]
 fn composite_area(
     s: &mut Surface,
     area: Rect,
@@ -72,6 +76,7 @@ fn composite_area(
     color: impl Fn(i32, i32) -> [f32; 4] + Sync,
     lock_transparency: bool,
     inks: Option<[f32; 4]>,
+    rim: Option<&(dyn Fn(i32, i32) -> f32 + Sync)>,
 ) {
     // Composite tile by tile (in parallel on native); tiles with zero coverage are left untouched,
     // so their copy-on-write storage (and GPU residency) survives.
@@ -86,8 +91,12 @@ fn composite_area(
         let mut enc = [0.0f32; 8];
         for y in r.y0..r.y1 {
             for x in r.x0..r.x1 {
-                let k = coverage(x, y);
-                if k <= 0.0 {
+                let mut k = coverage(x, y);
+                let on_rim = match rim {
+                    Some(rim) if k <= 0.0 && !lock_transparency && matches!(mode, FillMode::Blend(_)) => rim(x, y),
+                    _ => 0.0,
+                };
+                if k <= 0.0 && on_rim <= 0.0 {
                     continue;
                 }
                 if !any {
@@ -97,6 +106,13 @@ fn composite_area(
                 let i = ((y - r.y0) as usize * w + (x - r.x0) as usize) * n;
                 let px = &mut region[i..i + n];
                 let d = photocraft_raster::to_rgba(&fmt, px);
+                if k <= 0.0 {
+                    // A rim pixel: only its transparency takes the fill, so opaque art stays as it is.
+                    k = on_rim * (1.0 - d[3].clamp(0.0, 1.0));
+                    if k.is_nan() || k <= 0.0 {
+                        continue;
+                    }
+                }
                 let o = match mode {
                     FillMode::Blend(m) if lock_transparency => blend::composite_atop(m, d, color(x, y), k),
                     FillMode::Blend(m) => blend::composite(m, d, color(x, y), k),
@@ -152,7 +168,8 @@ pub fn paint_gradient(
         FillMode::Blend(blend_mode),
         |x, y| opacity * selection.map_or(1.0, |m| m.sample_channel(x, y, 0)),
         |x, y| {
-            let t = tool_gradient_t(shape, from, to, x as f32 + 0.5, y as f32 + 0.5);
+            // Sampled one pixel up and left of the pixel centre, where the reference application samples (#12018).
+            let t = tool_gradient_t(shape, from, to, x as f32 - 0.5, y as f32 - 0.5);
             let mut c = sample_stops(stops, if reverse { 1.0 - t } else { t });
             if dither {
                 // One quantisation step of monochromatic noise breaks 8-bit banding without speckle.
@@ -164,6 +181,7 @@ pub fn paint_gradient(
             c
         },
         lock_transparency,
+        None,
         None,
     );
 }
@@ -226,9 +244,21 @@ pub fn bucket_fill_inks(
         return false;
     }
     let img = crate::selection::rgba8_image(s, area);
-    let Some(region) = crate::selection::wand_region(&img, area, seed, tolerance, contiguous, anti_alias) else { return false };
+    let Some(region) = crate::selection::wand_region_bucket(&img, area, seed, tolerance, contiguous, anti_alias) else { return false };
+    // Clicked on transparency with Anti-alias on: the wand's fringe gives the partly transparent
+    // pixels around the flood no coverage (their alpha is measured against the seed's 0), but the
+    // reference application fills each pixel 8-adjacent to the flood at coverage `1 − α`, so the
+    // soft rim a cleared selection leaves rises partly (α 187 → 205, 56 → 211, 3 → 252; the
+    // reference gives 204, 211, 253) and a black edge pixel of alpha 40 filled green becomes
+    // (0, 248, 0, 221) (#11311, #12528, #11354 review). Pixels further out stay as they are; with
+    // Anti-alias off nothing outside the flood changes.
+    let at_seed = usize::try_from(seed.1 - area.y0)
+        .ok()
+        .and_then(|y| y.checked_mul(area.width() as usize))
+        .and_then(|row| row.checked_add(usize::try_from(seed.0 - area.x0).ok()?));
+    let empty_seed = anti_alias && at_seed.and_then(|i| img.get(i)).is_some_and(|p| p[3] == 0);
     drop(img);
-    bucket_fill_region_inks(s, &region, opacity, selection, lock_transparency, src, inks, mode);
+    fill_region(s, &region, opacity, selection, lock_transparency, src, inks, mode, empty_seed);
     true
 }
 
@@ -257,10 +287,60 @@ pub fn bucket_fill_region_inks(
     inks: Option<[f32; 4]>,
     mode: FillMode,
 ) {
-    // Composite only over the filled region's box.
-    let b = region.bbox;
-    composite_area(s, b, mode, |x, y| region.at(x, y) * opacity * selection.map_or(1.0, |m| m.sample_channel(x, y, 0)), src, lock_transparency, inks);
+    fill_region(s, region, opacity, selection, lock_transparency, src, inks, mode, false);
 }
+
+/// [`bucket_fill_region_inks`]; with `rim`, the pixels 8-adjacent to the region's fully covered
+/// pixels that the region itself leaves uncovered take the fill at coverage `1 − α` (see
+/// [`composite_area`]). Fully covered pixels and pixels further out are filled as without it.
+#[allow(clippy::too_many_arguments)]
+fn fill_region(
+    s: &mut Surface,
+    region: &crate::selection::Region,
+    opacity: f32,
+    selection: Option<&Surface>,
+    lock_transparency: bool,
+    src: impl Fn(i32, i32) -> [f32; 4] + Sync,
+    inks: Option<[f32; 4]>,
+    mode: FillMode,
+    rim: bool,
+) {
+    // Composite only over the filled region's box (with Anti-alias on it already holds the
+    // one-pixel ring around the flood).
+    let b = region.bbox;
+    let strength = |x: i32, y: i32| opacity * selection.map_or(1.0, |m| m.sample_channel(x, y, 0));
+    // The ring is only ever read for an unlocked Blend fill (see composite_area), and it is
+    // empty when the region covers every pixel, so do not build it in those cases: on a large
+    // canvas it is a bool per pixel plus a full scan of the mask.
+    let use_rim = rim && !lock_transparency && matches!(mode, FillMode::Blend(_)) && region.mask.contains(&0);
+    let ring = if use_rim { rim_ring(region) } else { Vec::new() };
+    let on_ring = |x: i32, y: i32| {
+        let at = usize::try_from(y - b.y0).ok().zip(usize::try_from(x - b.x0).ok()).filter(|_| b.contains(x, y));
+        let hit = at.and_then(|(yy, xx)| yy.checked_mul(b.width() as usize)?.checked_add(xx)).and_then(|i| ring.get(i));
+        if hit == Some(&true) { strength(x, y) } else { 0.0 }
+    };
+    let rim: Option<&(dyn Fn(i32, i32) -> f32 + Sync)> = if use_rim { Some(&on_ring) } else { None };
+    composite_area(s, b, mode, |x, y| region.at(x, y) * strength(x, y), src, lock_transparency, inks, rim);
+}
+
+/// Over `region.bbox` (row-major): the pixels the region leaves uncovered that touch one of its
+/// fully covered pixels, diagonals included.
+fn rim_ring(region: &crate::selection::Region) -> Vec<bool> {
+    let (w, h) = (region.bbox.width() as usize, region.bbox.height() as usize);
+    let full = |x: usize, y: usize| y.checked_mul(w).and_then(|r| r.checked_add(x)).and_then(|i| region.mask.get(i)) == Some(&255);
+    let n = w.saturating_mul(h).min(region.mask.len());
+    (0..n)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            region.mask.get(i) == Some(&0)
+                && (y.saturating_sub(1)..=(y + 1).min(h - 1)).any(|ny| (x.saturating_sub(1)..=(x + 1).min(w - 1)).any(|nx| (nx, ny) != (x, y) && full(nx, ny)))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "paint_gradient_sample_tests.rs"]
+mod paint_gradient_sample_tests;
 
 #[cfg(test)]
 mod tests {
@@ -287,8 +367,8 @@ mod tests {
         paint_gradient(
             &mut s,
             a,
-            (0.5, 0.0),
-            (10.5, 0.0),
+            (-0.5, 0.0),
+            (9.5, 0.0),
             GradientShape::Linear,
             &[(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [1.0, 1.0, 1.0, 1.0])],
             false,
@@ -342,6 +422,174 @@ mod tests {
         assert!((s.rgba(-2, 4)[3] - 0.125).abs() < 0.005);
         assert_eq!(s.rgba(-1, 4), [0.0; 4], "outside the selection");
         assert_eq!(s.rgba(-4, 4), [0.0; 4], "outside the region");
+    }
+
+    /// #11311: flooding transparency with anti-aliasing fills the empty part of the region's edge
+    /// pixels at the fill's opacity, so the edge is no semi-transparent ring; opaque pixels the
+    /// anti-aliasing reaches blend exactly as before.
+    #[test]
+    fn bucket_on_transparency_fills_the_edge_pixels_in_full() {
+        let a = Rect::new(0, 0, 8, 1);
+        let white = |_, _| [1.0, 1.0, 1.0, 1.0];
+        for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+            for (opaque, opacity) in [([1.0, 1.0, 1.0, 1.0], 1.0), ([1.0, 1.0, 1.0, 1.0], 0.5), ([1.0, 0.0, 0.0, 1.0], 1.0)] {
+                let mut s = Surface::new(fmt);
+                s.fill_rect(Rect::new(4, 0, 8, 1), &opaque);
+                // The same region filled without the rule: what the bucket used to do.
+                let mut before = s.clone();
+                let img = crate::selection::rgba8_image(&before, a);
+                let region = crate::selection::wand_region(&img, a, (1, 0), 0.0, true, true).unwrap();
+                bucket_fill_region_inks(&mut before, &region, opacity, None, false, white, None, FillMode::Blend(BlendMode::Normal));
+
+                assert!(bucket_fill_inks(&mut s, a, (1, 0), 0.0, true, true, opacity, None, false, white, None, FillMode::Blend(BlendMode::Normal)));
+                for x in 0..4 {
+                    let p = s.rgba(x, 0);
+                    assert!(p[..3].iter().all(|c| (c - 1.0).abs() < 1e-3) && (p[3] - opacity).abs() < 3e-3, "{fmt:?} {opaque:?} at {x}: {p:?}");
+                }
+                for x in 4..8 {
+                    assert_eq!(s.rgba(x, 0), before.rgba(x, 0), "{fmt:?} {opaque:?} at {x}: opaque pixels blend as before");
+                }
+                assert!(s.rgba(4, 0)[3] > 0.999);
+            }
+        }
+    }
+
+    /// #11354 review: on a CMYK target, the edge pixels a transparent-seed bucket makes
+    /// opaque take the picked inks like the fully covered interior — their colour is the
+    /// fill alone. A partially transparent destination the fill touches keeps the blended
+    /// colour it already had, so its inks stay the conversion of that blend.
+    #[test]
+    fn bucket_on_transparency_writes_the_picked_cmyk_inks_at_the_edge() {
+        let a = Rect::new(0, 0, 8, 1);
+        let inks = [1.0f32, 0.0, 0.0, 0.0];
+        let rgb = photocraft_color::convert::cmyk_to_rgb(inks).map(|c| c.clamp(0.0, 1.0));
+        let src = |_, _| [rgb[0], rgb[1], rgb[2], 1.0];
+        let raw = |s: &Surface, x: i32| -> Vec<f32> { s.read_region(Rect::new(x, 0, x + 1, 1)).into_iter().take(4).collect() };
+        let is_inks = |got: &[f32]| got.iter().zip(inks).all(|(a, b)| (a - b).abs() < 0.02);
+
+        // Transparent run against opaque white: x=3 is the anti-aliased edge (coverage < 1).
+        let mut s = Surface::new(PixelFormat::CMYKA8);
+        s.fill_rect(Rect::new(4, 0, 8, 1), &[0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(bucket_fill_inks(&mut s, a, (1, 0), 0.0, true, true, 1.0, None, false, src, Some(inks), FillMode::Blend(BlendMode::Normal)));
+        assert!(is_inks(&raw(&s, 1)), "fully covered: {:?}", raw(&s, 1));
+        assert!(is_inks(&raw(&s, 3)), "the made-opaque edge takes the picked inks: {:?}", raw(&s, 3));
+
+        // The edge pixel holds white at half alpha instead: the fill raises its alpha,
+        // but the colour is a blend, so the picked inks do not replace it.
+        let mut s = Surface::new(PixelFormat::CMYKA8);
+        s.fill_rect(Rect::new(3, 0, 4, 1), &[0.0, 0.0, 0.0, 0.0, 0.5]);
+        s.fill_rect(Rect::new(4, 0, 8, 1), &[0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert!(bucket_fill_inks(&mut s, a, (1, 0), 0.0, true, true, 1.0, None, false, src, Some(inks), FillMode::Blend(BlendMode::Normal)));
+        let edge = s.rgba(3, 0);
+        assert!(edge[3] > 0.5, "the fill raised the partial pixel's alpha: {edge:?}");
+        assert!(!is_inks(&raw(&s, 3)), "a blended destination keeps its own encoding: {:?}", raw(&s, 3));
+    }
+
+    /// #11354 review: the soft rim a Clear leaves rises only partly. The reference application
+    /// takes rim alphas 187, 56 and 3 to 204, 211 and 253; the rule here, `α + (1 − α)²`, gives
+    /// 205, 211 and 252, each within one level of it (fit in PR #11354's review round). The rim pixel
+    /// sits on the bucket's anti-aliased fringe; the hole beside it fills in full and the opaque
+    /// art behind it is untouched by the rule.
+    #[test]
+    fn bucket_on_transparency_raises_the_cleared_rim_partly() {
+        let a = Rect::new(0, 0, 8, 1);
+        let white = |_, _| [1.0, 1.0, 1.0, 1.0];
+        let level = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+        // (rim alpha after the Clear, the reference application's result, ours)
+        for (rim, reference, ours) in [(187, 204, 205), (56, 211, 211), (3, 253, 252)] {
+            for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+                let mut s = Surface::new(fmt);
+                // The cleared hole is [0, 0, 0, 0] (Clear zeroes its RGB), the rim straight white.
+                s.fill_rect(Rect::new(4, 0, 5, 1), &[1.0, 1.0, 1.0, rim as f32 / 255.0]);
+                s.fill_rect(Rect::new(5, 0, 8, 1), &[1.0, 1.0, 1.0, 1.0]);
+                let before = s.clone();
+                assert!(bucket_fill_inks(&mut s, a, (1, 0), 32.0, true, true, 1.0, None, false, white, None, FillMode::Blend(BlendMode::Normal)));
+                let p = s.rgba(4, 0);
+                assert_eq!(level(p[3]), ours, "{fmt:?}: rim {rim} -> {p:?}");
+                assert!((ours - reference).abs() <= 1, "rim {rim}: ours {ours}, reference {reference}");
+                assert!(p[..3].iter().all(|c| (c - 1.0).abs() < 1e-3), "{fmt:?}: the rim stays white: {p:?}");
+                for x in 0..4 {
+                    assert_eq!(level(s.rgba(x, 0)[3]), 255, "{fmt:?} rim {rim}: the hole and its edge fill in full at {x}");
+                }
+                for x in 5..8 {
+                    assert_eq!(s.rgba(x, 0), before.rgba(x, 0), "{fmt:?} rim {rim}: opaque art at {x}");
+                }
+            }
+        }
+    }
+
+    /// The rule is for a click on transparency only: from an opaque seed the fill is exactly the
+    /// wand region's own fill, fringe included.
+    #[test]
+    fn bucket_on_opaque_pixels_keeps_neighbouring_transparency() {
+        let a = Rect::new(0, 0, 8, 1);
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        s.fill_rect(Rect::new(0, 0, 4, 1), &[1.0, 1.0, 1.0, 0.5]);
+        s.fill_rect(Rect::new(4, 0, 8, 1), &[1.0, 1.0, 1.0, 1.0]);
+        let mut plain = s.clone();
+        let img = crate::selection::rgba8_image(&plain, a);
+        let region = crate::selection::wand_region(&img, a, (6, 0), 0.0, true, true).unwrap();
+        bucket_fill_region_inks(&mut plain, &region, 1.0, None, false, |_, _| [1.0; 4], None, FillMode::Blend(BlendMode::Normal));
+        assert!(bucket_fill_inks(&mut s, a, (6, 0), 0.0, true, true, 1.0, None, false, |_, _| [1.0; 4], None, FillMode::Blend(BlendMode::Normal)));
+        for x in 0..8 {
+            assert_eq!(s.rgba(x, 0), plain.rgba(x, 0), "at {x}");
+        }
+        assert!((s.rgba(1, 0)[3] - 0.5).abs() < 0.01, "outside the region");
+    }
+
+    /// #12528 (reference application, transparent seed, Tolerance 32, Anti-alias on): a black
+    /// edge pixel bordering the filled area takes the green fill at coverage `1 − α`, so its
+    /// colour as well as its alpha follow the reference within two levels; with Anti-alias off it
+    /// stays as it was.
+    #[test]
+    fn bucket_on_transparency_blends_into_the_edge_at_its_transparency() {
+        let a = Rect::new(0, 0, 8, 1);
+        let green = |_, _| [0.0, 1.0, 0.0, 1.0];
+        let level = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+        // (edge alpha, the reference application's result)
+        for (alpha, reference) in [(40, [0, 248, 0, 221]), (112, [0, 190, 0, 192]), (197, [0, 70, 0, 210]), (253, [0, 2, 0, 253])] {
+            for fmt in [PixelFormat::RGBA8, PixelFormat::RGBA16, PixelFormat::RGBA32F] {
+                for anti_alias in [true, false] {
+                    let mut s = Surface::new(fmt);
+                    s.fill_rect(Rect::new(4, 0, 5, 1), &[0.0, 0.0, 0.0, alpha as f32 / 255.0]);
+                    s.fill_rect(Rect::new(5, 0, 8, 1), &[0.0, 0.0, 0.0, 1.0]);
+                    let before = s.clone();
+                    assert!(bucket_fill_inks(&mut s, a, (1, 0), 32.0, true, anti_alias, 1.0, None, false, green, None, FillMode::Blend(BlendMode::Normal)));
+                    let got = s.rgba(4, 0).map(level);
+                    if anti_alias {
+                        assert!(got.iter().zip(reference).all(|(g, r)| (g - r).abs() <= 2), "{fmt:?} alpha {alpha}: {got:?}, reference {reference:?}");
+                    } else {
+                        assert_eq!(s.rgba(4, 0), before.rgba(4, 0), "{fmt:?} alpha {alpha}: Anti-alias off leaves the edge");
+                    }
+                    for x in 5..8 {
+                        assert_eq!(s.rgba(x, 0), before.rgba(x, 0), "{fmt:?} alpha {alpha}: opaque art at {x}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// #11354 review (measured in the reference application with a 4 px feathered rim): only the
+    /// one-pixel ring 8-adjacent to the flood rises, diagonals included; pixels further out keep
+    /// their alpha exactly.
+    #[test]
+    fn bucket_on_transparency_raises_only_the_ring_next_to_the_flood() {
+        let a = Rect::new(0, 0, 7, 7);
+        let mut s = Surface::new(PixelFormat::RGBA8);
+        s.fill_rect(a, &[1.0, 1.0, 1.0, 100.0 / 255.0]);
+        s.fill_rect(Rect::new(3, 3, 4, 4), &[0.0; 4]);
+        let before = s.clone();
+        assert!(bucket_fill_inks(&mut s, a, (3, 3), 32.0, true, true, 1.0, None, false, |_, _| [1.0; 4], None, FillMode::Blend(BlendMode::Normal)));
+        for y in 0..7 {
+            for x in 0..7 {
+                let (p, was) = (s.rgba(x, y), before.rgba(x, y));
+                match ((x - 3).abs(), (y - 3).abs()) {
+                    (0, 0) => assert!(p[3] > 0.999, "the flood at ({x},{y}): {p:?}"),
+                    (dx, dy) if dx <= 1 && dy <= 1 => assert!(p[3] > was[3] + 0.1, "the ring at ({x},{y}) rises: {p:?}"),
+                    _ => assert_eq!(p, was, "beyond the ring at ({x},{y})"),
+                }
+            }
+        }
     }
 
     /// The Paint Bucket's Mode: Multiply darkens what's there, Clear erases it (half at 50 %).

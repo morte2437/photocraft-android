@@ -155,6 +155,9 @@ pub fn optimize(
             if preview {
                 look = rgba(&data, layout);
             }
+            // The profile only with Embed Color Profile on, as the WebP and JPEG branches do: Quick
+            // Export, which never sets it, writes no iCCP chunk (#13798).
+            let icc = icc.filter(|_| st.embed_icc);
             let img = photocraft_codecs::Image::from_u8(ww, hh, layout, data).map_err(e)?.with_icc(icc.map(<[u8]>::to_vec)).with_meta(meta());
             let opts = photocraft_codecs::EncodeOptions {
                 png_interlaced: st.interlaced,
@@ -428,3 +431,7 @@ fn quantize_rows(px: &mut [[f32; 4]], w: usize, pal: &[[u8; 3]], dither: Dither,
     #[cfg(target_arch = "wasm32")]
     quantize_band(px, w, 0, pal, dither, amount, t)
 }
+
+#[cfg(test)]
+#[path = "png_embed_icc_tests.rs"]
+mod png_embed_icc_tests;

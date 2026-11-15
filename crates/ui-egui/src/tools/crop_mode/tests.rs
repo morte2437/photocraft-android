@@ -458,6 +458,88 @@ fn commit_is_the_same_in_both_modes_and_the_view_stays_upright() {
     assert!(out[0].1 == out[1].1, "same pixels");
 }
 
+/// #9308: the default mode's camera turn is the crop's, not a view rotation, so Match Rotation
+/// and Match All copy 0 to the other views and leave the active view showing the box upright.
+#[test]
+fn match_rotation_leaves_a_pending_crops_turn_out() {
+    let ctx = egui::Context::default();
+    for id in ["window.arrange.matchRotation", "window.arrange.matchAll"] {
+        let mut app = app();
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        app.sync_views();
+        assert!(app.session.set_active(0));
+        app.sync_views();
+        let v = &mut app.ui.views[0];
+        (v.zoom, v.center, v.fit_pending, v.rotation) = (1.0, [100.0, 50.0], false, 0.0);
+        app.ui.views[1].rotation = 15.0;
+        let view = app.ui.views[1].clone();
+        app.ui.windows.push(crate::state::DocWindow { id: 7, document: 1, view, open: true, position: None, floating: false, focused: false });
+        with_frame(&mut app);
+        screen_drag(&mut app, &[pos2(450.0, 300.0), pos2(440.0, 320.0), pos2(370.0, 380.0)], NONE);
+        assert!((view_rotation(&app) - 90.0).abs() < 0.01, "{id}: the view turned with the frame");
+        let r = crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+        assert_eq!(r["rotation"], 0.0, "{id}: {r}");
+        assert_eq!(app.ui.views[1].rotation, 0.0, "{id}: the other document's view");
+        assert_eq!(app.ui.windows[0].view.rotation, 0.0, "{id}: the floating window");
+        assert!((view_rotation(&app) - 90.0).abs() < 0.01, "{id}: the crop still drives its own view");
+        crate::canvas::commit_crop(&mut app);
+        app.ui.tool = Tool::Brush;
+        assert_eq!(view_rotation(&app), 0.0, "{id}: after ↵");
+        assert_eq!(app.ui.views[1].rotation, 0.0, "{id}: the other view isn't left turned");
+    }
+}
+
+/// Match Zoom and Match Location copy no rotation, so with a crop turning the active view they
+/// report its camera's turn as it is and leave every view's rotation alone (#9308).
+#[test]
+fn match_zoom_and_location_report_the_turned_camera() {
+    let ctx = egui::Context::default();
+    for id in ["window.arrange.matchZoom", "window.arrange.matchLocation"] {
+        let mut app = app();
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        app.sync_views();
+        assert!(app.session.set_active(0));
+        app.sync_views();
+        let v = &mut app.ui.views[0];
+        (v.zoom, v.center, v.fit_pending, v.rotation) = (1.0, [100.0, 50.0], false, 0.0);
+        app.ui.views[1].rotation = 15.0;
+        with_frame(&mut app);
+        screen_drag(&mut app, &[pos2(450.0, 300.0), pos2(440.0, 320.0), pos2(370.0, 380.0)], NONE);
+        let turned = view_rotation(&app);
+        assert!((turned - 90.0).abs() < 0.01, "{id}: the view turned with the frame");
+        let r = crate::menus::invoke(&mut app, &ctx, id, json!({})).unwrap();
+        assert!((r["rotation"].as_f64().unwrap() - f64::from(turned)).abs() < 0.01, "{id}: {r}");
+        assert_eq!(app.ui.views[1].rotation, 15.0, "{id}: the other view keeps its rotation");
+    }
+}
+
+/// #9202: switching documents drops a turned pending crop and turns its own document's view
+/// upright, as Esc would, not only the view of the document switched to.
+#[test]
+fn switching_documents_turns_the_dropped_crops_view_upright() {
+    // The crop on the first document, then on the second.
+    for (on, other) in [(0, 1), (1, 0)] {
+        let mut app = app();
+        app.run("file.new", json!({"width": 300, "height": 150})).unwrap();
+        app.sync_views();
+        assert!(app.session.set_active(on));
+        app.sync_views();
+        let v = &mut app.ui.views[on];
+        (v.zoom, v.center, v.fit_pending, v.rotation) = (1.0, [100.0, 50.0], false, 0.0);
+        with_frame(&mut app);
+        screen_drag(&mut app, &[pos2(450.0, 300.0), pos2(440.0, 320.0), pos2(370.0, 380.0)], NONE);
+        assert!((view_rotation(&app) - 90.0).abs() < 0.01, "crop on {on}: the view turned with the frame");
+        assert!(app.session.set_active(other));
+        app.sync_views();
+        assert_eq!(app.ui.crop_rect, None, "crop on {on}: the turned crop is dropped");
+        app.ui.tool = Tool::Brush;
+        crate::crop_ui::ensure_frame(&mut app);
+        assert!(app.session.set_active(on));
+        app.sync_views();
+        assert_eq!(view_rotation(&app), 0.0, "crop on {on}: its document isn't left turned");
+    }
+}
+
 #[test]
 fn picking_the_crop_tool_turns_a_rotated_view_upright() {
     let mut app = app();

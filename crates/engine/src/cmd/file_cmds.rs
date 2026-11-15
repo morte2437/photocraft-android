@@ -24,13 +24,16 @@ mod batch_run;
 mod export;
 mod info;
 mod open;
+mod open_as_smart_object;
 mod paths;
+mod place_steps;
 mod processing;
 mod raw_open;
 mod save;
 
 pub use batch_naming::plan as plan_batch_names;
 use batch_run::batch;
+pub(crate) use batch_run::check_batch_depth;
 pub use batch_run::same_format as batch_same_format;
 use batch_run::same_format;
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,13 +45,15 @@ pub(crate) use batch_run::{batch_action, batch_inputs, batch_keeps_step, batch_s
 pub use export::{LayerExportReport, SkippedExportLayer, bake_cube, export_layers_report_with, export_layers_with};
 use export::{color_lookup_tables, layers_to_files, push_unique};
 use info::file_info;
-pub use info::{CAMERA_FIELDS, camera_data, read_file_info, write_file_info};
+pub use info::{CAMERA_FIELDS, camera_data, copyright_marked, read_file_info, write_file_info};
 #[cfg(test)]
 use info::{exposure_text, find_element};
 pub(crate) use open::{BatchOpen, batch_open_notice, batch_open_params, remember_batch_open};
 pub use open::{PLACE_EMBEDDED, open_bytes_as, open_bytes_as_with_options, place_bytes, raw_defaults};
+pub(crate) use open::{PlaceInput, apply_place, import, import_with_options, tag_exr_colorspace};
 use open::{approve_memory, close_all, close_others, open_as, place, revert};
-pub(crate) use open::{import, import_with_options, tag_exr_colorspace};
+pub use open_as_smart_object::admit_as_smart_object;
+use open_as_smart_object::open_as_smart_object;
 use paths::is_file;
 #[cfg(test)]
 use paths::openable_name;
@@ -57,12 +62,13 @@ pub use paths::{
     template_name, untitled_name,
 };
 pub(crate) use paths::{file_name, forward_slashes, is_windows_device_name, join, read_file, read_file_limited, sanitize, stem, write_file};
+pub(crate) use place_steps::PlaceSteps;
 use processing::{conditional_mode_change, fit_image, flatten_all_effects, flatten_all_masks, image_processor, load_files_into_stack};
 use save::save_a_copy;
 pub(crate) use save::{SaveOpts, encode, save_doc};
 pub use save::{
-    dds_param, dpx_bits_param, jpeg_format_param, jpeg_quality, pcraft_full_composite_param, tga_bits_param, tiff_bool_param, tiff_compression_param,
-    tiff_would_write_layers,
+    dds_param, dpx_bits_param, jpeg_format_param, jpeg_quality, maximize_compatibility_param, pcraft_full_composite_param, pdf_spot_plates_param,
+    tga_bits_param, tiff_bool_param, tiff_compression_param, tiff_would_write_layers,
 };
 
 mod batch_naming;
@@ -123,6 +129,10 @@ impl crate::DocState {
         if self.doc.name != name {
             Arc::make_mut(&mut self.doc).name = name;
         }
+        // The file now holds just this document, whatever the one it was opened from held.
+        if self.doc.file_encoding.source_images.is_some() {
+            Arc::make_mut(&mut self.doc).file_encoding.source_images = None;
+        }
         self.path = Some(path);
         self.saved_revision = self.revision;
     }
@@ -171,11 +181,18 @@ pub(crate) fn flattened(doc: &Document, fmt: PixelFormat) -> Surface {
 /// a sparse bundle declares its canvas, and one the size of the format allows would be rendered
 /// in full, however little it holds. Refused past the compositor's own per-render limit.
 pub(crate) fn flattened_checked(doc: &Document, fmt: PixelFormat, cmd: &str) -> Result<Surface> {
+    check_flattenable(doc, cmd)?;
+    Ok(flattened(doc, fmt))
+}
+
+/// The refusal [`flattened_checked`] gives a canvas past the compositor's per-render limit, for a
+/// caller that flattens `doc` some other way (a place job, which can be cancelled while it does).
+pub(crate) fn check_flattenable(doc: &Document, cmd: &str) -> Result<()> {
     let b = doc.bounds();
     if u64::from(b.width()) * u64::from(b.height()) > photocraft_compose::MAX_RENDER_PIXELS {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("the document's {}×{} canvas is too large to flatten", b.width(), b.height()) });
     }
-    Ok(flattened(doc, fmt))
+    Ok(())
 }
 
 fn new_guide_layout(s: &mut Session, p: &Value) -> Result<Value> {
@@ -223,6 +240,8 @@ fn clear_canvas_guides(s: &mut Session) -> Result<Value> {
 
 // ---------- registry ----------
 
+/// Register File-menu commands with their parameter contracts and enablement predicates.
+/// Filesystem operations are native-only; document operations remain available on the web.
 pub fn specs() -> Vec<CommandSpec> {
     macro_rules! spec {
         ($id:expr, $label:expr, $menu:expr, $sc:expr, $params:expr, $enabled:expr, $run:expr) => {
@@ -263,7 +282,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save a Copy…",
             &["File"],
             Some("Cmd+Alt+S"),
-            r##"{"path":str (format from the extension),"quality":0..12? (JPEG),"jpegFormat":"baseline|optimized|progressive"? (JPEG; default baseline),"layers":bool=true,"overwrite":bool=false (replace the document's own file),"tiffLayers":bool=false (TIFF: keep the layers; flat by default),"tiffCompression":"none|lzw|zip"? (TIFF: image compression; unset, none),"tiffTransparency":bool? (TIFF: Save Transparency; off composites over white; unset, kept unless the document has alpha or spot channels),"tiffPyramid":bool=false (TIFF: Save Image Pyramid, half-size copies after the image),"tgaBits":24|32? (TGA: 32 writes the alpha channel, or else the transparency, as the alpha; unset, 32 with an alpha channel or transparency, else 24),"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"pcraftFullComposite":bool? (.pcraft: request the flattened document at its canvas size as composite/full.png; it may be omitted; check the manifest's full_composite member; unset, Preferences › File Handling)}"##,
+            r##"{"path":str (format from the extension),"quality":0..12? (JPEG),"jpegFormat":"baseline|optimized|progressive"? (JPEG; default baseline),"layers":bool=true,"overwrite":bool=false (replace the document's own file),"tiffLayers":bool=false (TIFF: keep the layers; flat by default),"tiffCompression":"none|lzw|zip"? (TIFF: image compression; unset, none),"tiffTransparency":bool? (TIFF: Save Transparency; off composites over white; unset, kept unless the document has alpha or spot channels),"tiffPyramid":bool=false (TIFF: Save Image Pyramid, half-size copies after the image),"tgaBits":24|32? (TGA: 32 writes the alpha channel, or else the transparency, as the alpha; unset, 32 with an alpha channel or transparency, else 24),"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"maximizeCompatibility":bool? (PSD/PSB: write the real merged image; unset, Preferences > File Handling > Maximize PSD and PSB File Compatibility),"pdfSpotPlates":bool=true (PDF: spot channels as overprinting Separation plates after the image; a Multichannel document as plates alone, so false refuses it),"pcraftFullComposite":bool? (.pcraft: request the flattened document at its canvas size as composite/full.png; it may be omitted; check the manifest's full_composite member; unset, Preferences › File Handling)}"##,
             native_doc,
             save_a_copy
         ),
@@ -275,6 +294,15 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"path":str,"as":"psd|png|jpg|tiff|…"? (decode as this format),"approveHighMemory":bool=false (explicitly approve high memory usage)}"##,
             native,
             open_as
+        ),
+        spec!(
+            "file.openAsSmartObject",
+            "Open as Smart Object…",
+            &["File"],
+            None,
+            r##"{"path":str,"confirmDamage":bool=false (a damaged PSD waits for an answer, as File > Open's does)} (opens the file as a new untitled document named "<file name without its last extension>-N" with the file's size, resolution, colour mode, bit depth and profile, holding one embedded smart object layer named after the file) → {document, docId, name, layer, warnings, color, smartObject} (or {held, name, warnings, color, damaged, smartObject} while a prompt waits)"##,
+            native,
+            open_as_smart_object
         ),
         // One-shot permission for one file, not something to replay later: never journaled or
         // recorded in an action, since replaying it in another session/on another file would
@@ -340,7 +368,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Batch…",
             &["File", "Automate"],
             None,
-            r##"{"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"set":str? (for a named action),"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; a Save, Save As or Save a Copy step marks the document written to output, in this command's format and options: as the save found it if it was closed or another document is active at the end, else as the action leaves it; with no such step, the active document at the end),"source":"folder|open"="folder" (open runs on live documents),"input":folder|[paths] (folder source),"errorLog":path? (blank disables it),"suppressOpenOptions":bool=false (use caller RAW defaults and fully supported prior XMP without a dialog; unsupported prior settings or unanswerable profile questions fail the input),"suppressWarnings":bool=false (apply caller opening policy without profile questions; import diagnostics remain in notices),"overrideOpen":bool=false (execute action Open steps with the current input path, retaining other Open options; without an executed Open the input fails),"includeNonImages":bool=false (folder inputs report unsupported files as per-file errors instead of skipping them; arrays are unchanged),"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; ordinary outputs are flat; namingComponents can retain subfolders when flatOutput is false),"destination":"folder|saveAndClose"="folder" (Save and Close writes the same source path/format; rejects already-open sources and changed result document identity),"output":folder? (required only for folder; omit for Save and Close),"format":"same|png|jpg|psd|tiff|…"="same" (Save and Close requires same),"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"namingComponents":[{"component":choice}|{"text":str}]? (up to six; the exact filename, with no automatic extension),"compatibility":{"macintosh":bool,"windows":bool,"unix":bool}?,"flatOutput":bool=false (structured naming only; put every result directly under output, dropping its subfolder path; duplicate output names make later results error entries),"overrideSaveAs":bool? (recorded routing; requires a directly represented Save configuration),"stopOnError":bool=false (report the first failed input and stop; earlier outputs remain saved),"naming":string? (blank keeps source names; {name}/{NAME}/{Name}, {serial}/{serial:1..4}, {letter}/{LETTER}, {date} and date formats, {ext}/{EXT}; template determines the whole filename),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool? (Folder default false; Save and Close default true, with false refused when TIFF layer data would be lost),"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"calledActions":[{"name","steps"}…]? (internal action references; default: the session's; a named source is selected from the caller)} → {files, errors, stopped?, skipped?, errorLog?, documents?} (structured naming, includeNonImages and Save and Close refuse duplicate results; ordinary native templates keep the later result)"##,
+            r##"{"action":name|index|[steps]? (used only when steps is absent; named actions exclude disabled steps),"set":str? (for a named action),"steps":[[commandId,params]|{"command":id,"params":{}}…] (a recorded action; a Save, Save As or Save a Copy step marks the document written to output, in this command's format and options: as the save found it if it was closed or another document is active at the end, else as the action leaves it; with no such step, the active document at the end),"source":"folder|open"="folder" (open runs on live documents),"input":folder|[paths] (folder source),"errorLog":path? (blank disables it),"suppressOpenOptions":bool=false (use caller RAW defaults and fully supported prior XMP without a dialog; unsupported prior settings or unanswerable profile questions fail the input),"suppressWarnings":bool=false (apply caller opening policy without profile questions; import diagnostics remain in notices),"overrideOpen":bool=false (execute action Open steps with the current input path, retaining other Open options; without an executed Open the input fails),"includeNonImages":bool=false (folder inputs report unsupported files as per-file errors instead of skipping them; arrays are unchanged),"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; ordinary outputs are flat; namingComponents can retain subfolders when flatOutput is false),"destination":"folder|saveAndClose"="folder" (Save and Close writes the same source path/format; rejects already-open sources and changed result document identity),"output":folder? (required only for folder; omit for Save and Close),"format":"same|png|jpg|psd|tiff|…"="same" (Save and Close requires same),"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"namingComponents":[{"component":choice}|{"text":str}]? (up to six; the exact filename, with no automatic extension),"compatibility":{"macintosh":bool,"windows":bool,"unix":bool}?,"flatOutput":bool=false (structured naming only; put every result directly under output, dropping its subfolder path; duplicate output names make later results error entries),"overrideSaveAs":bool? (recorded routing; requires a directly represented Save configuration),"stopOnError":bool=false (report the first failed input and stop; earlier outputs remain saved),"naming":string? (blank keeps source names; {name}/{NAME}/{Name}, {serial}/{serial:1..4}, {letter}/{LETTER}, {date} and date formats, {ext}/{EXT}; template determines the whole filename),"startingSerial":1..4294967295=1 (input position, including failed inputs),"tiffLayers":bool? (Folder default false; Save and Close default true, with false refused when TIFF layer data would be lost),"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"maximizeCompatibility":bool? (PSD/PSB: write the real merged image; unset, Preferences > File Handling > Maximize PSD and PSB File Compatibility),"pdfSpotPlates":bool=true (PDF: spot channels as overprinting Separation plates after the image; a Multichannel document as plates alone, so false refuses it),"calledActions":[{"name","steps"}…]? (internal action references; default: the session's; a named source is selected from the caller)} → {files, errors, stopped?, skipped?, errorLog?, documents?} (structured naming, includeNonImages and Save and Close refuse duplicate results; ordinary native templates keep the later result)"##,
             native,
             batch
         ),
@@ -349,7 +377,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Image Processor…",
             &["File", "Scripts"],
             None,
-            r##"{"input":folder|[paths],"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"jpg|png|psd|tiff|…"="jpg","quality":0..12=8,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"width":px?,"height":px? (fit, never enlarge),"convertToSrgb":bool=false} → {files, errors} (an input whose output name was already written in the run goes to errors)"##,
+            r##"{"source":"folder|current|open"="folder" (current processes a copy of the active document; open processes copies of all open documents, including unsaved edits; originals and history stay unchanged),"input":folder|[paths]? (required for folder source),"includeSubfolders":bool=false (a folder input also takes the images in its subfolders, up to 32 levels and 100000 files; each result keeps its subfolder under output),"output":folder,"format":"jpg|png|psd|tiff|…"="jpg","quality":0..12=8,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"maximizeCompatibility":bool? (PSD/PSB: write the real merged image; unset, Preferences > File Handling > Maximize PSD and PSB File Compatibility),"pdfSpotPlates":bool=true (PDF: spot channels as overprinting Separation plates after the image; a Multichannel document as plates alone, so false refuses it),"width":px?,"height":px? (fit, never enlarge),"convertToSrgb":bool=false,"jpeg":{enabled?:bool=true,quality?:1..12=5,convertToSrgb?:bool=false,resize?:bool=false,width?:1..30000=1,height?:1..30000=1}|false?,"psd":{enabled?:bool=true,maximizeCompatibility?:bool=true,resize?:bool=false,width?:1..30000=1,height?:1..30000=1}|false?,"tiff":{enabled?:bool=true,lzw?:bool=false,resize?:bool=false,width?:1..30000=1,height?:1..30000=1}|false?} → {files, errors} (without format, supplying jpeg/psd/tiff selects per-format mode; omitted, null, false or disabled sections are skipped; at least one must be enabled. Errors in per-format mode identify the format.)"##,
             native,
             image_processor
         ),
@@ -377,7 +405,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Layers to Files…",
             &["File", "Export"],
             None,
-            r##"{"dir":folder,"format":"png|jpg|psd|tiff|…"="png","prefix":str=document name,"visibleOnly":bool=true,"trim":bool=false,"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain)} → {files}"##,
+            r##"{"dir":folder,"format":"png|jpg|psd|tiff|…"="png","prefix":str=document name,"visibleOnly":bool=true,"trim":bool=false,"quality":0..12?,"jpegFormat":"baseline|optimized|progressive"?,"tiffLayers":bool=false,"tiffCompression":"none|lzw|zip"?,"tiffTransparency":bool?,"tiffPyramid":bool=false,"tgaBits":24|32?,"dpxBits":8|10|12|16? (DPX: bits per sample; unset, 8 for an 8-bit document, else 16),"ddsCompression":"none|bc1|bc2|bc3"="none" (DDS: uncompressed, or block compression; BC1 keeps alpha on or off),"ddsMipmaps":bool=false (DDS: also write the full mip chain),"maximizeCompatibility":bool? (PSD/PSB: write the real merged image; unset, Preferences > File Handling > Maximize PSD and PSB File Compatibility),"pdfSpotPlates":bool=true (PDF: spot channels as overprinting Separation plates after the image; a Multichannel document as plates alone, so false refuses it)} → {files}"##,
             native_doc,
             layers_to_files
         ),
@@ -409,6 +437,22 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests;
 
 #[cfg(test)]
+#[path = "file_cmds/export_clut_cube_header_tests.rs"]
+mod export_clut_cube_header_tests;
+
+#[cfg(test)]
+#[path = "file_cmds/place_job_tests.rs"]
+mod place_job_tests;
+
+#[cfg(test)]
+#[path = "file_cmds/open_as_smart_object_tests.rs"]
+mod open_as_smart_object_tests;
+
+#[cfg(test)]
+#[path = "file_cmds/open_as_error_name_tests.rs"]
+mod open_as_error_name_tests;
+
+#[cfg(test)]
 mod aces_exr_tests {
     use super::*;
 
@@ -428,8 +472,8 @@ mod aces_exr_tests {
         .unwrap();
         let bytes = photocraft_codecs::encode(&image, photocraft_codecs::Format::OpenExr, &photocraft_codecs::EncodeOptions::default()).unwrap();
 
-        let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
-        let aces = photocraft_cms::Builtin::AcesCg.profile().to_bytes();
+        let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
+        let aces = craft_cms::Builtin::AcesCg.profile().to_bytes();
 
         // Off (the default): io's linear-sRGB tagging stays.
         let mut s = Session::new();
@@ -453,8 +497,8 @@ mod aces_exr_tests {
         let image = photocraft_codecs::Image::from_f32(4, 4, photocraft_codecs::ChannelLayout::Rgb, &[0.5; 48]).unwrap();
         let bytes =
             std::sync::Arc::new(photocraft_codecs::encode(&image, photocraft_codecs::Format::OpenExr, &photocraft_codecs::EncodeOptions::default()).unwrap());
-        let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
-        let aces = photocraft_cms::Builtin::AcesCg.profile().to_bytes();
+        let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
+        let aces = craft_cms::Builtin::AcesCg.profile().to_bytes();
         for (on, want) in [(false, &linear), (true, &aces)] {
             let mut s = Session::new();
             s.prefs.edit(|p| p.file_handling.exr_aces_cg = on);

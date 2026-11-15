@@ -400,3 +400,208 @@ fn nearest_neighbor_reduction_does_not_average() {
         }
     }
 }
+
+/// A reduction beyond 4096x by Lanczos must not build a weight per covered source sample.
+#[test]
+fn a_tiny_lanczos_scale_keeps_its_weights_small() {
+    let scale = 1.0e-7;
+    for o in [0, 1] {
+        let (_, w) = weights(o, scale, Kernel::Lanczos, None, (0, 63));
+        assert!(w.len() < 1024, "{} weights", w.len());
+        let sum: f64 = w.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "{sum}");
+    }
+}
+
+/// #9212: a bicubic shrink of both axes stores the image between its passes with one axis at the
+/// old size, larger than the result; single-pass filters and growing axes store nothing larger.
+#[test]
+fn largest_resize_rect_counts_the_image_between_the_passes() {
+    let r = Rect::new(0, 0, 100, 80);
+    for f in [Resample::Bicubic, Resample::BicubicSharper, Resample::BicubicAutomatic, Resample::PreserveDetails] {
+        assert_eq!(largest_resize_rect(r, 0.5, 0.5, f), Rect::new(0, 0, 50, 80), "{f:?}");
+    }
+    // The axis with the smaller scale goes first.
+    assert_eq!(largest_resize_rect(r, 0.5, 0.25, Resample::Bicubic), Rect::new(0, 0, 100, 20));
+    for f in [Resample::Bilinear, Resample::Nearest, Resample::Lanczos] {
+        assert_eq!(largest_resize_rect(r, 0.5, 0.5, f), Rect::new(0, 0, 50, 40), "{f:?}");
+    }
+    for f in [Resample::Bicubic, Resample::BicubicAutomatic] {
+        assert_eq!(largest_resize_rect(r, 2.0, 3.0, f), Rect::new(0, 0, 200, 240), "{f:?} grows");
+        assert_eq!(largest_resize_rect(r, 0.5, 2.0, f), Rect::new(0, 0, 50, 160), "{f:?} shrinks x, grows y");
+    }
+}
+
+#[test]
+fn controlled_resize_matches_pixels_and_discards_cancelled_work() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let src = ramp(depth);
+        let expected = resize_surface(&src, 1.7, 0.6, Resample::Bicubic);
+        let actual = resize_surface_with_interrupt(&src, 1.7, 0.6, Resample::Bicubic, &photocraft_raster::Interrupt::NONE).unwrap();
+        let bounds = expected.content_bounds();
+        assert_eq!(expected.read_region(bounds), actual.read_region(bounds));
+        let cancelled = || true;
+        let progress = |_| {};
+        let ctl = photocraft_raster::Interrupt::new(&cancelled, &progress);
+        assert!(resize_surface_with_interrupt(&src, 1.7, 0.6, Resample::Bicubic, &ctl).is_err());
+    }
+}
+
+/// Every band group of a pass asks `ctl` again, not only the start of each pass: counting the
+/// calls catches a missing per-group check, which a cancel (that fails at the first call or at the
+/// final one alike) cannot.
+#[test]
+fn controlled_resize_checks_cancellation_per_band_group() {
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let src = ramp(depth);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let cancelled = || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            false
+        };
+        let progress = |_| {};
+        let ctl = photocraft_raster::Interrupt::new(&cancelled, &progress);
+        assert!(resize_surface_with_interrupt(&src, 1.7, 0.6, Resample::Bicubic, &ctl).is_ok());
+        let passes = plan(Resample::Bicubic, 1.7, 0.6).len();
+        let checks = calls.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(checks > passes + 2, "{checks} cancellation checks for {passes} passes; per-group checks are missing");
+    }
+}
+
+/// A pseudo-random surface of `w`×`h` in a format of `mode`, `sample` and `alpha`.
+fn noisy(w: i32, h: i32, mode: ColorMode, sample: SampleType, alpha: bool) -> Surface {
+    let fmt = PixelFormat::new(mode, sample, alpha);
+    let n = fmt.channels();
+    let mut seed = 0x2545_f491u32;
+    let v: Vec<f32> = (0..w as usize * h as usize * n)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32
+        })
+        .collect();
+    let mut s = Surface::new(fmt);
+    s.write_region(Rect::new(0, 0, w, h), &v);
+    s
+}
+
+/// Drives `steps` to the end, `per_call` units of work at a time (0: unlimited); returns the
+/// surface and how many calls it took.
+fn drive(mut steps: ResizeSteps, per_call: usize) -> (Surface, usize) {
+    let mut calls = 0;
+    loop {
+        calls += 1;
+        let mut left = per_call;
+        let mut more = || {
+            left = left.wrapping_sub(1);
+            per_call == 0 || left > 0
+        };
+        if let Some(s) = steps.step(&mut more) {
+            return (s, calls);
+        }
+        assert!(calls < 10_000, "the resize never finished");
+    }
+}
+
+#[test]
+fn steps_equal_resize_surface() {
+    let cases = [
+        (SampleType::U8, ColorMode::Rgb, true),
+        (SampleType::U16, ColorMode::Rgb, false),
+        (SampleType::F32, ColorMode::Rgb, true),
+        (SampleType::U8, ColorMode::Grayscale, true),
+    ];
+    for (sample, mode, alpha) in cases {
+        let src = noisy(150, 130, mode, sample, alpha);
+        // Up, down, one axis each way, and enough output rows for several bands.
+        for (sx, sy) in [(0.6, 0.6), (1.7, 1.7), (0.4, 2.2), (1.0, 0.5)] {
+            for filter in [Resample::Bicubic, Resample::Lanczos, Resample::BicubicAutomatic, Resample::Nearest] {
+                let expected = resize_surface(&src, sx, sy, filter);
+                for per_call in [0, 1, 7] {
+                    let (got, _) = drive(ResizeSteps::new(src.clone(), sx, sy, filter, None), per_call);
+                    assert!(got == expected, "{sample:?} {mode:?} alpha={alpha} scale=({sx}, {sy}) {filter:?} per_call={per_call}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn steps_equal_resize_surface_in_canvas() {
+    let src = noisy(90, 70, ColorMode::Rgb, SampleType::U8, true);
+    let canvas = Rect::new(0, 0, 90, 70);
+    for (sx, sy) in [(0.7, 0.7), (1.9, 1.3)] {
+        let expected = resize_surface_in_canvas(&src, sx, sy, Resample::Bicubic, canvas);
+        let (got, _) = drive(ResizeSteps::new(src.clone(), sx, sy, Resample::Bicubic, Some(canvas)), 1);
+        assert!(got == expected, "scale=({sx}, {sy})");
+    }
+}
+
+#[test]
+fn steps_take_several_calls_and_report_progress() {
+    let src = noisy(120, 300, ColorMode::Rgb, SampleType::U8, true);
+    let mut steps = ResizeSteps::new(src, 0.9, 0.9, Resample::Bicubic, None);
+    assert_eq!(steps.progress(), 0.0);
+    let mut seen = Vec::new();
+    let mut calls = 0;
+    let out = loop {
+        calls += 1;
+        if let Some(s) = steps.step(&mut || false) {
+            break s;
+        }
+        seen.push(steps.progress());
+    };
+    // Planning, one call per 64-row band (270 rows: five), and the closing call.
+    assert!(calls >= 6, "{calls}");
+    assert!(seen.windows(2).all(|w| w[0] <= w[1]), "progress goes back: {seen:?}");
+    assert!(seen.iter().all(|p| (0.0..=1.0).contains(p)));
+    assert_eq!(out.content_bounds(), Rect::new(0, 0, 108, 270));
+}
+
+#[test]
+fn steps_of_an_empty_surface_are_empty() {
+    let src = Surface::new(PixelFormat::new(ColorMode::Rgb, SampleType::U8, true));
+    let expected = resize_surface(&src, 0.5, 0.5, Resample::Bicubic);
+    let (got, _) = drive(ResizeSteps::new(src, 0.5, 0.5, Resample::Bicubic, None), 1);
+    assert!(got == expected);
+}
+
+/// A transparent image with distant opaque corners keeps broad resize bounds. Its empty
+/// output tiles must be pruned across polls rather than scanning the whole surface at once.
+#[test]
+fn sparse_resize_final_pruning_yields_between_tile_batches() {
+    for sample in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        sparse_resize_final_pruning(sample);
+    }
+}
+
+fn sparse_resize_final_pruning(sample: SampleType) {
+    let mut src = Surface::new(PixelFormat::new(ColorMode::Rgb, sample, true));
+    for (x0, y0) in [(0, 0), (4600, 504)] {
+        for y in y0..y0 + 8 {
+            for x in x0..x0 + 8 {
+                src.write_pixel(x, y, &[1.0, 0.0, 0.0, 1.0]);
+            }
+        }
+    }
+    let expected = resize_surface(&src, 0.5, 0.5, Resample::Nearest);
+    let mut steps = ResizeSteps::new(src, 0.5, 0.5, Resample::Nearest, None);
+    let mut polls = 0;
+    while !steps.passes.as_slice().is_empty() || steps.run.is_some() {
+        assert!(steps.step(&mut || false).is_none());
+        polls += 1;
+        assert!(polls < 100, "the resize passes did not finish");
+    }
+    let unpruned = steps.src.tile_count();
+    assert!(unpruned >= 9, "the fixture must leave a broad output to scan: {unpruned}");
+    let mut closing_polls = 0;
+    let actual = loop {
+        closing_polls += 1;
+        if let Some(out) = steps.step(&mut || false) {
+            break out;
+        }
+        assert!(closing_polls < 100, "the final prune did not finish");
+    };
+    assert!(closing_polls >= unpruned.div_ceil(4), "{unpruned} tiles were scanned in {closing_polls} closing polls");
+    assert!(actual == expected, "stepped pruning must preserve pixels and remove the same empty tiles");
+    assert!(actual.tile_count() < unpruned, "the fixture must include default-filled output tiles");
+}

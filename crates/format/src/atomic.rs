@@ -21,6 +21,9 @@
 //! - **Network shares (macOS):** `sync_all` asks for a full flush to the disk's platters
 //!   (`F_FULLFSYNC`), which SMB shares and some virtual file systems refuse while a plain `fsync`
 //!   works. [`sync_file`] falls back to the plain one there (#1336).
+//! - **Hidden flags (network shares):** the temporary file's name never starts with a dot. An SMB
+//!   server that hides dot files marks one hidden when it is created, the mark survives the
+//!   rename, and the saved document then doesn't show in Finder (#11624). See [`temp_name`].
 //!
 //! On the web there is no file system: writes go through the platform services (downloads), so
 //! this module is never reached there; on `wasm32` every call returns the `std` "unsupported"
@@ -233,7 +236,14 @@ pub fn atomic_write_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, byt
 
 /// [`atomic_write_with`] reporting write progress (see [`atomic_write_progress`]).
 pub fn atomic_write_with_progress(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, bytes: &[u8], progress: &dyn Fn(f32)) -> io::Result<()> {
-    replace_with(fs, retry, path, &mut |tmp| fs.write_new_progress(tmp, bytes, progress))
+    replace_with(fs, retry, path, true, &mut |tmp| fs.write_new_progress(tmp, bytes, progress))
+}
+
+/// [`atomic_write`] that never follows a symlink at `path`: a link there is replaced by the new
+/// file (the rename swaps the directory entry), so a link planted between a caller's own check
+/// and this write cannot carry it outside the folder (a store managing its own entries).
+pub fn atomic_write_no_follow(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    replace_with(&RealFs, RenameRetry::platform(), path, false, &mut |tmp| RealFs.write_new_progress(tmp, bytes, &|_| {}))
 }
 
 /// [`atomic_write`] for a file serialized as it is written (#6607): `write` fills the temporary
@@ -258,7 +268,7 @@ pub fn atomic_write_stream_progress(path: &Path, expected_len: u64, progress: &d
 
 /// [`atomic_write_stream`] through an explicit file system and retry policy.
 pub fn atomic_write_stream_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write: &mut StreamWriter<'_>) -> io::Result<()> {
-    replace_with(fs, retry, path, &mut |tmp| fs.write_new_stream(tmp, write))
+    replace_with(fs, retry, path, true, &mut |tmp| fs.write_new_stream(tmp, write))
 }
 
 /// A stream reporting how far it has got (see [`atomic_write_stream_progress`]), every
@@ -301,8 +311,8 @@ impl Seek for Progress<'_, '_> {
 
 /// The steps every atomic write shares: `write_tmp` fills a fresh temporary file beside the
 /// target, which is then renamed over it.
-fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
-    let target = resolve_symlink(path).map_err(|e| context(e, format!("cannot save {}", path.display())))?;
+fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, follow: bool, write_tmp: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
+    let target = if follow { resolve_symlink(path).map_err(|e| context(e, format!("cannot save {}", path.display())))? } else { path.to_path_buf() };
     let name = target.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{}: not a file path", path.display())))?;
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
@@ -337,7 +347,10 @@ fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &
     // default, its extended attributes, and its ACL. Best effort, and before the swap, so the
     // file the user ends up with never passes through a more permissive state.
     let replacing = target.exists();
-    if replacing {
+    // A link that is replaced rather than followed has nothing to carry over: reading the target's
+    // attributes would open whatever it points at (a FIFO with no writer blocks there).
+    let replaced_link = !follow && std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink());
+    if replacing && !replaced_link {
         let _ = fs.copy_metadata(&target, &tmp);
     }
 
@@ -355,7 +368,7 @@ fn replace_with(fs: &dyn AtomicFs, retry: RenameRetry, path: &Path, write_tmp: &
     // so the caller keeps the document unsaved and its recovery data instead of discarding them
     // on a save that may not last.
     #[cfg(windows)]
-    fs.sync_dir(&dir).map_err(|e| publication_error(e, path))?;
+    dir_synced(fs.sync_dir(&dir)).map_err(|e| publication_error(e, path))?;
     #[cfg(not(windows))]
     dir_synced(fs.sync_dir(&dir)).map_err(|e| unconfirmed_error(e, path))?;
     Ok(())
@@ -376,9 +389,10 @@ fn open_dir_for_sync(dir: &Path) -> io::Result<Option<std::fs::File>> {
 /// `result` of flushing a directory, with "this file system can't flush directories" counted as
 /// success: `EINVAL` (Linux file systems without directory fsync), `ENOTSUP`/`EOPNOTSUPP` and,
 /// on Apple platforms, `ENOTTY`, or [`io::ErrorKind::Unsupported`]. Waiting or retrying won't
-/// change those, and failing every save there would make saving impossible. Any other error is
-/// returned: the flush was attempted and failed.
-#[cfg(not(windows))]
+/// change those, and failing every save there would make saving impossible. On Windows that is
+/// `ERROR_INVALID_FUNCTION` (1) and `ERROR_NOT_SUPPORTED` (50), which network shares (SMB, #9440)
+/// return when asked to flush a directory handle; access denied and I/O errors stay failures.
+/// Any other error is returned: the flush was attempted and failed.
 pub(crate) fn dir_synced(result: io::Result<()>) -> io::Result<()> {
     match result {
         Err(e) if dir_sync_unsupported(&e) => Ok(()),
@@ -386,10 +400,13 @@ pub(crate) fn dir_synced(result: io::Result<()>) -> io::Result<()> {
     }
 }
 
-#[cfg(not(windows))]
 fn dir_sync_unsupported(e: &io::Error) -> bool {
     if e.kind() == io::ErrorKind::Unsupported {
         return true;
+    }
+    // Win32 codes, not errno: ERROR_INVALID_FUNCTION and ERROR_NOT_SUPPORTED.
+    if cfg!(windows) {
+        return matches!(e.raw_os_error(), Some(1 | 50));
     }
     // errno values: EINVAL is 22 everywhere; ENOTSUP and EOPNOTSUPP are 95 on Linux and
     // Android, 45 and 102 on Apple platforms, 45 on the BSDs; ENOTTY is 25. Elsewhere 45 means
@@ -479,13 +496,53 @@ fn resolve_symlink(path: &Path) -> io::Result<PathBuf> {
     Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{}: too many levels of symbolic links", path.display())))
 }
 
-/// A unique hidden temporary file name to write beside `file` before renaming over it.
+/// What every [`temp_name`] ends with.
+const TEMP_SUFFIX: &str = ".pcsave.tmp";
+
+/// How many characters of the file name a [`temp_name`] keeps.
+const TEMP_STEM_CHARS: usize = 64;
+
+/// A unique temporary file name to write beside `file` before renaming over it:
+/// `{file}.{pid}-{n}.pcsave.tmp`.
+///
+/// It does not start with a dot of its own, so it is not hidden: an SMB server that hides dot
+/// files sets the hidden flag on such a file when it is created, the flag survives the rename,
+/// and the saved document would be invisible in Finder (#11624). The cost is that the file shows
+/// in a folder listing while a save writes it, and one an interrupted save leaves beside the
+/// document stays visible until it is removed (#6604). The
+/// process id, counter and suffix keep it apart from the files people name, and it is created
+/// with `create_new`, so it can never replace one. Older versions wrote
+/// `.{file}.{pid}-{n}.pcsave.tmp`; [`temp_owner`] recognizes both.
 pub fn temp_name(file: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     // Keep the name short: a long file name plus the suffix must stay under NAME_MAX.
-    let stem: String = file.chars().take(64).collect();
-    format!(".{stem}.{}-{n}.pcsave.tmp", std::process::id())
+    let stem: String = file.chars().take(TEMP_STEM_CHARS).collect();
+    format!("{stem}.{}-{n}{TEMP_SUFFIX}", std::process::id())
+}
+
+/// The id of the process that wrote `name`, if it is a [`temp_name`]: today's
+/// `{file}.{pid}-{n}.pcsave.tmp` or the `.{file}.{pid}-{n}.pcsave.tmp` older versions wrote, so
+/// their leftovers are still cleaned up.
+pub fn temp_owner(name: &str) -> Option<u32> {
+    let rest = name.strip_suffix(TEMP_SUFFIX)?;
+    let (stem, ids) = rest.rsplit_once('.')?;
+    let (pid, n) = ids.split_once('-')?;
+    // Only a file part `temp_name` writes: at most `TEMP_STEM_CHARS` characters, or one more when
+    // the first is the dot older versions put in front of them.
+    let chars = stem.chars().count();
+    if chars > TEMP_STEM_CHARS && !(chars == TEMP_STEM_CHARS + 1 && stem.starts_with('.')) {
+        return None;
+    }
+    let stem = stem.strip_prefix('.').unwrap_or(stem);
+    // Only numbers `temp_name` writes: plain decimal digits with no leading zero (a lone "0" is
+    // fine), a `u32` pid and the `u64` counter it counts with. Any other name is someone else's
+    // file, and the sweep must not delete it.
+    let decimal = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'));
+    if stem.is_empty() || !decimal(pid) || !decimal(n) || n.parse::<u64>().is_err() {
+        return None;
+    }
+    pid.parse().ok()
 }
 
 fn context(e: io::Error, msg: String) -> io::Error {

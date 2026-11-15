@@ -45,21 +45,28 @@ pub fn base_dirs(var: &dyn Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     dirs
 }
 
-/// One `[section]` of an `index.theme`, as (key, value) pairs.
-fn section<'a>(index: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
-    let mut inside = false;
-    let mut pairs = vec![];
+/// Every `[section]` of an `index.theme` as (key, value) pairs, in one pass; the first section
+/// of a name wins. (Looking each directory's section up by rescanning the file multiplied its
+/// size by the number of directories.)
+fn sections(index: &str) -> std::collections::HashMap<&str, Vec<(&str, &str)>> {
+    let mut all = std::collections::HashMap::new();
+    let mut current: Option<Vec<(&str, &str)>> = None;
+    let mut name = "";
     for line in index.lines().map(str::trim) {
         if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            if inside {
-                break;
+            if let Some(done) = current.take() {
+                all.entry(name).or_insert(done);
             }
-            inside = s == name;
-        } else if inside && let Some((k, v)) = line.split_once('=') {
+            name = s;
+            current = Some(vec![]);
+        } else if let (Some(pairs), Some((k, v))) = (current.as_mut(), line.split_once('=')) {
             pairs.push((k.trim(), v.trim()));
         }
     }
-    pairs
+    if let Some(done) = current {
+        all.entry(name).or_insert(done);
+    }
+    all
 }
 
 fn list(value: Option<&str>) -> impl Iterator<Item = &str> {
@@ -156,13 +163,14 @@ impl IconTheme {
             // The first index wins; a theme can still be spread over several base directories.
             let Some(index) = roots.iter().find_map(|r| read_small(&r.join("index.theme"))) else { continue };
             let index = String::from_utf8_lossy(&index);
-            let head = section(&index, "Icon Theme");
+            let all = sections(&index);
+            let head = all.get("Icon Theme").map_or(&[][..], Vec::as_slice);
             let get = |k: &str| head.iter().find(|(key, _)| *key == k).map(|(_, v)| *v);
             let mut subdirs: Vec<((i64, i64), &str)> = list(get("Directories"))
                 .chain(list(get("ScaledDirectories")))
                 .filter(|d| !d.split('/').any(|part| part == ".." || part.is_empty()))
                 .take(MAX_DIRS)
-                .map(|d| (distance(&section(&index, d)), d))
+                .map(|d| (distance(all.get(d).map_or(&[][..], Vec::as_slice)), d))
                 .collect();
             subdirs.sort_by_key(|(key, _)| *key);
             // Not checked for existence: a theme lists hundreds, and the search stops at a hit.
@@ -192,8 +200,9 @@ impl IconTheme {
 /// An SVG's coverage (alpha) as a `px` × `px` mask, the drawing fitted and centred. `None` for an
 /// unreadable SVG or an absurd size.
 pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
-    use resvg::{tiny_skia, usvg};
-    if !(1..=256).contains(&px) {
+    use craft_svg::tree::{draw, draw::tiny_skia, usvg};
+    // usvg inflates gzip (`.svgz`) input without a decoded-size limit, and icons are plain `.svg`.
+    if !(1..=256).contains(&px) || svg.starts_with(&[0x1f, 0x8b]) {
         return None;
     }
     // Glyphs are paths: no `<image>` is loaded, so an icon can't make us read another file
@@ -202,17 +211,21 @@ pub fn rasterize_mask(svg: &[u8], px: u32) -> Option<Vec<u8>> {
         image_href_resolver: usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) },
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_data(svg, &opts).ok()?;
-    let size = tree.size();
-    let side = size.width().max(size.height());
-    if !side.is_finite() || side <= 0.0 {
-        return None;
-    }
-    let s = px as f32 / side;
-    let (dx, dy) = ((px as f32 - size.width() * s) / 2.0, (px as f32 - size.height() * s) / 2.0);
-    let mut pixmap = tiny_skia::Pixmap::new(px, px)?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), &mut pixmap.as_mut());
-    Some(pixmap.data().as_chunks::<4>().0.iter().map(|[_, _, _, a]| *a).collect())
+    // usvg and resvg panic on some malformed drawings: such an icon is unreadable, not a crash.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let tree = usvg::Tree::from_data(svg, &opts).ok()?;
+        let size = tree.size();
+        let side = size.width().max(size.height());
+        if !side.is_finite() || side <= 0.0 {
+            return None;
+        }
+        let s = px as f32 / side;
+        let (dx, dy) = ((px as f32 - size.width() * s) / 2.0, (px as f32 - size.height() * s) / 2.0);
+        let pixmap = draw::render(&tree, tiny_skia::Transform::from_scale(s, s).post_translate(dx, dy), px, px, 0, 64 * 1024 * 1024).ok()?;
+        Some(pixmap.data().as_chunks::<4>().0.iter().map(|[_, _, _, a]| *a).collect())
+    }))
+    .ok()
+    .flatten()
 }
 
 #[cfg(test)]
@@ -283,6 +296,19 @@ mod tests {
     }
 
     #[test]
+    fn sections_are_read_once_and_the_first_of_a_name_wins() {
+        let all = sections("stray=1\n[A]\nSize=16\n[B]\nSize=22\n[A]\nSize=48\n");
+        assert_eq!(all["A"], vec![("Size", "16")]);
+        assert_eq!(all["B"], vec![("Size", "22")]);
+        assert!(!all.contains_key(""));
+    }
+
+    #[test]
+    fn a_gzip_icon_is_refused() {
+        assert_eq!(rasterize_mask(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0], 16), None);
+    }
+
+    #[test]
     fn distance_follows_the_spec() {
         assert_eq!(distance(&[("Size", "16"), ("Type", "Fixed")]), (0, 1));
         assert_eq!(distance(&[("Size", "22"), ("Type", "Fixed")]), (6, 1));
@@ -301,6 +327,15 @@ mod tests {
         assert!(rasterize_mask(b"not svg", 16).is_none());
         assert!(rasterize_mask(SQUARE.as_bytes(), 0).is_none());
         assert!(rasterize_mask(SQUARE.as_bytes(), 100_000).is_none());
+    }
+
+    /// resvg panics rendering an offset past the pixmap's size: the icon is unreadable instead.
+    #[test]
+    fn a_mask_the_renderer_panics_on_is_none() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+            <filter id="f"><feOffset dx="3e9" dy="-3e9"/></filter><rect width="16" height="16" filter="url(#f)"/>
+        </svg>"##;
+        assert!(rasterize_mask(svg.as_bytes(), 16).is_none());
     }
 
     /// An icon's `<image>` is never loaded: not a device file, not an embedded picture.

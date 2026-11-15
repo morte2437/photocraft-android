@@ -391,3 +391,29 @@ fn bench_gallery_preview() {
         println!("{f:>14}: old fit {old:>5.0} ms, new fit {fit:>6.0} ms, new 100 % (1100x800) {screen:>5.0} ms");
     }
 }
+
+/// #10335: the effect-layer list grows with the dialog: a tall column gives it more than the 190 px
+/// minimum, a short one keeps the minimum, and the settings keep room above it.
+#[test]
+fn effect_layer_list_grows_with_the_dialog_height() {
+    let (_, short) = column_heights(400.0);
+    assert_eq!(short, 190.0);
+    let (params, tall) = column_heights(980.0);
+    assert!(tall > 190.0 + 100.0, "list height {tall}");
+    assert!(params >= 80.0);
+    assert!(params + tall + 110.0 <= 980.0 + 1.0);
+    assert_eq!(column_heights(f32::NAN).1, 190.0);
+    // Short, zero, negative and non-finite heights keep the settings at 80 px and the list at 190 px.
+    for h in [380.0, 300.0, 0.0, -50.0, f32::NAN, f32::NEG_INFINITY] {
+        assert_eq!(column_heights(h), (80.0, 190.0), "{h}");
+    }
+    // At every height the settings keep at least 80 px and the list at least 190 px; from 380 px,
+    // where both floors and the 110 px of chrome first fit, they stay within the column.
+    for h in (0..=4000).step_by(10).map(|h| h as f32) {
+        let (params, list) = column_heights(h);
+        assert!(params >= 80.0 && list >= 190.0, "{h}: {params} {list}");
+        if h >= 380.0 {
+            assert!(params + list + 110.0 <= h + 1.0, "{h}: {params} {list}");
+        }
+    }
+}

@@ -1,10 +1,10 @@
+use craft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use photocraft_doc::LayerContent;
 use photocraft_engine::{Session, atn_cmds};
-use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use serde_json::json;
 
-#[path = "../../../psd/tests/common/csh_fixture.rs"]
+#[path = "../common/csh_fixture.rs"]
 mod csh_fixture;
 
 const SHAPE_ID: &str = "original-fixture-square";
@@ -253,7 +253,7 @@ fn custom_shape_smart_filter_keeps_geometry_across_save_without_preset_library()
 fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() {
     let mut s = fixture(16);
     let bytes = csh_fixture::triangle_csh();
-    let id = photocraft_psd::csh::parse(&bytes).unwrap()[0].id.clone();
+    let id = craft_psd::csh::parse(&bytes).unwrap()[0].id.clone();
     let p = json!({"data":photocraft_paint::tile::b64_encode(&bytes)});
     s.execute("shape.presets.importCsh", p.clone()).unwrap();
     s.execute("shape.presets.importCsh", p).unwrap();
@@ -285,7 +285,7 @@ fn imported_csh_id_resolves_in_an_action_after_reimport_and_preference_reload() 
     // This original fixture has the same ID but a different path. Keep both presets
     // available by their unique names, while refusing ambiguous action playback.
     let other = csh_fixture::polygon_csh(&[&[(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]]);
-    assert_eq!(photocraft_psd::csh::parse(&other).unwrap()[0].id, id);
+    assert_eq!(craft_psd::csh::parse(&other).unwrap()[0].id, id);
     s.execute("shape.presets.importCsh", json!({"data":photocraft_paint::tile::b64_encode(&other)})).unwrap();
     let result = s.execute("actions.play", json!({"action":"Shape"})).unwrap();
     assert_eq!(result["ran"], 0);

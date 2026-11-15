@@ -5,10 +5,10 @@
 
 use crate::common;
 
+use craft_psd::descriptor::{Descriptor, VersionedDescriptor};
+use craft_psd::testgen;
+use craft_psd::{Compression, LayerRecord, PsdFile, TaggedBlock, Version};
 use photocraft_io::*;
-use photocraft_psd::descriptor::{Descriptor, VersionedDescriptor};
-use photocraft_psd::testgen;
-use photocraft_psd::{Compression, LayerRecord, PsdFile, TaggedBlock, Version};
 
 /// `PlLd` data per the Adobe spec ("Placed Layer"): `plcL`, version 3, Pascal uuid, page,
 /// total pages, anti-alias policy, layer type, 8 transform doubles, warp version, warp
@@ -37,10 +37,10 @@ fn plld(uuid: &str) -> Vec<u8> {
 fn sold(uuid: &str) -> Vec<u8> {
     let mut d = b"soLD".to_vec();
     d.extend(4u32.to_be_bytes());
-    use photocraft_psd::descriptor::Value;
+    use craft_psd::descriptor::Value;
     // The strict check wants what Photoshop needs to place the layer: its file id and transform.
     let quad = [0.0, 0.0, 4.0, 0.0, 4.0, 4.0, 0.0, 4.0].map(Value::Double).to_vec();
-    let desc = Descriptor::new("null").with("Idnt", Value::Text(photocraft_psd::descriptor::UnicodeString::new_nul(uuid))).with("Trnf", Value::List(quad));
+    let desc = Descriptor::new("null").with("Idnt", Value::Text(craft_psd::descriptor::UnicodeString::new_nul(uuid))).with("Trnf", Value::List(quad));
     d.extend(VersionedDescriptor::new(desc).to_bytes());
     while !d.len().is_multiple_of(4) {
         d.push(0);

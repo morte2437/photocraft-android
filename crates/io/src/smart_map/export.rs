@@ -7,7 +7,7 @@ use super::import::{
 use super::placed::enumv;
 use super::{
     Class, Descriptor, FilterStack, Id, J, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, camera_raw, displace, hue_sat,
-    perspective_warp,
+    perspective_warp, puppet,
 };
 
 // ---------- writing ----------
@@ -308,6 +308,12 @@ pub fn item_for_filter(f: &SmartFilter) -> Result<Descriptor, String> {
     }
     if perspective_warp::handles(&f.command) {
         return perspective_warp::export_item(f);
+    }
+    if f.command == puppet::COMMAND && f.params.get(puppet::TEMPLATE_KEY).is_some() {
+        let mut d = puppet::export_item(&f.params)?;
+        set(&mut d, "blendOptions", blend_options(f));
+        set(&mut d, "enab", Value::Boolean(f.visible));
+        return Ok(d);
     }
     if f.command == UNSUPPORTED_FILTER {
         let raw = f.params.get("psd").and_then(J::as_str).and_then(from_hex).ok_or("its filter data is missing")?;

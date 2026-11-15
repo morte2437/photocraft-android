@@ -2,8 +2,9 @@
 //!
 //! With Scrubby Zoom on (the default, as in Photoshop) press-and-drag zooms continuously: right
 //! zooms in, left zooms out, anchored at the point where the button went down. With it off, the
-//! drag draws a rectangle and the release zooms to fit it. A click (no drag) still steps the zoom
-//! in, or out with ⌥ (handled by the canvas).
+//! drag draws a rectangle and the release zooms to fit it, unless it zooms out (Zoom Out mode, or
+//! ⌥ in Zoom In mode): then the release steps out once at the press point. A click (no drag)
+//! steps the zoom in, or out in Zoom Out mode, ⌥ turning either around (handled by the canvas).
 
 use egui::{Pos2, Rect, vec2};
 
@@ -25,6 +26,8 @@ struct ZoomDrag {
     zoom0: f32,
     /// Scrubby Zoom off: a zoom rectangle, its current corner.
     rect_to: Option<Pos2>,
+    /// The release steps out (Zoom Out mode, or ⌥ in Zoom In mode): no rectangle is shown.
+    out: bool,
 }
 
 fn id() -> egui::Id {
@@ -51,18 +54,29 @@ pub fn anchor_view(view: &mut View, xf: &ViewXform, screen: Pos2, doc: [f64; 2],
 }
 
 /// Route the canvas buttons for the Zoom tool. Returns true when it consumed the drag (the
-/// canvas then handles only the click).
-pub fn drag(app: &PhotocraftApp, ctx: &egui::Context, view: &mut View, xf: &ViewXform, b: &Buttons, pointer: Option<Pos2>) -> bool {
+/// canvas then handles only the click). `zoom_out` is the canvas's direction for ⌥ held or not
+/// (temporary zoom key, Zoom In / Zoom Out mode, latched ⌥).
+pub fn drag(
+    app: &PhotocraftApp,
+    ctx: &egui::Context,
+    view: &mut View,
+    xf: &ViewXform,
+    b: &Buttons,
+    pointer: Option<Pos2>,
+    zoom_out: &dyn Fn(bool) -> bool,
+) -> bool {
     let scrubby = app.ui.tool_options.zoom_scrubby;
+    let out = zoom_out(ctx.input(|i| i.modifiers.alt));
     if b.started {
         let anchor = ctx.input(|i| i.pointer.press_origin()).filter(|p| xf.rect.contains(*p)).or(pointer);
         if let Some(anchor) = anchor {
-            let z = ZoomDrag { anchor, doc: xf.to_doc(anchor), zoom0: view.zoom, rect_to: (!scrubby).then_some(anchor) };
+            let z = ZoomDrag { anchor, doc: xf.to_doc(anchor), zoom0: view.zoom, rect_to: (!scrubby).then_some(anchor), out };
             ctx.data_mut(|d| d.insert_temp(id(), z));
         }
     }
     let Some(mut z) = ctx.data(|d| d.get_temp::<ZoomDrag>(id())) else { return b.started || b.dragged || b.stopped };
     if let Some(p) = pointer.filter(|_| b.dragged || b.stopped) {
+        z.out = out;
         match z.rect_to.as_mut() {
             Some(to) => *to = p,
             None => {
@@ -79,7 +93,6 @@ pub fn drag(app: &PhotocraftApp, ctx: &egui::Context, view: &mut View, xf: &View
     if b.stopped {
         ctx.data_mut(|d| d.remove::<ZoomDrag>(id()));
         if let Some(to) = z.rect_to {
-            let out = crate::workspace_ui::sticky_mods(app, ctx.input(|i| i.modifiers)).alt;
             zoom_to_rect(view, xf, Rect::from_two_pos(z.anchor, to), z.anchor, out, app.ppp);
         }
     }
@@ -87,7 +100,7 @@ pub fn drag(app: &PhotocraftApp, ctx: &egui::Context, view: &mut View, xf: &View
 }
 
 /// Scrubby Zoom off: zoom so the dragged rectangle fills the canvas (a tiny one steps the zoom
-/// at the press point; ⌥ steps out).
+/// at the press point; `out` steps out there).
 fn zoom_to_rect(view: &mut View, xf: &ViewXform, r: Rect, anchor: Pos2, out: bool, ppp: f32) {
     if out || r.width() < 4.0 || r.height() < 4.0 {
         let doc = xf.to_doc(anchor);
@@ -103,12 +116,19 @@ fn zoom_to_rect(view: &mut View, xf: &ViewXform, r: Rect, anchor: Pos2, out: boo
 
 /// Scrubby Zoom off: the zoom rectangle being dragged, as marching ants.
 pub fn draw(ctx: &egui::Context, painter: &egui::Painter) {
-    let Some(z) = ctx.data(|d| d.get_temp::<ZoomDrag>(id())) else { return };
-    let Some(to) = z.rect_to else { return };
-    let r = Rect::from_two_pos(z.anchor, to);
+    let Some(r) = shown_rect(ctx) else { return };
     let r = Rect::from_min_max(r.min.round() + vec2(0.5, 0.5), r.max.round() + vec2(0.5, 0.5));
     crate::tool_feedback::draw_ants(painter, &[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()], true);
 }
 
+/// The zoom rectangle on screen, if any: none for a drag that steps out at its release.
+fn shown_rect(ctx: &egui::Context) -> Option<Rect> {
+    let z = ctx.data(|d| d.get_temp::<ZoomDrag>(id()))?;
+    let to = z.rect_to.filter(|_| !z.out)?;
+    Some(Rect::from_two_pos(z.anchor, to))
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod zoom_out_mode_tests;

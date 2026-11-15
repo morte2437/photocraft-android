@@ -526,6 +526,109 @@ fn export_document_scales_and_flattens() {
     assert_eq!(settings(&f).jpeg_quality, Some(85));
 }
 
+/// Read the main JPEG frame, skipping complete segments rather than searching marker bytes:
+/// APP metadata can contain a thumbnail JPEG with its own frame and different sampling.
+fn jpeg_sampling_factors(bytes: &[u8]) -> [(u8, u8); 3] {
+    assert_eq!(bytes.get(..2), Some([0xff, 0xd8].as_slice()), "JPEG SOI");
+    let mut offset = 2;
+    loop {
+        assert_eq!(bytes.get(offset), Some(&0xff), "JPEG marker prefix");
+        while bytes.get(offset) == Some(&0xff) {
+            offset += 1;
+        }
+        let marker = *bytes.get(offset).expect("JPEG marker");
+        offset += 1;
+        match marker {
+            0x01 | 0xd0..=0xd8 => continue, // Standalone markers have no length.
+            0x00 | 0xd9 | 0xda => panic!("JPEG has no frame before scan/end"),
+            _ => {}
+        }
+        let length_bytes = bytes.get(offset..offset + 2).expect("JPEG segment length");
+        let length = usize::from(u16::from_be_bytes([length_bytes[0], length_bytes[1]]));
+        assert!(length >= 2, "JPEG segment length includes its two length bytes");
+        let end = offset.checked_add(length).expect("JPEG segment end");
+        let segment = bytes.get(offset + 2..end).expect("complete JPEG segment");
+        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
+            assert_eq!(segment.get(5), Some(&3), "JPEG frame must have three components");
+            assert_eq!(segment.len(), 6 + 3 * 3, "JPEG frame component descriptors");
+            return std::array::from_fn(|i| {
+                let sampling = segment[6 + 3 * i + 1];
+                (sampling >> 4, sampling & 0x0f)
+            });
+        }
+        offset = end;
+    }
+}
+
+#[test]
+fn jpeg_export_sampling_skips_embedded_thumbnail() {
+    // An APP segment contains an entire 4:2:0 thumbnail; the main frame is 4:4:4.
+    let frame_420 = [0xff, 0xc0, 0, 17, 8, 0, 1, 0, 1, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1];
+    let mut thumbnail = vec![0xff, 0xd8];
+    thumbnail.extend_from_slice(&frame_420);
+    thumbnail.extend_from_slice(&[0xff, 0xd9]);
+    assert_eq!(jpeg_sampling_factors(&thumbnail), [(2, 2), (1, 1), (1, 1)]);
+    let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+    jpeg.extend_from_slice(&u16::try_from(thumbnail.len() + 2).unwrap().to_be_bytes());
+    jpeg.extend_from_slice(&thumbnail);
+    jpeg.push(0xff); // Marker fill byte before the main frame.
+    let mut frame_444 = frame_420;
+    frame_444[11] = 0x11;
+    jpeg.extend_from_slice(&frame_444);
+    assert_eq!(jpeg_sampling_factors(&jpeg), [(1, 1); 3]);
+}
+
+/// High-quality JPEG must keep the colour detail of a transparent graphic over its background;
+/// lower qualities use chroma subsampling, including at the quality-50 boundary.
+#[test]
+fn jpeg_export_preserves_fine_colour_edges() {
+    use photocraft_doc::{Color, ColorMode, Layer, SampleType, Size};
+    use photocraft_geom::Rect;
+
+    for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+        let mut doc = Document::with_background("colour detail", Size::new(32, 16), ColorMode::Rgb, depth, Color::WHITE);
+        let mut graphic = Layer::raster("transparent graphic", doc.pixel_format());
+        for x in (0..32).step_by(2) {
+            graphic.surface_mut().unwrap().fill_rect(Rect::from_xywh(x, 0, 1, 16), &[1.0, 0.0, 0.0, 1.0]);
+        }
+        doc.layers.push(graphic);
+        let before = doc.clone();
+        for quality in [1, 50, 51, 85, 100] {
+            let fields = json!({"format": "jpg", "quality": quality, "scale": 100}).as_object().unwrap().clone();
+            let out = default_export_document(&doc, &fields, None).unwrap();
+            let encoded = photocraft_io::export(&out, "detail.jpg", &settings(&fields).io_options()).unwrap();
+            let expected_sampling = if quality <= 50 { [(2, 2), (1, 1), (1, 1)] } else { [(1, 1); 3] };
+            assert_eq!(jpeg_sampling_factors(&encoded.bytes), expected_sampling, "{depth:?}, quality {quality}: JPEG sampling");
+            let decoded = photocraft_codecs::decode(&encoded.bytes).unwrap().convert(photocraft_codecs::ChannelLayout::Rgb, photocraft_codecs::SampleType::U8);
+            assert_eq!(decoded.dimensions(), (32, 16), "{depth:?}, quality {quality}");
+            // Lower qualities also lose detail to quantization, independently of chroma sampling.
+            if quality == 100 {
+                let mut max_error = 0;
+                for (i, pixel) in decoded.data().as_chunks::<3>().0.iter().enumerate() {
+                    let expected: [u8; 3] = if i % 32 % 2 == 0 { [255, 0, 0] } else { [255, 255, 255] };
+                    for (actual, expected) in pixel.iter().zip(expected) {
+                        max_error = max_error.max(actual.abs_diff(expected));
+                    }
+                }
+                assert!(max_error <= 8, "{depth:?}: JPEG at quality 100 loses colour detail by {max_error} levels");
+            }
+            assert_eq!(doc, before, "{depth:?}, quality {quality}: export leaves the layered source unchanged");
+        }
+    }
+}
+
+#[test]
+fn jpeg_export_settings_follow_quality_sampling_cutoff() {
+    for quality in 1..=100 {
+        let fields = json!({"format": "jpg", "quality": quality}).as_object().unwrap().clone();
+        let options = settings(&fields).io_options();
+        assert_eq!(options.encode.jpeg_quality, quality);
+        assert_eq!(options.encode.jpeg_chroma_subsampling, quality <= 50, "quality {quality}");
+    }
+    // Save As retains the codec's existing sampling default.
+    assert!(ExportSettings::default().io_options().encode.jpeg_chroma_subsampling);
+}
+
 /// #1353: a scale that changes only the height (the width rounds back to the original)
 /// used to be skipped, so the exported file kept the original size while the dialog
 /// labelled it as scaled.
@@ -704,8 +807,8 @@ fn check_profile_only_export(width: u32, height: u32) -> std::time::Duration {
     let start = std::time::Instant::now();
     let converted = default_export_document(&doc, &fields, None).unwrap();
     let elapsed = start.elapsed();
-    let profile = photocraft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
-    assert!(profile.same_bytes(photocraft_cms::Builtin::Srgb.profile()));
+    let profile = craft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
+    assert!(profile.same_bytes(craft_cms::Builtin::Srgb.profile()));
     let source = doc.layers[0].surface().unwrap();
     let output = converted.layers[0].surface().unwrap();
     assert!(source.tile_count() > 0);
@@ -748,8 +851,8 @@ fn untagged_jpeg_export_embeds_the_requested_srgb_profile() {
         let converted = default_export_document(&doc, &fields, None).unwrap();
         let bytes = photocraft_io::export(&converted, "out.jpg", &settings(&fields).io_options()).unwrap().bytes;
         let reloaded = photocraft_io::import("out.jpg", &bytes).unwrap().document;
-        let profile = photocraft_cms::Profile::parse(reloaded.icc_profile.as_deref().expect("explicit sRGB export must embed its profile")).unwrap();
-        assert!(profile.same_colors(photocraft_cms::Builtin::Srgb.profile()), "{depth:?}");
+        let profile = craft_cms::Profile::parse(reloaded.icc_profile.as_deref().expect("explicit sRGB export must embed its profile")).unwrap();
+        assert!(profile.same_colors(craft_cms::Builtin::Srgb.profile()), "{depth:?}");
         fields.insert("embedProfile".into(), json!(false));
         let bytes = photocraft_io::export(&converted, "out.jpg", &settings(&fields).io_options()).unwrap().bytes;
         assert!(photocraft_io::import("out.jpg", &bytes).unwrap().document.icc_profile.is_none(), "embedding remains optional");
@@ -763,7 +866,7 @@ fn untagged_jpeg_export_embeds_the_requested_srgb_profile() {
 
 #[test]
 fn preview_cache_tracks_working_profiles_but_prefers_embedded_profiles() {
-    use photocraft_cms::Builtin;
+    use craft_cms::Builtin;
     use photocraft_doc::{Color, SampleType, Size};
     for embedded in [false, true] {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
@@ -844,7 +947,7 @@ fn preview_workers_keep_the_captured_source_profile() {
 
 #[test]
 fn replay_converts_untagged_pixels_from_the_original_working_profile() {
-    use photocraft_cms::{Builtin, Intent};
+    use craft_cms::{Builtin, Intent};
     use photocraft_doc::{Color, ColorMode, SampleType, Size};
     for working in [Builtin::DisplayP3, Builtin::AdobeRgbCompat] {
         for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
@@ -870,7 +973,7 @@ fn replay_converts_untagged_pixels_from_the_original_working_profile() {
             replay(&mut app, &json!({"path": "out.png", "format": "png", "profile": "srgb", "transparency": true})).unwrap();
             let actual = captured.lock().unwrap().take().unwrap();
             assert_eq!(actual.layers[0].surface().unwrap().pixel(0, 0), expected_pixel, "{working:?} {depth:?}");
-            let profile = photocraft_cms::Profile::parse(actual.icc_profile.as_deref().unwrap()).unwrap();
+            let profile = craft_cms::Profile::parse(actual.icc_profile.as_deref().unwrap()).unwrap();
             assert!(profile.same_bytes(Builtin::Srgb.profile()));
             assert_eq!(app.session.active().unwrap().doc, source);
         }
@@ -879,7 +982,7 @@ fn replay_converts_untagged_pixels_from_the_original_working_profile() {
 
 #[test]
 fn profile_and_metadata_follow_the_existing_exporter() {
-    use photocraft_cms::Builtin;
+    use craft_cms::Builtin;
 
     let mut f = Map::new();
     f.insert("format".into(), json!("jpg"));
@@ -913,7 +1016,7 @@ fn profile_and_metadata_follow_the_existing_exporter() {
     f.insert("metadata".into(), json!("none"));
     f.insert("embedProfile".into(), json!(false));
     let converted = default_export_document(&doc, &f, None).unwrap();
-    let parsed = photocraft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
+    let parsed = craft_cms::Profile::parse(converted.icc_profile.as_deref().unwrap()).unwrap();
     assert!(parsed.same_colors(Builtin::Srgb.profile()), "Convert to sRGB replaces the document profile");
     let stripped = photocraft_io::export(&converted, "out.jpg", &settings(&f).io_options()).unwrap().bytes;
     assert!(!stripped.windows(b"ICC_PROFILE".len()).any(|w| w == b"ICC_PROFILE"));

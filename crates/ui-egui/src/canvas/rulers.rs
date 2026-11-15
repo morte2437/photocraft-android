@@ -102,6 +102,10 @@ pub struct GuideDrag {
     pub vertical: bool,
     pub index: Option<usize>,
     pub pos: f64,
+    /// Where the guide follows the pointer to before a Shift snap to a ruler tick moves it to
+    /// `pos` (`follow_pointer`): what a release is judged by, a click there and a drop off the
+    /// document there.
+    pub pointer: f64,
     /// Where the pointer went down, on the guide's axis: released there, an existing guide is
     /// clicked (selected), not moved.
     pub press: f64,
@@ -123,7 +127,38 @@ impl GuideDrag {
     /// An existing guide taken at document point `p`.
     pub fn existing(vertical: bool, index: usize, p: [f64; 2]) -> Self {
         let at = if vertical { p[0] } else { p[1] };
-        Self { vertical, index: Some(index), pos: at, press: at, over_ruler: false, flipped: false }
+        Self { vertical, index: Some(index), pos: at, pointer: at, press: at, over_ruler: false, flipped: false }
+    }
+
+    /// Whether the pointer is still where it went down: let go there, an existing guide is clicked
+    /// (selected), not moved. One ⌥ turned is never held in place.
+    fn held_in_place(&self, app: &PhotocraftApp) -> bool {
+        !self.flipped && (self.pointer - self.press).abs() * f64::from(app.point_zoom().max(0.01)) < 0.5
+    }
+
+    /// An existing guide follows the pointer (`track`, ⌥ turning it): `p` is the document point
+    /// View › Snap made of the pointer's `raw` one. With Shift the guide lands on the ruler tick
+    /// nearest the pointer instead, as a guide dragged out of a ruler does (#3770) and as in
+    /// Photoshop: Snap To targets (layer edges, the grid, the document's centre) neither pull it
+    /// first nor hold it on a target it sits on. Not while the pointer is still where it went down,
+    /// so a Shift-click selects the guide without moving it, nor off the document, where letting go
+    /// removes the guide; a tick past the document's edge leaves the guide on the edge.
+    pub fn follow_pointer(&mut self, app: &mut PhotocraftApp, raw: [f64; 2], p: [f64; 2], mods: egui::Modifiers) {
+        self.track(if mods.shift { raw } else { p }, mods.alt);
+        self.pointer = self.pos;
+        if !mods.shift {
+            return;
+        }
+        // The snap lines View › Snap drew for this move don't apply.
+        app.prefs_rt.snap_lines.clear();
+        let vertical = self.shows_vertical();
+        let extent = app.session.active().map_or(0.0, |s| f64::from(if vertical { s.doc.size.width } else { s.doc.size.height }));
+        if (0.0..=extent).contains(&self.pointer)
+            && !self.held_in_place(app)
+            && let Some(xf) = ViewXform::active(app)
+        {
+            self.pos = snap_to_tick(app, &xf, vertical, self.pointer).clamp(0.0, extent);
+        }
     }
 }
 
@@ -304,8 +339,7 @@ pub fn finish_drag(app: &mut PhotocraftApp, d: GuideDrag) {
     // reads as a click: dragged sideways onto the left ruler, a horizontal guide never moves in y.
     if let Some(i) = d.index
         && !d.over_ruler
-        && !d.flipped
-        && (d.pos - d.press).abs() * f64::from(app.point_zoom().max(0.01)) < 0.5
+        && d.held_in_place(app)
     {
         crate::guide_select::select(app, d.vertical, i);
         return;
@@ -313,7 +347,7 @@ pub fn finish_drag(app: &mut PhotocraftApp, d: GuideDrag) {
     let shows = d.shows_vertical();
     let extent = if shows { size.width } else { size.height } as f64;
     let orientation = if d.vertical { "vertical" } else { "horizontal" };
-    let inside = !d.over_ruler && d.pos >= 0.0 && d.pos <= extent;
+    let inside = !d.over_ruler && d.pointer >= 0.0 && d.pointer <= extent;
     let pos = (d.pos * 1000.0).round() / 1000.0;
     let _ = match (d.index, inside) {
         (None, true) => app.run("view.newGuide", json!({"orientation": if shows {"vertical"}else{"horizontal"}, "position": pos})),
@@ -415,14 +449,24 @@ fn ruler_scale_of(app: &PhotocraftApp, doc: Option<&photocraft_doc::Document>, x
     (px_per_unit, nice_step(60.0 / (zoom as f64 * px_per_unit).max(1e-6), unit == Unit::Pixels))
 }
 
+/// The spacing (document px) of the ruler ticks Shift snaps to: the minor ticks, tenths of the
+/// labelled `step` in `unit` (`px_per_unit` px each). A ruler in pixels snaps no closer than a
+/// whole pixel: deep in, its minor ticks fall between pixels, and a guide or the zero point put on
+/// one would sit across a pixel.
+fn snap_tick(unit: Unit, px_per_unit: f64, step: f64) -> f64 {
+    let tick = step / 10.0 * px_per_unit;
+    if unit == Unit::Pixels { tick.max(1.0) } else { tick }
+}
+
 /// `pos` (document px) moved to the nearest tick mark the ruler draws (counted from the zero point): where a guide lands when
-/// Shift is held while dragging it out of a ruler, as in Photoshop (#3770).
+/// Shift is held while dragging it out of a ruler or moving it, as in Photoshop (#3770). In pixels, on whole pixels at least
+/// ([`snap_tick`]).
 fn snap_to_tick(app: &PhotocraftApp, xf: &ViewXform, vertical: bool, pos: f64) -> f64 {
     // A vertical guide sits at an x position, which the top ruler measures.
     let (px_per_unit, step) = ruler_scale(app, xf, !vertical);
     // Ticks count from the zero point (#2955), which a vertical guide measures along x.
     let origin = app.session.active().map_or(0.0, |d| d.doc.ruler_origin[usize::from(!vertical)]);
-    snap_px_to_tick(pos, origin, step / 10.0 * px_per_unit)
+    snap_px_to_tick(pos, origin, snap_tick(app.session.prefs().units_and_rulers.rulers, px_per_unit, step))
 }
 
 /// The number a ruler prints at the tick `v` (in ruler units). Like Photoshop, rulers show the
@@ -433,7 +477,8 @@ fn ruler_label(v: f64, step: f64, whole: bool) -> String {
 }
 
 /// The rulers of `doc`'s view in `full`: background, ticks and labels from its zero point.
-/// Returns the top, left and corner rects, the painter, the zero point and the minor tick sizes.
+/// Returns the top, left and corner rects, the painter, the zero point and the tick sizes Shift
+/// snaps to ([`snap_tick`]).
 #[allow(clippy::type_complexity)]
 fn paint(
     app: &PhotocraftApp,
@@ -464,7 +509,7 @@ fn paint(
     for vertical in [false, true] {
         let p = p.with_clip_rect(if vertical { left } else { top });
         let (px_per_unit, step) = ruler_scale_of(app, Some(doc), xf, vertical);
-        ticks[usize::from(vertical)] = step * px_per_unit / 10.0;
+        ticks[usize::from(vertical)] = snap_tick(unit, px_per_unit, step);
         let (u0, u1) = if vertical {
             ruler_range(xf, left.left_top(), left.left_bottom(), 1, px_per_unit, origin)
         } else {
@@ -538,7 +583,7 @@ pub fn draw_rulers(app: &mut PhotocraftApp, ui: &mut egui::Ui, full: Rect, xf: &
             let d = xf.to_doc(pos);
             let along = if vertical { d[0] } else { d[1] };
             let pos = if ui.input(|i| i.modifiers.shift) { snap_to_tick(app, xf, vertical, along) } else { crate::snap_ui::snap_guide(app, vertical, along) };
-            app.guide_drag = Some(GuideDrag { vertical, index: None, pos, press: pos, over_ruler: false, flipped: false });
+            app.guide_drag = Some(GuideDrag { vertical, index: None, pos, pointer: pos, press: pos, over_ruler: false, flipped: false });
         }
         if resp.drag_stopped()
             && let Some(mut d) = app.guide_drag.take()

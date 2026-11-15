@@ -167,7 +167,10 @@ fn mode_button(ui: &mut egui::Ui, mode: SymmetryMode, checked: bool) -> egui::Re
 }
 pub fn menu(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let current = app.session.active().and_then(|s| s.symmetry.clone());
-    let resp = icons::button_with_icon_size(ui, "painting-symmetry", 24.0, 14.0, current.is_some(), tl!("Set painting symmetry options"));
+    // The Brush has its own text (#11813); the name stays for screen readers and the other tools.
+    let brush = app.ui.tool == crate::state::Tool::Brush;
+    let resp = icons::button_with_icon_size_tip(ui, "painting-symmetry", 24.0, 14.0, current.is_some(), tl!("Set painting symmetry options"), !brush);
+    let resp = if brush { resp.on_hover_text(tl!("Set symmetry options for Painting")) } else { resp };
     let resp = crate::brush_picker::named(resp, "Set painting symmetry options");
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(220.0);

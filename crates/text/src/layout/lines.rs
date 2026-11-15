@@ -241,6 +241,7 @@ fn justify_line(out: &mut TextLayout, c0: usize, g0: usize, slack: f32) -> f32 {
 fn rotate_to_text_space(glyphs: &mut [PlacedGlyph], vinfo: &[VGlyph], baseline: f32) {
     for (g, v) in glyphs.iter_mut().zip(vinfo) {
         let (u, cross) = (g.x, g.y);
+        g.line_center = Some(u + v.advance / 2.0);
         if v.upright {
             g.x = -baseline - v.advance * 0.5;
             g.y = u + v.origin;
@@ -333,12 +334,14 @@ impl Para<'_> {
     }
 
     /// Where the line starts along its extent: box and area lines at their box or span edge,
-    /// point lines around the anchor.
+    /// point and legacy unbounded path lines around the anchor. Explicit path ranges
+    /// align center/right lines within their available span instead of around that anchor.
     fn line_start(&self, f: &LineFrame, offset: f32, adv: f32, line_kern: f32) -> f32 {
         if !self.env.wraps {
+            let span = self.env.path_range.unwrap_or(0.0);
             let target = match self.ps.align {
-                TextAlign::Center | TextAlign::JustifyCenter => -(adv + line_kern) / 2.0,
-                TextAlign::Right | TextAlign::JustifyRight => -(adv + line_kern),
+                TextAlign::Center | TextAlign::JustifyCenter => (span - adv - line_kern) / 2.0,
+                TextAlign::Right | TextAlign::JustifyRight => span - adv - line_kern,
                 _ => self.indent_start,
             };
             return target - offset;
@@ -413,7 +416,8 @@ impl Para<'_> {
         let mut kern_px = self.kerning(optical, &slots);
         let (trailing_tabs, trailing_growth) = self.apply_tab_stops(&slots, &mut kern_px, f.index);
         let line_kern: f32 = kern_px.iter().sum::<f32>() - trailing_tabs;
-        let dx = self.line_start(f, m.offset, adv, line_kern);
+        let growth = if self.env.path_range.is_some() { slots.iter().map(|s| s.growth).sum::<f32>() - trailing_growth } else { 0.0 };
+        let dx = self.line_start(f, m.offset, adv, line_kern + growth);
         let lc = LineCtx { dx, baseline: f.baseline, slots: &slots, kern_px: &kern_px, line_index: out.lines.len() };
         let (g0, c0) = (out.glyphs.len(), out.clusters.len());
         let mut state = LineState { cursors: kern_cursors(line, &slots), seen_runs: Vec::new(), vinfo: Vec::new(), extra: 0.0 };
@@ -517,6 +521,7 @@ impl Para<'_> {
                 y: lc.baseline + g.y,
                 style: gr.style().brush.0,
                 orient: GlyphOrient::Horizontal,
+                line_center: None,
             });
             out.glyph_ranges.push(self.map_offset(source_range.start)..self.map_offset(source_range.end));
             if let Some(v) = &vm {

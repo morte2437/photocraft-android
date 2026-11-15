@@ -92,6 +92,47 @@ fn document(mode: ColorMode, depth: SampleType, selection: bool) -> (Document, L
     (doc, id)
 }
 
+/// A target clipped in the middle of a clipping group inside two nested groups: the preview wraps
+/// it in an isolating group so the adjustment runs on its raw raster, not the whole clip group.
+fn clipped_document(mode: ColorMode, depth: SampleType, selection: bool) -> (Document, LayerId) {
+    let mut doc = Document::with_background("t", Size::new(48, 40), mode, depth, Color::rgba(0.7, 0.6, 0.5, 1.0));
+    let fmt = doc.pixel_format();
+    let mut base = Layer::raster("clip base", fmt);
+    noise(&mut base, Rect::from_xywh(0, 0, 48, 40), 5, 0.35);
+    base.opacity = 0.9;
+    let mut below = Layer::raster("below", fmt);
+    noise(&mut below, Rect::from_xywh(2, 22, 38, 12), 7, 0.4);
+    below.clipped = true;
+    below.opacity = 0.5;
+    let mut target = Layer::raster("target", fmt);
+    noise(&mut target, Rect::from_xywh(4, 2, 38, 34), 11, 0.2);
+    target.clipped = true;
+    target.opacity = 0.8;
+    target.blend = BlendMode::Multiply;
+    let mut m = LayerMask::reveal_all();
+    m.surface.fill_rect(Rect::from_xywh(0, 0, 12, 12), &[0.3]);
+    target.mask = Some(m);
+    let id = target.id;
+    let mut above = Layer::raster("above", fmt);
+    noise(&mut above, Rect::from_xywh(24, 12, 16, 16), 17, 0.5);
+    above.clipped = true;
+    above.opacity = 0.6;
+    let mut inner = Layer::group("inner", vec![base, below, target, above]);
+    inner.opacity = 0.95;
+    let outer = Layer::group("outer", vec![inner]);
+    let mut top = Layer::raster("top", fmt);
+    noise(&mut top, Rect::from_xywh(0, 28, 48, 12), 23, 0.0);
+    top.blend = BlendMode::Screen;
+    doc.layers.extend([outer, top]);
+    if selection {
+        let mut sel = photocraft_raster::Surface::new(PixelFormat::GRAY8);
+        sel.fill_rect(Rect::from_xywh(8, 4, 30, 26), &[1.0]);
+        sel.fill_rect(Rect::from_xywh(8, 4, 8, 26), &[0.5]);
+        doc.selection = Some(sel);
+    }
+    (doc, id)
+}
+
 fn sample(kind: &str) -> Value {
     match kind {
         "brightnessContrast" => json!({"brightness": 40, "contrast": 30}),
@@ -107,9 +148,15 @@ fn sample(kind: &str) -> Value {
         "posterize" => json!({"levels": 3}),
         "threshold" => json!({"level": 90}),
         "gradientMap" => json!({"stops": [[0, "#200040"], [1, "#ffd080"]]}),
+        "selectiveColor" => json!({"method": "absolute", "reds": [10, -20, 30, 5], "blues": [-15, 0, 25, 0]}),
         _ => json!({}),
     }
 }
+
+/// Grayscale kinds that make colour from gray: only these preview on the CPU proxy, so a
+/// Grayscale preview error is expected only for them. The Hue/Saturation sample leaves
+/// `colorize` off, so it stays gray.
+const GRAY_COLOUR: [&str; 7] = ["vibrance", "colorBalance", "blackWhite", "photoFilter", "channelMixer", "gradientMap", "selectiveColor"];
 
 fn pm(p: &[f32; 4]) -> [f32; 4] {
     [p[0] * p[3], p[1] * p[3], p[2] * p[3], p[3]]
@@ -140,10 +187,14 @@ fn preview_layer_composites_on_the_gpu_like_the_command() {
                 let (doc, target) = document(mode, depth, selection);
                 for kind in photocraft_ui_egui::adjust_editors::KINDS {
                     let params = sample(kind);
-                    let Ok(preview) = preview_document(&doc, target, kind, &params) else {
-                        // Grayscale kinds that make colour preview on the CPU proxy.
-                        assert_eq!(mode, ColorMode::Grayscale, "{kind}");
-                        continue;
+                    let preview = match preview_document(&doc, target, kind, &params) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            // Only grayscale kinds that make colour keep the CPU proxy preview.
+                            assert_eq!(mode, ColorMode::Grayscale, "{kind}: {e}");
+                            assert!(GRAY_COLOUR.contains(&kind), "{kind} {mode:?}: unexpected preview error: {e}");
+                            continue;
+                        }
                     };
                     assert!(preview.layer(PREVIEW_LAYER).is_some());
                     let what = format!("{kind} {mode:?} {depth:?} selection {selection}");
@@ -168,6 +219,53 @@ fn preview_layer_composites_on_the_gpu_like_the_command() {
         }
     }
     eprintln!("worst GPU preview vs command: {:.3}/255", worst * 255.0);
+}
+
+/// A clipped target's isolating-group preview composites on the GPU like the CPU reference and
+/// like the destructive command's result.
+#[test]
+fn clipped_target_preview_composites_on_the_gpu_like_the_command() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let Some((device, queue, mut comp)) = gpu() else { return };
+    let (tol_gpu, tol_cmd) = (2.0 / 255.0, 2.5 / 255.0);
+    let mut worst = 0.0f32;
+    for mode in [ColorMode::Rgb, ColorMode::Grayscale] {
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            for selection in [false, true] {
+                let (doc, target) = clipped_document(mode, depth, selection);
+                for kind in photocraft_ui_egui::adjust_editors::KINDS {
+                    let params = sample(kind);
+                    let preview = match preview_document(&doc, target, kind, &params) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            // Only grayscale kinds that make colour keep the CPU proxy preview.
+                            assert_eq!(mode, ColorMode::Grayscale, "{kind}: {e}");
+                            assert!(GRAY_COLOUR.contains(&kind), "{kind} {mode:?}: unexpected preview error: {e}");
+                            continue;
+                        }
+                    };
+                    assert!(preview.layer(PREVIEW_LAYER).is_some());
+                    assert!(preview.layer(target).unwrap().is_group(), "the clipped target is isolated");
+                    let what = format!("{kind} {mode:?} {depth:?} selection {selection}");
+                    let b = preview.bounds();
+                    let skip = if matches!(kind, "threshold" | "posterize") && depth != SampleType::U8 { (b.width() * b.height()) as usize / 100 } else { 0 };
+                    let on_gpu = render_to_vec(&mut comp, &device, &queue, &preview, b).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                    let on_cpu = photocraft_compose::render(&preview, b).into_px();
+                    let d = max_diff(&on_gpu, &on_cpu, skip);
+                    assert!(d <= tol_gpu, "{what}: GPU vs CPU {:.2}/255", d * 255.0);
+                    let mut s = photocraft_engine::Session::new();
+                    s.add_document(doc.clone(), None);
+                    s.select_layer(target).unwrap();
+                    s.execute(&format!("image.adjustments.{kind}"), params.clone()).unwrap();
+                    let cmd = photocraft_compose::render(&s.active().unwrap().doc, b).into_px();
+                    let d = max_diff(&on_gpu, &cmd, skip);
+                    worst = worst.max(d);
+                    assert!(d <= tol_cmd, "{what}: GPU preview vs command {:.2}/255", d * 255.0);
+                }
+            }
+        }
+    }
+    eprintln!("worst clipped-target GPU preview vs command: {:.3}/255", worst * 255.0);
 }
 
 /// The zoomed-out proxy preview (own document and layer ids) composites on the GPU like the CPU.

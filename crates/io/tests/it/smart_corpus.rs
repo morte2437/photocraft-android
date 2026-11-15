@@ -184,7 +184,7 @@ fn smart_objects_round_trip_through_psd() {
                 Ok((back, out)) => {
                     compare(&em, &back, true).into_iter().for_each(|e| fail("re-embedded", e));
                     // The old files are gone: one lnk2 item per distinct source.
-                    let f = photocraft_psd::PsdFile::from_bytes(&out).unwrap();
+                    let f = craft_psd::PsdFile::from_bytes(&out).unwrap();
                     let items: Vec<String> = f
                         .global_blocks
                         .iter()

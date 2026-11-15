@@ -26,10 +26,13 @@ use crate::commands::{CommandSpec, blend_from_str};
 use crate::{EngineError, Result, Session};
 
 mod art_history;
+mod clone_sampling;
 mod content_aware_move;
 mod patch;
 mod pattern_stamp;
-pub use pattern_stamp::live_impressionist as live_pattern_impressionist;
+pub use pattern_stamp::{
+    INDEXED_REFUSAL as PATTERN_STAMP_INDEXED_REFUSAL, live_impressionist as live_pattern_impressionist, press_refusal as pattern_stamp_press_refusal,
+};
 mod periodic;
 mod remove;
 pub use content_aware_move::{ContentAwarePreview, preview as content_aware_move_preview};
@@ -142,6 +145,11 @@ pub fn stroke_brush(base: &BrushSettings, p: &Value) -> BrushSettings {
         flow: pct("flow", 100.0, 1.0, 100.0),
         // Brush Settings › Brush Tip Shape › Spacing, as the Brush uses it (#2140).
         spacing: pct("spacing", base.spacing * 100.0, 1.0, 1000.0),
+        // The options bar's Smoothing; the UI sends 0 for a ⇧-click line, which isn't smoothed (#11887).
+        smoothing: match p.get("smoothing") {
+            Some(_) => photocraft_paint::Smoothing { enabled: true, amount: pct("smoothing", 0.0, 0.0, 100.0), ..base.smoothing.clone() },
+            None => base.smoothing.clone(),
+        },
         erase: false,
         ..base.clone()
     }
@@ -164,7 +172,22 @@ fn parse_brush(s: &Session, p: &Value, cmd: &str) -> Result<(Stroke, Option<Laye
         return Err(bad(cmd, "`points` is empty"));
     }
     crate::brush_cmds::check_coords(&pts, cmd)?;
-    let brush = stroke_brush(&s.tools.brush, p);
+    // A History Brush stroke carries the brush it was pressed with (`"brush"`, deep-merged onto the
+    // session brush as `paint.stroke`'s is): a tool key mid-stroke changes the session brush, and
+    // the commit, its fallback and a replayed action must all paint what the press began.
+    let base = match p.get("brush").filter(|v| v.is_object()) {
+        Some(patch) if cmd == "paint.historyBrush" => {
+            let mut b = crate::brush_cmds::merge_brush(&s.tools.brush, patch, cmd)?;
+            s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
+            b
+        }
+        _ => s.tools.brush.clone(),
+    };
+    let mut brush = stroke_brush(&base, p);
+    // The Eraser's Erase to History in Pencil or Block mode paints back through that hard tip.
+    if flag(p, "eraseToHistory", false) && (flag(p, "pencil", false) || flag(p, "block", false)) {
+        brush = crate::brush_cmds::pencil_shape(brush, p)?;
+    }
     crate::brush_cmds::validate_brush(&brush, cmd)?;
     if crate::channel_cmds::is_channel_target(p) {
         return Ok((Stroke { brush, points: pts }, None));
@@ -205,7 +228,7 @@ fn damage_json(r: Rect) -> Value {
 /// The brush every retouching command shares, plus the tool's own params.
 macro_rules! brush_params {
     ($extra:literal) => {
-        concat!("{", r#""points":[[x,y,pressure?],…],"size":1..5000 px=tool size,"hardness":0..100=tool hardness,"opacity":1..100=100,"flow":1..100=100,"spacing":1..1000 (% of size)=Brush Settings spacing,"layer":id?=active,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target"#, $extra, "}")
+        concat!("{", r#""points":[[x,y,pressure?],…],"size":1..5000 px=tool size,"hardness":0..100=tool hardness,"opacity":1..100=100,"flow":1..100=100,"spacing":1..1000 (% of size)=Brush Settings spacing,"smoothing":0..100=options bar Smoothing,"layer":id?=active,"target":"pixels"|"mask"|"filterMask"|"quickMask"|{"channel":i}=Channels panel target"#, $extra, "}")
     };
 }
 
@@ -214,7 +237,7 @@ mod dab;
 mod heal;
 mod sampling;
 
-pub use clone::{LiveRetouch, clone_preview, clone_preview_periodic};
+pub use clone::{LiveRetouch, clone_destination_preview, clone_preview, clone_preview_periodic, healing_preview, healing_preview_periodic};
 use clone::{blend_param, clamp_samples, clone_stamp};
 pub(crate) use dab::DabEffect;
 #[cfg(test)]
@@ -236,7 +259,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","source":[sx,sy] (sampled under the first point) | "offset":[dx,dy],"aligned":bool=true,"sampleLayer":"current|currentAndBelow|all"="current","mode":"normal|multiply|…"="normal","wrap":bool=false (repeat source and stroke at document edges for Pattern Preview) → {"damage","offset","aligned","nextSource"}"#
+                r#","source":[sx,sy] (sampled under the first point) | "offset":[dx,dy],"aligned":bool=true,"sampleLayer":"current|currentAndBelow|all"="current","sourceLayer":id? (Current Layer: this layer, else the picked slot's layer/document, else the paint target; explicit source/offset use this document),"mode":"normal|multiply|…"="normal","wrap":bool=false (repeat source and stroke at document edges for Pattern Preview) → {"damage","offset","aligned","nextSource"}"#
             ),
             enabled: has_pixel_layer,
             run: clone_stamp,
@@ -248,7 +271,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","pattern":id|name?=Patterns panel current,"scale":1..1000 %=100,"angle":deg=0,"aligned":bool=true,"impressionist":bool=false,"mode":"normal|multiply|…"="normal","phase":[px,py]? → {"damage","phase","aligned","pattern"}"#
+                r#","pattern":id|name?=Patterns panel current,"scale":1..1000 %=100,"angle":deg=0,"aligned":bool=true,"impressionist":bool=false,"mode":"normal|multiply|…|behind (paints beneath existing pixels)"="normal","phase":[px,py]? → {"damage","phase","aligned","pattern"}"#
             ),
             enabled: pattern_stamp::enabled,
             run: pattern_stamp::run,
@@ -260,7 +283,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","source":[sx,sy] | "offset":[dx,dy],"aligned":bool=true,"sampleLayer":"current|currentAndBelow|all"="current","mode":"normal|…"="normal" → {"damage","offset","aligned","nextSource"}"#
+                r#","source":[sx,sy] | "offset":[dx,dy],"aligned":bool=true,"sampleLayer":"current|currentAndBelow|all"="current","mode":"normal|…"="normal","wrap":bool=false (View › Pattern Preview: the stroke goes on across the canvas edges) → {"damage","offset","aligned","nextSource"}"#
             ),
             enabled: has_pixel_layer,
             run: healing_brush,
@@ -363,7 +386,9 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Smudge",
             menu: &[],
             shortcut: None,
-            params: brush_params!(r#","strength":1..100=50,"fingerPainting":bool=false (starts with the foreground colour),"sampleAllLayers":bool=false"#),
+            params: brush_params!(
+                r#","strength":1..100=50,"fingerPainting":bool=false (starts with the foreground colour),"sampleAllLayers":bool=false,"mode":"normal|darken|lighten|hue|saturation|color|luminosity"="normal" (how the smudged colour replaces the pixel; 8-bit RGB, else Normal)"#
+            ),
             enabled: has_pixel_layer,
             run: |s, p| dab_cmd(s, p, "paint.smudge"),
             journal: true,
@@ -374,7 +399,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","state":row (a History panel row, as history.setSource: 0 = oldest state, then the current one, then the greyed redo states),"snapshot":id (a history.newSnapshot id; default: the History panel's source, else the oldest held state; a source of another canvas size is an error)"#
+                r#","state":row (a History panel row, as history.setSource: 0 = oldest state, then the current one, then the greyed redo states),"snapshot":id (a history.newSnapshot id; default: the History panel's source, else the oldest held state; a source of another canvas size is an error),"eraseToHistory":bool=false (a layer missing from a source state that holds a single layer paints that layer's own pixels, or a shape's solid colour, else white, outside its shape too, as the Eraser's Erase to History does, instead of an error),"pencil":bool=false and "block":bool=false with "zoom" (with eraseToHistory: the hard aliased tip or the square, as paint.pencil's),"brush":{…}? (BrushSettings fields, deep-merged onto the session brush as paint.stroke's: the brush the stroke was pressed with, so a tool picked mid-stroke changes nothing)"#
             ),
             enabled: has_pixel_layer,
             run: history_brush,
@@ -386,7 +411,7 @@ pub fn specs() -> Vec<CommandSpec> {
             menu: &[],
             shortcut: None,
             params: brush_params!(
-                r#","state":row (a History panel row, as history.setSource),"snapshot":id (a history.newSnapshot id; default: the History panel's source, as paint.historyBrush; a source of another canvas size is an error),"style":"tightShort|tightMedium|tightLong|looseMedium|looseLong|dab|tightCurl|looseCurl"="tightMedium","area":0..100=50,"tolerance":0..100=0,"opacity":0..100=100 (overrides the common 1..100: how strongly the history state is painted; 0 changes nothing; no flow, mode is Normal)"#
+                r#","state":row (a History panel row, as history.setSource),"snapshot":id (a history.newSnapshot id; default: the History panel's source, as paint.historyBrush; a source of another canvas size or colour mode is an error),"style":"tightShort|tightMedium|tightLong|looseMedium|looseLong|dab|tightCurl|looseCurl"="tightMedium","area":0..100=50,"tolerance":0..100=0,"opacity":0..100=100 (overrides the common 1..100: how strongly the history state is painted; 0 changes nothing; no flow, mode is Normal)"#
             ),
             enabled: has_pixel_layer,
             run: art_history::run,
@@ -397,3 +422,12 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod clone_source_layer_tests;
+
+#[cfg(test)]
+mod patch_history_names_tests;
+
+#[cfg(test)]
+mod remove_history_name_tests;

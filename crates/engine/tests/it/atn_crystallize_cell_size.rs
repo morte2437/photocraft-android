@@ -1,7 +1,7 @@
 //! #7669: strict ATN export must not replace a native fractional Crystallize cell size.
+use craft_psd::{atn, descriptor::Value as D};
 use photocraft_engine::actions_cmds::Action;
 use photocraft_engine::{Session, atn_cmds};
-use photocraft_psd::{atn, descriptor::Value as D};
 use serde_json::{Value, json};
 
 const CRYSTALLIZE: &str = "filter.pixelate.crystallize";

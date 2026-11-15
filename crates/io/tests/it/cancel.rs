@@ -47,7 +47,7 @@ fn import_reports_monotonic_progress_per_layer() {
 
 #[test]
 fn cancelled_brush_import_fails() {
-    use photocraft_psd::abr::{LegacyBrush, LegacyTip, write_v12};
+    use craft_psd::abr::{LegacyBrush, LegacyTip, write_v12};
     let brush = |name: &str| LegacyBrush {
         name: name.into(),
         spacing: 10,

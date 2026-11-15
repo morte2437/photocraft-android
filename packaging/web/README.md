@@ -43,7 +43,9 @@ the default Rust version is the stable release CI used when the `Dockerfile` was
 `TRUNK_VERSION`. `RUST_VERSION`, `TRUNK_VERSION`, and `NGINX_VERSION` can be overridden with
 `--build-arg`. To stamp the About dialog with the commit and date instead of "dev build", pass
 `--build-arg PHOTOCRAFT_BUILD_SHA=$(git rev-parse HEAD) --build-arg PHOTOCRAFT_BUILD_DATE=$(date -u +%F)`.
-The web build does not embed the optional `craft-fonts` checkout.
+It downloads the interface translations from
+[storytold/craft-i18n](https://github.com/storytold/craft-i18n) at the commit in `craft-i18n.rev`,
+as CI and releases do. The web build does not embed the optional `craft-fonts` checkout.
 
 The Docker build uses thin LTO and one Cargo build job to reduce peak memory, while keeping
 the web profile's size optimizations and `wasm-opt -Oz`. Its Wasm size may differ from the

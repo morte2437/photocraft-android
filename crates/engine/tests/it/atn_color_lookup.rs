@@ -1,7 +1,7 @@
+use craft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
+use craft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use photocraft_doc::{Adjustment, LayerContent};
 use photocraft_engine::{Session, atn_cmds};
-use photocraft_psd::atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem};
-use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value as D};
 use serde_json::json;
 
 const CUBE: &[u8] = b"LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n";
@@ -57,7 +57,7 @@ fn samples() -> Vec<(&'static str, Vec<u8>)> {
         }
     }
     let hex: String =
-        photocraft_cms::lutfile::LutFile::identity(2).data.into_iter().flat_map(|v| (1.0 - v).to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+        craft_cms::lutfile::LutFile::identity(2).unwrap().data.into_iter().flat_map(|v| (1.0 - v).to_le_bytes()).map(|b| format!("{b:02X}")).collect();
     let look = format!("<look><LUT><size>2</size><data>{hex}</data></LUT></look>");
     let le = [vec![0xff, 0xfe], look.encode_utf16().flat_map(u16::to_le_bytes).collect()].concat();
     let be = [vec![0xfe, 0xff], look.encode_utf16().flat_map(u16::to_be_bytes).collect()].concat();

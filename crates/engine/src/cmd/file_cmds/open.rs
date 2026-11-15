@@ -1,8 +1,5 @@
 use super::paths::{file_name, read_file, stem, template_name};
-use super::{
-    Affine, Arc, Document, EngineError, Layer, LayerContent, LayerId, Resample, Result, Session, SmartObject, SmartSource, Value, f64_param, flattened_checked,
-    json, resize_surface, str_param, translate_surface,
-};
+use super::{Arc, Document, EngineError, Layer, LayerContent, LayerId, PixelFormat, PlaceSteps, Result, Session, Value, json, str_param};
 
 /// Input and successfully opened document identities of one Override Open scratch session.
 pub(crate) struct BatchOpen {
@@ -77,9 +74,15 @@ fn import_result(name: &str, bytes: &[u8]) -> Result<photocraft_io::ImportResult
 /// The one import path every caller shares: allocation checkpoint, native `.pcraft` and format
 /// dispatch through `photocraft_io::import_with_options`, typed memory refusals, and the
 /// preview-only refusal wherever the import came from.
-fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult> {
+pub(super) fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<photocraft_io::ImportResult> {
+    import_result_for_open(name, bytes, opts).map(|(r, _)| r)
+}
+
+/// [`import_result_with`], also telling whether a PSD/PSB had damaged data it recovered from, as
+/// File › Open's job learns it (`photocraft_io::import_for_open`), so an interactive caller can ask.
+pub(super) fn import_result_for_open(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOptions) -> Result<(photocraft_io::ImportResult, bool)> {
     crate::allocation::checkpoint("importing document")?;
-    let r = photocraft_io::import_with_options(name, bytes, opts).map_err(|e| crate::error::io_open_error(name, e))?;
+    let (r, damaged) = photocraft_io::import_for_open(name, bytes, opts).map_err(|e| crate::error::io_open_error(name, e))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
     if r.preview_only {
@@ -87,7 +90,7 @@ fn import_result_with(name: &str, bytes: &[u8], opts: &photocraft_io::ImportOpti
             "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
         )));
     }
-    Ok(r)
+    Ok((r, damaged))
 }
 
 // ---------- close / revert / save a copy / open as ----------
@@ -144,9 +147,9 @@ pub(crate) fn tag_exr_colorspace(s: &Session, name: &str, doc: &mut Document) {
     if !name.to_ascii_lowercase().ends_with(".exr") || !s.prefs.get().file_handling.exr_aces_cg {
         return;
     }
-    let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
+    let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
     if doc.icc_profile.as_ref().map(|v| v.as_slice()) == Some(linear.as_slice()) {
-        doc.icc_profile = Some(photocraft_cms::Builtin::AcesCg.profile().to_bytes());
+        doc.icc_profile = Some(craft_cms::Builtin::AcesCg.profile().to_bytes());
     }
 }
 
@@ -193,11 +196,14 @@ pub fn open_bytes_as_with_options(
     let mut opts = crate::jobs::import_options(s.prefs());
     opts.psd_high_memory_approved = approve_high_memory;
     opts.psd_approved_estimate = None;
-    let raw = super::raw_open::prepare(s, &decode_name, path.as_deref(), bytes)?;
+    let raw = super::raw_open::prepare(s, &decode_name, &file_name(name), path.as_deref(), bytes)?;
     let (r, raw_settings) = if let Some((imported, settings)) = raw {
         (imported, Some(settings))
     } else {
-        let r = photocraft_io::import_with_options(&decode_name, bytes, &opts).map_err(|e| crate::error::io_open_error(&decode_name, e))?;
+        let r = photocraft_io::import_with_options_as(&decode_name, bytes, as_ext, &opts).map_err(|e| match as_ext {
+            Some(ext) => crate::error::io_open_as_error(&file_name(name), ext, e),
+            None => crate::error::io_open_error(&decode_name, e),
+        })?;
         (r, None)
     };
     if (s.batch_open.is_some() || s.batch_open_notices.is_some()) && r.preview_only {
@@ -232,6 +238,22 @@ pub fn open_bytes_as_with_options(
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }
 
+/// Extensions Open As reads besides the codec formats, the camera raw formats
+/// (`photocraft_io::raw::EXTENSIONS`) and the Affinity ones (`photocraft_io::affinity::EXTENSIONS`):
+/// the document and vector formats `photocraft_io::import` handles, and `raw`, the Open As type
+/// for any camera raw.
+const OPEN_AS_EXTRA: &[&str] = &["raw", "pdn", "ora", "xcf", "xcf.gz", "xcfgz", "kra", "krz", "psd", "psb", "psdt", "pcraft", "svg", "svgz", "pdf", "ai"];
+
+/// Whether `ext` (the `as` value of Open As) names a format PhotoCraft reads.
+fn is_open_as_format(ext: &str) -> bool {
+    let ext = ext.trim_start_matches('.').to_ascii_lowercase();
+    let ext = ext.as_str();
+    OPEN_AS_EXTRA.contains(&ext)
+        || photocraft_io::raw::EXTENSIONS.contains(&ext)
+        || photocraft_io::affinity::EXTENSIONS.contains(&ext)
+        || photocraft_codecs::from_extension(ext).is_some_and(|f| f.caps().read)
+}
+
 /// Open the selected file with its decoder options and record its Batch source identity.
 pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path", "file.openAs")?.to_string();
@@ -243,6 +265,11 @@ pub(super) fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(EngineError::BadParams { cmd: "file.openAs".into(), msg: "expected boolean for \"approveHighMemory\"".into() });
         }
     };
+    if let Some(ext) = as_ext
+        && !is_open_as_format(ext)
+    {
+        return Err(EngineError::BadParams { cmd: "file.openAs".into(), msg: format!("\"as\" names no format PhotoCraft reads: {ext:?}") });
+    }
     let bytes = read_file(&path)?;
     let result = open_bytes_as_with_options(s, &path, &bytes, as_ext, Some(path.clone()), approve_high_memory)?;
     remember_batch_open(s);
@@ -286,7 +313,8 @@ pub(super) fn approve_memory(s: &mut Session, p: &Value) -> Result<Value> {
     // does not keep the tile share), and the import re-checks the exact split before decoding.
     let budget = photocraft_io::memory::resolve_budget_with_scratch(photocraft_io::memory::MemorySnapshot::current(), None, u64::MAX);
     if preflight.required > budget.hard_limit {
-        return Err(EngineError::PsdHardBudget { name: preflight.name, required: preflight.required, limit: budget.hard_limit });
+        let free_memory = budget.refusal_free_memory(preflight.required);
+        return Err(EngineError::PsdHardBudget { name: preflight.name, required: preflight.required, limit: budget.hard_limit, free_memory });
     }
     let started = s.start_open_approved_with_background(
         &preflight.name,
@@ -312,117 +340,153 @@ pub const PLACE_EMBEDDED: &str = "Place Embedded";
 /// `linked` makes it a linked smart object that refers to that path instead of embedding the bytes.
 /// With Preferences ▸ General ▸ Always Create Smart Objects When Placing off, an embedded place
 /// lands as a plain pixel layer instead (an explicit `"smartObject": false` asks for one).
+///
+/// The decoding and resampling are a background job when the command was started with
+/// [`Session::start`] (see [`crate::jobs`]); inline otherwise. The layer is inserted by the apply
+/// step on the calling thread, as one undo step.
 pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<String>, p: &Value) -> Result<Value> {
-    let d = s.active().ok_or(EngineError::NoDocument)?;
-    let frame_id = match p.get("frame") {
-        Some(Value::Bool(false)) => None,
-        Some(v) if !v.is_null() => Some(LayerId(v.as_u64().ok_or_else(|| EngineError::Other("frame must be a frame id or false".into()))?)),
-        _ => d.active_layer.and_then(|id| crate::frame_cmds::frame_of(&d.doc, id)),
-    };
-    let frame = frame_id
-        .map(|id| {
-            d.doc.layer(id).and_then(|l| l.frame.clone()).map(|f| (id, f)).ok_or_else(|| EngineError::Other("the destination frame is unavailable".into()))
-        })
-        .transpose()?;
-    let (cw, ch) = frame.as_ref().map_or((d.doc.size.width as f64, d.doc.size.height as f64), |(_, f)| {
-        let [a, b, c, d, _, _] = f.transform.m;
-        (a.hypot(b), c.hypot(d))
-    });
-    let fmt = d.doc.pixel_format();
-    let vector = photocraft_io::svg::is_svg(&bytes);
-    // Refuse before decoding if the operation cannot fit.
-    crate::memory_gate::ensure(&format!("place \u{201c}{}\u{201d}", file_name(name)), crate::memory_gate::place_need(&bytes, fmt.bytes_per_pixel()))?;
-    let approve = match p.get("approveHighMemory") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(_) => {
-            return Err(EngineError::BadParams { cmd: "file.placeEmbedded".into(), msg: "expected boolean for \"approveHighMemory\"".into() });
-        }
-    };
-    let mut opts = crate::jobs::import_options(s.prefs());
-    opts.psd_high_memory_approved = approve;
-    opts.psd_approved_estimate = None;
-    let imported = photocraft_io::import_with_options(name, &bytes, &opts).map_err(|e| crate::error::io_open_error(name, e))?;
-    if imported.preview_only {
-        return Err(EngineError::Other(format!(
-            "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
-        )));
+    let input = PlaceInput::new(s, name, bytes, linked, p)?;
+    place_input(s, input)
+}
+
+/// Run a place: in the background when the command was started with [`Session::start`].
+fn place_input(s: &mut Session, input: PlaceInput) -> Result<Value> {
+    let label = input.job_label();
+    crate::jobs::run_stepped(s, &label, true, PlaceSteps::new(input, s.cooperative_jobs()), apply_place)
+}
+
+/// The file a place reads.
+pub(super) enum PlaceFile {
+    /// Its contents, already read (a dropped or picked file with no path, a script's bytes).
+    Bytes(Arc<Vec<u8>>),
+    /// Its path, read by [`PlaceSteps`]: on the job's worker when the place runs in the
+    /// background, so a large file doesn't hold up the window while it is read.
+    Path(String),
+}
+
+/// Everything a place reads from the session, taken up front so [`PlaceSteps`] can run on a
+/// worker that never sees the [`Session`].
+pub(crate) struct PlaceInput {
+    pub(super) name: String,
+    pub(super) file: PlaceFile,
+    pub(super) linked: Option<String>,
+    pub(super) params: Value,
+    pub(super) canvas: (f64, f64),
+    pub(super) fmt: PixelFormat,
+    pub(super) opts: photocraft_io::ImportOptions,
+    /// Preferences ▸ General ▸ Resize Image During Place, unless the params say otherwise.
+    pub(super) fit: bool,
+    /// Preferences ▸ General ▸ Always Create Smart Objects When Placing, unless the params say
+    /// otherwise. A linked place is always a smart object.
+    pub(super) smart: bool,
+    /// The document as the job sees it, for rendering a vector source at its placement scale. A
+    /// path isn't read yet, so whether it is a vector source is decided once it is.
+    pub(super) doc: Option<Arc<Document>>,
+    /// The frame the image goes into: the active layer's, `"frame"` in the params, or none
+    /// (`"frame": false`). Its image renders through a smart object.
+    pub(super) frame: Option<(LayerId, photocraft_doc::Frame)>,
+}
+
+impl PlaceInput {
+    /// The input of a place of `bytes` already read (named `name`; `linked`: Place Linked to that path).
+    pub(crate) fn new(s: &Session, name: &str, bytes: Vec<u8>, linked: Option<String>, p: &Value) -> Result<Self> {
+        Self::with_file(s, name, PlaceFile::Bytes(Arc::new(bytes)), linked, p)
     }
-    let src = imported.document;
-    let (w, h) = (src.size.width as f64, src.size.height as f64);
-    // The implicit `fit` is Preferences ▸ General ▸ Resize Image During Place (on by default).
-    let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(s.prefs().general.resize_image_during_place);
-    let scale = match f64_param(p, "scale") {
-        Some(k) => (k / 100.0).max(1e-4),
-        None if frame.is_some() && fit => (cw / w).max(ch / h),
-        None if fit && (w > cw || h > ch) => (cw / w).min(ch / h),
-        None => 1.0,
-    };
-    let center = match p.get("center").and_then(Value::as_array) {
-        Some(c) if c.len() == 2 => (c[0].as_f64().unwrap_or(cw / 2.0), c[1].as_f64().unwrap_or(ch / 2.0)),
-        _ => (cw / 2.0, ch / 2.0),
-    };
-    let (dx, dy) = ((center.0 - w * scale / 2.0).round(), (center.1 - h * scale / 2.0).round());
-    // A frame's image renders through its smart object below, which refuses a placement past the
-    // memory budget; resampling it to the frame's size first would allocate that surface twice.
-    let px = if frame.is_none() {
-        let mut px = flattened_checked(&src, fmt, "file.place")?;
-        if (scale - 1.0).abs() > 1e-9 {
-            px = resize_surface(&px, scale, scale, Resample::Bicubic);
-        }
-        Some(translate_surface(&px, dx as i32, dy as i32))
-    } else {
-        None
-    };
-    let placement = frame
-        .as_ref()
-        .map_or(Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, |(_, f)| f.transform.mul(&Affine { m: [scale / cw, 0.0, 0.0, scale / ch, dx / cw, dy / ch] }));
-    let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(x, y)| placement.apply(photocraft_geom::Point::new(x, y)));
-    let bounds = [
-        corners.iter().map(|q| q.x).fold(f64::INFINITY, f64::min),
-        corners.iter().map(|q| q.y).fold(f64::INFINITY, f64::min),
-        corners.iter().map(|q| q.x).fold(f64::NEG_INFINITY, f64::max),
-        corners.iter().map(|q| q.y).fold(f64::NEG_INFINITY, f64::max),
-    ];
-    // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off, an
-    // embedded place lands as a plain pixel layer. A linked place is always a smart object.
-    let smart = frame.is_some()
-        || linked.is_some()
-        || p.get("smartObject").and_then(Value::as_bool).unwrap_or(s.prefs().general.always_create_smart_objects_when_placing);
-    let source = match linked {
-        Some(path) => SmartSource::Linked { path },
-        None => SmartSource::Embedded { file_name: file_name(name), bytes: Arc::new(bytes) },
-    };
-    let layer_name = stem(name);
-    let label = if matches!(&source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
-    let id = s.edit(label, |doc, active| {
-        let layer = if smart {
-            let mut so = SmartObject::new(source, placement, px);
-            // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
-            if (vector || frame.is_some())
-                && let Some(sharp) = crate::smart_cmds::render(doc, &so)?
-            {
-                so.cache = Some(sharp);
-            }
-            if so.cache.is_none() {
-                return Err(EngineError::Other(format!("{name}: the placed image could not be rendered")));
-            }
-            Layer::new(layer_name, LayerContent::Smart(so))
-        } else {
-            let px = px.ok_or_else(|| EngineError::Other(format!("{name}: a frame's image must be a smart object")))?;
-            Layer::new(layer_name, LayerContent::Raster(px))
+
+    /// The input of a place of `file`, with the destination (canvas or frame), preferences and
+    /// import settings taken from the session up front.
+    fn with_file(s: &Session, name: &str, file: PlaceFile, linked: Option<String>, p: &Value) -> Result<Self> {
+        let d = s.active().ok_or(EngineError::NoDocument)?;
+        let prefs = s.prefs();
+        let frame_id = match p.get("frame") {
+            Some(Value::Bool(false)) => None,
+            Some(v) if !v.is_null() => Some(LayerId(v.as_u64().ok_or_else(|| EngineError::Other("frame must be a frame id or false".into()))?)),
+            _ => d.active_layer.and_then(|id| crate::frame_cmds::frame_of(&d.doc, id)),
         };
-        let id = layer.id;
-        if let Some((frame_id, _)) = &frame {
-            crate::frame_cmds::put_content(doc, *frame_id, layer)?;
-            *active = Some(*frame_id);
+        let frame = frame_id
+            .map(|id| {
+                d.doc
+                    .layer(id)
+                    .and_then(|l| l.frame.as_deref().cloned())
+                    .map(|f| (id, f))
+                    .ok_or_else(|| EngineError::Other("the destination frame is unavailable".into()))
+            })
+            .transpose()?;
+        let canvas = frame.as_ref().map_or((d.doc.size.width as f64, d.doc.size.height as f64), |(_, f)| {
+            let [a, b, c, d, _, _] = f.transform.m;
+            (a.hypot(b), c.hypot(d))
+        });
+        let approve = match p.get("approveHighMemory") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => {
+                return Err(EngineError::BadParams { cmd: "file.placeEmbedded".into(), msg: "expected boolean for \"approveHighMemory\"".into() });
+            }
+        };
+        let mut opts = crate::jobs::import_options(prefs);
+        opts.psd_high_memory_approved = approve;
+        opts.psd_approved_estimate = None;
+        Ok(Self {
+            name: name.to_string(),
+            canvas,
+            fmt: d.doc.pixel_format(),
+            opts,
+            // The implicit `fit` is Preferences ▸ General ▸ Resize Image During Place (on by default).
+            fit: p.get("fit").and_then(Value::as_bool).unwrap_or(prefs.general.resize_image_during_place),
+            // Preferences ▸ General ▸ Always Create Smart Objects When Placing (on by default): off,
+            // an embedded place lands as a plain pixel layer.
+            smart: linked.is_some() || p.get("smartObject").and_then(Value::as_bool).unwrap_or(prefs.general.always_create_smart_objects_when_placing),
+            doc: match &file {
+                PlaceFile::Bytes(bytes) => (frame.is_some() || photocraft_io::is_svg_input(name, bytes)).then(|| Arc::clone(&d.doc)),
+                PlaceFile::Path(_) => Some(Arc::clone(&d.doc)),
+            },
+            frame,
+            params: p.clone(),
+            file,
+            linked,
+        })
+    }
+
+    /// The job's name in the progress UI.
+    pub(crate) fn job_label(&self) -> String {
+        format!("Placing {}", file_name(&self.name))
+    }
+
+    /// The command this place stands for.
+    pub(crate) fn command(&self) -> &'static str {
+        if self.linked.is_some() { "file.placeLinked" } else { "file.placeEmbedded" }
+    }
+}
+
+/// A place decoded, flattened and fitted, ready to be inserted by [`apply_place`].
+pub(crate) struct Prepared {
+    pub(super) content: LayerContent,
+    pub(super) layer_name: String,
+    /// The history step's name.
+    pub(super) label: &'static str,
+    pub(super) scale: f64,
+    pub(super) bounds: [f64; 4],
+    pub(super) smart: bool,
+    /// The frame the layer fills, if any (it becomes the frame's content instead of a new layer).
+    pub(super) frame: Option<LayerId>,
+}
+
+/// Insert the prepared layer as one undo step and report the place. Runs on the session's thread.
+pub(crate) fn apply_place(s: &mut Session, p: Prepared) -> Result<Value> {
+    let Prepared { content, layer_name, label, scale, bounds, smart, frame } = p;
+    let layer = Layer::new(layer_name, content);
+    let id = layer.id;
+    s.edit(label, move |doc, active| {
+        if let Some(frame_id) = frame {
+            crate::frame_cmds::put_content(doc, frame_id, layer)?;
+            *active = Some(frame_id);
         } else {
             crate::layer_place::insert_new(doc, *active, layer, crate::layer_place::Place::AutoEditable);
             *active = Some(id);
         }
-        Ok(id)
+        Ok(())
     })?;
-    Ok(json!({"layer": id.0, "frame": frame.as_ref().map(|(id,_)|id.0), "scale": scale * 100.0, "bounds": bounds, "smartObject": smart}))
+    Ok(json!({"layer": id.0, "frame": frame.map(|f| f.0), "scale": scale * 100.0, "bounds": bounds, "smartObject": smart}))
 }
 
 pub(super) fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {
@@ -431,7 +495,6 @@ pub(super) fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: "expected boolean for approveHighMemory".into() });
     }
     let path = str_param(p, "path", cmd)?.to_string();
-    let bytes = read_file(&path)?;
     // The link is stored absolute: a relative one would later be taken from the document's
     // folder (`doc_path`), not the working directory the path was given in.
     let link = linked.then(|| {
@@ -441,5 +504,7 @@ pub(super) fn place(s: &mut Session, p: &Value, linked: bool) -> Result<Value> {
             path.clone()
         }
     });
-    place_bytes(s, &path, bytes, link, p)
+    // The file is read by the place itself, on the job's worker when it runs in the background.
+    let input = PlaceInput::with_file(s, &path, PlaceFile::Path(path.clone()), link, p)?;
+    place_input(s, input)
 }

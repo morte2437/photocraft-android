@@ -82,18 +82,13 @@ impl ThumbnailCache {
 
 /// Check if two path strings match, tolerating slash direction and Windows case differences.
 fn paths_match(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
     #[cfg(windows)]
     {
-        let a_norm = a.replace('\\', "/");
-        let b_norm = b.replace('\\', "/");
-        a_norm.eq_ignore_ascii_case(&b_norm)
+        a == b || a.replace('\\', "/").eq_ignore_ascii_case(&b.replace('\\', "/"))
     }
     #[cfg(not(windows))]
     {
-        false
+        a == b
     }
 }
 
@@ -180,14 +175,14 @@ fn read_psd_thumbnail_bounded(path: &Path, file_len: u64) -> Option<ColorImage> 
     if res_len > 0 && res_len <= 32 * 1024 * 1024 && (res_len as u64) <= file_len {
         let mut res_bytes = vec![0u8; res_len as usize];
         if file.read_exact(&mut res_bytes).is_ok()
-            && let Ok((resources, _)) = photocraft_psd::tiff::resources_from_bytes(&res_bytes)
+            && let Ok((resources, _)) = craft_psd::tiff::resources_from_bytes(&res_bytes)
         {
             let decode_opts = photocraft_codecs::DecodeOptions {
                 limits: photocraft_codecs::Limits { max_width: 4096, max_height: 4096, max_pixels: 4096 * 4096, max_alloc: 4096 * 4096 * 4 },
                 ..Default::default()
             };
             for r in &resources {
-                if (r.id == photocraft_psd::resources::ids::THUMBNAIL || r.id == photocraft_psd::resources::ids::THUMBNAIL_PS4)
+                if (r.id == craft_psd::resources::ids::THUMBNAIL || r.id == craft_psd::resources::ids::THUMBNAIL_PS4)
                     && let Some(jfif) = r.data.get(28..)
                     && let Ok(img) = photocraft_codecs::decode_with(jfif, &decode_opts)
                 {
@@ -227,7 +222,7 @@ fn read_psd_thumbnail_bounded(path: &Path, file_len: u64) -> Option<ColorImage> 
 
     // Fourth, within budget and safe dimensions: read file and decode merged composite
     let bytes = std::fs::read(path).ok()?;
-    if let Ok(file) = photocraft_psd::PsdFile::from_bytes(&bytes)
+    if let Ok(file) = craft_psd::PsdFile::from_bytes(&bytes)
         && let Ok(comp) = photocraft_io::merged_composite(&file)
     {
         let w = file.header.width;
@@ -765,6 +760,19 @@ pub(crate) fn render_list_row(
     (resp, action)
 }
 
+/// Judge a click that opens the recent file `path` as File › Open Recent's item for it, as the
+/// menu does: synthetic input from a client confined to its automation roots can't plant a recent
+/// file outside them and click its Home card open. A user's own click is always allowed.
+fn open_recent_gate(app: &PhotocraftApp, path: &str) -> Result<(), String> {
+    let Some(authorize) = app.services.automation_command.as_ref() else { return Ok(()) };
+    if !app.automation_input {
+        return Ok(());
+    }
+    // The Home list is File › Open Recent's first entries, so the card's index there is its id.
+    let i = app.ui.recent_files.iter().position(|p| p == path).ok_or_else(|| "no such recent file".to_string())?;
+    authorize(&format!("file.openRecent.{i}"), &serde_json::json!({}))
+}
+
 /// The main entry point to render the Home Recent Files visual grid or list.
 pub(crate) fn show_home_recent(app: &mut PhotocraftApp, ui: &mut Ui, recent: &[String], avail_width: f32) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -868,7 +876,7 @@ pub(crate) fn show_home_recent(app: &mut PhotocraftApp, ui: &mut Ui, recent: &[S
     if let Some(action) = action_to_take {
         match action {
             RecentAction::Open(path) => {
-                if let Err(e) = app.open_path(&path) {
+                if let Err(e) = open_recent_gate(app, &path).and_then(|()| app.open_path(&path)) {
                     app.open_failed(&crate::file_open::display_name(&path), &e);
                 }
             }
@@ -1231,23 +1239,23 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn recent_thumbnail_skips_composite_for_oversized_psd_without_preview() {
-        let temp_dir = std::env::temp_dir().join(format!("photocraft_psd_bound_test_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("craft_psd_bound_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         let file_path = temp_dir.join("oversized.psd");
         let path_str = file_path.to_string_lossy().into_owned();
 
         // Create an oversized PSD (3000 x 3000) with no thumbnail resource
-        let header = photocraft_psd::Header::new(photocraft_psd::Version::Psd, 3000, 3000, 3, 8, photocraft_psd::ColorMode::Rgb);
-        let file = photocraft_psd::PsdFile {
+        let header = craft_psd::Header::new(craft_psd::Version::Psd, 3000, 3000, 3, 8, craft_psd::ColorMode::Rgb);
+        let file = craft_psd::PsdFile {
             header,
             color_mode_data: Vec::new(),
             resources: Vec::new(),
             layer_info: None,
-            layer_info_placement: photocraft_psd::LayerInfoPlacement::Section,
+            layer_info_placement: craft_psd::LayerInfoPlacement::Section,
             global_layer_mask: None,
             global_blocks: Vec::new(),
             layer_mask_trailing: Vec::new(),
-            image_data: photocraft_psd::ImageData { compression: photocraft_psd::Compression::Raw, data: Vec::new(), stored: None },
+            image_data: craft_psd::ImageData { compression: craft_psd::Compression::Raw, data: Vec::new(), stored: None },
             write_as_psb: false,
         };
         let mut bytes = file.to_bytes().unwrap();
@@ -1266,23 +1274,23 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn recent_thumbnail_skips_composite_for_high_channel_psd_without_preview() {
-        let temp_dir = std::env::temp_dir().join(format!("photocraft_psd_channels_test_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("craft_psd_channels_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         let file_path = temp_dir.join("high_channels.psd");
         let path_str = file_path.to_string_lossy().into_owned();
 
         // 2000 x 2000 with 56 channels: decoded uncompressed size = 2000 * 2000 * 56 = 224 MB (> 64 MB cap)
-        let header = photocraft_psd::Header::new(photocraft_psd::Version::Psd, 2000, 2000, 56, 8, photocraft_psd::ColorMode::Rgb);
-        let file = photocraft_psd::PsdFile {
+        let header = craft_psd::Header::new(craft_psd::Version::Psd, 2000, 2000, 56, 8, craft_psd::ColorMode::Rgb);
+        let file = craft_psd::PsdFile {
             header,
             color_mode_data: Vec::new(),
             resources: Vec::new(),
             layer_info: None,
-            layer_info_placement: photocraft_psd::LayerInfoPlacement::Section,
+            layer_info_placement: craft_psd::LayerInfoPlacement::Section,
             global_layer_mask: None,
             global_blocks: Vec::new(),
             layer_mask_trailing: Vec::new(),
-            image_data: photocraft_psd::ImageData { compression: photocraft_psd::Compression::Raw, data: Vec::new(), stored: None },
+            image_data: craft_psd::ImageData { compression: craft_psd::Compression::Raw, data: Vec::new(), stored: None },
             write_as_psb: false,
         };
         let bytes = file.to_bytes().unwrap();
@@ -1297,7 +1305,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn recent_thumbnail_extracts_embedded_preview_from_large_psd_without_reading_payload() {
-        let temp_dir = std::env::temp_dir().join(format!("photocraft_psd_large_preview_test_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("craft_psd_large_preview_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         let file_path = temp_dir.join("large_payload.psd");
         let path_str = file_path.to_string_lossy().into_owned();
@@ -1316,19 +1324,19 @@ mod tests {
         res_data[4..8].copy_from_slice(&512u32.to_be_bytes()); // width: 512
         res_data[8..12].copy_from_slice(&512u32.to_be_bytes()); // height: 512
         res_data.extend_from_slice(&jfif);
-        let resource = photocraft_psd::resources::ImageResource::new(photocraft_psd::resources::ids::THUMBNAIL, res_data);
+        let resource = craft_psd::resources::ImageResource::new(craft_psd::resources::ids::THUMBNAIL, res_data);
 
-        let header = photocraft_psd::Header::new(photocraft_psd::Version::Psd, 400, 400, 3, 8, photocraft_psd::ColorMode::Rgb);
-        let file = photocraft_psd::PsdFile {
+        let header = craft_psd::Header::new(craft_psd::Version::Psd, 400, 400, 3, 8, craft_psd::ColorMode::Rgb);
+        let file = craft_psd::PsdFile {
             header,
             color_mode_data: Vec::new(),
             resources: vec![resource],
             layer_info: None,
-            layer_info_placement: photocraft_psd::LayerInfoPlacement::Section,
+            layer_info_placement: craft_psd::LayerInfoPlacement::Section,
             global_layer_mask: None,
             global_blocks: Vec::new(),
             layer_mask_trailing: Vec::new(),
-            image_data: photocraft_psd::ImageData { compression: photocraft_psd::Compression::Raw, data: Vec::new(), stored: None },
+            image_data: craft_psd::ImageData { compression: craft_psd::Compression::Raw, data: Vec::new(), stored: None },
             write_as_psb: false,
         };
         let mut bytes = file.to_bytes().unwrap();

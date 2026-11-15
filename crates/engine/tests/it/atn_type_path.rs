@@ -1,13 +1,13 @@
 //! Recorded Type > Create Work Path preserves its descriptor and uses native glyph outlines.
+use craft_psd::{
+    atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
+    descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value as D},
+};
 use photocraft_doc::{LayerContent, LayerId};
 use photocraft_engine::{
     Session,
     actions_cmds::Action,
     atn_cmds::{export, import},
-};
-use photocraft_psd::{
-    atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
-    descriptor::{Class, Descriptor, Id, ReferenceItem, UnicodeString, Value as D},
 };
 use serde_json::{Value, json};
 

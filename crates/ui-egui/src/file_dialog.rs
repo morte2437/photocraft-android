@@ -148,17 +148,37 @@ impl PhotocraftApp {
     /// (#1826, #1866). A caller's explicit directory is kept. The chosen folder is remembered for
     /// the document the dialog was asked for.
     pub(crate) fn pick_save(&mut self, suggested: &str, then: impl FnOnce(&mut Self, String) -> Result<Value, String> + 'static) -> Result<Value, String> {
+        self.pick_save_in(suggested, false, then)
+    }
+
+    /// [`Self::pick_save`] for the export flows (Export As, Quick Export, Save for Web, ...): starts in
+    /// the folder [`export_start_dir`] picks (#10192), and once `then` has exported, remembers the
+    /// chosen file's folder in `export.lastFolder`; a failed or cancelled export leaves it alone.
+    pub(crate) fn pick_export(&mut self, suggested: &str, then: impl FnOnce(&mut Self, String) -> Result<Value, String> + 'static) -> Result<Value, String> {
+        self.pick_save_in(suggested, true, then)
+    }
+
+    fn pick_save_in(
+        &mut self,
+        suggested: &str,
+        export: bool,
+        then: impl FnOnce(&mut Self, String) -> Result<Value, String> + 'static,
+    ) -> Result<Value, String> {
         let mut suggested = std::path::PathBuf::from(suggested);
         let doc = self.session.active().map(|d| d.doc.id);
         // Closed documents' folders are no longer needed.
         let open: Vec<_> = self.session.documents().iter().map(|d| d.doc.id).collect();
         self.save_dirs.retain(|id, _| open.contains(id));
-        if suggested.parent().is_some_and(|p| p.as_os_str().is_empty())
-            && let Some(dir) = doc
+        if suggested.parent().is_some_and(|p| p.as_os_str().is_empty()) {
+            let document_dir = doc
                 .and_then(|d| self.save_dirs.get(&d).cloned())
-                .or_else(|| self.session.active().and_then(|d| d.path.as_deref()).and_then(|p| std::path::Path::new(p).parent()).map(Path::to_path_buf))
-        {
-            suggested = dir.join(suggested);
+                // An export doesn't start in a folder that is gone.
+                .filter(|dir| !export || folder_exists(dir))
+                .or_else(|| self.session.active().and_then(|d| d.path.as_deref()).and_then(|p| std::path::Path::new(p).parent()).map(Path::to_path_buf));
+            let remembered = export.then(|| self.session.prefs().export.last_folder.clone());
+            if let Some(dir) = export_start_dir(remembered.as_deref(), document_dir, folder_exists) {
+                suggested = dir.join(suggested);
+            }
         }
         // The format comes from the extension, so a name typed without one (common where file
         // extensions are hidden, #5039) gets the suggested file's extension, as Photoshop's
@@ -169,12 +189,20 @@ impl PhotocraftApp {
             FileDialogAnswer::SaveTo(path) => {
                 let path = saved_path(app, &path, suggested_ext.as_deref());
                 // The web answers a download name, which has no folder to remember.
-                if let Some(doc) = doc
-                    && let Some(dir) = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty())
-                {
-                    app.save_dirs.insert(doc, dir.to_path_buf());
+                let dir = doc.zip(Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf));
+                // An export's folder only once it has exported: a failed one doesn't move where
+                // the next export starts.
+                if !export && let Some((doc, dir)) = dir.clone() {
+                    app.save_dirs.insert(doc, dir);
                 }
-                then(app, path)
+                let exported = then(app, path.clone())?;
+                if export {
+                    if let Some((doc, dir)) = dir {
+                        app.save_dirs.insert(doc, dir);
+                    }
+                    app.remember_export_folder(&path);
+                }
+                Ok(exported)
             }
             _ => Err(UNEXPECTED.into()),
         })?;
@@ -182,6 +210,16 @@ impl PhotocraftApp {
             p.saved_path = Some(Box::new(move |app, path| saved_path(app, path, ext.as_deref())));
         }
         Ok(asked)
+    }
+
+    /// Remember the folder of an export that succeeded as where the next export dialog starts.
+    /// The web answers a download name, which has no folder, and leaves it alone.
+    fn remember_export_folder(&mut self, path: &str) {
+        let Some(dir) = Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()) else { return };
+        let dir = dir.to_string_lossy().into_owned();
+        if self.session.prefs().export.last_folder != dir {
+            self.session.prefs.edit(|p| p.export.last_folder = dir);
+        }
     }
 
     /// Whether a save to `path` replaces a file the save dialog didn't ask about: the dialog
@@ -253,6 +291,30 @@ impl PhotocraftApp {
                 FileDialogAnswer::FolderTo(_) => return Err(UNEXPECTED.into()),
                 FileDialogAnswer::SaveTo(_) | FileDialogAnswer::Unavailable(_) => return Err(UNEXPECTED.into()),
             }
+            Ok(Value::Null)
+        })
+    }
+
+    /// File › Open as Smart Object…: the File › Open dialog (same filters, several files); each
+    /// chosen file opens as its own document holding one embedded smart object, in name order,
+    /// reporting each failure as File › Open does.
+    pub fn open_dialog_as_smart_object(&mut self) -> Result<Value, String> {
+        let initial_dir = last_used_dir(&self.ui.recent_files);
+        self.ask_file(FileDialogRequest::Open { multiple: true, initial_dir, extensions: None }, |app, answer| {
+            let FileDialogAnswer::Paths(paths) = answer else { return Err(UNEXPECTED.into()) };
+            // Each file is a tracked open job like File › Open's, in name order. No `show_if_open`:
+            // the file opens as another document even when it is already open.
+            let mut paths: Vec<String> = paths.iter().map(|p| crate::file_open::absolute(p)).collect();
+            paths.sort_by(|a, b| crate::file_open::natural_cmp(a, b));
+            let batch = crate::jobs_ui::begin_batch(app);
+            for (seq, path) in paths.iter().enumerate() {
+                let order = crate::jobs_ui::OpenOrder { batch, seq };
+                if let Err(e) = crate::jobs_ui::start_open_as_smart_object(app, path, Some(order)) {
+                    app.open_failed(&crate::file_open::display_name(path), &e);
+                }
+            }
+            crate::jobs_ui::end_batch(app);
+            app.sync_views();
             Ok(Value::Null)
         })
     }
@@ -368,6 +430,28 @@ fn saved_path(app: &PhotocraftApp, answered: &str, suggested_ext: Option<&str>) 
         Some(ext) if Path::new(&path).extension().is_none() => Path::new(&path).with_extension(ext).to_string_lossy().into_owned(),
         _ => path,
     }
+}
+
+/// Whether `dir` is a folder on disk. The web has no file system, so nothing is remembered there.
+#[cfg(not(target_arch = "wasm32"))]
+fn folder_exists(dir: &Path) -> bool {
+    dir.is_dir()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn folder_exists(_dir: &Path) -> bool {
+    false
+}
+
+/// The folder an export dialog starts in (#10192): the `remembered` folder of the last export
+/// while `exists` finds it, else the document's own folder (`document_dir`, whatever it is),
+/// else none, which leaves the choice to the system dialog.
+pub(crate) fn export_start_dir(
+    remembered: Option<&str>,
+    document_dir: Option<std::path::PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    remembered.filter(|d| !d.is_empty()).map(std::path::PathBuf::from).filter(|d| exists(d)).or(document_dir)
 }
 
 /// The folder an open dialog starts in: the directory of the most recent file (UI-217-3).

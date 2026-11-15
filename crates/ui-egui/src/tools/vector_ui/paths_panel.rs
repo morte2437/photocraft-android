@@ -111,6 +111,11 @@ fn rename_id(doc: &Document) -> egui::Id {
     egui::Id::unique(("path-rename", doc.id.0))
 }
 
+/// Is a path's name being typed in the active document's Paths panel? Esc belongs to its field.
+pub(crate) fn path_renaming(app: &PhotocraftApp, ctx: &egui::Context) -> bool {
+    app.session.active().is_some_and(|st| ctx.data(|d| d.get_temp::<PathRename>(rename_id(&st.doc)).is_some()))
+}
+
 /// Commands offered by a Paths row's context menu. The row's path is passed explicitly so a
 /// right-click acts on that row even when another path is selected in the panel. `layer` is the
 /// layer a `PathRow::Layer` row belongs to (the active layer).

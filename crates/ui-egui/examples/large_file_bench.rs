@@ -9,7 +9,7 @@
 //! cargo run --release -p photocraft-ui-egui --example large_file_bench -- [--reps 3] [--only psd|psb] [--cache DIR] [--clean] [--json out.json]
 //! ```
 //!
-//! The fixtures (`photocraft_psd::fixtures`, about 6.4 GB together) are generated once into
+//! The fixtures (`craft_psd::fixtures`, about 6.4 GB together) are generated once into
 //! `--cache` (default: `$PHOTOCRAFT_FIXTURE_DIR`, else `fixtures/` in the target directory next
 //! to this binary) and kept for the next run; `--clean` removes them afterwards. Each row also
 //! records the peak resident memory of its opens. Needs about 30 GB of memory for the PSB.
@@ -17,8 +17,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use craft_psd::fixtures::{PSB_4GB, PSD_2GB, Streamed};
 use photocraft_engine::Session;
-use photocraft_psd::fixtures::{PSB_4GB, PSD_2GB, Streamed};
 use photocraft_testkit::perf::{RssSampler, row};
 use serde_json::json;
 

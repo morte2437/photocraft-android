@@ -104,7 +104,9 @@ fn prepare(app: &PhotocraftApp, draft: &mut Draft, fields: &Map<String, Value>) 
     let mut params = crate::new_guide_ui::params(app, fields);
     // Opening a fractional position in cm/percent rounds its display. Leaving the text and
     // orientation alone must not move the guide or consume Redo through that rounding.
-    if fields.get("position").and_then(Value::as_str) == Some(&draft.initial_position)
+    // Once the user edits Position, even a value equal to the original readout is intentional.
+    if !fields.get("__positionEdited").and_then(Value::as_bool).unwrap_or(false)
+        && fields.get("position").and_then(Value::as_str) == Some(&draft.initial_position)
         && (params.get("newOrientation").and_then(Value::as_str) == Some("vertical")) == draft.edit.original().vertical
     {
         params["position"] = serde_json::json!(draft.edit.original().position);

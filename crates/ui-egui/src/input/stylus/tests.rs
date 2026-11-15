@@ -350,3 +350,62 @@ fn eraser_end_switches_tools_once_and_never_mid_drag() {
     assert!(!Stylus::sync_eraser_tool(&mut app));
     assert_eq!(app.ui.tool, Tool::Eraser);
 }
+
+/// Windows reports the pen's end through `Services::pen_end`, not the feed (#2285): flipping the
+/// pen switches tools the same way, and a feed sample (automation, another backend) wins.
+#[test]
+fn the_platform_pen_end_switches_to_the_eraser_and_back() {
+    use crate::state::Tool;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.execute("file.new", serde_json::json!({"width": 60, "height": 60})).unwrap();
+    app.ui.tool = Tool::Brush;
+    // 0 = no pen, 1 = tip, 2 = eraser end.
+    let end = Arc::new(AtomicU8::new(0));
+    let read = end.clone();
+    app.services.pen_end = Some(Box::new(move || match read.load(Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }));
+    assert!(!Stylus::sync_eraser_tool(&mut app), "no pen in range");
+    end.store(1, Ordering::Relaxed);
+    assert!(!Stylus::sync_eraser_tool(&mut app), "the tip keeps the tool");
+    end.store(2, Ordering::Relaxed);
+    assert!(Stylus::sync_eraser_tool(&mut app));
+    assert_eq!(app.ui.tool, Tool::Eraser);
+    assert!(!Stylus::sync_eraser_tool(&mut app), "reported once");
+    // Out of range and back with the eraser end: still the Eraser, nothing to switch.
+    end.store(0, Ordering::Relaxed);
+    assert!(!Stylus::sync_eraser_tool(&mut app));
+    end.store(2, Ordering::Relaxed);
+    assert!(!Stylus::sync_eraser_tool(&mut app));
+    end.store(1, Ordering::Relaxed);
+    assert!(Stylus::sync_eraser_tool(&mut app));
+    assert_eq!(app.ui.tool, Tool::Brush, "the tip restores the previous tool");
+    // A feed sample is read before the platform's end.
+    end.store(2, Ordering::Relaxed);
+    app.stylus.feed.set(Some(PenSample { pressure: 0.5, eraser: false, ..Default::default() }));
+    assert!(!Stylus::sync_eraser_tool(&mut app));
+    assert_eq!(app.ui.tool, Tool::Brush);
+}
+
+/// The pen's eraser end is a tool switch like any other: Add New Artboard's placing mode ends
+/// (#11386), and coming back to the Artboard tool on the tip leaves it off.
+#[test]
+fn the_eraser_end_ends_the_artboard_placing_mode() {
+    use crate::state::Tool;
+    let mut app = crate::PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+    app.session.execute("file.new", serde_json::json!({"width": 60, "height": 60})).unwrap();
+    app.ui.tool = Tool::Artboard;
+    app.ui.artboard_tool.adding = true;
+    let pen = |eraser| Some(PenSample { pressure: 0.5, eraser, ..Default::default() });
+    app.stylus.feed.set(pen(true));
+    assert!(Stylus::sync_eraser_tool(&mut app));
+    assert!(!app.ui.artboard_tool.adding, "the eraser end ends the mode");
+    app.stylus.feed.set(pen(false));
+    assert!(Stylus::sync_eraser_tool(&mut app));
+    assert_eq!(app.ui.tool, Tool::Artboard);
+    assert!(!app.ui.artboard_tool.adding);
+}

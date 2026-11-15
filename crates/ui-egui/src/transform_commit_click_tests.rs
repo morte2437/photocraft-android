@@ -72,6 +72,105 @@ fn a_click_on_the_pasteboard_commits_one_free_transform_step() {
     }
 }
 
+/// #11100, measured in the reference application: a click outside the box on another layer's
+/// pixels commits one Free Transform step, and the transformed layer stays the only selected one
+/// (the click doesn't pick the layer under it).
+#[test]
+fn a_click_on_another_layers_pixels_commits_and_keeps_the_selection() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 200, "height": 200, "background": "white"})).unwrap();
+    app.sync_views();
+    app.ui.extras.rulers = false;
+    app.ui.extras.snap = false;
+    // "Other" has a blue block at x 120..160, y 120..160; "Paint" a red one at x 20..60, y 20..60.
+    for (name, at, color) in [("Other", 120, "#0000ff"), ("Paint", 20, "#ff0000")] {
+        let id = app.run("layer.new.layer", json!({"name": name})).unwrap()["layer"].as_u64().unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        app.run("select.rect", json!({"x": at, "y": at, "width": 40, "height": 40})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+    }
+    let paint = app.session.active().unwrap().active_layer.unwrap();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let t = app.ui.transform.as_mut().unwrap();
+    t.quad = t.quad.map(|[x, y]| [x + 10.0, y]);
+    let before = steps(&app);
+    click(&mut app, [140.0, 140.0]);
+    assert!(app.ui.transform.is_none(), "committed");
+    assert_eq!(steps(&app), before + 1);
+    assert_eq!(app.session.active().unwrap().history.entries().last().map(ToString::to_string).as_deref(), Some("Free Transform"));
+    assert_eq!(app.session.active().unwrap().selected_layers(), vec![paint], "the selection doesn't change");
+}
+
+/// A layer linked to the transformed one after the box opened moves with the commit
+/// (`edit.transform` takes the link group along), so a click on its pixels is not a click on
+/// another layer: the box stays open.
+#[test]
+fn a_click_on_a_layer_linked_after_the_box_opened_keeps_it_open() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 200, "height": 200, "background": "white"})).unwrap();
+    app.sync_views();
+    app.ui.extras.rulers = false;
+    app.ui.extras.snap = false;
+    let mut ids = Vec::new();
+    for (name, at, color) in [("Other", 120, "#0000ff"), ("Paint", 20, "#ff0000")] {
+        let id = app.run("layer.new.layer", json!({"name": name})).unwrap()["layer"].as_u64().unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        app.run("select.rect", json!({"x": at, "y": at, "width": 40, "height": 40})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        ids.push(LayerId(id));
+    }
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let t = app.ui.transform.as_mut().unwrap();
+    t.quad = t.quad.map(|[x, y]| [x + 10.0, y]);
+    app.session
+        .edit("Link Layers", |doc, _| {
+            for id in &ids {
+                doc.layer_mut(*id).unwrap().link_group = Some(7);
+            }
+            Ok(())
+        })
+        .unwrap();
+    click(&mut app, [140.0, 140.0]);
+    assert!(app.ui.transform.is_some(), "the linked layer moves with the box: the click doesn't commit");
+}
+
+/// Only the frontmost layer under the click counts: where a grouped layer (not measured, so the
+/// box stays open there) covers a top-level layer's pixels, the click doesn't commit through the
+/// covered layer.
+#[test]
+fn a_click_on_a_grouped_layer_covering_another_layer_keeps_the_box_open() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 200, "height": 200, "background": "white"})).unwrap();
+    app.sync_views();
+    app.ui.extras.rulers = false;
+    app.ui.extras.snap = false;
+    // "Paint" has a red block at x 20..60, y 20..60; "Other" a blue one at x 120..160, y 120..160,
+    // covered by a green one on "Cover", which then goes into a group.
+    let mut ids = Vec::new();
+    for (name, at, color) in [("Paint", 20, "#ff0000"), ("Other", 120, "#0000ff"), ("Cover", 120, "#00ff00")] {
+        let id = app.run("layer.new.layer", json!({"name": name})).unwrap()["layer"].as_u64().unwrap();
+        app.run("layer.select", json!({"layer": id})).unwrap();
+        app.run("select.rect", json!({"x": at, "y": at, "width": 40, "height": 40})).unwrap();
+        app.run("edit.fill", json!({"contents": "color", "color": color})).unwrap();
+        app.run("select.deselect", json!({})).unwrap();
+        ids.push(id);
+    }
+    app.run("layer.groupLayers", json!({})).unwrap();
+    let doc = &app.session.active().unwrap().doc;
+    assert!(doc.layers.iter().all(|l| l.id.0 != ids[2]), "Cover is grouped");
+    assert!(doc.layers.iter().any(|l| l.id.0 == ids[1]), "Other is top-level");
+    app.run("layer.select", json!({"layer": ids[0]})).unwrap();
+    crate::menus::invoke(&mut app, &egui::Context::default(), "edit.freeTransform", json!({})).unwrap();
+    let t = app.ui.transform.as_mut().unwrap();
+    t.quad = t.quad.map(|[x, y]| [x + 10.0, y]);
+    let before = steps(&app);
+    click(&mut app, [140.0, 140.0]);
+    assert!(app.ui.transform.is_some(), "the box stays open");
+    assert_eq!(steps(&app), before);
+}
+
 /// The press decides where a click lands: one on the image that jitters past the canvas edge
 /// before the release keeps the box open, one on the pasteboard that jitters onto the image commits.
 #[test]

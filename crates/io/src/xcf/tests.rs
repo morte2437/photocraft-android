@@ -2,6 +2,7 @@
 //! every compression, precisions, groups, masks, channels, limits and malformed input.
 
 use super::*;
+use craft_xcf::{Compression, MAX_STRING, TILE};
 use photocraft_raster::Interrupt;
 
 /// A small XCF writer for tests: version 11+ layout (64-bit pointers) by default.
@@ -471,7 +472,7 @@ fn sixteen_bit_and_float_samples_are_big_endian() {
     assert!(d.layers[0].locks.transparency, "no alpha channel in the file: the layer is opaque");
 
     // 16-bit float (500) and 64-bit float (700) decode too.
-    for (precision, bytes) in [(500u32, f16::from_f32(0.75).to_bits().to_be_bytes().to_vec()), (700, 0.75f64.to_be_bytes().to_vec())] {
+    for (precision, bytes) in [(500u32, 0x3a00u16.to_be_bytes().to_vec()), (700, 0.75f64.to_be_bytes().to_vec())] {
         let mut img = TestImage::rgb8(1, 1);
         img.base_type = 1;
         img.precision = precision;
@@ -779,32 +780,29 @@ fn a_path_failing_below_the_top_level_lands_at_the_top_level() {
     assert!(r.warnings.iter().any(|w| w.contains("Stray") && w.contains("item path")), "{:?}", r.warnings);
 }
 
-/// A parasite name field: u32 `len+1`, then the bytes and a trailing NUL.
-fn parasite_name(out: &mut Vec<u8>, name: &str) {
-    out.extend_from_slice(&((name.len() as u32) + 1).to_be_bytes());
-    out.extend_from_slice(name.as_bytes());
-    out.push(0);
-}
-
-/// One PROP_PARASITES record: name, u32 flags, u32 len, then the payload.
-fn parasite_record(out: &mut Vec<u8>, name: &str, payload: &[u8]) {
-    parasite_name(out, name);
-    out.extend_from_slice(&0u32.to_be_bytes());
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(payload);
-}
-
 #[test]
-fn duplicate_parasites_keep_order_and_last_value() {
-    // Duplicate names must resolve to the last payload while keeping first-seen order.
-    // This is the behavior the name->index map must preserve versus the old linear scan.
-    let mut data = Vec::new();
-    parasite_record(&mut data, "gimp-comment", b"first");
-    parasite_record(&mut data, "gimp-image-grid", b"grid");
-    parasite_record(&mut data, "gimp-comment", b"second");
-    let out = parasites(&data);
-    assert_eq!(out.len(), 2, "duplicate collapses to one slot");
-    assert_eq!(out[0].0, "gimp-comment");
-    assert_eq!(out[0].1, b"second", "last value wins");
-    assert_eq!(out[1].0, "gimp-image-grid", "insertion order preserved");
+fn a_narrow_drawable_is_charged_the_tiles_it_stores() {
+    // One pixel wide and 300000 tall: 1.2 MB of samples a layer, but 1172 whole tiles (307 MB
+    // in RGBA8); four such layers pass the sample budget and exceed the 1 GiB of tiles.
+    let h = MAX_SIDE;
+    let mut img = TestImage::rgb8(1, h);
+    for name in ["a", "b", "c", "d"] {
+        img.layers.push(TestLayer::rgba(name, 1, h, rgba(1, h, |_, _| [1, 2, 3, 255])));
+    }
+    let e = open(&img.write()).unwrap_err().to_string();
+    assert!(e.contains("pixel limit"), "{e}");
+    img.layers.truncate(3);
+    assert!(open(&img.write()).is_ok(), "three fit");
+}
+
+/// Blank content keeps no tiles after `prune()`, so it is not charged against the pixel budget.
+#[test]
+fn blank_layers_are_not_charged_for_pruned_tiles() {
+    let mut budget = MAX_PIXEL_BYTES;
+    for _ in 0..4 {
+        let mut surface = Surface::new(photocraft_color::PixelFormat::RGBA8);
+        let px = Pixels { width: 1, height: 300_000, channels: 4, data: vec![0.0; 1_200_000] };
+        write_pixels(&mut surface, &px, 0, 0, &mut budget).unwrap();
+    }
+    assert_eq!(budget, MAX_PIXEL_BYTES);
 }

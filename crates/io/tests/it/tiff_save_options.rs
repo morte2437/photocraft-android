@@ -2,11 +2,11 @@
 //! channels, and Save Image Pyramid. Unset Save Transparency is covered in `tiff_layers`.
 
 use crate::common::*;
+use craft_psd::tiff::ImageSourceData;
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{AlphaChannel, Document, Layer, LayerContent};
 use photocraft_geom::{Rect, Size};
 use photocraft_io::*;
-use photocraft_psd::tiff::ImageSourceData;
 use photocraft_raster::Surface;
 
 /// A 4×4 document whose one layer is opaque red in its middle and transparent around it, with a
@@ -33,15 +33,19 @@ fn save(doc: &Document, layers: bool, transparency: Option<bool>) -> ExportResul
 }
 
 fn extra_samples_tag(bytes: &[u8]) -> Vec<u16> {
-    let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(bytes)).unwrap();
-    dec.get_tag_u16_vec(tiff::tags::Tag::ExtraSamples).unwrap_or_default()
+    let tiff = craft_tiff::Tiff::parse(bytes).unwrap();
+    tiff.ifds
+        .first()
+        .and_then(|ifd| ifd.value(craft_tiff::tags::EXTRA_SAMPLES))
+        .map(|v| v.to_u64_vec().into_iter().map(|x| x as u16).collect())
+        .unwrap_or_default()
 }
 
 /// A TIFF's channel resources: the names in 1006, and the byte lengths of DisplayInfo (1077)
 /// and the alpha identifiers (1053).
 fn channel_resources(bytes: &[u8]) -> (Vec<String>, usize, usize) {
     let tag = photocraft_codecs::tiff_photoshop_tags(bytes).0.expect("resources");
-    let (resources, _) = photocraft_psd::tiff::resources_from_bytes(tag).expect("parse resources");
+    let (resources, _) = craft_psd::tiff::resources_from_bytes(tag).expect("parse resources");
     let data = |id: u16| resources.iter().find(|r| r.id == id).map(|r| r.data.clone()).unwrap_or_default();
     let pascal = data(1006);
     let (mut at, mut names) = (0usize, Vec::new());

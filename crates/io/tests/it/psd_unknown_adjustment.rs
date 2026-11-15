@@ -3,10 +3,10 @@
 //! of opening silently as an empty pixel layer (#6575). Pixel layers that merely carry an unknown
 //! block stay pixel layers.
 
+use craft_psd::testgen;
+use craft_psd::{ChannelData, Compression, LayerFlags, LayerRecord, PsdFile, Rect, TaggedBlock, Version};
 use photocraft_doc::{Adjustment, Document, LayerContent};
 use photocraft_io::*;
-use photocraft_psd::testgen;
-use photocraft_psd::{ChannelData, Compression, LayerFlags, LayerRecord, PsdFile, Rect, TaggedBlock, Version};
 
 /// A layer record as Photoshop writes an adjustment layer: no pixels, "pixel data irrelevant"
 /// set, the adjustment block first, then the usual metadata.

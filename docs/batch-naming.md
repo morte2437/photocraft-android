@@ -58,6 +58,28 @@ The same options are available on `file.automate.batch` through the engine comma
 The CLI has matching `batch --recursive`, `--naming`, `--start-serial`, `--stop-on-error`, and
 `--error-log` flags. Droplets use Batch's flat output and naming behavior.
 
+## Image Processor sources
+
+**File > Scripts > Image Processor…** has a **Source** selector: **Current document**,
+**All open documents**, or **Folder**. It defaults to the current document when one is open.
+Open-document sources include unsaved edits and untitled images. Resizing and export run on
+copies; the open documents, their history and their source files remain intact. Choose a
+separate output folder. Duplicate output names appear in the per-file errors instead of
+replacing an earlier result.
+
+Untitled document names follow the portable filename rules used for layer exports: for
+example, `foo/bar` becomes `foo_bar`. The document's displayed name stays unchanged.
+
+Agents can use the same engine command:
+
+```json
+{"source": "current", "output": "exports", "format": "jpg", "width": 1920, "height": 1080}
+```
+
+Pass this to `file.scripts.imageProcessor`. Use `"source": "open"` for all open documents;
+`"source": "folder"` (the command default) takes `"input"` as before. The input folder and
+**Include All Subfolders** controls appear only for the folder source.
+
 ## Reference behavior and conformance
 
 The [Photoshop 2026 Batch measurements](https://github.com/davidmann4/photocraft/blob/docs/atn-event-reference/docs/atn.md#batch-behaviour)

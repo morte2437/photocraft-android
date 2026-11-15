@@ -2,7 +2,7 @@ use photocraft_doc::BlendMode;
 
 use super::enabled::{check_all_unlocked, is_mask_target, paint_surface};
 use super::layer_params::{layer_param, mask_new_layer};
-use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Map, Result, Session, Value, json, pixels};
+use super::{Adjustment, ColorMode, EngineError, Layer, LayerContent, Result, Session, Value, json, pixels};
 
 /// Add an adjustment layer above the active one; it takes the mask `mask_new_layer` builds from `p` (a path, the selection, or the default white mask).
 /// Optional opacity is a 0..1 fraction, validated before the creation edit.
@@ -109,24 +109,7 @@ pub(super) fn doc_mode(s: &Session) -> ColorMode {
 /// Levels stay in the neutral space instead of Lab (where the composite is ignored) or CMYK
 /// (where the curve runs on the inks) (#5335).
 pub(super) fn adjust_mode(s: &Session, p: &Value) -> ColorMode {
-    if is_mask_target(p) || crate::channel_cmds::is_channel_target(p) { ColorMode::Grayscale } else { doc_mode(s) }
-}
-
-/// Tone params for a gray plane target: the document-space channel records are dropped, because
-/// those keys select the Lab or CMYK tone space and a plane only holds levels (#5335).
-pub(super) fn gray_tone_params(p: &Value) -> Value {
-    match p {
-        Value::Object(m) => {
-            let mut o = Map::new();
-            for (k, v) in m {
-                if !matches!(k.as_str(), "cyan" | "magenta" | "yellow" | "black" | "lightness" | "a" | "b") {
-                    o.insert(k.clone(), v.clone());
-                }
-            }
-            Value::Object(o)
-        }
-        other => other.clone(),
-    }
+    if crate::channel_cmds::gray_target(p).is_some() { ColorMode::Grayscale } else { doc_mode(s) }
 }
 
 /// Commands generated from a table share one `run` fn; the kind is recovered from the id.

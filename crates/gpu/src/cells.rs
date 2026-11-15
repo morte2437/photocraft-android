@@ -4,7 +4,39 @@ use super::convert::{convert_tile, convert_tiles, keep_overlap, put_tiles, words
 use super::kit::{Bound, FrameRes, texture_group, uniform_group};
 use super::paging::cell_rect;
 use super::textures::{CachedPattern, Cell, ChunkOut, ResKey, Resident, ResidentRef, Stats, Tex, TexKind};
-use super::{Arc, Compositor, DocId, HashMap, I, Kernel, Pattern, Plan, Rect, Role, Surface, TILE_SIZE, TileCoord, plan};
+use super::{Arc, Compositor, DocId, HashMap, I, Kernel, Pattern, Plan, Rect, Role, Surface, TILE_SIZE, TileCoord, Unsupported, plan};
+
+/// Each of the RGBA and encoded upload buffers is bounded independently, rather
+/// than retaining two expanded copies of a compact pattern's entire texture.
+const PATTERN_UPLOAD_BAND_BYTES: u64 = 4 << 20;
+
+fn pattern_upload_bands(
+    pat: &Pattern,
+    mode: photocraft_color::ColorMode,
+    max_band_bytes: u64,
+    mut upload: impl FnMut(u32, u32, &[u8]),
+) -> Result<(), Unsupported> {
+    let mut bytes = Vec::new();
+    photocraft_compose::pattern::pattern_rgba_bands(pat, mode, max_band_bytes, |top, pixels| {
+        let len = pixels.len().checked_mul(16)?;
+        bytes.clear();
+        bytes.try_reserve_exact(len).ok()?;
+        bytes.extend(pixels.iter().flat_map(|q| [q[0] * q[3], q[1] * q[3], q[2] * q[3], q[3]]).flat_map(f32::to_le_bytes));
+        let rows = u32::try_from(pixels.len() / pat.width as usize).ok()?;
+        upload(top, rows, &bytes);
+        Some(())
+    })
+    .ok_or_else(|| Unsupported(format!("pattern `{}` could not be expanded within the upload scratch budget", pat.name)))
+}
+
+fn write_pattern_band(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, top: u32, rows: u32, bytes: &[u8]) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: top, z: 0 }, aspect: wgpu::TextureAspect::All },
+        bytes,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 16), rows_per_image: Some(rows) },
+        wgpu::Extent3d { width, height: rows, depth_or_array_layers: 1 },
+    );
+}
 
 impl Compositor {
     /// Bring the pages of `cell` that `plan` samples up to date and resolve its effect maps.
@@ -462,7 +494,7 @@ impl Compositor {
 
     /// Premultiplied RGBA32F texture of a pattern as it paints in the document's mode (cached by
     /// pixel identity and mode).
-    pub(crate) fn pattern_view(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pat: &Pattern) -> wgpu::TextureView {
+    pub(crate) fn pattern_view(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pat: &Pattern) -> Result<wgpu::TextureView, Unsupported> {
         let fp = pat.surface.tiles().fold((pat.width as u64) << 32 | pat.height as u64, |acc, (c, t)| {
             acc.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (Arc::as_ptr(t) as usize as u64) ^ ((c.tx as u64) << 20) ^ c.ty as u64
         });
@@ -479,22 +511,17 @@ impl Compositor {
         {
             cached.doc = doc;
             cached.last_used = last_used;
-            return cached.texture.view.clone();
+            return Ok(cached.texture.view.clone());
         }
         let (w, h) = (pat.width, pat.height);
-        let px = photocraft_compose::pattern::pattern_rgba(pat, mode);
-        let bytes: Vec<u8> = px.iter().flat_map(|q| [q[0] * q[3], q[1] * q[3], q[2] * q[3], q[3]]).flat_map(f32::to_le_bytes).collect();
         let t = Tex::new(device, "pc_pattern", w, h, wgpu::TextureFormat::Rgba32Float, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &t.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &bytes,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 16), rows_per_image: Some(h) },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
+        pattern_upload_bands(pat, mode, PATTERN_UPLOAD_BAND_BYTES, |top, rows, bytes| {
+            write_pattern_band(queue, &t.texture, w, top, rows, bytes);
+        })?;
         let v = t.view.clone();
         let bytes = u64::from(w.max(1)) * u64::from(h.max(1)) * 16;
         self.patterns.insert(key, CachedPattern { fingerprint: fp, format, default_bits, texture: t, doc, last_used, bytes });
-        v
+        Ok(v)
     }
 
     /// An R32F temporary at least `region`-sized (the smallest that fits) not in `taken`.
@@ -519,5 +546,115 @@ impl Compositor {
         let v = t.view.clone();
         self.temps.push((t, frame));
         v
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pattern_upload_tests {
+    use super::*;
+    use photocraft_color::{ColorMode, PixelFormat, SampleType};
+
+    fn fixture(sample: SampleType) -> Pattern {
+        let mut surface = Surface::new(PixelFormat::new(ColorMode::Rgb, sample, true));
+        for y in 0..5 {
+            surface.fill_rect(Rect::new(0, y, 3, y + 1), &[y as f32 / 4., 0.25, 0.75, 0.5]);
+        }
+        Pattern { id: "upload".into(), name: "upload".into(), width: 3, height: 5, surface }
+    }
+
+    #[test]
+    fn upload_bands_keep_complete_rows_premultiplication_and_final_partial_band() {
+        for sample in SampleType::ALL {
+            let p = fixture(sample);
+            let mut starts = Vec::new();
+            let mut uploaded = Vec::new();
+            pattern_upload_bands(&p, ColorMode::Rgb, 3 * 2 * 16, |top, rows, bytes| {
+                starts.push((top, rows));
+                assert_eq!(bytes.len(), rows as usize * 3 * 16);
+                assert!(bytes.len() <= 3 * 2 * 16);
+                uploaded.extend_from_slice(bytes);
+            })
+            .unwrap();
+            assert_eq!(starts, [(0, 2), (2, 2), (4, 1)]);
+            let mut expected = Vec::new();
+            for y in 0..5 {
+                for x in 0..3 {
+                    let pixel = p.surface.pixel(x, y);
+                    expected.extend([pixel[0] * pixel[3], pixel[1] * pixel[3], pixel[2] * pixel[3], pixel[3]].into_iter().flat_map(f32::to_le_bytes));
+                }
+            }
+            assert_eq!(uploaded, expected);
+            assert!(pattern_upload_bands(&p, ColorMode::Rgb, 3 * 16 - 1, |_, _, _| panic!("a row must fit before uploading")).is_err());
+            let unpaintable = Pattern { width: 30_000, height: 30_000, ..p };
+            assert!(pattern_upload_bands(&unpaintable, ColorMode::Rgb, 3 * 2 * 16, |_, _, _| panic!("unpaintable pattern must not upload")).is_err());
+        }
+    }
+
+    #[test]
+    fn small_budget_bands_reach_the_real_texture_upload_boundary() {
+        let required = std::env::var_os("WGPU_BACKEND").is_some();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                assert!(!required, "requested GPU adapter unavailable: {error}");
+                return;
+            }
+        };
+        let (device, queue) = match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+            Ok(device) => device,
+            Err(error) => {
+                assert!(!required, "requested GPU device unavailable: {error}");
+                return;
+            }
+        };
+        for sample in [SampleType::U8, SampleType::U16] {
+            let p = fixture(sample);
+            let texture =
+                Tex::new(&device, "pattern band test", 3, 5, wgpu::TextureFormat::Rgba32Float, wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC);
+            let mut calls = Vec::new();
+            pattern_upload_bands(&p, ColorMode::Rgb, 3 * 2 * 16, |top, rows, bytes| {
+                calls.push((top, rows));
+                write_pattern_band(&queue, &texture.texture, p.width, top, rows, bytes);
+            })
+            .unwrap();
+            assert_eq!(calls, [(0, 2), (2, 2), (4, 1)]);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("pattern band readback"),
+                size: 256 * 5,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo { texture: &texture.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: Some(5) },
+                },
+                wgpu::Extent3d { width: 3, height: 5, depth_or_array_layers: 1 },
+            );
+            queue.submit([encoder.finish()]);
+            let (send, receive) = std::sync::mpsc::channel();
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                let _ = send.send(result);
+            });
+            device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(std::time::Duration::from_secs(30)) }).unwrap();
+            receive.recv_timeout(std::time::Duration::from_secs(1)).unwrap().unwrap();
+            let data = buffer.slice(..).get_mapped_range().unwrap();
+            for y in 0..5 {
+                for x in 0..3 {
+                    let pixel = p.surface.pixel(x, y);
+                    let expected = [pixel[0] * pixel[3], pixel[1] * pixel[3], pixel[2] * pixel[3], pixel[3]];
+                    for (channel, expected) in expected.into_iter().enumerate() {
+                        let offset = y as usize * 256 + x as usize * 16 + channel * 4;
+                        let actual = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                        assert_eq!(actual, expected, "{sample:?} ({x}, {y}) channel {channel}");
+                    }
+                }
+            }
+            drop(data);
+            buffer.unmap();
+        }
     }
 }

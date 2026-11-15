@@ -81,8 +81,6 @@ fn key4(s: &str) -> Result<[u8; 4]> {
     unhex(s)?.try_into().map_err(|_| FormatError::corrupt(format!("bad 4-byte key `{s}`")))
 }
 
-pub(crate) use craft_pcraft_format::is_valid_hash;
-
 /// Convert native-endian sample bytes to little-endian in place (and back:
 /// the swap is an involution).
 pub(crate) fn swap_to_le(bytes: &mut [u8], sample: SampleType) {
@@ -160,11 +158,16 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             // Older PhotoCraft versions cannot deserialize ArrowLine.
             // The saved path preserves the arrow's visual appearance.
             live: match &s.live {
-                Some(photocraft_doc::LiveShape::ArrowLine { .. }) => None,
+                Some(photocraft_doc::LiveShape::ArrowLine { .. } | photocraft_doc::LiveShape::Triangle { .. }) => None,
                 other => other.clone(),
             },
             arrow_live: match &s.live {
                 Some(arrow @ photocraft_doc::LiveShape::ArrowLine { .. }) => Some(arrow.clone()),
+                _ => None,
+            },
+            // Likewise for a triangle: older builds cannot read the kind, so they open its path.
+            triangle_live: match &s.live {
+                Some(triangle @ photocraft_doc::LiveShape::Triangle { .. }) => Some(triangle.clone()),
                 _ => None,
             },
             density: s.density,
@@ -238,8 +241,11 @@ fn channel_m(c: &AlphaChannel, sink: &mut dyn Sink) -> ChannelM {
     ChannelM { name: name.clone(), surface: surface_m(surface, sink), spot: *spot, color: *color, opacity: *opacity, indicates: *indicates }
 }
 
-pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> DocM {
-    DocM {
+/// Build native document manifest data, sending durable conversion provenance through the same bounded content sink as
+/// other stored data.
+pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> Result<DocM> {
+    let import_conversion = d.metadata.import_conversion.as_deref().map(|report| crate::import_conversion::to_manifest(report, sink)).transpose()?;
+    Ok(DocM {
         id: d.id.0,
         name: d.name.clone(),
         size: d.size,
@@ -253,6 +259,7 @@ pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> DocM {
         ruler_origin: d.ruler_origin,
         selection: d.selection.as_ref().map(|s| surface_m(s, sink)),
         metadata: MetadataM {
+            import_conversion,
             xmp: d.metadata.xmp.as_deref().map(str::to_owned),
             exif: opt_blob(&d.metadata.exif, sink),
             text: d.metadata.text.clone(),
@@ -282,7 +289,7 @@ pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> DocM {
         notes: d.notes.clone(),
         text_styles: d.text_styles.clone(),
         slices: d.slices.clone(),
-    }
+    })
 }
 
 fn effects_m(e: &Effects, sink: &mut dyn Sink) -> EffectsM {
@@ -491,11 +498,16 @@ impl Loader<'_> {
                     warp: warp.clone(),
                 })
             }
-            ContentM::Shape { fill, cache, psd_raw, path, stroke, live, arrow_live, density, feather } => LayerContent::Shape(ShapeLayer {
+            ContentM::Shape { fill, cache, psd_raw, path, stroke, live, arrow_live, triangle_live, density, feather } => LayerContent::Shape(ShapeLayer {
                 path: path.clone(),
                 fill: fill.clone(),
                 stroke: stroke.clone(),
-                live: arrow_live.as_ref().filter(|shape| matches!(shape, photocraft_doc::LiveShape::ArrowLine { .. })).cloned().or_else(|| live.clone()),
+                live: arrow_live
+                    .as_ref()
+                    .filter(|shape| matches!(shape, photocraft_doc::LiveShape::ArrowLine { .. }))
+                    .or_else(|| triangle_live.as_ref().filter(|shape| matches!(shape, photocraft_doc::LiveShape::Triangle { .. })))
+                    .cloned()
+                    .or_else(|| live.clone()),
                 cache: self.opt_surface(cache)?,
                 psd_raw: self.opt_blob(psd_raw)?,
                 density: *density,
@@ -594,6 +606,8 @@ impl Loader<'_> {
         })
     }
 
+    /// Reconstruct checked native data while reserving/remapping IDs, validating resources and preserving references
+    /// plus opaque conversion provenance.
     pub(crate) fn document(&mut self, m: &DocM) -> Result<Document> {
         // Reserve every stored id before allocating identities missing from older bundles. If an
         // id is implausibly large, remap the whole document while retaining shared contents groups.
@@ -623,6 +637,7 @@ impl Loader<'_> {
         }
         let quick_mask = m.quick_mask.as_ref().map(|c| self.channel(c)).transpose()?;
         let mut md = Metadata {
+            import_conversion: m.metadata.import_conversion.as_ref().map(|report| crate::import_conversion::from_manifest(report, self.fetch)).transpose()?,
             xmp: m.metadata.xmp.as_deref().map(std::sync::Arc::from),
             exif: self.opt_blob(&m.metadata.exif)?,
             text: m.metadata.text.clone(),

@@ -4,7 +4,7 @@
 use photocraft_engine::Session;
 use serde_json::json;
 
-#[path = "../../psd/tests/common/csh_fixture.rs"]
+#[path = "common/csh_fixture.rs"]
 mod fixture;
 use fixture::{polygon_csh, triangle_csh};
 

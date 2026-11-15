@@ -4,7 +4,7 @@ use photocraft_color::{BlendMode, Color, ColorMode, SampleType};
 use photocraft_doc::{Adjustment, Document, Fill, Layer, LayerContent, LayerId, LayerMask, Size};
 use photocraft_geom::{Rect, TILE_SIZE};
 use photocraft_raster::Surface;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::{EngineError, Result, Session, inspect, pixels};
 
@@ -27,6 +27,11 @@ pub struct CommandSpec {
     pub journal: bool,
 }
 
+/// Image › Adjustments › Desaturate: Hue/Saturation with saturation at -100.
+pub(crate) fn desaturate_adjustment() -> Adjustment {
+    Adjustment::HueSaturation { hue: 0.0, saturation: -100.0, lightness: 0.0, colorize: false, ranges: photocraft_doc::adjust::HueRange::defaults() }
+}
+
 /// Image › Image Rotation by a right angle or a flip (pixels, vectors, guides, … all move).
 fn turn(s: &mut Session, label: &str, t: crate::canvas_geom::Turn) -> Result<Value> {
     if let Some(d) = s.active() {
@@ -37,7 +42,7 @@ fn turn(s: &mut Session, label: &str, t: crate::canvas_geom::Turn) -> Result<Val
         s.set_canvas_map(a, half.then(&a).then(&photocraft_geom::Affine::translate(-0.5, -0.5)));
     }
     s.edit(label, |doc, _| {
-        crate::canvas_geom::turn_canvas(doc, t);
+        crate::canvas_geom::keeping_count_points(doc, |doc| crate::canvas_geom::turn_canvas(doc, t));
         Ok(())
     })?;
     Ok(Value::Null)
@@ -67,6 +72,14 @@ pub mod color_cmds;
 pub mod color_to_alpha_cmds;
 pub mod comps_cmds;
 pub mod contour_lib_cmds;
+#[cfg(test)]
+mod count_delete_group_tests;
+#[cfg(test)]
+mod count_history_names_tests;
+#[cfg(test)]
+mod count_record_label_tests;
+#[cfg(test)]
+mod count_resize_tests;
 pub mod cutout_cmds;
 pub mod distort_cmds;
 pub mod document_preset_cmds;
@@ -87,6 +100,8 @@ pub mod frame_cmds;
 pub mod fx_view_cmds;
 pub mod fx_visibility_cmds;
 pub mod gallery_cmds;
+#[cfg(test)]
+mod gradient_alpha_method_tests;
 pub mod gradient_fill_cmds;
 pub mod group_view_cmds;
 pub mod history_cmds;
@@ -96,6 +111,7 @@ pub mod history_select_cmds;
 pub mod history_source_cmds;
 pub mod image_cmds;
 pub mod layer_copy_cmds;
+pub mod layer_css_cmds;
 pub mod layer_label_cmds;
 pub mod layer_list_cmds;
 pub mod layer_mask_props_cmds;
@@ -111,7 +127,11 @@ pub mod mask_view_cmds;
 pub(super) mod migrate_cmds;
 pub mod mode_cmds;
 pub mod multichannel_cmds;
+#[cfg(test)]
+mod new_document_history_name_tests;
 pub mod notes_cmds;
+#[cfg(test)]
+mod notes_stored_values_tests;
 mod ops;
 pub mod paint_cmds;
 mod params;
@@ -129,6 +149,8 @@ pub mod redeye_cmds;
 pub mod render_cmds;
 pub mod retouch_cmds;
 pub mod sample_cmds;
+#[cfg(test)]
+mod sample_zoom_box_tests;
 pub mod sampler_cmds;
 pub mod select_extra_cmds;
 pub mod selection_cmds;
@@ -148,6 +170,8 @@ pub mod type_area_cmds;
 pub mod type_caret_cmds;
 pub mod type_cmds;
 pub mod type_extra_cmds;
+#[cfg(test)]
+mod type_indexed_mode_tests;
 pub mod type_mask_cmds;
 pub mod type_spell_cmds;
 pub mod type_styles_cmds;
@@ -162,15 +186,15 @@ pub mod web_cmds;
 pub(super) mod wia_cmds;
 
 pub(crate) use adjust_params::inject_kind;
-use adjust_params::{adjust_mode, destructive_adjust, doc_mode, gray_tone_params, new_adjustment};
+use adjust_params::{adjust_mode, destructive_adjust, doc_mode, new_adjustment};
 pub use adjust_params::{adjustment_from_params, adjustment_kind};
 pub(crate) use enabled::{always, check_all_unlocked, check_pixels_unlocked, has_paintable, is_mask_target, paint_surface};
-use enabled::{can_redo, can_undo, has_doc, has_layer, has_pixel_layer, has_pixel_or_channel, has_selection};
+use enabled::{can_redo, can_undo, has_doc, has_layer, has_pixel_or_channel, has_selection};
 pub use layer_params::blend_from_str;
 pub(crate) use layer_params::{NEW_LAYER_PATH, explicit_layer, layer_listing, layer_panel_option, layer_param, mask_at_depth, mask_new_layer, selection_mask};
 pub(crate) use layer_references::{recorded_drop, recorded_layer};
-use ops::{arrange, merge_group, set_mask, set_mask_and_deselect};
-pub(crate) use ops::{layer_copy, translate_layer};
+use ops::{arrange, merge_group, move_mask, set_mask, set_mask_and_deselect};
+pub(crate) use ops::{layer_copy, translate_layer, translate_layer_wrapped};
 use params::{bad, set_clipped};
 pub(crate) use params::{check_f32_values, cmyk_param, color_param, int, int_i32, parse_hex, u32_id, u32_id_param};
 
@@ -197,9 +221,14 @@ pub fn list_entry(s: &Session, c: &CommandSpec, reason: Option<String>) -> Value
 
 /// Other names a command is looked for by, beyond its id and label: the Photoshop tools and
 /// options it stands for (#5060). `select.rect` is also the Elliptical and Single Row/Column
-/// Marquee, which an agent searches for as "ellipse" or "marquee".
-pub(crate) const SEARCH_KEYWORDS: &[(&str, &str)] =
-    &[("select.rect", "Rectangular Marquee, Elliptical Marquee (\"ellipse\":true), ellipse, oval, circle, Single Row/Column Marquee (\"line\")")];
+/// Marquee, which an agent searches for as "ellipse" or "marquee". The RAW Develop filter and
+/// RAW Defaults keep Photoshop's "Camera Raw" name as a search alias only: the menus and windows
+/// say "RAW Develop" (#12403).
+pub(crate) const SEARCH_KEYWORDS: &[(&str, &str)] = &[
+    ("select.rect", "Rectangular Marquee, Elliptical Marquee (\"ellipse\":true), ellipse, oval, circle, Single Row/Column Marquee (\"line\")"),
+    ("filter.cameraRaw", "Camera Raw Filter"),
+    ("edit.preferences.rawDefaults", "Camera Raw Defaults"),
+];
 
 /// [`SEARCH_KEYWORDS`] of command `id`, if it has any.
 pub fn search_keywords(id: &str) -> Option<&'static str> {
@@ -306,6 +335,10 @@ fn build() -> Vec<CommandSpec> {
                     doc.icc_profile = Some(prof.to_bytes());
                 }
                 let i = s.add_document(doc, None);
+                // A new document's first History state is "New"; opened files keep "Open" (#14029).
+                if let Some(st) = s.active_mut() {
+                    st.history.set_current_label("New");
+                }
                 Ok(json!({ "document": i }))
             }
         ),
@@ -319,11 +352,10 @@ fn build() -> Vec<CommandSpec> {
             |s, p| {
                 let i = p.get("document").and_then(Value::as_u64).map(|v| v as usize).or(s.active_index()).ok_or(EngineError::NoDocument)?;
                 match p.get("save").filter(|v| !v.is_null()) {
-                    Some(v) if v == "ask" => {
-                        if s.documents().get(i).ok_or(EngineError::NoDocument)?.is_dirty() {
-                            return Err(bad("file.close", "the document has unsaved changes; save it or explicitly discard them"));
-                        }
+                    Some(v) if v == "ask" && s.documents().get(i).ok_or(EngineError::NoDocument)?.is_dirty() => {
+                        return Err(bad("file.close", "the document has unsaved changes; save it or explicitly discard them"));
                     }
+                    Some(v) if v == "ask" => {}
                     // `false` (don't save) is the older spelling of discard.
                     Some(Value::Bool(false)) => {}
                     Some(v) if v != "discard" => return Err(bad("file.close", "`save` must be ask, discard or false")),
@@ -571,6 +603,7 @@ fn build() -> Vec<CommandSpec> {
                 let add_copy = layer_panel_option(s, "addCopyToCopiedLayersAndGroups", true);
                 // The dialog offers Duplicate Layer's own name: only a different one was typed (#9023).
                 let mut typed = None;
+                let mut shift = (0, 0);
                 let nid = s.edit("Duplicate Layer", |doc, active| {
                     let mut dup = layer_copy(doc, id, add_copy)?;
                     if let Some(name) = name.as_ref().filter(|n| **n != dup.name) {
@@ -581,11 +614,12 @@ fn build() -> Vec<CommandSpec> {
                     // A lone copy joins its original's link group, as in the reference application (#11217).
                     crate::layer_multi_cmds::relink_copies(doc, &[nid])?;
                     if !in_place {
-                        crate::artboard_cmds::place_copy(doc, nid)?;
+                        shift = crate::artboard_cmds::place_copy(doc, nid)?;
                     }
                     *active = Some(nid);
                     Ok(nid)
                 })?;
+                crate::artboard_cmds::follow_shift(s, shift);
                 if let Some(name) = typed {
                     crate::type_cmds::note_typed_name(s, nid, &name);
                 }
@@ -807,6 +841,15 @@ fn build() -> Vec<CommandSpec> {
             "Delete Layer Mask",
             None
         )),
+        cmd!(
+            "layer.layerMask.moveTo",
+            "Move Layer Mask",
+            [],
+            None,
+            r##"{"layer":id? (the mask's layer, default active),"to":id|name (the layer or group it goes to; a recorded step names it),"toOccurrence":n? (which of several layers named `to`, in document order),"copy":bool=false (⌥-drag: a copy goes and the original stays),"replace":bool=false (replace a mask already there; otherwise refused)} → {layer,to,copy}"##,
+            has_layer,
+            move_mask
+        ),
         cmd!("layer.mergeDown", "Merge Down", ["Layer"], None, r##"{"layer":id?}"##, has_layer, |s, p| {
             let id = layer_param(s, p)?;
             s.edit("Merge Down", |doc, active| {
@@ -882,7 +925,7 @@ fn build() -> Vec<CommandSpec> {
             "Gradient…",
             ["Layer", "New Fill Layer"],
             None,
-            r##"{"from":"#rrggbb","to":"#rrggbb","angle":deg=90,"style":"linear|radial|angle|reflected|diamond","reverse":bool,"path":"work"|saved path name|{…path}? (the active path: becomes the vector mask; else the selection is the layer mask)}"##,
+            r##"{"from":"#rrggbb","to":"#rrggbb","angle":deg=90,"style":"linear|radial|angle|reflected|diamond","reverse":bool,"path":"work"|saved path name|{…path}? (the active path: becomes the vector mask; else the selection is the layer mask),"stops"?,"transparency"?,"midpoints"?,"scale"?,"offset"?,"dither"?,"align"? (as gradient.fill.set; stops replace from/to)}"##,
             has_doc,
             |s, p| {
                 let a = color_param("layer.newFillLayer.gradient", p, "from", s.tools.foreground)?;
@@ -891,15 +934,26 @@ fn build() -> Vec<CommandSpec> {
                 let style = crate::layer_style::gradient_style(p.get("style").and_then(Value::as_str).unwrap_or("linear"));
                 let reverse = p.get("reverse").and_then(Value::as_bool).unwrap_or(false);
                 let default_mask = layer_panel_option(s, "useDefaultMasksOnFillLayers", true);
+                // The rest of a recorded Gradient Fill (a loaded action's Make): applied as
+                // `gradient.fill.set` would, in the same step.
+                let rest: serde_json::Map<String, Value> = ["stops", "transparency", "midpoints", "scale", "offset", "dither", "align"]
+                    .iter()
+                    .filter_map(|k| p.get(*k).map(|v| ((*k).to_string(), v.clone())))
+                    .collect();
+                let (fg, bg) = (s.tools.foreground, s.tools.background);
                 let id = s.edit("New Gradient Fill Layer", |doc, active| {
-                    let fill = Fill::gradient(
+                    let mut fill = Fill::gradient(
                         vec![(0.0, Color::rgba(a[0], a[1], a[2], a[3])), (1.0, Color::rgba(b[0], b[1], b[2], b[3]))],
                         angle,
                         1.0,
                         style,
                         reverse,
-                    )
-                    .in_mode(doc.mode);
+                    );
+                    if !rest.is_empty() {
+                        let l = Layer::new(String::new(), LayerContent::Fill(fill.clone()));
+                        fill = crate::gradient_fill_cmds::apply_set(&l, &fill, doc.bounds(), &Value::Object(rest.clone()), fg, bg)?;
+                    }
+                    let fill = fill.in_mode(doc.mode);
                     let mut l = Layer::new(doc.next_layer_name("Gradient Fill"), LayerContent::Fill(fill));
                     mask_new_layer(doc, &mut l, p, "layer.newFillLayer.gradient", default_mask)?;
                     let id = crate::layer_place::insert_new(doc, *active, l, crate::layer_place::Place::Auto);
@@ -954,7 +1008,7 @@ fn build() -> Vec<CommandSpec> {
             "Move Layer",
             [],
             None,
-            r##"{"layer":id?,"dx":i32,"dy":i32,"units":"px"|"pt"="px" (pt: points, whole pixels at the document's resolution),"target":"pixels"|"mask"="pixels","selection":bool=false,"nest":bool=false} → null | {nested:[id]} (no layer: every selected layer; linked layers follow; target mask: a layer whose mask is unlinked moves that mask alone, a linked mask moves with the layer; selection: the selection moves too, in the same step; nest: auto-nesting as the Move tool does it, a layer whose bounds centre lands on another artboard joins it and one whose centre is off every artboard leaves for the top level; a clipping base takes the layers clipped to it along and a clipped layer goes only where its base goes; artboards, the Background, empty layers, layers whose board doesn't change, groups that would nest too deep and layers locked with Prevent Auto-Nesting (on the layer, a group around it or the destination board) stay put, with their whole clipping group; nested lists the layers that changed board)"##,
+            r##"{"layer":id?,"dx":i32,"dy":i32,"units":"px"|"pt"="px" (pt: points, whole pixels at the document's resolution),"target":"pixels"|"mask"="pixels","selection":bool=false,"wrap":bool=false,"nest":bool=false} → null | {nested:[id]} (no layer: every selected layer; linked layers follow; target mask: a layer whose mask is unlinked moves that mask alone, a linked mask moves with the layer; selection: the selection moves too, in the same step; wrap: View › Pattern Preview, pixels that leave the canvas come back on the opposite edge so the tile stays seamless; nest: auto-nesting as the Move tool does it, a layer whose bounds centre lands on another artboard joins it and one whose centre is off every artboard leaves for the top level; a clipping base takes the layers clipped to it along and a clipped layer goes only where its base goes; artboards, the Background, empty layers, layers whose board doesn't change, groups that would nest too deep and layers locked with Prevent Auto-Nesting (on the layer, a group around it or the destination board) stay put, with their whole clipping group; nested lists the layers that changed board)"##,
             has_layer,
             crate::layer_multi_cmds::translate
         ),
@@ -980,20 +1034,12 @@ fn build() -> Vec<CommandSpec> {
             ["Image", "Adjustments"],
             Some("Cmd+Shift+U"),
             r##"{"target":"pixels"|"mask"|{"color":i}|{"colors":[i,…]}?=Channels panel target,"layer":id|name?=active}"##,
-            has_pixel_layer,
+            crate::adjust_cmds::has_adjustable,
             |s, p| {
-                destructive_adjust(
-                    s,
-                    "Desaturate",
-                    Adjustment::HueSaturation {
-                        hue: 0.0,
-                        saturation: -100.0,
-                        lightness: 0.0,
-                        colorize: false,
-                        ranges: photocraft_doc::adjust::HueRange::defaults(),
-                    },
-                    p,
-                )
+                if crate::adjust_cmds::adjust_as_smart_filter(s, "desaturate", "Desaturate", p)? {
+                    return Ok(Value::Null);
+                }
+                destructive_adjust(s, "Desaturate", desaturate_adjustment(), p)
             }
         ),
         // Paint
@@ -1171,12 +1217,12 @@ fn build() -> Vec<CommandSpec> {
         (
             "levels",
             "Levels…",
-            r##"{"inBlack":0..253=0,"gamma":0.01..9.99=1,"inWhite":2..255=255,"outBlack":0..255=0,"outWhite":0..255=255,"red":json,"green":json,"blue":json,"eyedropper":json} (top level = composite; per channel {"inBlack","gamma","inWhite","outBlack","outWhite"} under red/green/blue, gray, cyan/magenta/yellow/black or lightness/a/b; eyedropper = the dialog's Set Black/Neutral Gray/White Point picker {"point":"black|gray|white","at":[x,y],"size":1..101=1} or {"point",…,"color":[r,g,b] 0..1}: black/white set each channel's input black/white to the sample, gray each channel's gamma so the sample turns neutral at its luma; RGB and Grayscale (no gray) only, applied over the given levels)"##,
+            r##"{"inBlack":0..253=0,"gamma":0.01..9.99=1,"inWhite":2..255=255,"outBlack":0..255=0,"outWhite":0..255=255,"red":json,"green":json,"blue":json,"eyedropper":json} (top level = composite; per channel {"inBlack","gamma","inWhite","outBlack","outWhite"} under red/green/blue, gray, cyan/magenta/yellow/black or lightness/a/b; eyedropper = the dialog's Set Black/Neutral Gray/White Point picker {"point":"black|gray|white","at":[x,y],"size":1..101=1} or {"point",…,"color":[r,g,b] 0..1}: black/white set each channel's input black/white to the sample, gray each channel's gamma so the sample turns neutral at its luma; colour composites: RGB and Grayscale (no gray); Image adjustments targeting a mask, alpha or Quick Mask sample that gray plane in any document mode, applied over the given levels)"##,
         ),
         (
             "curves",
             "Curves…",
-            r##"{"points":json,"red":json,"green":json,"blue":json,"pencil":bool=false,"smooth":0..10=0,"eyedropper":json} (curves as [[in,out],…] in 0..255, 2..19 points: points = composite; red/green/blue, gray, cyan/magenta/yellow/black or lightness/a/b per channel; pencil = drawn curves (Draw to modify the curve): each curve is 256 output levels in 0..255 (point curves given are drawn in, and turning pencil off fits points to the drawing); smooth = Smooth passes over the drawn curves; eyedropper = the dialog's Set Black/Neutral Gray/White Point picker {"point":"black|gray|white","at":[x,y],"size":1..101=1} or {"point",…,"color":[r,g,b] 0..1}, RGB and Grayscale (no gray) only, applied over the given curves)"##,
+            r##"{"points":json,"red":json,"green":json,"blue":json,"pencil":bool=false,"smooth":0..10=0,"eyedropper":json} (curves as [[in,out],…] in 0..255, 2..19 points: points = composite; red/green/blue, gray, cyan/magenta/yellow/black or lightness/a/b per channel; pencil = drawn curves (Draw to modify the curve): each curve is 256 output levels in 0..255 (point curves given are drawn in, and turning pencil off fits points to the drawing); smooth = Smooth passes over the drawn curves; eyedropper = the dialog's Set Black/Neutral Gray/White Point picker {"point":"black|gray|white","at":[x,y],"size":1..101=1} or {"point",…,"color":[r,g,b] 0..1}, colour composites: RGB and Grayscale (no gray); Image adjustments targeting a mask, alpha or Quick Mask sample that gray plane in any document mode, applied over the given curves)"##,
         ),
         ("exposure", "Exposure…", r##"{"exposure":-20..20=0,"offset":-0.5..0.5=0,"gamma":0.01..9.99=1}"##),
         ("vibrance", "Vibrance…", r##"{"vibrance":-100..100=0,"saturation":-100..100=0}"##),
@@ -1217,7 +1263,7 @@ fn build() -> Vec<CommandSpec> {
         (
             "colorLookup",
             "Color Lookup…",
-            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text?,"lutFormat":"cube|3dl|look"?} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection)"##,
+            r##"{"lut":"none|warm|cool|tealOrange|bleachBypass|fadedFilm|dayForNight|monoContrast|crossProcess"="none","file":text,"interpolation":"trilinear|tetrahedral"="trilinear","dither":bool=false,"data":text,"dataEncoding":"text|base64"="text","fileName":text,"lutFormat":"auto|cube|3dl|look"="auto"} (file: LUT path; data: file text or encoded bytes; lutFormat overrides format detection, auto detects it)"##,
         ),
     ];
     for &(kind, label, params) in ADJ {
@@ -1258,7 +1304,10 @@ fn build() -> Vec<CommandSpec> {
             enabled: crate::adjust_cmds::has_adjustable,
             run: |s, p| {
                 let kind = p.get("__kind").and_then(Value::as_str).unwrap_or("invert").to_string();
-                let eyedropped = if matches!(kind.as_str(), "levels" | "curves") { crate::adjust_params::eyedropper_from_params(s, &kind, p)? } else { None };
+                if matches!(kind.as_str(), "levels" | "curves") {
+                    crate::channel_cmds::resolve_tone_target(s, false, p)?;
+                }
+                let eyedropped = if matches!(kind.as_str(), "levels" | "curves") { crate::adjust_params::destructive_eyedropper(s, &kind, p)? } else { None };
                 // A smart filter re-runs its params, so it records what an eyedropper resolved
                 // to, not the sample (#3127).
                 let recorded = eyedropped.as_ref().map(|adj| {
@@ -1273,9 +1322,9 @@ fn build() -> Vec<CommandSpec> {
                     Some(adj) => adj,
                     None => {
                         // A gray plane target keeps the neutral tone space even over params
-                        // carrying Lab or CMYK records (#5335).
+                        // carrying RGB, Lab or CMYK records (#5335).
                         let tone = if is_mask_target(p) || crate::channel_cmds::is_channel_target(p) {
-                            if matches!(kind.as_str(), "levels" | "curves") { gray_tone_params(p) } else { p.clone() }
+                            if matches!(kind.as_str(), "levels" | "curves") { crate::adjust_params::gray_tone_params(p) } else { p.clone() }
                         } else {
                             p.clone()
                         };
@@ -1367,6 +1416,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::adjust_cmds::specs());
     v.extend(crate::layer_menu_cmds::specs());
     v.extend(crate::layer_label_cmds::specs());
+    v.extend(crate::layer_css_cmds::specs());
     v.extend(crate::layer_xmp_cmds::specs());
     v.extend(crate::mode_cmds::specs());
     v.extend(crate::multichannel_cmds::specs());

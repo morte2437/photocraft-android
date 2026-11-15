@@ -15,8 +15,8 @@
 
 use std::io::Write as _;
 
-use photocraft_psd::compression::{PlaneLayout, encode_planes, predict};
-use photocraft_psd::{ChannelData, Compression, PsdError};
+use craft_psd::compression::{PlaneLayout, encode_planes, predict};
+use craft_psd::{ChannelData, Compression, PsdError};
 use photocraft_raster::Surface;
 
 use super::Ex;
@@ -76,7 +76,7 @@ impl Ex<'_> {
         }
     }
 
-    fn banded_pass(&self, s: &Surface, r: photocraft_geom::Rect, compression: Compression) -> photocraft_psd::Result<Vec<ChannelData>> {
+    fn banded_pass(&self, s: &Surface, r: photocraft_geom::Rect, compression: Compression) -> craft_psd::Result<Vec<ChannelData>> {
         let (w, h) = (r.width() as usize, r.height() as usize);
         let bpp = s.format().bytes_per_pixel();
         let band_rows = (band_bytes() / (w * bpp).max(1)).max(1);
@@ -115,7 +115,7 @@ impl Ex<'_> {
             // Alpha (planes[cc]) is channel 0, then the colour channels; each on its own thread.
             let work: Vec<(&mut Channel, Vec<u8>)> =
                 channels.iter_mut().enumerate().map(|(k, c)| (c, planes[if k == 0 { self.cc } else { k - 1 }].take().unwrap_or_default())).collect();
-            let done = crate::pixels::par_map(work, |(c, mut plane)| -> photocraft_psd::Result<()> {
+            let done = crate::pixels::par_map(work, |(c, mut plane)| -> craft_psd::Result<()> {
                 check()?;
                 match compression {
                     Compression::Rle => {
@@ -135,7 +135,7 @@ impl Ex<'_> {
                 }
                 Ok(())
             });
-            done.into_iter().collect::<photocraft_psd::Result<()>>()?;
+            done.into_iter().collect::<craft_psd::Result<()>>()?;
             #[cfg(test)]
             BANDS_DONE.set(BANDS_DONE.get() + 1);
         }

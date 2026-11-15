@@ -322,3 +322,217 @@ fn the_pen_carries_on_a_vector_masks_open_subpath() {
     assert_eq!(mask.path.subpaths[0].knots.len(), 3);
     assert!(st.doc.work_path.is_none());
 }
+
+/// The component selection a press creates must survive the frame tick (`sync_views`) — it is
+/// structural (the path's shape), not bound to a history revision (#10854).
+#[test]
+fn a_pressed_component_selection_survives_the_frame_tick() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    assert!(super::selected(&app).is_some(), "the press selects the inner square");
+    app.sync_views();
+    assert!(super::selected(&app).is_some(), "the selection survives the frame tick");
+}
+
+/// ⇧-click adds components, and the accumulated selection survives the tick too.
+#[test]
+fn shift_add_accumulates_and_survives_the_frame_tick() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    crate::path_components::press(&mut app, [30.0, 30.0], true);
+    assert_eq!(super::selected(&app).map(|(.., heads)| heads), Some(vec![0, 1]), "⇧-click adds the outer square");
+    app.sync_views();
+    assert_eq!(super::selected(&app).map(|(.., heads)| heads), Some(vec![0, 1]), "the multi-selection survives the tick");
+}
+
+/// Edits that do not restructure the path (an operation change, a colour edit) keep the
+/// selection; a structural edit (an added anchor) clears it — the stored indices must not go
+/// stale.
+#[test]
+fn the_selection_survives_unrelated_edits_and_dies_on_restructure() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    let (id, _) = shape(&app);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    app.run("path.setOperation", json!({"name": "layer", "layer": id.0, "subpaths": [1], "op": "subtract"})).unwrap();
+    assert!(super::selected(&app).is_some(), "an operation change keeps the selection");
+    app.run("shape.edit", json!({"layer": id.0, "fill": "#0000ff"})).unwrap();
+    assert!(super::selected(&app).is_some(), "a colour edit keeps it too");
+    app.run("path.addAnchor", json!({"name": "layer", "layer": id.0, "subpath": 0, "knot": 0, "t": 0.5})).unwrap();
+    assert!(super::selected(&app).is_none(), "adding an anchor changes the structure: the selection clears");
+}
+
+/// The real click is press + release, and the release activates the shape's layer — an engine
+/// edit. The component selection must survive that (it is structural, not revision-bound).
+#[test]
+fn the_selection_survives_the_layer_activation_of_the_click() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    let (id, _) = shape(&app);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    app.run("layer.select", json!({"layer": id.0})).unwrap();
+    assert!(super::selected(&app).is_some(), "activating the shape's layer keeps the selection");
+}
+
+/// The clicked component's anchors render filled — and the unselected component's stay hollow —
+/// right after the press, no drag needed (#10854).
+#[test]
+fn a_pressed_component_marks_itself_on_the_canvas() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    assert!(super::selected(&app).is_some());
+    app.sync_views();
+    assert!(super::selected(&app).is_some(), "the frame tick keeps the press selection");
+
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(900.0, 700.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(6);
+    {
+        let v = &mut h.state_mut().ui.views[0];
+        v.zoom = 2.0;
+        v.center = [100.0, 100.0];
+        v.fit_pending = false;
+    }
+    h.run_steps(3);
+    let accent = crate::theme::Tokens::get(&h.ctx).accent;
+    let xf = crate::canvas::ViewXform::active(h.state()).expect("active document view");
+    let ppp = h.ctx.pixels_per_point();
+    let img = h.render().unwrap();
+    let px = |at: egui::Pos2| {
+        let x = (at.x * ppp).round();
+        let y = (at.y * ppp).round();
+        assert!(x >= 0.0 && y >= 0.0 && x < img.width() as f32 && y < img.height() as f32, "anchor pixel is inside the rendered image");
+        img.get_pixel(x as u32, y as u32).0
+    };
+    let close = |actual: [u8; 4], expected: [u8; 3]| actual[..3].iter().zip(expected).all(|(a, e)| (*a).abs_diff(e) <= 8);
+    // The pressed inner square's anchor (60, 60) is filled with the accent…
+    assert!(close(px(xf.to_screen(60.0, 60.0)), [accent.r(), accent.g(), accent.b()]), "the pressed component's anchor is filled");
+    // …the unselected component's anchor (20, 20) stays a hollow (white) square.
+    assert!(close(px(xf.to_screen(20.0, 20.0)), [255, 255, 255]), "the unselected component's anchor is hollow");
+}
+
+/// A same-count reorder, or a same-count edit that merges components (op "join"), still clears
+/// the selection: the stored indices would address a different component (review on the
+/// selection-fix PR).
+#[test]
+fn the_selection_dies_on_reorder_or_partition_change_even_at_same_counts() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    let (id, _) = shape(&app);
+    let k = |x: f64, y: f64| json!({"anchor": [x, y]});
+    app.ui.tool = Tool::PathSelection;
+
+    // Reorder: swap the two same-count subpaths (outer 20..140, inner 60..100).
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    app.run(
+        "shape.edit",
+        json!({"layer": id.0, "path": {"subpaths": [
+            {"closed": true, "knots": [k(60.0, 60.0), k(100.0, 60.0), k(100.0, 100.0), k(60.0, 100.0)]},
+            {"closed": true, "knots": [k(20.0, 20.0), k(140.0, 20.0), k(140.0, 140.0), k(20.0, 140.0)]},
+        ]}}),
+    )
+    .unwrap();
+    assert!(super::selected(&app).is_none(), "reordering same-count subpaths clears the selection");
+
+    // Partition change: same counts, but the second subpath becomes a Join of the first.
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    assert!(super::selected(&app).is_some());
+    app.run(
+        "shape.edit",
+        json!({"layer": id.0, "path": {"subpaths": [
+            {"closed": true, "knots": [k(20.0, 20.0), k(140.0, 20.0), k(140.0, 140.0), k(20.0, 140.0)]},
+            {"closed": true, "op": "join", "knots": [k(60.0, 60.0), k(100.0, 60.0), k(100.0, 100.0), k(60.0, 100.0)]},
+        ]}}),
+    )
+    .unwrap();
+    assert!(super::selected(&app).is_none(), "a same-count partition change (join) clears the selection");
+}
+
+/// A component selection on a type layer's Type Path (#9114) survives unrelated edits like any
+/// other target: the structural fallback resolves the Type Path by its stored layer id.
+#[test]
+fn a_type_path_component_selection_survives_unrelated_edits() {
+    let mut app = app();
+    let layer = app.run("type.create", json!({"x": 20, "y": 70, "text": "Hello path", "size": 36, "color": "#000000"})).unwrap()["layer"].as_u64().unwrap();
+    app.run("path.set", json!({"name": "work", "path": {"subpaths": [{"closed": false, "knots": [[150, 10], [150, 110]]}]}})).unwrap();
+    app.run("type.attachToPath", json!({"start": 4})).unwrap();
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [150.0, 60.0], false);
+    let (r, _, heads) = super::selected(&app).expect("the press selects the type path's component");
+    assert!(matches!(r, PathRef::TypePath(_)) && heads == vec![0]);
+    app.run("path.set", json!({"name": "Other", "path": {"subpaths": [{"closed": true, "knots": [[5, 5], [10, 5], [10, 10]]}]}})).unwrap();
+    assert!(super::selected(&app).is_some(), "an unrelated edit keeps the Type Path selection");
+    // A structural edit of the Type Path itself clears the selection (the signature mismatches).
+    app.run("path.addAnchor", json!({"name": "layer", "layer": layer, "typePath": true, "subpath": 0, "knot": 0, "t": 0.5})).unwrap();
+    assert!(super::selected(&app).is_none(), "a structural Type Path edit clears the selection");
+}
+
+/// A drag-move re-signs the selection: the stored signature hashes the moved geometry, so a
+/// later unrelated edit keeps the selection (review on the selection-fix PR).
+#[test]
+fn a_move_re_signs_the_selection_so_unrelated_edits_keep_it() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    let (id, _) = shape(&app);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    super::move_selected(&mut app, [10.0, 0.0]).expect("the move runs").unwrap();
+    assert!(super::selected(&app).is_some(), "the move keeps the selection");
+    app.run("shape.edit", json!({"layer": id.0, "fill": "#0000ff"})).unwrap();
+    assert!(super::selected(&app).is_some(), "a colour edit after the move keeps it too");
+}
+
+/// Structural validation is cached per document revision: a colour edit needs one signature,
+/// while repeated hover/command checks on that revision need none (review on #10935).
+#[test]
+fn structural_selection_validation_is_cached_per_revision() {
+    let mut app = app();
+    square(&mut app, 20.0, 20.0, 120.0);
+    app.ui.tool_options.pen_path_op = "combine".into();
+    square(&mut app, 60.0, 60.0, 40.0);
+    let (id, _) = shape(&app);
+    app.ui.tool = Tool::PathSelection;
+    crate::path_components::press(&mut app, [80.0, 80.0], false);
+    app.run("shape.edit", json!({"layer": id.0, "fill": "#0000ff"})).unwrap();
+    assert!(super::selected(&app).is_some());
+    let computations = |app: &PhotocraftApp| app.ui.direct_selection.owner.as_ref().unwrap().selection_computations();
+    assert_eq!(computations(&app), 1, "the changed revision is checked once");
+    for _ in 0..3 {
+        assert!(super::selected(&app).is_some(), "the cached selection stays valid");
+    }
+    assert_eq!(computations(&app), 1, "the same revision does not re-sign the path");
+    app.run("shape.edit", json!({"layer": id.0, "fill": "#00ff00"})).unwrap();
+    assert!(super::selected(&app).is_some());
+    assert_eq!(computations(&app), 2, "only the next revision needs a new signature");
+}

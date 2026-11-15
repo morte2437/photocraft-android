@@ -65,10 +65,6 @@ pub(super) fn fit(pts: &[Pt], closed: bool, s: &Settings) -> Vec<Pt> {
     let mut keep: Vec<usize> = if closed { corners.clone() } else { std::iter::once(0).chain(corners.iter().copied()).chain(std::iter::once(n - 1)).collect() };
     keep.sort_unstable();
     keep.dedup();
-    let mut is_corner = vec![false; n];
-    for &k in &keep {
-        is_corner[k] = true;
-    }
     if closed && keep.len() < 2 {
         // A smooth loop: split it at two far-apart points (not corners) to simplify each half.
         let a = keep.first().copied().unwrap_or(0);
@@ -92,8 +88,6 @@ pub(super) fn fit(pts: &[Pt], closed: bool, s: &Settings) -> Vec<Pt> {
         verts.push(n - 1);
     }
     let v: Vec<Pt> = verts.iter().map(|&i| p[i]).collect();
-    let corner: Vec<bool> = verts.iter().map(|&i| is_corner[i]).collect();
-    let _ = &corner;
     let mut out = v.clone();
     if closed {
         out.extend(v.first().copied());

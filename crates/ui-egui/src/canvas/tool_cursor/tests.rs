@@ -10,11 +10,6 @@ fn alpha(image: &CustomCursorImage, x: u16, y: u16) -> u8 {
     image.rgba[(usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4 + 3]
 }
 
-fn rgba_at(image: &CustomCursorImage, x: u16, y: u16) -> [u8; 4] {
-    let offset = (usize::from(y) * usize::from(image.size[0]) + usize::from(x)) * 4;
-    image.rgba[offset..offset + 4].try_into().unwrap()
-}
-
 fn frame(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
     let mut output = ctx.run_ui(Default::default(), draw);
     // These tests inspect cursor output without a renderer.
@@ -22,7 +17,6 @@ fn frame(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutp
     output
 }
 
-#[cfg(target_os = "linux")]
 fn collect_meshes(shape: &egui::Shape, meshes: &mut Vec<(egui::TextureId, egui::Rect)>) {
     match shape {
         egui::Shape::Mesh(mesh) => meshes.push((mesh.texture_id, mesh.calc_bounds())),
@@ -68,36 +62,19 @@ fn precise_and_tip_centre_crosshairs_have_distinct_hotspots() {
 }
 
 #[test]
-fn bucket_bitmap_keeps_the_svg_above_left_of_its_exact_crosshair_hotspot() {
-    for scale in [1.0, 1.25, 2.0] {
+fn bucket_bitmap_keeps_the_svg_below_right_of_its_arrow_tip_hotspot() {
+    for (scale, hotspot) in [(1.0, [1, 1]), (1.25, [1, 1]), (2.0, [2, 2])] {
         let image = super::bucket::rasterize(scale).unwrap();
-        let expected_x = (26.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
-        let expected_y = (25.0 / 24.0 * 22.0 * scale).round() + (scale + 1.0).ceil();
-        assert_eq!(image.hotspot, [expected_x as u16, expected_y as u16], "bucket box target at {scale}x");
-        let gradient_cross = rasterize(&STANDARD_CROSSHAIR, scale).unwrap();
-        assert_eq!(alpha(&image, image.hotspot[0], image.hotspot[1]), 0, "Gradient-style open center at {scale}x");
+        assert_eq!(image.hotspot, hotspot, "the arrow tip sits one halo in from the top left at {scale}x");
+        assert!(alpha(&image, image.hotspot[0], image.hotspot[1]) > 128, "the antialiased tip itself is drawn at {scale}x");
 
         let side = usize::from(image.size[0]);
         let has_bucket_art = image.rgba.as_chunks::<4>().0.iter().enumerate().any(|(i, p)| {
             let x = (i % side) as u16;
             let y = (i / side) as u16;
-            p[3] > 200 && x + 2 < image.hotspot[0] && y + 2 < image.hotspot[1]
+            p[0] > 200 && p[3] > 200 && x > image.hotspot[0] + 10 && y > image.hotspot[1] + 10
         });
-        assert!(has_bucket_art, "opaque bucket art remains above-left of the hotspot at {scale}x");
-
-        for arm in [1, 5, 8] {
-            let arm = (arm as f32 * scale).round() as u16;
-            assert_eq!(
-                rgba_at(&image, image.hotspot[0] + arm, image.hotspot[1]),
-                rgba_at(&gradient_cross, gradient_cross.hotspot[0] + arm, gradient_cross.hotspot[1]),
-                "right arm matches the Gradient crosshair at {scale}x"
-            );
-            assert_eq!(
-                rgba_at(&image, image.hotspot[0], image.hotspot[1] + arm),
-                rgba_at(&gradient_cross, gradient_cross.hotspot[0], gradient_cross.hotspot[1] + arm),
-                "lower arm matches the Gradient crosshair at {scale}x"
-            );
-        }
+        assert!(has_bucket_art, "opaque white bucket art below-right of the hotspot at {scale}x");
     }
 }
 
@@ -197,7 +174,7 @@ fn scaled_wayland_bucket_uses_one_cached_image_area_without_a_split_crosshair() 
     let (first, first_images) = run(1.25, first_at);
     assert!(first.platform_output.cursor_image.is_none(), "scaled Wayland does not send a bitmap to winit");
     assert_eq!(first.platform_output.cursor_icon, CursorIcon::None, "the image replaces the system arrow");
-    assert_eq!(first_images.len(), 1, "bucket and fill crosshair are one Image primitive");
+    assert_eq!(first_images.len(), 1, "bucket and arrow are one Image primitive");
     let image = super::bucket::rasterize(1.25).unwrap();
     let image_bounds = first_images[0].1;
     let image_hotspot = image_bounds.min + egui::vec2((f32::from(image.hotspot[0]) + 0.5) / 1.25, (f32::from(image.hotspot[1]) + 0.5) / 1.25);
@@ -497,6 +474,8 @@ fn write_cursor_preview() {
         (Shape::Zoom { out: false }, 1.0),
         (Shape::Zoom { out: true }, 1.0),
         (Shape::Zoom { out: false }, 2.0),
+        (Shape::Pipette, 1.0),
+        (Shape::Pipette, 1.5),
     ];
     let (width, height) = (600_usize, cases.len() * 100);
     let mut rgba = vec![255; width * height * 4];
@@ -523,6 +502,37 @@ fn write_cursor_preview() {
     let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tool-cursor-preview.png");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, png).unwrap();
+    write_painted_pipette_preview();
+}
+
+/// The first row is 6x; the second uses a 64x display with the bounded 8x texture.
+fn write_painted_pipette_preview() {
+    let ctx = egui::Context::default();
+    let (width, height) = (1200_usize, 800_usize);
+    let mut rgba = vec![255; width * height * 4];
+    for (col, background) in [0_u8, 128, 255].into_iter().enumerate() {
+        for y in 0..height {
+            for x in col * 400..(col + 1) * 400 {
+                rgba[(y * width + x) * 4..(y * width + x) * 4 + 3].fill(background);
+            }
+        }
+        for (row, scale) in [6.0, 64.0].into_iter().enumerate() {
+            let image = cached_pipette(&ctx, scale, true).image.unwrap();
+            let side = usize::from(image.size[0]);
+            let x0 = col * 400 + 200 - usize::from(image.hotspot[0]);
+            let y0 = row * 400 + 200 - usize::from(image.hotspot[1]);
+            for (i, pixel) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
+                let at = ((y0 + i / side) * width + x0 + i % side) * 4;
+                let alpha = f32::from(pixel[3]) / 255.0;
+                let value = (f32::from(pixel[0]) * alpha + f32::from(background) * (1.0 - alpha)).round() as u8;
+                rgba[at..at + 3].fill(value);
+            }
+        }
+    }
+    let image = photocraft_codecs::Image::from_u8(width as u32, height as u32, photocraft_codecs::ChannelLayout::Rgba, rgba).unwrap();
+    let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/painted-pipette-preview.png");
     std::fs::write(path, png).unwrap();
 }
 
@@ -1138,5 +1148,217 @@ mod benchmark_stats {
         assert_eq!(percentile(&samples, f64::NAN), 1.0, "a NaN percentage stays bounded");
         assert_eq!(percentile(&[], 0.95), 0.0, "no samples");
         assert_eq!(percentile(&[4.5], 0.95), 4.5, "one sample");
+    }
+}
+
+/// #9356: the continue-path pointer is the centre cross with a slash below right.
+#[test]
+fn continue_path_bitmap_has_the_centre_cross_and_a_slash_beside_it() {
+    for scale in [1.0, 2.0] {
+        let image = rasterize(&Shape::Outline { rings: vec![continue_slash()].into(), centre: true }, scale).unwrap();
+        let [x, y] = image.hotspot;
+        let at = |dx: f32, dy: f32| alpha(&image, x + (dx * scale) as u16, y + (dy * scale) as u16);
+        assert!(at(0.0, 0.0) > 230, "the centre cross");
+        assert!(at(9.5, 9.5) > 0, "the slash");
+        assert_eq!(at(0.0, 9.0), 0, "apart from the cross");
+    }
+}
+
+#[test]
+fn pipette_bitmaps_are_readable_at_each_dpi_and_bound_allocations() {
+    for (scale, side, hot) in [(1.0, 53, 26), (1.25, 65, 32), (1.5, 77, 38), (2.0, 101, 50), (3.0, 151, 75)] {
+        let image = rasterize(&Shape::Pipette, scale).unwrap();
+        assert_eq!(image.size, [side; 2], "bitmap bounds at {scale}x");
+        assert_eq!(image.hotspot, [hot; 2], "SVG tip (2, 22) is placed at the bitmap centre");
+        assert!(image.rgba.as_chunks::<4>().0.iter().any(|p| p[0] > 230 && p[3] > 230));
+        let halo_pixels = image.rgba.as_chunks::<4>().0.iter().filter(|p| p[0] < 25 && p[3] > 100).count();
+        assert!(halo_pixels > (35.0 * scale * scale) as usize, "a substantial dark halo at {scale}x: {halo_pixels}");
+        for p in 0..side {
+            assert_eq!(
+                [alpha(&image, p, 0), alpha(&image, p, side - 1), alpha(&image, 0, p), alpha(&image, side - 1, p)],
+                [0; 4],
+                "no clipped halo at {scale}x"
+            );
+        }
+        assert!(alpha(&image, image.hotspot[0], image.hotspot[1]) > 230);
+    }
+    for scale in [f32::NAN, f32::INFINITY, -1.0, 0.0, f32::MAX, 500.0] {
+        assert!(rasterize(&Shape::Pipette, scale).is_none());
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn pipette_bitmap_uses_the_platform_cursor_units_at_high_dpi() {
+    let ctx = egui::Context::default();
+    ctx.add_plugin(CursorLifecycle);
+    for (native_ppp, zoom, mac_size, mac_hot, other_size, other_hot) in [(2.0, 1.0, 53, 26, 101, 50), (2.0, 1.5, 77, 38, 151, 75)] {
+        ctx.set_zoom_factor(zoom);
+        let mut input = egui::RawInput::default();
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(native_ppp);
+        let mut output = ctx.run_ui(input, |ui| {
+            let icon = pipette(ui.ctx(), egui::pos2(100.0, 100.0));
+            ui.ctx().set_cursor_icon(icon);
+        });
+        assert_eq!(ctx.pixels_per_point(), native_ppp * zoom);
+        let image = output.platform_output.cursor_image.unwrap();
+        let (side, hot) = if cfg!(target_os = "macos") { (mac_size, mac_hot) } else { (other_size, other_hot) };
+        assert_eq!(image.size, [side; 2]);
+        assert_eq!(image.hotspot, [hot; 2]);
+        assert!(alpha(&image, hot, hot) > 230);
+        // No renderer consumes font/texture uploads in this output-only test.
+        output.textures_delta.clear();
+    }
+}
+
+/// A Retina child viewport must not evict the root viewport's point-sized native bitmap.
+#[test]
+fn pipette_bitmap_cache_reuses_each_scale_when_viewports_alternate() {
+    let ctx = egui::Context::default();
+    let first = cached_image(&ctx, &Shape::Pipette, 1.0).unwrap();
+    let retina = cached_image(&ctx, &Shape::Pipette, 2.0).unwrap();
+    for _ in 0..3 {
+        assert!(Arc::ptr_eq(&first.rgba, &cached_image(&ctx, &Shape::Pipette, 1.0).unwrap().rgba));
+        assert!(Arc::ptr_eq(&retina.rgba, &cached_image(&ctx, &Shape::Pipette, 2.0).unwrap().rgba));
+    }
+    for scale in [1.25, 1.5, 3.0, 4.0, 5.0] {
+        cached_image(&ctx, &Shape::Pipette, scale).unwrap();
+    }
+    let entries = ctx.data(|d| d.get_temp::<Vec<CachedPipette>>(egui::Id::unique("photocraft-pipette-cache"))).unwrap();
+    assert_eq!(entries.len(), 4, "repeated UI zoom changes cannot grow the cache indefinitely");
+}
+
+/// Declarations are valid XML but cannot be nested inside the composed cursor's SVG root.
+#[test]
+fn pipette_svg_accepts_a_preamble_and_reports_broken_styling_or_xml() {
+    let icon = include_str!("../../../../../assets/icons/pipette.svg");
+    let original = rasterize_pipette_svg(icon, 1.0, 53, 26).unwrap();
+    let prefixed = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE svg>\n{icon}");
+    assert_eq!(rasterize_pipette_svg(&prefixed, 1.0, 53, 26).unwrap().rgba, original.rgba);
+    for (bad, expected) in [
+        (icon.replace("currentColor", "black"), "currentColor"),
+        (icon.replace("stroke-width=\"2\"", "stroke-width='2'"), "stroke-width"),
+        (icon.replace("0 0 24 24", "0 0 32 32"), "viewBox"),
+        (icon.replace("</svg>", "</broken>"), "invalid pipette SVG"),
+    ] {
+        assert!(rasterize_pipette_svg(&bad, 1.0, 53, 26).unwrap_err().contains(expected));
+    }
+}
+
+/// A load failure must not leave an invisible pointer on the painted-only path.
+#[test]
+fn pipette_failed_bitmap_keeps_a_visible_fallback() {
+    let ctx = egui::Context::default();
+    let child = egui::ViewportId::from_hash_of("pipette-failed-child");
+    ctx.data_mut(|d| {
+        d.insert_temp(egui::Id::unique("photocraft-pipette-cache"), vec![CachedPipette { scale: 1.0, painted: true, image: None, texture: None }])
+    });
+    let mut input = egui::RawInput { viewport_id: child, ..Default::default() };
+    input.viewports.entry(child).or_default();
+    let mut output = ctx.run_ui(input, |ui| {
+        let icon = pipette(ui.ctx(), egui::pos2(100.0, 100.0));
+        ui.ctx().set_cursor_icon(icon);
+    });
+    assert!(output.platform_output.cursor_image.is_none());
+    assert_eq!(output.platform_output.cursor_icon, CursorIcon::Crosshair);
+    output.textures_delta.clear();
+}
+
+/// Exercise the same painted path used on the web and in immediate child viewports.
+#[test]
+fn pipette_painted_fallback_keeps_its_hotspot_and_reuses_textures_across_frames_and_scales() {
+    let ctx = egui::Context::default();
+    ctx.add_plugin(CursorLifecycle);
+    let child = egui::ViewportId::from_hash_of("pipette-test-child");
+    let draw = |scale: f32, at: Pos2, side: f32, hot: f32| {
+        let mut input = egui::RawInput { viewport_id: child, ..Default::default() };
+        input.viewports.entry(child).or_default().native_pixels_per_point = Some(scale);
+        let output = ctx.run_ui(input, |ui| {
+            assert!(!native(ui.ctx()));
+            let icon = pipette(ui.ctx(), at);
+            ui.ctx().set_cursor_icon(icon);
+        });
+        assert!(output.platform_output.cursor_image.is_none());
+        assert_eq!(output.platform_output.cursor_icon, CursorIcon::None);
+        let mut meshes = Vec::new();
+        for shape in &output.shapes {
+            collect_meshes(&shape.shape, &mut meshes);
+        }
+        assert_eq!(meshes.len(), 1);
+        let (texture, rect) = meshes[0];
+        assert_eq!(rect.size(), Vec2::splat(side / scale));
+        assert_eq!(rect.min + Vec2::splat((hot + 0.5) / scale), at, "centre of hotspot texel follows the pointer");
+        (texture, output.textures_delta)
+    };
+    let (first, mut delta) = draw(1.0, egui::pos2(100.0, 100.0), 53.0, 26.0);
+    // This headless test checks upload reuse without a renderer. Acknowledge every delta,
+    // including the initial upload and the new-density upload, before dropping it.
+    delta.clear();
+    let (moved, mut delta) = draw(1.0, egui::pos2(120.0, 140.0), 53.0, 26.0);
+    assert_eq!(first, moved);
+    assert!(!delta.set.iter().any(|(id, _)| *id == first), "no repeated upload on movement");
+    assert!(!delta.free.contains(&first), "context retains the texture handle between frames");
+    delta.clear();
+    let (retina, mut delta) = draw(2.0, egui::pos2(120.0, 140.0), 101.0, 50.0);
+    assert_ne!(first, retina, "different density uses a different texture");
+    delta.clear();
+    let (back, mut delta) = draw(1.0, egui::pos2(140.0, 160.0), 53.0, 26.0);
+    assert_eq!(back, first, "alternating viewport densities retain both textures");
+    assert!(!delta.set.iter().any(|(id, _)| *id == first));
+    assert!(!delta.free.contains(&retina));
+    delta.clear();
+}
+
+/// Painted viewports must keep the artwork even above every platform's native cursor limit.
+#[test]
+fn pipette_painted_fallback_survives_high_display_scales() {
+    let ctx = egui::Context::default();
+    ctx.add_plugin(CursorLifecycle);
+    let child = egui::ViewportId::from_hash_of("pipette-high-dpi-child");
+    for display_scale in [6.0, 64.0] {
+        let at = egui::pos2(100.0, 100.0);
+        let mut input = egui::RawInput { viewport_id: child, ..Default::default() };
+        input.viewports.entry(child).or_default().native_pixels_per_point = Some(display_scale);
+        let mut output = ctx.run_ui(input, |ui| {
+            let icon = pipette(ui.ctx(), at);
+            ui.ctx().set_cursor_icon(icon);
+        });
+        assert_eq!(output.platform_output.cursor_icon, CursorIcon::None, "{display_scale}x must paint the pipette");
+        assert!(output.platform_output.cursor_image.is_none());
+        let mut meshes = Vec::new();
+        for shape in &output.shapes {
+            collect_meshes(&shape.shape, &mut meshes);
+        }
+        assert_eq!(meshes.len(), 1, "the sampling cursor still has artwork at {display_scale}x");
+        let texture = meshes[0].0;
+        let upload = output.textures_delta.set.get(&texture).unwrap().first().unwrap();
+        let (side, hot, raster_scale) = if display_scale == 6.0 { (297, 148.0, 6.0) } else { (395, 197.0, 8.0) };
+        assert_eq!(upload.image.size(), [side; 2], "bounded texture even with excessive display scaling");
+        let expected = egui::Rect::from_min_size(at - Vec2::splat((hot + 0.5) / raster_scale), Vec2::splat(side as f32 / raster_scale));
+        assert!(meshes[0].1.min.distance(expected.min) < 0.001);
+        assert!(meshes[0].1.max.distance(expected.max) < 0.001);
+        // Inspect the upload above, then discard it intentionally: no GPU renderer is attached.
+        output.textures_delta.clear();
+    }
+}
+
+/// The native cursor cap and the independent GPU cap must not leak through the shared cache.
+#[test]
+fn pipette_native_and_painted_limits_are_independent_and_bounded() {
+    let ctx = egui::Context::default();
+    for scale in [6.0, 64.0] {
+        let native = cached_pipette(&ctx, scale, false);
+        let painted = cached_pipette(&ctx, scale, true);
+        let image = painted.image.unwrap();
+        assert!(image.size.into_iter().all(|side| side <= 395));
+        assert!(painted.texture.is_some());
+        assert_eq!(native.image.is_some(), scale == 6.0 && MAX_SIDE >= 297);
+        assert_eq!(cached_pipette(&ctx, scale, false).image, native.image, "painted texture cannot bypass the native cap");
+        assert!(Arc::ptr_eq(&image.rgba, &cached_pipette(&ctx, scale, true).image.unwrap().rgba));
+    }
+    let capped = cached_pipette(&ctx, f32::MAX, true);
+    assert_eq!(capped.image.unwrap().size, [395; 2]);
+    for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(cached_pipette(&ctx, scale, true).image.is_none());
     }
 }

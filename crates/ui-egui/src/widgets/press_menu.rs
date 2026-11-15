@@ -154,7 +154,13 @@ impl PressCombo {
     /// Was option `item` (in the open list `ui`) chosen this frame: clicked, or the press-drag
     /// gesture that opened the list released on it? The list closes when it was.
     pub fn chosen(&self, ui: &Ui, item: &Response) -> bool {
-        let released_on = item.enabled() && item.contains_pointer() && ui.input(|i| i.pointer.primary_released()) && self.owns_gesture(ui.ctx());
+        // A release back on the box chooses nothing, also where a list covers the box.
+        let on_box = |ctx: &egui::Context| {
+            let at = ctx.input(|i| i.pointer.interact_pos());
+            ctx.data(|d| d.get_temp::<egui::Rect>(gesture_id().with(self.popup))).zip(at).is_some_and(|(b, p)| b.contains(p))
+        };
+        let released_on =
+            item.enabled() && item.contains_pointer() && ui.input(|i| i.pointer.primary_released()) && self.owns_gesture(ui.ctx()) && !on_box(ui.ctx());
         if released_on {
             ui.close();
         }
@@ -169,7 +175,10 @@ impl PressCombo {
         if pressed && !Popup::is_id_open(ctx, self.popup) {
             // Opened now, the list counts as open this frame and egui shows it from the next.
             Popup::open_id(ctx, self.popup);
-            ctx.data_mut(|d| d.insert_temp(gesture_id(), self.popup));
+            ctx.data_mut(|d| {
+                d.insert_temp(gesture_id(), self.popup);
+                d.insert_temp(gesture_id().with(self.popup), button.rect);
+            });
             ctx.request_repaint();
         } else if self.owns_gesture(ctx) && ctx.input(|i| i.pointer.primary_released() || !i.pointer.primary_down()) {
             ctx.data_mut(|d| d.remove::<egui::Id>(gesture_id()));

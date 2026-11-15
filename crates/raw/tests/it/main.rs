@@ -3,6 +3,7 @@
 mod cr3;
 mod development_limits;
 mod dng;
+mod hasselblad;
 mod hostile;
 mod nef_packed;
 mod nikon_d4_depth;

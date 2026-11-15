@@ -54,8 +54,15 @@ pub fn confirm(app: &mut PhotocraftApp, fields: &Map<String, Value>) -> Result<V
             let r = app.save_to(path.clone(), choices)?;
             app.journal_as_plain_save(&path, from);
             Ok(r)
-        } else {
+        } else if app.session.active().is_some_and(|st| crate::saves_flat_in_place(&st.doc, &path)) {
+            // Its own flat file: a JPEG, TIFF, Targa or DDS texture asks its format's options next (#2223).
+            app.save_flat_in_place(path, choices)
+        } else if app.session.active().is_some_and(|st| photocraft_engine::file_cmds::holds_at(&st.doc, &path)) {
             app.save_in_place(path, crate::FormatChoices::default())
+        } else {
+            // The document changed while the prompt was open and its file can't keep it any more:
+            // Save As, never a write over the original with less (#5733).
+            app.save_dialog_flow(None, choices, true)
         }
     })
 }

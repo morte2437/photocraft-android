@@ -1,4 +1,4 @@
-use super::open::{Target, cancel, commit_open_raw, open_raw, raw_stage};
+use super::open::{Target, cancel, raw_stage};
 use super::sidecar::{load_settings, report_file_error, save_settings};
 use super::{
     Align2, BANDS, CameraRaw, CameraRawDialog, Color32, ERect, FontId, PANEL_W, PhotocraftApp, Pos2, Sense, Stroke, Tokens, ToneZone, Value, Wheel, curve_lut,
@@ -49,7 +49,7 @@ fn history_keys(d: &mut CameraRawDialog, ctx: &egui::Context) {
 }
 
 pub(super) fn commit(app: &mut PhotocraftApp) -> Result<Value, String> {
-    let d = app.camera_raw.as_ref().ok_or(tl!("Camera Raw isn't open"))?;
+    let d = app.camera_raw.as_ref().ok_or(tl!("RAW Develop isn't open"))?;
     let result = match d.target {
         Target::NewFilter => {
             let mut p = d.command_params();
@@ -69,7 +69,7 @@ pub(super) fn commit(app: &mut PhotocraftApp) -> Result<Value, String> {
         Target::OpenRaw => {
             let raw = d.raw_open.clone().ok_or("no raw file is being opened")?;
             let (params, original) = (d.params.clone(), d.original.clone());
-            commit_open_raw(app, &params, &raw, Some(&original))?
+            super::filmstrip::open_all(app, &params, &raw, &original)?
         }
     };
     app.camera_raw = None;
@@ -83,12 +83,12 @@ fn demosaic_row(ui: &mut egui::Ui, m: &mut photocraft_io::raw::Demosaic) {
     use photocraft_io::raw::Demosaic;
     ui.horizontal(|ui| {
         ui.label(crate::i18n::tr_ctx(crate::i18n::current(), "cameraRaw", "Demosaic")).on_hover_text(tl!(
-            "How the camera's colour filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with."
+            "How the camera's color filter mosaic is filled in. It is applied when the file opens; the preview shows the method it was opened with."
         ));
         let options = [
-            (Demosaic::Ahd, "AHD (adaptive homogeneity)", "Hirakawa–Parks: the cleanest edges and the least colour fringing, the slowest."),
-            (Demosaic::Mhc, "Malvar–He–Cutler", "Gradient-corrected interpolation: sharp and fast, with some colour fringing on fine detail."),
-            (Demosaic::Bilinear, "Bilinear", "The fastest and the softest, with colour fringing on fine detail."),
+            (Demosaic::Ahd, "AHD (adaptive homogeneity)", "Hirakawa–Parks: the cleanest edges and the least color fringing, the slowest."),
+            (Demosaic::Mhc, "Malvar–He–Cutler", "Gradient-corrected interpolation: sharp and fast, with some color fringing on fine detail."),
+            (Demosaic::Bilinear, "Bilinear", "The fastest and the softest, with color fringing on fine detail."),
         ];
         widgets::dropdown_with_tooltips(ui, "camera-raw-demosaic", tl!("Demosaic"), m, &options, 180.0);
     });
@@ -188,31 +188,45 @@ fn curve_editor(ui: &mut egui::Ui, p: &mut CameraRaw, dirty: &mut bool, state: &
 
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if app.camera_raw.is_none()
-        && let Some(raw) = app.pending_raw_open.take()
-        && let Err(e) = open_raw(app, ctx, raw)
+        && !app.raw_shelf.is_empty()
+        && let Err(e) = super::filmstrip::open_held(app, ctx, 0)
     {
         // The document stays open, developed with the defaults.
+        app.raw_shelf.remove(0);
         app.ui.status = e;
         app.ui.status_error = true;
     }
     let Some(d) = app.camera_raw.as_ref() else { return };
-    // Where the platform has no extra windows (the web build), draw over the main window.
-    if ctx.embed_viewports() {
+    if draws_over_main_window(ctx, app.services.is_wayland) {
         draw(app, ctx, false);
         return;
     }
     let window_title = d.window_title();
     // Camera Raw is modal, as in Photoshop: the main window is dimmed and takes no input while it
-    // is open (in a separate window, or drawn over it where there are no extra windows).
+    // is open (in a separate window, or drawn over it: see `draws_over_main_window`).
     let main = ctx.content_rect();
-    egui::Area::new(egui::Id::unique("camera-raw-modal")).order(egui::Order::Foreground).fixed_pos(main.min).show(ctx, |ui| {
-        let (r, _) = ui.allocate_exact_size(main.size(), Sense::click_and_drag());
+    let scrim = egui::Area::new(egui::Id::unique("camera-raw-modal")).order(egui::Order::Foreground).fixed_pos(main.min).show(ctx, |ui| {
+        let (r, response) = ui.allocate_exact_size(main.size(), Sense::click_and_drag());
         ui.painter().rect_filled(r, 0.0, Tokens::get(ui.ctx()).scrim);
+        response
     });
+    let window = egui::ViewportId::from_hash_of("camera-raw-window");
+    // Coming back to PhotoCraft (⌘Tab, the Dock) can bring the main window over Camera Raw,
+    // leaving only the dimmed window that takes no input: the main window gaining focus, or a
+    // click on it, brings Camera Raw back to the front.
+    let main_focused = ctx.input(|i| i.viewport().focused.unwrap_or(false));
+    if let Some(d) = app.camera_raw.as_mut() {
+        if raise_camera_raw(d.main_focused, main_focused, scrim.inner.clicked() || scrim.inner.drag_started()) {
+            for command in raise_commands() {
+                ctx.send_viewport_cmd_to(window, command);
+            }
+        }
+        d.main_focused = main_focused;
+    }
     // A window of its own (title bar, moved and resized like any window), like Adobe Camera Raw.
     let builder = crate::os_window::builder().with_title(window_title).with_inner_size([1360.0, 900.0]).with_min_inner_size([900.0, 600.0]);
     let mut close = false;
-    ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("camera-raw-window"), builder, |ui, class| {
+    ctx.show_viewport_immediate(window, builder, |ui, class| {
         if ui.ctx().input(|i| i.viewport().close_requested()) {
             close = true;
         }
@@ -223,13 +237,40 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
+/// Whether the dialog is drawn over the main window instead of in a window of its own: where the
+/// platform has no extra windows (the web build), while the main window is full screen, and on
+/// Wayland while it is maximized.
+///
+/// The dialog's window is an immediate viewport, so it takes input and redraws only while the
+/// main window draws a frame. A window opened over a full-screen or maximized one can cover it
+/// (Hyprland hands the new window the full screen or the maximized state), the compositor then
+/// sends the hidden main window no frame callbacks, and the dialog freezes: its sliders don't
+/// move and nothing else responds. Elsewhere a maximized main window keeps Camera Raw in its own
+/// window, as in Photoshop.
+fn draws_over_main_window(ctx: &egui::Context, wayland: bool) -> bool {
+    let (fullscreen, maximized) = ctx.input(|i| (i.viewport().fullscreen == Some(true), i.viewport().maximized == Some(true)));
+    ctx.embed_viewports() || fullscreen || (wayland && maximized)
+}
+
+/// Whether to bring Camera Raw's window to the front: when the main window has just gained focus
+/// (it came forward over Camera Raw's) or is clicked.
+fn raise_camera_raw(was_focused: bool, focused: bool, clicked: bool) -> bool {
+    (focused && !was_focused) || clicked
+}
+
+/// Brings Camera Raw's window to the front, restoring it first if it was minimized (a minimized
+/// window ignores Focus).
+fn raise_commands() -> [egui::ViewportCommand; 2] {
+    [egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus]
+}
+
 impl CameraRawDialog {
-    /// "Camera Raw (name)" for the open-time dialog, "Camera Raw Filter (layer)" otherwise.
+    /// "RAW Develop (name)" for the open-time dialog, "RAW Develop Filter (layer)" otherwise.
     fn window_title(&self) -> String {
         if self.target == Target::OpenRaw {
-            crate::i18n::fmt(tl!("Camera Raw ({name})"), &[("name", &self.layer_name)])
+            crate::i18n::fmt(tl!("RAW Develop ({name})"), &[("name", &self.layer_name)])
         } else {
-            crate::i18n::fmt(tl!("Camera Raw Filter ({layer})"), &[("layer", &self.layer_name)])
+            crate::i18n::fmt(tl!("RAW Develop Filter ({layer})"), &[("layer", &self.layer_name)])
         }
     }
 }
@@ -241,6 +282,7 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
     let screen = ctx.content_rect();
     let current_display = app.session.active().and_then(|st| app.session.color.canvas_display(&st.doc).ok());
     let mut action: Option<&str> = None;
+    let mut show_held: Option<usize> = None;
     egui::Area::new(egui::Id::unique("camera-raw-dialog")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let Some(d) = app.camera_raw.as_mut() else { return };
         history_keys(d, ctx);
@@ -278,7 +320,16 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         let animated_zoom = app.session.prefs().general.animated_zoom;
         let scope = &mut app.ui.camera_raw_scope;
         // Clip both pixels and scope overlays before painting the settings dock/footer.
-        let preview_body = ERect::from_min_max(body.min, pos2((body.right() - PANEL_W).max(body.left() + 1.0), body.bottom()));
+        // Several raws being opened: the filmstrip on the left.
+        let film_w = if d.target == Target::OpenRaw && app.raw_shelf.len() > 1 { super::filmstrip::FILM_W } else { 0.0 };
+        if film_w > 0.0 {
+            let film = ERect::from_min_max(body.min, pos2(body.left() + film_w - 1.0, body.bottom()));
+            painter.rect_filled(film, 0.0, t.dock);
+            painter.line_segment([film.right_top(), film.right_bottom()], Stroke::new(1.0, t.separator));
+            show_held = super::filmstrip::filmstrip(ui, film, &mut app.raw_shelf, d.raw_open.as_ref().map(|r| r.document), &t);
+        }
+        let preview_body =
+            ERect::from_min_max(pos2(body.left() + film_w, body.top()), pos2((body.right() - PANEL_W).max(body.left() + film_w + 1.0), body.bottom()));
         let view = ERect::from_min_max(
             preview_body.min + vec2(16.0, 16.0),
             pos2((preview_body.right() - 16.0).max(preview_body.left() + 17.0), (preview_body.bottom() - 48.0).max(preview_body.top() + 17.0)),
@@ -476,6 +527,15 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         ) {
             action = Some(if role == widgets::ButtonRole::Default { "ok" } else { "cancel" });
         }
+        // Done (open-time dialog): keep the settings in the raws' sidecars, open nothing.
+        if d.target == Target::OpenRaw
+            && fu
+                .add_sized([90.0, 28.0], egui::Button::new(tl!("Done")))
+                .on_hover_text(tl!("Save the settings to each raw's sidecar without opening it"))
+                .clicked()
+        {
+            action = Some("done");
+        }
         fu.add_space(12.0);
         widgets::checkbox(&mut fu, &mut d.show_before, tl!("Before (Y)"));
         fu.label(egui::RichText::new(format!("{:.0} ms", d.render_ms)).color(t.text_faint));
@@ -496,6 +556,12 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
         }
     });
     crate::camera_raw_scope_ui::persist(app, ctx);
+    if let Some(i) = show_held
+        && let Err(e) = super::filmstrip::show_raw(app, ctx, i)
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
     if ctx.input(|i| i.key_pressed(egui::Key::Y))
         && let Some(d) = app.camera_raw.as_mut()
     {
@@ -511,6 +577,9 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
             }
         }
         Some("cancel") => cancel(app),
+        Some("done") => {
+            super::filmstrip::done(app);
+        }
         Some("save") => {
             let r = save_settings(app);
             report_file_error(app, r);
@@ -520,5 +589,28 @@ fn draw(app: &mut PhotocraftApp, ctx: &egui::Context, own_window: bool) {
             report_file_error(app, r);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Coming back to PhotoCraft can put the main window over Camera Raw's: the main window
+    /// gaining focus brings Camera Raw's window to the front, once per activation, and so does a
+    /// click on the dimmed main window.
+    #[test]
+    fn the_main_window_gaining_focus_brings_camera_raw_back_to_the_front() {
+        assert!(raise_camera_raw(false, true, false), "the main window came forward");
+        assert!(!raise_camera_raw(true, true, false), "only once, so Camera Raw's own focus isn't fought");
+        assert!(!raise_camera_raw(true, false, false) && !raise_camera_raw(false, false, false));
+        assert!(raise_camera_raw(true, true, true), "a click on the dimmed main window");
+    }
+
+    /// Focus does nothing for a minimized window, which would leave only the dimmed main window
+    /// that takes no input: Camera Raw's is restored first.
+    #[test]
+    fn raising_camera_raw_restores_it_when_minimized() {
+        assert_eq!(raise_commands(), [egui::ViewportCommand::Minimized(false), egui::ViewportCommand::Focus]);
     }
 }

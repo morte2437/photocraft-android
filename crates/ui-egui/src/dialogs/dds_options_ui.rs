@@ -29,7 +29,7 @@ pub struct Prompt {
 
 /// `true` when `path` names a DDS texture.
 pub fn wants_prompt(path: &str) -> bool {
-    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) == Some(photocraft_codecs::Format::Dds)
+    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_formats::from_extension(&e)) == Some(photocraft_formats::Format::Dds)
 }
 
 /// The DDS options a command or control call asks for (`"ddsCompression"`, `"ddsMipmaps"`),
@@ -65,6 +65,8 @@ fn label(c: DdsCompression) -> &'static str {
     }
 }
 
+/// Show the DDS Options modal for a parked save, and on OK write it and journal its step (marking
+/// a recording automation's when an automation gate is installed); Cancel drops the save.
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let Some(p) = &mut app.dds_options else { return };
     let (mut ok, mut cancel) = (false, false);
@@ -103,6 +105,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
         if written.is_ok() {
             // An action being recorded keeps the Save As or Save a Copy with this answer.
+            photocraft_engine::actions_cmds::note_automation_step(&mut app.session, p.record, &step);
             app.session.journal.push((p.record.into(), step));
         }
         match written {
@@ -116,7 +119,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
     } else if cancel {
         app.dds_options = None;
-        app.ui.status = tl!("Save cancelled").into();
+        app.ui.status = tl!("Save canceled").into();
         app.ui.status_error = false;
     }
 }

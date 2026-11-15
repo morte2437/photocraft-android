@@ -63,11 +63,11 @@ pub(super) struct SmartOut {
     /// Source composites (document pixel format, source space) by uuid; `None` = unreadable.
     pub(super) composites: std::collections::HashMap<String, Option<(std::sync::Arc<Surface>, photocraft_geom::Rect)>>,
     /// Preserved `FEid` items (by placed id).
-    pub(super) old_fx: Vec<photocraft_psd::filter_effects::FilterEffectsItem>,
+    pub(super) old_fx: Vec<craft_psd::filter_effects::FilterEffectsItem>,
     /// Placed ids whose preserved `FEid` item stays.
     pub(super) keep_fx: std::collections::HashSet<String>,
     /// Regenerated `FEid` items.
-    pub(super) new_fx: Vec<photocraft_psd::filter_effects::FilterEffectsItem>,
+    pub(super) new_fx: Vec<craft_psd::filter_effects::FilterEffectsItem>,
     /// The unfiltered pixels of each smart object whose filter mask shows: its layer record holds
     /// the filtered pixels without the mask, as Photoshop's do (`compose::filter_mask`).
     pub(super) unfiltered: std::collections::HashMap<photocraft_doc::LayerId, Surface>,
@@ -82,7 +82,7 @@ pub(super) fn masked(sm: &photocraft_doc::SmartObject) -> bool {
 
 /// `FEid` data padded to 4 bytes inside the block length: Photoshop counts the padding in the
 /// length and can't open a file whose `FEid` is padded outside it.
-fn padded_fx(fx: &photocraft_psd::filter_effects::FilterEffects) -> Vec<u8> {
+fn padded_fx(fx: &craft_psd::filter_effects::FilterEffects) -> Vec<u8> {
     let mut d = fx.to_bytes();
     d.resize(d.len().next_multiple_of(4), 0);
     d
@@ -99,7 +99,7 @@ impl SmartOut {
         let old_fx = globals
             .iter()
             .filter(|(_, k, _)| FX_KEYS.contains(&k))
-            .filter_map(|(_, _, d)| photocraft_psd::filter_effects::FilterEffects::parse(d).ok())
+            .filter_map(|(_, _, d)| craft_psd::filter_effects::FilterEffects::parse(d).ok())
             .flat_map(|fx| fx.items)
             .collect();
         let mut linked_contents = std::collections::HashMap::new();
@@ -158,7 +158,7 @@ impl SmartOut {
                     Some(d) => out.push((sig, key, Arc::new(d))),
                 }
             } else if FX_KEYS.contains(&&key) {
-                let Ok(mut fx) = photocraft_psd::filter_effects::FilterEffects::parse(&data) else {
+                let Ok(mut fx) = craft_psd::filter_effects::FilterEffects::parse(&data) else {
                     out.push((sig, key, data));
                     continue;
                 };
@@ -190,7 +190,7 @@ impl SmartOut {
             }
         }
         if !fx_placed && !self.new_fx.is_empty() {
-            let fx = photocraft_psd::filter_effects::FilterEffects { version: 3, items: self.new_fx.clone() };
+            let fx = craft_psd::filter_effects::FilterEffects { version: 3, items: self.new_fx.clone() };
             out.push((*b"8BIM", *b"FEid", Arc::new(padded_fx(&fx))));
             if !out.iter().any(|(_, k, _)| k == b"FMsk") {
                 // Filter mask overlay: RGB red at 50 %, Photoshop's default.

@@ -267,3 +267,27 @@ fn rectangles_and_triangles_selected_together_take_the_same_radius() {
     assert_eq!(rr, [4.0; 4]);
     assert!((corner_radius_of(&app, tri) - 4.0).abs() < 1e-9);
 }
+
+#[test]
+fn a_star_shows_widgets_at_its_outer_points_only() {
+    // #13308: a star's inner points stay sharp, so they have no widget.
+    let live = LiveShape::Polygon { rect: [40.0, 40.0, 120.0, 100.0], sides: 5, star_ratio: 0.5, corner_radius: 6.0 };
+    let t = super::target(1, &live).unwrap();
+    assert_eq!(t.corners(), 5);
+    let sharp = &photocraft_vector::shapes::polygon(40.0, 40.0, 120.0, 100.0, 5, 0.5).subpaths[0].knots;
+    for i in 0..5 {
+        let v = sharp[2 * i].anchor;
+        assert_eq!(t.corner(i).unwrap().vertex, [v.x, v.y], "corner {i} is outer point {i}");
+    }
+    // The widgets preview the outline `shape.create` makes with the same radius.
+    assert_eq!(t.path(t.radii), photocraft_vector::shapes::live_path(&live));
+    // The largest radius is the one every outer point can take.
+    let outer_most = (0..5).filter_map(|i| t.fillet(i, 1.0e12)).map(|f| f.radius).fold(f64::INFINITY, f64::min);
+    assert!(outer_most.is_finite() && t.max_radius() == outer_most);
+}
+
+#[test]
+fn a_plain_polygon_shows_a_widget_at_every_vertex() {
+    let live = LiveShape::Polygon { rect: [40.0, 40.0, 120.0, 100.0], sides: 6, star_ratio: 1.0, corner_radius: 6.0 };
+    assert_eq!(super::target(1, &live).unwrap().corners(), 6);
+}

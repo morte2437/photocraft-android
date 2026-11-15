@@ -115,7 +115,8 @@ fn contiguous_limits_skip_a_matching_island_that_discontiguous_recolours() {
 /// 8 (the live stroke keeps its working pixels in the layer's depth between dabs).
 #[test]
 fn a_stroke_is_drawn_live_and_is_one_history_step() {
-    for depth in [8, 32] {
+    // Color Replacement refuses 32-bit RGB documents, as the reference application does (#11923).
+    for depth in [8, 16] {
         live_stroke_at(depth);
     }
 }
@@ -147,7 +148,7 @@ fn live_stroke_at(depth: u32) {
     }
     let st = app.session.active().unwrap();
     assert_eq!(st.history.past_len(), steps + 1, "one History step");
-    assert_eq!(st.history.entries().last().map(|e| e.to_string()).as_deref(), Some("Color Replacement"));
+    assert_eq!(st.history.entries().last().map(|e| e.to_string()).as_deref(), Some("Color Replacement Tool"));
     app.run("edit.undo", json!({})).unwrap();
     assert_eq!(rgba(&app, 20, 20), before, "one undo restores the pixels");
     app.run("edit.redo", json!({})).unwrap();
@@ -242,7 +243,7 @@ fn it_paints_like_the_brush_tools() {
     a.run("tools.increaseBrushSize", json!({})).unwrap();
     assert!(a.session.tools.brush.size > size);
     a.run("tools.decreaseBrushSize", json!({})).unwrap();
-    assert_eq!(a.session.tools.brush.size, size);
+    assert_eq!(a.session.tools.brush.size, 10.0, "[ snaps back below the original intermediate 12 px size");
     // Alt+right drag resizes and paints nothing.
     let events = json!([{"kind": "down", "x": 40, "y": 20}, {"kind": "move", "x": 60, "y": 20}, {"kind": "up", "x": 70, "y": 20}]);
     let (req, _rx) = crate::control::ControlRequest::new("ui.pointer", json!({"tool": "colorReplacement", "button": "right", "alt": true, "events": events}));

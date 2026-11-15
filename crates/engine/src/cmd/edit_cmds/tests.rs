@@ -1292,6 +1292,56 @@ fn guide_positions_take_photoshop_units() {
     assert_eq!(s.active().unwrap().doc.guides.horizontal[0], 50.0);
 }
 
+/// #10440: the position takes arithmetic as Photoshop's New Guide field does. Measured in
+/// Photoshop 2025 on a 600 × 400, 72 ppi document: "100% / 3" → 200, "100% - 50px" → 550,
+/// "300 / 2" → 150 (pixels), "1in + 10" → 792 (the bare 10 is in the first operand's unit).
+#[test]
+fn guide_positions_take_arithmetic() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 600, "height": 400, "resolution": 72})).unwrap();
+    for (text, px) in [
+        ("100% / 3", 200.0),
+        ("100% - 50px", 550.0),
+        ("300 / 2", 150.0),
+        ("1in + 10", 792.0),
+        ("2 * 50 px", 100.0),
+        ("10 + 2 * 3", 16.0),
+        ("-50px + 100", 50.0),
+    ] {
+        assert!((new_guide(&mut s, "vertical", json!(text)) - px).abs() < 1e-6, "{text}");
+    }
+    // Horizontal guides take percent of the height.
+    assert!((new_guide(&mut s, "horizontal", json!("50% + 10px")) - 210.0).abs() < 1e-6);
+    for bad in ["100% /", "1in * 2in", "10 / 0", "10 / 2px", "5 ^ 2", "+", "50% 3"] {
+        let err = s.execute("view.newGuide", json!({"orientation": "vertical", "position": bad})).unwrap_err();
+        assert!(err.to_string().contains("not a length"), "{bad}: {err}");
+    }
+}
+
+/// The Unicode minus (U+2212, what some keyboards and pasted text give) is a minus, as in the
+/// numeric fields' own evaluator.
+#[test]
+fn guide_position_arithmetic_takes_the_unicode_minus() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 600, "height": 400, "resolution": 72})).unwrap();
+    for (text, px) in [("100% − 50px", 550.0), ("−50px + 100", 50.0), ("1in − −10", 792.0), ("−100", -100.0)] {
+        assert!((new_guide(&mut s, "vertical", json!(text)) - px).abs() < 1e-6, "{text}");
+    }
+}
+
+/// Text longer than the numeric fields' 1024-byte cap is refused before it is tokenised.
+#[test]
+fn guide_position_arithmetic_is_capped_at_1024_bytes() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 600, "height": 400, "resolution": 72})).unwrap();
+    let fits = format!("{}100", "0 + ".repeat(255));
+    assert_eq!(fits.len(), 1023);
+    assert_eq!(new_guide(&mut s, "vertical", json!(fits)), 100.0);
+    let long = format!("{}100", "0 + ".repeat(256));
+    let err = s.execute("view.newGuide", json!({"orientation": "vertical", "position": long})).unwrap_err();
+    assert!(err.to_string().contains("not a length"), "{err}");
+}
+
 #[test]
 fn new_guides_keep_their_own_colour_through_moves_deletes_and_undo() {
     let mut s = Session::new();
@@ -1379,6 +1429,26 @@ fn editing_a_guide_changes_what_is_given_in_one_undoable_step() {
     let g = guides(&s);
     assert_eq!((g.vertical.clone(), g.horizontal.is_empty()), (vec![10.0, 200.0, 30.0], true));
     assert_eq!(g.color(true, 200.0), Some([0xff, 0x00, 0xff]));
+}
+
+/// #10440: Edit Selected Guides reads its position as New Guide does, arithmetic included; % is of
+/// the new orientation's extent.
+#[test]
+fn editing_a_guide_takes_arithmetic_in_its_position() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 400, "height": 200, "resolution": 100})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "vertical", "position": 10})).unwrap();
+    s.execute("view.newGuide", json!({"orientation": "vertical", "position": 20})).unwrap();
+    s.execute("view.editGuide", json!({"orientation": "vertical", "index": 0, "position": "100% / 4"})).unwrap();
+    s.execute("view.editGuide", json!({"orientation": "vertical", "index": 1, "position": "1in + 1"})).unwrap();
+    assert_eq!(s.active().unwrap().doc.guides.vertical, vec![100.0, 200.0]);
+    s.execute("view.editGuide", json!({"orientation": "vertical", "index": 0, "newOrientation": "horizontal", "position": "50% − 10px"})).unwrap();
+    let g = &s.active().unwrap().doc.guides;
+    assert_eq!((g.vertical.clone(), g.horizontal.clone()), (vec![200.0], vec![90.0]));
+    let before = g.clone();
+    let err = s.execute("view.editGuide", json!({"orientation": "vertical", "index": 0, "position": "1in * 2in"})).unwrap_err();
+    assert!(err.to_string().contains("not a length"), "{err}");
+    assert_eq!(s.active().unwrap().doc.guides, before);
 }
 
 #[test]

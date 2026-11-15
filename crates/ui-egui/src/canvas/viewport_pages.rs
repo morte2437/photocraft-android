@@ -609,12 +609,14 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
     if app.ui.view.pattern_preview || gpu.fault().is_some() {
         return false;
     }
-    let Some((revision, last_damage, id, size)) = app
-        .session
-        .documents()
-        .get(idx)
-        .map(|st| (st.revision, st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) }), st.doc.id, st.doc.size))
-    else {
+    let Some((revision, last_damage, id, size)) = app.session.documents().get(idx).map(|st| {
+        (
+            st.revision,
+            (st.damage_from(), st.last_damage.map(|r| if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) })),
+            st.doc.id,
+            st.doc.size,
+        )
+    }) else {
         return false;
     };
     let size = [size.width, size.height];
@@ -643,7 +645,7 @@ pub(super) fn show(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usize, xf:
         return false;
     }
     let (display, _) = canvas_display(app, &doc, None);
-    let display_key = texture_key(display.as_deref());
+    let display_key = texture_key(display.as_deref(), &doc);
     let now = Identity { revision, preview: raw_key, display: display_key, size };
     let seen = app.streams.get(&id).and_then(|s| s.seen);
     if seen != Some(now) {

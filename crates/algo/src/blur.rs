@@ -168,13 +168,18 @@ fn boxes_for_gauss(sigma: f32, n: usize) -> Vec<usize> {
     (0..n).map(|i| if i < m { wl as usize } else { wu as usize }).collect()
 }
 
+/// Largest box-blur radius run (far beyond any real use).
+const MAX_BOX_RADIUS: f32 = 16384.0;
+
 /// The box widths (odd) a blur runs as running-sum passes along each axis, or `None` when it uses a
 /// direct kernel (small radii, where the kernel is quicker).
 pub(crate) fn box_widths(params: &FilterParams) -> Option<Vec<usize>> {
     match *params {
         FilterParams::GaussianBlur { radius } if radius > 4.0 => Some(boxes_for_gauss(radius, 3)),
         FilterParams::BoxBlur { radius } => {
-            let r = radius.max(0.0).round() as usize;
+            // Capped: the line scratch grows with the radius, and `2 * r + 1` must not overflow
+            // (Photoshop's largest Box Blur radius is 999).
+            let r = radius.clamp(0.0, MAX_BOX_RADIUS).round() as usize;
             (r > 4).then(|| vec![2 * r + 1])
         }
         _ => None,

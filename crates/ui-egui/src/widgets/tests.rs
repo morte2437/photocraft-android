@@ -2,6 +2,80 @@ use super::{hue_color, hue_stops};
 use egui::{Color32, Key, Modifiers};
 
 #[test]
+fn slider_outer_bands_accept_clicks_and_drags() {
+    use egui::{Event, PointerButton, Rect, pos2, vec2};
+    use egui_kittest::Harness;
+    for scale in [1.0, 1.25, 2.0] {
+        for gradient in [false, true] {
+            for dy in [-11.0, 11.0] {
+                for enabled in [true, false] {
+                    let mut h = Harness::builder().with_size(vec2(300.0, 140.0)).with_pixels_per_point(scale).build_ui_state(
+                        |ui, (value, rect): &mut (f32, Rect)| {
+                            // Neighbors prevent egui's nearest-widget fallback from hiding missed hits.
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.add_space(20.0);
+                            ui.add_sized(egui::vec2(ui.available_width(), 24.0), egui::Button::new("Above"));
+                            let colors = [Color32::BLACK, Color32::WHITE];
+                            ui.add_enabled_ui(enabled, |ui| {
+                                *rect = super::slider(ui, value, 0.0..=100.0, gradient.then_some(colors.as_slice())).rect;
+                            });
+                            ui.add_sized(egui::vec2(ui.available_width(), 24.0), egui::Button::new("Below"));
+                        },
+                        (50.0, Rect::NOTHING),
+                    );
+                    h.run();
+                    let rect = h.state().1;
+                    let at = pos2(rect.left() + 7.0 + (rect.width() - 14.0) * 0.75, rect.center().y + dy);
+                    h.hover_at(at);
+                    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+                    h.run();
+                    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+                    h.run();
+                    assert!(
+                        (h.state().0 - if enabled { 75.0 } else { 50.0 }).abs() < 0.01,
+                        "click: scale {scale}, gradient {gradient}, dy {dy}, enabled {enabled}"
+                    );
+                    h.event(Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+                    h.run();
+                    let to = pos2(rect.left() + 7.0 + (rect.width() - 14.0) * 0.25, at.y);
+                    h.hover_at(to);
+                    h.run();
+                    h.event(Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+                    h.run();
+                    assert!(
+                        (h.state().0 - if enabled { 25.0 } else { 50.0 }).abs() < 0.01,
+                        "drag: scale {scale}, gradient {gradient}, dy {dy}, enabled {enabled}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn slider_hit_area_does_not_take_neighboring_controls() {
+    use egui::{Rect, vec2};
+    use egui_kittest::{Harness, kittest::Queryable};
+    let mut h = Harness::builder().with_size(vec2(300.0, 160.0)).build_ui_state(
+        |ui, (value, rect, clicked): &mut (f32, Rect, bool)| {
+            ui.add_space(20.0);
+            *rect = super::slider(ui, value, 0.0..=100.0, None).rect;
+            *clicked |= ui.button("Neighbor").clicked();
+        },
+        (50.0, Rect::NOTHING, false),
+    );
+    h.run();
+    let at = h.get_by_label("Neighbor").rect().center_top() + vec2(0.0, 1.0);
+    h.hover_at(at);
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run();
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run();
+    assert!(h.state().2);
+    assert_eq!(h.state().0, 50.0);
+}
+
+#[test]
 fn hue_stops_are_pure_and_evenly_spaced() {
     let c = |r, g, b| Color32::from_rgb(r, g, b);
     let want = [c(255, 0, 0), c(255, 255, 0), c(0, 255, 0), c(0, 255, 255), c(0, 0, 255), c(255, 0, 255), c(255, 0, 0)];
@@ -109,6 +183,85 @@ fn elided_label_never_exceeds_its_room() {
     });
     crate::PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
     h.run_steps(2);
+}
+
+/// Every text shape drawn in `out`: its (whole) string, where it was drawn and whether it was elided.
+fn drawn_texts(out: &egui::FullOutput) -> Vec<(String, egui::Rect, bool)> {
+    let mut texts = Vec::new();
+    for s in &out.shapes {
+        if let egui::Shape::Text(t) = &s.shape {
+            texts.push((t.galley.text().to_string(), s.shape.visual_bounding_rect(), t.galley.elided));
+        }
+    }
+    texts
+}
+
+/// The Urdu Stroke heading has a negative left glyph bearing with the shipped fonts. Its ink
+/// must stay inside the panel at every scale, even though its logical advance starts at zero.
+#[test]
+fn section_labels_keep_glyph_bearings_inside_the_panel() {
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    for kind in crate::theme::ThemeKind::ALL {
+        crate::theme::apply(&ctx, kind);
+        for ppp in [1.0, 1.25, 2.0] {
+            ctx.set_pixels_per_point(ppp);
+            for label in ["Stroke", "\u{644}\u{6a9}\u{6cc}\u{631}", "Location"] {
+                let mut room = egui::Rect::NOTHING;
+                let mut out = ctx.run_ui(Default::default(), |ui| {
+                    ui.set_max_width(440.0);
+                    room = ui.max_rect();
+                    super::section_label(ui, label);
+                });
+                out.textures_delta.clear();
+                let texts = drawn_texts(&out);
+                assert_eq!(texts.len(), 1, "{kind:?} @{ppp}x: {label}");
+                let (_, ink, _) = &texts[0];
+                assert!(ink.left() >= room.left() - 0.01, "{kind:?} @{ppp}x: {label} ink {ink:?} in {room:?}");
+                assert!(ink.right() <= room.right() + 0.01, "{kind:?} @{ppp}x: {label} ink {ink:?} in {room:?}");
+            }
+        }
+    }
+}
+
+/// #9635: the shared dialog label column is as wide as its widest label, between the English
+/// width and a cap, and a label wider than the column elides inside it.
+#[test]
+fn column_label_stays_inside_its_column() {
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    crate::theme::apply(&ctx, crate::theme::ThemeKind::ALL[0]);
+    // German "Canvas extension color": far wider than any column here.
+    let long = "Farbe der Zeichenflächenerweiterung:";
+    let mut col = egui::Rect::NOTHING;
+    let mut out = ctx.run_ui(Default::default(), |ui| {
+        assert_eq!(super::label_column_width(ui, &["Fill:"], 90.0, 240.0), 90.0, "never narrower than the English column");
+        let grown = super::label_column_width(ui, &["Fill:", "Dimensione immagine:"], 84.0, 240.0);
+        assert!(grown > 84.0 && grown < 240.0, "widens to the Italian label: {grown}");
+        assert_eq!(super::label_column_width(ui, &[long], 90.0, 100.0), 100.0, "capped");
+        assert_eq!(super::label_column_width(ui, &["Fill:"], 90.0, 10.0), 90.0, "a cap below the minimum keeps the minimum");
+        assert_eq!(super::label_column_width(ui, &[], f32::NAN, f32::INFINITY), 0.0, "bad bounds never panic");
+        ui.horizontal(|ui| col = super::column_label(ui, long, 100.0).rect);
+    });
+    out.textures_delta.clear();
+    assert_eq!(col.width(), 100.0, "the column keeps its width");
+    let texts = drawn_texts(&out);
+    let (_, at, elided) = texts.iter().find(|(t, ..)| t.starts_with("Farbe")).unwrap_or_else(|| panic!("label drawn: {texts:?}"));
+    assert!(*elided, "elided with '…'");
+    assert!(at.left() >= col.left() - 0.5 && at.right() <= col.right() - super::LABEL_COLUMN_GAP + 1.0, "{at:?} inside {col:?}");
+
+    // A label that fits is drawn whole, right-aligned against its field; an empty label draws
+    // nothing, and a bad width or gap never panics.
+    let mut out = ctx.run_ui(Default::default(), |ui| {
+        ui.horizontal(|ui| col = super::column_label(ui, "Fill:", 90.0).rect);
+        super::column_label(ui, "", 90.0);
+        super::column_label_padded(ui, "Bad width:", f32::NAN, f32::NAN);
+    });
+    out.textures_delta.clear();
+    let texts = drawn_texts(&out);
+    let (_, at, elided) = texts.iter().find(|(t, ..)| t == "Fill:").unwrap_or_else(|| panic!("label drawn: {texts:?}"));
+    assert!(!*elided, "a label that fits is drawn whole");
+    assert!((at.right() - (col.right() - super::LABEL_COLUMN_GAP)).abs() < 2.5 && at.left() > col.left(), "{at:?} right-aligned in {col:?}");
 }
 
 #[test]
@@ -262,6 +415,41 @@ fn text_field_is_a_boxed_input_whose_selection_colour_stays_local() {
     assert_eq!(h.state().0, "abc", "typing reaches the bound string");
 }
 
+/// #2084: a plain text field's text is centred in its box, like a value field's digits, in the
+/// monospaced (hex) and proportional faces alike: neither low nor overshooting the middle.
+#[test]
+fn text_field_text_ink_is_centred_in_its_box() {
+    let _gpu = photocraft_testkit::gpu_lock();
+    let scale = 4.0;
+    for kind in [crate::theme::ThemeKind::Pro, crate::theme::ThemeKind::Studio] {
+        // Digits and capitals: no descenders, so their ink should straddle the box's middle.
+        for (text, mono) in [("A0F3C2", true), ("100", true), ("HEX", false)] {
+            let mut h = Harness::builder().with_size(egui::vec2(160.0, 40.0)).with_pixels_per_point(scale).wgpu().build_ui_state(
+                move |ui, s: &mut (String, egui::Rect)| {
+                    let before = ui.cursor().min;
+                    super::text_field(ui, egui::Id::unique("tf"), &mut s.0, "", 140.0, mono).accessible_name("Value");
+                    s.1 = egui::Rect::from_min_size(before, egui::vec2(140.0, super::TEXT_FIELD_H));
+                },
+                (text.to_owned(), egui::Rect::NOTHING),
+            );
+            crate::PhotocraftApp::setup_context(&h.ctx, kind);
+            h.run_steps(3);
+            let image = h.render().expect("render text field");
+            let field = h.state().1;
+            let px = |v: f32| (v * scale) as u32;
+            let bg = image.get_pixel(px(field.right() - 3.0), px(field.center().y)).0;
+            let lum = |p: [u8; 4]| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2]);
+            let rows: Vec<u32> = (px(field.top() + 2.0)..px(field.bottom() - 2.0))
+                .filter(|&y| (px(field.left() + 3.0)..px(field.right() - 6.0)).any(|x| lum(image.get_pixel(x, y).0) > lum(bg) + 150))
+                .collect();
+            let (top, bottom) = (rows.first().copied().unwrap_or(0) as f32 / scale, (rows.last().copied().unwrap_or(0) + 1) as f32 / scale);
+            let what = format!("{kind:?} {text:?} mono={mono}: field {field:?}, ink {top}..{bottom}, off {}", (top + bottom) / 2.0 - field.center().y);
+            assert!(!rows.is_empty(), "{what}");
+            assert!(((top + bottom) / 2.0 - field.center().y).abs() <= 0.25, "{what}");
+        }
+    }
+}
+
 /// #2150: a huge paste into a plain text field stops at its limit instead of growing the
 /// string (and its laid-out text) without bound.
 #[test]
@@ -297,6 +485,128 @@ fn text_field_bounds_an_oversized_existing_value() {
     h.event(egui::Event::Key { key: egui::Key::Backspace, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
     h.run_steps(1);
     assert!(h.state().chars().count() < super::TEXT_FIELD_LIMIT, "an edit keeps the bounded copy");
+}
+
+/// A text field's text, its box, and whether its editor has the focus.
+type FieldState = (String, egui::Rect, bool);
+
+/// A harness drawing one 140 pt text field holding `text`, in a `Ui` that is `enabled` or not.
+fn text_field_harness(text: &str, enabled: bool) -> Harness<'static, FieldState> {
+    let id = egui::Id::unique("tf");
+    let mut h = Harness::new_ui_state(
+        move |ui, s: &mut FieldState| {
+            let field = ui.add_enabled_ui(enabled, |ui| drop(super::text_field(ui, id, &mut s.0, "", 140.0, false).accessible_name("Value")));
+            s.1 = field.response.rect;
+            s.2 = ui.memory(|m| m.has_focus(id));
+        },
+        (text.to_owned(), egui::Rect::NOTHING, false),
+    );
+    crate::PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+    h.run();
+    assert_eq!(h.state().1.size(), egui::vec2(140.0, super::TEXT_FIELD_H), "the state holds the field's box");
+    h
+}
+
+/// Clicks a field holding `text` at `at(its box)` and types "X": the text after that, and
+/// whether the click focused the editor.
+fn click_text_field_then_type(text: &str, enabled: bool, at: impl Fn(egui::Rect) -> egui::Pos2) -> (String, bool) {
+    let mut h = text_field_harness(text, enabled);
+    let pos = at(h.state().1);
+    click_at(&mut h, pos, egui::PointerButton::Primary);
+    let focused = h.state().2;
+    h.event(egui::Event::Text("X".into()));
+    h.run();
+    (h.state().0.clone(), focused)
+}
+
+/// #12302: a click in a text field's padding focuses its editor with the caret at the nearest
+/// point inside it: the start from the left, the end from the right. Before the fix only a click
+/// within egui's `interact_radius` (5 pt) of the editor reached it, so the left and right clicks
+/// sit half a point in from the box's edge (5.5 pt out, on the 6 pt sides) and the corner clicks
+/// are farther still diagonally, clamped into the editor in both axes.
+#[test]
+fn text_field_padding_click_focuses_the_editor() {
+    let click = |at: fn(egui::Rect) -> egui::Pos2| click_text_field_then_type("hello", true, at);
+    assert_eq!(click(|r| egui::pos2(r.left() + 0.5, r.center().y)), ("Xhello".to_owned(), true), "left padding");
+    assert_eq!(click(|r| egui::pos2(r.right() - 0.5, r.center().y)), ("helloX".to_owned(), true), "right padding");
+    assert_eq!(click(|r| r.left_top() + egui::vec2(0.5, 0.5)), ("Xhello".to_owned(), true), "top-left corner");
+    assert_eq!(click(|r| r.right_bottom() - egui::vec2(0.5, 0.5)), ("helloX".to_owned(), true), "bottom-right corner");
+    // Above and below the text, the caret goes where a click straight down (or up) into the
+    // editor puts it, in the middle of "hello" here.
+    let inside = click(|r| egui::pos2(r.left() + 20.0, r.center().y));
+    assert_eq!(click(|r| egui::pos2(r.left() + 20.0, r.top() + 0.5)), inside, "top padding");
+    assert_eq!(click(|r| egui::pos2(r.left() + 20.0, r.bottom() - 0.5)), inside, "bottom padding");
+}
+
+/// #12302: a padding click on an empty field focuses it, with the caret at the only place it
+/// can go.
+#[test]
+fn text_field_padding_click_focuses_an_empty_field() {
+    for (side, at) in [("left", 0.5), ("right", 139.5)] {
+        let clicked = click_text_field_then_type("", true, |r| egui::pos2(r.left() + at, r.center().y));
+        assert_eq!(clicked, ("X".to_owned(), true), "{side} padding");
+    }
+}
+
+/// #12302: in a value wider than the field, scrolled to its end while being edited, a click in
+/// the right padding puts the caret at the end of the text in view, which is the value's end.
+#[test]
+fn text_field_padding_click_follows_a_scrolled_value() {
+    let long = "abcdefghij".repeat(10);
+    let mut h = text_field_harness(&long, true);
+    let r = h.state().1;
+    click_at(&mut h, egui::pos2(r.left() + 0.5, r.center().y), egui::PointerButton::Primary);
+    h.event(egui::Event::Key { key: Key::End, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run();
+    click_at(&mut h, egui::pos2(r.right() - 0.5, r.center().y), egui::PointerButton::Primary);
+    h.event(egui::Event::Text("X".into()));
+    h.run();
+    assert_eq!(h.state().0, format!("{long}X"));
+}
+
+/// A disabled field's padding takes no click: the editor stays unfocused and typing changes
+/// nothing.
+#[test]
+fn disabled_text_field_padding_click_does_nothing() {
+    let clicked = click_text_field_then_type("hello", false, |r| egui::pos2(r.left() + 0.5, r.center().y));
+    assert_eq!(clicked, ("hello".to_owned(), false));
+}
+
+/// The popup arrow drawn in a [`super::text_field_with_trailing`]'s trailing space (the Type
+/// tool's font field) keeps its own click now that the editor covers the rest of the box
+/// (#12302): the editor stops short of that space.
+#[test]
+fn text_field_trailing_arrow_keeps_its_click() {
+    let id = egui::Id::unique("tf");
+    // The text, whether the arrow was clicked, the arrow's rect and whether the editor has the focus.
+    let mut h = Harness::new_ui_state(
+        move |ui, s: &mut (String, bool, egui::Rect, bool)| {
+            let (input, rect) = super::text_field_with_trailing(ui, id, &mut s.0, "", 140.0, super::POPUP_ARROW_W);
+            drop(input.accessible_name("Font"));
+            s.2 = egui::Rect::from_min_max(egui::pos2(rect.right() - super::POPUP_ARROW_W - 2.0, rect.top() + 2.0), rect.max - egui::vec2(2.0, 2.0));
+            let arrow = ui.interact(s.2, id.with("arrow"), egui::Sense::click());
+            arrow.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Font"));
+            s.1 |= arrow.clicked();
+            s.3 = ui.memory(|m| m.has_focus(id));
+        },
+        ("hello".to_owned(), false, egui::Rect::NOTHING, false),
+    );
+    crate::PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::Studio);
+    h.run();
+    let pos = h.state().2.center();
+    click_at(&mut h, pos, egui::PointerButton::Primary);
+    assert!(h.state().1, "the arrow takes the click");
+    assert!(!h.state().3, "the editor doesn't take the focus");
+}
+
+/// #12302: a click inside the editor keeps egui's own focus and caret placement: the box behind
+/// it doesn't take the click, and the caret lands inside the word rather than at either end.
+#[test]
+fn text_field_editor_click_places_the_caret_at_the_pointer() {
+    let (text, focused) = click_text_field_then_type("hello", true, |r| egui::pos2(r.left() + 20.0, r.center().y));
+    assert!(focused);
+    assert_eq!(text.len(), 6, "{text:?}");
+    assert!(text != "Xhello" && text != "helloX", "the X lands inside the word: {text:?}");
 }
 
 /// #2150: text queued by the control channel (`ui.type`) joins the input in `raw_input_hook`
@@ -773,10 +1083,15 @@ fn typed_arithmetic_evaluates() {
         ("(2+3)*4", 20.0),
         ("2^3", 8.0),
         ("10%3", 1.0),
+        // A decimal comma (#10729).
+        ("0,3", 0.3),
+        ("1,5*2", 3.0),
+        ("−2,25", -2.25),
     ] {
         assert_eq!(parse_num(text), Some(want), "{text}");
     }
-    for text in ["", "abc", "5+", "*2", "4/0", "0/0", "1+*2", "(2+3", "1e400"] {
+    // A comma beside a point, or two decimal separators, is not guessed at.
+    for text in ["", "abc", "5+", "*2", "4/0", "0/0", "1+*2", "(2+3", "1e400", "1.234,5", "1,2,3"] {
         assert_eq!(parse_num(text), None, "{text}");
     }
 }
@@ -883,7 +1198,7 @@ fn click_and_type(h: &mut egui_kittest::Harness<'static, (f32, u32)>, text: &str
 }
 
 /// A button down (and up) at `pos`.
-fn click_at(h: &mut egui_kittest::Harness<'static, (f32, u32)>, pos: egui::Pos2, button: egui::PointerButton) {
+fn click_at<S>(h: &mut egui_kittest::Harness<'_, S>, pos: egui::Pos2, button: egui::PointerButton) {
     h.event(egui::Event::PointerMoved(pos));
     for pressed in [true, false] {
         h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE });
@@ -1294,6 +1609,65 @@ fn value_field_applies_typed_arithmetic() {
     assert_eq!(type_and_press(1.0, "1280/3*2", Enter, true), 853.0);
 }
 
+/// #10729: a field such as Feather takes a decimal comma, as typed where the comma is the decimal
+/// separator.
+#[test]
+fn value_field_takes_a_decimal_comma() {
+    use egui::Key::{Enter, Tab};
+    assert!((type_and_press(1.0, "0,3", Enter, false) - 0.3).abs() < 1e-6);
+    assert!((type_and_press(1.0, "2,5", Tab, false) - 2.5).abs() < 1e-6);
+}
+
+/// Review on #10729: only where the system's separator is not the point. Where it is, a typed
+/// `1,234` is a thousands group, and reading the comma as a decimal point would be out by a
+/// factor of a thousand instead of invalid. Where the separator can't be read the field takes
+/// both, as it did before.
+#[test]
+fn a_decimal_comma_is_read_only_where_the_system_uses_one() {
+    let parse = |text: &str| super::units::plain(text);
+    crate::i18n::with_decimal_separator(Some(','), || {
+        assert_eq!(parse("0,3"), Some(0.3), "a comma system reads the comma");
+    });
+    crate::i18n::with_decimal_separator(Some('.'), || {
+        assert_eq!(parse("0,3"), None, "a point system does not: 0,3 stays invalid, not 0.3");
+        assert_eq!(parse("1,234"), None, "and a thousands group is not read as 1.234");
+        assert_eq!(parse("0.3"), Some(0.3), "its own separator still works");
+    });
+    crate::i18n::with_decimal_separator(None, || {
+        assert_eq!(parse("0,3"), Some(0.3), "unknown: both are taken, as zoom_field does");
+        assert_eq!(parse("0.3"), Some(0.3));
+    });
+}
+
+/// Review on #10729: each number in an expression decides for itself, so a comma in one operand
+/// and a point in another still computes. A single number holding both separators stays invalid
+/// rather than being guessed at.
+#[test]
+fn a_decimal_comma_is_read_per_operand_not_per_entry() {
+    let close = |got: Option<f64>, want: f64, what: &str| {
+        let v = got.unwrap_or_else(|| panic!("{what}: refused"));
+        assert!((v - want).abs() < 1e-9, "{what}: {v} is not {want}");
+    };
+    for sep in [Some(','), None] {
+        crate::i18n::with_decimal_separator(sep, || {
+            close(super::parse_num("1,5+2.0"), 3.5, "a comma and a point in one expression");
+            close(super::parse_num("2.0+1,5"), 3.5, "and the other way round");
+            close(super::parse_num("1,5*2"), 3.0, "a comma against a whole number");
+            close(super::parse_num("1,5"), 1.5, "a comma on its own");
+            close(super::parse_num("1.5"), 1.5, "a point on its own");
+            // One number carrying both is not guessed at, whichever side it sits on.
+            for text in ["1.234,5", "1,2,3", "1.234,5+1", "1+1.234,5"] {
+                assert_eq!(super::parse_num(text), None, "{text} stays invalid");
+            }
+        });
+    }
+    // A point system reads no comma at all, in an expression either: 1,5 is a thousands group.
+    crate::i18n::with_decimal_separator(Some('.'), || {
+        assert_eq!(super::parse_num("1,5+2.0"), None, "a point system refuses the comma operand");
+        close(super::parse_num("1.5+2.0"), 3.5, "its own separator computes");
+    });
+}
+
 #[test]
 fn numbers_drop_trailing_zero() {
     // #2434: the unit keys map to Photoshop's places, and the shared formatter trims zeros.
@@ -1364,6 +1738,155 @@ fn dropdown_list_keeps_its_width_while_scrolling() {
         h.run();
         assert_eq!(list(&h).map(|r| r.width()), Some(open.width()));
     }
+}
+
+/// A window `height` tall with the Layers panel's blend mode dropdown (all 27 modes, wheel
+/// steps them) `down` from its top, opened.
+fn open_blend_modes(height: f32, down: f32) -> Harness<'static, photocraft_color::BlendMode> {
+    use photocraft_color::BlendMode;
+    let mut h = Harness::builder().with_size(egui::vec2(400.0, height)).build_ui_state(
+        move |ui, mode: &mut BlendMode| {
+            ui.add_space(down);
+            let opts: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.iter().map(|m| (*m, m.label())).collect();
+            super::dropdown_wheel_hovered(ui, "blend-mode", tl!("Blend Mode"), mode, &opts, 120.0);
+        },
+        BlendMode::Normal,
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::ProMedium);
+    h.run();
+    h.get_by_role(egui::accesskit::Role::ComboBox).click();
+    h.run_steps(4);
+    h
+}
+
+/// The open list's rect.
+fn open_list<T>(h: &Harness<'_, T>) -> egui::Rect {
+    let list = h.ctx.memory(|m| m.layer_ids().filter(|l| l.order == egui::Order::Foreground).find_map(|l| m.area_rect(l.id)));
+    let Some(list) = list else { panic!("the list is open") };
+    list
+}
+
+/// Each mode's row in the open list: its label's last node, as the box shows the chosen one's.
+fn mode_rows<T>(h: &Harness<'_, T>) -> Vec<egui::Rect> {
+    use photocraft_color::BlendMode;
+    BlendMode::LAYER_MODES.iter().map(|m| h.get_all_by_label(m.label()).last().map(|n| n.rect()).unwrap_or(egui::Rect::NOTHING)).collect()
+}
+
+/// Photoshop opens the Layers panel's blend modes at full height when the window has room, no
+/// scroll bar (#5495): not capped at a fixed height. A short window still scrolls the list,
+/// which stays inside the window.
+#[test]
+fn dropdown_list_is_as_tall_as_its_options_up_to_the_window() {
+    let h = open_blend_modes(1000.0, 0.0);
+    let (list, rows) = (open_list(&h), mode_rows(&h));
+    for (i, row) in rows.iter().enumerate() {
+        assert!(list.contains_rect(*row), "row {i} {row:?} shows in the list {list:?}");
+    }
+    let h = open_blend_modes(300.0, 0.0);
+    let (list, rows) = (open_list(&h), mode_rows(&h));
+    assert!(list.top() >= 0.0 && list.bottom() <= 300.0, "the list {list:?} stays in the window");
+    assert!(list.height() > 200.0, "the list {list:?} uses the window's height");
+    assert!(rows.last().is_some_and(|r| !list.contains_rect(*r)), "the last rows scroll: {rows:?}");
+}
+
+/// The open list opens at the button's left edge, below the button or above it, never over it
+/// (#5495 review: a click released in place would choose the row under the pointer): below
+/// when the whole list fits there, else on the side with more room, scrolling when it doesn't
+/// fit there either. It stays put while the wheel steps through every mode over it (#1747),
+/// although the button widens for the longer names.
+#[test]
+fn dropdown_list_opens_beside_its_button_and_stays_put_while_the_wheel_steps_its_value() {
+    use photocraft_color::BlendMode;
+    // (window height, button's distance from the top, list below it, all modes in sight)
+    let cases = [
+        (1000.0, 0.0, true, true),    // room below
+        (900.0, 420.0, true, false),  // room on neither side, more below
+        (900.0, 520.0, false, false), // room on neither side, more above
+        (1000.0, 900.0, false, true), // room above only, near the bottom edge
+        (300.0, 150.0, false, false), // a window shorter than the list
+    ];
+    for (height, down, below, all) in cases {
+        let mut h = open_blend_modes(height, down);
+        let button = h.get_by_role(egui::accesskit::Role::ComboBox).rect();
+        let list = open_list(&h);
+        assert!(list.top() >= 0.0 && list.bottom() <= height, "{height}/{down}: the list {list:?} is in the window");
+        assert!((list.left() - button.left()).abs() < 8.0, "{height}/{down}: the list {list:?} starts at the button {button:?}");
+        assert!(!list.intersects(button.shrink(1.0)), "{height}/{down}: the list {list:?} leaves the button {button:?} free");
+        assert_eq!(list.top() >= button.bottom() - 1.0, below, "{height}/{down}: the list {list:?} is below the button {button:?}");
+        let rows = mode_rows(&h);
+        assert_eq!(rows.iter().all(|r| list.contains_rect(*r)), all, "{height}/{down}: all modes show in {list:?}");
+        let over = list.center();
+        for _ in 1..BlendMode::LAYER_MODES.len() {
+            h.hover_at(over);
+            h.event(egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Unknown,
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, -1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            });
+            h.run_steps(3);
+            assert_eq!(open_list(&h), list, "{height}/{down}: the list stays put at {:?}", h.state());
+        }
+        assert_eq!(*h.state(), BlendMode::Luminosity, "{height}/{down}: the wheel stepped through every mode");
+    }
+}
+
+/// A short list opens below its button when it fits there, and above it near the window's
+/// bottom edge, whole either way.
+#[test]
+fn a_short_dropdown_list_opens_below_or_above_its_button_whole() {
+    for (down, below) in [(100.0, true), (360.0, false)] {
+        let mut h = Harness::builder().with_size(egui::vec2(300.0, 400.0)).build_ui_state(
+            move |ui, selected: &mut usize| {
+                ui.add_space(down);
+                super::dropdown(ui, "blend-mode", tl!("Blend Mode"), selected, &MODES, 120.0);
+            },
+            0,
+        );
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run_steps(4);
+        let button = h.get_by_role(egui::accesskit::Role::ComboBox).rect();
+        let list = open_list(&h);
+        assert_eq!(list.top() >= button.bottom() - 1.0, below, "{down}: the list {list:?} is below the button {button:?}");
+        assert!(!list.intersects(button.shrink(1.0)), "{down}: the list {list:?} leaves the button {button:?} free");
+        for (_, label) in MODES {
+            let row = h.get_all_by_label(label).last().map(|n| n.rect()).unwrap_or(egui::Rect::NOTHING);
+            assert!(list.contains_rect(row), "{down}: {label} {row:?} shows in {list:?}");
+        }
+        assert!(list.height() < 150.0, "{down}: the list {list:?} is only as tall as its rows");
+        assert_eq!(*h.state(), 0, "{down}: the click chose nothing");
+    }
+}
+
+/// In a window with less than 120 pt on either side of the button the list still leaves
+/// its button free, scrolling in the room that side has, and stays in the window; the release
+/// of the click that opened it, held a few frames, chooses nothing (#5495 review).
+#[test]
+fn in_a_very_short_window_the_list_still_leaves_its_button_free_and_the_opening_click_chooses_nothing() {
+    use photocraft_color::BlendMode;
+    let mut h = Harness::builder().with_size(egui::vec2(400.0, 110.0)).build_ui_state(
+        |ui, mode: &mut BlendMode| {
+            ui.add_space(40.0);
+            let opts: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.iter().map(|m| (*m, m.label())).collect();
+            super::dropdown_wheel_hovered(ui, "blend-mode", tl!("Blend Mode"), mode, &opts, 120.0);
+        },
+        BlendMode::Normal,
+    );
+    h.run();
+    let button = h.get_by_role(egui::accesskit::Role::ComboBox).rect();
+    let at = button.center();
+    h.hover_at(at);
+    h.run();
+    for (pressed, frames) in [(true, 6), (false, 4)] {
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        h.run_steps(frames);
+    }
+    let list = open_list(&h);
+    assert!(!list.intersects(button.shrink(1.0)), "the list {list:?} leaves the button {button:?} free");
+    assert!(list.top() >= 0.0 && list.bottom() <= 110.0, "the list {list:?} is in the window");
+    assert_eq!(*h.state(), BlendMode::Normal, "the click chose nothing");
 }
 
 const MODES: [(usize, &str); 4] = [(0, "Normal"), (1, "Dissolve"), (2, "Darken"), (3, "Multiply")];
@@ -1441,4 +1964,200 @@ fn the_wheel_leaves_a_plain_dropdown_alone() {
     let mut h = mode_dropdown(false);
     wheel(&mut h, egui::MouseWheelUnit::Line, egui::vec2(0.0, -1.0), Modifiers::NONE);
     assert_eq!(*h.state(), 0);
+}
+
+#[test]
+fn brush_picker_footer_slider_stays_inside_the_dragged_height() {
+    use egui::vec2;
+    use egui_kittest::Harness;
+    let size = vec2(crate::brush_picker::DEFAULT_SIZE[0], crate::brush_picker::DEFAULT_SIZE[1]);
+    let mut h = Harness::builder().with_size(vec2(600.0, 700.0)).build_ui_state(
+        |ui, height: &mut f32| {
+            let mut brush = photocraft_engine::BrushSettings::default();
+            let mut list = crate::brush_picker::list_state();
+            *height = ui.scope(|ui| crate::brush_picker::body(ui, &mut brush, &[], None, &mut list, size)).response.rect.height();
+        },
+        0.0,
+    );
+    h.run();
+    assert!((*h.state() - size.y).abs() < 0.5, "picker {} tall for a {} drag", h.state(), size.y);
+}
+
+/// The middle of an overflowing menu's lower scroll arrow, from the menu's laid-out rect.
+fn lower_menu_arrow(menu: egui::Rect) -> egui::Pos2 {
+    let half = super::dropdown::MENU_ARROW_HEIGHT / 2.0;
+    egui::pos2(menu.left() + half, menu.bottom() - half)
+}
+
+/// #2091: a menu taller than the window shows scroll arrows; hovering the lower one scrolls
+/// it, and a short menu gets none.
+#[test]
+fn overflowing_menus_get_scroll_arrows_that_scroll_on_hover() {
+    // (rows, overflowing, scroll offset, the menu's rect)
+    type S = (usize, bool, f32, egui::Rect);
+    let run = |rows: usize| {
+        let mut h = Harness::builder().with_size(egui::vec2(220.0, 300.0)).build_ui_state(
+            |ui, s: &mut S| {
+                let id = ui.scope_id().with("menu_scroll");
+                super::menu_scroll(ui, |ui| {
+                    for i in 0..s.0 {
+                        ui.label(format!("Item {i}"));
+                    }
+                });
+                s.1 = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+                s.2 = ui.data(|d| d.get_temp::<f32>(id.with("offset"))).unwrap_or(0.0);
+                s.3 = ui.min_rect();
+            },
+            (rows, false, 0.0, egui::Rect::NOTHING),
+        );
+        h.run_steps(3);
+        h
+    };
+    let short = run(3);
+    assert!(!short.state().1, "a short menu has no arrows");
+    let mut long = run(80);
+    assert!(long.state().1, "a long menu overflows");
+    assert_eq!(long.state().2, 0.0);
+    let below = lower_menu_arrow(long.state().3);
+    long.event(egui::Event::PointerMoved(below));
+    long.run_steps(10);
+    assert!(long.state().2 > 0.0, "hovering the lower arrow scrolls down");
+}
+
+/// #2091: the step a hovered arrow leaves for the next frame isn't taken when a menu closed
+/// while hovering it opens again.
+#[test]
+fn a_reopened_menu_takes_no_stale_scroll_step() {
+    // (shown, scroll offset, the menu's rect)
+    type S = (bool, f32, egui::Rect);
+    let mut h = Harness::builder().with_size(egui::vec2(220.0, 300.0)).build_ui_state(
+        |ui, s: &mut S| {
+            let id = ui.scope_id().with("menu_scroll");
+            if s.0 {
+                super::menu_scroll(ui, |ui| {
+                    for i in 0..80 {
+                        ui.label(format!("Item {i}"));
+                    }
+                });
+                s.2 = ui.min_rect();
+            }
+            s.1 = ui.data(|d| d.get_temp::<f32>(id.with("offset"))).unwrap_or(0.0);
+        },
+        (true, 0.0, egui::Rect::NOTHING),
+    );
+    h.run_steps(3);
+    h.event(egui::Event::PointerMoved(lower_menu_arrow(h.state().2)));
+    h.run_steps(3);
+    let offset = h.state().1;
+    assert!(offset > 0.0, "hovering the lower arrow scrolls down");
+    h.state_mut().0 = false;
+    h.run();
+    h.state_mut().0 = true;
+    h.event(egui::Event::PointerGone);
+    h.run();
+    assert_eq!(h.state().1, offset, "the reopened menu stays where it was left");
+}
+
+/// #2091: an overflowing menu's scroll arrows are as wide as its rows, so they don't widen the
+/// menu to the whole width it is offered.
+#[test]
+fn menu_scroll_arrows_do_not_widen_the_menu() {
+    // (overflowing, width of the menu)
+    type S = (bool, f32);
+    let mut h = Harness::builder().with_size(egui::vec2(600.0, 300.0)).build_ui_state(
+        |ui, s: &mut S| {
+            let id = ui.scope_id().with("menu_scroll");
+            super::menu_scroll(ui, |ui| {
+                for i in 0..80 {
+                    ui.label(format!("Item {i}"));
+                }
+            });
+            s.0 = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+            s.1 = ui.min_rect().width();
+        },
+        (false, 0.0),
+    );
+    h.run_steps(4);
+    assert!(h.state().0, "the menu overflows");
+    assert!(h.state().1 < 200.0, "the arrows follow the rows' width, not the 600 pt window: {}", h.state().1);
+}
+
+/// #2091: in a short window, between the shortest menu and that plus its arrows, an overflowing
+/// menu's arrows come out of the room rather than being added under it, so the lower arrow stays
+/// on screen. A window shorter than a menu's minimum gets a menu of the minimum height, arrows
+/// included.
+#[test]
+fn menu_scroll_arrows_stay_inside_a_short_window() {
+    // (overflowing, the menu's rect)
+    type S = (bool, egui::Rect);
+    let run = |height: f32| {
+        let mut h = Harness::builder().with_size(egui::vec2(220.0, height)).build_ui_state(
+            |ui, s: &mut S| {
+                let id = ui.scope_id().with("menu_scroll");
+                super::menu_scroll(ui, |ui| {
+                    for i in 0..80 {
+                        ui.label(format!("Item {i}"));
+                    }
+                });
+                s.0 = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+                s.1 = ui.min_rect();
+            },
+            (false, egui::Rect::NOTHING),
+        );
+        h.run_steps(4);
+        let screen = h.ctx.content_rect();
+        (h.state().0, h.state().1, screen)
+    };
+    // The room is 150 - 22 (the popup frame and edge gaps) = 128 pt: more than the shortest menu,
+    // less than it plus both 14 pt arrows.
+    let (overflow, menu, screen) = run(150.0);
+    assert!(overflow, "the menu overflows and shows its arrows");
+    assert!(menu.top() >= screen.top(), "the upper arrow is on screen: {menu:?} in {screen:?}");
+    assert!(menu.bottom() <= screen.bottom(), "the lower arrow is on screen: {menu:?} in {screen:?}");
+    assert!(menu.height() <= 128.5, "the menu, arrows included, fits the room: {}", menu.height());
+    let (overflow, menu, _) = run(60.0);
+    assert!(overflow, "a tiny window's menu overflows too");
+    let min = super::dropdown::MENU_MIN_HEIGHT;
+    assert!((menu.height() - min).abs() < 0.5, "a tiny window's menu is the minimum height, arrows included: {}", menu.height());
+}
+
+/// [`MODES`] in a wheel dropdown whose list draws a line above each option `starts_group` picks,
+/// opened: the open list's rect and each option's row in it.
+fn open_grouped_modes(starts_group: fn(&usize) -> bool) -> (egui::Rect, Vec<egui::Rect>) {
+    let mut h = Harness::builder().with_size(egui::vec2(300.0, 300.0)).build_ui_state(
+        move |ui, selected: &mut usize| {
+            super::dropdown_wheel_grouped(ui, "blend-mode", tl!("Blend Mode"), selected, &MODES, 120.0, starts_group);
+        },
+        0,
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::ProMedium);
+    h.run();
+    h.get_by_role(egui::accesskit::Role::ComboBox).click();
+    h.run_steps(4);
+    let list = h.ctx.memory(|m| m.layer_ids().filter(|l| l.order == egui::Order::Foreground).find_map(|l| m.area_rect(l.id)));
+    let Some(list) = list else { panic!("the list is open") };
+    let rows = MODES.iter().map(|(_, l)| h.get_all_by_label(l).map(|n| n.rect()).rfind(|r| list.contains_rect(*r)).unwrap_or(egui::Rect::NOTHING)).collect();
+    (list, rows)
+}
+
+/// The gaps between consecutive rows of an open list.
+fn row_gaps(rows: &[egui::Rect]) -> Vec<f32> {
+    rows.windows(2).map(|w| w[1].top() - w[0].bottom()).collect()
+}
+
+/// A grouped dropdown draws a line above each option starting a group, never above the first one,
+/// and the lines take no width: the list is as wide as without them (#5532).
+#[test]
+fn a_grouped_dropdown_list_draws_a_line_above_each_group_and_keeps_its_width() {
+    let (plain_list, plain) = open_grouped_modes(|_| false);
+    let plain_gaps = row_gaps(&plain);
+    let (lo, hi) = plain_gaps.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), g| (lo.min(*g), hi.max(*g)));
+    assert!(hi - lo < 1.0, "no groups, even row gaps: {plain_gaps:?}");
+    // Darken (index 2) starts a group; so does Normal, the first option, which never gets a line.
+    let (list, rows) = open_grouped_modes(|i| matches!(*i, 0 | 2));
+    let gaps = row_gaps(&rows);
+    assert!((gaps[0] - lo).abs() < 0.5 && (gaps[2] - lo).abs() < 0.5, "only Dissolve/Darken is wider: {gaps:?}");
+    assert!(gaps[1] > lo + 2.0, "a line between Dissolve and Darken: {gaps:?}");
+    assert!((rows[0].top() - plain[0].top()).abs() < 0.5, "no line above the first row: {rows:?} vs {plain:?}");
+    assert_eq!(list.width(), plain_list.width(), "the line doesn't widen the list");
 }

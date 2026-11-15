@@ -1,8 +1,8 @@
 //! `import_file` parses a PSD/PSB from the open file (channel data read as it is decoded) and must
 //! open the same document, with the same warnings, as importing the file's bytes.
 
+use craft_psd::testgen;
 use photocraft_io::{ImportResult, import, import_file};
-use photocraft_psd::testgen;
 use photocraft_raster::Interrupt;
 
 struct TempDir(std::path::PathBuf);
@@ -107,7 +107,7 @@ fn import_file_reads_other_formats_whole() {
 fn import_file_fails_cleanly() {
     let dir = TempDir::new("fail");
     assert!(open("missing.psd", &dir.0.join("missing.psd")).is_err());
-    let bytes = testgen::small(photocraft_psd::Version::Psd, photocraft_psd::Compression::Rle).to_bytes().unwrap();
+    let bytes = testgen::small(craft_psd::Version::Psd, craft_psd::Compression::Rle).to_bytes().unwrap();
     // Cut inside the layer records, inside the channel data, and inside the merged image.
     for cut in [10, 60, bytes.len() / 2, bytes.len() - 5] {
         let name = format!("cut{cut}.psd");
@@ -125,7 +125,7 @@ fn import_file_fails_cleanly() {
 #[test]
 fn a_cancelled_import_file_reports_cancelled() {
     let dir = TempDir::new("cancel");
-    let bytes = testgen::small(photocraft_psd::Version::Psd, photocraft_psd::Compression::Zip).to_bytes().unwrap();
+    let bytes = testgen::small(craft_psd::Version::Psd, craft_psd::Compression::Zip).to_bytes().unwrap();
     let path = dir.write("c.psd", &bytes);
     let cancel = || true;
     let ctl = Interrupt::cancel_only(&cancel);
@@ -136,7 +136,7 @@ fn a_cancelled_import_file_reports_cancelled() {
 /// its drive goes away) fails the open: no layer is left empty for a save to lose.
 #[test]
 fn a_read_failing_while_layers_decode_fails_the_open() {
-    use photocraft_psd::ReadAt;
+    use craft_psd::ReadAt;
     /// The file's bytes, failing every read of channel data (as a dropped network share or a
     /// truncated file would) except the 2-byte compression fields the parse reads.
     struct Failing {
@@ -147,18 +147,18 @@ fn a_read_failing_while_layers_decode_fails_the_open() {
         fn len(&self) -> u64 {
             self.bytes.len() as u64
         }
-        fn read_at(&self, offset: u64, buf: &mut [u8]) -> photocraft_psd::Result<()> {
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> craft_psd::Result<()> {
             let end = offset + buf.len() as u64;
             if self.data.iter().any(|&(a, b)| offset < b && end > a) {
-                return Err(photocraft_psd::PsdError::Read("the drive went away".into()));
+                return Err(craft_psd::PsdError::Read("the drive went away".into()));
             }
             self.bytes.as_slice().read_at(offset, buf)
         }
     }
-    for c in [photocraft_psd::Compression::Rle, photocraft_psd::Compression::Raw, photocraft_psd::Compression::Zip] {
-        let file = testgen::layered(photocraft_psd::Version::Psd, photocraft_psd::ColorMode::Rgb, 8, c);
+    for c in [craft_psd::Compression::Rle, craft_psd::Compression::Raw, craft_psd::Compression::Zip] {
+        let file = testgen::layered(craft_psd::Version::Psd, craft_psd::ColorMode::Rgb, 8, c);
         let bytes = file.to_bytes().unwrap();
-        let lazy = photocraft_psd::PsdFile::from_source(photocraft_psd::Source::new(bytes.clone())).unwrap();
+        let lazy = craft_psd::PsdFile::from_source(craft_psd::Source::new(bytes.clone())).unwrap();
         let data: Vec<(u64, u64)> = lazy
             .layers()
             .iter()
@@ -170,7 +170,7 @@ fn a_read_failing_while_layers_decode_fails_the_open() {
         assert!(!data.is_empty());
         // Opening the same file whole succeeds: only the failed reads fail the open.
         assert!(import("x.psd", &bytes).is_ok());
-        let r = photocraft_io::import_source_for_open_with("x.psd", photocraft_psd::Source::new(Failing { bytes, data }), &Interrupt::NONE);
+        let r = photocraft_io::import_source_for_open_with("x.psd", craft_psd::Source::new(Failing { bytes, data }), &Interrupt::NONE);
         match r {
             Err(photocraft_io::IoError::Read(msg)) => assert!(msg.contains("the drive went away"), "{c:?}: {msg}"),
             r => panic!("{c:?}: the open didn't fail: {:?}", r.map(|(r, damaged)| (r.warnings, damaged))),

@@ -8,7 +8,7 @@ use rayon::prelude::*;
 
 use super::{
     ColorMode, Document, EngineError, Intent, PixelFormat, Profile, Result, SampleType, Surface, Transform, cms_err, convert_color, convert_document,
-    convert_layer_colors, convert_surface, document_profile, space_mode,
+    convert_layer_colors, convert_style_colors, convert_surface, document_profile, space_mode,
 };
 
 const TILE_PIXELS: u128 = (TILE_SIZE * TILE_SIZE) as u128;
@@ -103,7 +103,7 @@ fn quantize(value: f32, threshold: f64) -> u8 {
 fn surface(s: &Surface, to: PixelFormat, t: &Transform, bounds: Rect) -> Result<Surface> {
     let ds = to.channels();
     let mut converted_default = [0.0; 16];
-    t.convert_f32(&s.default_pixel(), s.channels(), &mut converted_default[..ds], ds, true);
+    t.convert_f32(&s.default_pixel(), s.channels(), &mut converted_default[..ds], ds, true).map_err(super::cms_err)?;
     let mut out = Surface::with_default(to, &converted_default[..ds]);
     let tiles = dither_tiles(s, bounds).par_iter().map(|c| dither_tile(s, &out, t, bounds, *c).map(|tile| (*c, Arc::new(tile)))).collect::<Result<Vec<_>>>()?;
     out.put_tiles(tiles);
@@ -135,7 +135,7 @@ fn dither_tile(s: &Surface, out: &Surface, t: &Transform, bounds: Rect, c: TileC
         for (d, s) in input.iter_mut().zip(sp).take(ni) {
             *d = f32::from(*s) / 255.0;
         }
-        t.eval_fast(&input[..ni], &mut output[..no]);
+        t.eval_fast(&input[..ni], &mut output[..no]).map_err(super::cms_err)?;
         // The hash can return 1.0; recenter its 65536 bins strictly inside (0, 1).
         let threshold = (f64::from(photocraft_color::dither_noise(x, y)) * 65535.0 + 0.5) / 65536.0;
         for (d, value) in dp.iter_mut().zip(output).take(no) {
@@ -197,6 +197,7 @@ pub(super) fn convert(doc: &mut Document, dst: &Profile, intent: Intent, bpc: bo
     for layer in &mut doc.layers {
         convert_layer_colors(layer, &mut |c| convert_color(c, from, to_mode, &t));
     }
+    convert_style_colors(&mut doc.text_styles, &mut |c| convert_color(c, from, to_mode, &t));
     doc.mode = to_mode;
     doc.icc_profile = Some(dst.to_bytes());
     doc.color_table = None;

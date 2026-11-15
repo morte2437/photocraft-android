@@ -12,7 +12,7 @@
 | `photocraft-type.jpg` | PhotoCraft UI screenshot (offscreen snapshot) with *Among the Sierra Nevada, California*, Albert Bierstadt, 1868 | Artwork: public domain, [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Albert_Bierstadt_-_Among_the_Sierra_Nevada,_California_-_Google_Art_Project.jpg). UI: this project. |
 | `photocraft-export-light.jpg` | PhotoCraft UI screenshot (offscreen snapshot) with *The Kiss*, Gustav Klimt, 1907–1908 | Artwork: public domain, [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Gustav_Klimt_016.jpg). UI: this project. |
 
-Screenshots must use famous public-domain artwork (or content made in the app), never personal photos.
+Screenshots must use famous public-domain artwork (or content made in the app), never personal photos. Only images the README or a doc displays live here (a doc's own before/after comparison included); screenshots that only show a PR's change go in its PR description.
 
 # Other bundled data
 

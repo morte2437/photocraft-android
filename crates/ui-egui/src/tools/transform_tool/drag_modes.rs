@@ -366,8 +366,28 @@ pub(crate) fn apply_drag(s: &mut TransformSession, g: Gesture, p: [f64; 2], mods
                 }
             }
             if corner && !mods.shift {
-                let k = ku.abs().max(kv.abs());
-                (ku, kv) = (k * ku.signum(), k * kv.signum());
+                // The corner follows the pointer's projection onto the on-screen diagonal, the
+                // straight line from the anchor to the dragged corner in canvas pixels (#11096).
+                // The projected point is mapped back into the box's unit square, where it lies on
+                // that square's diagonal, and the whole box scales by that factor about the
+                // anchor; so it also holds for a distorted quad. Past the anchor `k` is negative
+                // and the box flips.
+                let (hu, hv) = (if mu.0 { 0.0 } else { 1.0 }, if mv.0 { 0.0 } else { 1.0 });
+                let (ax, ay) = h.apply(au, av);
+                let (cx, cy) = h.apply(hu, hv);
+                let (dx, dy) = (cx - ax, cy - ay);
+                let len2 = dx * dx + dy * dy;
+                let k = if len2 > 1e-12 {
+                    let t = ((p[0] - ax) * dx + (p[1] - ay) * dy) / len2;
+                    match inv.apply(ax + t * dx, ay + t * dy) {
+                        (pu, _) if (hu - au).abs() >= (hv - av).abs() => (pu - au) / (hu - au),
+                        (_, pv) => (pv - av) / (hv - av),
+                    }
+                } else {
+                    1.0
+                };
+                let k = if k.is_finite() { k } else { 1.0 };
+                (ku, kv) = (k, k);
             }
             let r = [au - au * ku, av - av * kv, au + (1.0 - au) * ku, av + (1.0 - av) * kv];
             let map = |a: f64, b: f64| {

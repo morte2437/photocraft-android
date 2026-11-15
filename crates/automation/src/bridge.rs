@@ -4,7 +4,13 @@
 //! dropped before its reply — or before a call, once the connection has been
 //! idle long enough that the app (which closes idle control connections after
 //! [`IO_TIMEOUT`](crate::security::IO_TIMEOUT)) may already have closed it.
+//!
+//! Each connection authenticates with the challenge handshake (NV-6): the client connects to
+//! the literal loopback address it was given (never a name lookup that may pick another
+//! listener) and the server must prove it holds the control token before the client sends its
+//! own proof. The token itself is never sent, so a process that took the port gets nothing.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -15,7 +21,9 @@ use tokio::sync::Mutex;
 
 use crate::AutomationError;
 use crate::budgets::MAX_RESPONSE_BYTES;
-use crate::security::{AUTH_METHOD, IO_TIMEOUT, MAX_REQUEST_BYTES, validate_token};
+use crate::security::{
+    AUTH_METHOD, CHALLENGE_METHOD, IO_TIMEOUT, MAX_REQUEST_BYTES, ProofRole, generate_nonce, handshake_proof, is_hex256, proof_matches, validate_token,
+};
 
 type Conn = (BufReader<tokio::net::tcp::OwnedReadHalf>, tokio::net::tcp::OwnedWriteHalf);
 
@@ -35,6 +43,8 @@ const NO_REPLY_CAUSES: &str =
 
 pub struct BridgeClient {
     addr: String,
+    /// Where to connect: `addr` parsed, with `localhost` taken as 127.0.0.1.
+    socket: SocketAddr,
     token: String,
     conn: Mutex<Option<(Conn, Instant)>>,
     next_id: AtomicU64,
@@ -48,13 +58,11 @@ impl BridgeClient {
     pub fn new(addr: impl Into<String>, token: impl Into<String>) -> Result<Self, AutomationError> {
         let addr = addr.into();
         let token = token.into();
-        let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(&addr);
-        if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "::1") {
-            return Err(AutomationError::BadRequest(format!("bridge address must be loopback, got `{addr}`")));
-        }
+        let socket = loopback_socket(&addr)?;
         validate_token(&token)?;
         Ok(BridgeClient {
             addr,
+            socket,
             token: token.to_ascii_lowercase(),
             conn: Mutex::new(None),
             next_id: AtomicU64::new(1),
@@ -126,7 +134,7 @@ impl BridgeClient {
             *guard = None;
         }
         if guard.is_none() {
-            let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&self.addr))
+            let s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(self.socket))
                 .await
                 .map_err(|_| Failure::NotSent(format!("timed out connecting to {}", self.addr)))?
                 .map_err(|e| {
@@ -137,8 +145,7 @@ impl BridgeClient {
                 })?;
             let (r, w) = s.into_split();
             let mut conn = (BufReader::new(r), w);
-            let auth_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let auth = tokio::time::timeout(Duration::from_secs(5), exchange(&mut conn, auth_id, AUTH_METHOD, &json!({"token": self.token})))
+            let auth = tokio::time::timeout(Duration::from_secs(5), self.authenticate(&mut conn))
                 .await
                 .map_err(|_| Failure::NotSent("control authentication timed out".into()))?
                 .map_err(|e| Failure::NotSent(e.to_string()))?;
@@ -175,6 +182,51 @@ impl BridgeClient {
             Err(_) => Err(Failure::TimedOut(())),
         }
     }
+}
+
+impl BridgeClient {
+    /// Challenge authentication on a fresh connection. The server must prove it holds the token
+    /// before the client sends its own proof; the token itself is never sent (NV-6).
+    /// Outer `Err` = transport failure; inner = refused.
+    async fn authenticate(&self, conn: &mut Conn) -> Result<Result<(), AutomationError>, AutomationError> {
+        let client_nonce = generate_nonce()?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let challenge = match exchange(conn, id, CHALLENGE_METHOD, &json!({"clientNonce": client_nonce})).await? {
+            Ok(challenge) => challenge,
+            Err(AutomationError::App(e)) => {
+                return Ok(Err(AutomationError::Bridge(format!(
+                    "{} refused challenge authentication ({e}): it is not PhotoCraft, or a PhotoCraft too old to support it (update the app); the control token was not sent",
+                    self.addr
+                ))));
+            }
+            Err(e) => return Ok(Err(e)),
+        };
+        let field = |key: &str| challenge.get(key).and_then(Value::as_str).filter(|v| is_hex256(v));
+        let server_nonce = match (field("serverNonce"), field("serverProof")) {
+            (Some(nonce), Some(proof)) if proof_matches(&self.token, ProofRole::Server, &client_nonce, nonce, proof) => nonce,
+            _ => {
+                return Ok(Err(AutomationError::Bridge(format!(
+                    "{} did not prove it holds this control token: the token does not match the app's, or the listener is not that PhotoCraft app; the control token was not sent",
+                    self.addr
+                ))));
+            }
+        };
+        let proof = handshake_proof(&self.token, ProofRole::Client, &client_nonce, server_nonce)?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        Ok(exchange(conn, id, AUTH_METHOD, &json!({"proof": proof})).await?.map(|_| ()))
+    }
+}
+
+/// The literal loopback socket address for `addr`: `127.0.0.1:<port>` or `[::1]:<port>`, with
+/// `localhost:<port>` meaning 127.0.0.1, the address the app binds. The name is never looked up,
+/// since a lookup may return `[::1]` first and reach another process listening there (NV-6).
+fn loopback_socket(addr: &str) -> Result<SocketAddr, AutomationError> {
+    let refuse = || AutomationError::BadRequest(format!("bridge address must be loopback `127.0.0.1:<port>` or `[::1]:<port>`, got `{addr}`"));
+    let socket = match addr.strip_prefix("localhost:") {
+        Some(port) => SocketAddr::from((Ipv4Addr::LOCALHOST, port.parse::<u16>().map_err(|_| refuse())?)),
+        None => addr.parse::<SocketAddr>().map_err(|_| refuse())?,
+    };
+    if socket.ip() == IpAddr::V4(Ipv4Addr::LOCALHOST) || socket.ip() == IpAddr::V6(Ipv6Addr::LOCALHOST) { Ok(socket) } else { Err(refuse()) }
 }
 
 /// How a single attempt failed, deciding the retry and the wording above.
@@ -254,6 +306,17 @@ mod tests {
     fn the_call_timeout_stays_below_the_app_reply_deadline() {
         // At or above the app's 60s deadline, callers would see their own cutoff first.
         assert!(DEFAULT_CALL_TIMEOUT < Duration::from_secs(60));
+    }
+
+    /// NV-6: `localhost` is the IPv4 loopback the app binds, never a name lookup.
+    #[test]
+    fn bridge_addresses_are_literal_loopback_sockets() {
+        assert_eq!(loopback_socket("localhost:7878").unwrap(), SocketAddr::from((Ipv4Addr::LOCALHOST, 7878)));
+        assert_eq!(loopback_socket("127.0.0.1:7878").unwrap(), SocketAddr::from((Ipv4Addr::LOCALHOST, 7878)));
+        assert_eq!(loopback_socket("[::1]:7878").unwrap(), SocketAddr::from((Ipv6Addr::LOCALHOST, 7878)));
+        for bad in ["10.0.0.5:7878", "127.0.0.2:7878", "localhost", "localhost:", "localhost:99999", "::1:7878", "example.com:7878", "127.0.0.1"] {
+            assert!(loopback_socket(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

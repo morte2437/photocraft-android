@@ -22,7 +22,7 @@ pub const PSD_TOOLS_COMMIT: &str = "96eb134c17b2c65edf4c4151c0f00b802ada86c2";
 /// https://github.com/Agamnentzar/ag-psd (MIT): `test/` (master, 2026-07-02).
 pub const AG_PSD_COMMIT: &str = "387049670cb89b88fb8fe1b7c01aeacf98dd2e3b";
 /// https://github.com/tbraun96/heic-rs (MIT OR Apache-2.0): `tests/fixtures` at the v0.1.1 tag, the
-/// version photocraft-heif pins (2026-09-12).
+/// version first pinned (2026-09-12); craft-heif now pins 0.1.4.
 pub const HEIC_RS_COMMIT: &str = "4f0d4df474c773dfc3b14fa80e7219be6898866e";
 /// https://github.com/bigcat88/pillow_heif (BSD-3-Clause): `tests/images` (master, 2026-09-25).
 pub const PILLOW_HEIF_COMMIT: &str = "b16be1196dfa465a342d68894696e685ca3655cb";
@@ -268,7 +268,7 @@ pub const AFFINITY: PinnedCorpus = PinnedCorpus {
     },
 };
 /// Photoshop Actions files (`.atn`) from public repositories under permissive licences, the
-/// real-file oracles of `photocraft-psd::atn` and the engine's `.atn` import (2026-10-12).
+/// real-file oracles of `craft-psd::atn` and the engine's `.atn` import (2026-10-12).
 /// https://github.com/sbaril/Photoshop-Scripts (MIT): `Actions/`.
 pub const SBARIL_COMMIT: &str = "622493c9c617c9d2ff38500e8e512c0ad421eed9";
 /// https://github.com/bjango/Bjango-Actions (BSD, `Help/License.md`): three sets at the root.

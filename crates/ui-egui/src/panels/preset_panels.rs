@@ -18,11 +18,15 @@ use crate::PhotocraftApp;
 use crate::state::Tool;
 use crate::theme::Tokens;
 
+mod clone_offsets;
 mod panels;
 
+pub use clone_offsets::{clone_mapping_at, clone_sample_point};
+pub(crate) use clone_offsets::{clone_offset_edit, clone_offset_readout, remember_clone_cursor};
+
 pub use panels::{
-    clone_sample_point, clone_source_panel, finish_custom_shape, gradients_panel, patterns_panel, select_tool_preset, shape_picker, shapes_panel, styles_panel,
-    tool_presets_panel, windows,
+    clone_source_panel, finish_custom_shape, gradients_panel, patterns_panel, select_tool_preset, shape_picker, shapes_panel, styles_panel, tool_presets_panel,
+    windows,
 };
 #[cfg(test)]
 use panels::{new_tool_preset_params, tool_id};
@@ -36,6 +40,9 @@ pub struct PresetUi {
     pub shapes: bool,
     pub tool_presets: bool,
     pub clone_source: bool,
+    /// Last clone preview position in its destination document; never restored into another session.
+    #[serde(skip)]
+    pub clone_cursor: Option<(photocraft_doc::DocId, [f64; 2])>,
     /// Thumbnail size per panel (px; the minimum shows a list).
     pub sizes: BTreeMap<String, f32>,
     /// Folders whose open state differs from the default (only the first folder starts open).

@@ -1,8 +1,8 @@
 use crate::common;
 use common::Features;
+use craft_psd::{Compression, PsdFile};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_io::{ExportOptions, export};
-use photocraft_psd::{Compression, PsdFile};
 
 #[test]
 fn empty_layer_and_mask_channels_use_raw_without_a_payload() {

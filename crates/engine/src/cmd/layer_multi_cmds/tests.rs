@@ -176,13 +176,13 @@ fn moves_and_layer_props_report_only_their_area() {
     assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
     s.execute("layer.setProps", json!({"layer": a.0, "opacity": 0.5, "blend": "Multiply"})).unwrap();
     assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
-    // Clipping changes reach the layers around: everything.
+    // Clipping a pixel layer with nothing clipped to it changes only where it draws (#9329).
     s.execute("layer.setProps", json!({"layer": a.0, "clipped": true})).unwrap();
-    assert_eq!(damage(&s), None);
-    // An adjustment layer changes everything beneath it.
+    assert_eq!(damage(&s), Some(Rect::new(15, 7, 25, 17)));
+    // An adjustment layer changes everything beneath it: here the Background, the canvas.
     let adj = s.execute("layer.newAdjustmentLayer.invert", json!({})).unwrap()["layer"].as_u64().unwrap();
     s.execute("layer.setProps", json!({"layer": adj, "visible": false})).unwrap();
-    assert_eq!(damage(&s), None);
+    assert_eq!(damage(&s), Some(doc(&s).bounds()));
     // The Background (opaque everywhere): everything.
     let bg = doc(&s).layers[0].id;
     s.execute("layer.setProps", json!({"layer": bg.0, "opacity": 0.5})).unwrap();
@@ -269,11 +269,11 @@ fn new_layers_that_change_clipping_recomposite_everything() {
     based.layers.insert(under, l);
     assert_eq!(step_damage(&before, &based), None);
     assert_eq!(step_damage(&based, &before), None);
-    // An adjustment reaches every pixel below it.
+    // An adjustment reaches every pixel below it: here the Background, the canvas.
     let mut adjusted = before.clone();
     adjusted.insert_above(None, Layer::new("inv", LayerContent::Adjustment(photocraft_doc::Adjustment::Invert)));
-    assert_eq!(step_damage(&before, &adjusted), None);
-    assert_eq!(step_damage(&adjusted, &before), None);
+    assert_eq!(step_damage(&before, &adjusted), Some(before.bounds()));
+    assert_eq!(step_damage(&adjusted, &before), Some(before.bounds()));
     // Empty layers draw nothing, in any blend mode.
     let mut styled = before.clone();
     let mut l = Layer::raster("styled", styled.pixel_format());
@@ -343,11 +343,11 @@ fn toggling_a_clipped_adjustment_damages_only_its_base() {
         s.execute("layer.setProps", json!({"layer": adj.0, "visible": false})).unwrap();
         assert_eq!(damage(&s), Some(base_rect));
         assert_eq!(patched(&s, &shown), hidden);
-        // Unclipped, the adjustment still reaches the whole canvas.
+        // Unclipped over the Background, the adjustment still reaches the whole canvas.
         s.execute("layer.setProps", json!({"layer": adj.0, "visible": true})).unwrap();
         s.execute("layer.releaseClippingMask", json!({"layer": adj.0})).unwrap();
         s.execute("layer.hideLayers", json!({"layer": adj.0})).unwrap();
-        assert_eq!(damage(&s), None);
+        assert_eq!(damage(&s), Some(doc(&s).bounds()));
     }
 }
 
@@ -393,6 +393,49 @@ fn clipped_adjustment_in_pass_through_clip_base_damages_its_group() {
     before.layers.truncate(3);
     after.layers.truncate(3);
     assert_eq!(step_damage(&before, &after), Some(Rect::new(2, 1, 4, 3)));
+}
+
+/// #9329: hiding the last visible unclipped adjustment in a pass-through group that is a clip
+/// base switches the group from isolated to pass-through rendering, which agrees with the old
+/// pixels outside the layers beneath only up to float rounding, so it damages the group too.
+#[test]
+fn unclipped_adjustment_in_pass_through_clip_base_damages_its_group() {
+    use photocraft_doc::{Adjustment, BlendMode};
+    let solid = |name: &str, r: Rect, blend: BlendMode| {
+        let mut l = Layer::raster(name, PixelFormat::RGBA8);
+        l.surface_mut().unwrap().fill_rect(r, &[0.5, 0.3, 0.7, 0.6]);
+        l.blend = blend;
+        l
+    };
+    let mut before = Document::with_background(
+        "t",
+        photocraft_geom::Size::new(10, 8),
+        photocraft_doc::ColorMode::Rgb,
+        photocraft_doc::SampleType::U8,
+        photocraft_color::Color::WHITE,
+    );
+    before.layers.clear();
+    before.layers.push(solid("bg", Rect::new(0, 0, 2, 2), BlendMode::Normal));
+    let a = Layer::new("A", LayerContent::Adjustment(Adjustment::Invert));
+    let mut g = Layer::group("G", vec![solid("P", Rect::new(2, 1, 4, 3), BlendMode::Normal), a, solid("Q", Rect::new(6, 4, 8, 6), BlendMode::Multiply)]);
+    g.blend = BlendMode::PassThrough;
+    before.layers.push(g);
+    let mut x = solid("X", Rect::new(2, 1, 7, 5), BlendMode::Normal);
+    x.clipped = true;
+    before.layers.push(x);
+    let mut after = before.clone();
+    let LayerContent::Group(g) = &mut after.layers[1].content else { panic!("group") };
+    g.children[1].visible = false;
+    // The layers beneath A (0..4 × 0..3) and the group (2..8 × 1..6).
+    let r = Rect::new(0, 0, 8, 6);
+    assert_eq!(step_damage(&before, &after), Some(r));
+    assert_eq!(step_damage(&after, &before), Some(r));
+    assert!(unchanged_outside(&before, &after, r));
+    // Without the layer clipped to the group it stays pass-through: just the layers beneath.
+    before.layers.truncate(2);
+    after.layers.truncate(2);
+    assert_eq!(step_damage(&before, &after), Some(Rect::new(0, 0, 4, 3)));
+    assert!(unchanged_outside(&before, &after, Rect::new(0, 0, 4, 3)));
 }
 
 /// #2883 (P8/P9): a duplicate shares the source's tiles (no pixel copy) and recomposites only
@@ -586,9 +629,23 @@ fn find_layers_by_name() {
     s.execute("layer.renameLayer", json!({"layer": a.0, "name": "Sky photo"})).unwrap();
     s.execute("layer.renameLayer", json!({"layer": b.0, "name": "Photo of sea"})).unwrap();
     assert_eq!(doc(&s).layer(a).unwrap().name, "Sky photo");
-    let r = s.execute("select.findLayers", json!({"name": "PHOTO"})).unwrap();
-    assert_eq!(r["selected"], json!([a.0, b.0]));
-    assert!(s.execute("select.findLayers", json!({"name": "nothing"})).is_err());
+    // #10884: Find Layers filters the Layers panel by Name and leaves the selection alone.
+    s.execute("layer.select", json!({"layer": a.0})).unwrap();
+    let r = s.execute("select.findLayers", json!({"name": " PHOTO "})).unwrap();
+    assert_eq!(r["selected"], json!([a.0, b.0]), "the matching layers, trimmed and ignoring case");
+    assert_eq!(r["layerFilter"], json!({"by": "name", "name": " PHOTO "}), "the app sets the Name text as given");
+    assert_eq!(s.active().unwrap().selected_layers(), [a], "the selection is unchanged");
+    let r = s.execute("select.findLayers", json!({"name": "nothing"})).unwrap();
+    assert_eq!(r["selected"], json!([]), "no match lists nothing and is no error");
+    let all: Vec<u64> = doc(&s).walk().into_iter().map(|(_, _, l)| l.id.0).collect();
+    for blank in ["", "  "] {
+        let r = s.execute("select.findLayers", json!({"name": blank})).unwrap();
+        assert_eq!(r["selected"], json!(all), "a blank name filters nothing, as in the panel: {blank:?}");
+    }
+    let r = s.execute("select.findLayers", json!({})).unwrap();
+    assert_eq!((&r["selected"], &r["layerFilter"]), (&json!([]), &json!({"by": "name"})), "without a name it only switches to Name");
+    assert_eq!(s.active().unwrap().selected_layers(), [a]);
+    assert!(s.execute("select.findLayers", json!({"name": 3})).is_err());
     assert!(s.execute("layer.renameLayer", json!({})).is_err());
 }
 
@@ -1210,13 +1267,314 @@ fn undo_of_clipping_or_channel_exclusion_composites_everything() {
     let _ = rect_layer(&mut s, Rect::new(10, 10, 20, 20));
     let b = rect_layer(&mut s, Rect::new(12, 12, 30, 30));
     select_all(&mut s, &[b]);
-    // Clipping reaches the layers clipped above, outside this layer's bounds.
-    s.execute("layer.setProps", json!({"clipped": true})).unwrap();
+    // #9329: on a pixel layer both are bounded: clipping by the layer (and the clipped layers
+    // above it), channel exclusion by the layer (per pixel where it draws).
+    for p in [json!({"clipped": true}), json!({"channels": [true, false, true]})] {
+        let before = doc(&s).clone();
+        s.execute("layer.setProps", p.clone()).unwrap();
+        let after = doc(&s).clone();
+        s.undo();
+        let r = damage(&s).unwrap_or_else(|| panic!("{p} is bounded"));
+        assert!(r.width() < 100 && unchanged_outside(&after, &before, r), "{p}: {r:?}");
+    }
+    // On a group they change how it composites its children: everything.
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    let g = s.active().unwrap().active_layer.unwrap();
+    assert!(doc(&s).layer(g).unwrap().children().is_some());
+    s.execute("layer.setProps", json!({"layer": g.0, "clipped": true})).unwrap();
     s.undo();
-    assert_eq!(damage(&s), None, "a clipping change recomposites everything");
-    s.execute("layer.setProps", json!({"channels": [true, false, true]})).unwrap();
+    assert_eq!(damage(&s), None, "a group's clipping change recomposites everything");
+    s.execute("layer.setProps", json!({"layer": g.0, "channels": [true, false, true]})).unwrap();
     s.undo();
-    assert_eq!(damage(&s), None, "an excluded-channel change recomposites everything");
+    assert_eq!(damage(&s), None, "a group's excluded-channel change recomposites everything");
+}
+
+/// A new adjustment layer of `kind` (made while `s`'s selection is active, so it masks it).
+fn adjustment(s: &mut Session, kind: &str) -> LayerId {
+    LayerId(s.execute(&format!("layer.newAdjustmentLayer.{kind}"), json!({})).unwrap()["layer"].as_u64().unwrap())
+}
+
+/// Run `id` with `p`, then undo and redo it: each step's damage is bounded, smaller than the
+/// canvas, and covers every pixel it changed (`unchanged_outside`). Returns the step's damage.
+fn bounded_step(s: &mut Session, id: &str, p: serde_json::Value) -> Rect {
+    let before = doc(s).clone();
+    s.execute(id, p).unwrap();
+    let after = doc(s).clone();
+    let canvas = after.bounds();
+    let check = |s: &Session, from: &Document, to: &Document, what: &str| {
+        let r = damage(s).unwrap_or_else(|| panic!("{id} {what}: bounded"));
+        assert!(r.width() * r.height() < canvas.width() * canvas.height(), "{id} {what}: {r:?}");
+        assert!(unchanged_outside(from, to, r), "{id} {what}: {r:?} misses changed pixels");
+        r
+    };
+    let r = check(s, &before, &after, "");
+    s.undo();
+    check(s, &after, &before, "undo");
+    s.redo();
+    check(s, &before, &after, "redo");
+    r
+}
+
+/// #9329, #6533: in a 32-bit document hiding a masked adjustment damages only its mask, over
+/// an opaque Background too. An integer document rounds the whole backdrop after every
+/// visible adjustment layer (#9033), so there it still damages the canvas.
+#[test]
+fn hiding_a_masked_adjustment_damages_only_its_mask() {
+    for depth in [32, 8] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 800, "height": 600, "depth": depth})).unwrap();
+        let c = rect_layer(&mut s, Rect::new(50, 50, 700, 500));
+        s.execute("layer.setProps", json!({"layer": c.0, "opacity": 0.37})).unwrap();
+        let reveal = Rect::new(520, 330, 560, 370);
+        s.execute("select.rect", json!({"x": reveal.x0, "y": reveal.y0, "width": 40, "height": 40})).unwrap();
+        let adj = adjustment(&mut s, "invert");
+        assert!(doc(&s).layer(adj).unwrap().mask.is_some());
+        if depth == 32 {
+            let r = bounded_step(&mut s, "layer.setProps", json!({"layer": adj.0, "visible": false}));
+            assert!(r.contains_rect(&reveal), "{r:?}");
+        } else {
+            s.execute("layer.setProps", json!({"layer": adj.0, "visible": false})).unwrap();
+            assert_eq!(damage(&s), Some(doc(&s).bounds()));
+        }
+    }
+}
+
+/// #9329, #6528: Show Only This Layer, in a document whose only layer that could reach
+/// everywhere was an adjustment, is bounded by where the layers draw.
+#[test]
+fn show_only_with_an_adjustment_is_bounded() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80, "depth": 8, "background": "transparent"})).unwrap();
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(40, 20, 60, 50));
+    s.execute("layer.setProps", json!({"layer": b.0, "opacity": 0.37})).unwrap();
+    let _ = adjustment(&mut s, "invert");
+    let r = bounded_step(&mut s, "layer.showOnly", json!({"layer": a.0}));
+    assert_eq!(r, Rect::new(10, 10, 60, 50));
+}
+
+/// #9329: Bring Forward damages only where the moved layer draws, not the whole canvas.
+#[test]
+fn bring_forward_damages_only_the_moved_layer() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let _b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    let _c = rect_layer(&mut s, Rect::new(60, 60, 70, 70));
+    select_all(&mut s, &[a]);
+    let r = bounded_step(&mut s, "layer.arrange.bringForward", json!({}));
+    assert_eq!(r, Rect::new(10, 10, 30, 30));
+}
+
+/// #9329: Send Backward, its undo and its redo each damage only the moved layer; an
+/// adjustment moving past a layer reaches as far as the layers beneath it at either end.
+#[test]
+fn send_backward_undo_and_redo_are_bounded() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 100, "height": 80, "depth": 8, "background": "transparent"})).unwrap();
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    select_all(&mut s, &[b]);
+    // Either layer of the swapped pair is the one that moved.
+    let r = bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
+    assert!(r == Rect::new(20, 20, 50, 50) || r == Rect::new(10, 10, 30, 30), "{r:?}");
+    let _c = rect_layer(&mut s, Rect::new(60, 60, 70, 70));
+    let adj = adjustment(&mut s, "invert");
+    select_all(&mut s, &[adj]);
+    bounded_step(&mut s, "layer.arrange.sendBackward", json!({}));
+}
+
+/// #9329: a moved group holding a video layer has no bounded damage, as the video layer itself
+/// has none.
+#[test]
+fn bring_forward_on_a_group_holding_a_video_layer_is_unbounded() {
+    let mut s = session(8);
+    let v = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    s.edit("video", |doc, _| {
+        let l = doc.layer_mut(v).unwrap();
+        let frame = l.surface().unwrap().clone();
+        l.video = Some(photocraft_doc::VideoData::new(vec![frame.clone(), frame], 24.0));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.select", json!({"layer": v.0})).unwrap();
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).skip(1).collect::<Vec<_>>(), vec![g, b]);
+    select_all(&mut s, &[g]);
+    s.execute("layer.arrange.bringForward", json!({})).unwrap();
+    assert_eq!(doc(&s).layers.iter().map(|l| l.id).skip(1).collect::<Vec<_>>(), vec![b, g]);
+    assert_eq!(damage(&s), None);
+}
+
+/// #9329: reordering inside a group with a drop shadow damages the shadow too. The moved layer
+/// knocks out the one beneath it, so the group's shape, and with it the shadow, changes.
+#[test]
+fn a_reorder_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(30, 30, 50, 50));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 50, 50));
+    s.edit("knockout", |doc, _| {
+        let l = doc.layer_mut(k).unwrap();
+        l.advanced.knockout = photocraft_doc::Knockout::Shallow;
+        l.fill_opacity = 0.0;
+        Ok(())
+    })
+    .unwrap();
+    select_all(&mut s, &[k, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(doc(&s).layer(g).unwrap().children().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), vec![k, b]);
+    select_all(&mut s, &[k]);
+    let r = bounded_step(&mut s, "layer.arrange.bringForward", json!({}));
+    assert!(r.contains_rect(&Rect::new(30, 30, 50, 50)), "{r:?}");
+}
+
+/// #9329: deleting a layer inside a group with a drop shadow, and adding it back on undo,
+/// damages the shadow too, which reaches past the layer.
+#[test]
+fn adding_or_deleting_a_layer_inside_a_group_with_a_drop_shadow_damages_the_shadow() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    select_all(&mut s, &[k, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    let r = bounded_step(&mut s, "layer.delete", json!({"layer": k.0}));
+    assert!(r.contains_rect(&Rect::new(20, 20, 30, 30)), "{r:?}");
+}
+
+/// A group holding `layers`, with a drop shadow that reaches about 8 px down and right of them.
+fn shadowed_group(s: &mut Session, layers: &[LayerId]) -> LayerId {
+    select_all(s, layers);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+        Ok(())
+    })
+    .unwrap();
+    g
+}
+
+/// [`bounded_step`] for a step that must change canvas pixels, so it can't pass vacuously.
+fn bounded_visible_step(s: &mut Session, id: &str, p: serde_json::Value) -> Rect {
+    let before = photocraft_compose::render(doc(s), doc(s).bounds());
+    let r = bounded_step(s, id, p);
+    assert_ne!(photocraft_compose::render(doc(s), doc(s).bounds()).px, before.px, "{id}: no canvas pixel changed");
+    r
+}
+
+/// #9329: deleting a layer just off the canvas inside a group whose drop shadow reaches onto
+/// it, and adding it back on undo, damages the shadow on the canvas.
+#[test]
+fn deleting_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(-10, 20, -1, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    shadowed_group(&mut s, &[k, b]);
+    bounded_visible_step(&mut s, "layer.delete", json!({"layer": k.0}));
+}
+
+/// #9329: reordering a layer just off the canvas inside a group whose drop shadow reaches onto
+/// it damages the shadow on the canvas. The moved layer knocks out the one beneath it, so the
+/// group's shape, and with it the shadow, changes.
+#[test]
+fn reordering_an_off_canvas_layer_damages_its_group_shadow_on_the_canvas() {
+    let mut s = session(8);
+    let k = rect_layer(&mut s, Rect::new(-9, 25, -1, 35));
+    let b = rect_layer(&mut s, Rect::new(-14, 20, -1, 40));
+    s.edit("knockout", |doc, _| {
+        let l = doc.layer_mut(k).unwrap();
+        l.advanced.knockout = photocraft_doc::Knockout::Shallow;
+        l.fill_opacity = 0.0;
+        Ok(())
+    })
+    .unwrap();
+    shadowed_group(&mut s, &[k, b]);
+    select_all(&mut s, &[k]);
+    bounded_visible_step(&mut s, "layer.arrange.bringForward", json!({}));
+}
+
+/// #9329: unclipping a layer inside a group with a drop shadow exposes its pixels outside its
+/// old base, which moves the group's shadow past the layer; clipping it back, on undo and redo,
+/// too.
+#[test]
+fn clipping_and_unclipping_inside_a_shadowed_group_damages_the_shadow() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(25, 25, 45, 45));
+    s.execute("layer.setProps", json!({"layer": b.0, "clipped": true})).unwrap();
+    shadowed_group(&mut s, &[a, b]);
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": false}));
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": true}));
+}
+
+/// #9329: a property change on a layer inside a group with a drop shadow changes the shadow,
+/// which reaches past the layer.
+#[test]
+fn a_property_change_inside_a_shadowed_group_damages_the_shadow() {
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(20, 20, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(50, 40, 60, 50));
+    shadowed_group(&mut s, &[a, b]);
+    bounded_visible_step(&mut s, "layer.setProps", json!({"layer": a.0, "opacity": 0.3}));
+}
+
+/// #9329: hiding or deleting a layer at the edge of a group with a Gradient Overlay shrinks the
+/// group's frame, which lays the gradient out again over the rest of the group (#4053).
+#[test]
+fn hiding_or_deleting_a_layer_in_a_group_with_a_gradient_overlay_damages_the_group() {
+    use photocraft_doc::{Effect, FxCommon, Gradient};
+    let mut s = session(8);
+    let a = rect_layer(&mut s, Rect::new(10, 10, 30, 30));
+    let b = rect_layer(&mut s, Rect::new(60, 40, 80, 60));
+    select_all(&mut s, &[a, b]);
+    let g = LayerId(s.execute("layer.groupLayers", json!({})).unwrap()["layer"].as_u64().unwrap());
+    s.edit("fx", |doc, _| {
+        doc.layer_mut(g).unwrap().effects.items.push(Effect::GradientOverlay {
+            common: FxCommon::new(photocraft_doc::BlendMode::Normal, 1.0),
+            gradient: Gradient::default(),
+            dither: false,
+            interpolation: None,
+        });
+        Ok(())
+    })
+    .unwrap();
+    let r = bounded_visible_step(&mut s, "layer.setProps", json!({"layer": b.0, "visible": false}));
+    assert!(r.contains_rect(&Rect::new(10, 10, 30, 30)), "{r:?}");
+    s.undo();
+    let r = bounded_visible_step(&mut s, "layer.delete", json!({"layer": b.0}));
+    assert!(r.contains_rect(&Rect::new(10, 10, 30, 30)), "{r:?}");
+}
+
+/// #9329: clipping a layer to the one beneath damages it and the layers clipped to it
+/// (they change base), on undo and redo too.
+#[test]
+fn clipping_a_layer_damages_it_and_the_clipped_run_above() {
+    let mut s = session(8);
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 40, 40));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 60, 50));
+    let c = rect_layer(&mut s, Rect::new(30, 15, 70, 45));
+    s.execute("layer.setProps", json!({"layer": c.0, "clipped": true})).unwrap();
+    let r = bounded_step(&mut s, "layer.setProps", json!({"layer": b.0, "clipped": true}));
+    assert_eq!(r, Rect::new(20, 15, 70, 50));
+}
+
+/// #9329: excluding a channel from a pixel layer's blend damages only where it draws.
+#[test]
+fn excluding_a_channel_damages_only_the_layer() {
+    let mut s = session(8);
+    let _a = rect_layer(&mut s, Rect::new(10, 10, 40, 40));
+    let b = rect_layer(&mut s, Rect::new(20, 20, 60, 50));
+    let r = bounded_step(&mut s, "layer.setProps", json!({"layer": b.0, "channels": [true, false, true]}));
+    assert_eq!(r, Rect::new(20, 20, 60, 50));
 }
 
 #[test]
@@ -1574,4 +1932,273 @@ fn translate_can_carry_the_selection_in_the_same_step() {
         assert!(s.execute("layer.translate", json!({"dx": dx, "selection": "yes"})).is_err(), "dx {dx}: a bad `selection` is an error");
         assert_eq!(state(&s), before, "dx {dx}: and changes nothing");
     }
+}
+
+/// View › Pattern Preview (`"wrap": true`): samples that leave the canvas come back on the
+/// opposite edge, and a move of exactly one canvas is not a history step.
+#[test]
+fn translate_wrap_folds_pixels_back_into_the_canvas() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(0, 1, 1, 2));
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(Rect::new(7, 1, 8, 2), &[0.0, 0.0, 1.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let px = |s: &Session, x, y| doc(s).layer(id).unwrap().surface().unwrap().pixel(x, y);
+    s.execute("layer.translate", json!({"dx": 2, "dy": 0})).unwrap();
+    assert!(px(&s, 9, 1)[2] > 0.9, "without wrap the blue column leaves the canvas");
+    s.undo();
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layer.translate", json!({"dx": 8, "dy": -4, "wrap": true})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "a whole tile is no move");
+    assert!(px(&s, 0, 1)[0] > 0.9, "red stayed");
+    s.execute("layer.translate", json!({"dx": 2, "dy": -1, "wrap": true})).unwrap();
+    let red = px(&s, 2, 0);
+    assert!(red[0] > 0.9 && red[3] > 0.9, "red wrapped onto the row above: {red:?}");
+    let blue = px(&s, 1, 0);
+    assert!(blue[2] > 0.9 && blue[3] > 0.9, "blue wrapped from x=7 to x=1: {blue:?}");
+    assert!(px(&s, 0, 1)[3] < 0.1 && px(&s, 9, 1)[3] < 0.1, "the old and the off-canvas spots are empty");
+    let before = (px(&s, 2, 0), s.active().unwrap().history.past_len());
+    for dx in [1, 0] {
+        assert!(s.execute("layer.translate", json!({"dx": dx, "wrap": "yes"})).is_err(), "dx {dx}: a bad wrap is an error");
+        assert_eq!((px(&s, 2, 0), s.active().unwrap().history.past_len()), before, "dx {dx}: a bad wrap changes nothing");
+    }
+}
+
+/// Pattern Preview folding is only for raster samples. A shape keeps the raw delta, including a
+/// step of -1, and a move of exactly one canvas is history unless every target is raster.
+#[test]
+fn translate_wrap_moves_a_shape_by_the_raw_delta() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [2, 1, 3, 2]})).unwrap()["layer"].as_u64().unwrap());
+    let xy = |s: &Session| {
+        let LayerContent::Shape(sh) = &doc(s).layer(id).unwrap().content else { panic!("shape") };
+        let photocraft_doc::LiveShape::Rect { rect, .. } = sh.live.as_ref().expect("live rect") else { panic!("rect") };
+        [rect[0], rect[1]]
+    };
+    s.execute("layer.translate", json!({"dx": -1, "dy": 0, "wrap": true})).unwrap();
+    assert_eq!(xy(&s), [1.0, 1.0], "dx -1 stays -1, not width-1");
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layer.translate", json!({"dx": 8, "dy": 0, "wrap": true})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "a full canvas still moves a shape");
+    assert_eq!(xy(&s), [9.0, 1.0]);
+
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(0, 0, 1, 1));
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layer.translate", json!({"dx": 8, "dy": -4, "wrap": true})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "raster samples fold back onto themselves");
+    assert!(doc(&s).layer(id).unwrap().surface().unwrap().pixel(0, 0)[0] > 0.9);
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layer.translate", json!({"dx": 8, "dy": 0, "wrap": true})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "a group of only rasters folds away too");
+
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(1, 1, 2, 2));
+    s.execute("layer.layerMask.hideAll", json!({})).unwrap();
+    s.execute("layer.layerMask.linked", json!({"linked": false})).unwrap();
+    s.edit("mask", |doc, _| {
+        doc.layer_mut(id).unwrap().mask.as_mut().unwrap().surface.fill_rect(Rect::new(0, 0, 1, 1), &[1.0]);
+        Ok(())
+    })
+    .unwrap();
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layer.translate", json!({"dx": 8, "dy": 0, "wrap": true, "target": "mask"})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps, "a mask moved alone folds away");
+    assert!(doc(&s).layer(id).unwrap().mask.as_ref().unwrap().surface.sample_channel(0, 0, 0) > 0.9);
+}
+
+/// A contained wrap still leaves samples that started outside the canvas where they are.
+#[test]
+fn translate_wrap_leaves_off_canvas_samples_in_place() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(2, 1, 3, 2));
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(Rect::new(-1, 1, 0, 2), &[0.0, 1.0, 0.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 1, "dy": 0, "wrap": true})).unwrap();
+    let px = |x, y| doc(&s).layer(id).unwrap().surface().unwrap().pixel(x, y);
+    assert!(px(3, 1)[0] > 0.9, "in-canvas red moved right");
+    assert!(px(-1, 1)[1] > 0.9, "off-canvas green stayed");
+    assert!(px(0, 1)[3] < 0.1, "the off-canvas sample did not enter the canvas");
+}
+
+/// Opposite-edge samples wrap by tile copies of each piece, not one buffer of their bounding rect.
+#[test]
+fn translate_wrap_folds_sparse_tiles_on_opposite_edges() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 512, "height": 256, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(0, 0, 1, 1));
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(Rect::new(511, 255, 512, 256), &[0.0, 0.0, 1.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 1, "dy": 1, "wrap": true})).unwrap();
+    let surf = doc(&s).layer(id).unwrap().surface().unwrap();
+    assert!(surf.pixel(1, 1)[0] > 0.9, "red wrapped from the top-left");
+    assert!(surf.pixel(0, 0)[2] > 0.9, "blue wrapped from the bottom-right");
+    assert!(surf.pixel(0, 0)[0] < 0.1 && surf.pixel(511, 255)[3] < 0.1, "the old corners are empty");
+}
+
+/// A 256-pixel wrap on a 300-pixel canvas clones a whole tile; only the destination piece is kept.
+#[test]
+fn translate_wrap_clips_a_tile_aligned_piece_to_its_destination() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 300, "height": 64, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(0, 0, 1, 1));
+    s.edit("paint", |doc, _| {
+        doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(Rect::new(50, 0, 51, 1), &[0.0, 0.0, 1.0, 1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 256, "dy": 0, "wrap": true})).unwrap();
+    let px = |x, y| doc(&s).layer(id).unwrap().surface().unwrap().pixel(x, y);
+    assert!(px(256, 0)[0] > 0.9, "red stayed on-canvas at x+256");
+    assert!(px(6, 0)[2] > 0.9, "blue wrapped from x=50 to x=6");
+    assert!(px(306, 0)[3] < 0.1, "the tile clone did not leak past the canvas");
+    assert!(px(50, 0)[3] < 0.1, "the old blue spot is empty");
+}
+
+/// A linked vector mask on raster wraps with the pixels so it still covers them on the far edge.
+#[test]
+fn translate_wrap_folds_a_linked_vector_mask_with_raster() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(7, 1, 8, 2));
+    s.edit("mask", |doc, _| {
+        doc.layer_mut(id).unwrap().vector_mask = Some(photocraft_doc::VectorMask::new(photocraft_vector::shapes::rect(7.0, 1.0, 1.0, 1.0)));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 1, "dy": 0, "wrap": true})).unwrap();
+    let l = doc(&s).layer(id).unwrap();
+    assert!(l.surface().unwrap().pixel(0, 1)[0] > 0.9, "the sample wrapped");
+    let vm = l.vector_mask.as_ref().unwrap();
+    let left = photocraft_vector::vector_mask_values(vm, Rect::new(0, 1, 1, 2));
+    let right = photocraft_vector::vector_mask_values(vm, Rect::new(7, 1, 8, 2));
+    assert!(left[0] > 0.5, "the mask covers the wrapped sample");
+    assert!(right[0] < 0.5, "the mask left the old edge");
+}
+
+/// A linked raster mask on a shape follows the raw delta, like the shape itself.
+#[test]
+fn translate_wrap_moves_a_shape_mask_by_the_raw_delta() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [2, 1, 3, 2]})).unwrap()["layer"].as_u64().unwrap());
+    s.execute("layer.layerMask.hideAll", json!({})).unwrap();
+    s.edit("mask", |doc, _| {
+        doc.layer_mut(id).unwrap().mask.as_mut().unwrap().surface.fill_rect(Rect::new(2, 1, 3, 2), &[1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 7, "dy": 0, "wrap": true})).unwrap();
+    let l = doc(&s).layer(id).unwrap();
+    let LayerContent::Shape(sh) = &l.content else { panic!("shape") };
+    let photocraft_doc::LiveShape::Rect { rect, .. } = sh.live.as_ref().expect("live rect") else { panic!("rect") };
+    assert_eq!([rect[0], rect[1]], [9.0, 1.0], "the shape kept the raw delta");
+    let mask = &l.mask.as_ref().unwrap().surface;
+    assert!(mask.sample_channel(9, 1, 0) > 0.9, "the mask followed the shape off-canvas");
+    assert!(mask.sample_channel(1, 1, 0) < 0.1, "the mask did not wrap onto the opposite edge");
+}
+
+/// A linked vector mask that already sits outside the canvas stays there; wrapping it in would
+/// reveal pixels the mask was hiding.
+#[test]
+fn translate_wrap_leaves_an_off_canvas_vector_mask_in_place() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = rect_layer(&mut s, Rect::new(1, 1, 2, 2));
+    s.edit("mask", |doc, _| {
+        doc.layer_mut(id).unwrap().vector_mask = Some(photocraft_doc::VectorMask::new(photocraft_vector::shapes::rect(-4.0, 1.0, 1.0, 1.0)));
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 1, "dy": 0, "wrap": true})).unwrap();
+    let vm = doc(&s).layer(id).unwrap().vector_mask.as_ref().unwrap();
+    let outside = photocraft_vector::vector_mask_values(vm, Rect::new(-4, 1, -3, 2));
+    let on_canvas = photocraft_vector::vector_mask_values(vm, Rect::new(1, 1, 2, 2));
+    assert!(outside[0] > 0.5, "the mask stayed off-canvas");
+    assert!(on_canvas[0] < 0.5, "the mask did not fold onto previously hidden pixels");
+}
+
+/// Combine masks wrap as a handful of zone copies; repeating a nudge that crosses the edge must
+/// not double the subpath count every time.
+#[test]
+fn wrap_path_caps_repeated_edge_crossings() {
+    let tile = Rect::new(0, 0, 8, 4);
+    let mut path = photocraft_vector::shapes::rect(7.0, 1.0, 1.0, 1.0);
+    for _ in 0..20 {
+        path = wrap_path(&path, 1, 0, tile);
+    }
+    assert!(path.subpaths.len() <= 8, "wrap copies stay bounded: {}", path.subpaths.len());
+}
+
+/// Shapes keep the raw delta, so a selection carried with them must too: wrapping it would leave
+/// later selection-limited edits on the opposite edge.
+#[test]
+fn translate_wrap_does_not_fold_a_selection_of_shapes() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let a = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [1, 1, 2, 2]})).unwrap()["layer"].as_u64().unwrap());
+    let b = LayerId(s.execute("shape.create", json!({"kind": "rect", "rect": [3, 1, 4, 2]})).unwrap()["layer"].as_u64().unwrap());
+    s.execute("layer.select", json!({"layer": a.0, "mode": "add"})).unwrap();
+    s.execute("select.rect", json!({"x": 1, "y": 1, "width": 3, "height": 1})).unwrap();
+    s.execute("layer.translate", json!({"dx": 7, "dy": 0, "wrap": true, "selection": true})).unwrap();
+    let sel = doc(&s).selection.as_ref().map(|m| m.content_bounds());
+    assert_eq!(sel, Some(Rect::new(8, 1, 11, 2)), "the selection followed the shapes off-canvas");
+    let xy = |id: LayerId| {
+        let LayerContent::Shape(sh) = &doc(&s).layer(id).unwrap().content else { panic!("shape") };
+        let photocraft_doc::LiveShape::Rect { rect, .. } = sh.live.as_ref().expect("live rect") else { panic!("rect") };
+        [rect[0], rect[1]]
+    };
+    assert_eq!(xy(a), [8.0, 1.0]);
+    assert_eq!(xy(b), [10.0, 1.0]);
+}
+
+/// A group that also holds a shape keeps its linked mask on the raw delta, so the mask still
+/// covers the shape after a wrap move.
+#[test]
+fn translate_wrap_does_not_fold_a_mixed_group_mask() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let raster = rect_layer(&mut s, Rect::new(7, 1, 8, 2));
+    s.execute("shape.create", json!({"kind": "rect", "rect": [2, 1, 3, 2]})).unwrap();
+    s.execute("layer.select", json!({"layer": raster.0, "mode": "add"})).unwrap();
+    s.execute("layer.groupLayers", json!({})).unwrap();
+    let g = s.active().unwrap().active_layer.unwrap();
+    s.execute("layer.layerMask.hideAll", json!({})).unwrap();
+    s.edit("mask", |doc, _| {
+        doc.layer_mut(g).unwrap().mask.as_mut().unwrap().surface.fill_rect(Rect::new(7, 1, 8, 2), &[1.0]);
+        Ok(())
+    })
+    .unwrap();
+    s.execute("layer.translate", json!({"dx": 1, "dy": 0, "wrap": true})).unwrap();
+    let mask = &doc(&s).layer(g).unwrap().mask.as_ref().unwrap().surface;
+    assert!(mask.sample_channel(8, 1, 0) > 0.9, "the group mask followed the shape off-canvas");
+    assert!(mask.sample_channel(0, 1, 0) < 0.1, "the group mask did not wrap onto the far edge");
+}
+
+/// Frame geometry is not a tile of samples. A whole-canvas wrap still moves the frame.
+#[test]
+fn translate_wrap_still_moves_a_frame() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 4, "background": "transparent"})).unwrap();
+    let id = LayerId(s.execute("layer.new.frame", json!({"x": 0, "y": 0, "width": 4, "height": 4})).unwrap()["layer"].as_u64().unwrap());
+    let tx = |s: &Session| s.active().unwrap().doc.layer(id).unwrap().frame.as_ref().unwrap().transform.m[4];
+    let before = tx(&s);
+    let steps = s.active().unwrap().history.past_len();
+    s.execute("layer.translate", json!({"dx": 8, "dy": 0, "wrap": true})).unwrap();
+    assert_eq!(s.active().unwrap().history.past_len(), steps + 1, "a framed layer still records a whole-canvas move");
+    assert_eq!(tx(&s), before + 8.0, "the frame kept the raw delta");
 }

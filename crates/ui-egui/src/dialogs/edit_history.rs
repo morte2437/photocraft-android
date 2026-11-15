@@ -105,7 +105,7 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) {
     if let Some(top) = app.ui.dialogs.last() {
         // A shortcut field waiting for keys (Keyboard Shortcuts) records ⌘Z like any other key
         // (#9487); stepping back here undid the click that started the capture.
-        if top.kind != DialogKind::Command || top.fields.get("capture").and_then(Value::as_bool) == Some(true) {
+        if top.kind != DialogKind::Command || crate::prefs_ui::capturing_shortcut(app) {
             return;
         }
         let id = top.id;

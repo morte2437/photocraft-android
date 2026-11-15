@@ -1,8 +1,11 @@
 //! Number keys set opacity (#352): 1 = 10% … 9 = 90%, 0 = 100%; two digits
-//! typed quickly set an exact value (4 then 5 = 45%, 0 then 0 = 0%). With the Brush, Pencil or
-//! Eraser they set the brush's Opacity (⇧: Flow; swapped while airbrush build-up is on); with the Gradient or Paint Bucket their
+//! typed quickly set an exact value (4 then 5 = 45%; 0 then 0 = 100% for the Brush and the Pencil, #11812). With the Brush, Pencil or
+//! Eraser they set the brush's Opacity (⇧: Flow, swapped while airbrush build-up is on; the Pencil has no Flow, so its ⇧
+//! digits set Opacity too, #11967); with the Gradient or Paint Bucket their
 //! Opacity; with tools that have no opacity of their own (Move, the selection tools, Type…) the
-//! active layer's Opacity (⇧: Fill). Tools whose number is a strength or exposure are left alone.
+//! active layer's Opacity (⇧: Fill); with the Background Eraser its Tolerance (#11907). Tools whose
+//! number is a strength or exposure are left alone.
+//! ⌥+digit sets the Smoothing of the tools that show it (Brush, Pencil, Eraser; #11892).
 
 use egui::{Event, Key};
 use serde_json::json;
@@ -25,6 +28,8 @@ enum Target {
     },
     /// The Gradient / Paint Bucket opacity option.
     ToolOpacity,
+    /// The Background Eraser's Tolerance option.
+    BgTolerance,
     /// The active layer's opacity (⇧: fill).
     Layer,
     None,
@@ -35,6 +40,7 @@ fn target(tool: Tool) -> Target {
         Tool::Brush | Tool::Eraser | Tool::CloneStamp | Tool::HistoryBrush => Target::Brush { flow: true },
         Tool::Pencil => Target::Brush { flow: false },
         Tool::Gradient | Tool::PaintBucket => Target::ToolOpacity,
+        Tool::BackgroundEraser => Target::BgTolerance,
         // Their options-bar number is a strength, exposure or tolerance, not this opacity.
         t if t.is_brushlike() || t == Tool::MagicEraser => Target::None,
         _ => Target::Layer,
@@ -57,11 +63,38 @@ fn digit(k: Key) -> Option<u8> {
     })
 }
 
-/// Consumes this frame's unmodified (or ⇧) digit presses and applies them.
+/// The tools whose options bar has a Smoothing field, which ⌥+digit sets (#11892).
+fn has_smoothing(tool: Tool) -> bool {
+    matches!(tool, Tool::Brush | Tool::Pencil | Tool::Eraser)
+}
+
+/// One digit press of this frame: a plain or ⇧ digit, or an ⌥ digit for Smoothing.
+enum Press {
+    Digit(u8, bool),
+    Smoothing(u8),
+}
+
+/// Consumes this frame's unmodified (or ⇧) digit presses and applies them, and ⌥+digit presses
+/// for the tools with a Smoothing field, in the order they were typed.
 pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    let presses: Vec<(u8, bool)> = ctx.input_mut(|i| {
+    let smoothing = has_smoothing(app.ui.tool);
+    let presses: Vec<Press> = ctx.input_mut(|i| {
         let mut out = Vec::new();
         i.events.retain(|e| match e {
+            // ⌥+digit: one tens value each (1 = 10% … 0 = 100%), never two digits.
+            Event::Key { key, physical_key, pressed: true, repeat, modifiers }
+                if smoothing && modifiers.alt && !modifiers.shift && !modifiers.command && !modifiers.ctrl =>
+            {
+                match physical_key.and_then(digit).or_else(|| digit(*key)) {
+                    Some(d) => {
+                        if !repeat {
+                            out.push(Press::Smoothing(d));
+                        }
+                        false
+                    }
+                    None => true,
+                }
+            }
             // The physical key, so ⇧+digit is still a digit whatever symbol the layout puts there.
             Event::Key { key, physical_key, pressed: true, repeat, modifiers } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
                 match physical_key.and_then(digit).or_else(|| digit(*key)) {
@@ -69,7 +102,7 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
                         // A held key's auto-repeat is still one digit, not a second one typed
                         // quickly (holding 4 set 44%, #953); it is consumed all the same.
                         if !repeat {
-                            out.push((d, modifiers.shift));
+                            out.push(Press::Digit(d, modifiers.shift));
                         }
                         false
                     }
@@ -81,8 +114,16 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         out
     });
     let now = crate::gpu_canvas::now_ms();
-    for (d, shift) in presses {
-        press(app, d, shift, now);
+    for p in presses {
+        match p {
+            Press::Digit(d, shift) => press(app, d, shift, now),
+            Press::Smoothing(d) => {
+                // An ⌥ digit ends a two-digit Opacity value: 4, ⌥3, 5 is 50%, not 45%.
+                app.opacity_keys = None;
+                let amount = if d == 0 { 1.0 } else { f64::from(d) / 10.0 };
+                let _ = app.run("tools.setBrush", json!({ "brush": { "smoothing": { "enabled": true, "amount": amount } } }));
+            }
+        }
     }
 }
 
@@ -106,10 +147,15 @@ fn apply(app: &mut PhotocraftApp, percent: f32, shift: bool) {
     let build_up = app.session.tools.brush.build_up && !crate::eraser_ui::pencil_mode(app, tool) && !crate::eraser_ui::block_mode(app, tool);
     let shift = shift ^ (build_up && matches!(target(tool), Target::Brush { flow: true }));
     match (target(app.ui.tool), shift) {
-        (Target::Brush { .. }, false) => {
-            // Clone Stamp's and History Brush's Opacity fields (and their strokes) start at 1%, so
-            // `00` sets the 1% they actually paint with rather than showing a 0% they can't do.
-            let v = if matches!(tool, Tool::CloneStamp | Tool::HistoryBrush) { v.max(0.01) } else { v };
+        // The Pencil has no Flow: its ⇧ digits set Opacity like the plain ones (#11967).
+        (Target::Brush { flow: false }, _) | (Target::Brush { flow: true }, false) => {
+            // The painting tools' Opacity fields (and `tools.setBrush`) start at 1%, so `00` sets the
+            // 1% they actually paint with rather than a 0% they can't do. The Brush's and the
+            // Pencil's `00` is 100%, as in Photoshop (#11812); only `00` gives 0 here.
+            let v = match tool {
+                Tool::Brush | Tool::Pencil if v <= 0.0 => 1.0,
+                _ => v.max(0.01),
+            };
             let _ = app.run("tools.setBrush", json!({ "brush": { "opacity": v } }));
         }
         // The options bar's Flow field starts at 1%.
@@ -117,6 +163,8 @@ fn apply(app: &mut PhotocraftApp, percent: f32, shift: bool) {
             let _ = app.run("tools.setBrush", json!({ "brush": { "flow": v.max(0.01) } }));
         }
         (Target::ToolOpacity, false) => app.ui.tool_options.fill_opacity = percent,
+        // The Tolerance field starts at 1%; `00` (0%) keeps today's value rather than guessing.
+        (Target::BgTolerance, false) if percent >= 1.0 => app.ui.tool_options.bg_tolerance = percent,
         (Target::Layer, _) => {
             // The locked Background has no opacity or fill.
             let Some(st) = app.session.active() else { return };
@@ -163,7 +211,7 @@ mod tests {
         press(&mut a, 0, false, 9000.0);
         assert_eq!(a.session.tools.brush.opacity, 1.0, "0 = 100%");
         press(&mut a, 0, false, 9100.0);
-        assert_eq!(a.session.tools.brush.opacity, 0.0, "00 = 0%");
+        assert_eq!(a.session.tools.brush.opacity, 1.0, "00 = 100%");
         press(&mut a, 2, true, 20000.0);
         assert!((a.session.tools.brush.flow - 0.2).abs() < 1e-6);
         press(&mut a, 0, true, 30000.0);
@@ -224,10 +272,6 @@ mod tests {
             press(&mut a, 0, false, 100.0);
             assert!((a.session.tools.brush.opacity - 0.01).abs() < 1e-6, "{tool:?}");
         }
-        let mut a = app(Tool::Brush);
-        press(&mut a, 0, false, 0.0);
-        press(&mut a, 0, false, 100.0);
-        assert!(a.session.tools.brush.opacity.abs() < 1e-6, "the Brush itself still goes to 0%");
     }
 
     #[test]

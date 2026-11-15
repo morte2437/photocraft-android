@@ -128,6 +128,10 @@ pub(super) fn row(
         if arrow.clicked() {
             open = !open;
         }
+        // A command shortcut closes it, as it does egui's own popups (#9065).
+        if open && crate::menu_keys::popups_closed(ui.ctx()) {
+            open = false;
+        }
         let mut chosen: Option<&str> = None;
         let mut chosen_user: Option<Value> = None;
         let mut delete: Option<String> = None;
@@ -191,6 +195,9 @@ pub(super) fn row(
                 act = Some(Act::Save);
             }
         });
+        if open {
+            crate::menu_keys::own_popup_shown(ui.ctx());
+        }
         if let Some(name) = delete {
             let r = app.run("layer.layerStyle.contours.delete", json!({"name": name}));
             report(app, r);

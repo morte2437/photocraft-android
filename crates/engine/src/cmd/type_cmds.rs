@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use photocraft_color::{Color, PixelFormat};
+use photocraft_color::{Color, ColorMode, PixelFormat};
 use photocraft_doc::text::{
     AntiAlias, Caps, CharStyle, FontBaseline, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection,
     TextRun, TextShape,
@@ -655,6 +655,22 @@ pub fn refresh_at(dpi: f32, format: PixelFormat, t: &mut TextLayer) {
     t.psd_raw = Some(Arc::new(photocraft_text::psd::build_tysh(t, dpi, layout.bounds())));
 }
 
+/// Makes `t` paragraph text in the box `[x, y, width, height]`: the box sits at the text-space
+/// origin and the layer transform moves it to `(x, y)`, keeping its linear part. `x` and `y` are
+/// document px (the transform's translation); `width` and `height` are text-space px, so under a
+/// scaled transform they are scaled by its linear part.
+/// `type.edit`'s `box` param and the Type tool's live box-drag preview both use it, so the preview
+/// shows exactly the layer the command would make. Non-finite numbers count as 0, as a JSON
+/// `null` does in the command (a width or height of 0 becomes the 1 px minimum). The stored size
+/// is clamped to `1.0..=f32::MAX` so a huge input can't become an infinite `f32`.
+pub fn apply_box(t: &mut TextLayer, b: [f64; 4]) {
+    let [x, y, w, h] = b.map(|v| if v.is_finite() { v } else { 0.0 });
+    let size = |v: f64| v.clamp(1.0, f64::from(f32::MAX)) as f32;
+    let lin = t.transform.m;
+    t.shape = TextShape::Box { x: 0.0, y: 0.0, width: size(w), height: size(h) };
+    t.transform = Affine { m: [lin[0], lin[1], lin[2], lin[3], x, y] };
+}
+
 /// Refuses to change a type layer under Lock All (its own or an enclosing group's), with
 /// Photoshop's message. Every command that edits a type layer's text calls it first (#3132, #4188).
 pub(crate) fn check_text_unlocked(doc: &Document, id: LayerId) -> Result<()> {
@@ -937,8 +953,60 @@ pub(crate) fn new_text_layer(s: &Session, p: &Value, cmd: &str) -> Result<TextLa
     Ok(t)
 }
 
+/// The name of the history state a new horizontal type layer makes: what `type.create` records
+/// (vertical text is "New Vertical Type Layer", #12058), and what the
+/// Type tool's commit keeps in the modes [`commits_as_selection`] names (#12041).
+pub const NEW_TYPE_LAYER_LABEL: &str = "New Type Layer";
+
+/// Whether committing Type-tool text `t` in colour mode `mode` leaves no type layer, but a
+/// selection in the shape of its glyphs, as Photoshop does in its Indexed Color and Bitmap
+/// documents (#12041).
+///
+/// Both halves of the answer come from the issue:
+/// - the modes: Indexed Color and Bitmap are the two documents that keep no type layer;
+/// - the text: only the horizontal point text the measurement describes - the tool "still lets you
+///   click and type" and the commit leaves "a selection in the shape of the typed glyphs". Paragraph
+///   (box) text and vertical type are on its *Not measured* list, whose rule is that an unmeasured
+///   case keeps today's behaviour - and today's behaviour is the outcome that makes sense here
+///   anyway: a coverage mask cannot give back a box that reflows or a column of stacked lines, so
+///   the selection would end the editability the layer exists for. The Type Mask tools keep turning
+///   both into the selection, as they do today: there the user asked for one.
+///
+/// The check belongs to the Type tool's commit (the Type Mask tools' `type.createSelection` with
+/// `removeLayer`, which it already runs for `ed.mask`) and *not* to the `type.create` command, even
+/// though a colour-mode check there is what looks simplest:
+/// - `type.create` is the primitive the tools build the layer they edit and show on canvas with
+///   (`pointer_up` in `ui-egui`), and Preferences > Type > "Fill new type layers with placeholder
+///   text" (on by default) already gives that first call non-empty text. Branching there would make
+///   the click produce a selection and no layer, so there would be nothing to type into - while the
+///   reference application still lets you click and type in these modes and shows the text while
+///   editing. Only its commit differs.
+/// - `type.create` is also what automation, actions and a script's new text layer go through, and
+///   the measured difference is the tool's.
+pub fn commits_as_selection(mode: ColorMode, t: &TextLayer) -> bool {
+    let measured = matches!(t.shape, TextShape::Point) && t.orientation == Orientation::Horizontal;
+    measured && matches!(mode, ColorMode::Indexed | ColorMode::Bitmap)
+}
+
+/// Name the step the Type tool's commit made in such a document (#12041). The commit runs the Type
+/// Mask tools' `type.createSelection` with `removeLayer` - the same conversion, coalesced into the
+/// one step of the typing session - and that command names the step "Type Mask", while Photoshop's
+/// history state here is the type layer's own name.
+///
+/// An edit that does not carry the session's `coalesce` key (the Alt+arrow kerning step, which is
+/// deliberately one state per press) ends the session's step, exactly as it does for the Type Mask
+/// tools and for the plain type layer's rename on commit; the conversion is then a state of its own
+/// and takes this name too. Photoshop repeats a state name whenever the same thing happens again,
+/// so the two states read as the two type-layer steps they are.
+pub fn name_selection_commit(s: &mut Session) {
+    if let Some(st) = s.active_mut() {
+        st.history.set_current_label(NEW_TYPE_LAYER_LABEL);
+    }
+}
+
 const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","baseline":"normal|superscript|subscript","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
 
+/// The Type commands: create and edit type layers, set styles, fill paths, and the queries about them.
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -953,7 +1021,9 @@ pub fn specs() -> Vec<CommandSpec> {
                 let mut t = new_text_layer(s, p, "type.create")?;
                 let given = p.get("name").and_then(Value::as_str).map(str::to_string);
                 let name = given.clone().unwrap_or_else(|| layer_name(&t.text));
-                let id = s.edit("New Type Layer", |doc, active| {
+                // The reference application names new vertical text after its tool (#12058).
+                let label = if t.orientation == Orientation::Vertical { "New Vertical Type Layer" } else { NEW_TYPE_LAYER_LABEL };
+                let id = s.edit(label, |doc, active| {
                     refresh(doc, &mut t);
                     let id = crate::layer_place::insert_new(doc, *active, Layer::new(name, LayerContent::Text(t)), crate::layer_place::Place::AutoEditable);
                     *active = Some(id);
@@ -1063,9 +1133,11 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                     let lin = t.transform.m;
                     if let Some(b) = p.get("box").and_then(Value::as_array).filter(|b| b.len() == 4) {
-                        let v: Vec<f64> = b.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect();
-                        t.shape = TextShape::Box { x: 0.0, y: 0.0, width: v[2].max(1.0) as f32, height: v[3].max(1.0) as f32 };
-                        t.transform = Affine { m: [lin[0], lin[1], lin[2], lin[3], v[0], v[1]] };
+                        let mut v = [0.0; 4];
+                        for (slot, x) in v.iter_mut().zip(b) {
+                            *slot = x.as_f64().unwrap_or(0.0);
+                        }
+                        apply_box(t, v);
                     }
                     if let Some(pt) = p.get("point").and_then(Value::as_array).filter(|b| b.len() == 2) {
                         t.shape = TextShape::Point;
@@ -1237,3 +1309,6 @@ fn step_size(s: &mut Session, p: &Value, up: bool, default_by: f32) -> Result<Va
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "type_vertical_history_name_tests.rs"]
+mod vertical_history_name_tests;

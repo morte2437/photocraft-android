@@ -1,6 +1,6 @@
 use super::*;
-use photocraft_psd::abr::{LegacyBrush, write_v6, write_v6_folders, write_v12};
-use photocraft_psd::descriptor::{Id, UnicodeString};
+use craft_psd::abr::{LegacyBrush, write_v6, write_v6_folders, write_v12};
+use craft_psd::descriptor::{Id, UnicodeString};
 
 fn sample(id: &str, w: u32, h: u32, depth: u16) -> AbrSample {
     let bpp = usize::from(depth / 8);

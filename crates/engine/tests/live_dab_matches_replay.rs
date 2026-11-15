@@ -157,7 +157,7 @@ fn smudge_pickup_matches_full_neighborhood_when_pressure_expands() {
             points: points.iter().map(|q| StrokePoint::new(q[0], q[1], q[2] as f32)).collect(),
         };
         let mut effect = Smudge::new(0.8, None, 40.0).with_alpha(Some(3));
-        apply_dab_stroke(&mut expected, &stroke, None, lock, 40, |work, fp| effect.dab(work, fp));
+        apply_dab_stroke(&mut expected, &stroke, None, lock, 40, |work, fp| effect.dab(work, fp)).unwrap();
         let bounds = s.active().unwrap().doc.bounds();
         let want = expected.read_region(bounds);
         s.execute("paint.smudge", params.clone()).unwrap();

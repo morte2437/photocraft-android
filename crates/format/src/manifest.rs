@@ -288,6 +288,10 @@ pub enum ContentM {
         /// Older PhotoCraft versions ignore this optional field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         arrow_live: Option<LiveShape>,
+        /// A live triangle, stored apart from `live` because builds from before the kind cannot
+        /// read it there; they ignore this field and open the shape as its saved path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        triangle_live: Option<LiveShape>,
         /// The path's density as the fill's mask; older files have none (100 %).
         #[serde(default = "full_density")]
         density: f32,
@@ -370,6 +374,8 @@ fn default_channel_opacity() -> f32 {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MetadataM {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_conversion: Option<ImportConversionM>,
     pub xmp: Option<String>,
     pub exif: Option<Hash>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -378,6 +384,14 @@ pub struct MetadataM {
     pub psd_resources: Vec<(u16, String, Hash)>,
     /// (signature hex, key hex, blob)
     pub psd_global_blocks: Vec<(String, String, Hash)>,
+}
+
+/// Optional historical information. Both record and binary payloads use the normal blob store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportConversionM {
+    pub schema_version: u32,
+    pub record: Hash,
+    pub attachments: Vec<Hash>,
 }
 
 #[cfg(test)]

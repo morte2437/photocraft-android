@@ -51,7 +51,8 @@ pub(crate) fn hover(app: &mut PhotocraftApp, layers: &[LayerId], mode: Option<Bl
         // Anywhere when any layer can change anything; else the union of their areas.
         let mut area: Option<Rect> = Some(Rect::EMPTY);
         for &id in layers {
-            area = match (area, photocraft_compose::change_bounds(st.doc.layer(id)?, st.doc.bounds())) {
+            st.doc.layer(id)?;
+            area = match (area, photocraft_compose::layer_change_bounds(&st.doc, id)) {
                 (Some(a), Some(b)) => Some(if a.is_empty() { b } else { a.union(&b) }),
                 _ => None,
             };

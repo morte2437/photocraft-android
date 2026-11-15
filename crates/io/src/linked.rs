@@ -9,8 +9,8 @@
 //! Pascal uuid, Unicode file name, file type, creator, `u64` data length, open-descriptor flag (+
 //! versioned descriptor), then for `liFD` the raw file bytes.
 
+use craft_psd::descriptor::VersionedDescriptor;
 use photocraft_doc::Metadata;
-use photocraft_psd::descriptor::VersionedDescriptor;
 
 /// An embedded file found in a linked-layer block.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(rebuild_block(&data, &|_| true, &[]), None);
         let out = rebuild_block(&data, &|u| u != "a", std::slice::from_ref(&c)).unwrap();
         assert_eq!(parse_linked_files(&out), vec![b.clone(), c.clone()]);
-        photocraft_psd::TaggedBlock::new(*b"lnk2", out).check_structure().unwrap();
+        craft_psd::TaggedBlock::new(*b"lnk2", out).check_structure().unwrap();
         assert_eq!(file_type(&b.bytes), *b"8BPB");
         assert_eq!(file_type(&a.bytes), *b"PNGf");
         // A malformed tail is kept as is.

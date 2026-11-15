@@ -1,9 +1,9 @@
 //! Image resources 1092 (guides with colours) and 1097 (guide GUIDs) next to 1032 (#5966).
 
+use craft_psd::testgen;
+use craft_psd::{Compression, ImageResource, PsdFile, Version};
 use photocraft_io::guides_map::{DEFAULT_GUIDE_RGB, GUIDE_IDS, GUIDES_V2};
 use photocraft_io::*;
-use photocraft_psd::testgen;
-use photocraft_psd::{Compression, ImageResource, PsdFile, Version};
 
 const RED: [u8; 3] = [0xff, 0x00, 0x00];
 
@@ -76,7 +76,7 @@ fn colours_come_from_guides_v2() {
 fn unchanged_guides_keep_both_resources_byte_exact() {
     let f = photoshop_file();
     let (d, _) = psd_to_document(&f);
-    let out = document_to_psd(&d);
+    let out = document_to_psd(&d).unwrap();
     assert_eq!(resource(&out, GUIDES_V2), resource(&f, GUIDES_V2));
     assert_eq!(resource(&out, GUIDE_IDS), resource(&f, GUIDE_IDS));
 }
@@ -95,7 +95,7 @@ fn edited_guides_drop_both_resources() {
     for (name, edit) in edits {
         let mut d = base.clone();
         edit(&mut d);
-        let out = document_to_psd(&d);
+        let out = document_to_psd(&d).unwrap();
         assert!(resource(&out, GUIDES_V2).is_none(), "{name}: stale 1092 written");
         assert!(resource(&out, GUIDE_IDS).is_none(), "{name}: stale 1097 written");
         let (back, _) = psd_to_document(&out);
@@ -110,7 +110,7 @@ fn mismatched_ids_or_malformed_v2_are_not_kept() {
     f.resources.retain(|r| r.id != GUIDE_IDS);
     f.resources.push(ImageResource::new(GUIDE_IDS, guide_ids(3)));
     let (d, _) = psd_to_document(&f);
-    let out = document_to_psd(&d);
+    let out = document_to_psd(&d).unwrap();
     assert!(resource(&out, GUIDES_V2).is_some());
     assert!(resource(&out, GUIDE_IDS).is_none());
 
@@ -122,7 +122,7 @@ fn mismatched_ids_or_malformed_v2_are_not_kept() {
     }
     let (d, _) = psd_to_document(&f);
     assert_eq!(d.guides.color(false, 10.0), None);
-    let out = document_to_psd(&d);
+    let out = document_to_psd(&d).unwrap();
     assert!(resource(&out, GUIDES_V2).is_none());
     assert!(resource(&out, GUIDE_IDS).is_none());
 }

@@ -15,7 +15,7 @@
 //! - `ui.window.open {document?}` / `ui.window.close {window}`: extra document windows
 //! - `ui.pointer {events: [{kind: down|move|up, x, y, pressure?, tiltX?, tiltY?, rotation?}], tool?, modifiers?, button?}`: drive the active tool in document coordinates (`button: "secondary"` opens the tool's canvas context menu (the pasteboard colour menu outside the image) or Brush Preset picker, or erases with Preferences › Tools › Right-click with painting tools = erase)
 //! - `ui.click {x, y, button?, count?}` / `ui.move {x, y}`: synthetic pointer input in screen points
-//!   (`count` at most [`MAX_CLICKS`])
+//!   (`count` at most [`MAX_CLICKS`], `x` and `y` within ±[`MAX_SCREEN_POINT`])
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`: synthetic keyboard input
 //! - The synthetic input methods reject unknown fields, wrong types, unknown enum values and
 //!   out-of-range numbers before acting, naming the parameter (#2449)
@@ -51,7 +51,7 @@ use dispatch::dispatch;
 pub use inspect::{inspect, save_screenshot, save_screenshot_rgba};
 #[cfg(test)]
 use params::screen_point;
-pub use params::{MAX_CLICKS, UI_SET_FIELDS};
+pub use params::{MAX_CLICKS, MAX_SCREEN_POINT, UI_SET_FIELDS};
 use params::{err, ok};
 
 pub type ControlResponse = Value;

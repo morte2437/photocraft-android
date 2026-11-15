@@ -83,17 +83,29 @@ pub(crate) fn canvas_display(
 ) -> (Option<std::sync::Arc<photocraft_engine::display_color::CanvasDisplay>>, u64) {
     match app.session.color.canvas_display_for(doc, display.or(app.session.color.main_display)) {
         Ok(d) => {
-            let k = d.key;
+            let k = d.key ^ ink_preview_key(doc);
             (Some(d), k)
         }
-        Err(_) => (None, 0),
+        Err(_) => (None, ink_preview_key(doc)),
+    }
+}
+
+/// What a Multichannel document's ink preview depends on beyond its pixels: Color Settings ›
+/// Spot (the dot gain the compositor adds). Folded into the display key, so changing the
+/// setting redraws open Multichannel documents; other modes don't print inks.
+pub(super) fn ink_preview_key(doc: &Document) -> u64 {
+    if doc.mode == photocraft_color::ColorMode::Multichannel {
+        u64::from(photocraft_compose::multichannel::spot_dot_gain().to_bits()).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1 << 62
+    } else {
+        0
     }
 }
 
 /// [`canvas_display`]'s key for the GPU canvas texture: what the texture stores, the same on
-/// every display (the display LUT holds the monitor profile).
-pub(super) fn texture_key(display: Option<&photocraft_engine::display_color::CanvasDisplay>) -> u64 {
-    display.map_or(0, |d| d.texture_key)
+/// every display (the display LUT holds the monitor profile), with the ink preview (Multichannel
+/// documents fill it from the CPU compositor, which adds the Spot dot gain).
+pub(super) fn texture_key(display: Option<&photocraft_engine::display_color::CanvasDisplay>, doc: &Document) -> u64 {
+    display.map_or(0, |d| d.texture_key) ^ ink_preview_key(doc)
 }
 
 /// `app.canvases` key: CPU canvas textures are per document and display (they hold monitor
@@ -125,10 +137,17 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Ar
     if let Some(shown) = crate::shape_fill_ui::display_doc(app, idx) {
         return shown;
     }
+    if let Some(shown) = crate::type_path_placement::display_doc(app, idx) {
+        return shown;
+    }
     if let Some(shown) = crate::type_transform::display_doc(app, idx) {
         return shown;
     }
     if let Some(shown) = crate::type_font_preview::display_doc(app, idx) {
+        return shown;
+    }
+    // A paragraph-box handle drag, rendered in the background (#7032).
+    if let Some(shown) = crate::type_box_preview::display_doc(app, idx) {
         return shown;
     }
     // Vanishing Point's strokes over the document as it is now (the Layers panel may have
@@ -170,14 +189,14 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Ar
     crate::transform_tool::follow_edits(app);
     let st = &app.session.documents()[idx];
     if let Some(l) = live_stroke(app, idx) {
-        return (l.stroke.doc().clone(), l.display_key());
+        return (l.doc().clone(), l.display_key());
     }
     if let (Some(t), Some(pv)) = (&app.ui.transform, &app.transform_preview)
         && app.session.active_index() == Some(idx)
         && pv.doc.id == st.doc.id
         && st.doc.layer(photocraft_doc::LayerId(t.layer)).is_some()
     {
-        return (pv.doc.clone(), (1 << 40) + pv.session);
+        return (pv.doc.clone(), crate::transform_tool::preview_key(pv.session));
     }
     // Layer Style dialog: show its effects live (Cancel just drops the preview).
     let style = app.ui.dialogs.iter().find(|d| d.kind == crate::state::DialogKind::LayerStyle);

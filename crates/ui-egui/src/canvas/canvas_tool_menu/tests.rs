@@ -2,7 +2,10 @@ use super::*;
 use egui::{Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::{Harness, kittest::Queryable};
 
-fn app() -> PhotocraftApp {
+#[path = "zoom_menu_anchor_tests.rs"]
+mod zoom_menu_anchor_tests;
+
+pub(super) fn app() -> PhotocraftApp {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
     app
@@ -20,12 +23,12 @@ fn work_path(app: &mut PhotocraftApp) {
     .unwrap();
 }
 
-fn choose_open(app: &mut PhotocraftApp, command: &str) {
+pub(super) fn choose_open(app: &mut PhotocraftApp, command: &str) {
     assert!(open(app, &Context::default(), Tool::Pen, [10.0, 10.0]));
     choose(app, &Context::default(), command);
 }
 
-fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
+pub(crate) fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
     app.sync_views();
     let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).build_ui_state(
         |ui, app: &mut PhotocraftApp| {
@@ -42,7 +45,7 @@ fn harness(mut app: PhotocraftApp) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn right_click(h: &mut Harness<'static, PhotocraftApp>, p: Pos2, modifiers: Modifiers) {
+pub(crate) fn right_click(h: &mut Harness<'static, PhotocraftApp>, p: Pos2, modifiers: Modifiers) {
     h.event(egui::Event::ModifiersChanged(modifiers));
     h.event(egui::Event::PointerMoved(p));
     h.run_steps(1);
@@ -210,7 +213,9 @@ fn type_layer_menu_targets_the_type_under_the_pointer() {
     assert!(open_at(&mut app, &ctx, Tool::Type, [10.0, 10.0], Some([16.0, 16.0])));
     assert_eq!(active(&app), Some(id));
     let menu = app.ui.canvas_tool_menu.clone().unwrap();
-    for edit_row in ["edit.undo", "edit.cut", "edit.copy", "edit.paste", "select.all", FAUX_BOLD, FAUX_ITALIC] {
+    // The text-edit rows belong to the edit menu only; the faux rows act on the whole layer
+    // here since #12043 (the new tests cover them).
+    for edit_row in ["edit.undo", "edit.cut", "edit.copy", "edit.paste", "select.all"] {
         assert!(!available(&app, &menu, edit_row), "{edit_row} belongs to the edit menu only");
     }
     assert!(entry_enabled(&app, &menu, "type.convertToParagraphText") && !entry_enabled(&app, &menu, "type.convertToPointText"));
@@ -382,7 +387,7 @@ fn transform_menu_follows_photoshop_order() {
     }
 }
 
-fn labels(rows: &[Row]) -> Vec<Option<&str>> {
+pub(super) fn labels(rows: &[Row]) -> Vec<Option<&str>> {
     rows.iter().map(|row| row.map(|(label, _)| label)).collect()
 }
 
@@ -399,8 +404,8 @@ fn selection_menus_follow_photoshop_order() {
             Some("Save Selection…"),
             Some("Make Work Path…"),
             None,
-            Some("Layer via Copy"),
-            Some("Layer via Cut"),
+            Some("Layer Via Copy"),
+            Some("Layer Via Cut"),
             Some("New Layer…"),
             None,
             Some("Free Transform"),
@@ -521,7 +526,7 @@ fn zoom_app(w: u32, h: u32) -> PhotocraftApp {
     app
 }
 
-fn screen_of(app: &PhotocraftApp, doc: [f32; 2]) -> Pos2 {
+pub(super) fn screen_of(app: &PhotocraftApp, doc: [f32; 2]) -> Pos2 {
     crate::canvas::ViewXform::active(app).unwrap().to_screen(doc[0], doc[1])
 }
 
@@ -535,7 +540,8 @@ fn zoom_and_hand_right_click_opens_the_view_menu() {
         let inside = screen_of(h.state(), [300.0, 100.0]);
         right_click(&mut h, inside, Modifiers::NONE);
         let menu = h.state().ui.canvas_tool_menu.clone().unwrap_or_else(|| panic!("{tool:?}: right-click opens no menu"));
-        assert!(rows(&menu) == VIEW_MENU, "{tool:?}: the view menu");
+        // The Hand's menu has only the fixed zooms (#12022).
+        assert!(rows(&menu) == if tool == Tool::Hand { HAND_MENU } else { VIEW_MENU }, "{tool:?}: the view menu");
         assert_eq!(h.state().ui.views[0].zoom, zoom, "{tool:?}: the right-click alone does not zoom");
         assert!(entry_enabled(h.state(), &menu, FILL_SCREEN) && entry_enabled(h.state(), &menu, "view.printSize"));
         // Outside the image the pasteboard colour menu wins, as for the other tools.
@@ -546,12 +552,150 @@ fn zoom_and_hand_right_click_opens_the_view_menu() {
     }
 }
 
+/// A zoom harness with a fixed camera: zoom 1.0 centred on the 400×300 document. `animated` is
+/// Preferences › General › Animated Zoom; each step is 0.1 s of egui time, so a hold can pass
+/// `zoom_hold::DELAY` within a few steps.
+fn zoom_harness(animated: bool) -> Harness<'static, PhotocraftApp> {
+    let mut app = zoom_app(400, 300);
+    app.ui.tool = Tool::Zoom;
+    app.run("prefs.set", json!({"values": {"general.animatedZoom": animated, "tools.zoomClickedPointToCenter": false, "tools.overscroll": true}})).unwrap();
+    app.sync_views();
+    app.ui.extras.rulers = false;
+    let mut h = Harness::builder().with_size(vec2(1000.0, 700.0)).with_step_dt(0.1).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if !ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::default());
+    h.run_steps(4);
+    let view = &mut h.state_mut().ui.views[0];
+    view.zoom = 1.0;
+    view.center = [200.0, 150.0];
+    view.fit_pending = false;
+    view.fill_pending = false;
+    h.run_steps(2);
+    h
+}
+
+/// The menu opens at `[300, 100]` (doc points); this press lands 250 doc px to its left: outside
+/// the 200 px-wide menu, on the canvas.
+fn dismissal_point(h: &Harness<'static, PhotocraftApp>) -> Pos2 {
+    screen_of(h.state(), [50.0, 250.0])
+}
+
+/// #9832: a left press outside the open view menu dismisses it, and the whole gesture is
+/// consumed — the press, the held press, and the release never zoom, and the next ordinary
+/// click zooms again.
 #[test]
-fn view_menu_zoom_in_keeps_the_clicked_point_under_the_pointer() {
+fn dismissing_the_view_menu_consumes_the_whole_gesture() {
+    let mut h = zoom_harness(false);
+    let zoom = h.state().ui.views[0].zoom;
+    let open_at = screen_of(h.state(), [300.0, 100.0]);
+    right_click(&mut h, open_at, Modifiers::NONE);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "right-click opens the view menu");
+    // The dismissal press: the menu goes, the zoom does not.
+    let far = dismissal_point(&h);
+    h.event(egui::Event::PointerMoved(far));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "the outside press dismisses the menu");
+    assert_eq!(h.state().ui.views[0].zoom, zoom, "the dismissal press does not zoom");
+    // Holding it (a long press releases as a click) still does nothing…
+    h.run_steps(2);
+    assert_eq!(h.state().ui.views[0].zoom, zoom, "a held dismissal press does not zoom");
+    // …and the release over the canvas is consumed: no zoom step.
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().ui.views[0].zoom, zoom, "the dismissal release does not zoom");
+    // The next ordinary click zooms again: the gesture flag did not stick.
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().ui.views[0].zoom, crate::zoom_levels::step(zoom, 1, h.state().ui.views[0].doc_size), "the next ordinary click zooms");
+}
+
+/// #9832: a menu-dismissal press held past `zoom_hold::DELAY` must not arm the animated zoom
+/// hold: holding the dismissal click would otherwise zoom continuously.
+#[test]
+fn a_held_menu_dismissal_press_never_arms_the_zoom_hold() {
+    let mut h = zoom_harness(true);
+    let zoom = h.state().ui.views[0].zoom;
+    let open_at = screen_of(h.state(), [300.0, 100.0]);
+    right_click(&mut h, open_at, Modifiers::NONE);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "right-click opens the view menu");
+    let far = dismissal_point(&h);
+    h.event(egui::Event::PointerMoved(far));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "the outside press dismisses the menu");
+    // 0.8 s held still, well past the 0.3 s hold delay: every frame stays at the start zoom.
+    for i in 0..8 {
+        h.run_steps(1);
+        assert_eq!(h.state().ui.views[0].zoom, zoom, "held dismissal press frame {i} must not zoom");
+    }
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_eq!(h.state().ui.views[0].zoom, zoom, "the dismissal release does not zoom either");
+}
+
+/// #9832 (CodeRabbit): while the dismissal press stays down, the temporary Hand (Space) and the
+/// selected Hand must not pan either — the consumed gesture is inert until its release, and the
+/// pans read `response.dragged()` directly, so they need the gate up front.
+#[test]
+fn a_held_menu_dismissal_press_cannot_pan_the_view() {
+    fn key(h: &mut Harness<'static, PhotocraftApp>, k: egui::Key, pressed: bool) {
+        h.event(egui::Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+        h.run_steps(1);
+    }
+    let mut h = zoom_harness(false);
+    let (zoom, center0) = (h.state().ui.views[0].zoom, h.state().ui.views[0].center);
+    let open_at = screen_of(h.state(), [300.0, 100.0]);
+    right_click(&mut h, open_at, Modifiers::NONE);
+    assert!(h.state().ui.canvas_tool_menu.is_some(), "right-click opens the view menu");
+    // The dismissal press: the menu goes, and the button stays down.
+    let far = dismissal_point(&h);
+    h.event(egui::Event::PointerMoved(far));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    assert!(h.state().ui.canvas_tool_menu.is_none(), "the outside press dismisses the menu");
+    // Hold Space: the temporary Hand arms, but dragging must not pan the view.
+    key(&mut h, egui::Key::Space, true);
+    assert_eq!(crate::input::hold_keys::held_tool(h.state(), &h.ctx), Some(crate::input::hold_keys::Temporary::Hand), "Space arms the temporary hand");
+    h.event(egui::Event::PointerMoved(far + vec2(120.0, -60.0)));
+    h.run_steps(2);
+    h.event(egui::Event::PointerMoved(far + vec2(240.0, -120.0)));
+    h.run_steps(2);
+    assert_eq!(h.state().ui.views[0].center, center0, "a held dismissal press must not pan the view");
+    assert_eq!(h.state().ui.views[0].zoom, zoom);
+    // Release both: an ordinary Hand drag pans again, the flag did not stick.
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    key(&mut h, egui::Key::Space, false);
+    h.state_mut().ui.tool = Tool::Hand;
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    h.event(egui::Event::PointerMoved(far + vec2(100.0, 50.0)));
+    h.run_steps(2);
+    h.event(egui::Event::PointerButton { pos: far, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    h.run_steps(2);
+    assert_ne!(h.state().ui.views[0].center, center0, "an ordinary Hand drag pans the view again");
+}
+
+#[test]
+fn view_menu_zoom_in_keeps_the_view_centre() {
     let mut app = zoom_app(400, 300);
     app.ui.tool = Tool::Zoom;
     let mut h = harness(app);
     let zoom = h.state().ui.views[0].zoom;
+    let center = h.state().ui.views[0].center;
     let doc = [300.0, 100.0];
     let p = screen_of(h.state(), doc);
     right_click(&mut h, p, Modifiers::NONE);
@@ -561,8 +705,7 @@ fn view_menu_zoom_in_keeps_the_clicked_point_under_the_pointer() {
     assert!(h.state().ui.canvas_tool_menu.is_none());
     let after = h.state().ui.views[0].zoom;
     assert_eq!(after, crate::zoom_levels::step(zoom, 1, [400, 300]), "one Zoom In step");
-    let s = screen_of(h.state(), doc);
-    assert!((s - p).length() < 1.0, "the right-clicked point stays put: {s:?} vs {p:?}");
+    assert_eq!(h.state().ui.views[0].center, center);
     assert_eq!(h.state().session.journal.last().map(|(id, _)| id.as_str()), Some("view.zoomIn"));
     // Zoom Out returns to where it was.
     right_click(&mut h, p, Modifiers::NONE);
@@ -573,12 +716,13 @@ fn view_menu_zoom_in_keeps_the_clicked_point_under_the_pointer() {
 }
 
 #[test]
-fn animated_zoom_off_view_menu_keeps_the_anchor_without_a_transition() {
+fn animated_zoom_off_view_menu_keeps_the_centre_without_a_transition() {
     for command in ["view.zoomIn", "view.zoomOut", FILL_SCREEN] {
         let mut app = zoom_app(400, 300);
         app.ui.tool = Tool::Zoom;
         app.run("prefs.set", json!({"values": {"general.animatedZoom": false, "tools.zoomClickedPointToCenter": false}})).unwrap();
         let mut h = harness(app);
+        let center = h.state().ui.views[0].center;
         let doc = [300.0, 100.0];
         let p = screen_of(h.state(), doc);
         right_click(&mut h, p, Modifiers::NONE);
@@ -591,17 +735,18 @@ fn animated_zoom_off_view_menu_keeps_the_anchor_without_a_transition() {
         assert_eq!((xf.zoom, xf.center), (v.zoom, v.center), "{command}");
         assert!(v.zoom_anchor.is_none() && v.zoom_transition.is_none(), "{command}");
         if command != FILL_SCREEN {
-            assert!(screen_of(h.state(), doc).distance(p) < 1.0, "{command}: preserve the clicked point");
+            assert_eq!(v.center, center, "{command}: preserve the view centre");
         }
     }
 }
 
 #[test]
-fn view_menu_zoom_keeps_its_anchor_during_the_animation() {
+fn view_menu_zoom_keeps_its_centre_during_the_animation() {
     let mut app = zoom_app(400, 300);
     app.ui.tool = Tool::Zoom;
     let mut h = harness(app);
     let zoom = h.state().ui.views[0].zoom;
+    let center = h.state().ui.views[0].center;
     let doc = [300.0, 100.0];
     let p = screen_of(h.state(), doc);
     right_click(&mut h, p, Modifiers::NONE);
@@ -613,7 +758,7 @@ fn view_menu_zoom_keeps_its_anchor_during_the_animation() {
     h.step();
     let displayed = crate::canvas::ViewXform::active(h.state()).unwrap();
     assert!(displayed.zoom > zoom && displayed.zoom < h.state().ui.views[0].zoom);
-    assert!(displayed.to_screen(doc[0], doc[1]).distance(p) < 1.0);
+    assert!(displayed.to_screen(center[0], center[1]).distance(displayed.rect.center()) < 1.0);
     h.input_mut().time = Some(ctx.input(|i| i.time) + 0.3);
     h.step();
     assert!(!h.state().ui.views[0].zoom_animating);
@@ -622,7 +767,8 @@ fn view_menu_zoom_keeps_its_anchor_during_the_animation() {
 #[test]
 fn view_menu_zoom_in_centres_the_clicked_point_with_the_preference() {
     let mut app = zoom_app(400, 300);
-    app.ui.tool = Tool::Hand;
+    // Zoom In is on the Zoom tool's menu only (#12022).
+    app.ui.tool = Tool::Zoom;
     app.run("prefs.set", json!({"path": "tools.zoomClickedPointToCenter", "value": true})).unwrap();
     let mut h = harness(app);
     let doc = [300.0, 100.0];

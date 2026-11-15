@@ -1,13 +1,13 @@
 //! [`Document`] → PSD/PSB.
 
-use photocraft_color::{ColorMode, PixelFormat, SampleType};
-use photocraft_doc::{Document, Layer, LayerContent, LayerMask, SmartContentsId};
-use photocraft_psd::file::{GlobalLayerMask, LayerInfoPlacement};
-use photocraft_psd::layer::{BlendingRanges, ChannelData, LayerFlags, LayerInfo, LayerMask as PsdMask, MaskData, MaskParameters};
-use photocraft_psd::resources::{ImageResource, ResolutionInfo, ids, version_info_resource};
-use photocraft_psd::{
+use craft_psd::file::{GlobalLayerMask, LayerInfoPlacement};
+use craft_psd::layer::{BlendingRanges, ChannelData, LayerFlags, LayerInfo, LayerMask as PsdMask, MaskData, MaskParameters};
+use craft_psd::resources::{ImageResource, ResolutionInfo, ids, version_info_resource};
+use craft_psd::{
     BlendMode as PsdBlend, ColorMode as PsdMode, Compression, Header, ImageData, LayerRecord, PsdFile, Rect as PsdRect, SectionType, TaggedBlock, Version,
 };
+use photocraft_color::{ColorMode, PixelFormat, SampleType};
+use photocraft_doc::{Document, Layer, LayerContent, LayerMask, SmartContentsId};
 use photocraft_raster::{Interrupt, Surface};
 
 use crate::adjust_map;
@@ -628,7 +628,7 @@ impl Ex<'_> {
     fn layer_xmp_block(&mut self, l: &Layer, raw: &mut Vec<([u8; 4], Vec<u8>)>) {
         let Some(xmp) = l.xmp.as_deref() else { return };
         let pos = raw.iter().position(|(k, _)| k == b"shmd");
-        match photocraft_psd::metadata::put_layer_xmp(pos.map(|i| raw[i].1.as_slice()), xmp) {
+        match craft_psd::metadata::put_layer_xmp(pos.map(|i| raw[i].1.as_slice()), xmp) {
             Ok(data) => match pos {
                 Some(i) => raw[i].1 = data,
                 None => raw.push((*b"shmd", data)),

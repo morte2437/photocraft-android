@@ -55,6 +55,12 @@ fn open_exr_parts(s: &mut Session, p: &Value) -> Result<Value> {
     let bytes = read_file(&path)?;
     let mut r = photocraft_io::exr_parts::import(&stem(&path), &bytes, &sel).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     crate::file_cmds::tag_exr_colorspace(s, &path, &mut r.document);
+    // The file holds parts or layers the selection may have left out: Save doesn't write the
+    // document back over them (#5733).
+    let entries = photocraft_io::exr_parts::entries(&bytes).map_or(0, |e| e.len());
+    if entries > 1 {
+        r.document.file_encoding.source_images = Some(u32::try_from(entries).unwrap_or(u32::MAX));
+    }
     let (i, color) = s.open_document(r.document, Some(path.clone()));
     crate::file_cmds::remember_batch_open(s);
     super::file_cmds::batch_open_notice(s, &path, &r.warnings, &color);
@@ -184,8 +190,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("aov.exr");
         write_multipart(&path);
-        let linear = photocraft_cms::Builtin::LinearSrgb.profile().to_bytes();
-        let aces = photocraft_cms::Builtin::AcesCg.profile().to_bytes();
+        let linear = craft_cms::Builtin::LinearSrgb.profile().to_bytes();
+        let aces = craft_cms::Builtin::AcesCg.profile().to_bytes();
         for (on, want) in [(false, &linear), (true, &aces)] {
             let mut s = session();
             s.prefs.edit(|p| p.file_handling.exr_aces_cg = on);

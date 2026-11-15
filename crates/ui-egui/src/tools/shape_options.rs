@@ -32,7 +32,9 @@ fn selected_shape(session: &photocraft_engine::Session) -> Option<SelectedShape>
     }
 }
 
-pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) {
+/// The Shape tools' options. `paint` shows Fill and Stroke: off in Path mode, where a drag draws
+/// only an outline, but the tool's geometry (radius, sides, weight, custom shape) stays.
+pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool, paint: bool) {
     let t = Tokens::get(ui.ctx());
     let lbl = |ui: &mut egui::Ui, s: &str| {
         let label = ui.label(egui::RichText::new(s).color(t.text_dim).size(12.0));
@@ -40,7 +42,8 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
         crate::widgets::scrub_option_label(ui, &label);
     };
     let o = &mut app.ui.tool_options;
-    let target = selected_shape(&app.session);
+    // Path mode edits only the next outline: an active shape layer is not the target.
+    let target = if paint { selected_shape(&app.session) } else { None };
     // Fill and Stroke edit the selected shape layer too (#3347), and still set the next shape's.
     let (fg, bg) = (app.session.tools.foreground, app.session.tools.background);
     let (mut has_fill, fill, stroke) = match &target {
@@ -61,61 +64,67 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
     let gesture = paint_gesture(ui, gesture_key);
     let key = |k: &str| target.as_ref().map(|s| format!("shape-options-{:?}-{}-{k}:{}:{gesture}", s.doc, s.layer.0, gesture_key.value()));
     let mut edit: Option<Value> = None;
-    lbl(ui, tl!("Fill:"));
-    if crate::widgets::checkbox(ui, &mut has_fill, tl!("Fill")).changed() {
-        o.shape_fill = has_fill;
-        edit = Some(json!({"fill": if has_fill { o.shape_fill_gradient.as_ref().map_or_else(|| json!(fg), paint_param) } else { Value::Null }}));
-    }
-    let fill_color = swatch(ui, &lib, fill.as_ref(), fg, tl!("Fill color"), &mut gradients);
-    lbl(ui, tl!("Stroke:"));
-    let stroke_color = swatch(ui, &lib, stroke.as_ref().map(|s| &s.paint), bg, tl!("Stroke color"), &mut gradients);
-    if crate::widgets::value_field(ui, &mut width, 0.0..=288.0, "px", 58.0).accessible_name(tl!("Stroke:")).changed() {
-        o.stroke_width = width;
-        // A 0 px "change" (an arrow step clamped at the minimum) must not add a stroke.
-        if stroke.is_some() || width > 0.0 {
-            let mut p = json!({"width": width});
+    let (mut fill_color, mut stroke_color) = (None, None);
+    if paint {
+        lbl(ui, tl!("Fill:"));
+        if crate::widgets::checkbox(ui, &mut has_fill, tl!("Fill")).changed() {
+            o.shape_fill = has_fill;
+            edit = Some(json!({"fill": if has_fill { o.shape_fill_gradient.as_ref().map_or_else(|| json!(fg), paint_param) } else { Value::Null }}));
+        }
+        fill_color = swatch(ui, &lib, fill.as_ref(), fg, tl!("Fill color"), &mut gradients);
+        lbl(ui, tl!("Stroke:"));
+        stroke_color = swatch(ui, &lib, stroke.as_ref().map(|s| &s.paint), bg, tl!("Stroke color"), &mut gradients);
+        if crate::widgets::value_field(ui, &mut width, 0.0..=288.0, "px", 58.0).accessible_name(tl!("Stroke:")).changed() {
+            o.stroke_width = width;
+            // A 0 px "change" (an arrow step clamped at the minimum) must not add a stroke.
+            if stroke.is_some() || width > 0.0 {
+                let mut p = json!({"width": width});
+                if stroke.is_none() {
+                    p["color"] = o.shape_stroke_gradient.as_ref().map_or_else(|| json!(bg), paint_param);
+                }
+                edit = Some(json!({"stroke": p, "coalesce": key("stroke-w")}));
+            }
+        }
+        let preview = target.as_ref().filter(|s| s.stroke.is_some()).map(|s| (s.doc, s.layer));
+        if let Some(change) =
+            crate::shape_stroke_ui::button(ui, "tool-stroke", &style, &mut app.ui.stroke_editor, true, tool != Tool::EllipseShape, preview, stroke_enabled)
+        {
+            let mut p = change.options.params();
+            if !stroke_enabled {
+                p["width"] = json!(3.0);
+            }
             if stroke.is_none() {
                 p["color"] = o.shape_stroke_gradient.as_ref().map_or_else(|| json!(bg), paint_param);
             }
-            edit = Some(json!({"stroke": p, "coalesce": key("stroke-w")}));
+            edit = Some(json!({"stroke": p, "coalesce": change.coalesce}));
+            o.shape_stroke = change.options;
+            o.stroke_width = enabled_stroke_width(o.stroke_width);
         }
     }
-    let preview = target.as_ref().filter(|s| s.stroke.is_some()).map(|s| (s.doc, s.layer));
-    if let Some(change) =
-        crate::shape_stroke_ui::button(ui, "tool-stroke", &style, &mut app.ui.stroke_editor, true, tool != Tool::EllipseShape, preview, stroke_enabled)
-    {
-        let mut p = change.options.params();
-        if !stroke_enabled {
-            p["width"] = json!(3.0);
-        }
-        if stroke.is_none() {
-            p["color"] = o.shape_stroke_gradient.as_ref().map_or_else(|| json!(bg), paint_param);
-        }
-        edit = Some(json!({"stroke": p, "coalesce": change.coalesce}));
-        o.shape_stroke = change.options;
-        o.stroke_width = enabled_stroke_width(o.stroke_width);
-    }
+    let (mut radius_alert, mut sides_alert) = (false, false);
     match tool {
         Tool::Rectangle => {
             crate::widgets::vline(ui, 22.0);
-            lbl(ui, tl!("Radius:"));
-            let mut r = match target.as_ref().and_then(|s| s.live.as_ref()) {
-                Some(photocraft_doc::LiveShape::Rect { radii, .. }) => radii[0] as f32,
-                _ => o.corner_radius,
-            };
-            if crate::widgets::value_field(ui, &mut r, 0.0..=10000.0, "px", 62.0).changed() {
+            let label = tl!("Radius:");
+            lbl(ui, label);
+            // The tool's own radius for the next rectangle (#13338); the active shape is not touched.
+            let mut r = o.corner_radius;
+            let (resp, out_of_range) = crate::widgets::value_field_alerting(ui, label, &mut r, RADIUS_RANGE, "px", 62.0);
+            radius_alert = out_of_range;
+            if resp.changed() {
                 o.corner_radius = r;
-                let rf = r as f64;
-                edit = Some(json!({"radii": [rf, rf, rf, rf], "coalesce": key("radius")}));
             }
         }
         Tool::Polygon => {
             crate::widgets::vline(ui, 22.0);
-            lbl(ui, tl!("Sides:"));
-            let mut s = o.polygon_sides as f32;
-            if crate::widgets::value_field(ui, &mut s, 3.0..=100.0, "", 48.0).changed() {
-                o.polygon_sides = s.round().clamp(3.0, 100.0) as u32;
-            }
+            let label = tl!("Sides:");
+            lbl(ui, label);
+            sides_alert = sides_field(ui, label, &mut o.polygon_sides);
+        }
+        Tool::Triangle => {
+            crate::widgets::vline(ui, 22.0);
+            // Only a shape layer has pixel edges to align: greyed in Path mode (and in a pixels mode).
+            ui.add_enabled_ui(o.shape_mode == "shape", |ui| crate::widgets::checkbox(ui, &mut o.align_edges, tl!("Align Edges")));
         }
         Tool::Line => {
             crate::widgets::vline(ui, 22.0);
@@ -190,7 +199,54 @@ pub(crate) fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool
     if let Some(rgb) = recent {
         crate::paint_picker::remember(app, rgb);
     }
+    range_alert(app, radius_alert, RADIUS_RANGE_ALERT);
+    range_alert(app, sides_alert, SIDES_RANGE_ALERT);
 }
+
+/// The Rectangle tool's corner radius in px, as the reference takes it (#13336).
+pub(crate) const RADIUS_RANGE: std::ops::RangeInclusive<f32> = 0.0..=150_000.0;
+
+/// The reference's alert for a Rectangle tool Radius typed past [`RADIUS_RANGE`] (#13336).
+pub(crate) const RADIUS_RANGE_ALERT: &str = "A value between 0.000 pixel and 150000.000 Pixels is required. Closest value inserted.";
+
+/// The Polygon tool's Sides: whole numbers 3..100. Returns true once the field is left with a
+/// value typed past them, so the caller shows [`SIDES_RANGE_ALERT`] (#13304).
+fn sides_field(ui: &mut egui::Ui, label: &str, sides: &mut u32) -> bool {
+    let mut s = *sides as f32;
+    let (r, out_of_range) = crate::widgets::value_field_whole_alerting(ui, label, &mut s, 3.0..=100.0, "", 48.0);
+    if r.changed() {
+        *sides = s.round().clamp(3.0, 100.0) as u32;
+    }
+    out_of_range
+}
+
+/// The reference's alert for a Polygon Sides value typed past 3..100 (#13304).
+pub(crate) const SIDES_RANGE_ALERT: &str = "An integer between 3 and 100 is required. Closest value inserted.";
+
+/// Shows `alert` ([`RADIUS_RANGE_ALERT`], [`SIDES_RANGE_ALERT`]) as a modal with OK when `owed`,
+/// once even if more than one pass asks.
+fn range_alert(app: &mut PhotocraftApp, owed: bool, alert: &str) {
+    if !owed {
+        return;
+    }
+    let message = tl!(alert).to_owned();
+    let shown = app.ui.dialogs.iter().any(|d| d.kind == crate::state::DialogKind::Error && d.fields.get("message").and_then(|m| m.as_str()) == Some(&message));
+    if !shown {
+        app.ui.open_dialog(crate::state::DialogKind::Error, json!({ "message": message }).as_object().cloned().unwrap_or_default());
+    }
+}
+
+#[cfg(test)]
+#[path = "rectangle_radius_range_tests.rs"]
+mod rectangle_radius_range_tests;
+
+#[cfg(test)]
+#[path = "rectangle_radius_target_tests.rs"]
+mod rectangle_radius_target_tests;
+
+#[cfg(test)]
+#[path = "polygon_sides_alert_tests.rs"]
+mod polygon_sides_alert_tests;
 
 /// Tool-bar paint changes affect the next shape; Properties edits the selected shape instead.
 pub(crate) fn set_tool_paint(app: &mut PhotocraftApp, stroke: bool, change: PaintChange) -> Result<(), String> {

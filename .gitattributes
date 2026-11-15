@@ -1,0 +1,2 @@
+# The craft-i18n pin: CI and the build read it as one SHA, so it stays LF everywhere (readers trim it too).
+craft-i18n.rev text eol=lf

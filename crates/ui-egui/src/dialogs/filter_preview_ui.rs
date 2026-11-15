@@ -6,7 +6,9 @@
 //! click to centre the view on a document point, and press-and-hold to compare with the unfiltered
 //! image. The proxy is drawn scaled by its reduction factor, so 100% is one *document* pixel per
 //! point whatever the proxy factor. The Preview checkbox keeps toggling the on-canvas live result
-//! (`canvas::ensure_filter_preview`), unchanged.
+//! (`canvas::ensure_filter_preview`), unchanged. While such a dialog is on top, the image under it
+//! is the preview's locator: the pointer is a small square there, and a click centres the window
+//! on that document point ([`center_at`], #9648).
 
 use egui::{Color32, Rect, Sense, Stroke, Vec2, pos2, vec2};
 use photocraft_doc::Document;
@@ -149,6 +151,35 @@ pub(crate) fn window(app: &PhotocraftApp, dialog: u64, ui: &mut egui::Ui, f: &mu
     f.insert(ZOOM_FIELD.into(), json!(zoom.clamp(MIN_ZOOM, MAX_ZOOM)));
     f.insert(CENTER_X_FIELD.into(), json!(cx));
     f.insert(CENTER_Y_FIELD.into(), json!(cy));
+}
+
+/// The top dialog, when it has the preview window: the image under it is then the preview's
+/// locator (another dialog opened over it takes the input). Not while the image is something else
+/// of the dialog's: the Blur Gallery's pins (`blur_pins`) or Replace Color's armed eyedropper.
+pub(crate) fn locator(app: &PhotocraftApp) -> Option<u64> {
+    if crate::filter_dialog::color_eyedropper_armed(app) {
+        return None;
+    }
+    app.ui.dialogs.last().filter(|d| shows(&d.fields) && !crate::blur_pins::owns(&d.fields)).map(|d| d.id)
+}
+
+/// Centre the top dialog's preview window on document point (x, y), clamped to the image, as a
+/// click on the image does in Photoshop's filter dialogs (#9648). Only the dialog's private view
+/// fields change: no command runs, the document and its history are untouched. `false` when no
+/// dialog with a preview window is on top or the point is not finite.
+pub(crate) fn center_at(app: &mut PhotocraftApp, x: f64, y: f64) -> bool {
+    let Some(id) = locator(app) else { return false };
+    if !(x.is_finite() && y.is_finite()) {
+        return false;
+    }
+    let Some(size) = app.session.active().map(|st| st.doc.size) else { return false };
+    // Clamped before narrowing: a huge finite point (1e40 from `ui.pointer`) would overflow `f32`
+    // to infinity, which `clamp_center` reads as corrupt and puts at 0, not at the far edge.
+    let (cx, cy) = (x.clamp(0.0, f64::from(size.width)) as f32, y.clamp(0.0, f64::from(size.height)) as f32);
+    let Some(d) = app.ui.dialog_mut(id) else { return false };
+    d.fields.insert(CENTER_X_FIELD.into(), json!(cx));
+    d.fields.insert(CENTER_Y_FIELD.into(), json!(cy));
+    true
 }
 
 /// The zoom levels the − / + buttons step through, like the Filter Gallery's.
@@ -334,6 +365,7 @@ mod tests {
                     ChannelTarget::Alpha(0),
                     &[],
                     &Default::default(),
+                    Some((app.session.tools.foreground, app.session.tools.background)),
                 )
                 .unwrap();
                 let ctx = egui::Context::default();
@@ -492,6 +524,52 @@ mod tests {
         assert_eq!(x0 / doc.x, 0.475);
         assert!(document_size([0, 0], 4) == vec2(0.0, 0.0), "degenerate size stays finite");
         assert_eq!(document_size([10, 20], 0), vec2(10.0, 20.0), "a zero factor means 1×");
+    }
+
+    #[test]
+    fn a_point_on_the_image_centres_the_top_preview_window() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 64, "height": 48})).unwrap();
+        // No dialog, or one without a preview window: nothing to centre.
+        assert!(!center_at(&mut app, 10.0, 10.0));
+        crate::dialogs::open_command_dialog(&mut app, "image.adjustments.brightnessContrast", "Brightness/Contrast…");
+        assert_eq!(locator(&app), None, "an adjustment dialog has no preview window");
+        app.ui.dialogs.clear();
+        // Every filter dialog with the window shares the locator, Unsharp Mask and Reduce Noise too.
+        for command in ["filter.sharpen.unsharpMask", "filter.noise.reduceNoise"] {
+            let id = crate::filter_dialog::open(&mut app, command).expect("the filter opens a dialog");
+            assert_eq!(locator(&app), Some(id), "{command}");
+            app.ui.dialogs.clear();
+        }
+        let id = crate::filter_dialog::open(&mut app, "filter.sharpen.smartSharpen").expect("Smart Sharpen opens a dialog");
+        assert_eq!(locator(&app), Some(id), "Smart Sharpen has the preview window");
+        let (revision, history) = (app.session.active().unwrap().revision, app.session.active().unwrap().history.past_len());
+        let centre = |app: &PhotocraftApp| {
+            let f = &app.ui.dialogs.last().unwrap().fields;
+            (f.get(CENTER_X_FIELD).cloned(), f.get(CENTER_Y_FIELD).cloned())
+        };
+        assert!(center_at(&mut app, 10.5, 40.0));
+        assert_eq!(centre(&app), (Some(json!(10.5)), Some(json!(40.0))));
+        // Off the image it clamps to the nearest edge; a non-finite point changes nothing.
+        assert!(center_at(&mut app, -30.0, 999.0));
+        assert_eq!(centre(&app), (Some(json!(0.0)), Some(json!(48.0))));
+        assert!(!center_at(&mut app, f64::NAN, 5.0));
+        assert!(!center_at(&mut app, 5.0, f64::INFINITY));
+        assert_eq!(centre(&app), (Some(json!(0.0)), Some(json!(48.0))));
+        // A huge but finite point (past `f32`'s range) clamps to the far edge, not to 0.
+        assert!(center_at(&mut app, 1e40, -1e300));
+        assert_eq!(centre(&app), (Some(json!(64.0)), Some(json!(0.0))));
+        assert!(center_at(&mut app, -1e300, 1e40));
+        assert_eq!(centre(&app), (Some(json!(0.0)), Some(json!(48.0))));
+        let st = app.session.active().unwrap();
+        assert_eq!((st.revision, st.history.past_len()), (revision, history), "the document and its history are untouched");
+        // The view fields are private: the command's params don't carry them.
+        let params = crate::filter_dialog::params_of(&app.ui.dialogs.last().unwrap().fields);
+        assert!(params.get(CENTER_X_FIELD).is_none() && params.get(CENTER_Y_FIELD).is_none(), "{params}");
+        // A dialog opened over it takes the input.
+        crate::color_picker_ui::open(&mut app, "foreground");
+        assert_eq!(locator(&app), None);
+        assert!(!center_at(&mut app, 20.0, 20.0));
     }
 
     #[test]

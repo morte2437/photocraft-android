@@ -7,19 +7,22 @@ pub(crate) fn hover_pixel(app: &PhotocraftApp) -> Option<(i32, i32)> {
 }
 
 /// The colour the Info panel reads at document pixel `(x, y)`, straight RGBA 0..1: averaged over
-/// the Eyedropper's Sample Size, as in Photoshop (#1649), and cached per pixel and revision.
+/// the Eyedropper's Sample Size over the box it reads at the view zoom, as in Photoshop (#1649,
+/// #11751), and cached per pixel, revision, size and zoom.
 pub(crate) fn pointer_sample(app: &mut PhotocraftApp, (x, y): (i32, i32)) -> Option<[f32; 4]> {
     let rev = app.session.active()?.revision;
     let sample_size = app.ui.tool_options.eyedropper_size;
-    if let Some(((cx, cy, cr, cs), v)) = app.info_sample
-        && (cx, cy, cr, cs) == (x, y, rev, sample_size)
+    let zoom = app.current_zoom();
+    let key = (x, y, rev, sample_size, zoom.to_bits());
+    if let Some((k, v)) = app.info_sample
+        && k == key
     {
         return Some(v);
     }
-    let params = json!({"x": f64::from(x) + 0.5, "y": f64::from(y) + 0.5, "size": sample_size});
+    let params = json!({"x": f64::from(x) + 0.5, "y": f64::from(y) + 0.5, "size": sample_size, "zoom": f64::from(zoom)});
     let v: Vec<f32> = serde_json::from_value(app.session.execute("document.sampleColor", params).ok()?).ok()?;
     let v = [*v.first()?, *v.get(1)?, *v.get(2)?, *v.get(3)?];
-    app.info_sample = Some(((x, y, rev, sample_size), v));
+    app.info_sample = Some((key, v));
     Some(v)
 }
 
@@ -112,7 +115,8 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let (rgb, cmyk) = (&s["rgb"], &s["cmyk"]);
             ui.horizontal(|ui| {
                 ui.add_sized([24.0, 16.0], egui::Label::new(RichText::new(format!("#{n}")).color(t.text_dim).size(11.5)));
-                cell(ui, format!("X: {}  Y: {}", fx(at.0), fy(at.1)));
+                // The point sits on its pixel's centre (#11725); the row names the pixel, as the pointer row does.
+                cell(ui, format!("X: {}  Y: {}", fx(at.0.floor()), fy(at.1.floor())));
             });
             ui.horizontal(|ui| {
                 ui.add_sized([24.0, 16.0], egui::Label::new(RichText::new("").size(11.5)));
@@ -126,20 +130,24 @@ pub(super) fn info_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The Info panel's Color Sampler readouts and the (document, revision) they were composited for.
-pub(crate) type SamplerReadouts = ((photocraft_doc::DocId, u64), std::sync::Arc<Vec<Value>>);
+/// The Info panel's Color Sampler readouts and the (document, revision, Sample Size) they were
+/// composited for.
+pub(crate) type SamplerReadouts = ((photocraft_doc::DocId, u64, u32), std::sync::Arc<Vec<Value>>);
 
 /// The Color Sampler readouts of the active document, composited once per revision (#4528):
 /// adding, moving or deleting a sampler and every pixel edit bump the revision, so between them
 /// the Info panel reuses them instead of compositing each point through the stack every frame.
+/// They average over the Sample Size shared with the Eyedropper (#11732), which is part of the
+/// key, so changing it re-reads every sampler at once.
 pub(crate) fn sampler_readouts(app: &mut PhotocraftApp) -> std::sync::Arc<Vec<Value>> {
-    let Some(key) = app.session.active().map(|s| (s.doc.id, s.revision)) else { return std::sync::Arc::default() };
+    let size = app.ui.tool_options.eyedropper_size;
+    let Some(key) = app.session.active().map(|s| (s.doc.id, s.revision, size)) else { return std::sync::Arc::default() };
     if let Some((k, v)) = &app.info_samplers
         && *k == key
     {
         return v.clone();
     }
-    let list = app.session.execute("view.colorSamplers.list", json!({})).ok();
+    let list = app.session.execute("view.colorSamplers.list", json!({"size": size})).ok();
     let v = std::sync::Arc::new(list.as_ref().and_then(|v| v["samplers"].as_array()).cloned().unwrap_or_default());
     app.info_samplers = Some((key, v.clone()));
     v

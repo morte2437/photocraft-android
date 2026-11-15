@@ -145,6 +145,9 @@ mod tests {
 
     #[test]
     fn system_preferences_are_negotiated_in_order() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         for (tags, expected) in [
             (vec!["ja-JP", "en-US"], "ja"),
             (vec!["fr-CA", "en-US"], "fr"),
@@ -162,8 +165,9 @@ mod tests {
             (vec!["nl-BE", "fr-BE"], "nl"),
             (vec!["hu-HU", "en-US"], "hu"),
             (vec!["tr-TR", "en-US"], "tr"),
-            (vec!["sr-Latn-RS", "en-US"], "sr"),
-            (vec!["sw-KE", "sr_RS@latin", "ru-RU"], "sr"),
+            (vec!["sr-Latn-RS", "en-US"], "sr-latn"),
+            (vec!["sr-Cyrl-RS", "en-US"], "sr-latn"),
+            (vec!["sw-KE", "sr_RS@latin", "ru-RU"], "sr-latn"),
             (vec!["hi-IN", "en-US"], "hi"),
             (vec!["sv-SE", "en-US"], "sv"),
             (vec!["sv_FI.UTF-8", "fi-FI", "en-US"], "sv"),
@@ -172,6 +176,7 @@ mod tests {
             (vec!["nb-NO", "en-US"], "nb"),
             (vec!["nn_NO.UTF-8", "en-US"], "nb"),
             (vec!["is-IS", "no-NO"], "nb"),
+            (vec!["ka-GE", "ru-RU"], "ka"),
             (vec![], "en"),
         ] {
             with_system_tags(&tags, || assert_eq!(system_lang().code(), expected));
@@ -180,6 +185,9 @@ mod tests {
 
     #[test]
     fn test_system_preferences_restore_and_remain_thread_local() {
+        if !crate::i18n::needs_catalogs() {
+            return;
+        }
         with_system_tags(&["ko-KR"], || {
             with_system_tags(&["fr-FR"], || assert_eq!(system_lang().code(), "fr"));
             assert_eq!(system_lang().code(), "ko");

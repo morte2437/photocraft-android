@@ -1,7 +1,7 @@
 //! #7671: exported Stroke widths must have the same effect as command execution.
+use craft_psd::{atn, descriptor::Value as D};
 use photocraft_engine::actions_cmds::Action;
 use photocraft_engine::{Session, atn_cmds};
-use photocraft_psd::{atn, descriptor::Value as D};
 use serde_json::{Value, json};
 
 /// Synthetic colours and partial transparency make lost edge pixels observable at every depth.

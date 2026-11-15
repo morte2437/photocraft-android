@@ -65,16 +65,16 @@ fn modes_and_a_given_outline() {
 }
 
 #[test]
-fn edges_come_from_the_active_pixel_layer() {
+fn edges_come_from_the_visible_composite() {
     let mut s = session();
     s.execute("layer.new.layer", json!({})).unwrap();
-    // An empty layer has no edges: the point stays where it is.
+    // An empty layer on top adds no pixels: the edge of the Background's square still counts.
     let settings = Settings::default();
     let mut src = EdgeSource::new(&s).unwrap();
-    assert_eq!(src.snap([44.0, 50.0], settings), Some([44.0, 50.0]));
+    let p = src.snap([44.0, 50.0], settings).unwrap();
+    assert!((p[0] - 40.0).abs() < 0.01, "{p:?}");
     let bg = s.active().unwrap().doc.layers[0].id;
     s.execute("layer.select", json!({"layer": bg.0})).unwrap();
-    assert!(!src.is_current(&s), "another layer");
     let mut src = EdgeSource::new(&s).unwrap();
     assert!(src.is_current(&s));
     let p = src.snap([44.0, 50.0], settings).unwrap();

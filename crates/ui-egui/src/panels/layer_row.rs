@@ -1,4 +1,4 @@
-use super::layer_drag::{MaskDrag, fx_drop, layer_drag_and_drop, mask_drag_key, start_fx_drag, starts_mask_drag};
+use super::layer_drag::{MaskDrag, fx_drop, layer_drag_and_drop, mask_drag_key, mask_drop, start_fx_drag, starts_mask_drag};
 use super::layers::simple_lock_toggle;
 use super::{
     Color32, CornerRadius, Layer, LayerContent, PhotocraftApp, Pos2, Rect, Sense, Stroke, StrokeKind, Tokens, Value, icons, json, pos2, theme, vec2, widgets,
@@ -165,6 +165,26 @@ pub(super) fn paint_clipping_indicator(painter: &egui::Painter, at: Pos2, color:
     painter.add(egui::Shape::line(vec![at + vec2(2.0, 0.0), tip, at + vec2(8.0, 0.0)], stroke));
 }
 
+/// Where the row's disclosure triangle starts (after the eye column and the depth's indentation) and
+/// the layer thumbnail's size, for a row `rect` with thumbnails of `base` (0 when off). The painted
+/// row and an off-screen group's widget-only triangle share it, so the hit area is the same (#13117).
+fn triangle_x_and_thumb_size(l: &Layer, depth: usize, rect: Rect, base: f32) -> (f32, f32) {
+    // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
+    // the indentation first, then the thumbnails (a layer with two masks has three).
+    let others = 6.0
+        + 28.0
+        + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
+        + if l.clipped { 12.0 } else { 0.0 }
+        + crate::layer_row_ui::reserved_width(l);
+    let ts = if base == 0.0 { 0.0 } else { crate::mask_thumbs_ui::thumb_size(l, base, rect.width() - others) };
+    let fixed = others + if ts == 0.0 { 0.0 } else { ts + 6.0 + crate::mask_thumbs_ui::width(l, ts) };
+    // A layer inside a group (or an artboard) indents one step more than its depth, past the
+    // triangle's column, so it sits right of its parent: with only its depth its thumbnail lined
+    // up under the group's, hiding the hierarchy. Top-level rows don't move.
+    let steps = if !l.is_group() && depth > 0 { depth + 1 } else { depth };
+    (rect.left() + 6.0 + 28.0 + crate::layer_row_ui::indent(steps, rect.width(), fixed), ts)
+}
+
 /// Height of an artboard's row. Photoshop sets artboards apart from layers and groups in the
 /// Layers panel: a shorter row with the name in bold and no thumbnail (a board is a canvas, not a
 /// folder), so the boards read as headings over their layers (#10218).
@@ -207,6 +227,7 @@ pub(super) fn layer_row(
     let mask_drag = mask_drag.is_some();
     layer_drag_and_drop(app, ctx, ui, l, rect, &resp, actions);
     fx_drop(ctx, ui, l, rect, actions);
+    mask_drop(ctx, ui, l, rect, actions);
     crate::smart_ui::drop_on_row(ctx, ui, l, rect, actions);
     if resp.drag_started() && !mask_drag {
         crate::layer_transfer::begin_from_panel(app, ctx, l.id);
@@ -214,9 +235,14 @@ pub(super) fn layer_row(
     // Rows are painted: name them for screen readers and UI tests.
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &l.name));
     // A row scrolled out of view only keeps its place (#125): a layout's hundreds of rows would
-    // otherwise lay out names, icons and thumbnails every frame. Group rows stay whole: their
-    // disclosure triangle is a widget (accessibility, scroll-to).
-    if !ui.is_rect_visible(rect) && !l.is_group() && !resp.context_menu_opened() && crate::layer_row_ui::renaming(ctx) != Some(l.id.0) {
+    // otherwise lay out names, icons and thumbnails every frame. An off-screen group row keeps only
+    // its disclosure widget (accessibility, scroll-to) and paints nothing (#13117). A row whose
+    // menu (its own or the eye column's) is open, or that is being renamed, stays whole.
+    if !ui.is_rect_visible(rect) && !resp.context_menu_opened() && !eye_menu_open(ui, l) && crate::layer_row_ui::renaming(ctx) != Some(l.id.0) {
+        if l.is_group() {
+            let (x, _) = triangle_x_and_thumb_size(l, depth, rect, base);
+            crate::layer_tree_ui::disclosure_widget(ui, rect, x, l, actions);
+        }
         return rect;
     }
     let painter = ui.painter_at(rect.expand(1.0));
@@ -225,22 +251,8 @@ pub(super) fn layer_row(
         app.hover_layer = Some(l.id);
     }
     paint_row_background(&painter, &t, l, rect, selected, is_hovered);
-    let mut x = rect.left() + 6.0;
     let eye_resp = eye_column(app, ui, l, row, rect, actions);
-    // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
-    // the indentation first, then the thumbnails (a layer with two masks has three).
-    let others = 6.0
-        + 28.0
-        + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
-        + if l.clipped { 12.0 } else { 0.0 }
-        + crate::layer_row_ui::reserved_width(l);
-    let ts = if base == 0.0 { 0.0 } else { crate::mask_thumbs_ui::thumb_size(l, base, rect.width() - others) };
-    let fixed = others + if ts == 0.0 { 0.0 } else { ts + 6.0 + crate::mask_thumbs_ui::width(l, ts) };
-    // A layer inside a group (or an artboard) indents one step more than its depth, past the
-    // triangle's column, so it sits right of its parent: with only its depth its thumbnail lined
-    // up under the group's, hiding the hierarchy. Top-level rows don't move.
-    let steps = if !l.is_group() && depth > 0 { depth + 1 } else { depth };
-    x += 28.0 + crate::layer_row_ui::indent(steps, rect.width(), fixed);
+    let (mut x, ts) = triangle_x_and_thumb_size(l, depth, rect, base);
     let toggled = crate::layer_tree_ui::disclosure(ui, rect, &mut x, l, actions);
     if l.clipped {
         paint_clipping_indicator(&painter, pos2(x, rect.center().y), t.text_faint);
@@ -386,6 +398,18 @@ fn paint_row_background(painter: &egui::Painter, t: &Tokens, l: &Layer, rect: Re
     }
 }
 
+/// The eye column's widget id.
+fn eye_id(ui: &egui::Ui, l: &Layer) -> egui::Id {
+    ui.scope_id().with(("eye", l.id.0))
+}
+
+/// Whether the eye column's colour menu is open. It is the eye response's own context menu (egui
+/// keys it `Popup::default_response_id`: the widget id with "popup"), not the row's, and egui closes
+/// a popup that isn't shown in a frame, so a row with it open must not be culled.
+fn eye_menu_open(ui: &egui::Ui, l: &Layer) -> bool {
+    egui::Popup::is_id_open(ui.ctx(), eye_id(ui, l).with("popup"))
+}
+
 /// The eye column: visibility toggle (⌥ shows only this layer), sweep-drag and its colour menu.
 fn eye_column(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, row: RowSel, rect: Rect, actions: &mut Vec<(String, Value)>) -> egui::Response {
     let ctx = &ui.ctx().clone();
@@ -394,7 +418,7 @@ fn eye_column(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, row: RowSel
     let eye_cell = eye_cell(rect);
     // The whole eye column takes drags too (so a drag starting on it never reorders the row): dragging down
     // the eyes gives every row swept over the visibility the first eye toggled to (#8467).
-    let eye_resp = ui.interact(eye_cell, ui.scope_id().with(("eye", l.id.0)), Sense::click_and_drag());
+    let eye_resp = ui.interact(eye_cell, eye_id(ui, l), Sense::click_and_drag());
     // A hidden layer's eye box is left empty (still clickable; the whole column takes the click, #8467).
     if l.visible {
         // Centre the drawing in the column while preserving the visibility hit area.
@@ -567,22 +591,37 @@ fn handle_row_double_click(app: &mut PhotocraftApp, ctx: &egui::Context, rc: &Ro
     }
 }
 
-/// The visibility icon has its own color menu, and the layer-mask thumbnail its mask menu (#4575).
+/// The visibility icon has its own color menu, the layer-mask thumbnail its mask menu (#4575)
+/// and a pixel layer's thumbnail Select Pixels and the thumbnail settings (#12324).
 fn row_context_menu(app: &mut PhotocraftApp, ui: &mut egui::Ui, rc: &RowCtx<'_>, eye_resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
     let (l, resp, masks, row) = (rc.l, rc.resp, rc.masks, rc.row);
     let (ctx, selected) = (&ui.ctx().clone(), row.selected);
-    // The visibility icon has its own color menu, and the layer-mask thumbnail its mask menu
-    // (#4575); elsewhere use the full layer menu.
+    // The visibility icon has its own color menu, the layer-mask thumbnail its mask menu
+    // (#4575) and a pixel layer's thumbnail its thumbnail menu; elsewhere the full layer menu.
     let on_mask_id = ui.scope_id().with(("mask-menu", l.id.0));
+    let on_thumb_id = ui.scope_id().with(("thumb-menu", l.id.0));
     if resp.secondary_clicked() {
-        let on_mask = resp.interact_pointer_pos().and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel);
-        ctx.data_mut(|d| d.insert_temp(on_mask_id, on_mask));
+        let pos = resp.interact_pointer_pos();
+        let on_mask = pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Pixel);
+        // A pixel layer's thumbnail; not the Background's, which has no transparency to load.
+        // Type, shape, smart object, fill, adjustment and group thumbnails keep the layer menu
+        // with their own items (Rasterize, Edit Contents…).
+        let pixels = matches!(l.content, LayerContent::Raster(_)) && l.frame.is_none() && !rc.doc.is_background(l.id);
+        let on_thumb = !on_mask && pixels && rc.ts > 0.0 && pos.is_some_and(|p| masks.hit(p).is_none() && rc.thumb.expand(2.0).contains(p));
+        ctx.data_mut(|d| {
+            d.insert_temp(on_mask_id, on_mask);
+            d.insert_temp(on_thumb_id, on_thumb);
+        });
     }
     if !eye_resp.secondary_clicked() && !eye_resp.context_menu_opened() {
         resp.context_menu(|ui| {
             crate::widgets::style_spectrum_popup_menu(ui);
             if ui.ctx().data(|d| d.get_temp::<bool>(on_mask_id)).unwrap_or(false) {
                 crate::layer_menu_ui::show_mask(app, ui, l, actions);
+                return;
+            }
+            if ui.ctx().data(|d| d.get_temp::<bool>(on_thumb_id)).unwrap_or(false) {
+                super::layers_empty_menu::show_thumbnail(app, ui, l.id.0, actions);
                 return;
             }
             // Right-clicking inside a multi-selection keeps it and acts on every selected layer.

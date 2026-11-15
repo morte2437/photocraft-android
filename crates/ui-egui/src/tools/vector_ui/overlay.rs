@@ -1,5 +1,5 @@
 use super::curvature::curvature_refresh;
-use super::path_ops::{active_type_path, targeted_vector_mask, work_path_shown_in};
+use super::path_ops::{MovedPath, active_type_path, path_selection_preview, targeted_vector_mask, work_path_shown_in};
 use super::pen::{closing, over_first_anchor, shift_45};
 use egui::{Color32, Pos2, Rect, Stroke, pos2, vec2};
 use photocraft_doc::vector::Path;
@@ -129,6 +129,12 @@ pub(crate) fn selected_saved_path_index(app: &PhotocraftApp) -> Option<(usize, P
 
 /// Work path / active shape path / selected saved path outlines, anchors, and the pen path in
 /// progress.
+/// Whether the path being drawn previews its next segment up to the pointer. The Pen only does
+/// with its gear's Rubber Band on (#12900); the other pens' paths keep their preview.
+fn rubber_band_shown(app: &PhotocraftApp, tool: Tool, pen: &super::PenPath) -> bool {
+    tool != Tool::Pen || pen.curvature || app.ui.tool_options.pen_rubber_band
+}
+
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, doc: &Document) {
     let tool = app.ui.tool;
     let accent = Tokens::get(painter.ctx()).accent;
@@ -144,6 +150,9 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
     // View › Show › Target Path (under Extras) hides the paths; the Pen's path in progress stays.
     // Free Transform Path draws the path through its box instead (transform_tool).
     let paths = app.ui.view.shows(app.ui.view.show.target_path) && app.ui.transform.as_ref().is_none_or(|t| t.path.is_none());
+    if paths && app.session.active().is_some_and(|st| st.doc.id == doc.id) {
+        crate::type_path_placement::draw(app, painter, xf);
+    }
     if app.session.active().is_some_and(|st| st.doc.id == doc.id) && crate::direct_select::shows(app, painter.ctx().input(|i| i.modifiers)) {
         // Direct Selection (or the Pen with ⌘/Ctrl held) draws the paths it edits (#790).
         crate::direct_select::draw_overlay(app, painter, &to_scr, accent, paths);
@@ -157,14 +166,17 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // a path tool is active, as in Photoshop: a Work Path left unselected (one a PSD arrived
         // with, or after Ctrl-click Load as Selection) would otherwise cover the marching ants (#6551).
         let anchors = shows_anchors(tool);
+        // A Path Selection drag shows its path where the release will put it.
+        let moving = path_selection_preview(app, doc);
+        let moved = |which: MovedPath| moving.as_ref().filter(|(m, _)| *m == which).map(|(_, p)| p);
         if let Some(wp) = doc.work_path.as_ref().filter(|_| work_path_shown_in(app, doc))
             && (anchors || app.ui.selected_path.as_deref() == Some("work"))
         {
-            draw_path(wp, anchors);
+            draw_path(moved(MovedPath::Work).unwrap_or(wp), anchors);
         }
         // The saved path selected in the Paths panel is the target path (#6550).
         if let Some(p) = selected_saved_path(app) {
-            draw_path(p, anchors);
+            draw_path(moved(MovedPath::Saved).unwrap_or(p), anchors);
         }
         let st = app.session.active();
         if let Some(l) = st.and_then(|s| s.active_layer.and_then(|id| s.doc.layer(id)))
@@ -188,11 +200,22 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         // Path Selection's selected components show solid anchors, as in Photoshop.
         if tool == Tool::PathSelection
             && st.is_some_and(|s| s.doc.id == doc.id)
-            && let Some((_, path, _)) = crate::path_components::selected(app)
+            && let Some((r, path, _)) = crate::path_components::selected(app)
         {
+            let path = match r {
+                crate::direct_select::PathRef::Work => moved(MovedPath::Work),
+                crate::direct_select::PathRef::Saved(_) => moved(MovedPath::Saved),
+                _ => None,
+            }
+            .unwrap_or(&path);
             for k in app.ui.direct_selection.anchors.iter().filter_map(|[s, k]| path.subpaths.get(*s).and_then(|sp| sp.knots.get(*k))) {
                 draw_anchor(painter, to_scr([k.anchor.x, k.anchor.y]), true, accent);
             }
+        }
+        // Only over the active document, whose selected layers the box frames.
+        if st.is_some_and(|s| s.doc.id == doc.id) {
+            crate::shape_bounds_box::draw(app, painter, &to_scr, accent);
+            crate::shape_bounds_box::draw_line_controls(app, painter, &to_scr, accent);
         }
         crate::corner_radius::draw(app, painter, &to_scr, accent);
     }
@@ -221,6 +244,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
             && !pen.dragging
             && pen.moving.is_none()
             && !auto
+            && rubber_band_shown(app, tool, pen)
         {
             if pen.curvature && pen.knots.len() >= 2 {
                 // The Curvature Pen previews the curve the next click makes through the pointer.
@@ -238,15 +262,18 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
                 painter.add(egui::Shape::dashed_line(&[to_scr(last[0]), to_scr(h)], Stroke::new(1.0, accent), 4.0, 3.0));
             }
         }
+        // The anchor Auto Add selected is drawn filled, with its handles.
+        let ds = &app.ui.direct_selection;
+        let selected = |i: usize| ds.target == Some(crate::direct_select::PathRef::Pen) && ds.anchors.contains(&[0, i]);
         for (i, k) in pen.knots.iter().enumerate() {
             let c = to_scr(k[0]);
             let last = i + 1 == pen.knots.len();
-            if last && k[2] != k[0] && !pen.curvature {
-                for hnd in [k[1], k[2]] {
+            if (last && k[2] != k[0] && !pen.curvature) || (selected(i) && !last) {
+                for hnd in [k[1], k[2]].into_iter().filter(|h| *h != k[0]) {
                     draw_handle(painter, c, to_scr(hnd), accent);
                 }
             }
-            draw_anchor(painter, c, last, accent);
+            draw_anchor(painter, c, last || selected(i), accent);
         }
         // Hovering the first anchor: Photoshop's close cue, a small ring beside the pointer.
         let tol = 6.0 / f64::from(app.point_zoom().max(0.01));

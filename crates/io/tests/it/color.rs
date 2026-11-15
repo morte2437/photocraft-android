@@ -6,7 +6,7 @@ use crate::common;
 use std::sync::Arc;
 
 use common::*;
-use photocraft_cms::{Builtin, ColorSpace, Profile};
+use craft_cms::{Builtin, ColorSpace, Profile};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_io::*;
 
@@ -87,13 +87,9 @@ fn cmyk_to_png_is_colour_managed_and_tagged_srgb() {
 #[test]
 fn cmyk_fills_survive_psd_roundtrip_at_every_depth() {
     use photocraft_doc::{Color, Document, Fill, GradientStyle, Layer, LayerContent};
-    let icc = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
-        tvi: [0.26, 0.26, 0.26, 0.3],
-        grid_a2b: 5,
-        grid_b2a: 9,
-        ..Default::default()
-    })
-    .to_bytes();
+    let icc = craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams { tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() })
+        .unwrap()
+        .to_bytes();
     let a = Color { mode: ColorMode::Cmyk, c: [0.2, 0.4, 0.6, 0.3], alpha: 0.7 };
     let b = Color { mode: ColorMode::Cmyk, c: [0.6, 0.2, 0.3, 0.1], alpha: 0.4 };
     for depth in SampleType::ALL {
@@ -155,13 +151,13 @@ fn uncached_cmyk_gradient_corpus_roundtrip() {
 
 #[test]
 fn rgb_fill_colours_separate_through_the_document_cmyk_profile() {
-    use photocraft_cms::{Intent, Transform, synth};
+    use craft_cms::{Intent, Transform, synth};
     use photocraft_doc::{Color, Document, Fill, Layer, LayerContent};
-    let profile = synth::cmyk_profile(&synth::CmykParams { tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+    let profile = synth::cmyk_profile(&synth::CmykParams { tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() }).unwrap();
     let profile = Profile::parse(&profile.to_bytes()).unwrap();
     let rgb = [0.2, 0.4, 0.6];
     let mut expected = [0.0; 4];
-    Transform::new(Builtin::Srgb.profile(), &profile, Intent::RelativeColorimetric, true).unwrap().eval_fast(&rgb, &mut expected);
+    Transform::new(Builtin::Srgb.profile(), &profile, Intent::RelativeColorimetric, true).unwrap().eval_fast(&rgb, &mut expected).unwrap();
     for depth in SampleType::ALL {
         let mut doc = Document::new("RGB fill", photocraft_geom::Size::new(1, 1), ColorMode::Cmyk, depth);
         doc.icc_profile = Some(profile.to_bytes());
@@ -184,22 +180,18 @@ fn rgb_fill_colours_separate_through_the_document_cmyk_profile() {
 fn cmyk_merged_composite_reads_through_the_embedded_profile() {
     // The merged image of a CMYK file tagged with a non-default profile is turned into RGB through
     // that profile, as the layers are, or every comparison against it is off (#3778).
-    use photocraft_cms::{Intent, Transform};
-    use photocraft_psd::{Compression, ImageResource, Version, testgen};
-    let profile = photocraft_cms::synth::cmyk_profile(&photocraft_cms::synth::CmykParams {
-        tvi: [0.26, 0.26, 0.26, 0.3],
-        grid_a2b: 5,
-        grid_b2a: 9,
-        ..Default::default()
-    });
+    use craft_cms::{Intent, Transform};
+    use craft_psd::{Compression, ImageResource, Version, testgen};
+    let profile =
+        craft_cms::synth::cmyk_profile(&craft_cms::synth::CmykParams { tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() }).unwrap();
     let reference = |p: &Profile, ink: &[f32; 4]| {
         let t = Transform::new(p, Builtin::Srgb.profile(), Intent::RelativeColorimetric, true).unwrap();
         let mut o = [0.0f32; 4];
-        t.eval(ink, &mut o);
+        t.eval(ink, &mut o).unwrap();
         [o[0].clamp(0.0, 1.0), o[1].clamp(0.0, 1.0), o[2].clamp(0.0, 1.0)]
     };
     for depth in [8u16, 16] {
-        let mut f = testgen::merged_only(Version::Psd, photocraft_psd::ColorMode::Cmyk, depth, Compression::Raw, 4, 1);
+        let mut f = testgen::merged_only(Version::Psd, craft_psd::ColorMode::Cmyk, depth, Compression::Raw, 4, 1);
         let inks: [[f32; 4]; 4] = [[0.1, 0.6, 0.7, 0.05], [0.8, 0.2, 0.1, 0.0], [0.3, 0.3, 0.3, 0.5], [0.0, 0.0, 0.0, 0.0]];
         let max = if depth == 8 { 255.0 } else { 65535.0 };
         let mut data = Vec::new();
@@ -210,7 +202,7 @@ fn cmyk_merged_composite_reads_through_the_embedded_profile() {
                 if depth == 8 { data.push(v as u8) } else { data.extend((v as u16).to_be_bytes()) }
             }
         }
-        f.image_data = photocraft_psd::ImageData { compression: Compression::Raw, data, stored: None };
+        f.image_data = craft_psd::ImageData { compression: Compression::Raw, data, stored: None };
         f.resources.push(ImageResource::new(1039, profile.to_bytes().to_vec()));
         let merged = merged_composite(&f).unwrap();
         let mut seen_far = false;
@@ -254,15 +246,15 @@ fn grdm_block(a: (u16, [u16; 4]), b: (u16, [u16; 4])) -> Vec<u8> {
 }
 
 fn saved_grdm(bytes: &[u8]) -> Vec<u8> {
-    let f = photocraft_psd::PsdFile::from_bytes(bytes).unwrap();
+    let f = craft_psd::PsdFile::from_bytes(bytes).unwrap();
     f.layers().iter().find_map(|l| l.block(b"grdm")).map(|b| b.data.clone()).expect("grdm block")
 }
 
 #[test]
 fn gradient_maps_with_cmyk_lab_gray_stops_import_and_keep_their_space() {
-    use photocraft_cms::{Intent, Transform, synth};
+    use craft_cms::{Intent, Transform, synth};
     use photocraft_doc::{Adjustment, Document, Layer, LayerContent};
-    let profile = synth::cmyk_profile(&synth::CmykParams { tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() });
+    let profile = synth::cmyk_profile(&synth::CmykParams { tvi: [0.26, 0.26, 0.26, 0.3], grid_a2b: 5, grid_b2a: 9, ..Default::default() }).unwrap();
     let profile = Profile::parse(&profile.to_bytes()).unwrap();
     let to_srgb = Transform::new(&profile, Builtin::Srgb.profile(), Intent::RelativeColorimetric, true).unwrap();
     // First stop 60 % cyan + 40 % black (stored inverted), second paper white.
@@ -292,7 +284,7 @@ fn gradient_maps_with_cmyk_lab_gray_stops_import_and_keep_their_space() {
                 ColorMode::Cmyk => {
                     // Through the document's own profile, not the built-in coated CMYK.
                     let mut expected = [0.0f32; 3];
-                    to_srgb.eval_fast(&[0.6, 0.0, 0.0, 0.4], &mut expected);
+                    to_srgb.eval_fast(&[0.6, 0.0, 0.0, 0.4], &mut expected).unwrap();
                     assert!(first.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-4), "{depth:?}: {first:?} vs {expected:?}");
                     let builtin = photocraft_color::convert::cmyk_to_rgb([0.6, 0.0, 0.0, 0.4]);
                     assert!(first.iter().zip(builtin).any(|(a, b)| (a - b).abs() > 1e-3), "the document profile is used");

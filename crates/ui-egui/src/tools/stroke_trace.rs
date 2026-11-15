@@ -83,7 +83,7 @@ impl Summary {
 }
 
 /// Where the trace goes ([`StrokeTrace::from_env`]).
-// The web build has no clock, so it never traces.
+// The web build never traces: it has no environment, stderr or files to write to.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) enum Output {
@@ -120,7 +120,7 @@ fn percentiles(mut v: Vec<f64>) -> [f64; 2] {
 }
 
 impl StrokeTrace {
-    /// Reads `PHOTOCRAFT_STROKE_TRACE` (off on the web, where there is no clock).
+    /// Reads `PHOTOCRAFT_STROKE_TRACE` (off on the web, which has no environment, stderr or files).
     pub fn from_env() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(v) = std::env::var_os("PHOTOCRAFT_STROKE_TRACE") {
@@ -202,7 +202,7 @@ impl StrokeTrace {
 }
 
 /// The CSV text for `rows` of stroke `stroke` (with the header when `header`).
-// The web build has no clock, so it never traces.
+// The web build never traces: it has no environment, stderr or files to write to.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn csv(stroke: usize, rows: &[Row], header: bool) -> String {
     let mut s = String::new();

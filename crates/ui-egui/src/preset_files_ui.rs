@@ -181,7 +181,7 @@ mod tests {
     /// New Group (Enter) keeps it, Cancel imports nothing, Replace deletes it (#10640).
     #[test]
     fn reimporting_a_brush_file_asks_before_touching_its_group() {
-        use photocraft_psd::abr::{LegacyBrush, LegacyTip, write_v12};
+        use craft_psd::abr::{LegacyBrush, LegacyTip, write_v12};
         let round = |name: &str| LegacyBrush {
             name: name.into(),
             spacing: 25,
@@ -240,7 +240,7 @@ mod tests {
     /// Import as New Group adds "Fire (2)", Replace swaps "Fire" alone (#10640).
     #[test]
     fn reimporting_a_gradient_file_asks_before_touching_its_group() {
-        use photocraft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
+        use craft_psd::grd::{GrdColor, GrdGradient, GrdStop, write};
         let stop = |location: f32, color| GrdStop { location, midpoint: 0.5, color };
         let ember =
             GrdGradient { name: "Ember".into(), stops: vec![stop(0.0, GrdColor::Foreground), stop(1.0, GrdColor::Rgb([1.0, 0.0, 0.0]))], ..Default::default() };

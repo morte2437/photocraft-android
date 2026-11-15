@@ -231,10 +231,13 @@ fn straighten_layer_and_image() {
     assert_eq!(s.active().unwrap().history.past_len(), before + 1, "one history step");
     assert_eq!(d(&s).size.width, 80);
     assert!(d(&s).measurement.ruler.is_none());
-    // The Background: rotate the canvas and crop to the image.
+    // The Background used to rotate the canvas and crop it to the image; #12033 greys that state
+    // out, so the same crop now happens on a layer and only when it is asked for.
     let mut s = session(80, 60, 16);
     s.execute("image.analysis.rulerTool", json!({"start": [0, 0], "end": [40, 40]})).unwrap();
-    let r = s.execute("image.analysis.straightenLayer", json!({})).unwrap();
+    assert!(!s.is_enabled("image.analysis.straightenLayer"), "the Background is greyed out (#12033)");
+    s.execute("layer.new.layer", json!({})).unwrap();
+    let r = s.execute("image.analysis.straightenLayer", json!({"crop": true})).unwrap();
     assert_eq!(r["cropped"], true);
     assert_eq!(r["angle"].as_f64().unwrap().abs(), 45.0);
     let nd = d(&s);
@@ -551,6 +554,28 @@ fn iso_from_unix_matches_the_old_cycle_conversion_including_beyond_chrono() {
     assert_eq!(iso_from_unix(-10_000_000_000_000), "-314918-08-13T06:13:20Z");
     assert_eq!(iso_from_unix(i64::MAX), "292277026596-12-04T15:30:07Z");
     assert_eq!(iso_from_unix(i64::MIN), "-292277022657-01-27T08:29:52Z");
+}
+
+#[test]
+fn csv_text_cells_that_read_as_formulas_are_neutralised() {
+    for (cell, want) in [
+        ("=1+1", "'=1+1"),
+        ("@SUM(A1)", "'@SUM(A1)"),
+        ("-2+3", "'-2+3"),
+        ("+cmd|x", "'+cmd|x"),
+        ("-5.5", "-5.5"),
+        ("px", "px"),
+        ("\n=1+1", "\"'\n=1+1\""),
+        ("\u{ff1d}1+1", "'\u{ff1d}1+1"),
+        ("\u{ff0b}1", "'\u{ff0b}1"),
+        ("\u{ff20}SUM(A1)", "'\u{ff20}SUM(A1)"),
+        (" =1+1", "' =1+1"),
+        ("  -2+3", "'  -2+3"),
+        (" -5.5", " -5.5"),
+    ] {
+        assert_eq!(csv_field(&json!(cell)), want, "{cell}");
+    }
+    assert_eq!(csv_field(&json!(-5.5)), "-5.5", "numbers are not text cells");
 }
 
 #[test]

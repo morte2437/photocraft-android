@@ -5,7 +5,8 @@
 //! (≤ 900 px, `pixel_scale` keeps pixel radii true to the full image), recomputed when a
 //! control changes: on a worker for the dialog's own controls, so a drag never waits for it, and
 //! on the UI thread for the control channel, so a reply describes its own settings. Settings
-//! whose stages are all per pixel develop on the GPU instead where it can (`camera_raw_gpu`).
+//! whose stages are per pixel, or Shadows and Highlights, develop on the GPU instead where it can
+//! (`camera_raw_gpu`).
 //! OK runs `filter.cameraRaw` with the non-default settings, so the result is one history step
 //! (or a smart filter on a smart object) and exactly replayable.
 //!
@@ -30,6 +31,7 @@ use crate::widgets;
 
 mod controls;
 mod convert;
+mod filmstrip;
 mod menu;
 mod open;
 mod proxy;
@@ -38,6 +40,7 @@ mod sidecar;
 pub use controls::show;
 #[cfg(test)]
 use convert::open_pixels;
+pub use filmstrip::HeldRaw;
 pub use menu::menu;
 #[cfg(test)]
 use open::{Coverage, commit_open_raw, document_index, finish_redevelop, open_raw, replace_raw_document};
@@ -79,14 +82,16 @@ pub struct CameraRawDialog {
     pub(crate) detail: crate::camera_raw_detail_ui::DetailPreview,
     display: std::sync::Arc<photocraft_engine::display_color::CanvasDisplay>,
     pub(crate) viewport: Option<ERect>,
+    /// Whether the main window had focus last frame (see [`show`]).
+    main_focused: bool,
     pub(crate) float: bool,
     tex: Option<TextureHandle>,
     before_tex: Option<TextureHandle>,
     before_display_key: Option<u64>,
     pub(crate) before_histogram: RgbHistogram,
     pub(crate) processed: Vec<[f32; 4]>,
-    pub(crate) lab_transform: std::sync::Arc<photocraft_cms::Transform>,
-    pub(crate) scope_transform: std::sync::Arc<photocraft_cms::Transform>,
+    pub(crate) lab_transform: std::sync::Arc<craft_cms::Transform>,
+    pub(crate) scope_transform: std::sync::Arc<craft_cms::Transform>,
     pub(crate) scope: crate::camera_raw_scope_ui::ScopeView,
     pub(crate) after_histogram: RgbHistogram,
     pub(crate) preview_revision: u64,
@@ -245,7 +250,7 @@ impl CameraRawDialog {
             let (tx, rx) = std::sync::mpsc::channel::<Result<ProxyFrame, String>>();
             let repaint = ctx.clone();
             let spawned = std::thread::Builder::new().name("camera-raw-proxy".into()).spawn(move || {
-                let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run())).map_err(|_| "Camera Raw preview failed".to_string());
+                let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run())).map_err(|_| "RAW Develop preview failed".to_string());
                 // The dialog may have closed or rendered on its own meanwhile; then nobody listens.
                 if tx.send(frame).is_ok() {
                     repaint.request_repaint();
@@ -271,7 +276,7 @@ impl CameraRawDialog {
         let frame = match rx.try_recv() {
             Ok(frame) => frame,
             Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(()),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("Camera Raw preview worker stopped".to_string()),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("RAW Develop preview worker stopped".to_string()),
         };
         self.pending = None;
         self.publish(ctx, frame?);

@@ -7,7 +7,7 @@ use crate::canvas::{ToolEvent, tool_event};
 
 mod right_click;
 
-fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
+pub(super) fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
     let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
     app.run("file.new", json!({"width": 400, "height": 300})).unwrap();
     app.run("layer.new.layer", json!({})).unwrap();
@@ -33,13 +33,13 @@ fn harness(prefs: Option<&str>) -> Harness<'static, PhotocraftApp> {
     h
 }
 
-fn press(h: &mut Harness<'static, PhotocraftApp>, pos: Pos2, button: PointerButton, pressed: bool) {
+pub(super) fn press(h: &mut Harness<'static, PhotocraftApp>, pos: Pos2, button: PointerButton, pressed: bool) {
     h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE });
     h.run_steps(2);
 }
 
 /// Drag across the canvas centre with `button`; returns the document points it covered.
-fn drag(h: &mut Harness<'static, PhotocraftApp>, button: PointerButton) -> (Pos2, Pos2) {
+pub(super) fn drag(h: &mut Harness<'static, PhotocraftApp>, button: PointerButton) -> (Pos2, Pos2) {
     let c = h.state().last_canvas_rect.center();
     let (a, b) = (c - vec2(80.0, 0.0), c + vec2(80.0, 0.0));
     h.event(egui::Event::PointerMoved(a));
@@ -423,9 +423,13 @@ fn picker_gear_menu_saves_and_names_a_new_preset() {
     assert_eq!(h.state().session.tools.current_preset.as_deref(), Some("Inky"));
     h.state_mut().ui.brush_picker = Some([c.x, c.y]);
     h.run_steps(2);
-    // The gear's boxes pick the card parts; the last one on can't be turned off.
+    // The gear's boxes pick the card parts; the last one on can't be turned off. Brush Tip
+    // starts off (#11819).
     h.get_by_label("Brush Preset Options").click();
     h.run_steps(2);
+    h.get_by_label("Brush Tip").click();
+    h.run_steps(2);
+    assert!(h.state().ui.brush_picker_list.show_tip);
     h.get_by_label("Brush Tip").click();
     h.run_steps(2);
     assert!(!h.state().ui.brush_picker_list.show_tip);
@@ -578,9 +582,9 @@ fn art_history_brush_starts_at_full_opacity() {
     sync_tool_brush(&mut app);
     assert_eq!(app.session.tools.brush.opacity, 1.0, "Art History starts at 100%");
     assert_eq!(app.session.tools.brush.size, 40.0, "and inherits the size");
-    app.ui.tool = Tool::CloneStamp;
+    app.ui.tool = Tool::HistoryBrush;
     sync_tool_brush(&mut app);
-    assert_eq!(app.session.tools.brush.opacity, 1.0, "the Clone Stamp takes the Art History brush's opacity");
+    assert_eq!(app.session.tools.brush.opacity, 1.0, "the History Brush takes the Art History brush's opacity");
     app.ui.tool = Tool::Brush;
     sync_tool_brush(&mut app);
     app.ui.tool = Tool::Eraser;
@@ -1022,4 +1026,60 @@ fn a_right_click_moved_and_released_in_one_frame_still_opens_its_menu() {
     h.run_steps(2);
     assert_eq!(h.state().ui.brush_picker, None);
     assert_eq!(h.state().ui.canvas_tool_menu, None);
+}
+
+/// #11897: Clear chosen on a pixel layer, then the Background activated: a Brush stroke there
+/// paints the foreground, and the Mode reads Normal afterwards.
+#[test]
+fn chosen_clear_paints_normally_on_the_background_and_the_mode_reads_normal() {
+    let mut h = harness(None);
+    h.state_mut().ui.tool_options.brush_clear = true;
+    let bg = h.state().session.active().unwrap().doc.background().unwrap().id;
+    h.state_mut().run("layer.select", json!({"layer": bg.0})).unwrap();
+    h.run_steps(2);
+    let (a, b) = drag(&mut h, PointerButton::Primary);
+    assert!(!h.state().ui.tool_options.brush_clear, "the Mode reads Normal");
+    let last = strokes(&h).last().cloned().unwrap();
+    assert!(last.get("mode").is_none() && !last["erase"].as_bool().unwrap(), "{last}");
+    let app = h.state();
+    let v = app.ui.views[0].clone();
+    let d = ((a + (b - a) * 0.5) - app.last_canvas_rect.center()) / v.zoom;
+    let st = app.session.active().unwrap();
+    let px = st.doc.layer(bg).unwrap().surface().unwrap().rgba((d.x + v.center[0]) as i32, (d.y + v.center[1]) as i32);
+    assert!(px[2] > 0.9 && px[0] < 0.1, "the foreground blue, not the background colour: {px:?}");
+}
+
+/// #11897: a Background with Lock All refuses the stroke, so a chosen Clear stays chosen.
+#[test]
+fn chosen_clear_stays_on_a_locked_background() {
+    let mut h = harness(None);
+    h.state_mut().ui.tool_options.brush_clear = true;
+    let bg = h.state().session.active().unwrap().doc.background().unwrap().id;
+    h.state_mut().run("layer.select", json!({"layer": bg.0})).unwrap();
+    h.state_mut().run("layer.lockLayers", json!({"all": true})).unwrap();
+    h.run_steps(2);
+    drag(&mut h, PointerButton::Primary);
+    assert!(h.state().ui.tool_options.brush_clear, "the Mode still reads Clear");
+}
+
+/// #11897: a held `~` on the Background keeps erasing to the background colour.
+#[test]
+fn held_tilde_on_the_background_paints_the_background_colour() {
+    let mut h = harness(None);
+    h.state_mut().run("tools.setColors", json!({"background": "#00ff00"})).unwrap();
+    let bg = h.state().session.active().unwrap().doc.background().unwrap().id;
+    h.state_mut().run("layer.select", json!({"layer": bg.0})).unwrap();
+    h.run_steps(2);
+    h.event(egui::Event::Key { key: egui::Key::Backtick, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    let (a, b) = drag(&mut h, PointerButton::Primary);
+    h.event(egui::Event::Key { key: egui::Key::Backtick, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE });
+    h.run_steps(1);
+    assert_eq!(strokes(&h).last().unwrap()["mode"], json!("clear"));
+    let app = h.state();
+    let v = app.ui.views[0].clone();
+    let d = ((a + (b - a) * 0.5) - app.last_canvas_rect.center()) / v.zoom;
+    let st = app.session.active().unwrap();
+    let px = st.doc.layer(bg).unwrap().surface().unwrap().rgba((d.x + v.center[0]) as i32, (d.y + v.center[1]) as i32);
+    assert!(px[1] > 0.9 && px[0] < 0.1 && px[2] < 0.1, "the background green, not the foreground blue: {px:?}");
 }

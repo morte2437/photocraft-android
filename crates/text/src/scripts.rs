@@ -106,7 +106,7 @@ impl Script {
             ],
             Hebrew => &["notosanshebrew", "notoserifhebrew", "segoeui", "arialhb", "sfhebrew", "dejavusans", "arial", "freesans", "culmus"],
             Armenian => &["notosansarmenian", "notoserifarmenian", "segoeui", "sylfaen", "mshtakan", "dejavusans", "freesans"],
-            Georgian => &["notosansgeorgian", "notoserifgeorgian", "segoeui", "sylfaen", "dejavusans", "freesans"],
+            Georgian => &["notosansgeorgian", "notoserifgeorgian", "segoeui", "sylfaen", "sfgeorgian", "dejavusans", "freesans"],
             Ethiopic => &["notosansethiopic", "notoserifethiopic", "ebrima", "kefa", "abyssinicasil"],
             Devanagari => &[
                 "notosansdevanagari",

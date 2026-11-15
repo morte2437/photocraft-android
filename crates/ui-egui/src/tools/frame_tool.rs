@@ -63,13 +63,16 @@ fn drawn(start: [f64; 2], cur: [f64; 2], square: bool, centred: bool) -> [i64; 4
     let [x, y] = cur;
     let (mut dx, mut dy) = (x - sx, y - sy);
     if square {
-        let side = dx.abs().max(dy.abs());
+        // Shift squares from the drag's shorter side, as the reference application does (#13865).
+        let side = dx.abs().min(dy.abs());
         dx = side.copysign(dx);
         dy = side.copysign(dy);
     }
     let (a, b) = if centred { ([sx - dx, sy - dy], [sx + dx, sy + dy]) } else { (start, [sx + dx, sy + dy]) };
     [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(|v| v.round() as i64)
 }
+#[cfg(test)]
+mod shift_square_tests;
 pub fn selected(app: &PhotocraftApp) -> Option<&Layer> {
     let st = app.session.active()?;
     let id = photocraft_engine::frame_cmds::frame_of(&st.doc, st.active_layer?)?;
@@ -340,6 +343,43 @@ pub fn cancel(app: &mut PhotocraftApp) {
     app.ui.frame_tool.drag = None;
     app.frame_preview = None;
 }
+/// Escape during a drag. A frame being drawn is made at the pointer, as the reference application
+/// does (#13866); the mouse movement and release after it change nothing. Moving, resizing or
+/// rotating an existing frame is cancelled.
+pub fn escape(app: &mut PhotocraftApp) {
+    let Some(FrameDrag::New { start, cur, square, centred, doc, revision }) = app.ui.frame_tool.drag.clone() else {
+        cancel(app);
+        return;
+    };
+    cancel(app);
+    if app.session.active().is_some_and(|st| st.doc.id == doc && st.revision == revision) {
+        commit_new(app, start, cur, square, centred);
+    }
+}
+/// Make the frame drawn from `start` to `cur`, unless the drag was a click or drew nothing.
+fn commit_new(app: &mut PhotocraftApp, start: [f64; 2], cur: [f64; 2], square: bool, centred: bool) {
+    if (cur[0] - start[0]).hypot(cur[1] - start[1]) * f64::from(app.point_zoom()) < CLICK_PX {
+        return;
+    }
+    let r = drawn(start, cur, square, centred);
+    if r[2] <= r[0] || r[3] <= r[1] {
+        return;
+    }
+    let mut p = shape_params(app, r);
+    if let Some(id) = content_layer(app, r) {
+        p["layer"] = json!(id);
+    }
+    match app.run("layer.new.frame", p) {
+        Ok(v) => {
+            if let Some(id) = v.get("layer").and_then(Value::as_u64) {
+                select(app, LayerId(id), Target::Frame);
+            }
+        }
+        Err(e) => report(app, Err(e)),
+    }
+}
+#[cfg(test)]
+mod escape_commit_tests;
 /// A native double click (also driven by ui.click count=2) toggles content-only selection.
 pub fn double_click(app: &mut PhotocraftApp, p: [f64; 2]) {
     let Some(id) = frame_at(app, p) else { return };
@@ -463,31 +503,18 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                 return true;
             }
             match d {
-                FrameDrag::New { start, .. } => {
-                    if (x - start[0]).hypot(y - start[1]) * f64::from(app.point_zoom()) < CLICK_PX {
-                        return true;
-                    }
-                    let r = drawn(start, [x, y], mods.shift, mods.alt);
-                    if r[2] <= r[0] || r[3] <= r[1] {
-                        return true;
-                    }
-                    let mut p = shape_params(app, r);
-                    if let Some(id) = content_layer(app, r) {
-                        p["layer"] = json!(id);
-                    }
-                    match app.run("layer.new.frame", p) {
-                        Ok(v) => {
-                            if let Some(id) = v.get("layer").and_then(Value::as_u64) {
-                                select(app, LayerId(id), Target::Frame);
-                            }
-                        }
-                        Err(e) => report(app, Err(e)),
-                    }
-                }
+                FrameDrag::New { start, .. } => commit_new(app, start, [x, y], mods.shift, mods.alt),
                 FrameDrag::Edit { layer, original, start, mode, .. } => {
                     let transform = edit_transform(&original, mode, start, [x, y], mods);
                     if transform != original.transform {
-                        let r = app.run("layer.frame.set", json!({"layer":layer.0,"transform":transform.m}));
+                        let mut p = json!({"layer":layer.0,"transform":transform.m});
+                        // Moving an empty frame is a "Move" step (#13880). Handle drags, and a
+                        // frame with an image (not measured yet), keep "Frame Properties".
+                        let empty = app.session.active().and_then(|st| st.doc.layer(layer)).is_some_and(|l| l.children().is_none_or(<[Layer]>::is_empty));
+                        if mode == EditMode::Move && empty {
+                            p["historyName"] = json!("Move");
+                        }
+                        let r = app.run("layer.frame.set", p);
                         report(app, r);
                     }
                 }
@@ -868,3 +895,5 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     }
     false
 }
+#[cfg(test)]
+mod move_history_tests;

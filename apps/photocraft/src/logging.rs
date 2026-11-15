@@ -244,6 +244,17 @@ pub struct LogFile {
 /// One formatted log line: `<timestamp> <LEVEL> [<thread>] <target>: <message>\n`.
 pub fn format_line(ts: &str, level: log::Level, thread: &str, target: &str, message: &str) -> String {
     let message = message.strip_suffix('\n').unwrap_or(message);
+    // A message cannot forge a record or inject terminal controls: continuation lines are
+    // indented (a record starts with a timestamp) and other control characters are escaped.
+    let message: String = message
+        .chars()
+        .flat_map(|c| match c {
+            '\n' => "\n    ".chars().collect::<Vec<_>>(),
+            '\r' => vec!['\\', 'r'],
+            c if c.is_control() && c != '\t' => c.escape_default().collect(),
+            c => vec![c],
+        })
+        .collect();
     format!("{ts} {level:<5} [{thread}] {target}: {message}\n")
 }
 
@@ -560,8 +571,10 @@ mod tests {
             format_line("2026-10-08T07:59:17.728Z", log::Level::Warn, "main", "photocraft::gpu_startup", "GPU startup marker: denied"),
             "2026-10-08T07:59:17.728Z WARN  [main] photocraft::gpu_startup: GPU startup marker: denied\n"
         );
-        // A multi-line message (a panic with a backtrace) keeps its lines; the record still ends in one newline.
-        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\nb\n"));
+        // A multi-line message (a panic with a backtrace) keeps its lines, indented; the record still ends in one newline.
+        assert!(format_line("t", log::Level::Error, "w", "x", "a\nb\n").ends_with("x: a\n    b\n"));
+        let forged = format_line("t", log::Level::Error, "w", "x", "a\r\n2026 INFO forged\x1b[2J");
+        assert!(forged.lines().all(|l| !l.starts_with("2026")) && !forged.contains('\x1b') && !forged.contains('\r'));
     }
 
     #[test]

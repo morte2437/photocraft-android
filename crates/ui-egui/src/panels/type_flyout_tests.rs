@@ -293,8 +293,8 @@ fn red_eye_is_in_the_j_flyout() {
     let j = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).find(|slot| slot.contains(&Tool::SpotHealing)).expect("J group");
     assert!(j.contains(&Tool::RedEye), "{j:?}");
     assert_eq!(j.last(), Some(&Tool::RedEye));
-    // Remove leads the flyout, so the slot shows it until another J tool is picked.
-    assert_eq!(j.first(), Some(&Tool::Remove));
+    // Spot Healing Brush leads the flyout, so the slot shows it until another J tool is picked.
+    assert_eq!(j.first(), Some(&Tool::SpotHealing));
 }
 
 #[test]
@@ -348,8 +348,8 @@ fn long_press_brush_selects_color_replacement() {
     frame(&mut app, &ctx, 0.1, vec![]);
     let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&Tool::Brush)).unwrap();
     let slot = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).nth(index).copied().unwrap();
-    // Photoshop's Brush group, Color Replacement after the Mixer Brush.
-    assert_eq!(slot, &[Tool::Brush, Tool::Pencil, Tool::MixerBrush, Tool::ColorReplacement]);
+    // Photoshop's Brush group, Color Replacement before the Mixer Brush.
+    assert_eq!(slot, &[Tool::Brush, Tool::Pencil, Tool::ColorReplacement, Tool::MixerBrush]);
     let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
     let mut buttons: Vec<Rect> = ctx.viewport(|v| {
         v.prev_pass
@@ -369,8 +369,8 @@ fn long_press_brush_selects_color_replacement() {
     frame(&mut app, &ctx, 1.45, vec![]);
     let key = egui::Id::unique(("tool-slot", index));
     let menu = ctx.memory(|m| m.area_rect(key.with("flyout"))).unwrap();
-    // The last of the four 26-point rows.
-    let row = egui::pos2(menu.left() + 65.0, menu.bottom() - 20.0);
+    // The third of the four 26-point rows.
+    let row = egui::pos2(menu.left() + 65.0, menu.bottom() - 46.0);
     frame(&mut app, &ctx, 2.0, vec![egui::Event::PointerMoved(row), pointer(row, true)]);
     frame(&mut app, &ctx, 2.05, vec![pointer(row, false)]);
     assert_eq!(app.ui.tool, Tool::ColorReplacement);
@@ -448,6 +448,67 @@ fn next_slot_tool_wraps_around_the_flyout() {
     assert_eq!(next_slot_tool(&slot, Tool::Brush), Tool::EllipseMarquee, "unknown from → after the first");
     // Empty slot: no panic, the current tool stays.
     assert_eq!(next_slot_tool(&[], Tool::Brush), Tool::Brush);
+}
+
+#[test]
+fn slot_tool_is_the_current_tool_else_the_slots_last_else_its_first() {
+    let lasso = [Tool::Lasso, Tool::PolygonLasso, Tool::MagneticLasso];
+    assert_eq!(slot_tool(Tool::Move, &[], &lasso), Tool::Lasso);
+    let used = [Tool::Brush, Tool::PolygonLasso, Tool::Lasso];
+    assert_eq!(slot_tool(Tool::Move, &used, &lasso), Tool::PolygonLasso);
+    assert_eq!(slot_tool(Tool::MagneticLasso, &used, &lasso), Tool::MagneticLasso);
+    // Polygonal Lasso hidden in Edit › Toolbar: the slot falls back on the next one used.
+    assert_eq!(slot_tool(Tool::Move, &used, &[Tool::Lasso, Tool::MagneticLasso]), Tool::Lasso);
+    // Slots don't line up with keys: Blur's slot and the two single marquees have no key at all,
+    // and the Hand slot has two.
+    let used = [Tool::Sharpen, Tool::SingleRowMarquee, Tool::RotateView];
+    assert_eq!(slot_tool(Tool::Move, &used, &[Tool::Blur, Tool::Sharpen, Tool::Smudge]), Tool::Sharpen);
+    let marquee = [Tool::RectMarquee, Tool::EllipseMarquee, Tool::SingleRowMarquee, Tool::SingleColumnMarquee];
+    assert_eq!(slot_tool(Tool::Move, &used, &marquee), Tool::SingleRowMarquee);
+    assert_eq!(slot_tool(Tool::Move, &used, &[Tool::Hand, Tool::RotateView]), Tool::RotateView);
+    // Empty slot: no panic, the current tool stays.
+    assert_eq!(slot_tool(Tool::Brush, &used, &[]), Tool::Brush);
+}
+
+/// #3569: after a restart a slot is still on the tool it was left on, whichever tool is selected:
+/// a click picks that tool, not the slot's first.
+#[test]
+fn slots_come_back_on_their_last_tool_after_a_restart() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.prefs.edit(|p| p.group_tools = json!(["PolygonLasso", "PaintBucket", "Pencil", "Sharpen", "SingleRowMarquee"]));
+    crate::tool_memory::restore(&mut app);
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+    frame(&mut app, &ctx, 0.0, vec![]);
+    frame(&mut app, &ctx, 0.1, vec![]);
+    let bx = if Tokens::get(&ctx).pro { 30.0 } else { 36.0 };
+    let mut buttons: Vec<Rect> = ctx.viewport(|v| {
+        v.prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, w)| w.iter())
+            .filter(|w| w.rect.size() == egui::Vec2::splat(bx) && w.sense.senses_click())
+            .map(|w| w.rect)
+            .collect()
+    });
+    buttons.sort_by(|a, b| a.top().total_cmp(&b.top()));
+    let pointer = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    let slots = [
+        (Tool::Brush, Tool::Pencil),
+        (Tool::Gradient, Tool::PaintBucket),
+        (Tool::Lasso, Tool::PolygonLasso),
+        (Tool::Blur, Tool::Sharpen),
+        (Tool::RectMarquee, Tool::SingleRowMarquee),
+    ];
+    for (i, (first, last)) in slots.into_iter().enumerate() {
+        let index = TOOL_SECTIONS.iter().flat_map(|section| section.iter()).position(|slot| slot.contains(&first)).unwrap();
+        let at = buttons[index].center();
+        let t = 1.0 + i as f64;
+        frame(&mut app, &ctx, t, vec![egui::Event::PointerMoved(at), pointer(at, true)]);
+        frame(&mut app, &ctx, t + 0.05, vec![pointer(at, false)]);
+        frame(&mut app, &ctx, t + 0.1, vec![]);
+        assert_eq!(app.ui.tool, last);
+    }
 }
 
 /// Edit › Toolbar hidden tools shrink the Alt-click cycle to the remaining flyout members.

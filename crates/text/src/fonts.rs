@@ -78,6 +78,9 @@ pub const LAO_FAMILIES: &[&str] = &["Lao Sangam MN", "Lao MN", "Lao UI", "Noto S
 /// Myanmar/Burmese-capable families: macOS (Myanmar Sangam MN, Myanmar MN), Windows (Myanmar Text)
 /// and Linux (Noto).
 pub const MYANMAR_FAMILIES: &[&str] = &["Myanmar Sangam MN", "Myanmar MN", "Myanmar Text", "Noto Sans Myanmar"];
+/// Georgian-capable families: craft-fonts and Linux (Noto), Windows (Sylfaen), macOS (".SF Georgian",
+/// a hidden system face). Georgian in a font without Mkhedruli glyphs falls back to these.
+pub const GEORGIAN_FAMILIES: &[&str] = &["Noto Sans Georgian", "Noto Serif Georgian", "Sylfaen", ".SF Georgian"];
 /// Indic-script families for document text. Windows has `Nirmala UI` for all nine scripts (from
 /// Windows 8); macOS has the Kohinoor and Sangam MN families; Linux has Noto Sans. Indic text in a
 /// font without these glyphs had no candidate to fall back to and drew .notdef boxes (#218).
@@ -121,6 +124,7 @@ pub fn fallback_candidates(order: &[crate::cjk::CjkScript; 4]) -> Vec<&'static s
     v.extend_from_slice(KHMER_FAMILIES);
     v.extend_from_slice(LAO_FAMILIES);
     v.extend_from_slice(MYANMAR_FAMILIES);
+    v.extend_from_slice(GEORGIAN_FAMILIES);
     for fams in INDIC_FAMILIES {
         for f in *fams {
             // Nirmala UI covers all nine scripts and is listed by each; probe it once.
@@ -293,6 +297,12 @@ impl FontDb {
     /// Registers font data (TTF/OTF, or every face of a TTC/OTC). Returns the family names added.
     pub fn register_font_data(&mut self, bytes: Vec<u8>) -> Vec<String> {
         self.register_blob(Blob::new(Arc::new(bytes)), None)
+    }
+
+    /// [`Self::register_font_data`] with the family name overridden, so an embedded subset can be
+    /// registered under a name that cannot shadow an installed full family. Returns the names added.
+    pub fn register_font_data_as(&mut self, bytes: Vec<u8>, family: &str) -> Vec<String> {
+        self.register_blob(Blob::new(Arc::new(bytes)), Some(family))
     }
 
     /// Registers embedded font data without copying it.

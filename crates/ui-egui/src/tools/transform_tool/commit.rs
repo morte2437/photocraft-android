@@ -130,6 +130,9 @@ pub(crate) fn committing(app: &PhotocraftApp) -> Option<JobId> {
 /// A job ended (see [`crate::jobs_ui`]): when it was the commit, the session ends with it. Its
 /// status and errors are reported like any job's.
 pub fn on_job_event(app: &mut PhotocraftApp, e: &JobEvent) {
+    if super::begin::on_prepared(app, e) {
+        return;
+    }
     if committing(app) != Some(e.id) {
         return;
     }
@@ -205,11 +208,30 @@ pub fn end_if_left(app: &mut PhotocraftApp) {
     }
 }
 
-/// Another tool picked, or (outside Transform Selection) another layer selected, since the box
-/// opened: the session ends ([`end_if_left`], #1400).
+/// Another tool picked, or (outside Transform Selection) another layer selected or the selected
+/// layers changed, since the box opened: the session ends ([`end_if_left`], #1400, #11101).
 fn switched_away(app: &PhotocraftApp) -> bool {
     let (Some(t), Some(st)) = (&app.ui.transform, app.session.active()) else { return false };
-    app.transform_preview.as_ref().is_some_and(|pv| pv.tool != app.ui.tool) || (!t.selection && st.active_layer.is_some_and(|active| active.0 != t.layer))
+    let opened = app.transform_preview.as_ref().and_then(|pv| pv.follow.as_ref()).and_then(|f| f.selected.as_deref());
+    app.transform_preview.as_ref().is_some_and(|pv| pv.tool != app.ui.tool)
+        || (!t.selection && st.active_layer.is_some_and(|active| active.0 != t.layer))
+        || selected_layers_changed(st, t, opened)
+}
+
+/// A layer's box no longer matches the Layers panel's selection it opened with (`opened`): a layer
+/// was added to the selection or taken out of it, a group's child included. Photoshop applies the
+/// box first, to the layers it moves, and doesn't open it again (#11101). The selection itself is
+/// compared, not the layers the box moves: those also hold the layers linked to it (#11217) and
+/// leave out the children of a selected group. Boxes over a selection, a mask or channel, a path,
+/// a placed file or Content-Aware Scale don't follow the selection.
+fn selected_layers_changed(st: &photocraft_engine::DocState, t: &TransformSession, opened: Option<&[LayerId]>) -> bool {
+    if t.selection || t.target.is_some() || t.path.is_some() || t.made == Some(MadeLayer::Place) || t.content_aware.is_some() {
+        return false;
+    }
+    let Some(opened) = opened else { return false };
+    let mut now = st.selected_layers();
+    now.sort_unstable();
+    now != opened
 }
 
 /// Edits made while the box is open show in the preview at once, not only after the commit
@@ -307,6 +329,9 @@ pub(crate) fn nudge(app: &mut PhotocraftApp, dx: f64, dy: f64) {
 /// Save for Web (Legacy): refused under an open box, as it would export without the preview (#6737).
 pub(crate) const SAVE_FOR_WEB: &str = "file.export.saveForWebLegacy";
 
+/// Layer › Copy CSS: refused under an open box too, as it would copy the bounds from before it.
+const COPY_CSS: &str = photocraft_engine::layer_css_cmds::ID;
+
 /// While transforming, Undo and Redo apply to the box: `Some(enabled)` for those commands (and
 /// Toggle Last State, which would change the document under the box), `None` for the rest.
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
@@ -330,7 +355,8 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
         // No Toggle Last State or history jump under the box, and one box at a time.
         "edit.toggleLastState" | "history.selectState" | "edit.contentAwareScale" | "edit.puppetWarp" => Some(false),
         // Save for Web exports the committed document and would ignore the pending box (#6737).
-        SAVE_FOR_WEB => Some(false),
+        // Copy CSS, likewise, would copy the layers' bounds from before the box.
+        SAVE_FOR_WEB | COPY_CSS => Some(false),
         // Rotate and Flip turn the box (not while warping, where the mesh is the box).
         _ if box_preset(id).is_some() => Some(t.warp.is_none()),
         // One box over several layers doesn't warp (#6501).
@@ -378,7 +404,8 @@ fn box_preset(id: &str) -> Option<(f64, f64, f64)> {
 /// `None` for other commands or when not transforming.
 /// The commands the open box answers itself ([`is_enabled`], [`intercept`]).
 fn box_command(id: &str) -> bool {
-    matches!(id, "edit.undo" | "edit.redo" | "edit.toggleLastState" | "edit.contentAwareScale" | "edit.puppetWarp" | SAVE_FOR_WEB) || box_preset(id).is_some()
+    matches!(id, "edit.undo" | "edit.redo" | "edit.toggleLastState" | "edit.contentAwareScale" | "edit.puppetWarp" | SAVE_FOR_WEB | COPY_CSS)
+        || box_preset(id).is_some()
 }
 
 pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Value, String>> {
@@ -389,7 +416,7 @@ pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json:
     match id {
         "edit.undo" => Some(Ok(step(app, false))),
         "edit.redo" => Some(Ok(step(app, true))),
-        "edit.toggleLastState" | "history.selectState" | "edit.contentAwareScale" | "edit.puppetWarp" | SAVE_FOR_WEB => {
+        "edit.toggleLastState" | "history.selectState" | "edit.contentAwareScale" | "edit.puppetWarp" | SAVE_FOR_WEB | COPY_CSS => {
             Some(Err("Commit or cancel the transform first".into()))
         }
         _ => {
@@ -416,6 +443,15 @@ fn step(app: &mut PhotocraftApp, redo: bool) -> serde_json::Value {
     let Some(step) = from.pop() else { return serde_json::Value::Null };
     to.push(Step::of(t));
     s.settled = Some(step.clone());
+    let (had_warp, rect, quad) = (t.warp.is_some(), t.rect, t.quad);
     step.restore(t);
+    // Across the Warp boundary, a stored warp's edit shows other texels (begin.rs): the step
+    // brings its own box, so only the texels swap, and the other mode keeps the box it left.
+    if had_warp != t.warp.is_some()
+        && let Some(o) = pv.other_texels.as_mut()
+    {
+        std::mem::swap(&mut pv.texture, &mut o.texture);
+        (o.rect, o.quad) = (rect, quad);
+    }
     json!({"transform": t})
 }

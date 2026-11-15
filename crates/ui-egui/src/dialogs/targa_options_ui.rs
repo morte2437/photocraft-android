@@ -29,7 +29,7 @@ pub struct Prompt {
 
 /// `true` when `path` names a Targa (`.tga`, and the rarer `.icb`, `.vda`, `.vst`).
 pub fn is_tga_path(path: &str) -> bool {
-    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_codecs::from_extension(&e)) == Some(photocraft_codecs::Format::Tga)
+    photocraft_engine::file_cmds::extension(path).and_then(|e| photocraft_formats::from_extension(&e)) == Some(photocraft_formats::Format::Tga)
 }
 
 /// Whether saving the active document to `path` asks for Targa Options: an RGB Targa. Grayscale
@@ -87,7 +87,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.write_answered_save(ctx, p.doc, p.path, &settings, p.copy, (p.record, step));
     } else if cancel {
         app.targa_options = None;
-        app.ui.status = tl!("Save cancelled").into();
+        app.ui.status = tl!("Save canceled").into();
         app.ui.status_error = false;
     }
 }

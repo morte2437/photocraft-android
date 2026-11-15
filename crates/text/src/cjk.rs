@@ -136,16 +136,28 @@ fn os_locale() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn os_locale() -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new("reg")
-        .args(["query", "HKCU\\Control Panel\\International", "/v", "LocaleName"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
+    let out = locale_query().output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     // "    LocaleName    REG_SZ    ja-JP"
     text.lines().find(|l| l.contains("LocaleName")).and_then(|l| l.split_whitespace().last()).map(str::to_string)
+}
+
+/// `reg query` for the UI locale, with `reg.exe` by full path: by bare name, Windows first looks in
+/// the app's own folder, so a `reg.exe` lying next to a portable PhotoCraft would start (#9666).
+#[cfg(target_os = "windows")]
+fn locale_query() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = std::process::Command::new(windows_root(std::env::var_os("SystemRoot")).join("System32").join("reg.exe"));
+    cmd.args(["query", "HKCU\\Control Panel\\International", "/v", "LocaleName"]).creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// The Windows folder for the `SystemRoot` value `system_root`: `C:\Windows` when it is unset or
+/// not an absolute path (a relative one would resolve against the working directory).
+#[cfg(target_os = "windows")]
+fn windows_root(system_root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    system_root.map(std::path::PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -565,7 +577,12 @@ fn family_name_matches(font: &skrifa::FontRef<'_>, family: &str, budget: &mut us
 fn face_tables_are_readable(font: &skrifa::raw::FontRef<'_>) -> bool {
     let directory = font.table_directory();
     let records = directory.table_records();
-    !records.is_empty() && records.len() == usize::from(directory.num_tables()) && records.iter().all(|record| font.table_data(record.tag()).is_some())
+    // Each record's own range against the file, in one pass: `table_data(tag)` searches the
+    // (unsorted) directory per tag, which is quadratic in the table count.
+    let len = u64::try_from(font.data().len()).unwrap_or(u64::MAX);
+    !records.is_empty()
+        && records.len() == usize::from(directory.num_tables())
+        && records.iter().all(|record| u64::from(record.offset()) + u64::from(record.length()) <= len)
 }
 
 /// Whether face `index` of a font file or collection has a complete, in-bounds table directory.
@@ -592,7 +609,7 @@ pub fn font_file_is_readable(bytes: &[u8]) -> bool {
 
     match FileRef::new(bytes) {
         Ok(FileRef::Font(font)) => face_tables_are_readable(&font),
-        Ok(FileRef::Collection(faces)) => faces.iter().any(|face| face.is_ok_and(|font| face_tables_are_readable(&font))),
+        Ok(FileRef::Collection(faces)) => faces.iter().take(MAX_COLLECTION_FACES).any(|face| face.is_ok_and(|font| face_tables_are_readable(&font))),
         Err(_) => false,
     }
 }
@@ -653,6 +670,30 @@ pub fn face_index_for_family(bytes: &[u8], family: &str) -> u32 {
 mod tests {
     use super::*;
     use CjkScript::*;
+
+    /// `reg.exe` runs from System32, not from wherever a bare name would find one first (#9666),
+    /// and the query still answers the UI locale.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn locale_query_runs_the_system_reg() {
+        let cmd = locale_query();
+        let system = windows_root(std::env::var_os("SystemRoot")).join("System32").join("reg.exe");
+        assert_eq!(std::path::Path::new(cmd.get_program()), system);
+        assert!(os_locale().is_some_and(|l| !l.is_empty()));
+    }
+
+    /// `SystemRoot` unset or relative (which would resolve against the working directory) falls
+    /// back to `C:\Windows`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_windows_folder_falls_back_when_system_root_is_unset_or_relative() {
+        use std::path::PathBuf;
+        assert_eq!(windows_root(Some(r"D:\WinNT".into())), PathBuf::from(r"D:\WinNT"));
+        assert_eq!(windows_root(None), PathBuf::from(r"C:\Windows"));
+        assert_eq!(windows_root(Some(r"Windows".into())), PathBuf::from(r"C:\Windows"));
+        assert_eq!(windows_root(Some(r"\Windows".into())), PathBuf::from(r"C:\Windows"));
+        assert_eq!(windows_root(Some("".into())), PathBuf::from(r"C:\Windows"));
+    }
 
     #[test]
     fn explicit_locale_scripts_are_distinct_from_the_non_cjk_default() {
@@ -847,6 +888,28 @@ mod tests {
         // The first directory record begins at 12; its offset occupies bytes 20..24.
         missing_table[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(!font_file_is_readable(&missing_table), "a complete directory cannot point outside the file");
+    }
+
+    #[test]
+    fn a_directory_of_many_tables_is_validated_in_one_pass() {
+        // 60000 distinct tags, all in range: a per-tag directory search would be quadratic.
+        let n = 60_000u32;
+        let mut font = 0x0001_0000u32.to_be_bytes().to_vec();
+        font.extend((n as u16).to_be_bytes());
+        font.extend([0u8; 6]);
+        let data_at = 12 + 16 * n;
+        for i in 0..n {
+            font.extend([b'a' + (i / 26 / 26 / 26 % 26) as u8, b'a' + (i / 26 / 26 % 26) as u8, b'a' + (i / 26 % 26) as u8, b'a' + (i % 26) as u8]);
+            font.extend(0u32.to_be_bytes());
+            font.extend(data_at.to_be_bytes());
+            font.extend(4u32.to_be_bytes());
+        }
+        font.extend([0u8; 4]);
+        let start = std::time::Instant::now();
+        assert!(font_file_is_readable(&font));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        font[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(!font_file_is_readable(&font));
     }
 
     /// A readable collection can contain a malformed non-selected face, so the file-level check

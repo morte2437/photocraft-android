@@ -33,9 +33,13 @@ fn check_packet(raw: &str) -> Result<()> {
     if raw.contains('\0') {
         return Err(bad("`rawData` can't contain NUL characters"));
     }
-    let xml = photocraft_io::xml::parse(raw, roxmltree::ParsingOptions::default()).map_err(|e| bad(format!("`rawData` isn't well-formed XML: {e}")))?;
-    let root = xml.root_element().tag_name();
-    let xmp = matches!((root.namespace(), root.name()), (Some("adobe:ns:meta/"), "xmpmeta") | (Some("http://www.w3.org/1999/02/22-rdf-syntax-ns#"), "RDF"));
+    let namespaces = [("x", "adobe:ns:meta/"), ("rdf", "http://www.w3.org/1999/02/22-rdf-syntax-ns#")];
+    let canonical = craft_xml::Canonical::new(&namespaces);
+    let options = craft_xml::Options { doctype: craft_xml::Doctype::Reject, ..craft_xml::Options::canonical(&canonical) }
+        .with_limits(craft_xml::Limits { max_input: MAX_LAYER_XMP, max_depth: 512, ..craft_xml::Limits::default() })
+        .strict();
+    let xml = options.parse(raw.as_bytes()).map_err(|e| bad(format!("`rawData` isn't well-formed XML: {e}")))?;
+    let xmp = matches!(xml.name.as_str(), "x:xmpmeta" | "rdf:RDF");
     if !xmp {
         return Err(bad("`rawData` must be an XMP packet: its root element is x:xmpmeta or rdf:RDF"));
     }

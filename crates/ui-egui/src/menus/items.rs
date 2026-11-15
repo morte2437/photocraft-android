@@ -36,12 +36,14 @@ pub fn is_live(id: &str) -> bool {
 }
 
 /// Commands outside the catalogue that belong right after a catalogue item: `(id, after)`.
-/// The command takes that item's submenu path, so it joins Photoshop's submenu even where the
-/// catalogue spells it differently (Filter › "Other…").
+/// The command takes that item's submenu path, so it joins the catalogue's submenu rather than
+/// opening a second one spelled from its own id (Filter › Other).
 const PLACE_AFTER: &[(&str, &str)] = &[
     ("file.newFromClipboard", "file.new"),
     ("filter.render.relight", "filter.render.lightingEffects"),
-    ("view.resetView", "view.flipHorizontal"),
+    ("view.rotateLeft", "view.flipHorizontal"),
+    ("view.rotateRight", "view.rotateLeft"),
+    ("view.resetView", "view.rotateRight"),
     ("filter.other.colorToAlpha", "filter.other.offset"),
 ];
 
@@ -137,7 +139,7 @@ pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
         item.label = reveal_label().into();
     }
     // File › Open Recent: a dynamic submenu of recently opened files (inserted after "Open As…").
-    if let Some(after) = items.iter().position(|i| i.id == "file.openAs") {
+    if let Some(after) = items.iter().position(|i| i.id == "file.openAsSmartObject").or_else(|| items.iter().position(|i| i.id == "file.openAs")) {
         let rp: Vec<String> = vec!["File".into(), "Open Recent".into()];
         let mut recent: Vec<MenuItem> = app
             .ui
@@ -154,7 +156,7 @@ pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
         }
         recent.push(MenuItem {
             id: "file.clearRecent".into(),
-            label: "Clear Recent Files".into(),
+            label: "Clear Recent File List".into(),
             path: rp.clone(),
             shortcut: None,
             enabled: !app.ui.recent_files.is_empty(),

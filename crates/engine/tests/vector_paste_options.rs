@@ -18,14 +18,14 @@ fn raster_clip_cannot_silently_paste_as_path() {
 
 use std::sync::Arc;
 
+use craft_psd::{
+    atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
+    descriptor::{Class, Descriptor, Id, UnicodeString, Value as D},
+};
 use photocraft_color::{ColorMode, SampleType};
 use photocraft_doc::{Fill, Layer, LayerContent, Path, Subpath};
 use photocraft_engine::{actions_cmds::Action, atn_cmds, edit_cmds::Clip};
 use photocraft_geom::{Point, Size};
-use photocraft_psd::{
-    atn::{self, AtnAction, AtnEvent, AtnFile, AtnItem},
-    descriptor::{Class, Descriptor, Id, UnicodeString, Value as D},
-};
 use serde_json::Value;
 
 const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="8"><path d="M1 1 C2 0 8 0 9 1 L9 7 L1 7 Z" fill="#ff0000" stroke="#0000ff" stroke-width="1"/></svg>"##;

@@ -1,5 +1,6 @@
 use super::begin::{enter_warp, interpolation_preference, leave_warp, warps_type};
 use super::commit::{cancel, commit};
+use super::cylinder::cylinder_default;
 use super::pointer::point_on_quad;
 use super::warp::edit_session_warp;
 use super::{BezierMesh, Homography, PhotocraftApp, SplitTool, Stroke, TransformSession, Warp, WarpStyle, json, vec2};
@@ -266,8 +267,89 @@ fn reference_point_toggle(ui: &mut egui::Ui, on: &mut bool) -> bool {
     // The catalogue's "Toggle reference point" (sentence case, like the grid's tooltip).
     let label = tl!("Toggle reference point");
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, *on, label));
-    resp.on_hover_text(label);
+    resp.on_hover_text(label).on_disabled_hover_text(label);
     *on
+}
+
+/// Where the reference point was when the session opened: the point of the original box that the
+/// box's transform has carried to the reference point now. A box that only scales or turns about
+/// its reference point leaves it in place; a moved box carries it along.
+fn reference_point_origin(rect: [f64; 4], quad: [[f64; 2]; 4], pivot: [f64; 2]) -> [f64; 2] {
+    if let Some(h) = Homography::rect_to_quad(rect, quad).and_then(|h| h.inverse()) {
+        let (x, y) = h.apply(pivot[0], pivot[1]);
+        if x.is_finite() && y.is_finite() {
+            return [x, y];
+        }
+    }
+    // A flattened box has no inverse. Fit the map's linear part about the box's centre and use
+    // its pseudo-inverse: the collapsed direction adds nothing, so a box squashed about its
+    // reference point reads no offset and one squashed toward an edge reads how far it moved.
+    let (w, h) = (rect[2] - rect[0], rect[3] - rect[1]);
+    let centre = [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0];
+    let mid = [quad.iter().map(|q| q[0]).sum::<f64>() / 4.0, quad.iter().map(|q| q[1]).sum::<f64>() / 4.0];
+    let d = [pivot[0] - mid[0], pivot[1] - mid[1]];
+    if !(w.abs() > f64::EPSILON && h.abs() > f64::EPSILON) {
+        return [centre[0] + d[0], centre[1] + d[1]];
+    }
+    // Columns: where a unit step along the box's width and height goes.
+    let ex = [(quad[1][0] - quad[0][0] + quad[2][0] - quad[3][0]) / (2.0 * w), (quad[1][1] - quad[0][1] + quad[2][1] - quad[3][1]) / (2.0 * w)];
+    let ey = [(quad[3][0] - quad[0][0] + quad[2][0] - quad[1][0]) / (2.0 * h), (quad[3][1] - quad[0][1] + quad[2][1] - quad[1][1]) / (2.0 * h)];
+    let det = ex[0] * ey[1] - ey[0] * ex[1];
+    let norm2 = ex[0] * ex[0] + ex[1] * ex[1] + ey[0] * ey[0] + ey[1] * ey[1];
+    let back = if det.abs() > 1e-9 * norm2.max(1e-12) {
+        [(ey[1] * d[0] - ey[0] * d[1]) / det, (ex[0] * d[1] - ex[1] * d[0]) / det]
+    } else if norm2 > 1e-12 {
+        // Rank one: the pseudo-inverse is the transpose over the squared norm.
+        [(ex[0] * d[0] + ex[1] * d[1]) / norm2, (ey[0] * d[0] + ey[1] * d[1]) / norm2]
+    } else {
+        [0.0, 0.0]
+    };
+    let o = [centre[0] + back[0], centre[1] + back[1]];
+    if o[0].is_finite() && o[1].is_finite() { o } else { pivot }
+}
+
+fn shown_at(rect: [f64; 4], quad: [[f64; 2]; 4], pivot: [f64; 2], relative: bool) -> [f64; 2] {
+    if relative {
+        let o = reference_point_origin(rect, quad, pivot);
+        [pivot[0] - o[0], pivot[1] - o[1]]
+    } else {
+        pivot
+    }
+}
+
+/// X and Y as the options bar shows them: the reference point's position, or with relative
+/// positioning on (#11679) its offset from where it was when the session opened.
+pub(crate) fn position_shown(t: &TransformSession, relative: bool) -> [f64; 2] {
+    shown_at(t.rect, t.quad, t.pivot, relative)
+}
+
+/// Moves the box (and its reference point) so X and Y read `xy` (see [`position_shown`]).
+pub(crate) fn set_position(s: &mut TransformSession, relative: bool, xy: [f64; 2]) {
+    let now = position_shown(s, relative);
+    let (dx, dy) = (xy[0] - now[0], xy[1] - now[1]);
+    s.quad = s.quad.map(|q| [q[0] + dx, q[1] + dy]);
+    s.pivot = [s.pivot[0] + dx, s.pivot[1] + dy];
+}
+
+/// Use Relative Positioning for Reference Point: the triangle button Photoshop puts between X and
+/// Y (#11679). On, X and Y are the reference point's offset from where the box started.
+fn relative_position_toggle(ui: &mut egui::Ui, on: &mut bool) {
+    let tk = crate::theme::Tokens::get(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+    }
+    let painter = ui.painter();
+    if *on || resp.hovered() {
+        painter.rect_filled(rect, 3.0, if *on { tk.accent.gamma_multiply(0.35) } else { tk.card_border.gamma_multiply(0.5) });
+    }
+    let c = rect.center();
+    let tri = vec![egui::pos2(c.x, c.y - 4.5), egui::pos2(c.x + 5.0, c.y + 4.0), egui::pos2(c.x - 5.0, c.y + 4.0)];
+    let color = if *on { tk.accent } else { tk.text_dim };
+    painter.add(egui::Shape::closed_line(tri, egui::Stroke::new(1.2, color)));
+    let label = tl!("Use relative positioning for reference point");
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, *on, label));
+    resp.on_hover_text(label);
 }
 
 fn anchor_grid_widget(ui: &mut egui::Ui, current_anchor: Option<usize>, enabled: bool) -> Option<usize> {
@@ -292,7 +374,7 @@ fn anchor_grid_widget(ui: &mut egui::Ui, current_anchor: Option<usize>, enabled:
             painter.rect_filled(pt_rect, 0.5, if enabled { color } else { color.gamma_multiply(0.4) });
         }
     }
-    resp.on_hover_text(tl!("Reference point location"));
+    resp.on_hover_text(tl!("Reference point location")).on_disabled_hover_text(tl!("Reference point location"));
     clicked
 }
 
@@ -314,18 +396,23 @@ pub(crate) fn position_size_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, t
         pivot = new_p;
     }
     ui.add_space(4.0);
-    let mut px = pivot[0] as f32;
-    let mut py = pivot[1] as f32;
+    let relative = app.ui.tool_options.transform_relative_position;
+    let shown = shown_at(t.rect, t.quad, pivot, relative);
+    let mut px = shown[0] as f32;
+    let mut py = shown[1] as f32;
     lbl(ui, "X:");
     let rx = crate::widgets::value_field(ui, &mut px, -POSITION_LIMIT_PX..=POSITION_LIMIT_PX, "px", 72.0).accessible_name("X");
+    relative_position_toggle(ui, &mut app.ui.tool_options.transform_relative_position);
     lbl(ui, "Y:");
     let ry = crate::widgets::value_field(ui, &mut py, -POSITION_LIMIT_PX..=POSITION_LIMIT_PX, "px", 72.0).accessible_name("Y");
     if (rx.changed() || ry.changed())
         && let Some(s) = app.ui.transform.as_mut()
     {
-        let (dx, dy) = (px as f64 - s.pivot[0], py as f64 - s.pivot[1]);
-        s.quad = s.quad.map(|q| [q[0] + dx, q[1] + dy]);
-        s.pivot = [px as f64, py as f64];
+        // An axis the user didn't edit keeps its full-precision value: the field's f32 would
+        // nudge the box by its rounding.
+        let x = if rx.changed() { f64::from(px) } else { shown[0] };
+        let y = if ry.changed() { f64::from(py) } else { shown[1] };
+        set_position(s, relative, [x, y]);
     }
     crate::widgets::vline(ui, 22.0);
     // W and H in the unit picked from their right-click menu: the scale in percent, or the box's
@@ -378,12 +465,22 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
     };
     // Type takes only the styles (#3004): Split and Grid are greyed, and there is no Custom.
     let on_type = warps_type(app);
+    // A cylinder has no splits or grid either (#4112): its handles are its own.
+    let cylinder = w.style == WarpStyle::Cylinder;
+    // Free Transform's reference point check box and grid keep their slots, greyed and inert, as
+    // in the reference (#12503): on, at the centre. The disabled `Ui` greys the grid once; its own
+    // greying (for Toggle Reference Point off) would dim it again.
+    ui.add_enabled_ui(false, |ui| {
+        reference_point_toggle(ui, &mut true);
+        anchor_grid_widget(ui, Some(4), true);
+    });
+    crate::widgets::vline(ui, 22.0);
     // Split, Grid, then the warp style with its bend fields.
-    ui.add_enabled_ui(!on_type, |ui| warp_mesh_fields(app, ui, w));
+    ui.add_enabled_ui(!on_type && !cylinder, |ui| warp_mesh_fields(app, ui, w));
     crate::widgets::vline(ui, 22.0);
     lbl(ui, tl!("Warp:"));
     let mut style = w.style;
-    let opts: Vec<(WarpStyle, &str)> = WarpStyle::all().filter(|s| !(on_type && *s == WarpStyle::Custom)).map(|s| (s, s.label())).collect();
+    let opts: Vec<(WarpStyle, &str)> = warp_style_options(on_type).map(|s| (s, s.label())).collect();
     if crate::widgets::dropdown(ui, "warp-style", tl!("Warp"), &mut style, &opts, 120.0)
         && let Some(t) = app.ui.transform.as_mut()
     {
@@ -392,10 +489,13 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
             WarpStyle::Custom => Warp::custom(w.to_mesh(1, 1), b),
             WarpStyle::None if on_type => Warp::none(b),
             WarpStyle::None => Warp::custom(BezierMesh::identity(b, 1, 1), b),
+            // The cylinder the menu starts with over the box (a box too thin for one keeps its shape).
+            WarpStyle::Cylinder => cylinder_default(b).unwrap_or_else(|| Warp::custom(w.to_mesh(1, 1), b)),
             s => Warp { style: s, bend: if w.style.is_preset() { w.bend } else { 50.0 }, ..Warp::none(b) },
         });
     }
-    // Orientation and the bend fields are always there, and only act on a preset style.
+    // Orientation and the bend fields are always there, and only act on a preset style (a
+    // cylinder keeps them greyed, as the reference does: its handles are its only controls).
     let preset = w.style.is_preset();
     ui.add_enabled_ui(preset, |ui| {
         let orient = crate::icons::button(ui, "arrow-left-right", 26.0, w.vertical, tl!("Vertical"));
@@ -409,17 +509,40 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
         for (k, (name, v)) in fields.iter().enumerate() {
             lbl(ui, name);
             let mut f = *v as f32;
-            if crate::widgets::value_field(ui, &mut f, -100.0..=100.0, "%", 58.0).accessible_name(*name).changed()
+            let shown = ((f64::from(f) * 10.0).round() / 10.0) as f32;
+            let r = crate::widgets::value_field_fixed(ui, &mut f, -100.0..=100.0, "%", 62.0, 1).accessible_name(*name);
+            // The fields take one decimal: a typed 12.345 is stored as the 12.3 they show once the
+            // field is left (rounding each keystroke would rewrite the text being typed). Only an
+            // edit rounds: tabbing through keeps a value from a file (33.333) as it is, though the
+            // field applies its shown text (33.3) as it loses the focus. Arithmetic (`10+2`) only
+            // applies then, so a value other than the shown one is an edit too.
+            let edited_id = r.id.with("warp-edited");
+            let edited = ui.data(|d| d.get_temp::<bool>(edited_id)).unwrap_or(false);
+            let left = !r.has_focus();
+            if left {
+                ui.data_mut(|d| d.remove_temp::<bool>(edited_id));
+            } else if r.changed() {
+                ui.data_mut(|d| d.insert_temp(edited_id, true));
+            }
+            let edited = edited || (r.changed() && f != shown);
+            if ((r.changed() && !r.lost_focus()) || (r.lost_focus() && edited))
                 && let Some(Some(cur)) = app.ui.transform.as_mut().map(|t| t.warp.as_mut())
             {
+                let f = if left { (f64::from(f) * 10.0).round() / 10.0 } else { f64::from(f) };
                 match k {
-                    0 => cur.bend = f64::from(f),
-                    1 => cur.h_distort = f64::from(f),
-                    _ => cur.v_distort = f64::from(f),
+                    0 => cur.bend = f,
+                    1 => cur.h_distort = f,
+                    _ => cur.v_distort = f,
                 }
             }
         }
     });
+}
+
+/// The Warp menu's styles in Photoshop's order: None, Custom and the presets, then Cylinder
+/// (#4112). Type takes only the styles its Warp Text has: no Custom, no Cylinder (#3004).
+pub(super) fn warp_style_options(on_type: bool) -> impl Iterator<Item = WarpStyle> {
+    WarpStyle::all().filter(move |s| !(on_type && *s == WarpStyle::Custom)).chain((!on_type).then_some(WarpStyle::Cylinder))
 }
 
 /// The Split icons and the Grid menu of the Warp options bar.
@@ -547,26 +670,22 @@ fn split_icon(ui: &mut egui::Ui, kind: &str, tip: &str, on: bool) -> egui::Respo
 /// `mode_switch`: the Free Transform / Warp switch (not for Content-Aware Scale, which only scales).
 fn transform_actions(app: &mut PhotocraftApp, ui: &mut egui::Ui, warping: bool, mode_switch: bool) {
     ui.add_space(8.0);
-    let commit_tip = if warping {
-        crate::i18n::fmt(tl!("Commit warp ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))])
-    } else {
-        crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))])
-    };
+    // Warp and Free Transform share these tooltips, as in the reference (#12503).
+    let commit_tip = crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]);
     let commit_btn = crate::icons::button(ui, "check", 26.0, false, &commit_tip);
     let label = "Commit transform";
     commit_btn.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!(label)));
     if commit_btn.clicked() {
         commit(app);
     }
-    let cancel_tip = if warping { tl!("Cancel warp (Esc)") } else { tl!("Cancel transform (Esc)") };
-    let cancel_btn = crate::icons::button(ui, "ban", 26.0, false, cancel_tip);
+    let cancel_btn = crate::icons::button(ui, "ban", 26.0, false, tl!("Cancel transform (Esc)"));
     let label = "Cancel transform";
     cancel_btn.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!(label)));
     if cancel_btn.clicked() {
         cancel(app);
     }
     if warping {
-        let reset = crate::icons::button(ui, "undo-2", 26.0, false, tl!("Reset"));
+        let reset = crate::icons::button(ui, "undo-2", 26.0, false, tl!("Reset the warp"));
         reset.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Reset warp"));
         if reset.clicked() {
             reset_warp(app);
@@ -609,3 +728,7 @@ pub(super) fn rotate_about_pivot(app: &mut PhotocraftApp, da: f64) {
         [c[0] + x * cs - y * sn, c[1] + x * sn + y * cs]
     });
 }
+
+#[cfg(test)]
+#[path = "warp_options_bar_tests.rs"]
+mod warp_options_bar_tests;

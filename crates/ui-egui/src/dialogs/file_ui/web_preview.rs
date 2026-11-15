@@ -230,7 +230,16 @@ pub fn controls(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     nav.write(f);
 }
 
-pub fn paint(ui: &mut egui::Ui, rect: egui::Rect, response: &egui::Response, tex: &egui::TextureHandle, source: egui::Vec2, f: &mut Map<String, Value>) {
+/// Paints the preview image in `rect` and returns where the whole image lies (it may extend
+/// past `rect` when zoomed in).
+pub fn paint(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    response: &egui::Response,
+    tex: &egui::TextureHandle,
+    source: egui::Vec2,
+    f: &mut Map<String, Value>,
+) -> egui::Rect {
     let mut nav = Navigation::read(f);
     let ppp = ui.ctx().pixels_per_point();
     if response.double_clicked() {
@@ -254,6 +263,13 @@ pub fn paint(ui: &mut egui::Ui, rect: egui::Rect, response: &egui::Response, tex
     }
     nav.clamp(rect.size(), source * scale);
     let image = egui::Rect::from_min_size(rect.center() - nav.center * source * scale, source * scale);
+    // The checkerboard is under the image only, as in Photoshop; the pane around it is the
+    // caller's grey (#2362). Only its visible part is drawn, however far the image is zoomed,
+    // with cells counted from the image's corner so they move with it as it is panned.
+    let shown = rect.intersect(image).intersect(ui.clip_rect());
+    if shown.is_positive() {
+        crate::widgets::checker_at(&ui.painter().with_clip_rect(shown), shown, image.min, 8.0);
+    }
     ui.painter().with_clip_rect(rect.intersect(ui.clip_rect())).image(
         tex.id(),
         image,
@@ -267,6 +283,99 @@ pub fn paint(ui: &mut egui::Ui, rect: egui::Rect, response: &egui::Response, tex
         f.insert("__effectiveZoom".into(), json!(scale * ppp));
     }
     nav.write(f);
+    image
+}
+
+/// The numbers of the slices selected in the preview, in ascending order.
+pub fn selected_slices(f: &Map<String, Value>) -> Vec<u64> {
+    let mut numbers: Vec<u64> = f.get("__selectedSlices").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+}
+
+/// Draws the document's slices over a preview pane, as Photoshop's Save for Web does: user and
+/// layer slices outlined in the slice colour, auto slices dashed, each with its number, and the
+/// selected ones highlighted (#10548). A click selects the slice under the pointer and
+/// Shift-click adds or removes one, like the dialog's Slice Select tool; the selection is the
+/// `__selectedSlices` field, which Selected Slices exports.
+pub fn slices(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    image: egui::Rect,
+    response: &egui::Response,
+    doc: &photocraft_doc::Document,
+    color: egui::Color32,
+    f: &mut Map<String, Value>,
+) {
+    use photocraft_doc::SliceOrigin;
+    if doc.slices.is_empty() {
+        return;
+    }
+    let (dw, dh) = (doc.size.width.max(1) as f32, doc.size.height.max(1) as f32);
+    let to_screen = |r: photocraft_geom::Rect| {
+        let at = |x: i32, y: i32| image.min + egui::vec2(x as f32 / dw * image.width(), y as f32 / dh * image.height());
+        egui::Rect::from_two_pos(at(r.x0, r.y0), at(r.x1, r.y1))
+    };
+    let all = photocraft_doc::slices::resolve(doc);
+    if response.clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let hit = all.iter().find(|r| to_screen(r.rect).contains(pos)).map(|r| r.number as u64);
+        let mut selected = selected_slices(f);
+        match hit {
+            Some(n) if ui.input(|i| i.modifiers.shift) => {
+                if let Some(i) = selected.iter().position(|v| *v == n) {
+                    selected.remove(i);
+                } else {
+                    selected.push(n);
+                }
+            }
+            Some(n) => selected = vec![n],
+            None => {}
+        }
+        f.insert("__selectedSlices".into(), json!(selected));
+    }
+    let selected = selected_slices(f);
+    let highlight = egui::Color32::from_rgb(0xff, 0xb0, 0x00);
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    // Auto slices first (dashed, underneath), then user and layer slices, then the selection.
+    for pass in 0..3 {
+        for r in &all {
+            let auto = r.origin == SliceOrigin::Auto;
+            let chosen = selected.contains(&(r.number as u64));
+            if (pass == 0 && !auto) || (pass == 1 && auto) || (pass == 2 && !chosen) {
+                continue;
+            }
+            let sr = to_screen(r.rect);
+            match pass {
+                0 => {
+                    let pts = [sr.left_top(), sr.right_top(), sr.right_bottom(), sr.left_bottom(), sr.left_top()];
+                    painter.add(egui::Shape::dashed_line(&pts, egui::Stroke::new(1.0, color.gamma_multiply(0.7)), 3.0, 3.0));
+                }
+                1 => {
+                    painter.rect_stroke(sr, 0.0, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
+                }
+                _ => {
+                    painter.rect_filled(sr, 0.0, highlight.gamma_multiply(0.12));
+                    painter.rect_stroke(sr, 0.0, egui::Stroke::new(2.0, highlight), egui::StrokeKind::Inside);
+                }
+            }
+            if pass < 2 && sr.width() > 18.0 && sr.height() > 12.0 {
+                let galley = painter.layout_no_wrap(format!("{:02}", r.number), egui::FontId::proportional(10.0), egui::Color32::WHITE);
+                let badge = egui::Rect::from_min_size(sr.left_top() + egui::vec2(2.0, 2.0), galley.size() + egui::vec2(6.0, 2.0));
+                let bg = if chosen {
+                    highlight
+                } else if auto {
+                    egui::Color32::from_gray(110)
+                } else {
+                    color
+                };
+                painter.rect_filled(badge, 2.0, bg);
+                painter.galley(badge.min + egui::vec2(3.0, 1.0), galley, egui::Color32::WHITE);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -307,6 +416,77 @@ mod tests {
         h.run_steps(3);
         assert!(Arc::ptr_eq(&before, &cached(&h.ctx)), "picker drag must not re-encode");
         assert_eq!(h.state().1, [0, 255, 0, 255, 0, 0, 255, 255]);
+    }
+
+    /// #2362: as in Photoshop, the checkerboard is drawn under the image only, not across the
+    /// whole pane: a 40 × 20 image at 100 % in a 200 × 100 pane gets a checkerboard of its size.
+    #[test]
+    fn the_checkerboard_is_under_the_image_only() {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+            |ui, state: &mut (Map<String, Value>, egui::Rect)| {
+                let img = egui::ColorImage::new([40, 20], vec![egui::Color32::TRANSPARENT; 40 * 20]);
+                let tex = ui.ctx().load_texture("fixture", img, egui::TextureOptions::LINEAR);
+                let (r, response) = ui.allocate_exact_size(egui::vec2(200.0, 100.0), egui::Sense::drag());
+                state.1 = r;
+                paint(ui, r, &response, &tex, egui::vec2(40.0, 20.0), &mut state.0);
+            },
+            (serde_json::from_value::<Map<String, Value>>(json!({"__zoom": 1.0})).unwrap(), egui::Rect::NOTHING),
+        );
+        h.run_steps(2);
+        let pane = h.state().1;
+        let light: Vec<egui::Rect> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.fill == egui::Color32::from_gray(250) => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(light.len(), 1, "one checkerboard: {light:?}");
+        let image = egui::Rect::from_center_size(pane.center(), egui::vec2(40.0, 20.0));
+        assert!((light[0].min - image.min).length() < 0.5 && (light[0].max - image.max).length() < 0.5, "{:?} vs the image {image:?}", light[0]);
+    }
+
+    /// #2362 review: a zoomed-in image is clipped by the pane, and its checkerboard's cells are
+    /// counted from the image's corner, not the pane's, as the canvas's are from the document's,
+    /// so they move with the image when it is panned. A 400 × 200 image at 100 % in a 200 × 100
+    /// pane, panned so its corner is 20 × 30 points up-left of the pane's: every dark cell lies in
+    /// one odd 8-point cell of the image's grid.
+    #[test]
+    fn a_clipped_images_checkerboard_keeps_the_images_phase() {
+        for center in [[0.3, 0.4], [0.61, 0.27]] {
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(300.0, 200.0)).build_ui_state(
+                |ui, state: &mut (Map<String, Value>, egui::Rect)| {
+                    let img = egui::ColorImage::new([400, 200], vec![egui::Color32::TRANSPARENT; 400 * 200]);
+                    let tex = ui.ctx().load_texture("fixture", img, egui::TextureOptions::LINEAR);
+                    let (r, response) = ui.allocate_exact_size(egui::vec2(200.0, 100.0), egui::Sense::drag());
+                    state.1 = r;
+                    paint(ui, r, &response, &tex, egui::vec2(400.0, 200.0), &mut state.0);
+                },
+                (serde_json::from_value::<Map<String, Value>>(json!({"__zoom": 1.0, "__center": center})).unwrap(), egui::Rect::NOTHING),
+            );
+            h.run_steps(2);
+            let pane = h.state().1;
+            let image_min = pane.center() - egui::vec2(center[0], center[1]) * egui::vec2(400.0, 200.0);
+            let dark: Vec<egui::Rect> = h
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Rect(r) if r.fill == egui::Color32::from_gray(214) && r.rect.is_positive() => Some(r.rect),
+                    _ => None,
+                })
+                .collect();
+            assert!(dark.len() > 100, "the pane is covered: {} dark cells", dark.len());
+            for r in dark {
+                assert!(pane.expand(0.01).contains_rect(r), "{r:?} is inside the pane {pane:?}");
+                let cell = |p: egui::Pos2, nudge: f32| ((p - image_min + egui::Vec2::splat(nudge)) / 8.0).floor();
+                let (a, b) = (cell(r.min, 0.01), cell(r.max, -0.01));
+                assert_eq!(a, b, "{r:?} spans one of the image's cells (image at {image_min:?})");
+                assert_eq!((a.x + a.y).rem_euclid(2.0), 1.0, "{r:?} is a dark cell of the image's grid (image at {image_min:?})");
+            }
+        }
     }
 
     #[test]

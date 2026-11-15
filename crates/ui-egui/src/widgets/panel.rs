@@ -125,7 +125,15 @@ pub fn pill_tab(ui: &mut Ui, label: &str, selected: bool) -> Response {
 /// Small caps section label.
 pub fn section_label(ui: &mut Ui, text: &str) {
     let t = Tokens::get(ui.ctx());
-    ui.label(egui::RichText::new(tl!(text)).font(theme::medium(11.5)).color(t.text_faint));
+    let text = tl!(text);
+    let font = theme::medium(11.5);
+    let galley = ui.painter().layout(text.to_owned(), font.clone(), t.text_faint, ui.available_width());
+    // A glyph can start before its logical advance (the Urdu Stroke heading does). Reserve
+    // that bearing in the layout instead of clipping the glyph or relaxing dialog bounds.
+    let left = (galley.rect.left() - galley.mesh_bounds.left()).max(0.0).ceil() as i8;
+    egui::Frame::NONE.inner_margin(egui::Margin { left, ..Default::default() }).show(ui, |ui| {
+        ui.label(egui::RichText::new(text).font(font).color(t.text_faint));
+    });
 }
 
 /// Hairline separator.

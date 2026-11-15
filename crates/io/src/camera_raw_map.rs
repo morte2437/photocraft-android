@@ -1,9 +1,9 @@
 //! Camera Raw Filter descriptors observed in real PSD files (filter version 18.4, process 6).
 //! Verified develop controls are editable. Other processing versions
 //! or settings retain the entire filter through the existing opaque-filter path.
+use craft_psd::descriptor::{Descriptor, UnicodeString, Value};
 use photocraft_algo::camera_raw::CameraRaw;
 use photocraft_doc::SmartFilter;
-use photocraft_psd::descriptor::{Descriptor, UnicodeString, Value};
 use serde_json::{Value as J, json};
 
 use super::{blend_options, from_hex, get_desc, int, rgbc, set, to_hex};
@@ -297,11 +297,7 @@ pub(super) fn export_item(params: &J) -> Result<Descriptor, String> {
         if get_param(&original, param) != Some(value) {
             write_number(&mut d, key, value)?;
             if matches!(*key, "Temp" | "Tint") {
-                set(
-                    &mut d,
-                    "WBal",
-                    Value::Enumerated { type_id: photocraft_psd::descriptor::Id::new("WBal"), value: photocraft_psd::descriptor::Id::new("Cst ") },
-                );
+                set(&mut d, "WBal", Value::Enumerated { type_id: craft_psd::descriptor::Id::new("WBal"), value: craft_psd::descriptor::Id::new("Cst ") });
             }
         }
     }

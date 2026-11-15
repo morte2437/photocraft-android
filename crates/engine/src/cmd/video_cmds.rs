@@ -14,6 +14,36 @@ use crate::{EngineError, Result, Session};
 /// Maximum dense RGBA staging pixels in one animated GIF frame. A GIF also keeps the
 /// quantised frame and palette while rendering, so the document canvas limit is not enough.
 const MAX_GIF_FRAME_PIXELS: u64 = 64 << 20;
+/// Largest total an animated GIF render keeps staged before encoding: one index byte per pixel plus
+/// a 768-byte palette for every frame, the same 2 GiB bound as imported footage ([`MAX_FOOTAGE_BYTES`]).
+/// The per-frame cap alone lets `frames × pixels` reach terabytes (a 4000 × 4000 canvas over a
+/// 1,000,000-frame timeline). 1920 × 1080 holds about 2,145 frames and 4096 × 2160 about 242.
+/// This bounds the staged frames only (indices and palettes). It does not bound the encoder's output
+/// buffer (LZW data, roughly 1.3-1.5 times the raw size, growing by doubling) or the per-frame
+/// transients (RGBA f32, 16 bytes per pixel), so it is not a bound on peak memory.
+const MAX_GIF_STAGED_BYTES: u64 = MAX_FOOTAGE_BYTES;
+/// The GIF format stores each side as 16 bits.
+const MAX_GIF_SIDE: u64 = 65_535;
+
+/// Reject a GIF render whose canvas or frames-times-canvas staging would be unreasonable, before any
+/// frame is rendered. All sums are checked in `u64`.
+fn check_gif_budget(w: u64, h: u64, frames: u64) -> std::result::Result<(), String> {
+    if w > MAX_GIF_SIDE || h > MAX_GIF_SIDE {
+        return Err(format!("{w} × {h} is too large to render as an animated GIF (the GIF format allows {MAX_GIF_SIDE} pixels per side)"));
+    }
+    let pixels = w.checked_mul(h).filter(|p| *p <= MAX_GIF_FRAME_PIXELS);
+    let Some(pixels) = pixels else {
+        return Err(format!("{w} × {h} is too large to render as an animated GIF (limit {MAX_GIF_FRAME_PIXELS} pixels per frame)"));
+    };
+    let per_frame = pixels + 768;
+    if frames.checked_mul(per_frame).is_none_or(|total| total > MAX_GIF_STAGED_BYTES) {
+        return Err(format!(
+            "{frames} frames of {w} × {h} are too large to render as an animated GIF (limit {} MiB staged in total); shorten the timeline or reduce the canvas",
+            MAX_GIF_STAGED_BYTES >> 20
+        ));
+    }
+    Ok(())
+}
 
 /// Set every video layer's displayed content to its frame at the playhead.
 pub fn sync(doc: &mut Document) {
@@ -110,6 +140,15 @@ fn blank_of(fmt: photocraft_color::PixelFormat) -> Surface {
     Surface::new(fmt)
 }
 
+/// Both the altered and original footage stacks must have room for an added frame.
+fn check_frame_growth(frames: usize, original_frames: Option<usize>) -> Result<()> {
+    let limit = crate::timeline_cmds::MAX_DURATION;
+    if frames.max(original_frames.unwrap_or(0)) >= limit {
+        return Err(EngineError::Other(format!("a video layer is limited to {limit} frames")));
+    }
+    Ok(())
+}
+
 fn new_blank(s: &mut Session, _p: &Value) -> Result<Value> {
     let id = s.edit("New Blank Video Layer", |doc, active| {
         store(doc);
@@ -138,7 +177,8 @@ fn new_blank(s: &mut Session, _p: &Value) -> Result<Value> {
 fn insert_blank(s: &mut Session, _p: &Value) -> Result<Value> {
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
     edit_video(s, "Insert Blank Frame", move |v, cur| {
-        let at = (cur + 1).min(v.frames.len());
+        check_frame_growth(v.frames.len(), v.original_frames.as_ref().map(Vec::len))?;
+        let at = cur.saturating_add(1).min(v.frames.len());
         v.frames.insert(at, blank_of(fmt));
         if let Some(original) = &mut v.original_frames {
             // The stacks stay aligned, but never index past a shorter one.
@@ -150,7 +190,9 @@ fn insert_blank(s: &mut Session, _p: &Value) -> Result<Value> {
 
 fn duplicate_frame(s: &mut Session, _p: &Value) -> Result<Value> {
     edit_video(s, "Duplicate Frame", |v, cur| {
-        if let Some(f) = v.frames.get(cur).cloned() {
+        if let Some(f) = v.frames.get(cur) {
+            check_frame_growth(v.frames.len(), v.original_frames.as_ref().map(Vec::len))?;
+            let f = f.clone();
             if let Some(original) = &mut v.original_frames {
                 let orig = original.get(cur).cloned().unwrap_or_else(|| blank_of(f.format()));
                 original.insert((cur + 1).min(original.len()), orig);
@@ -223,6 +265,9 @@ struct Footage {
     /// The frame rate the footage itself implies (a single animated GIF's or WebP's delays); `None` for
     /// stills and sequences, which carry none.
     fps: Option<f32>,
+    /// Decoder warnings that survived salvaging, e.g. a GIF or WebP truncated mid-animation
+    /// (#11113): the frames are real but incomplete, and the caller must disclose that.
+    warnings: Vec<String>,
 }
 
 /// The frame rate for a GIF's frame delays (milliseconds): that of the most common delay, the
@@ -258,7 +303,7 @@ type ImportFrames = fn(
     &str,
     &[u8],
     &mut dyn FnMut(photocraft_doc::Document, u32) -> std::result::Result<(), photocraft_io::IoError>,
-) -> std::result::Result<usize, photocraft_io::IoError>;
+) -> std::result::Result<photocraft_io::FramesImport, photocraft_io::IoError>;
 
 /// Frame storage one footage import may keep (whole tiles, all frames together).
 const MAX_FOOTAGE_BYTES: u64 = 2 << 30;
@@ -370,6 +415,7 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft
     }
     let mut frames: Vec<Surface> = Vec::with_capacity(files.len());
     let mut delays = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     // Each frame stores whole tiles however little it draws, so count the tiles kept so far.
     let mut kept_bytes = 0u64;
     let max_footage_bytes = footage_byte_limit();
@@ -387,12 +433,12 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft
         Ok(())
     };
     for f in &files {
-        let bytes = std::fs::read(f).map_err(|e| EngineError::Other(format!("read `{}`: {e}", f.display())))?;
+        let bytes = crate::allocation::read_file_within(f, max_footage_bytes).map_err(|e| EngineError::Other(format!("read `{}`: {e}", f.display())))?;
         let name = f.to_string_lossy();
         // A GIF (a still one is its only frame) or an animated WebP brings every frame.
-        let animation = match photocraft_codecs::detect(&bytes) {
-            Some(photocraft_codecs::Format::Gif) => Some(photocraft_io::import_gif_frames as ImportFrames),
-            Some(photocraft_codecs::Format::WebP) if photocraft_codecs::webp_is_animated(&bytes) => Some(photocraft_io::import_webp_frames as ImportFrames),
+        let animation = match photocraft_formats::detect(&name, &bytes) {
+            Some(photocraft_formats::Format::Gif) => Some(photocraft_io::import_gif_frames as ImportFrames),
+            Some(photocraft_formats::Format::WebP) if photocraft_codecs::webp_is_animated(&bytes) => Some(photocraft_io::import_webp_frames as ImportFrames),
             _ => None,
         };
         if let Some(import) = animation {
@@ -408,12 +454,20 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft
             if let Some(msg) = over {
                 return Err(EngineError::Other(format!("`{}`: {msg}", f.display())));
             }
-            done.map_err(|e| EngineError::Other(format!("`{}`: {e}", f.display())))?;
+            let done = done.map_err(|e| EngineError::Other(format!("`{}`: {e}", f.display())))?;
+            // A file that decoded with salvage (a truncation warning, #11113) must still be
+            // disclosed even though the frames themselves came through.
+            for w in done.warnings {
+                let w = format!("`{}`: {w}", f.display());
+                if !warnings.contains(&w) {
+                    warnings.push(w);
+                }
+            }
             continue;
         }
         // A multi-page TIFF: every full-resolution page of the main chain, in order, as the
         // GIF's frames are (#6379). Thumbnails, reduced-resolution copies and masks are left out.
-        if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::Tiff) {
+        if photocraft_formats::detect(&name, &bytes) == Some(photocraft_formats::Format::Tiff) {
             let (pages, complete) = tiff_pages(&bytes);
             if pages.len() > 1 {
                 // A damaged or looping page chain, or one past the 10,000-directory limit, lists
@@ -449,7 +503,7 @@ fn load_frames(path: &str, fmt: photocraft_color::PixelFormat, opts: &photocraft
     }
     // Only a lone GIF or WebP says how fast it plays; a sequence mixing files has no single rate.
     let fps = if files.len() == 1 { fps_from_delays(&delays) } else { None };
-    Ok(Footage { frames, fps })
+    Ok(Footage { frames, fps, warnings })
 }
 
 fn new_from_file(s: &mut Session, p: &Value) -> Result<Value> {
@@ -459,7 +513,7 @@ fn new_from_file(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "layer.videoLayers.newVideoLayerFromFile".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let Footage { frames, fps: footage_fps } = load_frames(&path, fmt, &footage_import_options(s))?;
+    let Footage { frames, fps: footage_fps, warnings } = load_frames(&path, fmt, &footage_import_options(s))?;
     // An explicit `fps` wins, then the rate the footage implies, then 30.
     let fps = crate::timeline_cmds::fps_param("layer.videoLayers.newVideoLayerFromFile", p)?.or(footage_fps).unwrap_or(30.0);
     let n = frames.len();
@@ -486,7 +540,7 @@ fn new_from_file(s: &mut Session, p: &Value) -> Result<Value> {
         sync(doc);
         Ok(id)
     })?;
-    Ok(json!({"layer": id.0, "frames": n}))
+    Ok(json!({"layer": id.0, "frames": n, "warnings": warnings}))
 }
 
 fn replace_footage(s: &mut Session, p: &Value) -> Result<Value> {
@@ -496,13 +550,17 @@ fn replace_footage(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "layer.videoLayers.replaceFootage".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let frames = load_frames(&path, fmt, &footage_import_options(s))?.frames;
-    edit_video(s, "Replace Footage", move |v, _| {
+    let Footage { frames, warnings, .. } = load_frames(&path, fmt, &footage_import_options(s))?;
+    let mut out = edit_video(s, "Replace Footage", move |v, _| {
         v.original_frames = Some(frames.clone());
         v.frames = frames;
         v.source = photocraft_doc::VideoSource::File { path: path.clone() };
         Ok(())
-    })
+    })?;
+    if !warnings.is_empty() {
+        out["warnings"] = Value::from(warnings);
+    }
+    Ok(out)
 }
 
 fn interpret_footage(s: &mut Session, p: &Value) -> Result<Value> {
@@ -532,12 +590,16 @@ fn reload_frame(s: &mut Session, _p: &Value) -> Result<Value> {
     };
     // The footage path is stored in the document.
     let file = crate::doc_path::resolve(&path).map_err(|why| crate::doc_path::refusal("the footage", &path, why))?;
-    let frames = load_frames(&file.to_string_lossy(), fmt, &footage_import_options(s))?.frames;
-    edit_video(s, "Reload Frame", move |v, _| {
+    let Footage { frames, warnings, .. } = load_frames(&file.to_string_lossy(), fmt, &footage_import_options(s))?;
+    let mut out = edit_video(s, "Reload Frame", move |v, _| {
         v.original_frames = Some(frames.clone());
         v.frames = frames;
         Ok(())
-    })
+    })?;
+    if !warnings.is_empty() {
+        out["warnings"] = Value::from(warnings);
+    }
+    Ok(out)
 }
 
 /// The pages of a TIFF that are pages of the document: full-resolution directories of the main
@@ -557,7 +619,7 @@ fn frames_to_layers(s: &mut Session, p: &Value) -> Result<Value> {
         .ok_or_else(|| EngineError::BadParams { cmd: "file.import.videoFramesToLayers".into(), msg: "need `path`".into() })?
         .to_string();
     let fmt = s.active().ok_or(EngineError::NoDocument)?.doc.pixel_format();
-    let frames = load_frames(&path, fmt, &footage_import_options(s))?.frames;
+    let Footage { frames, warnings, .. } = load_frames(&path, fmt, &footage_import_options(s))?;
     let n = frames.len();
     s.edit("Video Frames to Layers", |doc, active| {
         let mut above = *active;
@@ -573,7 +635,7 @@ fn frames_to_layers(s: &mut Session, p: &Value) -> Result<Value> {
         *active = above;
         Ok(())
     })?;
-    Ok(json!({"layers": n}))
+    Ok(json!({"layers": n, "warnings": warnings}))
 }
 
 /// The document's name without its extension, as a file name: a native document keeps whatever
@@ -626,11 +688,9 @@ pub fn render_video_with(
 
     // Animated GIF: one file, every frame quantised to its own palette.
     if format.eq_ignore_ascii_case("gif") {
-        // The whole canvas is staged as f32 RGBA for each frame; reject over-budget
-        // dimensions before an infallible allocation can abort the process.
-        if (w as u64) * (h as u64) > MAX_GIF_FRAME_PIXELS {
-            return Err(EngineError::Other(format!("{w} × {h} is too large to render as an animated GIF (limit {MAX_GIF_FRAME_PIXELS} pixels per frame)")));
-        }
+        // Each frame is staged as f32 RGBA and every encoded frame is kept until the file is written;
+        // reject over-budget sizes before an infallible allocation can abort the process.
+        check_gif_budget(w as u64, h as u64, frames as u64).map_err(EngineError::Other)?;
         let delay = (100.0 / fps).round().clamp(1.0, 65535.0) as u16;
         let mut gframes = Vec::with_capacity(frames);
         for f in 0..frames {

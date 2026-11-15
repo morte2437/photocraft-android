@@ -593,9 +593,12 @@ fn txt2_only_opentype(style: &CharStyle) -> bool {
 /// Optical — and so are Stylistic Sets and the other [`TXT2_FEATURES`] flags (#10308). A fresh
 /// document of ordinary Metrics text with no such OpenType settings has nothing to put in the
 /// block. Writing Photoshop's empty `<< /0 << >> >>` stub anyway makes some readers (Photopea)
-/// fail (#3514); the export omits the block for such a document.
+/// fail (#3514); the export omits the block for such a document. Type on a path needs it too: its
+/// path and range live only in the block's frame (see `psd_path`).
 pub fn needs_txt2(objects: &[(i32, &TextLayer)]) -> bool {
-    objects.iter().any(|(_, l)| l.char_runs().iter().any(|r| r.style.kerning == Kerning::Optical || txt2_only_opentype(&r.style)))
+    objects.iter().any(|(_, l)| {
+        matches!(l.shape, TextShape::Path { .. }) || l.char_runs().iter().any(|r| r.style.kerning == Kerning::Optical || txt2_only_opentype(&r.style))
+    })
 }
 
 /// A `/53` SimplePaint dictionary (`<< /99 /SimplePaint /0 << >> >>`) for a fresh style run.

@@ -75,7 +75,7 @@ impl DetailPreview {
         let result = match rx.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("Camera Raw detail preview worker stopped".into()),
+            Err(TryRecvError::Disconnected) => Err("RAW Develop detail preview worker stopped".into()),
         };
         self.pending = None;
         match result {
@@ -104,7 +104,7 @@ impl DetailPreview {
         // The engine's full-image pipeline needs multiple temporary float buffers. Never start
         // an unbounded allocation just because a huge sparse document was zoomed into.
         if self.area.width() as u64 * self.area.height() as u64 > 64_000_000 {
-            self.error = Some("Full-resolution Camera Raw preview is limited to 64 megapixels; the proxy remains available".into());
+            self.error = Some("Full-resolution RAW Develop preview is limited to 64 megapixels; the proxy remains available".into());
             self.failed_revision = Some(revision);
             return;
         }
@@ -124,7 +124,7 @@ impl DetailPreview {
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| develop(&source, raw_curve.as_deref().map(Vec::as_slice), area, &params, &coverage)))
                     .map(|surface| (revision, surface))
-                    .map_err(|_| "Camera Raw detail preview failed; the proxy remains available".into());
+                    .map_err(|_| "RAW Develop detail preview failed; the proxy remains available".into());
             if !cancel.load(Ordering::Relaxed) {
                 let _ = tx.send(result);
                 ctx.request_repaint();
@@ -141,7 +141,7 @@ impl DetailPreview {
             }) {
                 Ok(_) => self.pending = Some((revision, rx)),
                 Err(e) => {
-                    self.error = Some(format!("Cannot start Camera Raw preview: {e}"));
+                    self.error = Some(format!("Cannot start RAW Develop preview: {e}"));
                     self.failed_revision = Some(revision);
                 }
             }
@@ -152,7 +152,7 @@ impl DetailPreview {
             // instead of blocking its UI with the full-image engine pipeline.
             drop(work);
             drop(rx);
-            self.error = Some("Full-resolution filtered preview requires a native Camera Raw worker; the web preview keeps the proxy".into());
+            self.error = Some("Full-resolution filtered preview requires a native RAW Develop worker; the web preview keeps the proxy".into());
             self.failed_revision = Some(revision);
         }
     }
@@ -392,7 +392,7 @@ fn visible_pixels(image: Rect, viewport: Rect, area: PixelRect, max_side: usize)
     (crop.width() as usize <= max_side && crop.height() as usize <= max_side && crop.width() as u64 * crop.height() as u64 <= 16_777_216).then_some(crop)
 }
 
-/// Pixels per band [`display_image`] reads and colour-converts at once: at least `photocraft-cms`'s
+/// Pixels per band [`display_image`] reads and colour-converts at once: at least `craft-cms`'s
 /// parallel threshold (16K pixels), and small enough that a band's float scratch is 1 MiB.
 const CROP_BAND_PIXELS: usize = 64 * 1024;
 
@@ -403,7 +403,7 @@ fn crop_image(surface: &Surface, area: PixelRect, display: &photocraft_engine::d
 
 /// `area` as the canvas shows it, with `read` filling each band's float pixels. Converted in
 /// bands of rows, in parallel off wasm, not one row or one whole copy at a time: a row is below
-/// `photocraft-cms`'s parallel threshold, so a per-row conversion ran the display transform (any
+/// `craft-cms`'s parallel threshold, so a per-row conversion ran the display transform (any
 /// document profile other than the monitor's, such as an Adobe RGB photo on sRGB) on one core of
 /// the UI thread for every edit (#4682).
 pub(crate) fn display_image(
@@ -545,7 +545,7 @@ mod tests {
                 assert!(light[0] - dark[0] > 0.5, "native alternating pixels survive: {mode:?}/{depth:?}");
                 let mut doc =
                     photocraft_doc::Document::new("test", photocraft_geom::Size::new(40, 30), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
-                doc.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
+                doc.icc_profile = Some(craft_cms::Builtin::Srgb.profile().to_bytes());
                 let display = photocraft_engine::color_cmds::ColorState::default().canvas_display(&doc).unwrap();
                 assert_eq!(crop_image(&expected, PixelRect::new(-12, 8, -10, 9), &display).size, [2, 1]);
                 assert!(preview.sample([f32::NAN, 0.0], 1, false, &params).is_none());
@@ -561,7 +561,7 @@ mod tests {
             Surface::new(photocraft_color::PixelFormat { mode: photocraft_color::ColorMode::Rgb, sample: photocraft_color::SampleType::F32, alpha: true });
         source.write_region(area, &[0.25, 0.25, 0.25, 1.0]);
         let mut doc = photocraft_doc::Document::new("test", photocraft_geom::Size::new(1, 1), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::F32);
-        doc.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
+        doc.icc_profile = Some(craft_cms::Builtin::LinearSrgb.profile().to_bytes());
         let mut color = photocraft_engine::color_cmds::ColorState::default();
         color.settings.monitor_profile = "srgb".into();
         let display = color.canvas_display(&doc).unwrap();
@@ -599,14 +599,14 @@ mod tests {
         let n = (area.width() * area.height()) as usize;
         let px: Vec<f32> = (0..n).flat_map(|i| [(i % 251) as f32 / 255.0, (i % 241) as f32 / 255.0, (i % 239) as f32 / 255.0, (i % 7) as f32 / 6.0]).collect();
         source.write_region(area, &px);
-        for profile in [photocraft_cms::Builtin::AdobeRgbCompat, photocraft_cms::Builtin::Srgb] {
+        for profile in [craft_cms::Builtin::AdobeRgbCompat, craft_cms::Builtin::Srgb] {
             let mut doc =
                 photocraft_doc::Document::new("test", photocraft_geom::Size::new(1024, 1024), photocraft_doc::ColorMode::Rgb, photocraft_doc::SampleType::U8);
             doc.icc_profile = Some(profile.profile().to_bytes());
             let mut color = photocraft_engine::color_cmds::ColorState::default();
             color.settings.monitor_profile = "srgb".into();
             let display = color.canvas_display(&doc).unwrap();
-            assert_eq!(display.transform.is_some(), profile == photocraft_cms::Builtin::AdobeRgbCompat);
+            assert_eq!(display.transform.is_some(), profile == craft_cms::Builtin::AdobeRgbCompat);
             let mut whole = photocraft_compose::Buffer { rect: area, px: vec![[0.0; 4]; n] };
             source.read_rgba_into(area, &mut whole.px);
             let expected = display.to_rgba8(&whole);

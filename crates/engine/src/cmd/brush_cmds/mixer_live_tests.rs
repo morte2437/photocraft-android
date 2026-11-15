@@ -110,7 +110,8 @@ fn mixer_live_current_layer_matches_reference_and_cancels() {
         &mut state,
         None,
         false,
-    );
+    )
+    .unwrap();
     let live = LiveMixer::begin(&s, &p).unwrap();
     let id = s.active().unwrap().active_layer.unwrap();
     let actual = live.doc.layer(id).unwrap().surface().unwrap().read_region(s.active().unwrap().doc.bounds());
@@ -282,7 +283,7 @@ fn mixer_large_tip_retains_off_canvas_paint_and_commits_the_live_result() {
 #[test]
 fn mixer_long_segments_are_interpolated_and_replay_matches_live() {
     let mut s = fixture(PixelFormat::RGBA8);
-    let p = json!({"points":[[20,48],[5020,48]],"seed":71,"size":2,"sampleAllLayers":false,"wet":0,"mix":0,"load":100,"color":"#ff0000"});
+    let p = json!({"points":[[20,48],[5020,48]],"seed":71,"size":2,"sampleAllLayers":false,"wet":0,"mix":0,"load":100,"color":"#ff0000","brush":{"smoothing":{"catchUpOnEnd":true}}});
     let live = LiveMixer::begin(&s, &p).unwrap();
     let id = s.active().unwrap().active_layer.unwrap();
     let expected = live.doc.layer(id).unwrap().surface().unwrap().clone();

@@ -80,7 +80,7 @@ fn targa_options_writes_the_choice_or_cancels() {
     h.run_steps(3);
     assert!(h.state().targa_options.is_none());
     assert_eq!(writes.borrow().len(), 1, "cancelled: nothing more written");
-    assert_eq!(h.state().ui.status, "Save cancelled");
+    assert_eq!(h.state().ui.status, "Save canceled");
     assert_eq!(h.state().session.active().unwrap().path.as_deref(), Some("t.tga"));
 }
 
@@ -276,5 +276,5 @@ fn enter_on_a_focused_cancel_writes_nothing() {
     h.run_steps(3);
     assert!(h.state().targa_options.is_none());
     assert!(writes.borrow().is_empty(), "nothing written");
-    assert_eq!(h.state().ui.status, "Save cancelled");
+    assert_eq!(h.state().ui.status, "Save canceled");
 }

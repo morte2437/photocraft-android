@@ -154,6 +154,104 @@ fn the_last_position_reopens_in_whatever_the_ruler_unit_is_now() {
     }
 }
 
+#[test]
+fn position_tab_and_shift_tab_select_all_in_new_and_edit_dialogs() {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    for editing in [false, true] {
+        for modifiers in [egui::Modifiers::NONE, egui::Modifiers::SHIFT] {
+            let (mut app, ctx) = app("pixels");
+            if editing {
+                app.run(COMMAND, json!({"orientation": "vertical", "position": 12.5})).unwrap();
+                crate::guide_select::select(&mut app, true, 0);
+            }
+            let mut h = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ProMedium);
+            let d = if editing { open_edit(h.state_mut()).unwrap() } else { open(h.state_mut(), &ctx) };
+            h.run_steps(3);
+            h.key_press_modifiers(modifiers, egui::Key::Tab);
+            h.run_steps(3);
+            assert!(h.get_by_label("Position").is_focused());
+            h.event(egui::Event::Text("1 in".into()));
+            h.run_steps(3);
+            assert_eq!(h.state_mut().ui.dialog_mut(d).unwrap().fields["position"], "1 in", "typing replaces the full readout");
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert!(h.state().ui.dialogs.is_empty());
+            assert_eq!(guides(h.state()), if editing { (vec![], vec![100.0]) } else { (vec![100.0], vec![]) });
+        }
+    }
+}
+
+#[test]
+fn focusing_and_recolouring_preserve_the_exact_guide_position() {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    for (rulers, original) in [("pixels", 12.5), ("cm", 123.45678901234567), ("percent", -1e-100)] {
+        for recolour in [false, true] {
+            let (mut app, _) = app(rulers);
+            app.run(COMMAND, json!({"orientation": "vertical", "position": original})).unwrap();
+            app.run("view.moveGuide", json!({"orientation": "vertical", "index": 0, "position": original + 1.0})).unwrap();
+            assert!(app.session.undo());
+            crate::guide_select::select(&mut app, true, 0);
+            let history = app.session.active().unwrap().history.past_len();
+            let mut h = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+            PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ProMedium);
+            let d = open_edit(h.state_mut()).unwrap();
+            if rulers == "pixels" {
+                assert_eq!(h.state_mut().ui.dialog_mut(d).unwrap().fields["position"], "13 px");
+            }
+            h.run_steps(3);
+            h.get_by_label("Position").click();
+            h.run_steps(3);
+            if recolour {
+                h.state_mut().ui.dialog_mut(d).unwrap().fields.insert("color".into(), json!("magenta"));
+            }
+            crate::guide_edit::sync(h.state_mut());
+            assert_eq!(edit_preview(h.state(), &h.state().session.active().unwrap().doc).unwrap().vertical, vec![original]);
+            assert_eq!(guides(h.state()).1, vec![original], "preview must not modify the document");
+            crate::dialogs::confirm(h.state_mut(), d).unwrap();
+            assert_eq!(guides(h.state()).1, vec![original]);
+            if recolour {
+                assert_eq!(color_of(h.state(), true, original), Some([255, 0, 255]));
+                assert_eq!(h.state().session.active().unwrap().history.past_len(), history + 1);
+                assert!(h.state_mut().session.undo());
+                assert_eq!(guides(h.state()).1, vec![original]);
+            } else {
+                assert_eq!(h.state().session.active().unwrap().history.past_len(), history);
+                assert!(h.state().session.active().unwrap().history.can_redo(), "focus alone must preserve Redo");
+            }
+        }
+    }
+}
+
+#[test]
+fn retyping_the_rounded_readout_is_an_intentional_position_edit() {
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    let (mut app, _) = app("pixels");
+    app.run(COMMAND, json!({"orientation": "vertical", "position": 12.5})).unwrap();
+    crate::guide_select::select(&mut app, true, 0);
+    let mut h = Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), app);
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ProMedium);
+    let d = open_edit(h.state_mut()).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Position").click();
+    h.run_steps(3);
+    h.event(egui::Event::Text("20 px".into()));
+    h.run_steps(3);
+    assert_eq!(h.state_mut().ui.dialog_mut(d).unwrap().fields["position"], "20 px", "click focus selects all");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("13 px".into()));
+    h.run_steps(3);
+    crate::guide_edit::sync(h.state_mut());
+    assert_eq!(edit_preview(h.state(), &h.state().session.active().unwrap().doc).unwrap().vertical, vec![13.0]);
+    crate::dialogs::confirm(h.state_mut(), d).unwrap();
+    assert_eq!(guides(h.state()).1, vec![13.0]);
+    assert!(h.state_mut().session.undo());
+    assert_eq!(guides(h.state()).1, vec![12.5]);
+}
+
 // These regressions exercise the ordinary dialog handlers, not a separate model.
 /// Open a draft on the first of two guides and propose moving it to 30 px.
 fn edit_fixture() -> (PhotocraftApp, u64) {
@@ -336,4 +434,30 @@ fn refused_edit_shows_the_error_and_typed_fields_in_the_dialog() {
     h.run_steps(3);
     assert!(h.query_by_label("guide edits are denied").is_none());
     assert_eq!(guides(h.state()).1, vec![10.0, 20.0]);
+}
+
+/// #10440: a leading bare number gets the ruler unit after a Unicode minus (U+2212) as after "-",
+/// so "5.08 − 2.54" with centimetre rulers is 2.54 cm, not 2.54 px.
+#[test]
+fn the_ruler_unit_goes_on_a_bare_number_before_a_unicode_minus() {
+    let (mut app, ctx) = app("cm");
+    let d = open(&mut app, &ctx);
+    set(&mut app, d, "vertical", "5.08 − 2.54");
+    crate::dialogs::confirm(&mut app, d).unwrap();
+    let (_, vertical) = guides(&app);
+    assert!(vertical.len() == 1 && (vertical[0] - 100.0).abs() < 1e-6, "{vertical:?}");
+}
+
+/// #10440: a leading bare number that multiplies or divides a length is a plain factor, so it
+/// doesn't take the ruler unit (CodeRabbit: "2 / 2 * 50 px" became "2 cm / 2 * 50 px").
+#[test]
+fn a_leading_factor_of_a_length_is_a_plain_number() {
+    let (mut app, ctx) = app("cm");
+    for (typed, px) in [("2 * 50 px", 100.0), ("2 / 2 * 1in", 100.0), ("2 * 2.54 - 2.54", 100.0)] {
+        let d = open(&mut app, &ctx);
+        set(&mut app, d, "vertical", typed);
+        crate::dialogs::confirm(&mut app, d).unwrap_or_else(|e| panic!("{typed}: {e}"));
+        let landed = *guides(&app).1.last().unwrap();
+        assert!((landed - px).abs() < 1e-6, "{typed}: {landed}");
+    }
 }

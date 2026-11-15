@@ -635,7 +635,8 @@ fn shift_constrains_polygonal_lasso_segments_but_unmodified_clicks_remain_free()
     ev(&mut app, "up", 140.0, 120.0, Modifiers::SHIFT);
     let diagonal = app.ui.polygon[1];
     assert!((diagonal[0] - diagonal[1]).abs() < 1e-8, "45-degree direction: {diagonal:?}");
-    assert!((diagonal[0] - 100.0 - 40.0_f64.hypot(20.0) / 2.0_f64.sqrt()).abs() < 1e-8);
+    // The diagonal keeps the shorter offset (20) on both axes (#11393).
+    assert!((diagonal[0] - 120.0).abs() < 1e-8, "{diagonal:?}");
     // Releasing Shift restores free placement rather than constraining subsequent points.
     ev(&mut app, "down", 155.0, 175.0, Modifiers::NONE);
     ev(&mut app, "up", 155.0, 175.0, Modifiers::NONE);
@@ -652,7 +653,9 @@ fn shift_polygonal_lasso_snap_has_all_eight_directions_and_handles_zero_length()
         let dy = end[1] - origin[1];
         let angle = dy.atan2(dx) / std::f64::consts::FRAC_PI_4;
         assert!((angle - angle.round()).abs() < 1e-9, "{delta:?} → {end:?}");
-        assert!((dx.hypot(dy) - delta[0].hypot(delta[1])).abs() < 1e-8);
+        // Axis snaps keep the length; diagonals keep the shorter offset on both axes (#11393).
+        let kept = if angle.round().rem_euclid(2.0) == 1.0 { delta[0].abs().min(delta[1].abs()) * std::f64::consts::SQRT_2 } else { delta[0].hypot(delta[1]) };
+        assert!((dx.hypot(dy) - kept).abs() < 1e-8, "{delta:?} → {end:?}");
     }
     assert_eq!(crate::canvas::constrained_polygon_point(origin, origin), origin);
 }
@@ -750,4 +753,68 @@ fn a_held_temporary_tool_keeps_the_polygon() {
     h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
     h.run_steps(3);
     assert_eq!(h.state().ui.polygon.len(), 2, "released");
+}
+
+/// #6578: the last corner of a small polygon lands within 8 points of the first one, but it is a
+/// new vertex, not a close; clicking on the first vertex still closes.
+#[test]
+fn the_last_corner_of_a_small_polygon_does_not_close_it() {
+    let mut app = polygon_app();
+    app.ui.views[0].zoom = 1.0;
+    app.ui.views[0].fit_pending = false;
+    assert_eq!(app.point_zoom(), 1.0);
+    let corners = [[100.0, 100.0], [106.0, 100.0], [106.0, 106.0], [100.0, 106.0]];
+    for [x, y] in corners {
+        ev(&mut app, "down", x, y, Modifiers::NONE);
+        ev(&mut app, "up", x, y, Modifiers::NONE);
+    }
+    assert_eq!(app.ui.polygon.len(), 4, "four corners, still open: {:?}", app.ui.polygon);
+    assert!(app.session.active().unwrap().doc.selection.is_none());
+    ev(&mut app, "down", 100.0, 100.0, Modifiers::NONE);
+    ev(&mut app, "up", 100.0, 100.0, Modifiers::NONE);
+    assert!(app.ui.polygon.is_empty(), "a click on the first vertex closes");
+    let bounds = app.session.active().unwrap().doc.selection.as_ref().unwrap().content_bounds();
+    assert!(near(bounds, 100, 100, 106, 106), "a square, not a triangle: {bounds:?}");
+}
+
+/// Large outlines keep the full 8-point reach; tiny ones still close on their first vertex. The
+/// reach follows the size of the whole outline, not its shortest edge (#7629).
+#[test]
+fn polygon_close_reach_scales_with_small_outlines_only() {
+    let reach = crate::canvas::polygon_close_reach;
+    let square = |s: f64| [[0.0, 0.0], [s, 0.0], [s, s], [0.0, s]];
+    assert_eq!(reach(square(100.0), 1.0), 8.0);
+    assert_eq!(reach(square(100.0), 2.0), 4.0);
+    assert_eq!(reach(square(32.0), 1.0), 8.0);
+    assert_eq!(reach(square(6.0), 1.0), 1.5);
+    assert_eq!(reach(square(1.0), 1.0), 1.0);
+    assert_eq!(crate::canvas::polygon_close_reach([[f64::NAN, 0.0]], 1.0), 8.0);
+    assert_eq!(crate::canvas::polygon_close_reach([[f64::NAN, 0.0], [0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]], 1.0), 2.5);
+}
+
+/// A large polygon with one short edge keeps the full reach: only a small outline shrinks it.
+#[test]
+fn polygon_close_reach_ignores_one_short_edge_of_a_large_outline() {
+    let reach = crate::canvas::polygon_close_reach;
+    assert_eq!(reach([[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [96.0, 101.0]], 1.0), 8.0);
+    // The outline of #7629's test (about 40 points across): the click 5 points from the first vertex still closes.
+    assert!(reach([[50.0, 50.0], [90.0, 50.0], [90.0, 90.0], [85.0, 91.0]], 1.0) > 5.0);
+}
+
+#[test]
+fn narrow_and_rotated_polygons_keep_the_fourth_corner() {
+    for corners in [[[100.0, 100.0], [200.0, 100.0], [200.0, 106.0], [100.0, 106.0]], [[100.0, 100.0], [160.0, 180.0], [155.2, 183.6], [95.2, 103.6]]] {
+        let mut app = polygon_app();
+        app.ui.views[0].zoom = 1.0;
+        app.ui.views[0].fit_pending = false;
+        for [x, y] in corners {
+            ev(&mut app, "down", x, y, Modifiers::NONE);
+            ev(&mut app, "up", x, y, Modifiers::NONE);
+        }
+        assert_eq!(app.ui.polygon.len(), 4, "{corners:?}");
+        assert!(app.session.active().unwrap().doc.selection.is_none());
+        ev(&mut app, "down", 100.0, 100.0, Modifiers::NONE);
+        assert!(app.ui.polygon.is_empty());
+        assert!(app.session.active().unwrap().doc.selection.is_some());
+    }
 }

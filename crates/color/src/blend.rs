@@ -183,10 +183,81 @@ pub fn blend_channel(mode: BlendMode, cb: f32, cs: f32) -> f32 {
 
 /// [`blend_channel`] for 32-bit float documents, whose values may exceed 1: Linear Dodge (Add)
 /// and Divide don't clip at 1 there (Photoshop's 32-bit Add is how light is added in HDR), only
-/// at `f32::MAX`, so they stay finite. Every other mode is [`blend_channel`].
+/// at `f32::MAX`, so they stay finite. Nonfinite results from finite inputs are retried in F64
+/// and saturated to the signed F32 range. Ordinary finite F32 results keep their rounding;
+/// Multiply also uses signed finite saturation for coverage-compositing callers.
 #[inline]
 pub fn blend_channel_hdr(mode: BlendMode, cb: f32, cs: f32) -> f32 {
-    channel(mode, cb, cs, f32::MAX)
+    let out = channel(mode, cb, cs, f32::MAX);
+    if !out.is_finite() && cb.is_finite() && cs.is_finite() {
+        return channel_hdr_wide(mode, cb, cs);
+    }
+    out
+}
+
+#[cold]
+/// Reevaluate an overflowing separable blend in F64 before bounding its signed F32 result.
+fn channel_hdr_wide(mode: BlendMode, cb: f32, cs: f32) -> f32 {
+    let (b, s) = (f64::from(cb), f64::from(cs));
+    let hard_light = |b: f64, s: f64| {
+        if s <= 0.5 {
+            b * 2.0 * s
+        } else {
+            let s = 2.0 * s - 1.0;
+            b + (1.0 - b) * s
+        }
+    };
+    let out = match mode {
+        BlendMode::Screen => b + s - b * s,
+        BlendMode::LinearBurn => (b + s - 1.0).max(0.0),
+        BlendMode::LinearDodge => b + s,
+        BlendMode::Overlay => hard_light(s, b),
+        BlendMode::HardLight => hard_light(b, s),
+        BlendMode::SoftLight => {
+            if s <= 0.5 {
+                b + (1.0 - 2.0 * s) * (b * b - b)
+            } else {
+                let backdrop = b.max(0.0);
+                let d = if backdrop <= 0.25 { ((16.0 * backdrop - 12.0) * backdrop + 4.0) * backdrop } else { backdrop.sqrt() };
+                if d == b { b } else { 2.0 * b * (1.0 - s) + d * (2.0 * s - 1.0) }
+            }
+        }
+        BlendMode::PinLight => {
+            if s <= 0.5 {
+                b.min(2.0 * s)
+            } else {
+                b.max(2.0 * s - 1.0)
+            }
+        }
+        BlendMode::Difference => (b - s).abs(),
+        BlendMode::Exclusion => b * (1.0 - 2.0 * s) + s,
+        BlendMode::Subtract => (b - s).max(0.0),
+        BlendMode::Divide => {
+            if s <= 0.0 {
+                if b <= 0.0 { 0.0 } else { 1.0 }
+            } else {
+                b / s
+            }
+        }
+        BlendMode::Negation => 1.0 - (1.0 - b - s).abs(),
+        BlendMode::PaintNetColorBurn => {
+            if s <= 0.0 {
+                0.0
+            } else {
+                (1.0 - (1.0 - b) / s).max(0.0)
+            }
+        }
+        BlendMode::PaintNetColorDodge => {
+            if s >= 1.0 {
+                1.0
+            } else {
+                (b / (1.0 - s)).min(1.0)
+            }
+        }
+        // The remaining scalar formulas already produce finite output for finite inputs.
+        _ => f64::from(channel(mode, cb, cs, f32::MAX)),
+    };
+    out.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
 }
 
 /// `B(cb, cs)` with Linear Dodge and Divide clipped at `hi` (1 at integer depths).
@@ -195,7 +266,7 @@ fn channel(mode: BlendMode, cb: f32, cs: f32, hi: f32) -> f32 {
     match mode {
         BlendMode::Normal | BlendMode::Dissolve | BlendMode::PassThrough => cs,
         BlendMode::Darken => cb.min(cs),
-        BlendMode::Multiply => cb * cs,
+        BlendMode::Multiply => (cb * cs).clamp(-f32::MAX, f32::MAX),
         BlendMode::ColorBurn => color_burn(cb, cs),
         BlendMode::LinearBurn => (cb + cs - 1.0).max(0.0),
         BlendMode::Lighten => cb.max(cs),
@@ -438,7 +509,72 @@ pub fn blend_rgb_within(mode: BlendMode, cb: [f32; 3], cs: [f32; 3], top: f32) -
 /// [`blend_rgb`] for 32-bit float documents: separable modes use [`blend_channel_hdr`], and the
 /// non-separable ones keep values above 1 ([`blend_rgb_within`] at `f32::MAX`).
 pub fn blend_rgb_hdr(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
-    if mode.is_separable() { std::array::from_fn(|i| blend_channel_hdr(mode, cb[i], cs[i])) } else { blend_rgb_within(mode, cb, cs, f32::MAX) }
+    if mode.is_separable() {
+        return std::array::from_fn(|i| blend_channel_hdr(mode, cb[i], cs[i]));
+    }
+    let out = blend_rgb_within(mode, cb, cs, f32::MAX);
+    if out.iter().all(|v| v.is_finite()) || cb.iter().chain(&cs).any(|v| !v.is_finite()) {
+        return out;
+    }
+    nonseparable_hdr_wide(mode, cb, cs)
+}
+
+/// Only replay overflowing finite inputs. A shared F32 normalization can erase a tiny
+/// source's hue; raw F32 inputs and these helpers' products fit safely in F64.
+#[cold]
+fn nonseparable_hdr_wide(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
+    /// Compute the nonseparable blend luminance directly from wide RGB channels.
+    fn lum(c: [f64; 3]) -> f64 {
+        0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+    }
+    /// Measure wide RGB saturation as the distance between its largest and smallest channels.
+    fn sat(c: [f64; 3]) -> f64 {
+        c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+    }
+    /// Rescale wide RGB saturation while preserving channel order and placing the minimum channel at zero.
+    fn set_sat(c: [f64; 3], s: f64) -> [f64; 3] {
+        let mut idx = [0usize, 1, 2];
+        idx.sort_by(|&a, &b| c[a].total_cmp(&c[b]));
+        let (imin, imid, imax) = (idx[0], idx[1], idx[2]);
+        let mut out = [0.; 3];
+        if c[imax] > c[imin] {
+            out[imid] = (c[imid] - c[imin]) * s / (c[imax] - c[imin]);
+            out[imax] = s;
+        }
+        out
+    }
+    /// Shift wide RGB to the requested luminance and compress gamut excursions against the F32 white point.
+    fn set_lum(c: [f64; 3], target: f64) -> [f64; 3] {
+        let d = target - lum(c);
+        let c = c.map(|v| v + d);
+        let l = lum(c);
+        let n = c[0].min(c[1]).min(c[2]);
+        let x = c[0].max(c[1]).max(c[2]);
+        let top = f64::from(f32::MAX);
+        let mut out = c;
+        if n < 0. {
+            let d = l - n;
+            for v in &mut out {
+                *v = if l > 0. && d > 0. { l + (*v - l) * l / d } else { l };
+            }
+        }
+        if x > top {
+            let d = x - l;
+            for v in &mut out {
+                *v = if l < top && d > 0. { l + (*v - l) * (top - l) / d } else { l };
+            }
+        }
+        out
+    }
+    let (cb, cs) = (cb.map(f64::from), cs.map(f64::from));
+    let out = match mode {
+        BlendMode::Hue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        BlendMode::Saturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        BlendMode::Color => set_lum(cs, lum(cb)),
+        BlendMode::Luminosity => set_lum(cb, lum(cs)),
+        _ => cs,
+    };
+    out.map(|v| v.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32)
 }
 
 /// Composite a straight-alpha source over a straight-alpha backdrop with blend mode and opacity.

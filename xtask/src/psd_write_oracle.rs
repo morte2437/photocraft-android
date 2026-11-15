@@ -91,7 +91,8 @@ fn validate(recipes: &Recipes) -> Result<(), String> {
     }
     let mut seen = HashSet::new();
     for case in &recipes.cases {
-        if !valid_id(&case.id) || !seen.insert(&case.id) {
+        // An id names the case's output directory, and `A` and `a` are one directory on a case-insensitive filesystem.
+        if !valid_id(&case.id) || !seen.insert(case.id.to_ascii_lowercase()) {
             return Err(format!("invalid or duplicate case id: {}", case.id));
         }
         let path = Path::new(&case.base);
@@ -108,7 +109,9 @@ fn validate(recipes: &Recipes) -> Result<(), String> {
             return Err(format!("{}: an edit needs a changed_to assertion", case.id));
         }
         for step in &case.commands {
+            // The contour library commands edit no document, and their `path` param reaches any file.
             if !(step.command.starts_with("type.") || step.command.starts_with("layer.layerStyle."))
+                || step.command.starts_with("layer.layerStyle.contours.")
                 || !step.params.is_object()
                 || step.params.get("layer").is_some()
                 || step.params.get("layers").is_some()
@@ -162,6 +165,39 @@ fn target<'a>(doc: &'a Value, wanted: &Target) -> Result<&'a Value, String> {
     found.into_iter().next().ok_or_else(|| "missing target".into())
 }
 
+/// Compare two JSON numbers by exact value, with no tolerance: `17` equals `17.0`, and integers too
+/// large for `f64` stay distinct.
+fn numbers_equal(a: &serde_json::Number, b: &serde_json::Number) -> bool {
+    let int = |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
+    let whole_float_is = |float: &serde_json::Number, i: i128| float.as_f64().is_some_and(|f| f.fract() == 0.0 && f as i128 == i);
+    match (int(a), int(b)) {
+        (Some(x), Some(y)) => x == y,
+        (Some(i), None) => whole_float_is(b, i),
+        (None, Some(i)) => whole_float_is(a, i),
+        (None, None) => a.as_f64() == b.as_f64(),
+    }
+}
+
+/// Compare JSON by value: numbers as in `numbers_equal`; arrays and objects element-wise. Recursion is
+/// bounded because serde_json's parser already limits nesting depth.
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => numbers_equal(x, y),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| values_equal(x, y)),
+        (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| values_equal(v, w))),
+        _ => a == b,
+    }
+}
+
+/// `values_equal` over optional values: both absent are equal, one absent is not.
+fn options_equal(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => values_equal(a, b),
+        _ => false,
+    }
+}
+
 fn verify(checks: &[Check], before: &Value, after: &Value) -> Vec<Value> {
     let mut results = Vec::new();
     let layer = after.get("name").or_else(|| before.get("name"));
@@ -174,9 +210,9 @@ fn verify(checks: &[Check], before: &Value, after: &Value) -> Vec<Value> {
         let old = before.pointer(path);
         let new = after.pointer(path);
         let pass = match check {
-            Check::ChangedTo { value, .. } => new == Some(value) && old != new,
-            Check::Equals { value, .. } => new == Some(value),
-            Check::Unchanged { .. } => old.is_some() && old == new,
+            Check::ChangedTo { value, .. } => new.is_some_and(|n| values_equal(n, value)) && !options_equal(old, new),
+            Check::Equals { value, .. } => new.is_some_and(|n| values_equal(n, value)),
+            Check::Unchanged { .. } => old.is_some() && options_equal(old, new),
         };
         results.push(
             json!({"layer": layer, "path": path, "op": op, "expected": expected, "before": old, "after": new, "status": if pass { "pass" } else { "fail" }}),
@@ -224,8 +260,34 @@ fn inspect(cli: &Path, file: &Path, dir: &Path, tag: &str) -> Result<Value, Stri
     serde_json::from_str(&out).map_err(|e| format!("invalid CLI inspection: {e}"))
 }
 
+/// Reference-editor verdicts, which this runner never produces itself.
+fn not_run() -> Value {
+    json!({"opens": "not_run", "meaning": "not_run", "rendering": "not_run"})
+}
+
+/// Reopen the exported candidate and check it against the recipe.
+fn check_candidate(
+    case: &Recipe,
+    cli: &Path,
+    dir: &Path,
+    candidate_sha256: &str,
+    before: &Value,
+    layer: &Value,
+    export_warnings: &str,
+) -> Result<Value, String> {
+    let candidate = dir.join("candidate.psd");
+    let after = inspect(cli, &candidate, dir, "after")?;
+    let checks = verify(&case.checks, layer, target(&after, &case.target)?);
+    let passed = checks.iter().all(|v| v.get("status").and_then(Value::as_str) == Some("pass"));
+    Ok(json!({"id": case.id, "status": if passed { "pass" } else { "fail" }, "base": case.base, "base_sha256": case.base_sha256,
+        "candidate": format!("{}/candidate.psd", case.id), "candidate_sha256": candidate_sha256, "checks": checks,
+        "warnings": {"input": before.get("warnings"), "export": export_warnings, "output": after.get("warnings")},
+        "photoshop": not_run()}))
+}
+
 /// Export and check one case, retaining candidate provenance after export succeeds.
 fn execute(case: &Recipe, corpus: &Path, cli: &Path, output: &Path) -> Result<Value, String> {
+    use std::io::Write;
     let input = input_path(corpus, &case.base)?;
     let input_bytes = read_limited(&input)?;
     if crate::sha256::hex(&input_bytes) != case.base_sha256 {
@@ -233,11 +295,16 @@ fn execute(case: &Recipe, corpus: &Path, cli: &Path, output: &Path) -> Result<Va
     }
     let dir = output.join(&case.id);
     fs::create_dir(&dir).map_err(|e| e.to_string())?;
-    let before = inspect(cli, &input, &dir, "before")?;
+    // Run on a private copy of the hashed bytes so the CLI never opens the corpus.
+    let pinned = dir.join("base.psd");
+    let mut f = OpenOptions::new().write(true).create_new(true).open(&pinned).map_err(|e| e.to_string())?;
+    f.write_all(&input_bytes).map_err(|e| e.to_string())?;
+    drop(f);
+    let before = inspect(cli, &pinned, &dir, "before")?;
     let layer = target(&before, &case.target)?;
     let layer_id = layer.get("id").and_then(Value::as_u64).ok_or("target lacks numeric id")?;
     let candidate = dir.join("candidate.psd");
-    let mut args = vec!["run".to_string(), input.to_str().ok_or("non-UTF-8 input path")?.to_string()];
+    let mut args = vec!["run".to_string(), pinned.to_str().ok_or("non-UTF-8 input path")?.to_string()];
     for step in &case.commands {
         let mut params = step.params.clone();
         params.as_object_mut().ok_or("params must be an object")?.insert("layer".into(), json!(layer_id));
@@ -246,13 +313,15 @@ fn execute(case: &Recipe, corpus: &Path, cli: &Path, output: &Path) -> Result<Va
     args.extend(["--out".into(), candidate.to_str().ok_or("non-UTF-8 output path")?.to_string()]);
     let (_, warnings) = invoke(cli, &args, &dir, "export")?;
     let bytes = read_limited(&candidate)?;
-    let after = inspect(cli, &candidate, &dir, "after")?;
-    let checks = verify(&case.checks, layer, target(&after, &case.target)?);
-    let passed = checks.iter().all(|v| v.get("status").and_then(Value::as_str) == Some("pass"));
-    Ok(json!({"id": case.id, "status": if passed { "pass" } else { "fail" }, "base": case.base, "base_sha256": case.base_sha256,
-        "candidate": format!("{}/candidate.psd", case.id), "candidate_sha256": crate::sha256::hex(&bytes), "checks": checks,
-        "warnings": {"input": before.get("warnings"), "export": warnings, "output": after.get("warnings")},
-        "photoshop": {"opens": "not_run", "meaning": "not_run", "rendering": "not_run"}}))
+    let candidate_sha256 = crate::sha256::hex(&bytes);
+    match check_candidate(case, cli, &dir, &candidate_sha256, &before, layer, &warnings) {
+        Ok(record) => Ok(record),
+        Err(e) => Ok(json!({"id": case.id, "status": "fail", "base": case.base, "base_sha256": case.base_sha256,
+            "candidate": format!("{}/candidate.psd", case.id), "candidate_sha256": candidate_sha256,
+            "error": format!("exported file: {e}"),
+            "warnings": {"input": before.get("warnings"), "export": warnings},
+            "photoshop": not_run()})),
+    }
 }
 
 /// Create a report artifact without overwriting an existing file.
@@ -294,7 +363,7 @@ pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
     for case in &recipes.cases {
         let result = execute(case, &corpus, &cli, output).unwrap_or_else(|e| {
             json!({"id": case.id, "status": "fail", "error": e,
-            "photoshop": {"opens": "not_run", "meaning": "not_run", "rendering": "not_run"}})
+            "photoshop": not_run()})
         });
         cases.push(result);
     }
@@ -389,6 +458,16 @@ mod tests {
         assert!(validate(&parsed).is_err());
         let duplicate = json!({"version":1,"corpus_revision":"pin","cases":[{"id":"x","base":"x.psd","base_sha256":"a".repeat(64),"target":{"kind":"Text"},"checks":[{"op":"unchanged","path":"/name"}]},{"id":"x","base":"x.psd","base_sha256":"a".repeat(64),"target":{"kind":"Text"},"checks":[{"op":"unchanged","path":"/name"}]}]});
         assert!(validate(&serde_json::from_value(duplicate).unwrap()).is_err());
+        let case_only = json!({"version":1,"corpus_revision":"pin","cases":[{"id":"A","base":"x.psd","base_sha256":"a".repeat(64),"target":{"kind":"Text"},"checks":[{"op":"unchanged","path":"/name"}]},{"id":"a","base":"x.psd","base_sha256":"a".repeat(64),"target":{"kind":"Text"},"checks":[{"op":"unchanged","path":"/name"}]}]});
+        assert!(validate(&serde_json::from_value(case_only).unwrap()).unwrap_err().contains("duplicate"));
+        let contour = |command: &str| {
+            json!({"version":1,"corpus_revision":"pin","cases":[{"id":"x","base":"x.psd","base_sha256":"a".repeat(64),"target":{"kind":"Text"},
+                "commands":[{"command":command,"params":{"path":"base.psd"}}],"checks":[{"op":"changed_to","path":"/name","value":"y"}]}]})
+        };
+        for command in ["layer.layerStyle.contours.save", "layer.layerStyle.contours.load"] {
+            assert!(validate(&serde_json::from_value(contour(command)).unwrap()).unwrap_err().contains("invalid command"));
+        }
+        assert!(validate(&serde_json::from_value(contour("layer.layerStyle.dropShadow")).unwrap()).is_ok());
         let edit = json!({"version":1,"corpus_revision":"pin","cases":[{"id":"x","base":"x.psd","base_sha256":"a".repeat(64),"target":{"kind":"Text"},"commands":[{"command":"type.setStyle"}],"checks":[{"op":"unchanged","path":"/name"}]}]});
         assert!(validate(&serde_json::from_value(edit).unwrap()).is_err());
     }
@@ -442,5 +521,132 @@ exit 1
         assert_eq!(good["status"], "pass");
         assert_eq!(good["photoshop"]["opens"], "not_run");
         assert!(execute(&make_case("bad", "type.bad"), &corpus, &cli, &output).unwrap_err().contains("bad command"));
+    }
+
+    /// Fake CLI that logs its arguments, tampers with the file it is asked to run on, and reports
+    /// `candidate_info` for the exported file.
+    #[cfg(unix)]
+    fn fake_cli(root: &Path, log: &Path, candidate_info: &str, export_fails: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let cli = root.join("fake-cli");
+        let script = r##"#!/bin/sh
+echo "$@" >> 'LOG'
+if [ "$1" = info ]; then
+    case "$2" in
+      */candidate.psd) echo 'CANDIDATE' ;;
+      *) echo '{"layers":[{"kind":"Type","id":4,"text":{"antialias":"None"}}]}' ;;
+    esac
+    exit 0
+fi
+if [ EXPORT_FAILS = 1 ]; then
+    echo 'export broke' >&2
+    exit 1
+fi
+input="$2"
+cp "$input" "$input.received"
+echo tamper >> "$input"
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --out ]; then cp "$input" "$2"; exit 0; fi
+    shift
+done
+exit 1
+"##
+        .replace("LOG", &log.display().to_string())
+        .replace("CANDIDATE", candidate_info)
+        .replace("EXPORT_FAILS", if export_fails { "1" } else { "0" });
+        fs::write(&cli, script).unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        cli
+    }
+
+    /// Run one recipe case through `run`; returns (temp dir guard, result, output dir, corpus dir, log path).
+    #[cfg(unix)]
+    fn run_case(id: &str, candidate_info: &str, export_fails: bool) -> (tempfile::TempDir, Result<(), String>, PathBuf, PathBuf, PathBuf) {
+        let tmp = tempfile::Builder::new().prefix("psd-write-oracle-").tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let corpus = root.join("corpus");
+        fs::create_dir(&corpus).unwrap();
+        fs::write(corpus.join("base.psd"), b"base").unwrap();
+        let log = root.join("calls.log");
+        let cli = fake_cli(&root, &log, candidate_info, export_fails);
+        let recipes = json!({"version":1,"corpus_revision":"pin","cases":[{"id":id,"base":"base.psd","base_sha256":crate::sha256::hex(b"base"),
+            "target":{"kind":"Type"},"commands":[{"command":"type.antiAlias.crisp","params":{}}],
+            "checks":[{"op":"changed_to","path":"/text/antialias","value":"Crisp"}]}]});
+        let recipe_path = root.join("recipes.json");
+        fs::write(&recipe_path, recipes.to_string()).unwrap();
+        let out = root.join("out");
+        let args = [recipe_path.to_str().unwrap(), corpus.to_str().unwrap(), cli.to_str().unwrap(), out.to_str().unwrap()];
+        let result = run(&root, &args);
+        (tmp, result, out, corpus, log)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn target_lost_after_export_keeps_candidate_in_manifest() {
+        let (_tmp, result, out, _, _) = run_case("lost", r#"{"layers":[]}"#, false);
+        assert!(result.is_err());
+        let report: Value = serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["cases"][0]["status"], "fail");
+        assert!(report["cases"][0]["error"].as_str().unwrap().starts_with("exported file: "));
+        let manifest: Value = serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        let entry = &manifest["candidates"][0];
+        assert_eq!(entry["id"], "lost");
+        assert_eq!(entry["path"], "lost/candidate.psd");
+        assert_eq!(entry["sha256"], crate::sha256::hex(&fs::read(out.join("lost/candidate.psd")).unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_failure_has_no_manifest_entry() {
+        let (_tmp, result, out, _, _) = run_case("broken", r#"{"layers":[]}"#, true);
+        assert!(result.is_err());
+        let report: Value = serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["cases"][0]["status"], "fail");
+        assert!(report["cases"][0]["error"].as_str().unwrap().contains("export broke"));
+        let manifest: Value = serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        assert!(manifest["candidates"].as_array().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_runs_on_pinned_base_never_on_corpus() {
+        let (_tmp, result, out, corpus, log) = run_case("pin", r#"{"layers":[{"kind":"Type","id":4,"text":{"antialias":"Crisp"}}]}"#, false);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(fs::read(corpus.join("base.psd")).unwrap(), b"base");
+        let pinned = out.join("pin/base.psd");
+        assert!(pinned.exists());
+        assert_eq!(fs::read(out.join("pin/base.psd.received")).unwrap(), b"base");
+        let log = fs::read_to_string(log).unwrap();
+        let corpus_path = corpus.join("base.psd").display().to_string();
+        assert!(!log.contains(&corpus_path));
+        let pinned = pinned.display().to_string();
+        let base_calls: Vec<&str> = log.lines().filter(|l| !l.starts_with("info ") || !l.contains("candidate.psd")).collect();
+        assert_eq!(base_calls.len(), 2);
+        assert!(base_calls.iter().all(|l| l.contains(&pinned)));
+    }
+
+    #[test]
+    fn numbers_compare_by_value() {
+        assert!(values_equal(&json!(17), &json!(17.0)));
+        assert!(!values_equal(&json!(17), &json!(18.0)));
+        assert!(!values_equal(&json!(17), &json!(17.5)));
+        assert!(values_equal(&json!(0.5), &json!(0.5)));
+        assert!(values_equal(&json!(-3), &json!(-3.0)));
+        assert!(values_equal(&json!(u64::MAX), &json!(u64::MAX)));
+        assert!(!values_equal(&json!(9_007_199_254_740_993_u64), &json!(9_007_199_254_740_992_u64)));
+        assert!(!values_equal(&json!(9_007_199_254_740_993_u64), &json!(9_007_199_254_740_992.0)));
+        assert!(values_equal(&json!(9_007_199_254_740_992_u64), &json!(9_007_199_254_740_992.0)));
+        assert!(!values_equal(&json!(u64::MAX), &json!(1e300)));
+        assert!(values_equal(&json!({"a":[1,2.0,{"b":3}],"c":"x"}), &json!({"c":"x","a":[1.0,2,{"b":3.0}]})));
+        assert!(!values_equal(&json!({"a":1}), &json!({"b":1})));
+        assert!(!values_equal(&json!({"a":1}), &json!({"a":1,"b":1})));
+        assert!(!values_equal(&json!([1, 2]), &json!([1])));
+        let before = json!({"n":17});
+        let after = json!({"n":17.0});
+        assert_eq!(verify(&[Check::ChangedTo { path: "/n".into(), value: json!(17) }], &before, &after)[0]["status"], "fail");
+        assert_eq!(verify(&[Check::Equals { path: "/n".into(), value: json!(17) }], &before, &after)[0]["status"], "pass");
+        assert_eq!(verify(&[Check::Unchanged { path: "/n".into() }], &before, &after)[0]["status"], "pass");
+        assert_eq!(verify(&[Check::ChangedTo { path: "/n".into(), value: json!(17) }], &json!({}), &after)[0]["status"], "pass");
+        assert_eq!(verify(&[Check::Equals { path: "/m".into(), value: json!(1) }], &before, &after)[0]["status"], "fail");
     }
 }

@@ -23,6 +23,24 @@ fn zero_width_images_complete_without_sizing_by_height() {
     assert_eq!(complete(1 << 40, 0, 3, &[], &[], &p), Some(Vec::new()));
 }
 
+/// Dimensions whose product wraps must be refused, not matched against tiny buffers.
+#[test]
+#[should_panic]
+fn wrapping_dimension_products_are_refused() {
+    let _ = complete(1 << 40, 1 << 40, 1, &[], &[], &CompleteParams::default());
+}
+
+/// A block size beyond `i32` falls back to the membrane fill instead of looping on a zero step.
+#[test]
+fn a_huge_synthesis_block_does_not_hang() {
+    let (w, h) = (8, 8);
+    let img = vec![0.5f32; w * h];
+    let mut hole = vec![false; w * h];
+    hole[27] = true;
+    let out = synthesize(w, h, 1, &img, &hole, usize::MAX, 1);
+    assert_eq!(out.len(), w * h);
+}
+
 /// Smooth gradient plus deterministic fine noise.
 fn texture(w: usize, h: usize) -> Vec<f32> {
     let mut rng = Rng::new(7);

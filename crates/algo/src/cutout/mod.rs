@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_images_stop_before_the_transpose_and_row_passes() {
+    fn empty_images_trace_to_nothing() {
         for r in [Rect::new(0, 0, 0, 4), Rect::new(0, 0, 4, 0), Rect::new(0, 0, 0, 0)] {
             let t = trace(&[], r, &settings(4, 2.0, 1.0));
             assert!(t.regions.is_empty());

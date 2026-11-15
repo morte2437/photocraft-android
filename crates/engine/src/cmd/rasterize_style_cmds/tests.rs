@@ -162,3 +162,58 @@ fn disabled_and_bad_params_fail_gracefully() {
     s.execute("layer.layerStyle.stroke", json!({"layer": g})).unwrap();
     assert!(s.execute(ID, json!({"layer": g})).is_err(), "group styles are not baked");
 }
+
+/// #4974: a layer that fails to bake takes back the ones baked before it.
+#[test]
+fn a_later_layer_failing_takes_back_the_baked_ones() {
+    let (mut s, id) = scene(8);
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let before = s.active().unwrap().doc.clone();
+    let steps = s.active().unwrap().history.past_len();
+    let journal = s.journal.len();
+    let calls = std::cell::Cell::new(0);
+    let r = bake_layers(&mut s, vec![LayerId(id), LayerId(id)], |s, id, key| {
+        calls.set(calls.get() + 1);
+        if calls.get() == 1 { bake_one(s, id, key) } else { Err(EngineError::Other("second layer failed".into())) }
+    });
+    assert!(r.is_err());
+    assert_eq!(calls.get(), 2);
+    assert_eq!(layer(&s, id).effects.items.len(), 5);
+    assert!(std::sync::Arc::ptr_eq(&s.active().unwrap().doc, &before));
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert!(!s.active().unwrap().history.can_redo());
+    assert_eq!(s.journal.len(), journal);
+    assert!(!s.active().unwrap().is_dirty());
+}
+
+/// A layer with no effects is refused before a step starts: the revision does not move.
+#[test]
+fn a_layer_without_effects_changes_nothing() {
+    let (mut s, _) = scene(8);
+    let plain = s.execute("layer.new.layer", json!({"name": "plain"})).unwrap()["layer"].as_u64().unwrap();
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let (revision, steps) = (s.active().unwrap().revision, s.active().unwrap().history.past_len());
+    let err = bake_layers(&mut s, vec![LayerId(plain)], bake_one).unwrap_err().to_string();
+    assert!(err.contains("no layer effects"), "{err}");
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert!(!s.active().unwrap().is_dirty());
+}
+
+/// Through the command itself: a layer without effects is refused and nothing moves.
+#[test]
+fn rasterize_layer_style_on_a_layer_without_effects_changes_nothing() {
+    let (mut s, _) = scene(8);
+    s.execute("layer.new.layer", json!({"name": "plain"})).unwrap();
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let (revision, steps, journal) = (s.active().unwrap().revision, s.active().unwrap().history.past_len(), s.journal.len());
+    let err = s.execute(ID, json!({})).unwrap_err().to_string();
+    assert!(err.contains("no selected layer has layer effects"), "{err}");
+    assert_eq!(s.active().unwrap().revision, revision);
+    assert_eq!(s.active().unwrap().history.past_len(), steps);
+    assert_eq!(s.journal.len(), journal);
+    assert!(!s.active().unwrap().is_dirty());
+}

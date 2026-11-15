@@ -4,7 +4,7 @@
 //! Every editor edits the kind's complete parameter set (`photocraft_engine::adjust_params`) as a
 //! JSON object and reports an [`Edit`]: `changed` while values move (the host previews them live)
 //! and `commit` when a gesture ends (the Properties host then runs one `layer.setAdjustment`; a
-//! dialog commits on OK). Selective Color and Color Lookup keep their editors in `adjust_ui`.
+//! dialog commits on OK). Color Lookup keeps its editor in `adjust_ui`.
 
 use crate::point_curve as curve_edit;
 use crate::state::CurvesEditorState as CurveUi;
@@ -28,14 +28,16 @@ mod curves;
 mod gradient_map;
 mod hue_saturation;
 mod levels;
+mod selective_color;
 mod session;
 
+pub(crate) use basic::PHOTO_FILTER_MODE;
 #[cfg(test)]
 pub(crate) use basic::row_value;
 #[cfg(test)]
 use basic::track_stops;
+pub use basic::{apply_auto, reset_adjustment_editor, reset_color_balance};
 use basic::{black_white, brightness_contrast, channel_mixer, color_balance, photo_filter, sliders, threshold};
-pub use basic::{reset_adjustment_editor, reset_color_balance};
 use curves::curves;
 #[cfg(test)]
 use curves::{CURVE_HANDLE_SIZE, curve_graph};
@@ -45,13 +47,15 @@ use gradient_map::gradient_map;
 pub use gradient_map::{gradient_presets, is_gray, swatches};
 use hue_saturation::hue_saturation;
 #[cfg(test)]
-use hue_saturation::{lightness_track, move_hue_range_handle, saturation_track};
+use hue_saturation::{hue_range_handle_at, hue_range_zone, lightness_track, move_hue_range_handle, move_hue_range_zone, saturation_track};
 use levels::levels;
+pub(crate) use levels::levels_drag;
 pub use levels::{auto_levels, gamma_from_pos, gamma_pos};
+use selective_color::selective_color;
 pub use session::{layer_editor, layer_mem, properties_coalesce, properties_reset, session_start};
 
-/// Kinds edited here (Selective Color and Color Lookup have their own editors; Invert has none).
-pub const KINDS: [&str; 13] = [
+/// Kinds edited here (Color Lookup has its own editor in `adjust_ui`; Invert has none).
+pub const KINDS: [&str; 14] = [
     "brightnessContrast",
     "levels",
     "curves",
@@ -65,10 +69,17 @@ pub const KINDS: [&str; 13] = [
     "posterize",
     "threshold",
     "gradientMap",
+    "selectiveColor",
 ];
 
 pub fn has_editor(kind: &str) -> bool {
     KINDS.contains(&kind)
+}
+
+/// Forget Photo Filter's Filter / Color choice in the editor memory `mem`, so the editor derives it
+/// from the colour again: a choice changed and then cancelled must not outlive the dialog (#9879).
+pub(crate) fn forget_photo_filter_mode(ctx: &egui::Context, mem: egui::Id) {
+    ctx.data_mut(|d| d.remove::<bool>(mem.with(PHOTO_FILTER_MODE)));
 }
 
 /// Kinds that draw a histogram behind their controls.
@@ -85,6 +96,8 @@ pub struct Edit {
     pub commit: bool,
     /// Open the host's gradient-file dialog without changing adjustment parameters.
     pub import_gradients: bool,
+    /// Black & White's Auto: the host fills in the weights for its image ([`apply_auto`]).
+    pub auto: bool,
 }
 
 impl Edit {
@@ -92,6 +105,7 @@ impl Edit {
         self.changed |= o.changed;
         self.commit |= o.commit;
         self.import_gradients |= o.import_gradients;
+        self.auto |= o.auto;
     }
     fn discrete(changed: bool) -> Self {
         Edit { changed, commit: changed, ..Default::default() }
@@ -119,7 +133,7 @@ pub struct EditorCx {
     /// Preferences ▸ Interface ▸ Dynamic Color Sliders: colour tracks on the colour sliders
     /// (off: the plain track).
     pub dynamic_color_sliders: bool,
-    /// Image › Curves with a single Channels-panel target: that channel only (#5335).
+    /// Image › Levels/Curves with a single Channels-panel target: that channel only (#5335).
     pub isolated_curve: Option<photocraft_engine::channel_cmds::IsolatedCurveChannel>,
 }
 
@@ -161,6 +175,7 @@ pub fn editor(ui: &mut egui::Ui, kind: &str, v: &mut Value, cx: &EditorCx) -> Ed
         "posterize" => sliders(ui, v, &[("levels", "Levels", 2.0, 255.0, 4.0, "", None)]),
         "threshold" => threshold(ui, v, cx),
         "gradientMap" => gradient_map(ui, v, cx),
+        "selectiveColor" => selective_color(ui, v, cx),
         _ => Edit::default(),
     }
 }
@@ -227,6 +242,30 @@ fn label(ui: &mut egui::Ui, text: &str) {
 mod tests {
     use super::*;
 
+    /// #8351: a Gradient Map that keeps Photoshop's gradient shows and edits its stops, not the
+    /// dense baked ones; its midpoints follow added and removed stops.
+    #[test]
+    fn gradient_map_editor_edits_photoshops_stops() {
+        use super::gradient_map::{read_stops, write_stops};
+        let baked: Vec<Value> = (0..=96).map(|k| json!([k as f64 / 96.0, "#808080"])).collect();
+        let mut v =
+            json!({"stops": baked, "source": {"stops": [[0, "#000000"], [1, "#ffffff"]], "midpoints": [0.3], "smoothness": 0.8, "method": "perceptual"}});
+        let stops = read_stops(&v);
+        assert_eq!(stops.len(), 2, "the editor shows Photoshop's two stops");
+        let mut three = stops.clone();
+        three.push((0.5, [1.0, 0.0, 0.0]));
+        write_stops(&mut v, &three);
+        assert_eq!(v["source"]["stops"].as_array().map(Vec::len), Some(3));
+        assert_eq!(v["source"]["midpoints"], json!([0.3, 0.5]), "the new segment starts halfway");
+        assert_eq!(v["stops"].as_array().map(Vec::len), Some(97), "the baked stops are the engine's to redo");
+        write_stops(&mut v, &stops);
+        assert_eq!(v["source"]["midpoints"], json!([0.3]));
+        // Without a source the map's own stops are edited.
+        let mut plain = json!({"stops": [[0, "#000000"], [1, "#ffffff"]]});
+        write_stops(&mut plain, &three);
+        assert_eq!(plain["stops"].as_array().map(Vec::len), Some(3));
+    }
+
     #[test]
     fn saturation_track_follows_the_hue() {
         // The Saturation slider track recolours with the hue (UI-217-16).
@@ -259,6 +298,53 @@ mod tests {
         let stops = [Color32::BLACK, Color32::RED];
         assert_eq!(track_stops(&cx(true), &stops), Some(&stops[..]));
         assert_eq!(track_stops(&cx(false), &stops), None);
+    }
+
+    /// #9272 review: at the narrowest Properties panel (a 230-point bar) a 30° zone is ~19 points
+    /// wide; a press in its middle grabs the zone, not a handle, while each handle stays grabbable.
+    #[test]
+    fn hue_range_zones_stay_selectable_on_a_narrow_bar() {
+        let w = 230.0;
+        let xs = [75.0f32, 105.0, 135.0, 165.0].map(|d| d / 360.0 * w);
+        for (a, z) in [(0, 1), (1, 2), (2, 3)] {
+            assert_eq!(hue_range_handle_at(xs, (xs[a] + xs[z]) / 2.0, w), None, "the middle of zone {a}..{z} is the zone's");
+        }
+        for (k, x) in xs.iter().enumerate() {
+            assert_eq!(hue_range_handle_at(xs, *x + 1.0, w), Some(k as u8), "handle {k}");
+        }
+        assert_eq!(hue_range_handle_at(xs, xs[0] - 9.0, w), Some(0), "the full reach outside the range");
+        let stacked = [50.0, 50.0, 80.0, 120.0];
+        assert!(hue_range_handle_at(stacked, 51.0, w).is_some(), "coinciding handles stay grabbable");
+        // Reds (315/345…15\45): its fully-on zone crosses the seam, ~9.6 points from each edge.
+        let reds = [315.0f32, 345.0, 15.0, 45.0].map(|d| d / 360.0 * w);
+        for x in [w - 1.0, w - 3.0, 0.5, 2.5] {
+            assert_eq!(hue_range_handle_at(reds, x, w), None, "x {x}: Reds' fully-on zone across the seam");
+        }
+        assert_eq!(hue_range_handle_at(reds, reds[1] + 1.0, w), Some(1));
+        assert_eq!(hue_range_handle_at(reds, reds[2] - 1.0, w), Some(2));
+    }
+
+    /// #9252: Photoshop 2025's zone drags on a colour range (measured on Reds): the fully-on span
+    /// moves all four handles, each fade its own two; a side stops at the other and the range
+    /// never passes a turn.
+    #[test]
+    fn hue_range_zones_move_their_handles() {
+        let reds = [-45.0, -15.0, 15.0, 45.0];
+        assert_eq!(hue_range_zone(reds, 345.0 - 15.0), Some(0));
+        assert_eq!(hue_range_zone(reds, 0.0), Some(1));
+        assert_eq!(hue_range_zone(reds, 30.0), Some(2));
+        assert_eq!(hue_range_zone(reds, 180.0), None);
+        let centre = move_hue_range_zone(reds, 1, 37.0);
+        assert_eq!(centre, [-8.0, 22.0, 52.0, 82.0], "all four, as Photoshop's 315/345…15\\45 → 352/21…52\\81");
+        let left = move_hue_range_zone(centre, 0, -19.0);
+        assert_eq!(left, [-27.0, 3.0, 52.0, 82.0], "the left two only");
+        let right = move_hue_range_zone(left, 2, 19.0);
+        assert_eq!(right, [-27.0, 3.0, 71.0, 101.0], "the right two only");
+        assert_eq!(move_hue_range_zone(reds, 0, 100.0), [-15.0, 15.0, 15.0, 45.0], "the left side stops at the right");
+        assert_eq!(move_hue_range_zone(reds, 2, -100.0), [-45.0, -15.0, -15.0, 15.0], "and the right at the left");
+        let wide = move_hue_range_zone(reds, 2, 500.0);
+        assert!(wide[3] - wide[0] <= 359.0 + 1e-3, "{wide:?}");
+        assert_eq!(move_hue_range_zone(reds, 1, f32::NAN), reds);
     }
 
     #[test]

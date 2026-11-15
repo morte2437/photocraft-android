@@ -2,8 +2,8 @@
 //! stored without a transparency channel), whatever its name in the Photoshop language that
 //! saved the file.
 
+use craft_psd::{ColorMode, Compression, PsdFile, TaggedBlock, Version, testgen};
 use photocraft_io::psd_to_document;
-use photocraft_psd::{ColorMode, Compression, PsdFile, TaggedBlock, Version, testgen};
 
 /// `testgen::layered` with its bottom layer turned into a Photoshop Background named `name`.
 fn file(name: &str, transparency_channel: bool) -> PsdFile {

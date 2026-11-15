@@ -43,7 +43,7 @@ fn exported_artboard_indices_match_guides_resource() {
     use photocraft_io::ExportOptions;
     let d = doc_with_board(Rect::new(10, 0, 30, 50));
     let bytes = export(&d, "x.psd", &ExportOptions::default()).expect("export").bytes;
-    let f = photocraft_psd::PsdFile::from_bytes(&bytes).expect("parse");
+    let f = craft_psd::PsdFile::from_bytes(&bytes).expect("parse");
     let res = f.resources.iter().find(|r| r.id == 1032).expect("guides resource");
     // 1032: version(4) hRes(4) vRes(4) count(4), then 5 bytes per guide: loc(4) dir(1).
     let dta = &res.data;

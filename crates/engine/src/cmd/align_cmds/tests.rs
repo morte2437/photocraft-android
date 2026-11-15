@@ -357,11 +357,17 @@ fn auto_blend_sparse_huge_bounds_keep_to_the_canvas() {
 #[test]
 fn auto_blend_budget_counts_layers_and_channels() {
     // Two RGBA layers: 4 bytes × (2 layers × (4 channels + luma, alpha, weight) + merged + depth).
-    assert_eq!(blend_bytes_per_pixel(2, 4), 88);
-    assert!(blend_bytes_per_pixel(5, 4) > blend_bytes_per_pixel(2, 4));
+    assert_eq!(blend_bytes_per_pixel(2, 4, false), 88);
+    assert!(blend_bytes_per_pixel(5, 4, false) > blend_bytes_per_pixel(2, 4, false));
+    // A stack blend adds the fusion pyramids: (2 × 4 + 7) × 4/3 = 20 more f32 per pixel.
+    assert_eq!(blend_bytes_per_pixel(2, 4, true), 88 + 80);
+    // Without Seamless Tones `fuse_stack` never runs, so its pyramids are not budgeted: two RGBA
+    // layers over 6000 x 6000 px fit the limit only then.
+    assert!(36_000_000 * blend_bytes_per_pixel(2, 4, false) <= MAX_BLEND_BYTES);
+    assert!(36_000_000 * blend_bytes_per_pixel(2, 4, true) > MAX_BLEND_BYTES);
     // A 2^27-pixel area would need about 11 GiB for just two RGBA layers: it keeps to the canvas.
-    assert!((1u64 << 27).saturating_mul(blend_bytes_per_pixel(2, 4)) > MAX_BLEND_BYTES);
-    assert_eq!(blend_bytes_per_pixel(u64::MAX, 4), u64::MAX, "saturates instead of overflowing");
+    assert!((1u64 << 27).saturating_mul(blend_bytes_per_pixel(2, 4, false)) > MAX_BLEND_BYTES);
+    assert_eq!(blend_bytes_per_pixel(u64::MAX, 4, true), u64::MAX, "saturates instead of overflowing");
 }
 
 #[test]

@@ -357,3 +357,30 @@ pub fn render_layer_in(doc: &Document, layer: &Layer, rect: Rect) -> Buffer {
         buf
     })
 }
+
+/// Composite in bounded bands, retaining native colour-model paths, with cancellation.
+pub fn composite_to_surface_with_interrupt(
+    doc: &Document,
+    rect: Rect,
+    fmt: photocraft_color::PixelFormat,
+    background: Option<[f32; 3]>,
+    ctl: &photocraft_raster::Interrupt,
+) -> Result<Surface, photocraft_raster::Cancelled> {
+    ctl.check()?;
+    let mut out = Surface::new(fmt);
+    let rows = band_rows_for(rect.width(), 64);
+    let mut y = rect.y0;
+    while y < rect.y1 {
+        ctl.check()?;
+        let end = y.saturating_add(rows).min(rect.y1);
+        let band = Rect::new(rect.x0, y, rect.x1, end);
+        let part = composite_to_surface(doc, band, fmt, background);
+        ctl.check()?;
+        let mut pixels = Vec::new();
+        part.read_region_into(band, &mut pixels);
+        out.write_region(band, &pixels);
+        y = end;
+    }
+    out.prune();
+    Ok(out)
+}
