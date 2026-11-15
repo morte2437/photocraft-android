@@ -127,7 +127,8 @@ pub(super) fn conditional_to(_: &str, p: &Value) -> Option<Descriptor> {
     for key in ["then", "else"] {
         if let Some(name) = jstr(p, key) {
             let mut items = vec![ReferenceItem::Name { class: class("Actn"), name: UnicodeString::new_nul(name) }];
-            if let Some(set) = jstr(p, "set") {
+            let scope = if key == "then" { "thenSet" } else { "elseSet" };
+            if let Some(set) = jstr(p, scope).or_else(|| jstr(p, "set")) {
                 items.push(ReferenceItem::Name { class: class("ASet"), name: UnicodeString::new_nul(set) });
             }
             d = d.with(key, D::Reference(items));

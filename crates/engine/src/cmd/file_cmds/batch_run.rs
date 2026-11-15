@@ -684,6 +684,9 @@ pub(crate) fn check_batch_depth(s: &Session, cmd: &str) -> Result<()> {
 
 pub(crate) fn batch_action(list: &[crate::actions_cmds::Action], p: &Value) -> Result<usize> {
     const CMD: &str = "file.automate.batch";
+    if p.get("actionId").is_some() {
+        return crate::actions_cmds::resolve_play_target(list, p, CMD);
+    }
     if let Some(set) = p.get("set").filter(|v| !v.is_null()) {
         let set = set.as_str().ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "set must be a string".into() })?;
         let name =
@@ -757,8 +760,9 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Steps that call another action play it from the caller's actions; the playback stack comes
     // along so an action that batches itself is caught as a recursive call.
-    let list = match p.get("calledActions") {
-        None | Some(Value::Null) => s.actions.list.clone(),
+    let embedded = p.get("calledActions").filter(|value| !value.is_null());
+    let list = match embedded {
+        None => s.actions.list.clone(),
         // A droplet brings the actions it calls (#2794) and runs with those alone.
         Some(v) => {
             let list: Vec<crate::actions_cmds::Action> =
@@ -769,7 +773,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
             list
         }
     };
-    let mut called_name = None;
+    let mut called_target = None;
     let mut steps = if let Some(st) = p.get("steps") {
         parse_steps(st)?
     } else if let Some(act) = p.get("action").filter(|v| v.is_array()) {
@@ -777,16 +781,16 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         // The caller selects the source; calledActions supplies only its internal namespace.
         let index = batch_action(&s.actions.list, p)?;
-        let (action, _) = crate::actions_cmds::playback_plan(s, &json!({"action": index}))?;
-        called_name = Some(action.name.clone());
+        let (row, action, _) = crate::actions_cmds::playback_plan_at(s, &json!({"action": index}))?;
+        called_target = Some(crate::actions_cmds::PlaybackTarget::at(s, row, &action));
         action.enabled_steps().map(|(_, (id, params))| (id.clone(), params.clone())).collect()
     };
     let action_name = s
         .action_history
         .as_ref()
         .map(|group| group.name.clone())
-        .or_else(|| s.actions.playback_stack.first().cloned())
-        .or_else(|| called_name.clone())
+        .or_else(|| s.actions.playback_stack.first().map(|target| target.name.clone()))
+        .or_else(|| called_target.as_ref().map(|target| target.name.clone()))
         .or_else(|| p.get("action").and_then(Value::as_str).map(str::to_string))
         .or_else(|| p.get("action").and_then(|action| action.get("name")).and_then(Value::as_str).map(str::to_string))
         .unwrap_or_else(|| "Batch".into());
@@ -834,7 +838,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     // hands the count on, so nested batches cannot multiply past the limit. A top-level named
     // action starts fresh; standalone explicit steps retain their existing behavior. A batch nested
     // in another batch (a droplet a droplet runs) is charged the same way, so the levels share one budget.
-    let named = called_name.is_some();
+    let named = called_target.is_some();
     let nested = s.actions.playing > 0 || s.actions.batch_depth > 0;
     let mut playback_steps = 0;
     if nested || named {
@@ -849,11 +853,12 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     let mut playback_stack = s.actions.playback_stack.clone();
-    playback_stack.extend(called_name);
+    playback_stack.extend(called_target);
     let actions = crate::actions_cmds::ActionState {
         list,
         playing: if named { s.actions.playing.saturating_add(1) } else { s.actions.playing },
         playback_stack,
+        playback_namespace: s.actions.playback_namespace + usize::from(embedded.is_some()),
         playback_steps,
         script_depth: s.actions.script_depth,
         script_steps: s.actions.script_steps,
@@ -865,7 +870,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         let save = SaveOpts::from_params(s, p, cmd)?;
         // A caller's recording index belongs to its original library, not an embedded namespace.
         // As in ordinary named playback, suspend it while executing and restore the Batch owner.
-        let previous_recording = if named {
+        let previous_recording = if named || embedded.is_some() {
             crate::actions_cmds::flush_recording(s)?;
             s.actions.recording.take()
         } else {
@@ -875,10 +880,11 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         let previous_playing = std::mem::replace(&mut s.actions.playing, actions.playing);
         let previous_stack = std::mem::replace(&mut s.actions.playback_stack, actions.playback_stack);
         let previous_steps = std::mem::replace(&mut s.actions.playback_steps, actions.playback_steps);
+        let previous_namespace = std::mem::replace(&mut s.actions.playback_namespace, actions.playback_namespace);
         // The nesting depth and shared budget of the levels above travel with the run too.
         let previous_shared = std::mem::replace(&mut s.actions.budget_shared, actions.budget_shared);
         let previous_depth = std::mem::replace(&mut s.actions.batch_depth, actions.batch_depth);
-        let previous_list = p.get("calledActions").is_some_and(|value| !value.is_null()).then(|| std::mem::replace(&mut s.actions.list, actions.list));
+        let previous_list = embedded.is_some().then(|| std::mem::replace(&mut s.actions.list, actions.list));
         let owns_history = s.action_history.is_none() && s.prefs().actions.create_single_history_state;
         if owns_history {
             crate::actions_cmds::begin_document_history(s, &action_name);
@@ -889,6 +895,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         }
         s.actions.playing = previous_playing;
         s.actions.playback_stack = previous_stack;
+        s.actions.playback_namespace = previous_namespace;
         s.actions.budget_shared = previous_shared;
         s.actions.batch_depth = previous_depth;
         if let Some(previous) = previous_list {
@@ -897,7 +904,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
         if previous_playing == 0 && !previous_shared {
             s.actions.playback_steps = previous_steps;
         }
-        if named {
+        if named || embedded.is_some() {
             s.actions.recording = previous_recording;
         }
         return result;

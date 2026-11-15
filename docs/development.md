@@ -784,6 +784,13 @@ cargo run -p craft-psd --example atn_dump -- "Default Actions.atn"
 cargo run -p craft-psd --example atn_roundtrip -- "Default Actions.atn"   # parse, write, diff
 ```
 
+The Classic Actions panel asks before clearing, resetting, or replacing the library. Reset
+offers OK, Cancel, and Append for PhotoCraft Basics. Replace validates the entire ATN archive
+before it removes existing sets. The latest library change can be undone through Edit › Undo
+without changing document History. Command callers use `confirm: true` with `actions.clearAll`,
+`actions.reset` (mode `append` or `replace`), or `actions.replace`, then `actions.undoLibrary`
+to undo. Use `actions.load` for a same-set import.
+
 The real-file oracles are `corpus/atn/` (16 sets from seven public repositories, see *Test
 corpora*): `craft-psd`'s corpus test parses every file and rewrites it byte for byte;
 `photocraft-engine`'s loads, saves and reloads every set and caps the steps that still have no

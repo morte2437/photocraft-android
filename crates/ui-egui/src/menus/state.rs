@@ -17,6 +17,9 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     if let Some(on) = crate::vector_ui::pen_history_enabled(app, id) {
         return on;
     }
+    if id == "edit.undo" && crate::actions::library::edit_undo_label(app).is_some() {
+        return true;
+    }
     // Photoshop greys these for the Background layer, other layer kinds or single-layer documents.
     if crate::enable_rules::disabled(app, id) {
         return false;

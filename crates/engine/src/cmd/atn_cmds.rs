@@ -128,8 +128,20 @@ fn photoshop_step_run(_: &mut Session, p: &Value) -> Result<Value> {
     Err(EngineError::Other(format!("Photoshop step \"{name}\" ({event}) has no PhotoCraft equivalent yet; switch it off in the Actions panel to skip it")))
 }
 
+pub use files::validate_replacement;
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "actions.replace",
+            label: "Replace Actions…",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"path":".atn file"?,"data":base64?,"confirm":true,"encoding":label?} → {sets,actions,warnings,unsupported}. Replaces the whole library with the complete ATN archive."#,
+            enabled: crate::actions_edit_cmds::library_change_enabled,
+            run: files::replace,
+            journal: false,
+        },
         CommandSpec {
             id: "actions.load",
             label: "Load Actions…",
@@ -145,7 +157,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Save Actions…",
             menu: &[],
             shortcut: None,
-            params: r##"{"path":".atn file"? (else the bytes come back as base64 `data`),"set":name? (that set's actions, none for an empty New Set set; default: every action, as the set "PhotoCraft Actions"),"action":name|index? (one action),"skipUnsupported":bool=false (leave out steps with no Photoshop equivalent instead of failing)} → {set, actions:[names], steps, bytes, skipped:[{action, step, id}], path|data}"##,
+            params: r##"{"path":".atn file"? (else the bytes come back as base64 `data`),"set":name? (default: every action, as "PhotoCraft Actions"),"setSlot":index? (one folder occurrence from actions.list; requires set to match its current caption, e.g. {"set":"My Set","setSlot":0}),"action":name|index? (one action),"skipUnsupported":bool=false (omit steps with no Photoshop equivalent)} → {set, actions:[names], steps, bytes, skipped:[{action, step, id}], path|data}"##,
             enabled: always,
             run: save,
             journal: false,
