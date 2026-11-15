@@ -885,7 +885,7 @@ fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "Photomerge needs two or more images"));
     }
     let focal_param = p.get("focalLength").and_then(Value::as_f64).filter(|f| *f > 0.0);
-    let doc_name = format!("Untitled_Panorama{}", s.documents().len() + 1);
+    let doc_name = crate::file_cmds::untitled_name("Untitled_Panorama", |n| s.documents().iter().any(|d| d.doc.name == n) || s.held_open_named(n));
     // A background job when started with `Session::start` (#210): alignment, warping and
     // blending run on a worker, checking for cancellation between stages and images.
     crate::jobs::run(
@@ -1412,3 +1412,6 @@ pub fn specs() -> Vec<CommandSpec> {
 mod photomerge_layer_order_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod photomerge_name_tests;
