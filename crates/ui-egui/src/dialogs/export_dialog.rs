@@ -1221,7 +1221,9 @@ fn layer_file_stem(name: &str) -> String {
 
 /// The names several layers' files get, for `docs` in document order (bottom to top). Equal
 /// names are numbered in Layers panel order: the upper layer keeps the name, the next ones down
-/// get `-1`, `-2`, … (skipping a name another layer already has).
+/// get `-1`, `-2`, … (skipping a name another layer already has). Names are compared case-folded,
+/// as a case-insensitive destination (a default Windows or macOS volume) treats `Logo` and `logo`
+/// as one file, which a second write would silently replace.
 fn layer_file_names(docs: &[Document], ext: &str) -> Vec<String> {
     let mut used = std::collections::HashSet::new();
     let mut names = vec![String::new(); docs.len()];
@@ -1229,11 +1231,11 @@ fn layer_file_names(docs: &[Document], ext: &str) -> Vec<String> {
         let stem = layer_file_stem(&doc.name);
         let mut name = format!("{stem}.{ext}");
         let mut n = 1u64;
-        while used.contains(&name) {
+        while used.contains(&name.to_lowercase()) {
             name = format!("{stem}-{n}.{ext}");
             n = n.saturating_add(1);
         }
-        used.insert(name.clone());
+        used.insert(name.to_lowercase());
         names[i] = name;
     }
     names

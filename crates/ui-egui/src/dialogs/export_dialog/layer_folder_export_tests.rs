@@ -22,6 +22,12 @@ fn names_keep_spaces_replace_illegal_characters_and_number_duplicates_downwards(
     // Bottom to top: three `Dup`s under `Top`. The upper `Dup` keeps the name.
     let docs = [named("Dup"), named("Dup"), named("Dup"), named("Top")];
     assert_eq!(layer_file_names(&docs, "png"), ["Dup-2.png", "Dup-1.png", "Dup.png", "Top.png"]);
+    // Names that differ only in case are one file on a case-insensitive destination: the upper layer
+    // keeps its name, the lower one is numbered.
+    let docs = [named("Logo"), named("logo")];
+    assert_eq!(layer_file_names(&docs, "png"), ["Logo-1.png", "logo.png"]);
+    let docs = [named("logo"), named("LOGO"), named("Logo")];
+    assert_eq!(layer_file_names(&docs, "png"), ["logo-2.png", "LOGO-1.png", "Logo.png"]);
     // A layer already called `Dup-1` keeps its name; the numbering skips it.
     let docs = [named("Dup"), named("Dup-1"), named("Dup")];
     assert_eq!(layer_file_names(&docs, "jpg"), ["Dup-2.jpg", "Dup-1.jpg", "Dup.jpg"]);
@@ -68,7 +74,9 @@ fn export_layers(app: &mut PhotocraftApp, ids: &[photocraft_doc::LayerId]) {
 
 #[test]
 fn several_layers_go_into_a_folder_one_file_each() {
-    let dir = std::env::temp_dir().join(format!("pc-layer-folder-{}", std::process::id()));
+    // The guard removes the folder on success and on failure.
+    let guard = tempfile::tempdir().unwrap();
+    let dir = guard.path().to_path_buf();
     let (mut app, ids, _, written, asked) = app(crate::FileDialogAnswer::FolderTo(dir.to_string_lossy().into_owned()));
     export_layers(&mut app, &ids);
     assert!(matches!(asked.borrow().first(), Some(crate::file_dialog::FileDialogRequest::Folder { .. })), "a folder choice");
@@ -80,9 +88,8 @@ fn several_layers_go_into_a_folder_one_file_each() {
 #[cfg(unix)]
 #[test]
 fn a_planted_link_is_replaced_not_followed() {
-    let dir = std::env::temp_dir().join(format!("pc-layer-link-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let guard = tempfile::tempdir().unwrap();
+    let dir = guard.path().to_path_buf();
     let link = dir.join("Dup.png");
     std::os::unix::fs::symlink(dir.join("victim"), &link).unwrap();
     let (mut app, ids, _, written, _) = app(crate::FileDialogAnswer::FolderTo(dir.to_string_lossy().into_owned()));
@@ -90,7 +97,6 @@ fn a_planted_link_is_replaced_not_followed() {
     assert!(link.symlink_metadata().is_err(), "the link is gone before the write");
     assert!(written.borrow().contains(&link.to_string_lossy().into_owned()));
     assert!(!dir.join("victim").exists(), "nothing was written through the link");
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

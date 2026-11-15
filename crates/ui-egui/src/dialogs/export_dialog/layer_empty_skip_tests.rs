@@ -72,7 +72,10 @@ fn poll(app: &mut PhotocraftApp) {
 
 #[test]
 fn the_dialog_opens_on_the_first_layer_with_pixels_and_exports_only_those() {
-    let (mut app, l, written) = app_answering(crate::FileDialogAnswer::FolderTo("/out".into()));
+    // A real folder, so the planted-link check on the targets never meets a path outside the test.
+    let guard = tempfile::tempdir().unwrap();
+    let out = guard.path().to_path_buf();
+    let (mut app, l, written) = app_answering(crate::FileDialogAnswer::FolderTo(out.to_string_lossy().into_owned()));
     let selection = [l.empty, l.adjustment, l.gone, l.red, l.blue];
     let id = open_layers(&mut app, &selection).expect("an empty lowest layer no longer stops the dialog");
     let fields = app.ui.dialog_mut(id).unwrap().fields.clone();
@@ -80,7 +83,7 @@ fn the_dialog_opens_on_the_first_layer_with_pixels_and_exports_only_those() {
     confirm(&mut app, &fields).unwrap();
     poll(&mut app);
     // Two files: a folder with one `<layer name>.<ext>` each (#14808).
-    let want: Vec<String> = ["Red.png", "Blue.png"].iter().map(|n| std::path::Path::new("/out").join(n).to_string_lossy().into_owned()).collect();
+    let want: Vec<String> = ["Red.png", "Blue.png"].iter().map(|n| out.join(n).to_string_lossy().into_owned()).collect();
     assert_eq!(*written.borrow(), want, "Red and Blue; the empty, adjustment and off-canvas layers write nothing");
     assert!(!app.ui.status_error, "{}", app.ui.status);
 }
