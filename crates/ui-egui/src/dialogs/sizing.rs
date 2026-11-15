@@ -90,6 +90,59 @@ pub(crate) fn pref_resample(i: photocraft_engine::prefs::Interpolation) -> &'sta
         Interpolation::PreserveDetails => "preserveDetails",
     }
 }
+
+/// Whether the Resample list offers `method`. Indexed Color: every method but Automatic and
+/// Nearest Neighbor blends colours the colour table doesn't have, which the command doesn't use
+/// and a save quantises away (#6019).
+fn resample_offered(f: &Map<String, Value>, method: &str) -> bool {
+    let indexed = f.get("__indexed").and_then(Value::as_bool) == Some(true);
+    !indexed || method == "automatic" || method == "nearest"
+}
+
+/// Alt+1 to Alt+8 (Option on macOS) and the Resample method each picks, as in the reference
+/// application. Alt+3 is Preserve Details 2.0, which PhotoCraft doesn't have yet (#2942), and
+/// Lanczos has no key.
+const RESAMPLE_KEYS: [(egui::Key, Option<&str>); 8] = [
+    (egui::Key::Num1, Some("automatic")),
+    (egui::Key::Num2, Some("preserveDetails")),
+    (egui::Key::Num3, None),
+    (egui::Key::Num4, Some("bicubicSmoother")),
+    (egui::Key::Num5, Some("bicubicSharper")),
+    (egui::Key::Num6, Some("bicubic")),
+    (egui::Key::Num7, Some("nearest")),
+    (egui::Key::Num8, Some("bilinear")),
+];
+
+/// Takes an Alt+1 to Alt+8 press out of this frame's input and picks its Resample method, when
+/// Resample is on and the list offers it. It runs before the fields are drawn, so the press (and
+/// the digit, or Option's character on macOS, the key also types) never reaches a focused field.
+/// Ctrl+Alt is left alone: on Windows it's AltGr, which types characters on many layouts.
+fn resample_shortcut(ui: &egui::Ui, f: &mut Map<String, Value>) {
+    let picked = ui.ctx().input_mut(|i| {
+        let mut picked = None;
+        i.events.retain(|e| {
+            let egui::Event::Key { key, pressed, modifiers, .. } = e else { return true };
+            if !modifiers.alt || modifiers.ctrl || modifiers.command || modifiers.mac_cmd {
+                return true;
+            }
+            let Some(&(_, method)) = RESAMPLE_KEYS.iter().find(|(k, _)| k == key) else { return true };
+            if *pressed {
+                picked = Some(method);
+            }
+            false
+        });
+        if picked.is_some() {
+            i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+        }
+        picked
+    });
+    let Some(Some(method)) = picked else { return };
+    let resampling = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic") != "none";
+    if resampling && resample_offered(f, method) {
+        f.insert("resample".into(), json!(method));
+    }
+}
+
 const ANCHORS: [&str; 9] = ["topLeft", "top", "topRight", "left", "center", "right", "bottomLeft", "bottom", "bottomRight"];
 
 pub fn is_sizing(command: &str) -> bool {
@@ -316,9 +369,9 @@ fn set_unit(f: &mut Map<String, Value>, key: &str, unit: &str) {
 
 fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
+    resample_shortcut(ui, f);
     let (ow, oh) = (num(f, "__origW"), num(f, "__origH"));
     let bpp = num(f, "__bytesPerPixel").max(1.0);
-    resample_shortcut(ui, f);
     let resample = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic").to_string();
     let resampling = resample != "none";
     if !resampling {
@@ -459,58 +512,6 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
             }
         }
     });
-}
-
-/// Whether the Resample list offers `method`. Indexed Color: every method but Automatic and
-/// Nearest Neighbor blends colours the colour table doesn't have, which the command doesn't use
-/// and a save quantises away (#6019).
-fn resample_offered(f: &Map<String, Value>, method: &str) -> bool {
-    let indexed = f.get("__indexed").and_then(Value::as_bool) == Some(true);
-    !indexed || method == "automatic" || method == "nearest"
-}
-
-/// Alt+1 to Alt+8 (Option on macOS) and the Resample method each picks, as in the reference
-/// application. Alt+3 is Preserve Details 2.0, which PhotoCraft doesn't have yet (#2942), and
-/// Lanczos has no key.
-const RESAMPLE_KEYS: [(egui::Key, Option<&str>); 8] = [
-    (egui::Key::Num1, Some("automatic")),
-    (egui::Key::Num2, Some("preserveDetails")),
-    (egui::Key::Num3, None),
-    (egui::Key::Num4, Some("bicubicSmoother")),
-    (egui::Key::Num5, Some("bicubicSharper")),
-    (egui::Key::Num6, Some("bicubic")),
-    (egui::Key::Num7, Some("nearest")),
-    (egui::Key::Num8, Some("bilinear")),
-];
-
-/// Takes an Alt+1 to Alt+8 press out of this frame's input and picks its Resample method, when
-/// Resample is on and the list offers it. It runs before the fields are drawn, so the press (and
-/// the digit, or Option's character on macOS, the key also types) never reaches a focused field.
-/// Ctrl+Alt is left alone: on Windows it's AltGr, which types characters on many layouts.
-fn resample_shortcut(ui: &egui::Ui, f: &mut Map<String, Value>) {
-    let picked = ui.ctx().input_mut(|i| {
-        let mut picked = None;
-        i.events.retain(|e| {
-            let egui::Event::Key { key, pressed, modifiers, .. } = e else { return true };
-            if !modifiers.alt || modifiers.ctrl || modifiers.command || modifiers.mac_cmd {
-                return true;
-            }
-            let Some(&(_, method)) = RESAMPLE_KEYS.iter().find(|(k, _)| k == key) else { return true };
-            if *pressed {
-                picked = Some(method);
-            }
-            false
-        });
-        if picked.is_some() {
-            i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
-        }
-        picked
-    });
-    let Some(Some(method)) = picked else { return };
-    let resampling = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic") != "none";
-    if resampling && resample_offered(f, method) {
-        f.insert("resample".into(), json!(method));
-    }
 }
 
 fn canvas_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
