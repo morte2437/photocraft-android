@@ -479,44 +479,79 @@ fn saved_presets(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<
     create
 }
 
+/// The name Save Document Preset proposes: the first `Saved N` no saved preset has (#14043).
+pub fn next_saved_name(presets: &[photocraft_engine::document_preset_cmds::DocumentPreset]) -> String {
+    // n presets leave one of `Saved 1`..`Saved n+1` free.
+    let free = (1..=presets.len().saturating_add(1)).map(|n| format!("Saved {n}")).find(|name| !presets.iter().any(|p| p.name.eq_ignore_ascii_case(name)));
+    free.unwrap_or_else(|| "Saved".into())
+}
+
+/// Whether the Save Document Preset pane stands in for Preset Details.
+fn saving_preset(f: &Map<String, Value>) -> bool {
+    f.get("__savingPreset").and_then(Value::as_bool) == Some(true)
+}
+
+/// Photoshop's Save Document Preset pane, opened by the icon beside Name (#14043): the header
+/// SAVE DOCUMENT PRESET, a name proposing the next free `Saved N` with its text selected, and
+/// Save Preset / Cancel. Cancel goes back to Preset Details without saving.
 fn save_preset(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Value>) {
+    let t = Tokens::get(ui.ctx());
+    ui.label(RichText::new(tl!("SAVE DOCUMENT PRESET")).size(11.0).color(t.text_faint));
+    ui.add_space(4.0);
+    // Consume every Enter, Ctrl+Enter too, before TextEdit sees it, so naming can never confirm the
+    // outer dialog. A dialog stacked above disables this pane and keeps its own Enter.
+    let enter = ui.is_enabled() && ui.input_mut(consume_any_enter);
+    let mut name = f.get("__presetName").and_then(Value::as_str).map_or_else(|| next_saved_name(&app.session.presets.documents), str::to_owned);
+    let r = ui
+        .add(egui::TextEdit::singleline(&mut name).id_salt("document-preset-name").desired_width(250.0).font(egui::FontId::proportional(15.0)).char_limit(255))
+        .accessible_name(tl!("Preset Name"));
+    f.insert("__presetName".into(), json!(name));
+    crate::field_tab::register(ui.ctx(), r.id);
+    // The pane opens with the proposed name selected, so typing replaces it.
+    if f.remove("__presetNameFocus").is_some() {
+        crate::field_tab::focus(ui.ctx(), r.id);
+    }
+    if r.gained_focus() {
+        crate::field_tab::select_all(ui.ctx(), r.id, &name);
+    }
     ui.add_space(12.0);
-    if f.get("__savingPreset").and_then(Value::as_bool) != Some(true) {
-        if widgets::secondary_button(ui, tl!("Save Preset…"), 240.0).clicked() {
-            f.insert("__savingPreset".into(), json!(true));
-            f.remove("__presetError");
-        }
-    } else {
-        // Consume before TextEdit sees Enter, so naming can never confirm the outer dialog.
-        let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        let label = ui.label(tl!("Preset Name"));
-        let mut name = get_s(f, "__presetName", "");
-        ui.add(egui::TextEdit::singleline(&mut name).id_salt("document-preset-name").desired_width(240.0).char_limit(255)).labelled_by(label.id);
-        f.insert("__presetName".into(), json!(name));
-        ui.horizontal(|ui| {
-            if widgets::secondary_button(ui, tl!("Save"), 110.0).clicked() || enter {
-                match app.run("document.presets.save", json!({"name":name,"settings":document_settings(f)})) {
-                    Ok(_) => {
-                        if let Some(preset) = app.session.presets.documents.last() {
-                            apply_saved_preset(f, preset);
-                        }
-                        f.insert("__category".into(), json!("Saved"));
-                        f.remove("__savingPreset");
-                        f.remove("__presetName");
-                        f.remove("__presetError");
-                        ui.ctx().request_repaint();
+    ui.horizontal(|ui| {
+        if widgets::secondary_button(ui, tl!("Save Preset"), 120.0).clicked() || enter {
+            match app.run("document.presets.save", json!({"name":name,"settings":document_settings(f)})) {
+                Ok(_) => {
+                    if let Some(preset) = app.session.presets.documents.last() {
+                        apply_saved_preset(f, preset);
                     }
-                    Err(e) => {
-                        f.insert("__presetError".into(), json!(e.to_string()));
-                    }
+                    f.insert("__category".into(), json!("Saved"));
+                    f.remove("__savingPreset");
+                    f.remove("__presetName");
+                    f.remove("__presetError");
+                    ui.ctx().request_repaint();
+                }
+                Err(e) => {
+                    f.insert("__presetError".into(), json!(e.to_string()));
                 }
             }
-            if widgets::secondary_button(ui, tl!("Cancel"), 110.0).clicked() {
-                f.remove("__savingPreset");
-                f.remove("__presetError");
-            }
-        });
-    }
+        }
+        if widgets::secondary_button(ui, tl!("Cancel"), 120.0).clicked() {
+            f.remove("__savingPreset");
+            f.remove("__presetName");
+            f.remove("__presetError");
+        }
+    });
+    preset_error(ui, f);
+}
+
+/// Takes this frame's Enter presses whatever their modifiers (`consume_key` leaves Ctrl+Enter for
+/// the outer dialog's Create) and says whether there was one.
+fn consume_any_enter(i: &mut egui::InputState) -> bool {
+    let before = i.events.len();
+    i.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, .. }));
+    i.events.len() != before
+}
+
+/// The last failed save or delete of a preset.
+fn preset_error(ui: &mut egui::Ui, f: &Map<String, Value>) {
     if let Some(error) = f.get("__presetError").and_then(Value::as_str) {
         // The engine's message stays copyable, unlike the static labels around it.
         ui.add(egui::Label::new(error).wrap().selectable(true));
@@ -642,12 +677,37 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
         // Right: Preset Details.
         ui.vertical(|ui| {
             ui.set_width(260.0);
+            // The Save Document Preset pane keeps the height Preset Details had, so the dialog
+            // doesn't shrink and jump while saving.
+            let details_height = egui::Id::unique("new-document-details-height");
+            if saving_preset(f) {
+                if let Some(h) = ui.ctx().data(|d| d.get_temp::<f32>(details_height)) {
+                    ui.set_min_height(h);
+                }
+                save_preset(app, ui, f);
+                return;
+            }
             ui.label(RichText::new(tl!("PRESET DETAILS")).size(11.0).color(t.text_faint));
             ui.add_space(4.0);
             // Keep the canonical English default in state; only the TextEdit shows a translation.
             let raw = get_s(f, "name", "Untitled-1");
             let mut name = if raw == "Untitled-1" { tl!("Untitled-1").to_string() } else { raw };
-            let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(250.0).font(egui::FontId::proportional(15.0))).accessible_name(tl!("Name"));
+            let r = ui
+                .horizontal(|ui| {
+                    const ICON: f32 = 24.0;
+                    let width = 250.0 - ICON - ui.spacing().item_spacing.x;
+                    let r =
+                        ui.add(egui::TextEdit::singleline(&mut name).desired_width(width).font(egui::FontId::proportional(15.0))).accessible_name(tl!("Name"));
+                    // Photoshop's save icon right of Name opens the Save Document Preset pane (#14043).
+                    if icons::button(ui, icons::FOOTER_NEW, ICON, false, "Save Document Preset").clicked() {
+                        f.insert("__savingPreset".into(), json!(true));
+                        f.insert("__presetNameFocus".into(), json!(true));
+                        f.remove("__presetName");
+                        f.remove("__presetError");
+                    }
+                    r
+                })
+                .inner;
             if r.changed() {
                 f.insert("name".into(), json!(name));
             }
@@ -836,7 +896,10 @@ pub fn body(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<Strin
                 f.remove("backgroundColor");
                 crate::color_picker_ui::request_field(f, "background", &crate::color_picker_ui::title_for(tl!("Background Contents")));
             }
-            save_preset(app, ui, f);
+            ui.add_space(12.0);
+            preset_error(ui, f);
+            let h = ui.min_rect().height();
+            ui.ctx().data_mut(|d| d.insert_temp(details_height, h));
         });
     });
     create
