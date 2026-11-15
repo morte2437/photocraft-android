@@ -482,7 +482,16 @@ pub(super) fn front(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, para
         }
         "file.automate.fitImage" => {
             let (w, h, _) = doc?;
-            dialog(app, json!({"width": w, "height": h, "dontEnlarge": false, "__compact": true}), json!({}))
+            // The values Fit Image last ran with, else the document's size (#13853). A stored
+            // value that isn't a usable size is ignored.
+            let kept = app.session.prefs().dialogs.get(photocraft_engine::file_cmds::FIT_IMAGE).cloned().unwrap_or_default();
+            let size = |key: &str| kept.get(key).and_then(Value::as_u64).filter(|v| (1..=300_000).contains(v));
+            let enlarge = kept.get("dontEnlarge").and_then(Value::as_bool).unwrap_or(false);
+            dialog(
+                app,
+                json!({"width": size("width").unwrap_or(w.into()), "height": size("height").unwrap_or(h.into()), "dontEnlarge": enlarge, "__compact": true}),
+                json!({}),
+            )
         }
         "file.automate.conditionalModeChange" => dialog(
             app,

@@ -241,6 +241,24 @@ fn clear_canvas_guides(s: &mut Session) -> Result<Value> {
 
 /// Register File-menu commands with their parameter contracts and enablement predicates.
 /// Filesystem operations are native-only; document operations remain available on the web.
+/// Where Fit Image's last values are kept: the preferences' `dialogs` map, by command id.
+pub const FIT_IMAGE: &str = "file.automate.fitImage";
+
+/// Keep the width, height and Don't Enlarge a Fit Image ran with, with or without its dialog,
+/// for the next opening of the dialog (#13853), as the reference application does.
+fn remember_fit_image(s: &mut Session, p: &Value) {
+    let mut kept = serde_json::Map::new();
+    for key in ["width", "height"] {
+        if let Some(v) = p.get(key).and_then(Value::as_f64).filter(|v| v.is_finite() && (1.0..=300_000.0).contains(v)) {
+            kept.insert(key.into(), json!(v.round() as u64));
+        }
+    }
+    kept.insert("dontEnlarge".into(), json!(p.get("dontEnlarge").and_then(Value::as_bool).unwrap_or(false)));
+    if s.prefs().dialogs.get(FIT_IMAGE) != Some(&Value::Object(kept.clone())) {
+        s.prefs.edit(|prefs| prefs.dialogs.insert(FIT_IMAGE.into(), Value::Object(kept)));
+    }
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     macro_rules! spec {
         ($id:expr, $label:expr, $menu:expr, $sc:expr, $params:expr, $enabled:expr, $run:expr) => {
@@ -351,7 +369,11 @@ pub fn specs() -> Vec<CommandSpec> {
             None,
             r##"{"width":px,"height":px,"dontEnlarge":bool=false,"resample":"automatic|preserveDetails|bicubicSmoother|bicubicSharper|bicubicAutomatic|bicubic|nearest|bilinear|lanczos"="bicubic"}"##,
             has_doc,
-            fit_image
+            |s, p| {
+                let r = fit_image(s, p)?;
+                remember_fit_image(s, p);
+                Ok(r)
+            }
         ),
         spec!(
             "file.automate.conditionalModeChange",
