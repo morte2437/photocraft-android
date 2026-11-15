@@ -721,6 +721,11 @@ fn canvas_size(s: &mut Session, p: &Value) -> Result<Value> {
     s.set_sampler_map(photocraft_geom::Affine::translate(f64::from(dx), f64::from(dy)));
     s.edit("Canvas Size", |doc, _| {
         crate::canvas_geom::keeping_count_points(doc, |doc| translate_doc(doc, "image.canvasSize", dx, dy))?;
+        // The reference application drops the selection when the canvas size changes (#14539);
+        // a Canvas Size that keeps the size is not measured and keeps it.
+        if (nw, nh) != (ow as u32, oh as u32) {
+            doc.selection = None;
+        }
         doc.size = Size::new(nw, nh);
         if nw > ow as u32 || nh > oh as u32 {
             drop_fill_caches(&mut doc.layers);
@@ -1299,6 +1304,9 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod canvas_size_selection_tests;
 
 #[cfg(test)]
 #[path = "image_size_drops_selection_tests.rs"]
