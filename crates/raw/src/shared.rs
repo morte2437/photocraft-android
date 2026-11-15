@@ -83,6 +83,10 @@ fn polynomials(image: &craft_raw::RawImage) -> Vec<MapPolynomial> {
 
 fn warnings(image: &craft_raw::RawImage) -> Vec<String> {
     let mut out = Vec::new();
+    // Preserve decoder uncertainty: a fallback phase is not metadata supplied by the file.
+    if image.notices.assumed_cfa {
+        out.push("the raw colour filter phase was assumed".to_string());
+    }
     for op in image.opcodes.list1.iter().chain(&image.opcodes.list2).chain(&image.opcodes.list3) {
         if !matches!(op, craft_raw::Opcode::GainMap { .. } | craft_raw::Opcode::MapPolynomial { .. }) {
             out.push("some raw correction opcodes are not applied by PhotoCraft".to_string());

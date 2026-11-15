@@ -130,3 +130,83 @@ fn embedded_preview_is_found() {
     // The lossless-JPEG raw data of a CR2 is not mistaken for a preview.
     assert!(embedded_preview(&cr2_spec(32, 8, 2, vec![]).build()).is_none());
 }
+
+/// A neutral scene recorded through per-channel WB gains, with a black masked border.
+/// Phase is anchored at the sensor origin, not the cropped image origin.
+fn cr2_neutral_spec(cfa: [u8; 4], l: usize, t: usize, model_id: Option<u32>) -> Cr2Spec {
+    let (w, h) = (96, 64);
+    let rgb: Vec<_> = scene(w, h)
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let p = if i % w >= w / 2 { [0.4; 3] } else { p };
+            [p[0] / 2.0, p[1], p[2] / 1.5]
+        })
+        .collect();
+    let mut data = mosaic(&rgb, w, cfa, 512, 13000);
+    for y in 0..h {
+        for x in 0..w {
+            if x < l || y < t {
+                data[y * w + x] = 512;
+            }
+        }
+    }
+    Cr2Spec {
+        width: w,
+        height: h,
+        data,
+        precision: 14,
+        components: 2,
+        slices: vec![48, 48],
+        borders: Some([l as u16, t as u16, w as u16 - 1, h as u16 - 1]),
+        wb_rggb: Some([2048, 1024, 1024, 1536]),
+        orientation: 1,
+        model_id,
+    }
+}
+
+fn assert_cr2_neutral(sensor: &Sensor) -> Developed {
+    let d = develop_sensor(sensor, &DevelopOptions { orient: false, ..Default::default() }).unwrap();
+    let (w, h) = (d.width as usize, d.height as usize);
+    let mut sum = [0.0f64; 3];
+    for y in 8..h - 8 {
+        for x in 48 - sensor.crop.x + 8..w - 8 {
+            for (c, channel) in sum.iter_mut().enumerate() {
+                *channel += f64::from(d.rgb[(y * w + x) * 3 + c]);
+            }
+        }
+    }
+    assert!(sum[1] > 0.0);
+    assert!((sum[0] / sum[1] - 1.0).abs() < 0.02 && (sum[2] / sum[1] - 1.0).abs() < 0.02, "{sum:?}");
+    d
+}
+
+#[test]
+fn cr2_explicit_cfa_keeps_neutral_colour_across_phases_and_border_parity() {
+    for (code, cfa) in [(1, [0, 1, 1, 2]), (2, [2, 1, 1, 0]), (3, [1, 2, 0, 1]), (4, [1, 0, 2, 1])] {
+        for (l, t) in [(16, 4), (17, 4), (16, 5), (17, 5)] {
+            // A conflicting model fallback must not override explicit file metadata.
+            let spec = cr2_neutral_spec(cfa, l, t, Some(0x8000_0250));
+            let sensor = decode(&spec.build_with_cfa_tag(Some(code)), &Limits::default()).unwrap();
+            assert_eq!(sensor.cfa.as_ref().unwrap().phase(0, 0), cfa, "code {code}, border {l},{t}");
+            assert!(!sensor.warnings.iter().any(|w| w.contains("colour filter phase")));
+            let d = assert_cr2_neutral(&sensor);
+            assert_eq!((d.width as usize, d.height as usize), (96 - l, 64 - t));
+            assert!(!d.warnings.iter().any(|w| w.contains("colour filter phase")));
+        }
+    }
+}
+
+#[test]
+fn cr2_missing_or_unknown_cfa_discloses_model_and_default_fallback_through_develop() {
+    for (model, cfa) in [(Some(0x8000_0250), [1, 2, 0, 1]), (Some(0x8000_0001), [0, 1, 1, 2]), (None, [0, 1, 1, 2])] {
+        for tag in [None, Some(99)] {
+            let spec = cr2_neutral_spec(cfa, 17, 5, model);
+            let sensor = decode(&spec.build_with_cfa_tag(tag), &Limits::default()).unwrap();
+            assert_eq!(sensor.cfa.as_ref().unwrap().phase(0, 0), cfa);
+            assert!(sensor.warnings.iter().any(|w| w.contains("colour filter phase")));
+            let d = assert_cr2_neutral(&sensor);
+            assert!(d.warnings.iter().any(|w| w.contains("colour filter phase")));
+        }
+    }
+}
