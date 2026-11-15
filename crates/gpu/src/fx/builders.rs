@@ -67,10 +67,11 @@ impl B {
     pub(super) fn satin(&mut self, s: &Satin) -> usize {
         // satin_map
         let (dx, dy) = offset(s.angle, fx::satin_distance(s));
+        let kernel = if s.size == 1.0 { fx::size_one_kernel() } else { fx::tent_kernel(s.size) };
         let a = self.shift(In::Shape, dx, dy, 0.0, false);
-        let a = self.conv(a, fx::tent_kernel(s.size));
+        let a = self.conv(a, kernel.clone());
         let c = self.shift(In::Shape, -dx, -dy, 0.0, false);
-        let c = self.conv(c, fx::tent_kernel(s.size));
+        let c = self.conv(c, kernel);
         self.finish_lut(a, Some(c), s.invert, fx::satin_lut(&s.contour), true, 0);
         1
     }

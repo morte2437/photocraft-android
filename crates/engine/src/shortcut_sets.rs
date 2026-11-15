@@ -78,7 +78,7 @@ impl ShortcutSet {
 
 /// An action's function key (`actions.play:<name>`): kept by the action, not by a set.
 fn is_action_key(id: &str) -> bool {
-    id.starts_with(crate::actions_cmds::PLAY_SHORTCUT_PREFIX)
+    crate::actions_cmds::is_action_key(id)
 }
 
 /// A set name as given, trimmed; an error for an empty, overlong or reserved name.

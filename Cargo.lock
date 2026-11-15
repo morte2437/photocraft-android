@@ -1596,6 +1596,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-plist"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=e2e3b4213afb2b5e7651bc1b1a1cf72a8bb6313d#e2e3b4213afb2b5e7651bc1b1a1cf72a8bb6313d"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-print"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=ad8faa1c136ce289e9f132c9137d0cd913bd4ef6#ad8faa1c136ce289e9f132c9137d0cd913bd4ef6"
@@ -2914,9 +2922,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -5620,6 +5630,7 @@ dependencies = [
  "craft-xml",
  "exr",
  "flate2",
+ "getrandom 0.3.4",
  "photocraft-algo",
  "photocraft-color",
  "photocraft-compose",
@@ -5763,6 +5774,7 @@ dependencies = [
 name = "photocraft-paint"
 version = "0.23.1"
 dependencies = [
+ "base64 0.23.1",
  "craft-cms",
  "photocraft-color",
  "photocraft-geom",
@@ -5847,6 +5859,8 @@ dependencies = [
 name = "photocraft-text"
 version = "0.23.1"
 dependencies = [
+ "craft-plist",
+ "base64 0.23.1",
  "craft-psd",
  "flate2",
  "parley",
