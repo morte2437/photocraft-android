@@ -619,14 +619,19 @@ fn set_row(
         let pairs: Vec<(String, &str)> = names.iter().map(|(n, l)| (n.clone(), l.as_str())).collect();
         if crate::widgets::dropdown(ui, "shortcut-set", tl!("Set:"), &mut chosen, &pairs, 220.0) && chosen != active {
             if modified {
-                // Unsaved edits: ask first (an action's F-key is no edit, see `differs`).
+                // Unsaved edits: ask first (an action's F-key is no edit, see `differs`). The new
+                // question replaces any naming step left open after an earlier Yes.
                 switch_to = Some(chosen);
+                new_name = None;
+                switch_after_save = None;
             } else {
                 // As `useSet`: the set's bindings, keeping the actions' F-keys.
                 sets.get(&chosen).cloned().unwrap_or_default().apply(overrides, alternates);
                 active = chosen;
                 message.clear();
-                // This replaces a naming step left open after Yes, and its pending switch.
+                // This replaces a question left open for another set, and a naming step left open
+                // after Yes with its pending switch.
+                switch_to = None;
                 new_name = None;
                 switch_after_save = None;
             }

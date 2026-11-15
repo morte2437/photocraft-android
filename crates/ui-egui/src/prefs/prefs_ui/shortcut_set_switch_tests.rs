@@ -215,3 +215,45 @@ fn another_set_chosen_during_the_name_step_ends_it_and_its_pending_switch() {
     assert_eq!(field(&h, id, "newSetName"), Value::Null, "the name step is gone");
     assert_eq!(field(&h, id, "switchAfterSave"), Value::Null, "and so is its pending switch");
 }
+
+/// CodeRabbit on #14864: choosing another set while the name step is open (the set is still
+/// modified, so the question opens again) ends the name step at once, so Create can't run the
+/// earlier switch before the new question is answered.
+#[test]
+fn choosing_a_set_during_the_name_step_ends_it_before_the_new_question_is_answered() {
+    let (mut h, id) = dialog();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"set": {"edit.cut": "F7"}, "saveSet": "B"})).unwrap();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"useSet": "A"})).unwrap();
+    let sets = h.state().session.prefs().shortcut_sets.clone();
+    set_field(&mut h, id, "sets", json!(sets));
+    set_field(&mut h, id, "activeSet", json!("A"));
+    set_field(&mut h, id, "overrides", json!({"edit.copy": "F8"}));
+    pick_set(&mut h, "PhotoCraft Defaults");
+    click(&mut h, "Yes");
+    assert_eq!(field(&h, id, "newSetName"), json!("A Copy"));
+    pick_set(&mut h, "B");
+    assert!(asking(&h), "the new question is open");
+    assert_eq!(field(&h, id, "newSetName"), Value::Null, "the name step is gone already");
+    assert_eq!(field(&h, id, "switchAfterSave"), Value::Null, "with its switch");
+}
+
+/// CodeRabbit on #14864: a question left open for set B is dropped when another choice switches at
+/// once (A saved meanwhile, so C applies without asking): No must not switch to B afterwards.
+#[test]
+fn a_question_for_one_set_is_dropped_when_another_set_switches_at_once() {
+    let (mut h, id) = dialog();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"set": {"edit.cut": "F7"}, "saveSet": "B"})).unwrap();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"set": {"edit.paste": "F6"}, "saveSet": "C"})).unwrap();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"useSet": "A"})).unwrap();
+    let sets = h.state().session.prefs().shortcut_sets.clone();
+    set_field(&mut h, id, "sets", json!(sets));
+    set_field(&mut h, id, "activeSet", json!("A"));
+    set_field(&mut h, id, "overrides", json!({"edit.copy": "F8"}));
+    pick_set(&mut h, "B");
+    assert!(asking(&h), "the question for B is open");
+    click(&mut h, "Save");
+    pick_set(&mut h, "C");
+    assert_eq!(field(&h, id, "activeSet"), json!("C"), "A is saved, so C applies at once");
+    assert!(!asking(&h), "and the question for B is gone");
+    assert_eq!(field(&h, id, "switchTo"), Value::Null);
+}
