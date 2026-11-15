@@ -767,3 +767,15 @@ fn finished_session_retains_final_save_until_target_is_safe() {
     poll(&mut app, &ctx);
     assert!(app.smart_svg.editing.is_empty());
 }
+
+#[test]
+fn svg_save_back_displays_omitted_image_warning() {
+    let (mut app, saves, _) = fixture();
+    open(&mut app);
+    confirm(&mut app).unwrap();
+    let omitted = SVG.replace("</svg>", r#"<image width="2" height="2" href="data:image/png,broken"/></svg>"#);
+    saves.borrow_mut().push_back(Ok(omitted.into_bytes()));
+    poll(&mut app, &egui::Context::default());
+    assert!(app.smart_svg.editing.first().unwrap().saved.is_none());
+    assert!(app.ui.notices.iter().any(|notice| notice.lines.iter().any(|line| line.contains("embedded") && line.contains("omitted"))));
+}

@@ -201,3 +201,27 @@ fn warning_bearing_svg_render_keeps_visible_filters_without_poisoning_strict_cac
     assert!(warnings[0].contains("embedded image was omitted"));
     assert!(render(doc, &smart).is_err(), "warning-bearing filter results must not enter strict caches");
 }
+
+/// Warningless layered decoding must not cache the partial pixels that warning-bearing File
+/// Open is allowed to expose. Repeated calls exercise both source and Stack Mode cache paths.
+#[test]
+fn svg_stack_and_source_caches_refuse_omitted_images() {
+    for href in ["data:image/x-foo,abc", "data:image/png;base64,not-base64", "data:image/png;base64"] {
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><image width="4" height="4" href="{href}"/><rect x="4" width="4" height="8" fill="#ff0000"/></svg>"##
+        );
+        let imported = photocraft_io::svg::import_svg_bounded_images("Omitted.svg", svg.as_bytes(), 24_000_000).unwrap();
+        assert!(imported.warnings.iter().any(|w| w.contains("embedded image was omitted")));
+        for _ in 0..2 {
+            assert!(decode_source("Omitted.svg", svg.as_bytes()).is_err());
+            assert!(source_image("Omitted.svg", svg.as_bytes(), PixelFormat::RGBA32F).is_err());
+            assert!(stack_image("Omitted.svg", svg.as_bytes(), PixelFormat::RGBA32F, photocraft_doc::StackMode::Mean).is_err());
+        }
+        let s = session(8);
+        let mut smart = SmartObject::new(SmartSource::Embedded { file_name: "Omitted.svg".into(), bytes: Arc::new(svg.into_bytes()) }, Affine::IDENTITY, None);
+        smart.stack_mode = Some(photocraft_doc::StackMode::Mean);
+        assert!(render(&s.active().unwrap().doc, &smart).is_err());
+        assert!(render_with_warnings(&s.active().unwrap().doc, &smart).is_err(), "Stack Mode must not suppress layered import omissions");
+    }
+    assert!(stack_image("Complete.svg", SVG, PixelFormat::RGBA32F, photocraft_doc::StackMode::Mean).is_ok());
+}

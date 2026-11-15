@@ -2022,3 +2022,14 @@ fn open_as_smart_object_opens_in_the_background_in_name_order() {
     assert!(app.ui.notices.iter().any(|n| n.error && n.title.starts_with("Couldn't open bad.png")), "the unreadable file is reported");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn synchronous_svg_place_displays_omitted_image_warning() {
+    let mut app = app_with_canvas();
+    app.background_jobs = false;
+    let doc = app.session.active().unwrap().doc.id;
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#ff0000"/><image width="2" height="2" href="data:image/png,broken"/></svg>"##;
+    app.drop_places.push_back((doc, crate::file_open::DropPlace::Bytes("omitted.svg".into(), svg.to_vec())));
+    app.place_next_dropped(&egui::Context::default());
+    assert!(app.ui.notices.iter().any(|notice| notice.lines.iter().any(|line| line.contains("embedded") && line.contains("omitted"))));
+}

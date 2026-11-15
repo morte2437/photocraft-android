@@ -452,6 +452,7 @@ fn parse_with_image_limit(bytes: &[u8], fonts: fn() -> Arc<usvg::fontdb::Databas
     let image_resolver = Arc::new(craft_svg::tree::ImageResolver::new(tree_limits(MAX_XML_DEPTH, max_image_pixels)));
     image_resolver.set_document_depth(depth);
     parse_at_depth(depth, false, |isolated| {
+        image_resolver.check_document(text).map_err(svg_parse_error)?;
         let opt = options_with_isolation(fontdb, MAX_XML_DEPTH.saturating_sub(depth), isolated, Arc::clone(&image_resolver));
         let tree = guarded_parse(|| craft_svg::tree::parse_text(text, &tree_limits(MAX_XML_DEPTH, max_image_pixels), &opt))?;
         let tree = tree.map_err(svg_parse_error)?;
@@ -547,8 +548,9 @@ fn parse_image_bounded_with(
             budget.lock().unwrap_or_else(PoisonError::into_inner).fontless_text = true;
         }
         let resolver = Arc::clone(&budget.lock().unwrap_or_else(PoisonError::into_inner).resolver);
-        let opt = options_with_isolation(fontdb, xml_left, isolated, resolver);
         let text = std::str::from_utf8(&xml).map_err(|_| IoError::Svg("the SVG is not valid UTF-8".into()))?;
+        resolver.check_document(text).map_err(svg_parse_error)?;
+        let opt = options_with_isolation(fontdb, xml_left, isolated, resolver);
         let limits = tree_limits(xml_left, MAX_RASTER_PIXELS);
         let tree = guarded_parse(|| craft_svg::tree::parse_text(text, &limits, &opt))?;
         let tree = tree.map_err(svg_parse_error)?;
@@ -927,6 +929,19 @@ pub fn import_svg_bounded_layers(name: &str, bytes: &[u8], max_cached_pixels: u6
 /// compressed data inflates to at most 16 MiB.
 pub fn import_svg_bounded_images(name: &str, bytes: &[u8], max_decoded_pixels: u64) -> Result<ImportResult, IoError> {
     on_svg_stack(|| import_parsed(name, parse_bounded(bytes, max_decoded_pixels)?, MAX_GROUP_DEPTH, None, false))
+}
+
+/// The bounded layered import for callers without an omission-warning channel. Reject missing
+/// embedded images before rendering or caching any layers; keep the same decode and retained-
+/// pixel budgets as [`import_svg_bounded_images`].
+pub fn import_svg_bounded_images_strict(name: &str, bytes: &[u8], max_decoded_pixels: u64) -> Result<ImportResult, IoError> {
+    on_svg_stack(|| {
+        let parsed = parse_bounded(bytes, max_decoded_pixels)?;
+        if omitted_image_count(parsed.image_usage) != 0 {
+            return Err(IoError::Svg("embedded images were unreadable or exceeded image limits; cannot import incomplete smart object contents".into()));
+        }
+        import_parsed(name, parsed, MAX_GROUP_DEPTH, None, false)
+    })
 }
 
 /// The pixel bounds [`import_svg_bounded`] gives the drawing, found without rendering any layer

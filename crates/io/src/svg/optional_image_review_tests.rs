@@ -193,3 +193,25 @@ fn raster_only_public_apis_preserve_complete_embedded_image_pixels() {
         assert_eq!(pixels, [0, 255, 0, 255].repeat(4));
     }
 }
+
+#[test]
+fn malformed_data_urls_and_broken_pixel_payloads_are_disclosed_before_rendering() {
+    let image = photocraft_codecs::Image::from_u8(1, 1, photocraft_codecs::ChannelLayout::Rgb, vec![0, 255, 0]).unwrap();
+    let mut png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+    // Keep a valid signature and IHDR, but remove IDAT/IEND: dimensions alone are not a decode.
+    png.truncate(33);
+    for source in ["data:image/png;base64,A".to_string(), "data:image/png;base64".to_string(), url("image/png", &png)] {
+        let text = drawing(&source);
+        let imported = crate::import("omitted.svg", text.as_bytes()).unwrap();
+        assert_omission_warning(&imported, 1);
+        assert_eq!(photocraft_compose::flatten(&imported.document).get(1, 1), [1., 0., 0., 1.]);
+        let (pixels, warnings) = rasterize_bounded_with_warnings(text.as_bytes(), 1., MAX_RASTER_PIXELS).unwrap();
+        assert_eq!(pixels.get(1, 1), [1., 0., 0., 1.]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].starts_with("SVG: 1 embedded "));
+        assert!(rasterize(text.as_bytes(), 1.).is_err());
+        assert!(rasterize_rgba8(text.as_bytes()).is_err());
+        assert!(rasterize_bounded(text.as_bytes(), 1., MAX_RASTER_PIXELS).is_err());
+        assert!(import_svg_preview_with_work("strict.svg", text.as_bytes(), MAX_RASTER_PIXELS).is_err());
+    }
+}
