@@ -1348,6 +1348,30 @@ use photocraft_doc::{
     StrokePosition,
 };
 
+/// #14983: the Size 1 Satin transition agrees with the CPU across whole textures and pages.
+#[test]
+fn satin_size_one_gpu_matches_cpu() {
+    let Some(mut g) = gpu() else { return };
+    let mut doc = Document::new("Satin size 1", Size::new(400, 300), ColorMode::Rgb, SampleType::U8);
+    doc.layers.push(Layer::new("Background", LayerContent::Fill(Fill::Solid(Color::WHITE))));
+    let mut layer = Layer::raster("Orange", PixelFormat::RGBA8);
+    layer.surface_mut().unwrap().fill_rect(Rect::new(100, 75, 300, 225), &[1.0, 128.0 / 255.0, 0.0, 1.0]);
+    layer.effects.items.push(Effect::Satin(Satin {
+        common: FxCommon::new(BlendMode::Normal, 1.0),
+        color: Color::BLACK,
+        angle: 90.0,
+        distance: 20.0,
+        size: 1.0,
+        contour: Contour::Linear,
+        anti_alias: true,
+        invert: false,
+    }));
+    doc.layers.push(layer);
+
+    let stats = diff_rect(&mut g, &doc, doc.bounds(), "Satin size 1").unwrap();
+    assert_eq!(stats.fx_programs, 1, "the GPU built the Satin effect map");
+}
+
 /// An anti-aliased blob (disc plus a soft-edged bar and a hole) with partially transparent parts,
 /// so effects see real edge coverage, concavities and interior alpha.
 /// Small layers composite only over their bounds and are copied back into the backdrop (#125):

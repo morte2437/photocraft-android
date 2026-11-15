@@ -41,9 +41,9 @@ mod paint;
 pub use bevel::{BEVEL_H_EPS, BevelGeom, BevelPaint, TextureCtx, bevel_chisel_h, bevel_geom, satin_distance};
 #[cfg(test)]
 use bevel::{bevel_maps, satin_map};
-pub use blur::tent_kernel;
 #[cfg(test)]
 use blur::{blur, box_line, dilate, tent, tent_direct};
+pub use blur::{size_one_kernel, tent_kernel};
 pub(crate) use composite::{VectorStroke, build_maps_prepared, composite_with_effects_prepared, map_count};
 pub use composite::{build_maps, composite_with_effects, outline_share, premerges_layer, shadow_see_through, stroke_widths};
 pub use distance::{FieldKind, STROKE_CHAMFER_MAX, bevel_distance_fields, distance_field, stroke_outside_exact};
@@ -247,3 +247,6 @@ impl FxMaps {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod satin_size_one_tests;
