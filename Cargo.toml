@@ -64,6 +64,8 @@ craft-pdn = { git = "https://github.com/storytold/craft-libs", rev = "ad8faa1c13
 craft-svg = { git = "https://github.com/storytold/craft-libs", rev = "ad8faa1c136ce289e9f132c9137d0cd913bd4ef6", features = ["tree-render", "tree-render-system-fonts"] }
 craft-raw = { git = "https://github.com/storytold/craft-libs", rev = "ad8faa1c136ce289e9f132c9137d0cd913bd4ef6" }
 craft-tiff = { git = "https://github.com/storytold/craft-libs", rev = "ad8faa1c136ce289e9f132c9137d0cd913bd4ef6" }
+# Camera-field EXIF reader/writer, shared prerequisite craft-libs#1563.
+craft-metadata = { git = "https://github.com/storytold/craft-libs", rev = "163f1b20315ffacaf8a6e085f4ae7fc568c08ff2" }
 craft-crs = { git = "https://github.com/storytold/craft-libs", rev = "ad8faa1c136ce289e9f132c9137d0cd913bd4ef6" }
 # Interface translations: lookup, fallback, CLDR plurals and language names over the craft-i18n
 # catalogs that `crates/ui-egui/build.rs` embeds from `CRAFT_I18N_DIR` (storytold/craft-i18n, at
