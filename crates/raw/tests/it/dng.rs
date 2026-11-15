@@ -272,7 +272,7 @@ fn metadata_is_read() {
     assert_eq!((d.width, d.height), (20, 16));
 }
 
-/// A DefaultCropOrigin no area could hold saturates, leaves nothing to crop, and the whole active area is kept.
+/// An unrepresentable DefaultCropOrigin is refused; the whole active area is kept with a notice.
 #[test]
 fn enormous_double_crop_origin_leaves_the_active_area() {
     let (w, h) = (16, 12);
@@ -285,7 +285,7 @@ fn enormous_double_crop_origin_leaves_the_active_area() {
     assert_eq!(s.crop, s.active);
 }
 
-/// craft-raw clips a crop that reaches past the active area to it (no warning).
+/// craft-raw clips a crop that reaches past the active area and reports the adjustment.
 #[test]
 fn out_of_range_default_crop_is_clipped_to_the_active_area() {
     let (w, h) = (16, 12);
@@ -944,7 +944,7 @@ fn profile_gain_table_map_is_reported() {
     let mut spec = DngSpec::cfa(8, 8, vec![500; 64]);
     assert!(!gain_table(&sensor(&spec.build())));
     // A well-formed ProfileGainTableMap (version 1, little-endian): one table of one gain. craft-raw
-    // reads the tag, so a blob it cannot parse is no map at all.
+    // reads the tag; a malformed optional map is omitted with a separate notice.
     let mut map = Vec::new();
     map.extend_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0]); // points V, H
     for v in [1.0f64, 1.0, 0.0, 0.0] {
@@ -956,7 +956,13 @@ fn profile_gain_table_map_is_reported() {
     }
     map.extend_from_slice(&1.0f32.to_le_bytes()); // the gain
     spec.profile_gain_table_map = Some(map);
-    assert!(gain_table(&sensor(&spec.build())));
+    let s = sensor(&spec.build());
+    assert!(gain_table(&s));
+    let d = develop_sensor(&s, &DevelopOptions::default()).unwrap();
+    for warnings in [&s.warnings, &d.warnings] {
+        assert!(warnings.iter().any(|w| w.contains("gain table map") && w.contains("not applied")), "{warnings:?}");
+        assert!(!warnings.iter().any(|w| w.contains("gain table map") && w.contains("omitted")), "{warnings:?}");
+    }
 }
 
 // ---------------------------------------------------------------- lossy DNG (compression 34892)
@@ -1162,4 +1168,33 @@ fn lossy_jpeg_rejects_other_depths_and_sample_counts() {
         let err = decode(&spec.build(), &Limits::default()).unwrap_err();
         assert!(matches!(&err, RawError::Unsupported(m) if m.contains(&format!("{bits}-bit"))), "{err}");
     }
+}
+
+/// Decoder fallback notices must survive both the adapter and development.
+#[test]
+fn adjusted_crop_and_omitted_gain_table_notices_survive_development() {
+    let mut spec = DngSpec::cfa(16, 12, vec![1000; 16 * 12]);
+    spec.active_area = Some([2, 3, 10, 14]);
+    let check = |spec: &DngSpec, crop: Rect, crop_warning: bool, gain_warning: bool| {
+        let s = sensor(&spec.build());
+        assert_eq!(s.crop, crop);
+        let d = develop_sensor(&s, &DevelopOptions { orient: false, ..Default::default() }).unwrap();
+        assert_eq!((d.width as usize, d.height as usize), (crop.width, crop.height));
+        for warnings in [&s.warnings, &d.warnings] {
+            assert_eq!(warnings.iter().any(|w| w.contains("default crop")), crop_warning, "{warnings:?}");
+            assert_eq!(warnings.iter().any(|w| w.contains("gain table map") && w.contains("omitted")), gain_warning, "{warnings:?}");
+        }
+    };
+    check(&spec, Rect::new(3, 2, 11, 8), false, false);
+    spec.default_crop = Some(([1, 1], [4, 4]));
+    check(&spec, Rect::new(4, 3, 4, 4), false, false);
+    spec.default_crop = Some(([8, 1], [5, 4]));
+    check(&spec, Rect::new(11, 3, 3, 4), true, false);
+    spec.default_crop_origin_double = Some([1e300, 0.0]);
+    check(&spec, Rect::new(3, 2, 11, 8), true, false);
+    spec.profile_gain_table_map = Some(vec![0; 16]);
+    check(&spec, Rect::new(3, 2, 11, 8), true, true);
+    spec.default_crop = None;
+    spec.default_crop_origin_double = None;
+    check(&spec, Rect::new(3, 2, 11, 8), false, true);
 }

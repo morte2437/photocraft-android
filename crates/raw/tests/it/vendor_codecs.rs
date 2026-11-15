@@ -284,10 +284,8 @@ fn orf_truncated_in_ifd0_is_malformed_not_the_compressed_variant() {
     assert!(decode(&b[..cut], &Limits::default()).is_err());
 }
 
-/// The guard behind the test above: craft-raw reports a file cut inside IFD0 as "Olympus compressed ORF"
-/// (its last fall-through), not as damage.
+/// The shared decoder must preserve damage classification for every truncated prefix.
 #[test]
-#[ignore = "craft-raw reports a cut-short ORF as the compressed variant (Unsupported, not Malformed); a craft-raw fix, not a photocraft-raw one"]
 fn orf_truncated_in_ifd0_is_malformed_not_the_compressed_variant_in_craft_raw() {
     let (w, h) = (40, 24);
     let data = mosaic(&scene(w, h), w, [1, 0, 2, 1], 64, 4095);
