@@ -155,7 +155,51 @@ impl ByteSource for ZipSource<'_> {
 fn bundle_error(error: craft_pcraft_bundle::Error) -> FormatError {
     match error {
         craft_pcraft_bundle::Error::LimitExceeded { entry, limit } => FormatError::LimitExceeded(format!("`{entry}` exceeds {limit} bytes")),
+        craft_pcraft_bundle::Error::Zip(error) if error.is_limit() => FormatError::LimitExceeded(error.to_string()),
+        craft_pcraft_bundle::Error::Io(message) => FormatError::Io(std::io::Error::other(message)),
         other => FormatError::corrupt(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod bundle_error_tests {
+    use super::*;
+
+    #[test]
+    fn shared_io_errors_keep_the_native_io_type_and_message() {
+        let error = bundle_error(craft_pcraft_bundle::Error::Io("manifest publication failed".into()));
+        let FormatError::Io(error) = error else { panic!("I/O failure must remain typed") };
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "manifest publication failed");
+    }
+
+    #[test]
+    fn direct_and_nested_zip_limits_remain_limits() {
+        let error = bundle_error(craft_pcraft_bundle::Error::LimitExceeded { entry: "manifest.json".into(), limit: 16 });
+        assert!(matches!(error, FormatError::LimitExceeded(message) if message == "`manifest.json` exceeds 16 bytes"));
+        for error in [
+            craft_zip::Error::TooManyEntries { declared: 3, limit: 2 },
+            craft_zip::Error::TooManyEndRecords(2),
+            craft_zip::Error::EntryTooLarge { name: "manifest.json".into(), limit: 16 },
+            craft_zip::Error::BudgetSpent { name: "manifest.json".into(), limit: 16 },
+        ] {
+            let message = error.to_string();
+            assert!(matches!(bundle_error(craft_pcraft_bundle::Error::Zip(error)), FormatError::LimitExceeded(found) if found == message));
+        }
+    }
+
+    #[test]
+    fn malformed_paths_archives_and_hashes_remain_corrupt() {
+        for error in [
+            craft_pcraft_bundle::Error::InvalidPath("../manifest.json".into()),
+            craft_pcraft_bundle::Error::InvalidBundle("missing manifest".into()),
+            craft_pcraft_bundle::Error::HashMismatch("tiles/object.zst".into()),
+            craft_pcraft_bundle::Error::Zip(craft_zip::Error::NotZip("truncated".into())),
+            craft_pcraft_bundle::Error::Zip(craft_zip::Error::Entry { name: "manifest.json".into(), msg: "checksum".into() }),
+        ] {
+            let message = error.to_string();
+            assert!(matches!(bundle_error(error), FormatError::Corrupt(found) if found == message));
+        }
     }
 }
 

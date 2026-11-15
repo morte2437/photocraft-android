@@ -931,27 +931,42 @@ fn bounded_svg_rejects_nested_gzip_at_top_level_and_inside_data_urls() {
 
 /// An embedded image the bounded resolver can't charge (an unknown MIME type, a format resvg
 /// doesn't draw, a PNG under another MIME type, a corrupt PNG) is left out as usvg's own
-/// resolver leaves it out, and the rest of the drawing still renders.
+/// resolver leaves it out. Import preserves the rest with a warning; warningless rasterization
+/// must reject the incomplete drawing.
 #[test]
 fn unreadable_embedded_images_are_left_out_and_the_drawing_still_renders() {
     let image = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, vec![255; 12]).unwrap();
     let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
-    for (mime, bytes) in [
-        ("image/x-foo", png.clone()),
-        ("application/octet-stream", png.clone()),
-        ("application/octet-stream", png_dimensions(6000, 5000)),
-        ("image/png", png_dimensions(0, 4)),
-        ("image/bmp", b"BM\0\0\0\0".to_vec()),
-        ("image/png", png[..20].to_vec()),
-    ] {
+    for (mime, bytes) in
+        [("image/x-foo", png.clone()), ("image/png", png_dimensions(0, 4)), ("image/bmp", b"BM\0\0\0\0".to_vec()), ("image/png", png[..20].to_vec())]
+    {
         let svg = format!(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">{}<rect x=\"2\" width=\"2\" height=\"4\" fill=\"#ff0000\"/></svg>",
             embedded_image(mime, &bytes)
         );
-        let buf = rasterize_bounded(svg.as_bytes(), 1.0, MAX_RASTER_PIXELS).unwrap_or_else(|e| panic!("{mime}: {e}"));
-        let at = |x: usize, y: usize| buf.px[y * 4 + x];
-        assert!(at(3, 1)[0] > 0.99 && at(3, 1)[3] > 0.99, "{mime}: the rect still draws");
-        assert!(import_svg_bounded("clipboard", svg.as_bytes(), MAX_RASTER_PIXELS).is_ok(), "{mime}");
+        assert!(rasterize_bounded(svg.as_bytes(), 1.0, MAX_RASTER_PIXELS).is_err(), "{mime}: incomplete pixels need a warning channel");
+        let imported = import_svg_bounded("clipboard", svg.as_bytes(), MAX_RASTER_PIXELS).unwrap_or_else(|e| panic!("{mime}: {e}"));
+        let pixel = photocraft_compose::flatten(&imported.document).get(3, 1);
+        assert!(pixel[0] > 0.99 && pixel[3] > 0.99, "{mime}: the rect still draws");
+        assert!(imported.warnings.iter().any(|warning| warning.contains("embedded") && warning.contains("omitted")), "{mime}: the loss is disclosed");
+    }
+}
+
+#[test]
+fn non_image_data_urls_remain_ignored_without_decoding() {
+    let image = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, vec![255; 12]).unwrap();
+    let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
+    for bytes in [png, png_dimensions(6000, 5000)] {
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\">{}<rect width=\"4\" height=\"4\" fill=\"#ff0000\"/></svg>",
+            embedded_image("application/octet-stream", &bytes)
+        );
+        // The resolver ignores non-image media types before decoding. They do not count as
+        // failed declared images, even when their bytes resemble an oversized PNG.
+        let buf = rasterize_bounded(svg.as_bytes(), 1.0, MAX_RASTER_PIXELS).unwrap();
+        assert_eq!(buf.get(3, 1), [1., 0., 0., 1.]);
+        let imported = import_svg_bounded("clipboard", svg.as_bytes(), MAX_RASTER_PIXELS).unwrap();
+        assert!(!imported.warnings.iter().any(|warning| warning.contains("embedded") && warning.contains("omitted")));
     }
 }
 
@@ -1000,8 +1015,8 @@ fn bounded_embedded_svg_gets_only_the_nesting_depth_the_drawing_left() {
         .stack_size(1 << 20)
         .spawn(move || {
             let deep = embed(MAX_XML_DEPTH - 2, MAX_XML_DEPTH - 2);
-            let buf = rasterize_bounded(deep.as_bytes(), 1.0, MAX_RASTER_PIXELS).unwrap();
-            assert!(buf.px[4 * 8 + 4][3] < 0.01, "the too-deep image is left out");
+            assert!(omitted_image_count(parse_bounded(deep.as_bytes(), MAX_RASTER_PIXELS).unwrap().image_usage) > 0, "the too-deep image is left out");
+            assert!(rasterize_bounded(deep.as_bytes(), 1.0, MAX_RASTER_PIXELS).is_err(), "incomplete pixels need a warning channel");
             let fine = embed(200, 200);
             let buf = rasterize_bounded(fine.as_bytes(), 1.0, MAX_RASTER_PIXELS).unwrap();
             assert!(buf.px[4 * 8 + 4][3] > 0.99, "within the shared budget the image draws");

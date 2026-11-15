@@ -172,6 +172,7 @@ fn raster_only_public_apis_reject_omitted_images_instead_of_returning_partial_pi
         let text = drawing(&source);
         assert!(matches!(rasterize(text.as_bytes(), 1.), Err(IoError::Svg(message)) if message.contains("incomplete drawing")));
         assert!(matches!(rasterize_rgba8(text.as_bytes()), Err(IoError::Svg(message)) if message.contains("incomplete drawing")));
+        assert!(rasterize_bounded(text.as_bytes(), 1., MAX_RASTER_PIXELS).is_err(), "bounded rasterization must also refuse omitted images");
         let imported = crate::import("outer.svg", text.as_bytes()).unwrap();
         assert_omission_warning(&imported, 1);
         assert_eq!(photocraft_compose::flatten(&imported.document).get(1, 1), [1., 0., 0., 1.]);
@@ -183,9 +184,10 @@ fn raster_only_public_apis_preserve_complete_embedded_image_pixels() {
     let image = photocraft_codecs::Image::from_u8(2, 2, photocraft_codecs::ChannelLayout::Rgb, [0, 255, 0].repeat(4)).unwrap();
     let png = photocraft_codecs::encode(&image, photocraft_codecs::Format::Png, &Default::default()).unwrap();
     let green = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2\" height=\"2\"><rect width=\"2\" height=\"2\" fill=\"#00ff00\"/></svg>";
-    for source in [url("image/png", &png), url("image/svg+xml", green.as_bytes())] {
+    for source in [url("image/png", &png), url("text/plain", &png), url("image/svg+xml", green.as_bytes())] {
         let text = drawing(&source);
         assert_eq!(rasterize(text.as_bytes(), 1.).unwrap().get(1, 1), [0., 1., 0., 1.]);
+        assert_eq!(rasterize_bounded(text.as_bytes(), 1., MAX_RASTER_PIXELS).unwrap().get(1, 1), [0., 1., 0., 1.]);
         let (width, height, pixels) = rasterize_rgba8(text.as_bytes()).unwrap();
         assert_eq!((width, height), (2, 2));
         assert_eq!(pixels, [0, 255, 0, 255].repeat(4));

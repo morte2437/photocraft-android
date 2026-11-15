@@ -1083,7 +1083,7 @@ pub fn rasterize(bytes: &[u8], scale: f32) -> Result<photocraft_compose::Buffer,
 pub fn rasterize_bounded(bytes: &[u8], scale: f32, max_decoded_pixels: u64) -> Result<photocraft_compose::Buffer, IoError> {
     on_svg_stack(|| {
         let (parsed, chain) = parse_bounded_inner(bytes, max_decoded_pixels)?;
-        let tree = parsed.tree;
+        let tree = complete_raster_tree(parsed)?;
         if chain != 0 {
             let cv = canvas(&tree, &mut Vec::new());
             let k = cv.scale * scale.clamp(1.0 / 64.0, 64.0);
