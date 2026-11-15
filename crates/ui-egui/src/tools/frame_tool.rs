@@ -35,10 +35,23 @@ pub struct FrameToolUi {
     pub drag: Option<FrameDrag>,
     #[serde(skip)]
     pub auto_transform: bool,
+    /// Space (the reposition key) is held: a frame being drawn moves instead of sizing (#13867).
+    #[serde(skip)]
+    pub space: bool,
 }
 impl Default for FrameToolUi {
     fn default() -> Self {
-        Self { ellipse: false, shape: "rectangle".into(), sides: 5, stroke: None, target: Target::Frame, selected: None, drag: None, auto_transform: false }
+        Self {
+            ellipse: false,
+            shape: "rectangle".into(),
+            sides: 5,
+            stroke: None,
+            target: Target::Frame,
+            selected: None,
+            drag: None,
+            auto_transform: false,
+            space: false,
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -343,6 +356,15 @@ pub fn cancel(app: &mut PhotocraftApp) {
     app.ui.frame_tool.drag = None;
     app.frame_preview = None;
 }
+/// Space (the reposition key) for this canvas frame (#13867). Whether a frame is being drawn, which
+/// Space then moves: the canvas keeps the key from the temporary Hand tool meanwhile.
+pub fn set_space(app: &mut PhotocraftApp, down: bool) -> bool {
+    app.ui.frame_tool.space = down;
+    matches!(app.ui.frame_tool.drag, Some(FrameDrag::New { .. }))
+}
+#[cfg(test)]
+mod space_move_tests;
+
 /// Escape during a drag. A frame being drawn is made at the pointer, as the reference application
 /// does (#13866); the mouse movement and release after it change nothing. Moving, resizing or
 /// rotating an existing frame is cancelled.
@@ -481,9 +503,14 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
             }
         }
         ToolEvent::Move { x, y, .. } => {
+            let space = app.ui.frame_tool.space;
             if let Some(d) = &mut app.ui.frame_tool.drag {
                 match d {
-                    FrameDrag::New { cur, square, centred, .. } => {
+                    FrameDrag::New { start, cur, square, centred, .. } => {
+                        // Space held moves the whole frame with the pointer (#13867).
+                        if space {
+                            *start = [start[0] + x - cur[0], start[1] + y - cur[1]];
+                        }
                         *cur = [x, y];
                         *square = mods.shift;
                         *centred = mods.alt;
@@ -503,7 +530,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                 return true;
             }
             match d {
-                FrameDrag::New { start, .. } => commit_new(app, start, [x, y], mods.shift, mods.alt),
+                FrameDrag::New { start, cur, .. } => {
+                    // Released with Space still down: the last step moved the frame too (#13867).
+                    let start = if app.ui.frame_tool.space { [start[0] + x - cur[0], start[1] + y - cur[1]] } else { start };
+                    commit_new(app, start, [x, y], mods.shift, mods.alt)
+                }
                 FrameDrag::Edit { layer, original, start, mode, .. } => {
                     let transform = edit_transform(&original, mode, start, [x, y], mods);
                     if transform != original.transform {

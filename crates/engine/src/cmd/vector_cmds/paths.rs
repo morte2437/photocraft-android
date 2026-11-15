@@ -74,16 +74,17 @@ pub(super) fn paths_list(s: &Session) -> Result<Value> {
 }
 
 /// The tools that override these shared commands' normal History labels with their own name:
-/// Freeform Pen (#12829) and the Line tool (#13244).
-const TOOL_HISTORY_NAMES: [&str; 2] = ["Freeform Pen", "Line Tool"];
+/// Freeform Pen (#12829), the Line tool (#13244) and the Triangle tool (#13354).
+const TOOL_HISTORY_NAMES: [&str; 3] = ["Freeform Pen", "Line Tool", "Triangle Tool"];
 
 /// Validate before editing so malformed automation input cannot change the document.
 pub(super) fn pen_history_name<'a>(p: &Value, cmd: &str, default: &'a str) -> Result<&'a str> {
     match p.get("historyName") {
         None | Some(Value::Null) => Ok(default),
-        Some(v) => {
-            TOOL_HISTORY_NAMES.into_iter().find(|&n| v.as_str() == Some(n)).ok_or_else(|| bad(cmd, "`historyName` must be \"Freeform Pen\" or \"Line Tool\""))
-        }
+        Some(v) => TOOL_HISTORY_NAMES
+            .into_iter()
+            .find(|&n| v.as_str() == Some(n))
+            .ok_or_else(|| bad(cmd, "`historyName` must be \"Freeform Pen\", \"Line Tool\" or \"Triangle Tool\"")),
     }
 }
 

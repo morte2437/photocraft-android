@@ -491,7 +491,8 @@ fn apply_content_aware_fill(s: &mut Session, label: &str, id: LayerId, output: &
     let layer = s.edit(label, |doc, active| {
         let target = match output {
             "new" => {
-                let mut l = Layer::raster(doc.next_layer_name("Content-Aware Fill"), PixelFormat { alpha: true, ..fmt });
+                let source_name = doc.layer(id).ok_or(EngineError::NoLayer(id))?.name.clone();
+                let mut l = Layer::raster(doc.copy_name(&source_name), PixelFormat { alpha: true, ..fmt });
                 let mut px = vec![0.0f32; w * h * n.max(1)];
                 let lf = l.surface().map(|s| s.format()).unwrap_or(fmt);
                 let ln = lf.channels();

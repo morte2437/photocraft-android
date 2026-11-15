@@ -1375,23 +1375,24 @@ fn the_saved_brush_owner_follows_the_saved_last_brush() {
     app.session.tools.brush_changed();
     crate::last_brush::persist(&mut app, &ctx);
     crate::tool_memory::persist(&mut app, &ctx);
-    // The Brush's tip becomes a big sampled one, then the Eraser takes over that brush.
+    // The Brush's tip becomes a big sampled one, then the Blur tool takes over that brush (the Eraser has its own
+    // starting tip since #11936).
     app.session.tools.brush.tip = TipShape::Sampled(GrayTile::from_fn(400, 300, |x, y| ((x * y) % 7) as f32 / 7.0));
     app.session.tools.brush_changed();
-    app.ui.tool = Tool::Eraser;
+    app.ui.tool = Tool::Blur;
     crate::paint_mouse::sync_tool_brush(&mut app);
     crate::last_brush::persist(&mut app, &ctx);
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
     let saved = stored(&store);
     assert_eq!(saved["lastBrush"]["brush"]["size"], json!(77.0), "the big tip is not remembered yet");
-    assert_ne!(saved["toolBrushes"]["owner"], json!("Eraser"), "{saved}");
+    assert_ne!(saved["toolBrushes"]["owner"], json!("Blur"), "{saved}");
     let (mut app2, _) = app_with_saved(store.lock().unwrap().clone());
     tick(&mut app2, &ctx);
     assert_eq!(app2.ui.brush_tool, Tool::Brush, "the 77 px brush is the Brush's");
     assert_eq!(app2.session.tools.brush.size, 77.0);
 
-    // Once the Eraser's brush is saved, the Eraser owns it in the preferences too.
+    // Once the Blur tool's brush is saved, the Blur tool owns it in the preferences too.
     app.session.tools.brush.tip = TipShape::Round;
     app.session.tools.brush.size = 33.0;
     app.session.tools.brush_changed();
@@ -1399,7 +1400,7 @@ fn the_saved_brush_owner_follows_the_saved_last_brush() {
     crate::tool_memory::persist(&mut app, &ctx);
     tick(&mut app, &ctx);
     let saved = stored(&store);
-    assert_eq!(saved["toolBrushes"]["owner"], json!("Eraser"), "{saved}");
+    assert_eq!(saved["toolBrushes"]["owner"], json!("Blur"), "{saved}");
     assert_eq!(saved["lastBrush"]["brush"]["size"], json!(33.0));
 }
 

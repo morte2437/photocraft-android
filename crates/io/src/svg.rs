@@ -623,8 +623,12 @@ fn note_byte_refusal(data: &[u8], used: usize, refusals: &SvgRefusals) {
             // Every unpack is charged at least what it unpacked, so together they stay within one
             // budget; plain data is only measured.
             let (unpacked, too_large) = match craft_svg::svgz::inflate(data, limit) {
-                Ok(std::borrow::Cow::Borrowed(_)) => (0, false),
-                Ok(std::borrow::Cow::Owned(xml)) => (xml.len(), false),
+                Ok(bytes) => {
+                    let charged = if compressed { bytes.len() } else { 0 };
+                    // Inflation and text decoding use different units: Latin-1 expands in UTF-8.
+                    let decoded_too_large = craft_svg::svgz::decode(&bytes).is_ok_and(|text| text.len() > content_left);
+                    (charged, decoded_too_large)
+                }
                 Err(craft_svg::svgz::Error::Nested(len)) => (len, false),
                 Err(craft_svg::svgz::Error::TooLarge(_)) => (if compressed { limit } else { 0 }, true),
                 Err(_) => (limit, false),

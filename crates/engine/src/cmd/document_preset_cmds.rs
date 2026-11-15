@@ -21,12 +21,22 @@ pub const MAX_RECENT: usize = 20;
 /// The formats accepted by `file.new`, also used when validating saved configurations.
 pub(crate) fn color_mode(mode: &str) -> Option<ColorMode> {
     match mode {
+        "bitmap" => Some(ColorMode::Bitmap),
         "rgb" => Some(ColorMode::Rgb),
         "gray" | "grayscale" => Some(ColorMode::Grayscale),
         "cmyk" => Some(ColorMode::Cmyk),
         "lab" => Some(ColorMode::Lab),
         _ => None,
     }
+}
+
+/// Bitmap documents are 1 bit, as in Photoshop's New Document (#14030), and stored expanded as 8-bit
+/// gray like a converted Bitmap image; every other mode takes 8, 16 or 32 bits.
+pub(crate) const BITMAP_DEPTH: u64 = 1;
+
+/// Whether `depth` suits a document of `mode`.
+pub(crate) fn depth_suits(mode: ColorMode, depth: u64) -> bool {
+    if mode == ColorMode::Bitmap { depth == BITMAP_DEPTH } else { sample_type(depth).is_some() }
 }
 
 pub(crate) fn sample_type(depth: u64) -> Option<SampleType> {
@@ -64,8 +74,8 @@ pub(crate) fn validate_new_params(s: &Session, p: &Value) -> Result<()> {
                 let max = if key == "resolution" { MAX_RESOLUTION } else { f64::from(MAX_DIMENSION) };
                 (value.as_f64().is_some_and(|n| n.is_finite() && (1.0..=max).contains(&n)), format!("a number within 1..={max}"))
             }
-            "mode" => (value.as_str().and_then(color_mode).is_some(), "rgb, gray, grayscale, cmyk or lab".into()),
-            "depth" => (value.as_u64().and_then(sample_type).is_some(), "8, 16 or 32".into()),
+            "mode" => (value.as_str().and_then(color_mode).is_some(), "bitmap, rgb, gray, grayscale, cmyk or lab".into()),
+            "depth" => (value.as_u64().is_some_and(|d| sample_type(d).is_some() || d == BITMAP_DEPTH), "1 (bitmap), 8, 16 or 32".into()),
             "background" => (
                 value.as_str().is_some_and(|v| {
                     matches!(v, "white" | "black" | "transparent" | "backgroundColor")
@@ -88,6 +98,14 @@ pub(crate) fn validate_new_params(s: &Session, p: &Value) -> Result<()> {
     }
     if p.get("background").and_then(Value::as_str) == Some("backgroundColor") {
         background_color(p, s.tools.background, cmd)?;
+    }
+    let mode = p.get("mode").and_then(Value::as_str).and_then(color_mode).unwrap_or(ColorMode::Rgb);
+    if let Some(depth) = p.get("depth").and_then(Value::as_u64).filter(|&d| !depth_suits(mode, d)) {
+        return Err(bad(cmd, if mode == ColorMode::Bitmap { "a Bitmap document is 1 bit".to_string() } else { format!("depth {depth} is for Bitmap only") }));
+    }
+    // A Bitmap pixel is black or white; Photoshop offers no Transparent background for it (#14030).
+    if mode == ColorMode::Bitmap && p.get("background").and_then(Value::as_str) == Some("transparent") {
+        return Err(bad(cmd, "a Bitmap document can't have a transparent background"));
     }
     Ok(())
 }
@@ -120,8 +138,14 @@ impl DocumentSettings {
         if !self.resolution.is_finite() || !(1.0..=MAX_RESOLUTION as f32).contains(&self.resolution) {
             return Err(format!("Resolution must be within 1..={MAX_RESOLUTION} ppi"));
         }
-        if color_mode(&self.mode).is_none() || sample_type(self.depth.into()).is_none() {
-            return Err("Use RGB, Grayscale, CMYK or Lab at 8, 16 or 32 bits".into());
+        let Some(mode) = color_mode(&self.mode) else {
+            return Err("Use Bitmap, RGB, Grayscale, CMYK or Lab".into());
+        };
+        if !depth_suits(mode, self.depth.into()) {
+            return Err("Use 1 bit for Bitmap, or 8, 16 or 32 bits for RGB, Grayscale, CMYK or Lab".into());
+        }
+        if mode == ColorMode::Bitmap && self.background == "transparent" {
+            return Err("A Bitmap document can't have a transparent background".into());
         }
         if !matches!(self.background.as_str(), "white" | "black" | "transparent" | "backgroundColor") && crate::commands::parse_hex(&self.background).is_none()
         {
@@ -144,7 +168,9 @@ impl DocumentSettings {
 
     fn from_params(s: &Session, p: &Value, cmd: &str) -> Result<Self> {
         let mut fields = p.as_object().cloned().ok_or_else(|| bad(cmd, "`settings` must be an object"))?;
-        let defaults = json!({"resolution":72.0,"mode":"rgb","depth":8,"background":"white","unit":"px","resolutionUnit":"in"});
+        let bitmap = fields.get("mode").and_then(Value::as_str) == Some("bitmap");
+        let depth = if bitmap { BITMAP_DEPTH } else { 8 };
+        let defaults = json!({"resolution":72.0,"mode":"rgb","depth":depth,"background":"white","unit":"px","resolutionUnit":"in"});
         if let Some(defaults) = defaults.as_object() {
             for (k, v) in defaults {
                 fields.entry(k.clone()).or_insert_with(|| v.clone());
@@ -312,7 +338,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Save Document Preset",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str (trimmed, ASCII case-insensitive unique, 1..255 characters),"settings":{"width":px,"height":px,"resolution":ppi=72,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16|32=8,"background":"white|black|transparent|backgroundColor|#rrggbb"="white","backgroundColor":[r,g,b]?,"unit":"px|in|cm|mm|pt|pica"="px","resolutionUnit":"in|cm"="in"}}"##,
+            params: r##"{"name":str (trimmed, ASCII case-insensitive unique, 1..255 characters),"settings":{"width":px,"height":px,"resolution":ppi=72,"mode":"bitmap|rgb|gray|cmyk|lab"="rgb","depth":8|16|32=8 (bitmap: 1),"background":"white|black|transparent|backgroundColor|#rrggbb"="white" (bitmap: not transparent),"backgroundColor":[r,g,b]?,"unit":"px|in|cm|mm|pt|pica"="px","resolutionUnit":"in|cm"="in"}}"##,
             enabled: always,
             run: save,
             journal: true,
