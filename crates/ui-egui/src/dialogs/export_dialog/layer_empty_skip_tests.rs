@@ -20,9 +20,13 @@ struct Layers {
 /// 100 x 80 with, bottom to top: Background, `Empty` (no pixels), an Invert adjustment layer,
 /// `Gone` (pixels only past the right edge), `Red` and `Blue` (filled).
 fn app(answer: &str) -> (PhotocraftApp, Layers, Written) {
+    app_answering(crate::FileDialogAnswer::SaveTo(answer.into()))
+}
+
+fn app_answering(answer: crate::FileDialogAnswer) -> (PhotocraftApp, Layers, Written) {
     let written = Written::default();
     let capture = written.clone();
-    let (picker, _) = crate::file_dialog::fake(vec![Some(crate::FileDialogAnswer::SaveTo(answer.into()))]);
+    let (picker, _) = crate::file_dialog::fake(vec![Some(answer)]);
     let services = crate::Services {
         file_dialog: Some(picker),
         export: Some(Box::new(|doc, path, settings| {
@@ -68,14 +72,16 @@ fn poll(app: &mut PhotocraftApp) {
 
 #[test]
 fn the_dialog_opens_on_the_first_layer_with_pixels_and_exports_only_those() {
-    let (mut app, l, written) = app("out.png");
+    let (mut app, l, written) = app_answering(crate::FileDialogAnswer::FolderTo("/out".into()));
     let selection = [l.empty, l.adjustment, l.gone, l.red, l.blue];
     let id = open_layers(&mut app, &selection).expect("an empty lowest layer no longer stops the dialog");
     let fields = app.ui.dialog_mut(id).unwrap().fields.clone();
     assert_eq!(fields["__layer"], json!(l.red.0), "the preview shows the first layer with pixels");
     confirm(&mut app, &fields).unwrap();
     poll(&mut app);
-    assert_eq!(*written.borrow(), ["out.png", "out-2-Blue.png"], "Red and Blue; the empty, adjustment and off-canvas layers write nothing");
+    // Two files: a folder with one `<layer name>.<ext>` each (#14808).
+    let want: Vec<String> = ["Red.png", "Blue.png"].iter().map(|n| std::path::Path::new("/out").join(n).to_string_lossy().into_owned()).collect();
+    assert_eq!(*written.borrow(), want, "Red and Blue; the empty, adjustment and off-canvas layers write nothing");
     assert!(!app.ui.status_error, "{}", app.ui.status);
 }
 

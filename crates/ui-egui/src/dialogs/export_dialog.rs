@@ -218,6 +218,8 @@ fn exportable_layers(doc: &Document, ids: &[photocraft_doc::LayerId]) -> Result<
 
 #[cfg(test)]
 mod layer_empty_skip_tests;
+#[cfg(test)]
+mod layer_folder_export_tests;
 
 /// Layer › Quick Export as PNG.
 pub fn quick_export_layer_png(app: &mut PhotocraftApp, layer: photocraft_doc::LayerId) -> Result<Value, String> {
@@ -1145,28 +1147,99 @@ fn confirm_layers(app: &mut PhotocraftApp, f: &Map<String, Value>, ids: &[photoc
         return Err("no selected layers".into());
     }
     let docs = exportable_layers(&st.doc, ids)?;
-    let stem = st.doc.name.rsplit_once('.').map_or(st.doc.name.as_str(), |(a, _)| a);
-    let suggested = format!("{}.{}", export_name(stem), s_fmt(f));
+    let ext = s_fmt(f);
     let (f, settings) = (f.clone(), settings(f));
+    // Several files on the desktop: a folder, then `<layer name>.<ext>` per layer there (#14808).
+    if docs.len() > 1 && !cfg!(target_arch = "wasm32") {
+        let names = layer_file_names(&docs, &ext);
+        return app.ask_folder(move |app, dir| {
+            let mut exported = Vec::new();
+            for (doc, name) in docs.iter().zip(names) {
+                let path = std::path::Path::new(&dir).join(name);
+                replace_link(&path)?;
+                exported.push(write_layer_file(app, doc, &f, &settings, &source_profile, &path.to_string_lossy())?);
+            }
+            let template = "Exported {n} files";
+            app.ui.status = crate::i18n::fmt(tl!(template), &[("n", &exported.len().to_string())]);
+            app.ui.status_error = false;
+            Ok(json!({"files": exported}))
+        });
+    }
+    // One file: the save dialog, named after the layer. The web downloads each file as before.
+    let suggested = match docs.as_slice() {
+        [one] => format!("{}.{ext}", layer_file_stem(&one.name)),
+        _ => format!("{}.{ext}", export_name(st.doc.name.rsplit_once('.').map_or(st.doc.name.as_str(), |(a, _)| a))),
+    };
     app.pick_export(&suggested, move |app, path| {
         let mut exported = Vec::new();
         for (doc, path) in docs.iter().zip(batch_paths(&path, &docs)) {
-            let out = export_document(doc, &f, None, &source_profile)?;
-            crate::app::ensure_memory_to_save(&out, &path)?;
-            let export = app.services.export.as_ref().ok_or("no exporter configured")?;
-            let (bytes, warnings) = export(&out, &path, &settings)?;
-            let write = app.services.write.as_mut().ok_or("no writer configured")?;
-            write(&path, &bytes)?;
-            let template = "Exported {path}";
-            let what = crate::i18n::fmt(tl!(template), &[("path", &crate::file_open::display_name(&path))]);
-            crate::notices::io_warnings(app, &what, &warnings);
-            exported.push(json!({"path": path, "bytes": bytes.len(), "warnings": warnings}));
+            exported.push(write_layer_file(app, doc, &f, &settings, &source_profile, &path)?);
         }
         let template = "Exported {n} files";
         app.ui.status = crate::i18n::fmt(tl!(template), &[("n", &exported.len().to_string())]);
         app.ui.status_error = false;
         Ok(json!({"files": exported}))
     })
+}
+
+/// One layer's file of a Layer › Export As: rendered with the dialog's settings and written.
+fn write_layer_file(
+    app: &mut PhotocraftApp,
+    doc: &Document,
+    f: &Map<String, Value>,
+    settings: &ExportSettings,
+    source_profile: &Profile,
+    path: &str,
+) -> Result<Value, String> {
+    let out = export_document(doc, f, None, source_profile)?;
+    crate::app::ensure_memory_to_save(&out, path)?;
+    let export = app.services.export.as_ref().ok_or("no exporter configured")?;
+    let (bytes, warnings) = export(&out, path, settings)?;
+    let write = app.services.write.as_mut().ok_or("no writer configured")?;
+    write(path, &bytes)?;
+    let template = "Exported {path}";
+    let what = crate::i18n::fmt(tl!(template), &[("path", &crate::file_open::display_name(path))]);
+    crate::notices::io_warnings(app, &what, &warnings);
+    Ok(json!({"path": path, "bytes": bytes.len(), "warnings": warnings}))
+}
+
+/// A layer's file name, as measured in the reference application: each character a file name
+/// can't hold becomes `_` (`a/b:c*?` → `a_b_c__`), spaces are kept.
+fn layer_file_stem(name: &str) -> String {
+    let stem: String = name.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    if stem.trim().is_empty() { "layer".into() } else { stem }
+}
+
+/// The names several layers' files get, for `docs` in document order (bottom to top). Equal
+/// names are numbered in Layers panel order: the upper layer keeps the name, the next ones down
+/// get `-1`, `-2`, … (skipping a name another layer already has).
+fn layer_file_names(docs: &[Document], ext: &str) -> Vec<String> {
+    let mut used = std::collections::HashSet::new();
+    let mut names = vec![String::new(); docs.len()];
+    for (i, doc) in docs.iter().enumerate().rev() {
+        let stem = layer_file_stem(&doc.name);
+        let mut name = format!("{stem}.{ext}");
+        let mut n = 1u64;
+        while used.contains(&name) {
+            name = format!("{stem}-{n}.{ext}");
+            n = n.saturating_add(1);
+        }
+        used.insert(name.clone());
+        names[i] = name;
+    }
+    names
+}
+
+/// Existing files are replaced without a prompt, but a link where a file goes is removed first,
+/// so the write lands there and is never redirected (the writer follows links).
+fn replace_link(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if path.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = path;
+    Ok(())
 }
 
 /// File › Export › Quick Export as PNG: the format, quality, metadata, colour space and location
