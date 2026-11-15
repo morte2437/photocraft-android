@@ -638,10 +638,11 @@ pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f
     let (x, y) = (start[0].min(end[0]), start[1].min(end[1]));
     let (w, h) = ((end[0] - start[0]).abs(), (end[1] - start[1]).abs());
     let sample_all = app.ui.tool_options.sample_all.object_selection;
+    let hard_edge = app.ui.tool_options.object_hard_edge;
     let mode = crate::tool_feedback::selection_mode(Tool::ObjectSelection, app.ui.selection_mode, mods);
     if (w < 2.0 || h < 2.0) && app.ui.tool_options.object_finder {
         // Object Finder (#4087): the object under the click, as hovering highlighted it.
-        let r = app.run("select.object", json!({"point": [end[0], end[1]], "mode": mode, "sampleAllLayers": sample_all}));
+        let r = app.run("select.object", json!({"point": [end[0], end[1]], "mode": mode, "sampleAllLayers": sample_all, "hardEdge": hard_edge}));
         crate::object_finder::clear(app);
         report_smart_result(app, r, tl!("No object found there — drag a rectangle around it"));
         return;
@@ -653,7 +654,10 @@ pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f
         report_smart_result(app, r, tl!("Quick Selection found nothing there"));
         return;
     }
-    let r = app.run("select.object", json!({"rect": [x.round(), y.round(), w.round(), h.round()], "mode": mode, "sampleAllLayers": sample_all}));
+    let r = app.run(
+        "select.object",
+        json!({"rect": [x.round(), y.round(), w.round(), h.round()], "mode": mode, "sampleAllLayers": sample_all, "hardEdge": hard_edge}),
+    );
     report_smart_result(app, r, tl!("Object Selection found nothing there — try a tighter rectangle"));
 }
 
@@ -1163,6 +1167,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::vline(ui, 22.0);
             crate::widgets::checkbox(ui, &mut o.object_finder, tl!("Object Finder"));
             crate::widgets::checkbox(ui, &mut o.sample_all.object_selection, tl!("Sample All Layers"));
+            crate::widgets::checkbox(ui, &mut o.object_hard_edge, tl!("Hard Edge"));
             opt(ui, tl!("Drag a rectangle around the object"));
             crate::widgets::vline(ui, 22.0);
             if crate::widgets::secondary_button(ui, tl!("Select Subject"), 0.0).clicked() {

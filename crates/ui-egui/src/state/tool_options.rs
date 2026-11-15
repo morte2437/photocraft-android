@@ -13,6 +13,8 @@ pub struct ToolOptions {
     pub sample_all: SampleAllLayers,
     /// Object Selection › Object Finder: hovering highlights the object a click selects (#4087).
     pub object_finder: bool,
+    /// Object Selection › Hard Edge (#12855): off, the result gets a softer, slightly wider rim.
+    pub object_hard_edge: bool,
     /// Remove tool: the fill goes to a new layer above the target (Photoshop's Create a new layer).
     pub remove_new_layer: bool,
     /// Remove tool: each stroke is filled when released (Photoshop's default). Off, the strokes
@@ -478,6 +480,7 @@ impl Default for ToolOptions {
             anti_alias: true,
             sample_all: SampleAllLayers::default(),
             object_finder: true,
+            object_hard_edge: true,
             remove_new_layer: false,
             remove_after_each_stroke: true,
             feather: 0.0,
