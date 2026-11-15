@@ -612,6 +612,7 @@ fn note_byte_refusal(data: &[u8], used: usize, refusals: &SvgRefusals) {
     let left = budget.saturating_sub(used);
     let unread = refusals.unread_charges.load(Ordering::Relaxed);
     match craft_svg::svgz::text(data, left) {
+        Ok(text) if text.len() > left => refusals.over_budget.store(true, Ordering::Relaxed),
         Ok(_) => {}
         Err(craft_svg::svgz::Error::TooLarge(_)) if unread == 0 => refusals.over_budget.store(true, Ordering::Relaxed),
         Err(craft_svg::svgz::Error::TooLarge(_)) => {

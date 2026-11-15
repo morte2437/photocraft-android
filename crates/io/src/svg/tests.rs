@@ -1130,9 +1130,8 @@ fn a_damaged_embedded_svgz_is_left_out() {
     assert!(parse_bounded_work_with(image_svg(&damaged).as_bytes(), MAX_RASTER_PIXELS, true, fonts).is_err());
 }
 
-/// craft-svg limits an embedded SVG's bytes before decoding, so a Latin-1 one fits and is
-/// charged its longer UTF-8 text: past the byte budget, the drawing is refused, not drawn with
-/// the next image left out.
+/// Latin-1 bytes may fit while their decoded UTF-8 text exceeds the shared budget.
+/// Refuse the drawing even when this is its only child, rather than silently omitting it.
 #[test]
 fn a_latin1_embedded_svg_that_decodes_past_the_budget_is_refused() {
     let budget = usize::try_from(MAX_BOUNDED_SVG_BYTES).unwrap();
@@ -1141,7 +1140,8 @@ fn a_latin1_embedded_svg_that_decodes_past_the_budget_is_refused() {
     latin1.extend_from_slice(b"--></svg>");
     let wide = embedded_image("image/svg+xml", &gzip(&latin1));
     let small = embedded_image("image/svg+xml", b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"/>");
-    assert!(parse_bounded(image_svg(&wide).as_bytes(), MAX_RASTER_PIXELS).is_ok(), "on its own it parses");
+    let error = parse_bounded(image_svg(&wide).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
     let error = parse_bounded(image_svg(&format!("{wide}{small}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
     assert!(error.to_string().contains("byte or nesting budget"), "{error}");
 }
