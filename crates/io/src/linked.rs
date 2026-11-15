@@ -9,7 +9,6 @@
 //! Pascal uuid, Unicode file name, file type, creator, `u64` data length, open-descriptor flag (+
 //! versioned descriptor), then for `liFD` the raw file bytes.
 
-use craft_psd::descriptor::VersionedDescriptor;
 use photocraft_doc::Metadata;
 
 /// An embedded file found in a linked-layer block.
@@ -20,102 +19,35 @@ pub struct LinkedFile {
     pub bytes: Vec<u8>,
 }
 
-struct Rd<'a> {
-    d: &'a [u8],
-    p: usize,
+/// A selected embedded item's decoded header and borrowed bytes.
+fn item_data(item: &[u8]) -> Option<(String, String, &[u8])> {
+    let header = craft_psd::smart::embedded_file_header(item).ok()?;
+    let bytes = header.payload(item)?;
+    Some((header.uuid, header.name, bytes))
 }
 
-impl<'a> Rd<'a> {
-    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let s = self.d.get(self.p..self.p.checked_add(n)?)?;
-        self.p += n;
-        Some(s)
-    }
-    fn u8(&mut self) -> Option<u8> {
-        self.take(1).map(|b| b[0])
-    }
-    fn u32(&mut self) -> Option<u32> {
-        self.take(4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-    }
-    fn u64(&mut self) -> Option<u64> {
-        self.take(8).map(|b| u64::from_be_bytes(b.try_into().unwrap_or([0; 8])))
-    }
-    /// Decode a bounded metadata filename without trusting its declared allocation size.
-    fn unicode(&mut self) -> Option<String> {
-        let n = self.u32()? as usize;
-        if n > 32_768 {
-            return None;
-        } // A file name is metadata, never an unbounded allocation.
-        let raw = self.take(n.checked_mul(2)?)?;
-        let units: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
-        Some(String::from_utf16_lossy(&units).trim_end_matches('\0').to_string())
-    }
-}
-
-/// Parses one item; `None` for malformed data or non-`liFD` items.
-fn parse_item(item: &[u8]) -> Option<LinkedFile> {
-    let (uuid, file_name, start, len) = item_header(item)?;
-    let bytes = item.get(start..start.checked_add(len)?)?.to_vec();
-    Some(LinkedFile { uuid, file_name, bytes })
-}
-
-/// The uuid and file name of an embedded (`liFD`) item, and where its file bytes start and how
-/// many there are; `None` for malformed data or other items.
-fn item_header(item: &[u8]) -> Option<(String, String, usize, usize)> {
-    let mut r = Rd { d: item, p: 0 };
-    let kind = r.take(4)?;
-    let _version = r.u32()?;
-    let n = r.u8()? as usize;
-    let uuid = String::from_utf8_lossy(r.take(n)?).to_string();
-    let file_name = r.unicode()?;
-    r.take(8)?; // file type + creator
-    let len = usize::try_from(r.u64()?).ok()?;
-    if r.u8()? != 0 {
-        let (_, used) = VersionedDescriptor::parse_prefix(item.get(r.p..)?).ok()?;
-        r.p += used;
-    }
-    if kind != b"liFD" {
-        return None;
-    }
-    Some((uuid, file_name, r.p, len))
-}
-
-/// The file name of the embedded file for smart-object `uuid` among the document's preserved PSD
-/// global blocks, without copying its bytes: whether a placed layer's source is embedded.
+/// Embedded filename without requiring the declared payload to be resident.
 pub fn embedded_file_name(meta: &Metadata, uuid: &str) -> Option<String> {
     if uuid.is_empty() {
         return None;
     }
-    meta.psd_global_blocks.iter().filter(|(_, k, _)| matches!(k, b"lnk2" | b"lnk3" | b"lnkD")).find_map(|(_, _, d)| {
-        let mut r = Rd { d, p: 0 };
-        while let Some(len) = r.u64() {
-            let item = r.take(usize::try_from(len).ok()?)?;
-            if let Some((_, name, ..)) = item_header(item).filter(|h| h.0 == uuid) {
-                return Some(name);
-            }
-            r.p = r.p.next_multiple_of(4);
-        }
-        None
-    })
+    meta.psd_global_blocks
+        .iter()
+        .filter(|(_, k, _)| matches!(k, b"lnk2" | b"lnk3" | b"lnkD"))
+        .flat_map(|(_, _, data)| craft_psd::smart::iter_linked_records(data))
+        .filter_map(|record| craft_psd::smart::embedded_file_header(record.item()?).ok())
+        .find(|header| header.uuid == uuid)
+        .map(|header| header.name)
 }
 
-/// Borrow the selected item payload without copying it.
-fn item_data(item: &[u8]) -> Option<(String, String, &[u8])> {
-    let (uuid, name, start, len) = item_header(item)?;
-    Some((uuid, name, item.get(start..start.checked_add(len)?)?))
-}
-
-/// Every embedded (`liFD`) file in one linked-layer block's data.
+/// Every complete embedded file; malformed inner headers do not hide later records.
 pub fn parse_linked_files(data: &[u8]) -> Vec<LinkedFile> {
-    let mut out = Vec::new();
-    let mut r = Rd { d: data, p: 0 };
-    while let Some(len) = r.u64() {
-        let Ok(len) = usize::try_from(len) else { break };
-        let Some(item) = r.take(len) else { break };
-        out.extend(parse_item(item));
-        r.p = r.p.next_multiple_of(4);
-    }
-    out
+    craft_psd::smart::iter_linked_records(data)
+        .filter_map(|record| {
+            let (uuid, file_name, bytes) = item_data(record.item()?)?;
+            Some(LinkedFile { uuid, file_name, bytes: bytes.to_vec() })
+        })
+        .collect()
 }
 
 /// The embedded file for smart-object `uuid` among the document's preserved PSD global blocks.
@@ -130,25 +62,8 @@ pub fn embedded_payload<'a>(meta: &'a Metadata, uuid: &str) -> Option<(String, &
 
 /// Borrow one selected payload from PSD global blocks without copying unrelated files.
 pub fn embedded_payload_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [u8])>, uuid: &str) -> Option<(String, &'a [u8])> {
-    if uuid.is_empty() {
-        return None;
-    }
-    for (key, data) in blocks {
-        if !matches!(key, b"lnk2" | b"lnk3" | b"lnkD") {
-            continue;
-        }
-        let mut r = Rd { d: data, p: 0 };
-        while let Some(len) = r.u64().and_then(|n| usize::try_from(n).ok()) {
-            let Some(item) = r.take(len) else { break };
-            if let Some((id, name, bytes)) = item_data(item)
-                && id == uuid
-            {
-                return Some((name, bytes));
-            }
-            r.p = r.p.checked_add(3)? & !3;
-        }
-    }
-    None
+    let (_, name, bytes) = find_slice_in_blocks(blocks, uuid)?;
+    Some((name, bytes))
 }
 
 /// The embedded file for smart-object `uuid` among PSD global blocks given as (key, data).
@@ -167,19 +82,12 @@ fn find_slice_in_blocks<'a>(blocks: impl IntoIterator<Item = (&'a [u8; 4], &'a [
     if uuid.is_empty() {
         return None;
     }
-    blocks.into_iter().filter(|(k, _)| matches!(*k, b"lnk2" | b"lnk3" | b"lnkD")).find_map(|(_, d)| {
-        let mut r = Rd { d, p: 0 };
-        while let Some(len) = r.u64() {
-            let Ok(len) = usize::try_from(len) else { return None };
-            let item = r.take(len)?;
-            let found = item_header(item).filter(|h| h.0 == uuid).and_then(|(id, name, start, n)| Some((id, name, item.get(start..start.checked_add(n)?)?)));
-            if found.is_some() {
-                return found;
-            }
-            r.p = r.p.next_multiple_of(4);
-        }
-        None
-    })
+    blocks
+        .into_iter()
+        .filter(|(key, _)| matches!(*key, b"lnk2" | b"lnk3" | b"lnkD"))
+        .flat_map(|(_, data)| craft_psd::smart::iter_linked_records(data))
+        .filter_map(|record| item_data(record.item()?))
+        .find(|(id, _, _)| id == uuid)
 }
 
 /// The size of embedded file `uuid` among PSD global blocks given as (key, data), when it is there
@@ -269,193 +177,57 @@ pub(crate) fn source_geometry(name: &str, bytes: &[u8], ctl: &photocraft_raster:
 
 /// The four-character file type Photoshop records for an embedded file, from its contents.
 pub fn file_type(bytes: &[u8]) -> [u8; 4] {
-    match bytes {
-        [b'8', b'B', b'P', b'S', 0, 2, ..] => *b"8BPB",
-        [b'8', b'B', b'P', b'S', ..] => *b"8BPS",
-        [0x89, b'P', b'N', b'G', ..] => *b"PNGf",
-        [0xFF, 0xD8, ..] => *b"JPEG",
-        [b'I', b'I', 42, 0, ..] | [b'M', b'M', 0, 42, ..] => *b"TIFF",
-        [b'G', b'I', b'F', ..] => *b"GIFf",
-        _ => *b"    ",
-    }
+    craft_psd::smart::file_type(bytes)
 }
 
-/// Encodes one `liFD` item (version 7: no open descriptor, empty child document id, no
-/// modification time, unlocked), length-prefixed and padded to 4 bytes.
+/// Encode using the shared PSD record writer.
 pub fn encode_linked_file(f: &LinkedFile) -> Vec<u8> {
-    let mut item = Vec::new();
-    item.extend_from_slice(b"liFD");
-    item.extend_from_slice(&7u32.to_be_bytes());
-    let id = f.uuid.as_bytes().get(..f.uuid.len().min(255)).unwrap_or_default();
-    item.push(id.len() as u8);
-    item.extend_from_slice(id);
-    // NUL-terminated, the terminator counted (as Photoshop writes and reads it).
-    let units: Vec<u16> = f.file_name.encode_utf16().chain(std::iter::once(0)).collect();
-    item.extend_from_slice(&(units.len() as u32).to_be_bytes());
-    for u in units {
-        item.extend_from_slice(&u.to_be_bytes());
-    }
-    item.extend_from_slice(&file_type(&f.bytes));
-    item.extend_from_slice(b"8BIM");
-    item.extend_from_slice(&(f.bytes.len() as u64).to_be_bytes());
-    item.push(0);
-    item.extend_from_slice(&f.bytes);
-    item.extend_from_slice(&0u32.to_be_bytes()); // child document id (version 5)
-    item.extend_from_slice(&0f64.to_be_bytes()); // asset modification time (version 6)
-    item.push(0); // asset locked (version 7)
-    let mut out = (item.len() as u64).to_be_bytes().to_vec();
-    out.extend_from_slice(&item);
-    while !out.len().is_multiple_of(4) {
-        out.push(0);
-    }
-    out
+    craft_psd::smart::encode_embedded_file(&f.uuid, &f.file_name, &f.bytes)
 }
 
-/// The uuid of one linked-layer item (any type), if its header is readable.
-fn item_uuid(item: &[u8]) -> Option<String> {
-    let n = usize::from(*item.get(8)?);
-    Some(String::from_utf8_lossy(item.get(9..9 + n)?).into_owned())
-}
-
-/// The items of a linked-layer block: each item's uuid (when readable) and its bytes including
-/// the length prefix and padding. A malformed tail is returned as one unnamed piece.
-fn split_items(data: &[u8]) -> Vec<(Option<String>, &[u8])> {
-    let mut out = Vec::new();
-    let mut at = 0usize;
-    while let Some(rest) = data.get(at..).filter(|r| !r.is_empty()) {
-        let len = rest.get(..8).map(|b| u64::from_be_bytes(b.try_into().unwrap_or([0; 8])));
-        let end = len.and_then(|l| usize::try_from(l).ok()).and_then(|l| l.checked_add(8)).filter(|&e| e <= rest.len());
-        let (Some(end), Some(item)) = (end, end.and_then(|e| rest.get(8..e))) else {
-            out.push((None, rest));
-            break;
-        };
-        let padded = end.next_multiple_of(4).min(rest.len());
-        out.push((item_uuid(item), rest.get(..padded).unwrap_or(rest)));
-        at += padded;
-    }
-    out
-}
-
-/// Rewrites a linked-layer block: keeps the items `keep` accepts (and anything unreadable), then
-/// appends `add`. `None` when nothing would change.
+/// Preserve unreadable records, retaining or appending the selected embedded files.
 pub fn rebuild_block(data: &[u8], keep: &dyn Fn(&str) -> bool, add: &[LinkedFile]) -> Option<Vec<u8>> {
-    let items = split_items(data);
-    let dropped = items.iter().any(|(u, _)| u.as_deref().is_some_and(|u| !keep(u)));
-    if !dropped && add.is_empty() {
-        return None;
+    let kept = craft_psd::smart::rebuild_linked_block(data, keep, &[]);
+    if add.is_empty() {
+        return kept;
     }
-    let mut out = Vec::with_capacity(data.len());
-    for (u, bytes) in items {
-        if u.as_deref().is_none_or(keep) {
-            out.extend_from_slice(bytes);
-        }
-    }
-    for f in add {
-        out.extend(encode_linked_file(f));
+    // Encode one new payload at a time, preserving the app's peak-memory behavior.
+    let mut out = kept.unwrap_or_else(|| data.to_vec());
+    for file in add {
+        out.extend(encode_linked_file(file));
     }
     Some(out)
 }
 
-/// The uuids of every item in a linked-layer block.
+/// IDs retain the shared reader's lossy metadata decoding.
 pub fn block_uuids(data: &[u8]) -> Vec<String> {
-    split_items(data).into_iter().filter_map(|(u, _)| u).collect()
+    craft_psd::smart::linked_uuids(data)
 }
 
-/// Copies only records accepted by `keep` (UUID and complete raw record including padding).
-/// Unlike [`rebuild_block`], unidentified records and malformed tails are discarded: clipboard
-/// copies must not carry unrelated embedded files. Empty UUIDs cannot identify source bytes.
-/// Selected identity must be provable without lossy UTF-8 decoding; an ambiguous or truncated
-/// selected ID is an error instead. No payload decoding or filesystem access is performed.
-/// `None` means the block already contains only selected complete records and can be shared.
+/// Clipboard selection requires exact identity; ambiguous selected IDs are refused.
 pub fn select_items(data: &[u8], keep: &dyn Fn(&str, &[u8]) -> bool) -> Result<Option<Vec<u8>>, crate::IoError> {
-    let error = || crate::IoError::Unsupported("can't copy a truncated selected PSD linked-layer record".into());
-    let mut selected = None;
-    let mut at = 0usize;
-    while let Some(rest) = data.get(at..).filter(|r| !r.is_empty()) {
-        let Some((item, raw)) = framed_item(rest) else {
-            if let Some(item) = rest.get(8..)
-                && selection_uuid(item, rest, keep)?.is_some_and(|uuid| keep(uuid, rest))
-            {
-                return Err(error());
-            }
-            if selected.is_none() {
-                let mut prefix = Vec::new();
-                append_selected(&mut prefix, data.get(..at).ok_or_else(error)?)?;
-                selected = Some(prefix);
-            }
-            break;
+    craft_psd::smart::select_linked_records(data, keep).map_err(|error| {
+        let message = match error {
+            craft_psd::PsdError::OutOfMemory(_) => "not enough memory to copy PSD linked-layer records",
+            _ if error.to_string().contains("not valid UTF-8") => "can't verify a PSD linked-layer source ID with invalid UTF-8",
+            _ => "can't copy a truncated selected PSD linked-layer record",
         };
-        if selection_uuid(item, raw, keep)?.is_some_and(|uuid| keep(uuid, raw)) {
-            if let Some(out) = &mut selected {
-                append_selected(out, raw)?;
-            }
-        } else if selected.is_none() {
-            let mut prefix = Vec::new();
-            append_selected(&mut prefix, data.get(..at).ok_or_else(error)?)?;
-            selected = Some(prefix);
-        }
-        at = at.checked_add(raw.len()).ok_or_else(error)?;
-    }
-    Ok(selected)
+        crate::IoError::Unsupported(message.into())
+    })
 }
 
-// Legacy PSD readers retain lossy IDs for file fidelity. Selection needs exact identity;
-// a lossy label is used only to refuse an ambiguous transfer, never to retain a record.
-fn selection_uuid<'a>(item: &'a [u8], raw: &[u8], keep: &dyn Fn(&str, &[u8]) -> bool) -> Result<Option<&'a str>, crate::IoError> {
-    let Some(n) = item.get(8).map(|n| usize::from(*n)) else { return Ok(None) };
-    let Some(bytes) = 9usize.checked_add(n).and_then(|end| item.get(9..end)).filter(|bytes| !bytes.is_empty()) else { return Ok(None) };
-    match std::str::from_utf8(bytes) {
-        Ok(uuid) => Ok(Some(uuid)),
-        Err(_) if keep(&String::from_utf8_lossy(bytes), raw) => {
-            Err(crate::IoError::Unsupported("can't verify a PSD linked-layer source ID with invalid UTF-8".into()))
-        }
-        Err(_) => Ok(None),
-    }
-}
-
-/// Whether a complete raw record already occurs in a block, without decoding its file bytes.
 pub fn contains_item(data: &[u8], record: &[u8]) -> bool {
-    let mut remaining = data;
-    while let Some((_, raw)) = framed_item(remaining) {
-        if raw == record {
-            return true;
-        }
-        let Some(next) = remaining.get(raw.len()..) else { return false };
-        remaining = next;
-    }
-    false
+    craft_psd::smart::contains_linked_record(data, record)
 }
 
-fn framed_item(data: &[u8]) -> Option<(&[u8], &[u8])> {
-    let len = usize::try_from(u64::from_be_bytes(data.get(..8)?.try_into().ok()?)).ok()?;
-    let end = len.checked_add(8)?;
-    let item = data.get(8..end)?;
-    let padded = end.checked_add(3).map(|n| n & !3)?.min(data.len());
-    Some((item, data.get(..padded)?))
-}
-
-fn append_selected(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), crate::IoError> {
-    out.try_reserve(bytes.len()).map_err(|_| crate::IoError::Unsupported("not enough memory to copy PSD linked-layer records".into()))?;
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
-/// Copies one linked item under a new UUID, preserving its embedded, external or alias payload.
+/// Preserve the app's historical lossy-ID lookup; raw payload is never rewritten.
 pub(crate) fn copy_item(data: &[u8], uuid: &str, new_uuid: &str) -> Option<Vec<u8>> {
-    let (_, raw) = split_items(data).into_iter().find(|(u, _)| u.as_deref() == Some(uuid))?;
-    let len = usize::try_from(u64::from_be_bytes(raw.get(..8)?.try_into().ok()?)).ok()?;
-    let item = raw.get(8..8usize.checked_add(len)?)?;
-    let old_end = 9usize.checked_add(usize::from(*item.get(8)?))?;
-    let new_len = u8::try_from(new_uuid.len()).ok()?;
-    let mut copy = item.get(..8)?.to_vec();
-    copy.push(new_len);
-    copy.extend_from_slice(new_uuid.as_bytes());
-    copy.extend_from_slice(item.get(old_end..)?);
-    let mut out = (copy.len() as u64).to_be_bytes().to_vec();
-    out.extend(copy);
-    out.resize(out.len().next_multiple_of(4), 0);
-    Some(out)
+    craft_psd::smart::iter_linked_records(data).find(|record| record.uuid.is_some_and(|id| String::from_utf8_lossy(id) == uuid))?.copy_with_uuid(new_uuid)
 }
+
+#[cfg(test)]
+#[path = "linked_legacy_tests.rs"]
+mod legacy;
 
 #[cfg(test)]
 mod tests {
@@ -656,5 +428,44 @@ mod bounded_payload_tests {
         assert!((original.as_ptr_range()).contains(&bytes.as_ptr()));
         assert!(embedded_payload(&meta, "").is_none());
         assert!(embedded_payload(&meta, "/dev/zero").is_none());
+    }
+}
+
+#[cfg(test)]
+mod shared_parity {
+    use super::*;
+    fn check(data: &[u8]) {
+        let old: Vec<_> = legacy::parse_linked_files(data).into_iter().map(|f| (f.uuid, f.file_name, f.bytes)).collect();
+        let new: Vec<_> = parse_linked_files(data).into_iter().map(|f| (f.uuid, f.file_name, f.bytes)).collect();
+        assert_eq!(new, old);
+        assert_eq!(block_uuids(data), legacy::block_uuids(data));
+        for id in ["wanted", "other", "\u{fffd}", ""] {
+            let meta = Metadata { psd_global_blocks: vec![(*b"8BIM", *b"lnk2", std::sync::Arc::new(data.to_vec()))], ..Metadata::default() };
+            assert_eq!(embedded_file_name(&meta, id), legacy::embedded_file_name(&meta, id));
+            assert_eq!(embedded_payload(&meta, id), legacy::embedded_payload(&meta, id));
+            assert_eq!(copy_item(data, id, "new"), legacy::copy_item(data, id, "new"));
+            assert_eq!(rebuild_block(data, &|x| x == id, &[]), legacy::rebuild_block(data, &|x| x == id, &[]));
+            assert_eq!(select_items(data, &|x, _| x == id).map_err(|e| e.to_string()), legacy::select_items(data, &|x, _| x == id).map_err(|e| e.to_string()));
+        }
+    }
+    #[test]
+    fn shared_linked_views_match_original_on_truncation_and_mutation() {
+        let file = LinkedFile { uuid: "wanted".into(), file_name: "source.psd".into(), bytes: b"8BPS payload".to_vec() };
+        let encoded = encode_linked_file(&file);
+        assert_eq!(
+            encoded,
+            legacy::encode_linked_file(&legacy::LinkedFile { uuid: file.uuid.clone(), file_name: file.file_name.clone(), bytes: file.bytes.clone() })
+        );
+        let data = [vec![0; 8], encoded.clone(), encoded, vec![1, 2, 3]].concat();
+        for n in 0..=data.len() {
+            check(&data[..n]);
+        }
+        for at in 0..data.len() {
+            for byte in [0, 0xff, 0x80] {
+                let mut changed = data.clone();
+                changed[at] = byte;
+                check(&changed);
+            }
+        }
     }
 }
