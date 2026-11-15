@@ -90,6 +90,65 @@ pub(crate) fn pref_resample(i: photocraft_engine::prefs::Interpolation) -> &'sta
         Interpolation::PreserveDetails => "preserveDetails",
     }
 }
+
+/// Whether the Resample list offers `method`. Indexed Color: every method but Automatic and
+/// Nearest Neighbor blends colours the colour table doesn't have, which the command doesn't use
+/// and a save quantises away (#6019).
+fn resample_offered(f: &Map<String, Value>, method: &str) -> bool {
+    let indexed = f.get("__indexed").and_then(Value::as_bool) == Some(true);
+    !indexed || method == "automatic" || method == "nearest"
+}
+
+/// Alt+1 to Alt+8 (Option on macOS) and the Resample method each picks, as in the reference
+/// application. Alt+3 is Preserve Details 2.0, which PhotoCraft doesn't have yet (#2942), and
+/// Lanczos has no key.
+const RESAMPLE_KEYS: [(egui::Key, Option<&str>); 8] = [
+    (egui::Key::Num1, Some("automatic")),
+    (egui::Key::Num2, Some("preserveDetails")),
+    (egui::Key::Num3, None),
+    (egui::Key::Num4, Some("bicubicSmoother")),
+    (egui::Key::Num5, Some("bicubicSharper")),
+    (egui::Key::Num6, Some("bicubic")),
+    (egui::Key::Num7, Some("nearest")),
+    (egui::Key::Num8, Some("bilinear")),
+];
+
+/// Takes Alt+1 to Alt+8 presses out of this frame's input and picks the Resample method of the
+/// last one that Resample (on) and the list offer; the others do nothing. It runs before the
+/// fields are drawn, so the press never reaches a focused field, and neither does the text the
+/// key types (the digit, or Option's character on macOS), which winit sends right after its press.
+/// Other typing in the same frame is kept. Ctrl+Alt is left alone: on Windows it's AltGr, which
+/// types characters on many layouts.
+fn resample_shortcut(ui: &egui::Ui, f: &mut Map<String, Value>) {
+    let resampling = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic") != "none";
+    let picked = ui.ctx().input_mut(|i| {
+        let mut picked = None;
+        let mut swallow_text = false;
+        i.events.retain(|e| {
+            if let egui::Event::Text(_) = e {
+                return !std::mem::take(&mut swallow_text);
+            }
+            swallow_text = false;
+            let egui::Event::Key { key, pressed, modifiers, .. } = e else { return true };
+            if !modifiers.alt || modifiers.ctrl || modifiers.command || modifiers.mac_cmd {
+                return true;
+            }
+            let Some(&(_, method)) = RESAMPLE_KEYS.iter().find(|(k, _)| k == key) else { return true };
+            if *pressed {
+                swallow_text = true;
+                if let Some(method) = method.filter(|m| resampling && resample_offered(f, m)) {
+                    picked = Some(method);
+                }
+            }
+            false
+        });
+        picked
+    });
+    if let Some(method) = picked {
+        f.insert("resample".into(), json!(method));
+    }
+}
+
 const ANCHORS: [&str; 9] = ["topLeft", "top", "topRight", "left", "center", "right", "bottomLeft", "bottom", "bottomRight"];
 
 pub fn is_sizing(command: &str) -> bool {
@@ -353,6 +412,7 @@ fn set_unit(f: &mut Map<String, Value>, key: &str, unit: &str) {
 
 fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
+    resample_shortcut(ui, f);
     let (ow, oh) = (num(f, "__origW"), num(f, "__origH"));
     let resample = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic").to_string();
     let resampling = resample != "none";
@@ -500,10 +560,7 @@ fn image_size(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 ("bilinear".to_string(), tl!("Bilinear")),
                 ("lanczos".to_string(), tl!("Lanczos (sharp)")),
             ];
-            // Indexed Color: every other method blends colours the colour table doesn't have,
-            // which the command doesn't use and a save quantises away (#6019).
-            let indexed = f.get("__indexed").and_then(Value::as_bool) == Some(true);
-            let opts: Vec<_> = opts.into_iter().filter(|(k, _)| !indexed || k == "automatic" || k == "nearest").collect();
+            let opts: Vec<_> = opts.into_iter().filter(|(k, _)| resample_offered(f, k)).collect();
             if crate::widgets::dropdown(ui, "is-resample", tl!("Resample"), &mut cur, &opts, 200.0) {
                 f.insert("resample".into(), json!(cur));
             }
@@ -633,3 +690,7 @@ fn anchor_grid(ui: &mut egui::Ui, current: &str, dw: f64, dh: f64) -> Option<&'s
 mod image_size_readout_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "image_size_resample_shortcuts_tests.rs"]
+mod image_size_resample_shortcuts_tests;
