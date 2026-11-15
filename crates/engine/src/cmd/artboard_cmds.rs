@@ -841,7 +841,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!(
             "layer.new.artboardFromGroup",
-            "Artboard from Group…",
+            "Artboard from Group",
             &["Layer", "New"],
             r##"{"layer":id? (a top-level group; default active),"background":…?,"color":[r,g,b]|"#rrggbb"?,"preset":str? (tag only; does not resize),"guideIDs":[int]? (ignored recording metadata),"changeBackground":int? (1 or absent applies background/color; other integers give white; legacy true = 1)} → {layer, rect}"##,
             has_plain_group,
