@@ -48,6 +48,9 @@ pub enum Drag {
     RulerNew(Option<Ruler>),
     /// Moving a ruler handle: 0 start, 1 end, 2 protractor end.
     RulerHandle(u8),
+    /// Moving the whole ruler, grabbed on its line or a protractor's vertex (#11981): where the
+    /// press was and the ruler then; it follows the pointer by the drag delta.
+    RulerMove([f64; 2], Ruler),
     /// Moving count marker (group, index) from where it was.
     Count(usize, usize, [f64; 2]),
     /// Moving note `index`: grab offset from its position.
@@ -238,20 +241,40 @@ fn tolerance(app: &PhotocraftApp) -> f64 {
     7.0 / f64::from(app.point_zoom().max(0.01))
 }
 
+/// The Ruler's grab radius: ±8 screen px, the reference's hit zone around a ruler end and its
+/// line (#11981). The Count, Note and Color Sampler tools keep [`tolerance`].
+fn ruler_tolerance(app: &PhotocraftApp) -> f64 {
+    8.0 / f64::from(app.point_zoom().max(0.01))
+}
+
+/// Is `p` within the ±`tol` square around `q`? A ruler end is hit in a 17 × 17 px square at 100 %
+/// zoom (#11981).
+fn within(p: [f64; 2], q: [f64; 2], tol: f64) -> bool {
+    (p[0] - q[0]).abs() <= tol && (p[1] - q[1]).abs() <= tol
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    dist(p, [a[0] + t * dx, a[1] + t * dy])
+}
+
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
 /// Is `p` within the grab radius `tol` of one of `r`'s end points?
 fn near_end(r: Ruler, p: [f64; 2], tol: f64) -> bool {
-    dist(p, r.start) <= tol || dist(p, r.end) <= tol
+    within(p, r.start, tol) || within(p, r.end, tol)
 }
 
 /// Is the pointer at document point `p` over the ruler's end points? The very hit test a press
-/// makes its decision with ([`near_end`], `dist` with [`tolerance`]), so the Ruler tool's ⌥ pointer
+/// makes its decision with ([`near_end`] with [`ruler_tolerance`]), so the Ruler tool's ⌥ pointer
 /// shows exactly where an ⌥-drag starts the protractor arm (#12037).
 pub(crate) fn ruler_end_at(app: &PhotocraftApp, p: [f64; 2]) -> bool {
-    let tol = tolerance(app);
+    let tol = ruler_tolerance(app);
     app.session.active().is_some_and(|d| d.doc.measurement.ruler.is_some_and(|r| near_end(r, p, tol)))
 }
 
@@ -288,6 +311,10 @@ mod analysis_ruler_click_tests;
 mod analysis_ruler_visibility_tests;
 
 #[cfg(test)]
+#[path = "analysis_ruler_move_tests.rs"]
+mod analysis_ruler_move_tests;
+
+#[cfg(test)]
 #[path = "note_show_on_new_tests.rs"]
 mod note_show_on_new_tests;
 
@@ -321,10 +348,13 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
     let tol = tolerance(app);
     match (tool, ev) {
         (Tool::Ruler, ToolEvent::Down { x, y, .. }) => {
+            let tol = ruler_tolerance(app);
             let p = [x, y];
             let cur = doc.measurement.ruler;
-            let near = |q: [f64; 2]| dist(p, q) <= tol;
+            let near = |q: [f64; 2]| within(p, q, tol);
             match cur {
+                // A protractor's vertex moves the whole protractor, with or without ⌥ (#11981).
+                Some(r) if r.protractor.is_some() && near(r.start) => app.ui.analysis.drag = Some(Drag::RulerMove(p, r)),
                 // ⌥-drag from an end point starts the protractor arm at that vertex.
                 Some(mut r) if mods.alt && near_end(r, p, tol) => {
                     if near(r.end) && !near(r.start) {
@@ -337,6 +367,9 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
                 Some(r) if r.protractor.is_some_and(near) => app.ui.analysis.drag = Some(Drag::RulerHandle(2)),
                 Some(r) if near(r.end) => app.ui.analysis.drag = Some(Drag::RulerHandle(1)),
                 Some(r) if near(r.start) => app.ui.analysis.drag = Some(Drag::RulerHandle(0)),
+                // On the line, away from the ends: the whole ruler moves (#11981). A protractor's
+                // arm lines are not measured and keep starting a new ruler.
+                Some(r) if r.protractor.is_none() && segment_dist(p, r.start, r.end) <= tol => app.ui.analysis.drag = Some(Drag::RulerMove(p, r)),
                 _ => {
                     set_ruler(app, Ruler { start: p, end: p, protractor: None });
                     app.ui.analysis.drag = Some(Drag::RulerNew(cur));
@@ -346,6 +379,11 @@ pub fn pointer(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) ->
         (Tool::Ruler, ToolEvent::Move { x, y, .. }) => {
             let (Some(drag), Some(mut r)) = (app.ui.analysis.drag, doc.measurement.ruler) else { return true };
             match drag {
+                Drag::RulerMove(from, at_press) => {
+                    let (dx, dy) = (x - from[0], y - from[1]);
+                    let shift = |q: [f64; 2]| [q[0] + dx, q[1] + dy];
+                    r = Ruler { start: shift(at_press.start), end: shift(at_press.end), protractor: at_press.protractor.map(shift) };
+                }
                 Drag::RulerNew(_) | Drag::RulerHandle(1) => r.end = constrain(r.start, [x, y], mods.shift),
                 Drag::RulerHandle(0) => r.start = constrain(r.end, [x, y], mods.shift),
                 Drag::RulerHandle(_) => r.protractor = Some(constrain(r.start, [x, y], mods.shift)),
