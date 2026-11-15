@@ -164,3 +164,45 @@ fn ok_applies_the_picked_method() {
     let reds: Vec<u8> = photocraft_compose::flatten(doc).px.iter().take(8).map(|p| (p[0] * 255.0).round() as u8).collect();
     assert_eq!(reds, [0, 0, 0, 0, 255, 255, 255, 255], "Nearest Neighbor keeps the edge hard");
 }
+
+/// Queues `key` with `modifiers` as a real keyboard sends it (press, its text, release) into the
+/// next frame's input, without running it.
+fn queue(h: &mut Harness<'static, PhotocraftApp>, modifiers: Modifiers, key: Key, text: &str) {
+    let events = &mut h.input_mut().events;
+    events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+    events.push(egui::Event::Text(text.into()));
+    events.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+}
+
+/// Several shortcuts in one frame: one that does nothing (Alt+3, or a method Indexed Color
+/// doesn't offer) doesn't undo an earlier one that picked a method.
+#[test]
+fn a_key_that_does_nothing_keeps_the_earlier_pick_in_the_same_frame() {
+    let mut h = image_size_dialog(false);
+    set_resample(&mut h, "bicubic");
+    queue(&mut h, Modifiers::ALT, Key::Num7, "7");
+    queue(&mut h, Modifiers::ALT, Key::Num3, "3");
+    h.run_steps(2);
+    assert_eq!(resample(&h), json!("nearest"), "Alt+3 after Alt+7 keeps Nearest Neighbor");
+    let mut h = image_size_dialog(true);
+    set_resample(&mut h, "automatic");
+    queue(&mut h, Modifiers::ALT, Key::Num7, "7");
+    queue(&mut h, Modifiers::ALT, Key::Num5, "5");
+    h.run_steps(2);
+    assert_eq!(resample(&h), json!("nearest"), "Indexed Color: Alt+5 after Alt+7 keeps Nearest Neighbor");
+    assert_eq!(num(&fields(&h), "width"), 200.0, "neither digit was typed");
+}
+
+/// Ordinary typing that arrives in the same frame as a shortcut still reaches the focused field;
+/// only the shortcut's own digit is dropped.
+#[test]
+fn typing_in_the_same_frame_as_a_shortcut_is_kept() {
+    let mut h = image_size_dialog(false);
+    assert!(h.query_all_by_role(Role::SpinButton).next().expect("the Width field").is_focused(), "Width has focus");
+    h.input_mut().events.push(egui::Event::Text("5".into()));
+    queue(&mut h, Modifiers::ALT, Key::Num7, "7");
+    h.input_mut().events.push(egui::Event::Text("0".into()));
+    h.run_steps(2);
+    assert_eq!(resample(&h), json!("nearest"));
+    assert_eq!(num(&fields(&h), "width"), 50.0, "the typed 5 and 0 replaced the selected 200; the shortcut's 7 didn't");
+}

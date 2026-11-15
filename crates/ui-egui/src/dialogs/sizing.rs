@@ -113,32 +113,38 @@ const RESAMPLE_KEYS: [(egui::Key, Option<&str>); 8] = [
     (egui::Key::Num8, Some("bilinear")),
 ];
 
-/// Takes an Alt+1 to Alt+8 press out of this frame's input and picks its Resample method, when
-/// Resample is on and the list offers it. It runs before the fields are drawn, so the press (and
-/// the digit, or Option's character on macOS, the key also types) never reaches a focused field.
-/// Ctrl+Alt is left alone: on Windows it's AltGr, which types characters on many layouts.
+/// Takes Alt+1 to Alt+8 presses out of this frame's input and picks the Resample method of the
+/// last one that Resample (on) and the list offer; the others do nothing. It runs before the
+/// fields are drawn, so the press never reaches a focused field, and neither does the text the
+/// key types (the digit, or Option's character on macOS), which winit sends right after its press.
+/// Other typing in the same frame is kept. Ctrl+Alt is left alone: on Windows it's AltGr, which
+/// types characters on many layouts.
 fn resample_shortcut(ui: &egui::Ui, f: &mut Map<String, Value>) {
+    let resampling = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic") != "none";
     let picked = ui.ctx().input_mut(|i| {
         let mut picked = None;
+        let mut swallow_text = false;
         i.events.retain(|e| {
+            if let egui::Event::Text(_) = e {
+                return !std::mem::take(&mut swallow_text);
+            }
+            swallow_text = false;
             let egui::Event::Key { key, pressed, modifiers, .. } = e else { return true };
             if !modifiers.alt || modifiers.ctrl || modifiers.command || modifiers.mac_cmd {
                 return true;
             }
             let Some(&(_, method)) = RESAMPLE_KEYS.iter().find(|(k, _)| k == key) else { return true };
             if *pressed {
-                picked = Some(method);
+                swallow_text = true;
+                if let Some(method) = method.filter(|m| resampling && resample_offered(f, m)) {
+                    picked = Some(method);
+                }
             }
             false
         });
-        if picked.is_some() {
-            i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
-        }
         picked
     });
-    let Some(Some(method)) = picked else { return };
-    let resampling = f.get("resample").and_then(Value::as_str).unwrap_or("bicubic") != "none";
-    if resampling && resample_offered(f, method) {
+    if let Some(method) = picked {
         f.insert("resample".into(), json!(method));
     }
 }
