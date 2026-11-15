@@ -113,12 +113,14 @@ fn reference_frame(h: &mut Harness) {
 #[test]
 #[should_panic(expected = "called `Result::unwrap()` on an `Err` value")]
 fn fixture_failures_are_not_skipped_as_a_missing_adapter() {
+    let _gpu = photocraft_testkit::gpu_lock();
     // An invalid fixture document must fail on any machine, with or without a graphics adapter.
     let _ = harness([0, 0], "white");
 }
 
 #[test]
 fn omitting_an_occluded_checker_preserves_cpu_canvas_pixels() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut h) = harness([320, 240], "white") else {
         eprintln!("skipping: no offscreen graphics adapter");
         return;
@@ -159,6 +161,7 @@ fn omitting_an_occluded_checker_preserves_cpu_canvas_pixels() {
 
 #[test]
 fn pattern_preview_keeps_the_legacy_checker_for_every_copy() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let Some(mut h) = harness([320, 240], "white") else {
         eprintln!("skipping: no offscreen graphics adapter");
         return;
@@ -198,6 +201,7 @@ fn pattern_preview_keeps_the_legacy_checker_for_every_copy() {
 #[test]
 #[ignore = "manual release benchmark: 24 MP CPU canvas on the offscreen software adapter"]
 fn cpu_canvas_background_benchmark() {
+    let _gpu = photocraft_testkit::gpu_lock();
     use std::time::Instant;
     let mut results = Vec::new();
     let output = std::env::var_os("PHOTOCRAFT_CPU_BENCH_OUTPUT").map(std::path::PathBuf::from);
