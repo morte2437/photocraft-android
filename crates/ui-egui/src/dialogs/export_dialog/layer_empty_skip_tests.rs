@@ -119,3 +119,18 @@ fn other_failures_are_still_errors() {
     assert!(!err.contains("No valid asset"), "{err}");
     assert_eq!(exportable_layers(&doc, &[l.gone, l.red]).unwrap().len(), 1);
 }
+
+/// CodeRabbit on #15034: opening the dialog skips only empty layers. An unknown id is reported, before or
+/// after a valid layer, and the empty-layer message is kept for a selection that is all empty.
+#[test]
+fn opening_with_an_unknown_layer_reports_it_instead_of_skipping_it() {
+    let (mut app, l, _) = app("/out/x.png");
+    let unknown = LayerId(987_654);
+    for selection in [vec![unknown, l.empty], vec![l.empty, unknown, l.red], vec![l.red, unknown]] {
+        let err = open_layers(&mut app, &selection).unwrap_err();
+        assert!(!err.contains("No valid asset"), "{selection:?}: the unknown id is the error, not the empty message: {err}");
+        assert!(app.ui.dialogs.is_empty(), "no dialog opened");
+    }
+    let e = open_layers(&mut app, &[l.empty, l.adjustment]).unwrap_err();
+    assert!(e.contains("No valid asset to export"), "{e}");
+}

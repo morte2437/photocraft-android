@@ -183,8 +183,17 @@ pub fn open_layers(app: &mut PhotocraftApp, layers: &[photocraft_doc::LayerId]) 
     };
     // The dialog opens on the first layer with pixels: an empty, adjustment or off-canvas layer
     // at the bottom of the selection no longer stops it (#14806).
+    // Only an empty layer is skipped: any other failure (an unknown id, say) is the answer, whether or
+    // not a valid layer follows it.
     let st = app.session.active().ok_or("no document")?;
-    let first = layers.iter().copied().find(|id| photocraft_engine::layer_menu_cmds::layer_document(&st.doc, *id).is_ok());
+    let mut first = None;
+    for id in layers {
+        match photocraft_engine::layer_menu_cmds::layer_document(&st.doc, *id) {
+            Ok(_) => first = first.or(Some(*id)),
+            Err(e) if photocraft_engine::layer_menu_cmds::is_empty_layer(&e) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
     let id = open_layer(app, first.ok_or_else(|| tl!(NO_VALID_ASSET).to_string())?)?;
     if let Some(d) = app.ui.dialogs.iter_mut().find(|d| d.id == id) {
         d.fields.insert("__layers".into(), json!(layers.iter().map(|l| l.0).collect::<Vec<_>>()));
