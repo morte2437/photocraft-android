@@ -95,7 +95,8 @@ pub fn export_layers_report_with(s: &Session, p: &Value, mut write: impl FnMut(&
             }
         }
 
-        let name = format!("{}_{:04}_{}.{format}", sanitize(&prefix), index, sanitize(&l.name));
+        // The prefix is optional; only the layer name needs the empty-name fallback.
+        let name = format!("{}_{:04}_{}.{format}", if prefix.is_empty() { String::new() } else { sanitize(&prefix) }, index, sanitize(&l.name));
         let (bytes, _warnings) = encode(&one, &name, save)?;
         write(&name, &bytes)?;
         report.files.push(name);
@@ -262,3 +263,7 @@ pub(super) fn push_unique(v: &mut Vec<f64>, x: f64) {
         v.push(x);
     }
 }
+
+#[cfg(test)]
+#[path = "layers_to_files_prefix_tests.rs"]
+mod layers_to_files_prefix_tests;
