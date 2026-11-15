@@ -43,20 +43,22 @@ fn variable_sizes_and_32_bit_chunk_offsets_work() {
 #[test]
 fn broken_tables_and_raw_codec_tracks_are_not_used() {
     let good = cr3_preview(&jpeg(), 1);
-    for marker in [b"stsz", b"co64", b"stsc", b"JPEG"] {
+    // (A broken stsc is tolerated: craft-raw falls back to one sample per chunk, which finds the same JPEG.)
+    for marker in [b"stsz", b"co64", b"JPEG"] {
         let mut b = good.clone();
         let at = position(&b, marker);
         b[at..at + 4].copy_from_slice(b"xxxx");
-        assert!(embedded_preview(&b).is_none());
+        assert!(embedded_jpeg_preview(&b).is_none());
     }
     let mut b = good.clone();
     let at = position(&b, b"co64") + 12;
     b[at..at + 8].copy_from_slice(&u64::MAX.to_be_bytes());
-    assert!(embedded_preview(&b).is_none());
+    assert!(embedded_jpeg_preview(&b).is_none());
+    // Refuse an impossible sample count rather than trusting just its first entry.
     let mut b = good;
     let at = position(&b, b"stsz") + 12;
     b[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
-    assert!(embedded_preview(&b).is_none());
+    assert!(embedded_jpeg_preview(&b).is_none());
 }
 
 #[test]
