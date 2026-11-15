@@ -1175,6 +1175,9 @@ fn a_latin1_embedded_svg_that_decodes_past_the_budget_is_refused() {
     let damaged = embedded_image("image/svg+xml", &compressed[..compressed.len() / 2]);
     let error = parse_bounded(image_svg(&format!("{damaged}{wide}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
     assert!(error.to_string().contains("byte or nesting budget"), "{error}");
+    let plain = embedded_image("image/svg+xml", &latin1);
+    let error = parse_bounded(image_svg(&format!("{damaged}{plain}")).as_bytes(), MAX_RASTER_PIXELS).unwrap_err();
+    assert!(error.to_string().contains("byte or nesting budget"), "{error}");
 }
 
 /// After a damaged image spent the budget, images refused for bytes are unpacked again to tell

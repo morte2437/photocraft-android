@@ -628,17 +628,20 @@ fn note_byte_refusal(data: &[u8], used: usize, refusals: &SvgRefusals) {
         Err(craft_svg::svgz::Error::TooLarge(_)) if unread == 0 => refusals.over_budget.store(true, Ordering::Relaxed),
         Err(craft_svg::svgz::Error::TooLarge(_)) => {
             let content_left = budget.saturating_sub(used.saturating_sub(unread));
-            // Plain data is only measured; compressed data is unpacked again.
+            // Rechecks may inflate or allocate text for a legacy encoding.
             let compressed = data.starts_with(&[0x1f, 0x8b]);
-            let limit = if compressed { content_left.min(budget.saturating_sub(refusals.rechecked.load(Ordering::Relaxed))) } else { content_left };
-            // Every unpack is charged at least what it unpacked, so together they stay within one
-            // budget; plain data is only measured.
+            let limit = content_left.min(budget.saturating_sub(refusals.rechecked.load(Ordering::Relaxed)));
+            // Charge inflation and allocated decoded text against the same recheck budget.
             let (unpacked, too_large) = match craft_svg::svgz::inflate(data, limit) {
                 Ok(xml) => {
                     // Encoding expansion is part of the text budget too: a Latin-1 child
                     // after corrupt data must not evade the normal decoded-text limit.
-                    let decoded = craft_svg::svgz::decode(&xml).map_or(xml.len(), |text| text.len());
-                    let work = if compressed { xml.len().max(decoded).min(limit) } else { 0 };
+                    let (decoded, converted) = match craft_svg::svgz::decode(&xml) {
+                        Ok(std::borrow::Cow::Owned(text)) => (text.len(), text.len()),
+                        Ok(text) => (text.len(), 0),
+                        Err(_) => (xml.len(), xml.len()),
+                    };
+                    let work = (if compressed { xml.len().max(converted) } else { converted }).min(limit);
                     (work, decoded > limit)
                 }
                 Err(craft_svg::svgz::Error::Nested(len)) => (len, false),
