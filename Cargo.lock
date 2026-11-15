@@ -1540,7 +1540,7 @@ dependencies = [
 [[package]]
 name = "craft-pcraft-format"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=dd866b846c558eb2bd95edd52cf18e4a6b0e0c4d#dd866b846c558eb2bd95edd52cf18e4a6b0e0c4d"
+source = "git+https://github.com/storytold/craft-libs?rev=3e970577b9bb446967c2003ec8ecaf4f28b0768c#3e970577b9bb446967c2003ec8ecaf4f28b0768c"
 dependencies = [
  "flate2",
  "serde",
@@ -5589,7 +5589,7 @@ dependencies = [
  "craft-cms",
  "craft-file-formats",
  "craft-image-codecs",
- "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=dd866b846c558eb2bd95edd52cf18e4a6b0e0c4d)",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=3e970577b9bb446967c2003ec8ecaf4f28b0768c)",
  "craft-print",
  "craft-psd",
  "craft-xml",
