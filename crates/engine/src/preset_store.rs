@@ -85,17 +85,15 @@ pub const MAX_PATTERNS_BYTES: u64 = 256 << 20;
 /// The whole store never grows beyond this; further groups are skipped with a warning.
 pub const MAX_STORE_BYTES: u64 = 2 << 30;
 /// Largest tip side accepted from disk.
-pub const MAX_TIP_SIDE: u32 = 16384;
+pub const MAX_TIP_SIDE: u32 = craft_pcraft_tip::tip::MAX_SIDE;
 /// Largest tip sample count accepted from disk (64 Mi samples).
-pub const MAX_TIP_SAMPLES: u64 = 1 << 26;
+pub const MAX_TIP_SAMPLES: u64 = craft_pcraft_tip::tip::MAX_SAMPLES;
 /// Most group files loaded.
 pub const MAX_GROUPS: usize = 4096;
 /// Most presets loaded from one group file.
 pub const MAX_PRESETS_PER_GROUP: usize = 50_000;
 
 const GROUP_FORMAT: &str = "photocraft-brush-group";
-const TIP_MAGIC: &[u8; 6] = b"PCTIP1";
-const TIP_HEADER: usize = 6 + 1 + 4 + 4;
 
 /// Where the store's files live. File names are relative (`name.pcbrushes`, `tips/x.pctip`).
 pub trait PresetBackend: Send {
@@ -258,34 +256,9 @@ fn tip_hash(t: &GrayTile) -> String {
     h.finalize().to_hex()[..32].to_string()
 }
 
-/// `PCTIP1`, bits (8|16), width, height (u32 LE), then the zlib-deflated samples.
+/// Encode the shared PCTIP1 envelope, preserving lossless 8/16-bit samples.
 pub fn encode_tip(t: &GrayTile) -> Vec<u8> {
-    use std::io::Write;
-    let eight = t.data.iter().all(|v| v % 257 == 0);
-    let mut out = Vec::with_capacity(TIP_HEADER + t.data.len() / 4);
-    out.extend_from_slice(TIP_MAGIC);
-    out.push(if eight { 8 } else { 16 });
-    out.extend_from_slice(&t.width.to_le_bytes());
-    out.extend_from_slice(&t.height.to_le_bytes());
-    // Level 3: zlib-rs level 1 writes static Huffman blocks only, 13-30% bigger than miniz's level 1.
-    let mut z = flate2::write::ZlibEncoder::new(out, flate2::Compression::new(3));
-    let mut buf = Vec::with_capacity(8192);
-    let mut ok = true;
-    for chunk in t.data.chunks(4096) {
-        buf.clear();
-        if eight {
-            buf.extend(chunk.iter().map(|v| (v / 257) as u8));
-        } else {
-            for v in chunk {
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        ok &= z.write_all(&buf).is_ok();
-    }
-    match z.finish() {
-        Ok(v) if ok => v,
-        _ => Vec::new(),
-    }
+    craft_pcraft_tip::tip::encode(t.width, t.height, &t.data)
 }
 
 /// Inverse of [`encode_tip`]; any malformed, truncated or oversized input is an error.
@@ -295,34 +268,8 @@ pub fn decode_tip(bytes: &[u8]) -> Result<GrayTile, String> {
 
 /// [`decode_tip`] refusing (before inflating anything) a bitmap with a side over `max_side`.
 fn decode_tip_max(bytes: &[u8], max_side: u32) -> Result<GrayTile, String> {
-    let head = bytes.get(..TIP_HEADER).ok_or("truncated tip header")?;
-    if &head[..6] != TIP_MAGIC {
-        return Err("not a PhotoCraft tip".into());
-    }
-    let bits = head[6];
-    let u32_at = |i: usize| u32::from_le_bytes([head[i], head[i + 1], head[i + 2], head[i + 3]]);
-    let (w, h) = (u32_at(7), u32_at(11));
-    if w == 0 || h == 0 || w > MAX_TIP_SIDE.min(max_side) || h > MAX_TIP_SIDE.min(max_side) {
-        return Err(format!("bad tip size {w}×{h}"));
-    }
-    let n = u64::from(w) * u64::from(h);
-    if n > MAX_TIP_SAMPLES {
-        return Err(format!("tip too large ({w}×{h})"));
-    }
-    let bytes_per = match bits {
-        8 => 1u64,
-        16 => 2,
-        b => return Err(format!("unsupported tip depth {b}")),
-    };
-    let want = n * bytes_per;
-    let mut raw = Vec::with_capacity(want as usize);
-    flate2::read::ZlibDecoder::new(&bytes[TIP_HEADER..]).take(want + 1).read_to_end(&mut raw).map_err(|e| format!("tip data: {e}"))?;
-    if raw.len() as u64 != want {
-        return Err(format!("tip data has {} bytes, expected {want}", raw.len()));
-    }
-    let data: Vec<u16> =
-        if bits == 8 { raw.iter().map(|&v| u16::from(v) * 257).collect() } else { raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect() };
-    Ok(GrayTile { width: w, height: h, data: data.into() })
+    let tip = craft_pcraft_tip::tip::decode_with_max_side(bytes, max_side)?;
+    Ok(GrayTile { width: tip.width, height: tip.height, data: tip.data.into() })
 }
 
 // ------------------------------------------------------------------ group files

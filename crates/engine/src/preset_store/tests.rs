@@ -101,7 +101,7 @@ fn tip_decoder_rejects_garbage() {
             })
             .collect();
         let _ = decode_tip(&v);
-        let mut w = TIP_MAGIC.to_vec();
+        let mut w = b"PCTIP1".to_vec();
         w.extend_from_slice(&v);
         let _ = decode_tip(&w);
     }
@@ -1153,4 +1153,15 @@ fn a_symlinked_preset_entry_is_refused_not_written_through() {
     assert_eq!(std::fs::read(&outside).unwrap(), b"victim");
     be.write("fresh.json", b"{}").unwrap();
     assert_eq!(be.read("fresh.json", 1024).unwrap(), b"{}");
+}
+
+#[test]
+fn tip_adapter_matches_shared_codec_and_keeps_preview_limit() {
+    for t in [tip8(37, 21, 3), tip16(40, 33, 9)] {
+        let shared = craft_pcraft_tip::tip::encode(t.width, t.height, &t.data);
+        assert_eq!(encode_tip(&t), shared);
+        assert_eq!(decode_tip(&shared).unwrap(), t);
+        assert!(decode_tip_max(&shared, t.width - 1).is_err());
+        assert_eq!(decode_tip_max(&shared, t.width).unwrap(), t);
+    }
 }

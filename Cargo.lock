@@ -1531,9 +1531,20 @@ source = "git+https://github.com/storytold/craft-libs?rev=e2dc681a3#e2dc681a3ad8
 dependencies = [
  "blake3",
  "craft-atomic",
- "craft-pcraft-format",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=e2dc681a3)",
  "craft-zip",
  "ruzstd",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-pcraft-format"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=dd866b846c558eb2bd95edd52cf18e4a6b0e0c4d#dd866b846c558eb2bd95edd52cf18e4a6b0e0c4d"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -5578,6 +5589,7 @@ dependencies = [
  "craft-cms",
  "craft-file-formats",
  "craft-image-codecs",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=dd866b846c558eb2bd95edd52cf18e4a6b0e0c4d)",
  "craft-print",
  "craft-psd",
  "craft-xml",
@@ -5619,7 +5631,7 @@ dependencies = [
  "craft-file-formats",
  "craft-image-codecs",
  "craft-pcraft-bundle",
- "craft-pcraft-format",
+ "craft-pcraft-format 0.1.0 (git+https://github.com/storytold/craft-libs?rev=e2dc681a3)",
  "craft-zip",
  "crc32fast",
  "exacl",
