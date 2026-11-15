@@ -23,6 +23,8 @@ use serde_json::{Value, json};
 use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
+#[cfg(test)]
+mod convert_profile_same_tests;
 mod profile_dither;
 
 // ------------------------------------------------------------------ state
@@ -1131,6 +1133,20 @@ fn convert_to_profile(s: &mut Session, p: &Value) -> Result<Value> {
     let flatten = profile_option(p, "flatten")?;
     let rasterize = profile_option(p, "rasterizePlaced")?;
     let dither = profile_option(p, "dither")?;
+    // A document tagged with a profile of the same colours as the destination needs no colour
+    // conversion (compared by colour, not bytes). Without Flatten or Rasterize it stays as it is,
+    // with no history state, as in the reference application (#14261); with either, that still
+    // runs as before. An untagged document is still converted and tagged, and an Indexed, Duotone,
+    // Bitmap or Multichannel one still goes through the conversion that changes its mode; none
+    // of those was measured. The embedded profile itself is compared, so one that can't be read
+    // or doesn't fit the mode is still replaced.
+    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    let measured = matches!(doc.mode, ColorMode::Rgb | ColorMode::Cmyk | ColorMode::Grayscale | ColorMode::Lab);
+    let embedded = doc.icc_profile.as_ref().and_then(|b| profile_from_bytes(b).ok()).filter(|p| p.color_space == mode_space(doc.mode));
+    let same = measured && embedded.is_some_and(|p| p.same_colors(&dst));
+    if same && !flatten && !rasterize {
+        return Ok(json!({ "profile": dst.description, "mode": format!("{:?}", doc.mode), "intent": intent.id(), "bpc": bpc, "converted": false }));
+    }
     s.edit("Convert to Profile", |doc, active| {
         if flatten {
             // Flatten consumes the displayed image; discarded hidden objects need no source read.
@@ -1138,10 +1154,20 @@ fn convert_to_profile(s: &mut Session, p: &Value) -> Result<Value> {
         } else if rasterize {
             prepare_profile_smart_layers(doc, true)?;
         }
-        if dither { profile_dither::convert(doc, &dst, intent, bpc) } else { convert_document(doc, &dst, intent, bpc) }
+        if same {
+            // The colours stay, but the destination is the profile asked for: an embedded one of
+            // the same colours with other bytes (another name, another date) is replaced, as the
+            // conversion would have, so the reply's profile is the document's.
+            doc.icc_profile = Some(dst.to_bytes());
+            Ok(())
+        } else if dither {
+            profile_dither::convert(doc, &dst, intent, bpc)
+        } else {
+            convert_document(doc, &dst, intent, bpc)
+        }
     })?;
     let d = &s.active().ok_or(EngineError::NoDocument)?.doc;
-    Ok(json!({ "profile": dst.description, "mode": format!("{:?}", d.mode), "intent": intent.id(), "bpc": bpc }))
+    Ok(json!({ "profile": dst.description, "mode": format!("{:?}", d.mode), "intent": intent.id(), "bpc": bpc, "converted": true }))
 }
 
 fn profile_info(s: &mut Session, p: &Value) -> Result<Value> {
