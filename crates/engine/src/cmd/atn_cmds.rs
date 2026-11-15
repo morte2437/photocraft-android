@@ -54,6 +54,7 @@ mod steps_layer_style;
 mod steps_lookup;
 mod steps_make;
 mod steps_measurement;
+mod steps_mode_change;
 mod steps_path;
 mod steps_perspective_warp;
 mod steps_type_path;
@@ -213,7 +214,14 @@ mod frame_section_tests;
 mod recorded_tools_tests;
 
 #[cfg(test)]
+mod mode_change_tests;
+
+#[cfg(test)]
 mod artboard_section_tests;
 
 #[cfg(test)]
 mod fade_step_tests;
+
+#[cfg(test)]
+#[path = "atn_cmds/canvas_size_default_anchor_tests.rs"]
+mod canvas_size_default_anchor_tests;

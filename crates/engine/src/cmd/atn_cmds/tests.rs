@@ -879,6 +879,7 @@ fn every_mapped_command_exports_and_imports_back() {
         ("image.analysis.recordMeasurements", json!({})),
         ("image.analysis.setMeasurementScale", json!({"preset": "custom", "pixelLength": 120, "logicalLength": 2.5, "units": "mm"})),
         ("layer.videoLayers.insertBlankFrame", json!({})),
+        ("file.automate.conditionalModeChange", json!({"from": ["grayscale", "rgb"], "to": "cmyk"})),
         ("layer.videoLayers.duplicateFrame", json!({})),
         ("layer.videoLayers.deleteFrame", json!({})),
         ("file.automate.cropAndStraightenPhotos", json!({})),

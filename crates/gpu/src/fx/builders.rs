@@ -58,7 +58,8 @@ impl B {
                 self.spread_blur(src, (g.size, g.spread), inner, 0.0, 0.0)
             }
         };
-        self.finish_glow(m, fx::glow_lut(g), inner, center);
+        // The same transfer as the CPU's `glow_map`, reach cap included (#11361).
+        self.finish_glow(m, fx::glow_paint_lut(g, inner), inner, center);
         1
     }
 

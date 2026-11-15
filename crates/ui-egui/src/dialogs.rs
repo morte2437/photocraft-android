@@ -456,6 +456,9 @@ fn filter_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fields: &
     } else {
         first_field_focused(ui, id, |ui| body(ui, fields));
     }
+    if let Some(Value::String(msg)) = fields.remove("__rangeAlert") {
+        crate::panels::options_bar::range_alert(&mut app.ui, &msg);
+    }
 }
 
 /// The OK / Cancel row (with Apply, Alternate or Reset where the dialog has them), drawn in the
@@ -821,6 +824,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         outcome = image_processor_ui::finish(&mut app.ui, interactive, processor_alert, outcome);
         outcome = fit_image_range::finish(&mut app.ui, interactive, fit_image_alert, outcome);
+        // A size warning must precede creation, while Cancel discards the edit and its warning.
+        // Wait until the buttons have answered so the click that left a field cannot do both.
+        if crate::shape_dialog::owns(&fields) && outcome != Some(false) && crate::shape_dialog::open_owed_alert(app, ctx, &mut fields) {
+            outcome = None;
+        }
         if let Some(dm) = app.ui.dialog_mut(d.id) {
             dm.fields = fields;
         }
@@ -1211,6 +1219,7 @@ pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
                 app.ui.views[i].fit_pending = true;
             }
             if r.is_ok() {
+                crate::new_doc_ui::pixel_aspect::apply(app, &d.fields);
                 crate::remember_new_document(app, &d.fields);
                 // File › New › Recent. Best effort: the document exists either way.
                 let _ = app.run("document.recent.add", json!({"settings": crate::new_doc_ui::document_settings(&d.fields)}));
@@ -1331,6 +1340,7 @@ pub(crate) mod color_picker_preview;
 pub mod color_picker_ui;
 pub mod color_range_ui;
 pub mod color_table_ui;
+pub mod count_group_name_ui;
 pub mod credits;
 pub mod dds_options_ui;
 pub mod delete_layer_prompt;

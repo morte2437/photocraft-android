@@ -381,9 +381,10 @@ group, `ui.dialog.set {"choice":"replace"}` then `ui.dialog.confirm` replaces, a
 `ui.dialog.cancel` imports nothing.
 
 Named New Document presets also persist with preferences (`presets.documents`) on desktop and
-web. File › New › Save Preset… saves the current form; the Saved tab selects a configuration or
-deletes it. Selection only fills the form: Create still runs `file.new`, and the document name
-is independent of the preset name. Settings include pixel width/height, resolution in ppi,
+web. In File › New, the save icon right of Name (Save Document Preset, proposing the next free
+`Saved N`) saves the current form; the Saved tab selects a configuration or deletes it.
+Selection only fills the form: Create still runs `file.new`, and the document name is
+independent of the preset name. Settings include pixel width/height, resolution in ppi,
 mode, depth, background, and display `unit` (`px`, `in`, `cm`, `mm`, `pt`, `pica`) and
 `resolutionUnit` (`in`, `cm`). The defaults match File › New. Background Color captures the
 toolbox colour as `backgroundColor: [r,g,b]` (0..1), so reusing it does not follow later toolbox

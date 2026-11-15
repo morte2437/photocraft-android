@@ -715,12 +715,21 @@ fn canvas_size(s: &mut Session, p: &Value) -> Result<Value> {
     let (nw, nh) = if relative { (ow + w, oh + h) } else { (w, h) };
     let (nw, nh) = (nw.round().clamp(1.0, 300_000.0) as u32, nh.round().clamp(1.0, 300_000.0) as u32);
     let (ax, ay) = anchor_factors("image.canvasSize", p.get("anchor").and_then(Value::as_str).unwrap_or("center"))?;
+    // A result equal to the current size changes nothing and adds no history step (#14537).
+    if (nw, nh) == (ow as u32, oh as u32) {
+        return Ok(json!({ "width": nw, "height": nh, "offset": [0, 0] }));
+    }
     let dx = ((nw as f64 - ow) * ax).round() as i32;
     let dy = ((nh as f64 - oh) * ay).round() as i32;
     let ext = extension_color(s, p);
     s.set_sampler_map(photocraft_geom::Affine::translate(f64::from(dx), f64::from(dy)));
     s.edit("Canvas Size", |doc, _| {
         crate::canvas_geom::keeping_count_points(doc, |doc| translate_doc(doc, "image.canvasSize", dx, dy))?;
+        // The reference application drops the selection when the canvas size changes (#14539);
+        // a Canvas Size that keeps the size is not measured and keeps it.
+        if (nw, nh) != (ow as u32, oh as u32) {
+            doc.selection = None;
+        }
         doc.size = Size::new(nw, nh);
         if nw > ow as u32 || nh > oh as u32 {
             drop_fill_caches(&mut doc.layers);
@@ -1186,6 +1195,9 @@ pub(crate) fn change_depth(doc: &mut Document, depth: SampleType) {
 fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let mut doc = (*d.doc).clone();
+    // As Photoshop: the copy starts without a selection (the source keeps its own); alpha
+    // channels, guides and paths are copied.
+    doc.selection = None;
     doc.id = photocraft_doc::DocId::fresh();
     doc.name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{} copy", d.doc.name));
     if p.get("mergedOnly").and_then(Value::as_bool).unwrap_or(false) {
@@ -1298,8 +1310,18 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+#[path = "image_cmds/duplicate_selection_tests.rs"]
+mod duplicate_selection_tests;
+
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod canvas_size_selection_tests;
 
 #[cfg(test)]
 #[path = "image_size_drops_selection_tests.rs"]
 mod image_size_drops_selection_tests;
+
+#[cfg(test)]
+mod canvas_size_noop_history_tests;

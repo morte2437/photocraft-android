@@ -7,6 +7,8 @@
 //! `layer.translate`) moves the board with its contents. The canvas grows to fit every board,
 //! in every direction, like Photoshop's auto-expanding artboard canvas ([`fit_canvas`]).
 
+use std::collections::HashSet;
+
 use photocraft_color::{Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{Artboard, ArtboardBackground, Document, Layer, LayerContent, LayerId, Size};
 use photocraft_geom::{Affine, Rect};
@@ -675,7 +677,57 @@ fn chosen_artboards(doc: &Document, p: &Value) -> Vec<LayerId> {
     }
 }
 
-/// File › Export › Artboards to Files: `<prefix>_<index:04>_<artboard name>.<format>` per board.
+/// Formats whose file names Artboards to Files writes with a `-` for each space, as the reference
+/// application does for PNG (and, per #13633, JPEG, BMP, Targa and TIFF). PSD keeps its spaces,
+/// as do the formats the reference application was not measured with.
+const HYPHENATED_FORMATS: &[&str] = &["png", "jpg", "jpeg", "bmp", "tga", "tif", "tiff"];
+
+/// The file names (without extension) Artboards to Files writes for `names`, in export order:
+/// `<prefix><artboard name>` with no separator or index between them, [`sanitize`]d as a whole,
+/// and with each space turned into `-` when `hyphenate`.
+///
+/// A name equal to an earlier one ignoring letter case ([`collision_key`]), or equal once
+/// sanitized, gets the first `-2`, `-3`… that no other board's own name and no earlier suffix
+/// takes. Every board still gets a file of its own on case-insensitive file systems (#6613), and
+/// the first board of a name, like every board whose name is unique, keeps the plain name.
+fn artboard_file_stems(prefix: &str, names: &[&str], hyphenate: bool) -> Vec<String> {
+    let plain: Vec<String> = names
+        .iter()
+        .map(|name| {
+            let stem = sanitize(&format!("{prefix}{name}"));
+            if hyphenate { stem.replace(' ', "-") } else { stem }
+        })
+        .collect();
+    let mut taken: HashSet<String> = plain.iter().map(|stem| collision_key(stem)).collect();
+    let mut seen = HashSet::new();
+    plain
+        .into_iter()
+        .map(|stem| {
+            if seen.insert(collision_key(&stem)) {
+                return stem;
+            }
+            let mut n = 2u64;
+            loop {
+                let candidate = format!("{stem}-{n}");
+                if taken.insert(collision_key(&candidate)) {
+                    break candidate;
+                }
+                n += 1;
+            }
+        })
+        .collect()
+}
+
+/// The key two file names are compared by to decide whether a case-insensitive file system would
+/// take them for one file: lower case, then upper case. Upper case alone misses the Kelvin sign
+/// `K`, which macOS folds into `K`; lower case alone misses `σ` and `ς`, which NTFS both reads as
+/// `Σ`. Merging a few names a file system would keep apart only costs a `-2` suffix.
+fn collision_key(stem: &str) -> String {
+    stem.to_lowercase().to_uppercase()
+}
+
+/// File › Export › Artboards to Files: one `<prefix><artboard name>.<format>` per board, named by
+/// [`artboard_file_stems`] (`abfiles-testRed-Board.png`, `abfiles-testRed Board.psd`).
 fn artboards_to_files(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.export.artboardsToFiles";
     let dir = str_param(p, "dir", cmd).or_else(|_| str_param(p, "output", cmd))?.to_string();
@@ -684,12 +736,12 @@ fn artboards_to_files(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let prefix = p.get("prefix").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| stem(&d.doc.name));
     let doc = d.doc.clone();
+    let boards = chosen_documents(&doc, p)?;
+    let names: Vec<&str> = boards.iter().map(|one| one.name.as_str()).collect();
     let mut files = Vec::new();
-    for (i, one) in chosen_documents(&doc, p)?.into_iter().enumerate() {
-        // Names may be identical, or collide after sanitizing or filesystem case folding.
-        let name = if prefix.is_empty() { format!("{i:04}_{}", sanitize(&one.name)) } else { format!("{}_{i:04}_{}", sanitize(&prefix), sanitize(&one.name)) };
+    for (one, name) in boards.iter().zip(artboard_file_stems(&prefix, &names, HYPHENATED_FORMATS.contains(&format.as_str()))) {
         let path = join(&dir, &format!("{name}.{format}"));
-        save_doc(&one, &path, save)?;
+        save_doc(one, &path, save)?;
         files.push(path);
     }
     if files.is_empty() {
@@ -752,7 +804,9 @@ fn artboards_to_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let doc = d.doc.clone();
     let quality = f64_param(p, "quality").or(Some(10.0));
     let mut pages = Vec::new();
-    for one in chosen_documents(&doc, p)? {
+    // Pages go bottom artboard of the Layers panel first, as in the reference application (#13643);
+    // `chosen_documents` lists them top first, the order Artboards to Files keeps.
+    for one in chosen_documents(&doc, p)?.into_iter().rev() {
         let buf = photocraft_compose::flatten(&one).over_background([1.0, 1.0, 1.0]);
         let fmt = PixelFormat::new(ColorMode::Rgb, SampleType::U8, true);
         let mut flat = Document::new(&one.name, one.size, ColorMode::Rgb, SampleType::U8);
@@ -829,7 +883,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.export.artboardsToFiles",
             "Artboards to Files…",
             &["File", "Export"],
-            r##"{"dir":folder,"format":"png|jpg|psd|tiff|…"="png","prefix":str=document name ("" = none),"artboards":[id]? (default all),"quality":0..12?} → {files}"##,
+            r##"{"dir":folder,"format":"png|jpg|psd|tiff|…"="png","prefix":str=document name ("" = none),"artboards":[id]? (default all),"quality":0..12?} → {files} (one "<prefix><artboard name>.<format>" per board, no separator or index added: spaces become "-" in PNG, JPEG, BMP, Targa and TIFF and stay in PSD and other formats, characters a file name can't hold become "_", and a name an earlier board already took, ignoring case, gets "-2", "-3"…)"##,
             export_artboards,
             artboards_to_files
         ),
@@ -837,7 +891,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "file.export.artboardsToPdf",
             "Artboards to PDF…",
             &["File", "Export"],
-            r##"{"path":str (.pdf),"artboards":[id]?,"quality":0..12=10} → {path, pages} (one raster page per board)"##,
+            r##"{"path":str (.pdf),"artboards":[id]?,"quality":0..12=10} → {path, pages} (one raster page per board, bottom artboard of the Layers panel first)"##,
             export_artboards,
             artboards_to_pdf
         ),
@@ -845,8 +899,14 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
+#[path = "artboard_cmds/file_names_tests.rs"]
+mod file_names_tests;
+#[cfg(test)]
 #[path = "artboard_cmds/first_board_background_tests.rs"]
 mod first_board_background_tests;
+#[cfg(test)]
+#[path = "artboard_cmds/pdf_page_order_tests.rs"]
+mod pdf_page_order_tests;
 #[cfg(test)]
 #[path = "artboard_cmds/tests.rs"]
 mod tests;

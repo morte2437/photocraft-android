@@ -2,7 +2,7 @@
 //! Drop Shadow's light (#882), Motion Blur and the other direction angles of the filter
 //! dialogs (#3152) share it, as Photoshop's dialogs do.
 
-use super::{Response, Sense, Stroke, Tokens, Ui, row_label, value_field, vec2};
+use super::{Response, Sense, Stroke, Tokens, Ui, row_label, value_field, value_field_whole_alerting, vec2};
 
 /// `Label (dial) [field°]` for a direction in document angles: counter-clockwise from three
 /// o'clock, y up. The dial points anywhere in -180..=180; the result is clamped to `range`, and
@@ -12,9 +12,27 @@ pub fn angle_dial_row(ui: &mut Ui, label: &str, angle: &mut f32, range: std::ops
     angle_dial_line(ui, label, None, angle, range)
 }
 
+/// [`angle_dial_row`] with a whole-number alerting field (`value_field_whole_alerting`),
+/// returning the field's response (for focus/id tracking) and whether an out-of-range value was
+/// committed.
+pub fn angle_dial_row_whole_alerting(ui: &mut Ui, label: &str, angle: &mut f32, range: std::ops::RangeInclusive<f32>) -> (Response, bool) {
+    angle_dial_line_in(ui, label, None, angle, range, true)
+}
+
 /// [`angle_dial_row`] with its label right-aligned in a `label_w` column ([`row_label`]) when
 /// given, lined up with the [`slider_line`] rows around it (Layer Style).
 pub fn angle_dial_line(ui: &mut Ui, label: &str, label_w: Option<f32>, angle: &mut f32, range: std::ops::RangeInclusive<f32>) -> Response {
+    angle_dial_line_in(ui, label, label_w, angle, range, false).0
+}
+
+fn angle_dial_line_in(
+    ui: &mut Ui,
+    label: &str,
+    label_w: Option<f32>,
+    angle: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    whole_alerting: bool,
+) -> (Response, bool) {
     let t = Tokens::get(ui.ctx());
     // The dial clamps with max/min, not `f32::clamp`, which panics if a malformed spec
     // reverses the range.
@@ -62,11 +80,16 @@ pub fn angle_dial_line(ui: &mut Ui, label: &str, label_w: Option<f32>, angle: &m
             }
         }
         // The dialogs' own number field: it takes the opening focus (#1757), Tab and arrow steps.
-        let field = value_field(ui, angle, range, "°", 64.0).accessible_name(tl!(label));
+        let (field, alert) = if whole_alerting {
+            value_field_whole_alerting(ui, tl!(label), angle, range, "°", 64.0)
+        } else {
+            (value_field(ui, angle, range, "°", 64.0).accessible_name(tl!(label)), false)
+        };
         if field.changed() {
             dial.mark_changed();
         }
-        dial | field
+        let resp = if whole_alerting { field } else { dial | field };
+        (resp, alert)
     })
     .inner
 }
