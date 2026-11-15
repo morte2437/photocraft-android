@@ -221,3 +221,7 @@ mod artboard_section_tests;
 
 #[cfg(test)]
 mod fade_step_tests;
+
+#[cfg(test)]
+#[path = "atn_cmds/canvas_size_default_anchor_tests.rs"]
+mod canvas_size_default_anchor_tests;
