@@ -322,8 +322,9 @@ At startup the desktop lists recovery metadata, then decodes one document at a t
 
 `photocraft-cli mcp` serves MCP on stdio using `crates/automation`, which is built on `rmcp`:
 
-- **Headless:** `photocraft-cli mcp --automation-read-root <project> --automation-read-root <library> --automation-write-root <project>`. It drives an in-process engine session with ordered read directories and one write directory.
+- **Headless:** `photocraft-cli mcp --headless --automation-read-root <project> --automation-read-root <library> --automation-write-root <project>`. Use `--headless` in scripts, tests and agent sessions: without it `mcp` works in the open window while the ArtCraft Launcher's agents switch is on, and may start PhotoCraft (When PhotoCraft Is Closed defaults to starting it). It drives an in-process engine session with ordered read directories and one write directory.
 - **Live app:** start `photocraft --control 7878 --control-token-file <private-path> --automation-read-root <project> --automation-read-root <library> --automation-write-root <project>`, then run `photocraft-cli mcp --bridge 127.0.0.1:7878 --control-token-file <private-path>`. The desktop process owns the roots; root flags on the bridging CLI are a usage error. See `docs/control-protocol.md#mcp-bridge`.
+- **Live app, no flags:** with the `AI-MCP` flag, turn on ArtCraft Launcher › Settings › AI agents and add the MCP client there; plain `photocraft-cli mcp` then works in the open window. The app publishes its port and token file in `agent-connection.json` in the settings folder; `mcp` reads it on every call. Without a launcher, a scratch `CRAFT_MCP_DIR` with an `apps.json` naming `photocraft` (the format in storytold/craft-ai-integrations, crate `craft-ai-agents`) turns the switch on for a test. See [MCP conventions](mcp.md#connecting-the-desktop-app-no-terminal). Test it against a scratch settings folder with `PHOTOCRAFT_CONFIG_DIR`, which both the app and the CLI honour.
 
 For headless MCP clients, pass absolute paths to deliberately chosen trusted workspace directories in the launch arguments. Desktop `PHOTOCRAFT_AUTOMATION_READ_ROOT` and `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` environment variables do **not** grant headless CLI access. Omitting a root flag deliberately denies that direction of access.
 
@@ -367,7 +368,7 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
   "mcpServers": {
     "photocraft": {
       "command": "/path/to/photocraft/target/release/photocraft-cli",
-      "args": ["mcp", "--automation-read-root", "/absolute/path/to/trusted/workspace", "--automation-read-root", "/absolute/path/to/reference/library", "--automation-write-root", "/absolute/path/to/trusted/workspace"]
+      "args": ["mcp", "--headless", "--automation-read-root", "/absolute/path/to/trusted/workspace", "--automation-read-root", "/absolute/path/to/reference/library", "--automation-write-root", "/absolute/path/to/trusted/workspace"]
     },
     "photocraft-live": {
       "command": "/path/to/photocraft/target/release/photocraft-cli",
@@ -380,7 +381,7 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
 ```sh
 cargo build --release -p photocraft-cli
 mkdir -p "$PWD/photocraft-work"
-claude mcp add photocraft -- "$PWD/target/release/photocraft-cli" mcp \
+claude mcp add photocraft -- "$PWD/target/release/photocraft-cli" mcp --headless \
   --automation-read-root "$PWD/photocraft-work" \
   --automation-write-root "$PWD/photocraft-work"
 ```
@@ -409,15 +410,15 @@ A typical agent loop (place inputs under a configured read root and outputs unde
 
 ## Colour management
 
-`crates/cms` is our own pure-Rust ICC engine (v2/v4 parsing, matrix/TRC and LUT profiles, all four
+`craft-cms` ([storytold/craft-libs](https://github.com/storytold/craft-libs/tree/main/crates/cms)) is our own pure-Rust ICC engine (v2/v4 parsing, matrix/TRC and LUT profiles, all four
 intents, black point compensation). It ships CC0 built-in profiles, including a synthetic
-"PhotoCraft Coated CMYK", because Adobe's CMYK profiles are proprietary (see `crates/cms/README.md`).
+"PhotoCraft Coated CMYK", because Adobe's CMYK profiles are proprietary (see its README).
 
 - Documents carry an optional embedded ICC profile (`Document::icc_profile`); `edit.assignProfile`
   and `edit.convertToProfile` change it. Mode changes (`image.mode.*`) convert through cms.
 - **Proof Colors** (⌘Y), **Proof Setup** and **Gamut Warning** (⇧⌘Y) bake a 3D LUT
   (`cms::Lut3d`) that the canvas shader applies; the document pixels never change.
-- Convert colours with `photocraft_cms::transform::cached(src, dst, opts)`: transforms are cached
+- Convert colours with `craft_cms::transform::cached(src, dst, opts)`: transforms are cached
   process-wide and integer buffers use precomputed tables or a device link.
 
 ## Menu parity

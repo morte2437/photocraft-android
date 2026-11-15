@@ -14,7 +14,7 @@ use crate::state::Tool;
 const NONE: Modifiers = Modifiers::NONE;
 
 /// A 1:1 view of the 1000 × 700 document, turned by `rotation` degrees.
-fn view(rotation: f32) -> ViewXform {
+pub(crate) fn view(rotation: f32) -> ViewXform {
     ViewXform {
         rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 700.0)),
         zoom: 1.0,
@@ -54,7 +54,7 @@ fn near(got: (f64, f64, f64, f64), want: [f64; 4]) {
     assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1.0), "{got:?} vs {want:?}");
 }
 
-fn drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2]) {
+pub(crate) fn drag(app: &mut PhotocraftApp, from: [f64; 2], to: [f64; 2]) {
     tool_event(app, ToolEvent::Down { x: from[0], y: from[1], pressure: 1.0 }, NONE);
     let mid = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
     tool_event(app, ToolEvent::Move { x: mid[0], y: mid[1], pressure: 1.0 }, NONE);

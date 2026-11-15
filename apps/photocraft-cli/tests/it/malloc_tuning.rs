@@ -2,13 +2,13 @@
 //! and a value the user set.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use photocraft_engine::malloc_tuning::{TRIM_THRESHOLD, TRIM_THRESHOLD_VAR};
 
 /// The environment of a running `serve` once it answered a request, as `NAME=value` entries.
 fn serve_environ(set: Option<&str>) -> Vec<String> {
-    let mut cmd = Command::new(crate::binary());
+    let mut cmd = crate::command();
     for var in [TRIM_THRESHOLD_VAR, "MALLOC_MMAP_THRESHOLD_", "MALLOC_TOP_PAD_", "MALLOC_MMAP_MAX_", "MALLOC_ARENA_MAX", "GLIBC_TUNABLES"] {
         cmd.env_remove(var);
     }

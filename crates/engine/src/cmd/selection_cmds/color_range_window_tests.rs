@@ -7,9 +7,9 @@ fn fixture(depth: SampleType, p3: bool) -> Session {
     let mut s = Session::new();
     let mut doc = Document::with_background("color range", Size::new(64, 48), ColorMode::Rgb, depth, photocraft_doc::Color::WHITE);
     if p3 {
-        doc.icc_profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes());
+        doc.icc_profile = Some(craft_cms::Builtin::DisplayP3.profile().to_bytes());
     } else {
-        doc.icc_profile = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes());
+        doc.icc_profile = Some(craft_cms::Builtin::Srgb.profile().to_bytes());
     }
     let bg = doc.layers[0].surface_mut().unwrap();
     bg.fill_rect(Rect::new(0, 0, 64, 48), &[0.92, 0.92, 0.92, 1.0]);

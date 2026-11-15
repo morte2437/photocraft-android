@@ -6,8 +6,8 @@
 //! height, compressed size, bits per pixel 24, planes 1) followed by the JFIF stream. Photoshop
 //! keeps the long side at 160 px or less.
 
+use craft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
 use craft_psd::resources::{ImageResource, ids};
-use photocraft_cms::{Builtin, ColorSpace, Intent, Profile, Transform};
 use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType as CSample};
 use photocraft_color::ColorMode;
 use photocraft_doc::Document;
@@ -33,7 +33,7 @@ pub(crate) fn resource(doc: &Document) -> Result<ImageResource, IoError> {
     let dst = Builtin::Srgb.profile();
     if !src.same_colors(dst) {
         let t = Transform::new(&src, dst, Intent::RelativeColorimetric, true).map_err(|e| IoError::Unsupported(e.to_string()))?;
-        t.apply(buf.px.as_flattened_mut(), 4);
+        t.apply(buf.px.as_flattened_mut(), 4).map_err(|e| IoError::Unsupported(e.to_string()))?;
     }
     let mut rgb = Vec::with_capacity(buf.px.len() * 3);
     for p in &buf.px {

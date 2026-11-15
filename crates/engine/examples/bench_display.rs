@@ -11,7 +11,7 @@
 
 use std::time::Instant;
 
-use photocraft_cms::Builtin;
+use craft_cms::Builtin;
 use photocraft_color::{Color, ColorMode, SampleType};
 use photocraft_doc::{Document, Size};
 use photocraft_engine::Session;

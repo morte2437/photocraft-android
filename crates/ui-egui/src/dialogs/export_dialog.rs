@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 
-use photocraft_cms::Profile;
+use craft_cms::Profile;
 use photocraft_doc::{ColorMode, Document};
 use serde_json::{Map, Value, json};
 
@@ -112,7 +112,7 @@ fn open_sized(app: &mut PhotocraftApp, src_w: u32, src_h: u32) -> Result<u64, St
     f.insert("tgaBits".into(), json!("auto"));
     f.insert("sizing".into(), json!("scale"));
     f.insert("lockAspect".into(), json!(true));
-    f.insert("profile".into(), json!("document"));
+    f.insert("profile".into(), json!("srgb"));
     f.insert("embedProfile".into(), json!(true));
     f.insert("width".into(), json!(src_w));
     f.insert("height".into(), json!(src_h));
@@ -149,6 +149,13 @@ fn fit_size(f: &mut Map<String, Value>, src_w: f64, src_h: f64) {
         }
         f.insert("sizing".into(), json!("scale"));
     }
+}
+
+/// Whether Enter answers the dialog with `f` as its fields the way its default button does. Export
+/// As starts only from a click on Export, as in Photoshop: Enter, with no text field taking it,
+/// leaves the dialog open (#13740). Every other dialog keeps Enter = OK.
+pub(crate) fn enter_confirms(f: &Map<String, Value>) -> bool {
+    !f.contains_key("__export")
 }
 
 /// Layer › Export As…: the same dialog for just the active layer (trimmed to its pixels).
@@ -325,7 +332,7 @@ fn export_document(doc: &Document, f: &Map<String, Value>, max_side: Option<u32>
     }
     let mut session = photocraft_engine::Session::new();
     session.add_document(copy, None);
-    if srgb && (doc.mode != ColorMode::Rgb || !source_profile.same_bytes(photocraft_cms::Builtin::Srgb.profile())) {
+    if srgb && (doc.mode != ColorMode::Rgb || !source_profile.same_bytes(craft_cms::Builtin::Srgb.profile())) {
         session.execute("edit.convertToProfile", json!({"profile": "srgb", "intent": "perceptual"})).map_err(|e| e.to_string())?;
     }
     let (w, h) = export_pixels(f64::from(doc.size.width), f64::from(doc.size.height), f, max_side)?;
@@ -475,6 +482,9 @@ fn settings(f: &Map<String, Value>) -> ExportSettings {
         // Metadata: None drops EXIF and resolution as well as XMP. A missing key keeps them,
         // which is what Export As wrote before the choice existed.
         embed_metadata: metadata != "none",
+        // Export As's JPGs are progressive (SOF2) in the reference application, measured at its
+        // default quality; the scan layout is one setting for the whole dialog.
+        jpeg_format: photocraft_codecs::JpegFormat::Progressive,
         ..Default::default()
     }
 }
@@ -946,17 +956,12 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                     f.insert("metadata".into(), json!(m));
                 }
             });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(tl!("Color Profile")).color(t.text_dim));
-                let mut profile = s(f, "profile");
-                if profile != "srgb" {
-                    profile = "document".into();
-                }
-                let opts: Vec<(String, &str)> = vec![("document".into(), tl!("Document Profile")), ("srgb".into(), tl!("Convert to sRGB"))];
-                if crate::widgets::dropdown(ui, "export-profile", tl!("Color Profile"), &mut profile, &opts, 130.0) {
-                    f.insert("profile".into(), json!(profile));
-                }
-            });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tl!("Color Space")).font(crate::theme::semibold(12.0)).color(t.text));
+            let mut srgb = s(f, "profile") == "srgb";
+            if crate::widgets::checkbox(ui, &mut srgb, tl!("Convert to sRGB")).changed() {
+                f.insert("profile".into(), json!(if srgb { "srgb" } else { "document" }));
+            }
             let mut embed = f.get("embedProfile").and_then(Value::as_bool).unwrap_or(true);
             crate::widgets::checkbox(ui, &mut embed, tl!("Embed Color Profile"));
             f.insert("embedProfile".into(), json!(embed));
@@ -1176,7 +1181,15 @@ fn quick_export(app: &mut PhotocraftApp, p: Value) -> Result<Value, String> {
 }
 
 #[cfg(test)]
+mod srgb_default_tests;
+#[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod enter_key_tests;
+
+#[cfg(test)]
+mod jpg_progressive_tests;
 
 #[cfg(all(test, unix))]
 mod batch_name_tests {

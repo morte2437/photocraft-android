@@ -38,7 +38,7 @@ fn lens_flare_dialog_centre_is_a_slider_from_0_to_1_defaulting_to_the_middle() {
 fn color_settings_working_spaces_list_installed_profiles_of_their_space() {
     // #6323: a press condition installed in the system can be the CMYK working space, as in
     // Photoshop's Color Settings; each working-space menu lists only profiles of its space.
-    use photocraft_cms::{ColorSpace, ProfileClass};
+    use craft_cms::{ColorSpace, ProfileClass};
     let p = |path: &str, class, color_space| InstalledProfile { path: path.into(), description: path.to_uppercase(), class, color_space };
     let installed = [
         p("gracol.icc", ProfileClass::Output, ColorSpace::Cmyk),
@@ -92,7 +92,7 @@ fn display_names_are_not_split_like_camel_case_keys() {
 
 #[test]
 fn indexed_matte_tool_seeds_use_document_encoded_rgb() {
-    use photocraft_cms::Transform;
+    use craft_cms::Transform;
 
     let mut session = photocraft_engine::Session::new();
     session.color.settings.working_rgb = "display-p3".into();
@@ -109,7 +109,7 @@ fn indexed_matte_tool_seeds_use_document_encoded_rgb() {
     let transform = Transform::new(&source, &destination, app.session.color.settings.intent(), app.session.color.settings.bpc).unwrap();
     for (key, input) in [(INDEXED_MATTE_FOREGROUND, [0.2, 0.4, 0.8]), (INDEXED_MATTE_BACKGROUND, [0.8, 0.4, 0.2])] {
         let mut output = [0.0; 16];
-        transform.eval(&input, &mut output);
+        transform.eval(&input, &mut output).unwrap();
         let expected = crate::color_picker_ui::hex([output[0], output[1], output[2]]);
         assert_eq!(fields.get(key).and_then(Value::as_str), Some(expected.as_str()), "{key}");
         assert_eq!(

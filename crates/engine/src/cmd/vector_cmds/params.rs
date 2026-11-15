@@ -320,7 +320,7 @@ pub(super) fn live_json(l: &LiveShape) -> Value {
 /// Builds a live shape from `kind` + geometry params.
 pub(super) fn live_from_params(cmd: &str, kind: &str, p: &Value, prev: Option<&LiveShape>) -> Result<LiveShape> {
     let prev_rect = match prev {
-        Some(LiveShape::Rect { rect, .. } | LiveShape::Ellipse { rect } | LiveShape::Polygon { rect, .. }) => Some(*rect),
+        Some(LiveShape::Rect { rect, .. } | LiveShape::Ellipse { rect } | LiveShape::Polygon { rect, .. } | LiveShape::Triangle { rect, .. }) => Some(*rect),
         _ => None,
     };
     let rect = || nums::<4>(p, "rect").or(prev_rect).ok_or_else(|| bad(cmd, "`rect`: [x, y, w, h] is required"));
@@ -340,6 +340,14 @@ pub(super) fn live_from_params(cmd: &str, kind: &str, p: &Value, prev: Option<&L
             LiveShape::Rect { rect: rect()?, radii: radii(p).unwrap_or(r) }
         }
         "ellipse" => LiveShape::Ellipse { rect: rect()? },
+        "triangle" => {
+            let pc = match prev {
+                Some(LiveShape::Triangle { corner_radius, .. }) => *corner_radius,
+                _ => 0.0,
+            };
+            let corner_radius = f64p(p, "cornerRadius").map_or(pc, |v| if v.is_finite() { v.clamp(0.0, 1.0e6) } else { pc });
+            LiveShape::Triangle { rect: rect()?, corner_radius }
+        }
         "polygon" | "star" => {
             let (ps, pr, pc) = match prev {
                 Some(LiveShape::Polygon { sides, star_ratio, corner_radius, .. }) => (*sides, *star_ratio, *corner_radius),

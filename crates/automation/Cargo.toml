@@ -39,6 +39,9 @@ hmac = "0.12"
 sha2 = "0.10"
 cap-std = "4"
 clap = { workspace = true }
+# The suite's AI-MCP flag and the ArtCraft Launcher's agents switch (the one consent for agents).
+craft-flags = { workspace = true }
+craft-ai-agents = { workspace = true }
 
 # Optional native GPU rendering backend
 photocraft-gpu = { workspace = true, optional = true }

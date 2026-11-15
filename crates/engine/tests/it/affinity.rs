@@ -89,7 +89,7 @@ fn warningless_auxiliary_paths_cannot_silently_use_a_thumbnail() {
 
 /// A minimal native document: one 10×10 px red square at (5, 5) on a 40×20 page.
 fn native() -> Vec<u8> {
-    use photocraft_affinity::synth::{self, F, Method, tag};
+    use craft_affinity::synth::{self, F, Method, tag};
     let node = |x: f64, y: f64| {
         let mut r = x.to_le_bytes().to_vec();
         r.extend(y.to_le_bytes());

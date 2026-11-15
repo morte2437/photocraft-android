@@ -63,10 +63,10 @@ const NO_SELECTION: [&str; 17] = [
     "Reselect",
 ];
 
-/// The reference also greys Load Selection…, but its menu-bar twin is live here (as in the Count
-/// tool's menu), and the row follows the twin.
-const NO_SELECTION_GREY: [&str; 6] =
-    ["Blending Options…", "Group from Layers…", "Convert to Layers", "Rasterize Layer", "Rasterize Layer Style", "Free Transform"];
+/// Group from Layers… and Load Selection… follow their menu-bar twins, which grey them for the Background
+/// (#12866) and for a lone Background with no saved selection (#13293), as the reference does.
+const NO_SELECTION_GREY: [&str; 7] =
+    ["Blending Options…", "Group from Layers…", "Convert to Layers", "Rasterize Layer", "Rasterize Layer Style", "Free Transform", "Load Selection…"];
 
 const IN_SELECTION: [&str; 23] = [
     "Deselect",

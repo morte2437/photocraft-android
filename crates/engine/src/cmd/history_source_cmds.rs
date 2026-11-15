@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn default_source_is_the_oldest_state() {
         let mut s = session();
-        assert_eq!(crate::inspect::document(s.active().unwrap())["historySource"], json!({"state": 0, "label": "Open"}));
+        assert_eq!(crate::inspect::document(s.active().unwrap())["historySource"], json!({"state": 0, "label": "New"}));
         brush(&mut s, json!({}));
         assert!(close(rgb(&s), [1.0, 1.0, 1.0]), "{:?}", rgb(&s));
     }

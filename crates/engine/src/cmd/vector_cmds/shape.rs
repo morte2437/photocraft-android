@@ -6,7 +6,6 @@ use super::{
     Affine, Color, Document, EngineError, Fill, FillRule, Layer, LayerContent, LayerId, LiveShape, Path, PathOp, Point, Result, SHAPE_BLOCKS, Session,
     ShapeLayer, Value, bad, json, sel, vector,
 };
-use std::borrow::Cow;
 
 fn active_shape(s: &Session) -> std::result::Result<&ShapeLayer, String> {
     let d = s.active().ok_or("no document open")?;
@@ -71,22 +70,7 @@ pub(super) fn paste_shape_stroke(s: &mut Session, p: &Value) -> Result<Value> {
 /// The path `shape.create` draws for live-shape params `p` (the Shape tools preview it while dragging).
 pub fn shape_path(p: &Value) -> Result<Path> {
     let kind = p.get("kind").and_then(Value::as_str).unwrap_or("rect");
-    let (kind, p) = triangle_as_polygon(kind, p);
-    Ok(vector::shapes::live_path(&live_from_params("shape.create", kind, &p, None)?))
-}
-
-/// `kind: "triangle"` (the Triangle tool, Create Triangle) is a 3-sided polygon: the live-shape
-/// kind and params to build it from. Its own kind only names the new layer (Triangle N).
-fn triangle_as_polygon<'a>(kind: &'a str, p: &'a Value) -> (&'a str, Cow<'a, Value>) {
-    if kind != "triangle" {
-        return (kind, Cow::Borrowed(p));
-    }
-    let mut q = p.clone();
-    if let Some(o) = q.as_object_mut() {
-        o.insert("sides".into(), json!(3));
-        o.remove("starRatio");
-    }
-    ("polygon", Cow::Owned(q))
+    Ok(vector::shapes::live_path(&live_from_params("shape.create", kind, p, None)?))
 }
 
 fn live_kind(l: &LiveShape) -> &'static str {
@@ -96,6 +80,7 @@ fn live_kind(l: &LiveShape) -> &'static str {
         LiveShape::Ellipse { .. } => "ellipse",
         LiveShape::Polygon { star_ratio, .. } if *star_ratio < 1.0 => "star",
         LiveShape::Polygon { .. } => "polygon",
+        LiveShape::Triangle { .. } => "triangle",
         LiveShape::Line { .. } | LiveShape::ArrowLine { .. } => "line",
     }
 }
@@ -250,6 +235,7 @@ pub fn transform_shape(sh: &mut ShapeLayer, a: &Affine) {
                 LiveShape::Polygon { rect, sides, star_ratio, corner_radius } => {
                     LiveShape::Polygon { rect: r(rect), sides, star_ratio, corner_radius: corner_radius * m0.min(m3) }
                 }
+                LiveShape::Triangle { rect, corner_radius } => LiveShape::Triangle { rect: r(rect), corner_radius: corner_radius * m0.min(m3) },
                 LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
                     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
                     let old_len = dx.hypot(dy);
@@ -460,8 +446,7 @@ pub(super) fn shape_create(s: &mut Session, p: &Value) -> Result<Value> {
         let v = p.get("path").ok_or_else(|| bad(CMD, "kind \"path\" needs `path`"))?;
         (parse_path(v).map_err(|e| bad(CMD, e))?, None)
     } else {
-        let (live_kind, q) = triangle_as_polygon(kind, p);
-        let l = live_from_params(CMD, live_kind, &q, None)?;
+        let l = live_from_params(CMD, kind, p, None)?;
         (vector::shapes::live_path(&l), Some(l))
     };
     let (fill, stroke) = new_fill_stroke(s, CMD, p)?;
@@ -563,13 +548,36 @@ pub(super) fn path_to_shape(s: &mut Session, p: &Value) -> Result<Value> {
     shape_info(s, id)
 }
 
+/// The History name of a `shape.edit` of layer `id`: an edit of one arrowhead setting of a line
+/// is named after it, "Change Arrowhead End" (#13267). The reference application was measured for
+/// End and Width; Start, Length and Concavity follow the same pattern. Any other edit, several
+/// keys at once, or arrowhead keys sent to a shape that isn't a line stay "Edit Shape".
+fn edit_history_name(s: &Session, id: LayerId, p: &Value) -> &'static str {
+    const EDIT: &str = "Edit Shape";
+    let is_line = s
+        .active()
+        .and_then(|st| st.doc.layer(id))
+        .is_some_and(|l| matches!(&l.content, LayerContent::Shape(sh) if matches!(sh.live, Some(LiveShape::Line { .. } | LiveShape::ArrowLine { .. }))));
+    let Some(o) = p.as_object().filter(|_| is_line) else { return EDIT };
+    let mut changed = o.keys().map(String::as_str).filter(|k| !matches!(*k, "layer" | "coalesce") && !k.starts_with("__"));
+    match (changed.next(), changed.next()) {
+        (Some("arrowStart"), None) => "Change Arrowhead Start",
+        (Some("arrowEnd"), None) => "Change Arrowhead End",
+        (Some("arrowWidth"), None) => "Change Arrowhead Width",
+        (Some("arrowLength"), None) => "Change Arrowhead Length",
+        (Some("arrowConcavity"), None) => "Change Arrowhead Concavity",
+        _ => EDIT,
+    }
+}
+
 pub(super) fn shape_edit(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "shape.edit";
     let id = layer_id(s, p)?;
     let fg = s.tools.foreground;
     let fgc = Color::rgba(fg[0], fg[1], fg[2], fg[3]);
     let name = p.get("name").and_then(Value::as_str).map(str::to_string);
-    with_shape(s, id, "Edit Shape", |sh, layer| {
+    let label = edit_history_name(s, id, p);
+    with_shape(s, id, label, |sh, layer| {
         if let Some(v) = p.get("path") {
             sh.path = parse_path(v).map_err(|e| bad(CMD, e))?;
             sh.live = None;
@@ -807,6 +815,10 @@ pub(super) fn selection_to_shape(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 #[path = "triangle_layer_name_tests.rs"]
 mod triangle_layer_name_tests;
+
+#[cfg(test)]
+#[path = "triangle_box_geometry_tests.rs"]
+mod triangle_box_geometry_tests;
 
 #[cfg(test)]
 mod arrow_affine_regression_tests {

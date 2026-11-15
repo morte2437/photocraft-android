@@ -128,7 +128,7 @@ fn mask_corner(app: &PhotocraftApp) -> photocraft_doc::Knot {
 
 #[test]
 fn other_tools_keep_their_step_names() {
-    let direct = vec!["Drag Direction Point".to_string()];
+    let direct = vec!["Drag Control Point".to_string()];
     for mods in [Modifiers::NONE, Modifiers::ALT] {
         let mut ds = with_shown_handles(Tool::DirectSelection);
         assert_eq!(added(&mut ds, |a| drag(a, [140.0, 40.0], [140.0, 70.0], mods)), direct, "Direct Selection {mods:?}");
@@ -157,7 +157,7 @@ fn the_commands_take_the_step_name_and_refuse_any_other() {
     let handle = json!({"subpath": 0, "knot": 1, "handle": "out", "to": [150, 60], "independent": true});
     let mut run = |id: &str, params: &serde_json::Value| added(&mut app, |a| a.run(id, params.clone()).map(|_| ()).unwrap());
     assert_eq!(run("path.convertPoint", &convert), ["Convert Point"]);
-    assert_eq!(run("path.moveHandle", &handle), ["Drag Direction Point"]);
+    assert_eq!(run("path.moveHandle", &handle), ["Drag Control Point"]);
     let named = |p: &serde_json::Value, n: &str| {
         let mut p = p.clone();
         p["stepName"] = json!(n);
@@ -179,7 +179,7 @@ fn a_bad_step_name_is_an_error_and_changes_nothing() {
         let e = app.run("path.convertPoint", json!({"subpath": 0, "knot": 1, "stepName": bad})).unwrap_err();
         assert!(e.contains("stepName"), "{bad}: {e}");
     }
-    for bad in [json!("Change Anchor Point"), json!("Drag Direction Point"), json!(0), json!({})] {
+    for bad in [json!("Change Anchor Point"), json!("Drag Control Point"), json!(0), json!({})] {
         let e = app.run("path.moveHandle", json!({"subpath": 0, "knot": 1, "handle": "out", "to": [150, 60], "stepName": bad})).unwrap_err();
         assert!(e.contains("stepName"), "{bad}: {e}");
     }

@@ -1,38 +1,9 @@
 //! Faithful vector and selectable text export for PDF.
 
-use std::fmt::Write as _;
+use craft_pdf::write_raster::{ContentFillRule, ContentOp, ContentPath, DeviceColor, PathElement};
 
 use photocraft_color::ColorMode;
 use photocraft_doc::TextLayer;
-
-fn actual_text_hex(text: &str) -> String {
-    let mut hex = String::from("FEFF");
-    for code in text.encode_utf16() {
-        let _ = write!(hex, "{code:04X}");
-    }
-    hex
-}
-
-fn write_fill_color(out: &mut String, color: &photocraft_color::Color, mode: ColorMode, channels: usize) -> Option<()> {
-    for value in color.c.iter().take(channels) {
-        if !value.is_finite() || !(0.0..=1.0).contains(value) {
-            return None;
-        }
-        write!(out, "{value} ").ok()?;
-    }
-    writeln!(
-        out,
-        "{}",
-        match mode {
-            ColorMode::Rgb => "rg",
-            ColorMode::Grayscale => "g",
-            ColorMode::Cmyk => "k",
-            _ => return None,
-        }
-    )
-    .ok()?;
-    Some(())
-}
 
 /// Whether any glyph is thickened by faux bold or by a face lacking the weight: rendering
 /// emboldens those glyphs, but [`photocraft_text::render::glyph_outlines`] gives the regular outline.
@@ -59,8 +30,9 @@ fn straight_horizontal(layer: &TextLayer, dpi: f32) -> bool {
 #[cfg(test)]
 fn text_ops(layer: &TextLayer, mode: ColorMode, dpi: f32) -> Option<String> {
     let prepared = prepare(layer, mode, dpi)?;
-    let font = super::selection::SelectionFont::new(std::iter::once(layer.text.as_str()));
-    ops(&prepared, mode, &font)
+    let font = super::SelectionFont::new(std::iter::once(layer.text.as_str()));
+    let commands = ops(&prepared, mode, &font)?;
+    craft_pdf::write_raster::encode_vector_content(&craft_pdf::write_raster::VectorContent { operations: commands })
 }
 
 fn channels(mode: ColorMode) -> Option<usize> {
@@ -70,6 +42,15 @@ fn channels(mode: ColorMode) -> Option<usize> {
         ColorMode::Cmyk => Some(4),
         _ => None,
     }
+}
+
+fn device_color(color: &photocraft_color::Color, mode: ColorMode) -> Option<DeviceColor> {
+    Some(match mode {
+        ColorMode::Grayscale => DeviceColor::Gray(f64::from(color.c[0])),
+        ColorMode::Rgb => DeviceColor::Rgb([f64::from(color.c[0]), f64::from(color.c[1]), f64::from(color.c[2])]),
+        ColorMode::Cmyk => DeviceColor::Cmyk([f64::from(color.c[0]), f64::from(color.c[1]), f64::from(color.c[2]), f64::from(color.c[3])]),
+        _ => return None,
+    })
 }
 
 fn outlines_permitted(bytes: &[u8], index: u32) -> bool {
@@ -146,16 +127,17 @@ fn layout_checks(layer: &TextLayer, mode: ColorMode, layout: &photocraft_text::T
     true
 }
 
-pub(super) fn ops(prepared: &PreparedText<'_>, mode: ColorMode, selection_font: &super::selection::SelectionFont) -> Option<String> {
-    let channels = channels(mode)?;
-    layout_ops(prepared.layer, mode, channels, &prepared.layout, selection_font)
+pub(super) fn ops(prepared: &PreparedText<'_>, mode: ColorMode, selection_font: &super::SelectionFont) -> Option<Vec<ContentOp>> {
+    channels(mode)?;
+    layout_ops(prepared.layer, mode, &prepared.layout, selection_font)
 }
 
 /// Write one glyph outline as PDF path operators, refusing any coordinate or derived Bézier
 /// control that is not finite. A quadratic's cubic controls come from finite differences, which
 /// can overflow even when the endpoints are finite.
-fn write_path_elements(out: &mut String, elements: &[photocraft_text::render::PathEl]) -> Option<()> {
+fn path_elements(elements: &[photocraft_text::render::PathEl]) -> Option<Vec<PathElement>> {
     let mut cur = [0.0f64, 0.0f64];
+    let mut out = Vec::with_capacity(elements.len());
     for el in elements {
         match *el {
             photocraft_text::render::PathEl::MoveTo([x, y]) => {
@@ -163,14 +145,14 @@ fn write_path_elements(out: &mut String, elements: &[photocraft_text::render::Pa
                     return None;
                 }
                 cur = [x, y];
-                writeln!(out, "{x} {y} m").ok()?;
+                out.push(PathElement::MoveTo([x, y]));
             }
             photocraft_text::render::PathEl::LineTo([x, y]) => {
                 if !x.is_finite() || !y.is_finite() {
                     return None;
                 }
                 cur = [x, y];
-                writeln!(out, "{x} {y} l").ok()?;
+                out.push(PathElement::LineTo([x, y]));
             }
             photocraft_text::render::PathEl::QuadTo([cx, cy], [x, y]) => {
                 if !cx.is_finite() || !cy.is_finite() || !x.is_finite() || !y.is_finite() {
@@ -184,58 +166,52 @@ fn write_path_elements(out: &mut String, elements: &[photocraft_text::render::Pa
                     return None;
                 }
                 cur = [x, y];
-                writeln!(out, "{c1x} {c1y} {c2x} {c2y} {x} {y} c").ok()?;
+                out.push(PathElement::CubicTo([c1x, c1y], [c2x, c2y], [x, y]));
             }
             photocraft_text::render::PathEl::CurveTo([c1x, c1y], [c2x, c2y], [x, y]) => {
                 if !c1x.is_finite() || !c1y.is_finite() || !c2x.is_finite() || !c2y.is_finite() || !x.is_finite() || !y.is_finite() {
                     return None;
                 }
                 cur = [x, y];
-                writeln!(out, "{c1x} {c1y} {c2x} {c2y} {x} {y} c").ok()?;
+                out.push(PathElement::CubicTo([c1x, c1y], [c2x, c2y], [x, y]));
             }
             photocraft_text::render::PathEl::Close => {
-                writeln!(out, "h").ok()?;
+                out.push(PathElement::Close);
             }
         }
     }
+    Some(out)
+}
+
+#[cfg(test)]
+fn write_path_elements(out: &mut String, elements: &[photocraft_text::render::PathEl]) -> Option<()> {
+    let commands = path_elements(elements)?;
+    // A PDF path must have a paint operation. The test exercises geometry encoding, so use a
+    // neutral fill while preserving the shared writer's production validation.
+    let path = ContentPath { elements: commands, fill: Some((DeviceColor::Gray(0.0), ContentFillRule::NonZero)), ..ContentPath::default() };
+    let encoded = craft_pdf::write_raster::encode_vector_content(&craft_pdf::write_raster::VectorContent { operations: vec![ContentOp::Path(path)] })?;
+    out.push_str(&encoded);
     Some(())
 }
 
-fn layout_ops(
-    layer: &TextLayer,
-    mode: ColorMode,
-    channels: usize,
-    layout: &photocraft_text::TextLayout,
-    selection_font: &super::selection::SelectionFont,
-) -> Option<String> {
+fn layout_ops(layer: &TextLayer, mode: ColorMode, layout: &photocraft_text::TextLayout, selection_font: &super::SelectionFont) -> Option<Vec<ContentOp>> {
     if !layout_checks(layer, mode, layout) {
         return None;
     }
 
     let outlines = photocraft_text::render::glyph_outlines(layout, &layer.transform, None);
 
-    let mut out = String::new();
-
-    let mut current_color: Option<photocraft_color::Color> = None;
-
+    let mut out = Vec::new();
     for glyph in &outlines {
         let style = layout.styles.get(glyph.style as usize)?;
         let color = style.color.in_mode(mode);
-        if current_color.as_ref() != Some(&color) {
-            write_fill_color(&mut out, &color, mode, channels)?;
-            current_color = Some(color);
-        }
-        write_path_elements(&mut out, &glyph.elements)?;
-        writeln!(out, "f*").ok()?;
+        let fill = device_color(&color, mode)?;
+        out.push(ContentOp::Path(ContentPath { elements: path_elements(&glyph.elements)?, fill: Some((fill, ContentFillRule::EvenOdd)), stroke: None }));
     }
 
     for d in &layout.decorations {
         let style = layout.styles.get(d.style as usize)?;
         let color = style.color.in_mode(mode);
-        if current_color.as_ref() != Some(&color) {
-            write_fill_color(&mut out, &color, mode, channels)?;
-            current_color = Some(color);
-        }
         let p0 = layer.transform.apply(photocraft_geom::Point::new(f64::from(d.x0), f64::from(d.y0)));
         let p1 = layer.transform.apply(photocraft_geom::Point::new(f64::from(d.x1), f64::from(d.y0)));
         let p2 = layer.transform.apply(photocraft_geom::Point::new(f64::from(d.x1), f64::from(d.y1)));
@@ -251,12 +227,17 @@ fn layout_ops(
         {
             return None;
         }
-        writeln!(out, "{} {} m", p0.x, p0.y).ok()?;
-        writeln!(out, "{} {} l", p1.x, p1.y).ok()?;
-        writeln!(out, "{} {} l", p2.x, p2.y).ok()?;
-        writeln!(out, "{} {} l", p3.x, p3.y).ok()?;
-        writeln!(out, "h").ok()?;
-        writeln!(out, "f").ok()?;
+        out.push(ContentOp::Path(ContentPath {
+            elements: vec![
+                PathElement::MoveTo([p0.x, p0.y]),
+                PathElement::LineTo([p1.x, p1.y]),
+                PathElement::LineTo([p2.x, p2.y]),
+                PathElement::LineTo([p3.x, p3.y]),
+                PathElement::Close,
+            ],
+            fill: Some((device_color(&color, mode)?, ContentFillRule::NonZero)),
+            stroke: None,
+        }));
     }
 
     selection_ops(&mut out, layer, layout, selection_font)?;
@@ -267,7 +248,7 @@ fn layout_ops(
 /// cluster, so paragraph breaks and other whitespace omitted by shaping survive
 /// in the selection; the first span also takes leading characters. Without this a multi-line
 /// layer extracts as one run of text.
-fn selection_ops(out: &mut String, layer: &TextLayer, layout: &photocraft_text::TextLayout, selection_font: &super::selection::SelectionFont) -> Option<()> {
+fn selection_ops(out: &mut Vec<ContentOp>, layer: &TextLayer, layout: &photocraft_text::TextLayout, selection_font: &super::SelectionFont) -> Option<()> {
     let [a, b, c, d, _, _] = layer.transform.m;
     let mut current_line = None;
     let mut clusters: Vec<_> = layout.clusters.iter().collect();
@@ -293,9 +274,9 @@ fn selection_ops(out: &mut String, layer: &TextLayer, layout: &photocraft_text::
         let line = layout.lines.get(cluster.line)?;
         if current_line != Some(cluster.line) {
             if current_line.is_some() {
-                writeln!(out, "ET").ok()?;
+                out.push(ContentOp::EndSelectionLine);
             }
-            writeln!(out, "BT\n3 Tr\n/FSelect 1 Tf").ok()?;
+            out.push(ContentOp::BeginSelectionLine);
             current_line = Some(cluster.line);
         }
         let height = (line.ascent + line.descent).max(1.0);
@@ -312,15 +293,12 @@ fn selection_ops(out: &mut String, layer: &TextLayer, layout: &photocraft_text::
         if !ta.is_finite() || !tb.is_finite() || !tc.is_finite() || !td.is_finite() {
             return None;
         }
-        let hex = actual_text_hex(span);
         let encoded = selection_font.encode(span)?;
-        writeln!(out, "/Span << /ActualText <{hex}> >> BDC").ok()?;
-        writeln!(out, "{ta} {tb} {tc} {td} {} {} Tm", origin.x, origin.y).ok()?;
-        writeln!(out, "<{encoded}> Tj\nEMC").ok()?;
+        out.push(ContentOp::SelectionText { actual_text: span.to_owned(), encoded, matrix: [ta, tb, tc, td, origin.x, origin.y] });
     }
 
     if current_line.is_some() {
-        writeln!(out, "ET").ok()?;
+        out.push(ContentOp::EndSelectionLine);
     }
     Some(())
 }
@@ -347,8 +325,8 @@ mod tests {
                 face.font.data = restricted.clone().into();
                 face.font.index = 0;
             }
-            let font = super::super::selection::SelectionFont::new(std::iter::once(layer.text.as_str()));
-            assert!(layout_ops(&layer, ColorMode::Rgb, 3, &layout, &font).is_none(), "restricted text must remain raster");
+            let font = super::super::SelectionFont::new(std::iter::once(layer.text.as_str()));
+            assert!(layout_ops(&layer, ColorMode::Rgb, &layout, &font).is_none(), "restricted text must remain raster");
         }
         assert!(!outlines_permitted(&[], 0));
     }
@@ -463,8 +441,8 @@ mod tests {
         let line = layout.lines.get(cluster.line).expect("a line");
         let origin = layer.transform.apply(photocraft_geom::Point::new(f64::from(cluster.x), f64::from(line.baseline)));
         assert!(origin.x.is_finite() && origin.y.is_finite(), "the fixture's origin stays finite");
-        let font = super::super::selection::SelectionFont::new(std::iter::once(layer.text.as_str()));
-        assert!(layout_ops(&layer, ColorMode::Rgb, 3, &layout, &font).is_none(), "overflowing Tm coefficients must not be emitted");
+        let font = super::super::SelectionFont::new(std::iter::once(layer.text.as_str()));
+        assert!(layout_ops(&layer, ColorMode::Rgb, &layout, &font).is_none(), "overflowing Tm coefficients must not be emitted");
         assert!(text_ops(&layer, ColorMode::Rgb, 72.0).is_none());
     }
 }

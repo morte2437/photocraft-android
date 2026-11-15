@@ -355,7 +355,7 @@ fn command_body_more(app: &mut PhotocraftApp, ui: &mut egui::Ui, d: &Dialog, fie
             }
         }
         _ if crate::color_range_ui::owns(fields) => crate::color_range_ui::body(app, ui, fields),
-        _ if crate::prefs_ui::owns(fields) => crate::prefs_ui::body(app, ui, fields),
+        _ if crate::prefs_ui::owns(fields) => crate::prefs_ui::body(app, ui, fields, d.id),
         _ if fields.contains_key("__export") => crate::export_dialog::body(app, ui, fields),
         // Image Size and Canvas Size open on Width, selected (#2329).
         _ if fields.contains_key("__sizing") => first_field_focused(ui, id, |ui| crate::sizing::body(ui, fields)),
@@ -547,12 +547,14 @@ fn button_row(
         } else {
             dialog_buttons(ui, &[ok, cancel])
         };
+        // Enter is the default button, except where a popup takes it or Export As waits for a click.
+        let enter_confirms = can_ok && !popup_blocks_enter && crate::export_dialog::enter_confirms(fields);
         match clicked {
             Some(ButtonRole::Cancel) if reset => crate::dialog_alt_reset::apply(app, ui.ctx(), fields),
             Some(ButtonRole::Cancel) => outcome = Some(false),
             Some(ButtonRole::Apply) => apply_requested = true,
             Some(_) => outcome = Some(true),
-            None if interactive && can_ok && !popup_blocks_enter && ui.input(|i| i.key_pressed(egui::Key::Enter)) => outcome = Some(true),
+            None if interactive && enter_confirms && ui.input(|i| i.key_pressed(egui::Key::Enter)) => outcome = Some(true),
             None => {}
         }
     }
@@ -561,7 +563,9 @@ fn button_row(
 
 /// The default button's label: what OK means for this dialog.
 fn ok_label(d: &Dialog) -> &'static str {
-    if d.kind == DialogKind::NewDocument {
+    if image_processor_ui::owns(&d.fields) {
+        tl!("Run")
+    } else if d.kind == DialogKind::NewDocument {
         tl!("Create")
     } else if crate::open_prompt::owns_memory(&d.fields) {
         tl!("Open anyway")
@@ -630,6 +634,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut drag = egui::Vec2::ZERO;
         let mut close_clicked = false;
         let mut sizing = false;
+        let mut processor_alert = None;
+        let mut fit_image_alert = None;
         let area = match start {
             Some(offset) => egui::Modal::default_area(id).anchor(egui::Align2::LEFT_TOP, offset),
             None => egui::Modal::default_area(id),
@@ -722,10 +728,34 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             crate::widgets::hairline(ui);
             ui.add_space(8.0);
             crate::field_tab::begin(ui.ctx());
-            if let Some(done) = dialog_body(app, ui, &d, &mut fields, id, interactive) {
-                outcome = Some(done);
+            if image_processor_ui::owns(&fields) {
+                processor_alert = image_processor_ui::body(ui, &mut fields);
+            } else if fit_image_range::owns(&fields) {
+                fit_image_alert = fit_image_range::body(ui, &mut fields);
+            } else {
+                outcome = dialog_body(app, ui, &d, &mut fields, id, interactive);
             }
             crate::field_tab::end(ui.ctx(), tab);
+            if let Some(index) = fields.remove("__scratchBrowse").and_then(|v| v.as_u64()) {
+                let dialog_id = d.id;
+                let result = app.ask_folder(move |app, path| {
+                    let dialog = app.ui.dialog_mut(dialog_id).ok_or("the dialog was closed")?;
+                    let disk = dialog
+                        .fields
+                        .get_mut("values")
+                        .and_then(|v| v.pointer_mut(&format!("/scratchDisks/disks/{index}/path")))
+                        .ok_or("the scratch disk was removed")?;
+                    if disk.as_str().is_some_and(|s| s.trim() != "(system temp)") {
+                        *disk = json!(path);
+                    }
+                    Ok(Value::Null)
+                });
+                if let Err(error) = result
+                    && error != crate::file_dialog::CANCELLED
+                {
+                    app.ui.status = error;
+                }
+            }
             if let Some(Value::String(key)) = fields.remove(BROWSE_FIELD) {
                 browse_field(app, d.id, &fields, &key);
             }
@@ -789,6 +819,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         {
             outcome = Some(false);
         }
+        outcome = image_processor_ui::finish(&mut app.ui, interactive, processor_alert, outcome);
+        outcome = fit_image_range::finish(&mut app.ui, interactive, fit_image_alert, outcome);
         if let Some(dm) = app.ui.dialog_mut(d.id) {
             dm.fields = fields;
         }
@@ -1169,6 +1201,8 @@ fn confirm_command_more(app: &mut PhotocraftApp, d: Dialog) -> Result<Value, Str
 
 pub fn confirm(app: &mut PhotocraftApp, id: u64) -> Result<Value, String> {
     confirm_preflight(app, id)?;
+    image_processor_ui::preflight(&mut app.ui, id)?;
+    fit_image_range::preflight(&mut app.ui, id)?;
     let d = app.ui.close_dialog(id).ok_or_else(|| format!("no dialog {id}"))?;
     match d.kind {
         DialogKind::NewDocument => {
@@ -1310,16 +1344,21 @@ pub mod duplicate_layer_ui;
 pub mod edit_history;
 pub mod equalize_ui;
 pub mod export_dialog;
+pub(crate) mod fade_modes;
 pub mod file_ui;
 pub mod fill_ui;
 pub mod filter_dialog;
 pub(super) mod filter_preview_ui;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) mod filter_preview_worker;
+mod fit_image_range;
+#[cfg(test)]
+mod fit_image_range_tests;
 pub mod gallery_ui;
 pub(crate) mod guide_edit;
 pub mod guide_layout_ui;
 pub mod history_options_ui;
+mod image_processor_ui;
 pub mod jpeg_options_ui;
 #[cfg(test)]
 mod label_column_tests;
@@ -1335,6 +1374,10 @@ pub mod new_guide_ui;
 pub mod new_layer_ui;
 pub mod open_prompt;
 pub mod palette;
+#[cfg(test)]
+mod paths_export_default_tests;
+#[cfg(test)]
+mod paths_export_document_bounds_tests;
 pub(crate) mod pattern_fill_ui;
 pub mod preset_group_prompt;
 pub mod rasterize_prompt;

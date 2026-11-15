@@ -706,15 +706,11 @@ pub fn source_marker_point(app: &PhotocraftApp) -> Option<[f64; 2]> {
         return None;
     }
     let slot = app.session.presets.clone.active();
-    if slot.document_closed || slot.source_doc(app.session.active().map(|d| d.doc.id)).is_some() {
+    if slot.document_closed || slot.document.is_some_and(|id| app.session.active().is_none_or(|st| st.doc.id != id)) {
         return None;
     }
     let at = app.drag.as_ref().filter(|d| matches!(d.tool, Tool::CloneStamp | Tool::Healing)).and_then(|d| d.points.last().map(|p| [p[0], p[1]]))?;
-    match (crate::preset_panels::clone_sample_point(app, Some(at)), app.ui.clone_offset, app.ui.clone_source) {
-        (Some(p), ..) => Some(p),
-        (None, Some(off), _) => Some([at[0] + off[0], at[1] + off[1]]),
-        (None, None, s) => s,
-    }
+    crate::preset_panels::clone_sample_point(app, Some(at))
 }
 
 /// Crosshair at [`source_marker_point`].
@@ -979,7 +975,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::checkbox(ui, &mut o.clone_aligned, tl!("Aligned"));
             opt(ui, tl!("Sample:"));
             clone_sample_dropdown(ui, &mut o.clone_sample, indexed);
-            if app.ui.clone_source.is_none() {
+            if app.session.presets.clone.active().source.is_none() {
                 crate::widgets::vline(ui, 22.0);
                 opt(ui, &crate::i18n::fmt(tl!("{key}-click to set the source"), &[("key", &crate::shortcuts::pretty("Alt"))]));
             }
@@ -1119,7 +1115,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
                     let entries = st.history.entries();
                     let name =
                         if idx < entries.len() { entries.get(idx).cloned() } else { st.history.redo_labels().nth(idx - entries.len()).map(str::to_string) }?;
-                    if idx == 0 && name == "Open" {
+                    // The opening state is "Open" for a file and "New" for a new document (#14029).
+                    if idx == 0 && matches!(name.as_str(), "Open" | "New") {
                         Some(tl!("Paints from the document's opening state").to_string())
                     } else {
                         Some(crate::i18n::fmt(tl!("Source: {name}"), &[("name", &name)]))

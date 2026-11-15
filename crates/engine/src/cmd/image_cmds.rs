@@ -318,6 +318,12 @@ fn image_size(s: &mut Session, p: &Value) -> Result<Value> {
             Method::Automatic if nw > ow || nh > oh => Resample::PreserveDetails,
             Method::Automatic => Resample::BicubicSharper,
         };
+        // Resampling to a new pixel size drops the selection rather than scaling it, as Photoshop
+        // does (#13856); undo brings it back with the old size. Taken before the resample so it
+        // isn't scaled for nothing. A resolution-only change (returned above) keeps it.
+        if (nw, nh) != (ow, oh) {
+            doc.selection = None;
+        }
         crate::canvas_geom::keeping_count_points(doc, |doc| resample_doc_with_styles(doc, "image.imageSize", nw, nh, filter, scale_styles))
     })?;
     // The size the document has now: without resampling `width`/`height` are ignored (#1815).
@@ -1293,3 +1299,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "image_size_drops_selection_tests.rs"]
+mod image_size_drops_selection_tests;

@@ -6,7 +6,7 @@ use std::process::Command;
 use serde_json::Value;
 
 fn bin() -> Command {
-    let mut cmd = Command::new(crate::binary());
+    let mut cmd = crate::command();
     cmd.env_remove("PHOTOCRAFT_CONTROL_PORT");
     cmd.env_remove("PHOTOCRAFT_CONTROL_TOKEN");
     cmd.env_remove("PHOTOCRAFT_CONTROL_TOKEN_FILE");

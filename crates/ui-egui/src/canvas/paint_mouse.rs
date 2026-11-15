@@ -437,6 +437,7 @@ pub fn canvas_buttons(app: &mut PhotocraftApp, response: &Response, tool: Tool, 
         && !crate::color_hud::is_open(&app.ui)
         && right_click_picker(tool)
         && let Some(p) = right_at
+        && !crate::retouch_ui::remove_pending_live(app)
     {
         crate::brush_picker::open(&mut app.ui, &response.ctx, [p.x, p.y]);
     }
@@ -489,7 +490,8 @@ pub fn pointer_secondary(app: &mut PhotocraftApp, ctx: &egui::Context, down: boo
         app.secondary_erase = down;
         return true;
     }
-    if down && right_click_picker(tool) {
+    // Waiting Remove strokes take no right-click: nothing opens over their tint (#12551).
+    if down && right_click_picker(tool) && !crate::retouch_ui::remove_pending_live(app) {
         crate::brush_picker::open(&mut app.ui, ctx, at);
     }
     false
@@ -586,3 +588,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../pencil_reset_defaults_tests.rs"]
 mod pencil_reset_defaults_tests;
+
+#[cfg(test)]
+#[path = "remove_right_click_tests.rs"]
+mod remove_right_click_tests;

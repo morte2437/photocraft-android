@@ -175,7 +175,7 @@ pub fn same_format(path: &str) -> String {
     const IMPORT_ONLY: &[&str] =
         &["pdn", "kra", "krz", "af", "afdesign", "afphoto", "afpub", "heic", "heif", "hif", "svg", "svgz", "cin", "pcx", "xpm", "xcf", "xcfgz", "gz", "psdt"];
     let ext = extension(path).unwrap_or_else(|| "png".into());
-    let no_writer = photocraft_codecs::from_extension(&ext).is_some_and(|f| !f.caps().write);
+    let no_writer = photocraft_formats::from_extension(&ext).is_some_and(|f| f.capabilities().write != photocraft_formats::Availability::Available);
     if photocraft_io::raw::EXTENSIONS.contains(&ext.as_str()) || IMPORT_ONLY.contains(&ext.as_str()) || no_writer { "psd".into() } else { ext }
 }
 
@@ -192,7 +192,9 @@ fn same_format_takes_the_file_names_extension() {
     for name in ["/in/scan.dcm", "/in/scan.DICOM", "/in/scan.dc3", "/in/page.xcf", "/in/page.xcf.gz", "/in/page.xcfgz", "/in/card.psdt"] {
         assert_eq!(same_format(name), "psd", "{name}");
     }
-    for f in photocraft_codecs::Format::ALL.into_iter().filter(|f| f.caps().read && !f.caps().write) {
+    for f in photocraft_formats::Format::ALL.into_iter().filter(|f| {
+        f.capabilities().read == photocraft_formats::Availability::Available && f.capabilities().write != photocraft_formats::Availability::Available
+    }) {
         for ext in f.extensions() {
             assert_eq!(same_format(&format!("/in/a.{ext}")), "psd", "{f:?} .{ext}");
         }
@@ -997,7 +999,8 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     && !extension(out).is_some_and(|ext| {
                         ext == encode_format
                             && (matches!(ext.as_str(), "psd" | "psb" | "pcraft" | "ora")
-                                || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write))
+                                || photocraft_formats::from_extension(&ext)
+                                    .is_some_and(|format| format.capabilities().write == photocraft_formats::Availability::Available))
                     })
                 {
                     return Err(EngineError::Other(format!("Save and Close needs Save As for this source format: {out}")).into());
@@ -1022,7 +1025,7 @@ pub(super) fn batch(s: &mut Session, p: &Value) -> Result<Value> {
                     // All recorded Opens passed their gates before inspecting the original source,
                     // including when this result is a saved snapshot whose document has been closed.
                     preserve_source(out)?;
-                    let tiff = extension(out).and_then(|ext| photocraft_codecs::from_extension(&ext)) == Some(photocraft_codecs::Format::Tiff);
+                    let tiff = extension(out).and_then(|ext| photocraft_formats::from_extension(&ext)) == Some(photocraft_formats::Format::Tiff);
                     if tiff {
                         if !matches!(
                             doc.pixel_format().mode,
@@ -1312,7 +1315,7 @@ fn preserve_source(path: &str) -> Result<()> {
     if photocraft_codecs::has_unretained_source_data(&bytes).map_err(|e| EngineError::Other(format!("cannot inspect source data: {e}")))? {
         return Err(EngineError::Other("Save and Close cannot preserve additional source data; save to a separate output folder".into()));
     }
-    if photocraft_codecs::detect(&bytes) == Some(photocraft_codecs::Format::OpenExr) {
+    if photocraft_formats::detect(path, &bytes) == Some(photocraft_formats::Format::OpenExr) {
         preserve_exr(&bytes)?;
     }
     Ok(())

@@ -57,7 +57,7 @@ fn samples() -> Vec<(&'static str, Vec<u8>)> {
         }
     }
     let hex: String =
-        photocraft_cms::lutfile::LutFile::identity(2).data.into_iter().flat_map(|v| (1.0 - v).to_le_bytes()).map(|b| format!("{b:02X}")).collect();
+        craft_cms::lutfile::LutFile::identity(2).unwrap().data.into_iter().flat_map(|v| (1.0 - v).to_le_bytes()).map(|b| format!("{b:02X}")).collect();
     let look = format!("<look><LUT><size>2</size><data>{hex}</data></LUT></look>");
     let le = [vec![0xff, 0xfe], look.encode_utf16().flat_map(u16::to_le_bytes).collect()].concat();
     let be = [vec![0xfe, 0xff], look.encode_utf16().flat_map(u16::to_be_bytes).collect()].concat();

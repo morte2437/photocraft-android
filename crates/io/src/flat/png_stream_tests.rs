@@ -4,7 +4,7 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use photocraft_cms::Builtin;
+use craft_cms::Builtin;
 
 use super::*;
 

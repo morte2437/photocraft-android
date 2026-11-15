@@ -111,6 +111,15 @@ pub fn polygon(x: f64, y: f64, w: f64, h: f64, sides: u32, star_ratio: f64) -> P
     Path::new(vec![Subpath::polygon(&pts)])
 }
 
+/// Triangle filling the rectangle: the apex at the centre of the top edge, then the bottom right
+/// and the bottom left corner. A negative size extends from the origin to the left or up, and the
+/// apex stays on top.
+pub fn triangle(x: f64, y: f64, w: f64, h: f64) -> Path {
+    let (x, w) = if w < 0.0 { (x + w, -w) } else { (x, w) };
+    let (y, h) = if h < 0.0 { (y + h, -h) } else { (y, h) };
+    Path::new(vec![Subpath::polygon(&[(x + w / 2.0, y), (x + w, y + h), (x, y + h)])])
+}
+
 /// Does `star_ratio` make [`polygon`] a star (inner points between its outer ones)?
 fn is_star(star_ratio: f64) -> bool {
     star_ratio > 0.0 && star_ratio < 1.0
@@ -309,6 +318,7 @@ pub fn live_path(s: &LiveShape) -> Path {
         LiveShape::Polygon { rect: [x, y, w, h], sides, star_ratio, corner_radius } => {
             round_corners_where(polygon(*x, *y, *w, *h, *sides, *star_ratio), *corner_radius, |i| polygon_rounds_vertex(*star_ratio, i))
         }
+        LiveShape::Triangle { rect: [x, y, w, h], corner_radius } => round_corners(triangle(*x, *y, *w, *h), *corner_radius),
         LiveShape::Line { from, to, weight } => line((from[0], from[1]), (to[0], to[1]), *weight),
         LiveShape::ArrowLine { from, to, weight, start, end, width, length, concavity } => {
             arrow_line((from[0], from[1]), (to[0], to[1]), *weight, *start, *end, *width, *length, *concavity)
@@ -437,6 +447,10 @@ mod tests {
 #[cfg(test)]
 #[path = "star_outer_corner_radius_tests.rs"]
 mod star_outer_corner_radius_tests;
+
+#[cfg(test)]
+#[path = "triangle_box_geometry_tests.rs"]
+mod triangle_box_geometry_tests;
 
 #[cfg(test)]
 #[path = "line_arrow_concavity_tests.rs"]

@@ -598,7 +598,7 @@ pub(super) fn tool_event_with_view(app: &mut PhotocraftApp, ev: ToolEvent, mods:
             }
             match tool {
                 Tool::PathSelection => {
-                    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
+                    let tol = crate::path_components::press_tolerance(app);
                     if let Some(st) = app.session.active()
                         && let Some(id) = crate::vector_ui::pick_shape_at(&st.doc, [x, y], tol)
                     {
@@ -824,8 +824,8 @@ fn hidden_target(app: &PhotocraftApp, tool: Tool) -> Option<&'static str> {
 
 /// The press-time refusals: a hidden target layer (#571), and for the tools with an alert in
 /// `brush_refusal` (the Brush, #11898, and others) a locked layer or a group's pixels. Those tools
-/// say why in an alert, as in Photoshop; the other tools say a hidden target in the status bar.
-/// True when the press is refused.
+/// say why in an alert, as in Photoshop; the other tools say a hidden target in the status bar
+/// (the Remove tool mostly says nothing: [`quiet_hidden_refusal`]). True when the press is refused.
 fn press_refused(app: &mut PhotocraftApp, tool: Tool) -> bool {
     let hidden = hidden_target(app, tool);
     if let Some(message) = crate::brush_refusal::alert(app, tool, hidden.is_some()) {
@@ -833,8 +833,10 @@ fn press_refused(app: &mut PhotocraftApp, tool: Tool) -> bool {
         return true;
     }
     if let Some(why) = hidden {
-        app.ui.status = why.into();
-        app.ui.status_error = true;
+        if !quiet_hidden_refusal(app, tool) {
+            app.ui.status = why.into();
+            app.ui.status_error = true;
+        }
         return true;
     }
     false
@@ -853,6 +855,22 @@ fn refuse_group(app: &mut PhotocraftApp, tool: Tool) -> bool {
         app.ui.open_dialog(crate::state::DialogKind::Error, json!({"message": message}).as_object().cloned().unwrap_or_default());
     }
     group
+}
+
+/// A Remove press on a hidden active pixel layer does nothing and says nothing, as in Photoshop
+/// (#12554). Only that case was measured: a layer inside a hidden group, a targeted mask, Sample
+/// All Layers and the other layer kinds keep the status-bar error. Hidden is checked before the
+/// lock, so a hidden layer with Lock All is quiet too.
+fn quiet_hidden_refusal(app: &PhotocraftApp, tool: Tool) -> bool {
+    if tool != Tool::Remove || app.ui.tool_options.sample_all.remove || paint_target(app) != json!("pixels") {
+        return false;
+    }
+    let Some(st) = app.session.active() else { return false };
+    let Some(id) = st.active_layer.filter(|&id| st.doc.layer(id).is_some_and(|l| matches!(l.content, photocraft_doc::LayerContent::Raster(_)))) else {
+        return false;
+    };
+    let Some(path) = st.doc.path_of(id) else { return false };
+    (1..path.len()).all(|n| path.get(..n).and_then(|p| st.doc.layer_at(p)).is_some_and(|l| l.visible))
 }
 
 /// Is document point `p` inside the active document's selection?

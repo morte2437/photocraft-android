@@ -43,19 +43,20 @@ pub(crate) fn untarget_saved_path_off(app: &mut PhotocraftApp, at: [f64; 2], tol
     }
 }
 
-/// The selected components: their path and the first subpath of each, in order. `None` with
-/// nothing selected, a selection on a path that is not an active one any more, or a tool other
-/// than Path Selection (the only one that shows it, so the only one that acts on it).
+/// The selected components: their path and the first subpath of each, in order. With Direct
+/// Selection, the components that have a selected anchor (#13219), on whichever path its marquee
+/// reached. `None` with nothing selected, a selection on a path that is gone or locked, or another
+/// tool (they show no selection, so they act on none).
 pub(crate) fn selected(app: &PhotocraftApp) -> Option<(PathRef, Path, Vec<usize>)> {
-    if app.ui.tool != Tool::PathSelection {
+    if !matches!(app.ui.tool, Tool::PathSelection | Tool::DirectSelection) {
         return None;
     }
     let sel = &app.ui.direct_selection;
     if !crate::direct_select::still_valid(app, sel) {
         return None;
     }
-    let r = sel.target.filter(|r| *r != PathRef::Pen)?;
-    let (_, path) = active_paths(app).into_iter().find(|(p, _)| *p == r)?;
+    let r = sel.target.filter(|r| *r != PathRef::Pen && crate::direct_select::writable(app, r))?;
+    let (_, path) = crate::direct_select::candidates(app).into_iter().find(|(p, _)| *p == r)?;
     let components = path.components();
     let mut heads: Vec<usize> = sel.anchors.iter().filter_map(|[s, _]| components.iter().find(|c| c.contains(s)).map(|c| c.start)).collect();
     heads.sort_unstable();
@@ -176,11 +177,25 @@ fn subpath_id(sp: &photocraft_doc::vector::Subpath) -> u64 {
     h
 }
 
+/// How far off a component's outline a press still lands on it, in document pixels: 6 screen points.
+pub(crate) fn press_tolerance(app: &PhotocraftApp) -> f64 {
+    6.0 / f64::from(app.point_zoom().max(0.01))
+}
+
+/// Whether a Path Selection press at `at` would land on a component: of a shape layer there (the
+/// press selects that layer first) or of the path it selects in. Where its cursor shows ⌥'s solid
+/// arrow (#13295).
+pub(crate) fn over_component(app: &PhotocraftApp, at: [f64; 2]) -> bool {
+    let tol = press_tolerance(app);
+    app.session.active().is_some_and(|st| crate::vector_ui::pick_shape_at(&st.doc, at, tol).is_some())
+        || target(app).is_some_and(|(_, path)| component_at(&path, at, tol).is_some())
+}
+
 /// Path Selection's press at `at`: selects the component there (⇧ adds or removes it). Pressing a
 /// selected component keeps the selection, so the drag moves all of it; pressing off every
 /// component deselects, unless ⇧ is held.
 pub(crate) fn press(app: &mut PhotocraftApp, at: [f64; 2], shift: bool) {
-    let tol = 6.0 / f64::from(app.point_zoom().max(0.01));
+    let tol = press_tolerance(app);
     let Some((r, path)) = target(app) else {
         app.ui.direct_selection = DirectSelection::default();
         return;

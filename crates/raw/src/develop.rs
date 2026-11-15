@@ -102,10 +102,15 @@ impl<'a> Scale<'a> {
     #[inline]
     pub(crate) fn value(&self, x: usize, y: usize, sample: usize) -> f32 {
         let s = self.s;
-        let raw = s.data[(y * s.width + x) * s.samples + sample];
-        let v = match self.lin {
-            Some(l) => f32::from(l.get(usize::from(raw)).or_else(|| l.last()).copied().unwrap_or(raw)),
-            None => f32::from(raw),
+        let index = (y * s.width + x) * s.samples + sample;
+        let v = if let Some(samples) = &s.float_data {
+            samples[index]
+        } else {
+            let raw = s.data[index];
+            match self.lin {
+                Some(l) => f32::from(l.get(usize::from(raw)).or_else(|| l.last()).copied().unwrap_or(raw)),
+                None => f32::from(raw),
+            }
         };
         let black = s.black.at(x.saturating_sub(s.active.x), y.saturating_sub(s.active.y), sample, s.samples);
         let white = s.white[sample.min(2)];
@@ -114,7 +119,12 @@ impl<'a> Scale<'a> {
             return 0.0;
         }
         let n = (v - black) / range;
-        if n.is_finite() { n } else { 0.0 }
+        let mut n = if n.is_finite() { n } else { 0.0 };
+        let (ax, ay) = (x.saturating_sub(s.active.x), y.saturating_sub(s.active.y));
+        for p in s.polynomials.iter().filter(|p| p.covers(ax, ay, sample)) {
+            n = p.eval(f64::from(n)) as f32;
+        }
+        n
     }
 }
 
@@ -128,9 +138,17 @@ fn fill_linear_row(sc: &Scale, mult: &[f32; 3], x0: usize, y: usize, row: &mut [
     let s = sc.s;
     let spp = s.samples;
     let w = row.len() / 3;
+    if s.float_data.is_some() {
+        for (i, px) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+            for k in 0..3 {
+                px[k] = (sc.value(x0 + i, y, k.min(spp.saturating_sub(1))) * mult[k]).clamp(0.0, 1.0);
+            }
+        }
+        return;
+    }
     let bl = &s.black;
     let cols = bl.cols.max(1);
-    if !bl.delta_h.is_empty() || !bl.delta_v.is_empty() || x0 < s.active.x || cols > 16 || !matches!(spp, 1 | 3) {
+    if !bl.delta_h.is_empty() || !bl.delta_v.is_empty() || x0 < s.active.x || cols > 16 || !matches!(spp, 1 | 3) || !s.polynomials.is_empty() {
         for (i, px) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             for k in 0..3 {
                 px[k] = (sc.value(x0 + i, y, k.min(spp.saturating_sub(1))) * mult[k]).clamp(0.0, 1.0);
@@ -269,7 +287,7 @@ fn develop(s: &Sensor, opts: &DevelopOptions, allow_fused: bool) -> Result<Devel
     if c.is_empty()
         || c.x.checked_add(c.width).is_none_or(|x| x > s.width)
         || c.y.checked_add(c.height).is_none_or(|y| y > s.height)
-        || samples.is_none_or(|n| s.data.len() < n)
+        || samples.is_none_or(|n| s.sample_count() < n)
     {
         return Err(RawError::malformed("crop lies outside the sensor data"));
     }
@@ -381,7 +399,7 @@ fn develop(s: &Sensor, opts: &DevelopOptions, allow_fused: bool) -> Result<Devel
             let period = if cfa.width % 2 == 0 { cfa.width.max(2) } else { cfa.width * 2 };
             let fill_row = |iy: usize, row: &mut [f32]| {
                 let y = c.y + iy;
-                if periodic {
+                if periodic && s.float_data.is_none() && s.polynomials.is_empty() {
                     // Per column of the period: black and the combined scale × white-balance gain.
                     let k: Vec<(f32, f32)> = (0..period)
                         .map(|p| {
@@ -837,6 +855,7 @@ mod tests {
             height: h,
             samples,
             data,
+            float_data: None,
             cfa,
             linearization: None,
             black: BlackLevels::uniform(64.0),
@@ -848,6 +867,7 @@ mod tests {
             orientation: 1,
             baseline_exposure: 0.0,
             gain_maps: Vec::new(),
+            polynomials: Vec::new(),
             tone_curve: vec![[0.18, 0.3], [1.0, 1.0]],
             black_point: 0.0,
             warnings: Vec::new(),

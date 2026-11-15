@@ -56,6 +56,20 @@ impl AuthorizedWorkspace {
         Ok(Self { read, write })
     }
 
+    /// This workspace with `path` as its only read root (the write authority stays). A path
+    /// spelled like the write root shares its capability, as [`Self::with_read_roots`] does, so
+    /// an implicit save can still write where a file was read.
+    pub fn with_read_root(&self, path: &Path) -> Result<Self, AutomationError> {
+        let opened: Vec<RootCapability> = self.write.iter().cloned().collect();
+        Ok(Self { read: vec![open_root(path, "read", &opened)?], write: self.write.clone() })
+    }
+
+    /// This workspace with `path` as its write root (the read authority stays), sharing the
+    /// capability of a read root spelled the same.
+    pub fn with_write_root(&self, path: &Path) -> Result<Self, AutomationError> {
+        Ok(Self { read: self.read.clone(), write: Some(open_root(path, "write", &self.read)?) })
+    }
+
     /// Read the first matching regular file, trying roots in their configured order.
     /// Only an open that reports NotFound tries the next root. Once opened, errors
     /// (including a non-regular file or a failed bounded read) never select another file.
@@ -234,21 +248,25 @@ impl Drop for TempRemoval<'_> {
     }
 }
 
-/// Whether `name`'s extension is one of the formats PhotoCraft saves or exports.
+/// Whether `name`'s extension is one of the formats PhotoCraft saves or exports. The image codec
+/// registry, not `photocraft_formats`: that one also names text and office files PhotoCraft only
+/// reads (`txt`, `md`, `csv`, `rtf`…), and notes must never be replaced (#14355). A codec counts
+/// only if this build writes it: PCX, XPM, DICOM and HEIF are read-only.
 fn written_kind(name: &str) -> bool {
     let Some((_, ext)) = name.rsplit_once('.') else { return false };
     let ext = ext.to_ascii_lowercase();
-    ["psd", "psb", "ora", "pdf", photocraft_format::EXTENSION].contains(&ext.as_str()) || photocraft_codecs::from_extension(&ext).is_some()
+    ["psd", "psb", "ora", "pdf", photocraft_format::EXTENSION].contains(&ext.as_str())
+        || photocraft_codecs::from_extension(&ext).is_some_and(|format| format.caps().write)
 }
 
-/// Whether the file at `relative` starts like an image PhotoCraft reads (PSD/PSB or a codec's
-/// magic). Containers that also hold other things (zip, PDF) are judged by name only.
+/// Whether the file at `relative` starts like an image PhotoCraft writes (PSD/PSB or a writable
+/// codec's magic). Containers that also hold other things (zip, PDF) are judged by name only.
 fn holds_image(dir: &Dir, relative: &Path) -> bool {
     let mut head = [0u8; 64];
     let Ok(mut file) = dir.open(relative) else { return false };
     let Ok(n) = file.read(&mut head) else { return false };
     let head = &head[..n];
-    head.starts_with(b"8BPS") || photocraft_codecs::detect(head).is_some()
+    head.starts_with(b"8BPS") || photocraft_codecs::detect(head).is_some_and(|format| format.caps().write)
 }
 
 fn read_to_observed_length(reader: &mut impl Read, observed_length: u64) -> Result<Vec<u8>, AutomationError> {
@@ -738,8 +756,12 @@ fn preference_uses_ambient_filesystem(path: &str) -> bool {
     let mut segments = path.split('.').filter(|segment| !segment.is_empty());
     let Some(section) = segments.next() else { return true };
     // File Handling's LUT folder (#6558) is listed from disk; the rest of that section is not.
+    // Integrations' automation roots are what this policy grants (applied at once): an agent must
+    // not widen its own file access.
+    let key = segments.next();
     matches!(section, "colorSettings" | "scriptEvents" | "historyLog" | "plugIns" | "scratchDisks")
-        || (section == "fileHandling" && segments.next().is_none_or(|key| key == "lutFolder"))
+        || (section == "fileHandling" && key.is_none_or(|key| key == "lutFolder"))
+        || (section == "integrations" && key.is_none_or(|key| matches!(key, "readRoot" | "writeRoot")))
 }
 
 fn command_uses_ambient_path(id: &str, params: &Value) -> bool {

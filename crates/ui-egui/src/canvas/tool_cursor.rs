@@ -274,6 +274,68 @@ pub(crate) fn path_type(painter: &Painter, at: Pos2) -> CursorIcon {
     outline(painter, at, path_type_rings(), false)
 }
 
+/// The Ruler tool's pointer (#12037). A small arrow with a ruler below right of its tip, and the
+/// same arrow with a protractor's angle mark over an end point with ⌥ — the same hit test a press
+/// makes its decision with (`analysis_ui::ruler_end_at`), so the angle mark shows exactly where an
+/// ⌥-drag starts the protractor arm. The hotspot is the arrow's tip, so the point a press takes is
+/// the pointer itself. `CursorIcon::None` with the shape painted where a backend takes no bitmap,
+/// as for the other tool pointers.
+pub(crate) fn ruler(app: &crate::PhotocraftApp, painter: &Painter, at: Pos2, doc: [f64; 2], mods: egui::Modifiers) -> CursorIcon {
+    outline(painter, at, ruler_rings(mods.alt && crate::analysis_ui::ruler_end_at(app, doc)), false)
+}
+
+/// The Ruler cursors' geometry, in points round the hotspot on the arrow's tip: the arrowhead,
+/// then the glyph below right of it. Our own artwork, in the same outlined pair the other tool
+/// pointers use.
+fn ruler_rings(protractor: bool) -> Vec<Vec<Vec2>> {
+    let mut rings = vec![ruler_arrow()];
+    rings.extend(if protractor { protractor_glyph() } else { straightedge_glyph() });
+    rings
+}
+
+/// The arrowhead: tip on the hotspot, body towards the lower right as a plain pointer's sits, with
+/// the notch in its back.
+fn ruler_arrow() -> Vec<Vec2> {
+    let d = std::f32::consts::FRAC_1_SQRT_2;
+    let (along, side) = (vec2(d, d), vec2(-d, d));
+    let (base, notch, half) = (along * 11.5, along * 4.6, 3.6);
+    vec![Vec2::ZERO, base + side * half, notch, base - side * half]
+}
+
+/// A ticked straightedge below right of the arrow's tip: the bar and three ticks off its upper edge.
+fn straightedge_glyph() -> Vec<Vec<Vec2>> {
+    let (along, side) = (vec2(0.948_7, 0.316_2), vec2(-0.316_2, 0.948_7));
+    let (from, len, half) = (vec2(10.5, 12.5), 12.0, 2.4);
+    let to = from + along * len;
+    let mut rings = vec![vec![from + side * half, to + side * half, to - side * half, from - side * half]];
+    for t in [0.3, 0.55, 0.8] {
+        let edge = from + along * (len * t) - side * half;
+        rings.push(open_ring(&[edge, edge + side * 1.7]));
+    }
+    rings
+}
+
+/// A protractor's angle mark below right of the arrow's tip: two arms out of one vertex and the arc
+/// between them.
+fn protractor_glyph() -> Vec<Vec<Vec2>> {
+    let vertex = vec2(9.0, 19.5);
+    let arc: Vec<Vec2> = (0..=6)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::FRAC_PI_4 / 6.0;
+            vertex + vec2(a.cos(), -a.sin()) * 4.5
+        })
+        .collect();
+    vec![open_ring(&[vertex, vertex + vec2(11.0, 0.0)]), open_ring(&[vertex, vertex + vec2(7.8, -7.8)]), open_ring(&arc)]
+}
+
+/// A ring through `pts` and back again: [`Shape::Outline`] closes its rings, so an open line has to
+/// list its points both ways instead of gaining the chord back to its start.
+fn open_ring(pts: &[Vec2]) -> Vec<Vec2> {
+    let mut ring = pts.to_vec();
+    ring.extend(pts.get(1..pts.len().saturating_sub(1)).unwrap_or(&[]).iter().rev().copied());
+    ring
+}
+
 /// Can this pass show an OS cursor bitmap? eframe's immediate viewports and its web integration
 /// don't upload cursor images; every desktop root viewport does (winit custom cursors). Wayland at
 /// any scale but 1 doesn't either: winit sizes the bitmap there with a `wp_viewport` destination
@@ -915,6 +977,9 @@ fn rasterize_pipette_svg(icon: &str, scale: f32, side: u16, hot: u16) -> Result<
     let rgba: Vec<u8> = image.pixels.iter().flat_map(|pixel| pixel.to_srgba_unmultiplied()).collect();
     Ok(CustomCursorImage { rgba: Arc::from(rgba), size: [side, side], hotspot: [hot, hot] })
 }
+
+#[cfg(test)]
+mod ruler_tests;
 
 #[cfg(test)]
 mod tests;

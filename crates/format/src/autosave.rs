@@ -322,7 +322,7 @@ fn sidecarless_entry(recovery_dir: &Path, bundle: &Path) -> Option<RecoveryEntry
         return None;
     }
     let meta = std::fs::symlink_metadata(bundle.join(crate::store::MANIFEST)).ok().filter(|m| m.is_file())?;
-    let source = crate::store::DirSource { root: bundle.to_path_buf() };
+    let source = crate::store::DirSource::new(bundle, &crate::LoadOptions::default()).ok()?;
     let manifest = crate::store::read_manifest(&source, &crate::LoadOptions::default()).ok()?;
     let saved_at = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
     let info = RecoveryInfo { key: key.to_string(), document_name: manifest.document.name, original_path: None, saved_at, revision: 0 };

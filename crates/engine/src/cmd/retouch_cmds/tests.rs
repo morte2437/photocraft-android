@@ -69,7 +69,7 @@ fn periodic_clone_projection_is_disjoint_and_matches_pixel_modulo() {
 
 #[test]
 fn a_hugely_scaled_clone_source_is_refused_before_the_dense_read() {
-    use super::clone::{CloneFrom, clone_sample};
+    use super::clone::clone_sample;
     use super::sampling::sample_layers;
     use crate::presets::clone_source::Mapping;
     let s = session(32, 24, 8, "rgb");
@@ -77,9 +77,10 @@ fn a_hugely_scaled_clone_source_is_refused_before_the_dense_read() {
     let id = d.active_layer.unwrap();
     let surf = d.doc.layer(id).unwrap().surface().unwrap();
     let which = sample_layers(&json!({"sampleLayer": "current"}), "paint.cloneStamp").unwrap();
+    let source = super::clone_sampling::resolve(&s, &json!({"sampleLayer": "current"}), "paint.cloneStamp").unwrap();
     // 1000x: a 100x100 destination asks for a ~100000x100000 source window.
     let map = Mapping { source: (0.0, 0.0), anchor: (0.0, 0.0), m: [1000.0, 0.0, 0.0, 1000.0], document: None };
-    let r = clone_sample(&d.doc, Some(id), surf, &CloneFrom::Here, which, Rect::new(0, 0, 100, 100), &map, false, "paint.cloneStamp");
+    let r = clone_sample(&d.doc, Some(id), surf, which, &source, Rect::new(0, 0, 100, 100), &map, false, "paint.cloneStamp");
     assert!(r.is_err());
 }
 
@@ -486,17 +487,193 @@ fn blur_reduces_local_variance_and_sharpen_increases_it() {
         s.execute("paint.blur", json!({"points": [[5, 15], [25, 15]], "size": 20, "hardness": 100, "strength": 100})).unwrap();
         assert!(var(&s, 10) < v0 * 0.5, "depth {depth}: {v0} → {}", var(&s, 10));
         assert!((var(&s, 45) - v0).abs() < 1e-3, "outside untouched");
-        // Sharpen a low-contrast checkerboard: contrast grows; Protect Detail caps it at the local range.
+        // Sharpen a low-contrast checkerboard: contrast grows, with Protect Detail too (#12938).
         let mut s = session(60, 30, depth, "rgb");
         paint_layer(&mut s, |x, y| if (x + y) % 2 == 0 { [0.45, 0.45, 0.45, 1.0] } else { [0.55, 0.55, 0.55, 1.0] });
         let v0 = var(&s, 10);
         s.execute("paint.sharpen", json!({"points": [[5, 15], [25, 15]], "size": 20, "hardness": 100, "strength": 100, "protectDetail": false})).unwrap();
         assert!(var(&s, 10) > v0 * 1.5, "depth {depth}: {v0} → {}", var(&s, 10));
-        // Pinned at 25%: Protect Detail clamps per dab, so denser dabs creep past the range.
+        // Protect Detail moves a pixel by less than 6 levels per dab; at 25 % spacing four dabs
+        // pass over each point.
         s.execute("paint.sharpen", json!({"points": [[35, 15], [55, 15]], "size": 20, "hardness": 100, "strength": 100, "spacing": 25})).unwrap();
         let hi = (10..20).flat_map(|y| (40..50).map(move |x| (x, y))).map(|(x, y)| rgba(&s, x, y)[0]).fold(0.0, f32::max);
-        assert!(hi <= 0.55 + tol(depth), "protect detail: {hi}");
+        assert!(hi > 0.55 + tol(depth) && hi <= 0.55 + 4.0 * 6.0 / 255.0 + tol(depth), "protect detail: {hi}");
     }
+}
+
+#[test]
+fn protect_detail_click_on_a_step_follows_strength() {
+    // #12938: one 40 px hard click on a grey 96 | 160 step, Protect Detail on (the default). The
+    // reference gives x 399/400 = 90/164 at 100 % and 93/162 at 50 %; Strength applies once per dab.
+    let level = |s: &Session, x| (rgba(s, x, 20)[0] * 255.0).round() as i32;
+    for (strength, dark, light, tol) in [(100, 90, 164, 3), (50, 93, 162, 2), (1, 96, 160, 0)] {
+        let mut s = session(80, 40, 8, "rgb");
+        paint_layer(&mut s, |x, _| if x < 40 { [96.0 / 255.0, 96.0 / 255.0, 96.0 / 255.0, 1.0] } else { [160.0 / 255.0, 160.0 / 255.0, 160.0 / 255.0, 1.0] });
+        s.execute("paint.sharpen", json!({"points": [[40, 20]], "size": 40, "hardness": 100, "strength": strength})).unwrap();
+        let (d, l) = (level(&s, 39), level(&s, 40));
+        assert!((d - dark).abs() <= tol && (l - light).abs() <= tol, "{strength} %: x 399/400 = {d}/{l}, want {dark}/{light} ± {tol}");
+    }
+}
+
+#[test]
+fn protect_detail_drags_at_the_default_spacing_widen_the_halo_without_banding() {
+    // #12938: three 40 px hard drags down a grey 96 | 160 step with the brush's own spacing. The
+    // reference gives a smooth halo that deepens and widens with every pass, with no 0/255
+    // pattern. Its drags put 4 dabs on each point (25 % spacing); at the default 10 % the drag
+    // must add up to the same, not to 10 full dabs.
+    let level = |s: &Session, x| (rgba(s, x, 80)[0] * 255.0).round() as i32;
+    let drag = |s: &mut Session, strength, spacing: Option<u32>| {
+        let mut p = json!({"points": [[40, 10], [40, 150]], "size": 40, "hardness": 100, "strength": strength});
+        if let Some(sp) = spacing {
+            p["spacing"] = json!(sp);
+        }
+        s.execute("paint.sharpen", p).unwrap();
+    };
+    let step = |x: i32, _| if x < 40 { [96.0 / 255.0, 96.0 / 255.0, 96.0 / 255.0, 1.0] } else { [160.0 / 255.0, 160.0 / 255.0, 160.0 / 255.0, 1.0] };
+    for strength in [50, 100] {
+        let (mut s, mut at25) = (session(80, 160, 8, "rgb"), session(80, 160, 8, "rgb"));
+        assert!((s.tools.brush.spacing - 0.1).abs() < 1e-6, "the default retouch spacing");
+        paint_layer(&mut s, step);
+        paint_layer(&mut at25, step);
+        let (mut depth, mut width) = (0, 0);
+        for pass in 1..=3 {
+            drag(&mut s, strength, None);
+            drag(&mut at25, strength, Some(25));
+            let row: Vec<i32> = (0..80).map(|x| level(&s, x)).collect();
+            assert!(row.iter().all(|v| (1..=254).contains(v)), "{strength} % pass {pass}: black and white bands {row:?}");
+            for x in [39, 40] {
+                let (got, want) = (level(&s, x), level(&at25, x));
+                assert!((got - want).abs() <= 4, "{strength} % pass {pass}: x {x} = {got} at the default spacing, {want} at 25 %");
+            }
+            let (d, w) = (96 - row[39], (20..40).filter(|&x| row[x] < 94).count());
+            assert!(d > depth && w >= width, "{strength} % pass {pass}: halo depth {d} (was {depth}), width {w} (was {width}): {row:?}");
+            (depth, width) = (d, w);
+        }
+        assert!(width >= 4, "{strength} %: the halo widens to {width} px");
+    }
+}
+
+#[test]
+fn protect_detail_sharpens_with_every_stamp_of_a_count_but_not_with_airbrush_repeats() {
+    // Scattering's Count with Scatter 0 lays several stamps on the same centre; with size jitter
+    // each has its own footprint, and a larger one must sharpen the ring only it covers (the
+    // stamps after the first used to get no share at all). An airbrush click repeats the same
+    // stamp, which adds nothing, so the measured click is kept.
+    let click = |set: &dyn Fn(&mut photocraft_paint::BrushSettings)| {
+        let mut s = session(80, 40, 8, "rgb");
+        paint_layer(&mut s, |x, _| if x < 40 { [96.0 / 255.0, 96.0 / 255.0, 96.0 / 255.0, 1.0] } else { [160.0 / 255.0, 160.0 / 255.0, 160.0 / 255.0, 1.0] });
+        set(&mut s.tools.brush);
+        s.execute("paint.sharpen", json!({"points": [[40, 20]], "size": 40, "hardness": 100, "strength": 100})).unwrap();
+        // The whole image, row by row: a larger stamp's ring meets the step above and below the click.
+        (0..40).flat_map(|y| (0..80).map(move |x| (x, y))).map(|(x, y)| (rgba(&s, x, y)[0] * 255.0).round() as i32).collect::<Vec<i32>>()
+    };
+    let jitter = |b: &mut photocraft_paint::BrushSettings| {
+        b.shape_dynamics.enabled = true;
+        b.shape_dynamics.size.jitter = 1.0;
+        b.shape_dynamics.size.minimum = 0.0;
+    };
+    let count = |b: &mut photocraft_paint::BrushSettings| {
+        jitter(b);
+        b.scattering.enabled = true;
+        b.scattering.count = 4;
+    };
+    // A seed whose click lays a later stamp clearly larger than the first, as the stroke's own
+    // dab builder sees it (size jitter only shrinks, so a later stamp may also fall inside).
+    let seed = (0..256)
+        .find(|&seed| {
+            let mut b = session(8, 8, 8, "rgb").tools.brush.clone();
+            b.size = 40.0;
+            count(&mut b);
+            b.seed = seed;
+            let mut dabs = Vec::new();
+            let step = photocraft_paint::dynamics::StepInput {
+                point: photocraft_paint::StrokePoint::new(40.0, 20.0, 1.0),
+                direction: 0.0,
+                initial_direction: 0.0,
+                step: 0,
+            };
+            photocraft_paint::dynamics::DabBuilder::new(&b).build(&step, &mut dabs);
+            dabs.len() == 4 && dabs[1..].iter().any(|d| d.radius > dabs[0].radius + 3.0)
+        })
+        .expect("a seed with a larger later stamp");
+    let one = click(&|b| {
+        jitter(b);
+        b.seed = seed;
+    });
+    let four = click(&|b| {
+        count(b);
+        b.seed = seed;
+    });
+    let moved = |img: &[i32]| img.iter().enumerate().map(|(i, v)| (v - if i % 80 < 40 { 96 } else { 160 }).abs()).sum::<i32>();
+    assert!(moved(&four) > moved(&one), "seed {seed}: Count 4 sharpens the ring its larger stamp adds ({} vs {})", moved(&four), moved(&one));
+    assert!(four.iter().all(|v| (1..=254).contains(v)), "no black and white bands");
+    let plain = click(&|_| {});
+    let airbrush = click(&|b| b.build_up = true);
+    assert_eq!(airbrush, plain, "an airbrush click repeats its stamp, which adds nothing");
+    // With size jitter the airbrush click's two dabs differ in size; the second still doesn't
+    // sharpen what the first already did.
+    let airbrush_jitter = click(&|b| {
+        jitter(b);
+        b.seed = seed;
+        b.build_up = true;
+    });
+    let centre = 20 * 80 + 39..=20 * 80 + 40;
+    assert_eq!(airbrush_jitter[centre.clone()], one[centre], "a jittered airbrush repeat doesn't sharpen the centre again");
+}
+
+#[test]
+fn protect_detail_dabs_on_one_centre_apply_at_most_one_dab_at_each_pixel() {
+    // Airbrush build-up held still with shape jitter lays dabs of changing size on one centre.
+    // Together they apply each pixel's largest coverage once, so a held stroke stays bounded,
+    // while a larger stamp still reaches the ring the smaller ones missed.
+    let dab = |x: f64, radius: f32| photocraft_paint::Dab {
+        center: photocraft_geom::Point { x, y: 50.0 },
+        radius,
+        alpha: 1.0,
+        angle: 0.0,
+        roundness: 1.0,
+        flip_x: false,
+        flip_y: false,
+        opacity: 1.0,
+        color: [0.0; 4],
+        depth: 0.0,
+        index: 0,
+        proj_angle: 0.0,
+        proj_scale: 1.0,
+        wet: 1.0,
+        mix: 1.0,
+    };
+    let mut shares = super::dab::ProtectDetailShares::default();
+    let (mut applied, mut largest) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+    for (i, radius) in [10.0, 20.0, 15.0, 20.0, 5.0].into_iter().enumerate() {
+        let fp = photocraft_paint::retouch::footprint(&dab(50.0, radius), i, 1.0);
+        let (share, fresh) = shares.next(&fp);
+        assert_eq!(share, 1.0, "dab {i}: the click's share");
+        let w = fp.rect.width() as usize;
+        let at = |v: &[f32], x: i32, y: i32| v[(y - fp.rect.y0) as usize * w + (x - fp.rect.x0) as usize];
+        if i == 1 {
+            assert!(at(&fresh, 65, 50) > 0.9, "the larger stamp sharpens the ring the first missed");
+            assert_eq!(at(&fresh, 50, 50), 0.0, "but not the centre again");
+        }
+        if i >= 2 {
+            assert!(fresh.iter().all(|&f| f == 0.0), "dab {i} (radius {radius}) adds nothing the run hasn't applied");
+        }
+        for y in fp.rect.y0..fp.rect.y1 {
+            for x in fp.rect.x0..fp.rect.x1 {
+                *applied.entry((x, y)).or_insert(0.0) += at(&fresh, x, y);
+                let l = largest.entry((x, y)).or_insert(0.0f32);
+                *l = l.max(at(&fp.cov, x, y));
+            }
+        }
+    }
+    for (p, a) in &applied {
+        assert!((a - largest[p]).abs() < 1e-6 && *a <= 1.0, "pixel {p:?}: applied {a}, largest coverage {}", largest[p]);
+    }
+    // A dab on a new centre starts a new run: its full coverage at the share for 5 px moved.
+    let fp = photocraft_paint::retouch::footprint(&dab(55.0, 20.0), 5, 1.0);
+    let (share, fresh) = shares.next(&fp);
+    assert!((share - 0.5).abs() < 1e-6, "5 px over a quarter of 40 px: {share}");
+    assert_eq!(fresh, fp.cov);
 }
 
 #[test]
@@ -2854,12 +3031,12 @@ fn clone_source_in_the_painted_document_still_samples_it() {
 }
 
 #[test]
-fn clone_from_another_document_converts_its_colour_mode() {
-    // A grayscale 8-bit source cloned into a 16-bit RGB document, and an RGB source into CMYK.
+fn clone_from_another_document_converts_depth_but_requires_matching_colour_modes() {
+    // A grayscale 8-bit source cloned into a 16-bit grayscale document.
     let mut s = session(24, 24, 8, "gray");
     paint_layer(&mut s, |x, _| [x as f32 / 24.0, x as f32 / 24.0, x as f32 / 24.0, 1.0]);
     s.execute("cloneSource.set", json!({"source": [12, 12]})).unwrap();
-    s.execute("file.new", json!({"width": 40, "height": 40, "depth": 16, "mode": "rgb"})).unwrap();
+    s.execute("file.new", json!({"width": 40, "height": 40, "depth": 16, "mode": "gray"})).unwrap();
     paint_layer(&mut s, |_, _| [1.0, 0.0, 0.0, 1.0]);
     s.execute("paint.cloneStamp", json!({"points": [[30, 30]], "size": 4, "hardness": 100})).unwrap();
     let got = doc_rgba(&s, 1, 30, 30);
@@ -2876,9 +3053,11 @@ fn clone_from_another_document_converts_its_colour_mode() {
     let mut s = two_documents(8, |_, _| [0.0, 1.0, 1.0, 1.0], |_, _| [1.0, 1.0, 1.0, 1.0], [5, 5]);
     s.execute("file.new", json!({"width": 16, "height": 16, "depth": 8, "mode": "cmyk"})).unwrap();
     paint_layer(&mut s, |_, _| [1.0, 1.0, 1.0, 1.0]);
-    s.execute("paint.cloneStamp", json!({"points": [[8, 8]], "size": 4, "hardness": 100})).unwrap();
-    let cyan = doc_rgba(&s, 2, 8, 8);
-    assert!(cyan[0] < 0.3 && cyan[1] > 0.6 && cyan[2] > 0.6, "cyan through CMYK: {cyan:?}");
+    // Adobe documents matching color modes for Clone Stamp. Reject RGB into CMYK atomically.
+    let before = s.active().unwrap().doc.clone();
+    let err = s.execute("paint.cloneStamp", json!({"points": [[8, 8]], "size": 4, "hardness": 100})).unwrap_err();
+    assert!(err.to_string().contains("color modes"), "{err}");
+    assert_eq!(s.active().unwrap().doc, before);
 }
 
 #[test]
@@ -2900,11 +3079,17 @@ fn clone_from_another_document_samples_the_layer_it_was_set_on() {
         let px = doc_rgba(&s, 1, at, 6);
         assert!(px[0] > 0.99 && px[2] < 0.01, "{sample}: {px:?}");
     }
-    // Removing that layer falls back to the source document's active layer.
+    // Removing the picked layer refuses the stroke until the user picks a new source.
     s.set_active(0);
     s.execute("layer.delete", json!({})).unwrap();
     s.set_active(1);
-    s.execute("paint.cloneStamp", json!({"points": [[6, 26]], "size": 4, "hardness": 100, "sampleLayer": "current", "aligned": false})).unwrap();
+    let params = json!({"points": [[6, 26]], "size": 4, "hardness": 100, "sampleLayer": "current", "aligned": false});
+    let before = s.active().unwrap().doc.clone();
+    let err = s.execute("paint.cloneStamp", params.clone()).unwrap_err();
+    assert!(err.to_string().contains("no longer exists"), "{err}");
+    assert_eq!(s.active().unwrap().doc, before);
+    s.execute("cloneSource.set", json!({"source": [10, 10], "document": 0})).unwrap();
+    s.execute("paint.cloneStamp", params).unwrap();
     assert!(doc_rgba(&s, 1, 6, 26)[0] > 0.99);
 }
 
@@ -2954,10 +3139,14 @@ fn live_clone_rejects_a_source_document_changed_during_the_stroke() {
 #[test]
 fn clone_preview_reads_another_document() {
     use crate::presets::clone_source::{Mapping, SourceDoc};
-    let s = two_documents(8, ramp, |_, _| [0.0, 0.0, 1.0, 1.0], [10, 12]);
+    let mut s = two_documents(8, ramp, |_, _| [0.0, 0.0, 1.0, 1.0], [10, 12]);
     let source = SourceDoc { id: s.documents()[0].doc.id, layer: s.documents()[0].active_layer };
     let map = Mapping { source: (10.0, 12.0), anchor: (30.0, 30.0), m: [1.0, 0.0, 0.0, 1.0], document: Some(source) };
+    // The public preview API's explicit mapping remains independent of the selected slot.
+    s.execute("cloneSource.select", json!({"index": 1})).unwrap();
+    let slots = s.presets.clone.clone();
     let buf = clone_preview(&s, Rect::new(30, 30, 31, 31), &map, "current").unwrap();
+    assert_eq!(s.presets.clone, slots, "preview never changes the selected slot");
     let want = doc_rgba(&s, 0, 10, 12);
     for (a, b) in buf.px[0].iter().zip(want) {
         assert!((a - b).abs() < 0.01, "{:?} vs {want:?}", buf.px[0]);
@@ -2992,7 +3181,7 @@ fn a_copy_opened_after_the_clone_source_document_closed_is_not_the_source() {
     let source = s.documents()[0].doc.id;
     let copy = (*s.close(0).unwrap().doc).clone();
     let i = s.add_document(copy, None);
-    assert_eq!(s.documents()[i].doc.id, source, "the copy keeps the closed document's ID");
+    assert_ne!(s.documents()[i].doc.id, source, "a picked source reserves its document ID");
     assert_eq!(s.execute("cloneSource.list", json!({})).unwrap()["sources"][0]["document"], Value::Null);
     // Neither in the other document nor in the copy itself does the stroke read the copy.
     for painted in [0, i] {

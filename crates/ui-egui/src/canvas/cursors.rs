@@ -287,20 +287,23 @@ pub(crate) fn paint_bucket_cursor(app: &mut PhotocraftApp, painter: &egui::Paint
 /// Decided when the press starts, so ⌥ pressed or released mid-stroke never switches between
 /// painting and sampling.
 pub(super) fn alt_eyedropper(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> bool {
-    if matches!(ev, ToolEvent::Down { .. }) {
+    if let ToolEvent::Down { x, y, .. } = ev {
         let physical_right = app.services.right_button_down.as_ref().is_some_and(|f| f());
-        app.alt_sampling = !physical_right && !app.secondary_erase && alt_samples(app.active_tool(), mods);
+        app.alt_sampling = !physical_right && !app.secondary_erase && (alt_samples(app.active_tool(), mods) || shape_alt_samples(app, mods, x, y));
     }
     if !app.alt_sampling {
         return false;
     }
+    // The Triangle tool's ⇧⌥ at the press samples as ⌥ does, and the release point's colour is the
+    // one it keeps (#13364).
+    let triangle = app.active_tool() == Tool::Triangle;
     match ev {
         // ⇧⌥-click adds a colour sampler at the clicked pixel instead, as the Color Sampler tool
         // places one: no foreground change, nothing painted (#11890). A refused point (the
         // document's limit) reports in the status bar as that tool's does; off the canvas, as that
         // tool, it places none and says nothing. A press on an existing point wasn't measured, so
         // it samples the foreground as before.
-        ToolEvent::Down { x, y, .. } if mods.shift && !on_sampler(app, x, y) => {
+        ToolEvent::Down { x, y, .. } if mods.shift && !triangle && !on_sampler(app, x, y) => {
             let size = app.session.active().map(|d| d.doc.size);
             let inside = size.is_some_and(|s| (0.0..f64::from(s.width)).contains(&x) && (0.0..f64::from(s.height)).contains(&y));
             if inside && let Err(e) = app.run("view.colorSamplers.add", json!({"x": x, "y": y})) {
@@ -312,12 +315,40 @@ pub(super) fn alt_eyedropper(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui:
             }
         }
         // While ⇧⌥ stay held after that press, moves sample nothing.
-        ToolEvent::Move { .. } if mods.shift => {}
+        ToolEvent::Move { .. } if mods.shift && !triangle => {}
+        ToolEvent::Down { x, y, .. } | ToolEvent::Move { x, y, .. } if triangle => sample_shape_fill(app, x, y),
         // Without ⌥: the sample sets the foreground colour, whatever the Eyedropper would do.
         ToolEvent::Down { x, y, .. } | ToolEvent::Move { x, y, .. } => sample_eyedropper(app, x, y, egui::Modifiers::NONE),
-        ToolEvent::Up { .. } => app.alt_sampling = false,
+        ToolEvent::Up { x, y } => {
+            if triangle {
+                sample_shape_fill(app, x, y);
+            }
+            app.alt_sampling = false;
+        }
     }
     true
+}
+
+/// The Triangle tool samples with ⌥ held at the press at (x, y) only in Shape mode and with no
+/// shape layer active (#13364): with one, ⌥ subtracts from it. Path or Pixels mode and a press
+/// with nothing to sample (off the image, over transparency) weren't measured and keep drawing
+/// from the centre. Control+⌥ stays the brush-resize drag, as in [`alt_samples`].
+fn shape_alt_samples(app: &mut PhotocraftApp, mods: egui::Modifiers, x: f64, y: f64) -> bool {
+    mods.alt
+        && !mods.ctrl
+        && app.active_tool() == Tool::Triangle
+        && app.ui.tool_options.shape_mode == "shape"
+        && crate::vector_ui::active_shape_path(app).is_none()
+        && eyedropper_color(app, x, y).is_some()
+}
+
+/// The Triangle tool's ⌥ sample: the colour at (x, y) becomes the foreground and the tool's Fill, a
+/// solid fill, which follows the foreground (#13364). Where nothing is sampled, both stay.
+fn sample_shape_fill(app: &mut PhotocraftApp, x: f64, y: f64) {
+    if sampled_eyedropper(app, x, y, egui::Modifiers::NONE) {
+        app.ui.tool_options.shape_fill = true;
+        app.ui.tool_options.shape_fill_gradient = None;
+    }
 }
 
 /// Is document point (x, y) on a colour sampler, within the Color Sampler tool's reach of one (7
@@ -328,12 +359,21 @@ fn on_sampler(app: &PhotocraftApp, x: f64, y: f64) -> bool {
 }
 
 #[cfg(test)]
+#[path = "triangle_alt_eyedropper_tests.rs"]
+mod triangle_alt_eyedropper_tests;
+
+#[cfg(test)]
 #[path = "../brush_shift_alt_sampler_tests.rs"]
 mod brush_shift_alt_sampler_tests;
 
 /// Sample the image or targeted raster mask at (x, y) using the configured Sample Size.
 /// Write a valid sample to the foreground swatch, or to the background swatch with Alt.
 pub(super) fn sample_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifiers) {
+    sampled_eyedropper(app, x, y, mods);
+}
+
+/// [`sample_eyedropper`], true when it set a swatch.
+fn sampled_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifiers) -> bool {
     let rgb = if let Some((surface, canvas)) = eyedropper_mask_source(app) {
         sample_layer_mask(surface, canvas, x, y, app.ui.tool_options.eyedropper_size)
     } else {
@@ -341,8 +381,9 @@ pub(super) fn sample_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: e
     };
     if let Some(rgb) = rgb {
         let key = if mods.alt { "background" } else { "foreground" };
-        let _ = app.run("tools.setColors", json!({ key: [rgb[0],rgb[1],rgb[2],1.0] }));
+        return app.run("tools.setColors", json!({ key: [rgb[0],rgb[1],rgb[2],1.0] })).is_ok();
     }
+    false
 }
 
 /// Only the Eyedropper's Current Layer and Current & Below modes pick the targeted raster mask.

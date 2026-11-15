@@ -1061,7 +1061,7 @@ impl GpuCanvas {
 
     /// Set a separately sampled curve/matrix/curve display transform. CMS validates this
     /// representation and provides bounded tables; no profile interpretation lives in the UI.
-    pub fn set_display_matrix_shaper(&self, doc: u64, output: u32, shaper: &photocraft_cms::GpuMatrixShaper) {
+    pub fn set_display_matrix_shaper(&self, doc: u64, output: u32, shaper: &craft_cms::GpuMatrixShaper) {
         if !self.health.is_ok() {
             return;
         }

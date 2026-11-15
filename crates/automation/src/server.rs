@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use crate::bridge::BridgeClient;
 use crate::budgets::{BatchReplyBudget, MAX_PREVIEW_SIDE, check_png, json_bytes};
 use crate::headless::Headless;
+use crate::live::{Live, LiveConfig, Target};
 use crate::security::MAX_BATCH_STEPS;
 use crate::{AuthorizedWorkspace, AutomationError, files};
 
@@ -27,6 +28,9 @@ pub enum Backend {
     Headless(Arc<Mutex<Headless>>),
     /// A running desktop app reached over the control protocol.
     Bridge(Arc<BridgeClient>),
+    /// The desktop app found through its connection file before each call, or the closed-app
+    /// choice (plain `photocraft-cli mcp`, see [`crate::live`]).
+    Live(Arc<Live>),
 }
 
 #[derive(Clone)]
@@ -619,6 +623,12 @@ impl PhotocraftMcp {
         Ok(Self::with_backend(Backend::Bridge(Arc::new(BridgeClient::new(addr, token)?))))
     }
 
+    /// Serve the desktop app found through its connection file, or headless without consent
+    /// (plain `photocraft-cli mcp`).
+    pub fn live(config: LiveConfig) -> Self {
+        Self::with_backend(Backend::Live(Arc::new(Live::new(config))))
+    }
+
     pub fn with_backend(backend: Backend) -> Self {
         let mut tool_router = Self::tool_router();
         for route in tool_router.map.values_mut() {
@@ -639,10 +649,7 @@ impl PhotocraftMcp {
         &self,
         f: impl FnOnce(&mut Headless) -> Result<T, AutomationError> + Send + 'static,
     ) -> Option<Result<T, AutomationError>> {
-        let Backend::Headless(h) = &*self.backend else {
-            return None;
-        };
-        let h = h.clone();
+        let h = self.headless_session()?;
         Some(
             tokio::task::spawn_blocking(move || {
                 // A panicking command poisons the lock, but edits run on a copy
@@ -657,10 +664,44 @@ impl PhotocraftMcp {
         )
     }
 
-    fn bridge_client(&self) -> Option<&BridgeClient> {
+    /// The headless session tools run on, if this backend (or the live choice) is one.
+    fn headless_session(&self) -> Option<Arc<Mutex<Headless>>> {
         match &*self.backend {
-            Backend::Bridge(b) => Some(b),
+            Backend::Headless(h) => Some(h.clone()),
+            Backend::Live(live) => match live.current()? {
+                Target::Headless(h) => Some(h),
+                Target::Bridge(_) => None,
+            },
+            Backend::Bridge(_) => None,
+        }
+    }
+
+    fn bridge_client(&self) -> Option<Arc<BridgeClient>> {
+        match &*self.backend {
+            Backend::Bridge(b) => Some(b.clone()),
+            Backend::Live(live) => match live.current()? {
+                Target::Bridge(b) => Some(b),
+                Target::Headless(_) => None,
+            },
             Backend::Headless(_) => None,
+        }
+    }
+
+    /// Where calls go now: the backend's session or app, or the live mode's last resolve.
+    fn target(&self) -> Option<Target> {
+        match &*self.backend {
+            Backend::Headless(h) => Some(Target::Headless(h.clone())),
+            Backend::Bridge(b) => Some(Target::Bridge(b.clone())),
+            Backend::Live(live) => live.current(),
+        }
+    }
+
+    /// Live mode: find the app (or apply the closed-app choice) before a call; the error is the
+    /// call's result. Other backends are always ready.
+    async fn ready(&self) -> Result<(), String> {
+        match &*self.backend {
+            Backend::Live(live) => live.resolve().await,
+            Backend::Headless(_) | Backend::Bridge(_) => Ok(()),
         }
     }
 
@@ -960,7 +1001,7 @@ impl PhotocraftMcp {
         if p.index.is_some() {
             return Ok(fail("`index` is only supported in headless mode; bridge previews capture the app window"));
         }
-        self.screenshot(b, Some(max)).await
+        self.screenshot(&b, Some(max)).await
     }
 
     #[tool(description = "Render a bounded flattened PNG preview (bridge mode: app window screenshot).")]
@@ -1056,7 +1097,7 @@ impl PhotocraftMcp {
     #[tool(description = "Bridge mode: screenshot of the live app window as PNG.")]
     async fn ui_screenshot(&self, Parameters(p): Parameters<ScreenshotParams>) -> Result<CallToolResult, McpError> {
         match self.bridge_client() {
-            Some(b) => self.screenshot(b, p.max_side).await,
+            Some(b) => self.screenshot(&b, p.max_side).await,
             None => bridge_only("ui_screenshot"),
         }
     }
@@ -1107,6 +1148,16 @@ impl PhotocraftMcp {
     }
 }
 
+/// Whether two targets are the same session or the same app connection.
+fn same_target(a: Option<&Target>, b: Option<&Target>) -> bool {
+    match (a, b) {
+        (Some(Target::Headless(a)), Some(Target::Headless(b))) => Arc::ptr_eq(a, b),
+        (Some(Target::Bridge(a)), Some(Target::Bridge(b))) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn bridge_only_headless(name: &str) -> Result<CallToolResult, McpError> {
     Ok(fail(format!("`{name}` is only available in headless mode (in the GUI use the window/tab UI or control_call)")))
 }
@@ -1119,11 +1170,13 @@ impl PhotocraftMcp {
     /// Run one command in either backend; `at` is its place in a batch, for progress.
     async fn step(&self, id: String, params: Value, wait: bool, waiter: &mut Waiter, at: (usize, usize)) -> Result<Value, AutomationError> {
         let none = || Err(AutomationError::Other("internal error: no headless session or app bridge".into()));
-        match &*self.backend {
-            Backend::Headless(_) if wait => self.headless_wait(id, params, waiter, at).await.unwrap_or_else(none),
-            Backend::Headless(_) => self.headless_op(move |h| h.command_start(&id, params, false)).await.unwrap_or_else(none),
-            Backend::Bridge(b) if wait => self.bridge_wait(b, id, params, waiter, at).await,
-            Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params, "wait": false})).await,
+        // Live mode goes wherever its last resolve pointed: the app, or a headless session.
+        match (self.headless_session(), self.bridge_client()) {
+            (Some(_), _) if wait => self.headless_wait(id, params, waiter, at).await.unwrap_or_else(none),
+            (Some(_), _) => self.headless_op(move |h| h.command_start(&id, params, false)).await.unwrap_or_else(none),
+            (None, Some(b)) if wait => self.bridge_wait(&b, id, params, waiter, at).await,
+            (None, Some(b)) => b.call("engine.execute", json!({"command": id, "params": params, "wait": false})).await,
+            (None, None) => none(),
         }
     }
 
@@ -1137,9 +1190,17 @@ impl PhotocraftMcp {
         let mut failed = 0;
         // The reply travels as escaped JSON text, so steps are charged their escaped size.
         let mut reply_budget = BatchReplyBudget::escaped();
+        // Live mode may find a restarted app (or go headless) while a batch runs: its steps must
+        // not end up split across two documents in two places.
+        let pinned = self.target();
         for (i, s) in p.steps.into_iter().enumerate() {
             // A cancelled request runs no further steps; the client no longer reads the reply.
             if waiter.is_cancelled() {
+                break;
+            }
+            if !same_target(pinned.as_ref(), self.target().as_ref()) {
+                failed += 1;
+                results.push(json!({"ok": false, "error": "PhotoCraft restarted (or the session changed) during the batch; this step and the ones after it did not run"}));
                 break;
             }
             let response = self.step(s.id, s.params.unwrap_or_else(|| json!({})), s.wait.unwrap_or(true), &mut waiter, (i, total)).await;

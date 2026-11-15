@@ -270,13 +270,24 @@ pub(crate) struct CommandsArgs {
     pub(crate) filter: Option<String>,
 }
 
-/// Run the MCP server on stdio (headless engine, or bridge to a running `photocraft --control <port>`)
+/// Run the MCP server on stdio: in the open PhotoCraft window when the person lets agents use it
+/// (ArtCraft Launcher › Settings › AI agents), otherwise headless
 ///
-/// Headless: each automation root grants that direction of file access; an omitted root denies it.
-/// Prefer absolute root paths in MCP client configurations. Bridge: set the roots on the desktop
-/// app; root flags are refused. The token flags require --bridge (or PHOTOCRAFT_CONTROL_PORT).
+/// The open window is found again on every call, with no port or token to configure. Without
+/// the person's consent, or with --headless, it runs headless: each automation root grants that
+/// direction of file access; an omitted root denies it. Prefer absolute root paths in MCP client
+/// configurations. Bridge (--bridge or PHOTOCRAFT_CONTROL_PORT): a running `photocraft --control
+/// <port>`; set the roots on the desktop app, root flags are refused, and the token flags require
+/// it.
 #[derive(Args)]
 pub(crate) struct McpArgs {
+    /// Always work headless, without the open window
+    #[arg(long, conflicts_with = "when_closed")]
+    pub(crate) headless: bool,
+    /// While agents may use PhotoCraft but it is closed: start it, serve a headless session, or
+    /// fail (default: the app's When PhotoCraft Is Closed setting)
+    #[arg(long, value_name = "launch|headless|error", value_parser = when_closed)]
+    pub(crate) when_closed: Option<photocraft_engine::prefs::WhenAppClosed>,
     /// Bridge to the PhotoCraft app listening here instead of a headless engine; a bare port means
     /// 127.0.0.1:<PORT>
     #[arg(long, value_name = "127.0.0.1:PORT", env = "PHOTOCRAFT_CONTROL_PORT", value_parser = bridge)]
@@ -337,6 +348,8 @@ enum ValueError {
     /// Why a `--bridge` value, or a PHOTOCRAFT_CONTROL_PORT value for `mcp`, is refused.
     #[error("expected a port, 0-65535 (--bridge also takes 127.0.0.1:<PORT>)")]
     Bridge,
+    #[error("expected launch, headless or error")]
+    WhenClosed,
 }
 
 /// Why `parse` refuses `mcp` or `serve` options clap accepted: clap prints it as a usage error
@@ -360,13 +373,19 @@ enum ServerOptionError {
     /// A token flag without the bridge or port that reads it would be ignored (#8035).
     #[error("{flag} requires {transport}")]
     NeedsTransport { flag: &'static str, transport: &'static str },
+    /// `--headless` never reaches an app.
+    #[error("--headless works without the app; {0} is for --bridge")]
+    HeadlessBridge(&'static str),
+    /// `--when-closed` is about the open app, which a bridge names itself.
+    #[error("--when-closed is for the open window; --bridge names the app itself")]
+    BridgeWhenClosed,
 }
 
 impl ServerOptionError {
     fn into_clap(self, cmd: &mut clap::Command) -> clap::Error {
         let kind = match self {
             Self::BridgeVar(_) | Self::GpuVar(_) => ErrorKind::ValueValidation,
-            Self::BridgeRoots | Self::BridgeGpu => ErrorKind::ArgumentConflict,
+            Self::BridgeRoots | Self::BridgeGpu | Self::HeadlessBridge(_) | Self::BridgeWhenClosed => ErrorKind::ArgumentConflict,
             Self::NeedsTransport { .. } => ErrorKind::MissingRequiredArgument,
         };
         cmd.error(kind, self)
@@ -392,6 +411,10 @@ fn tiff_compression(s: &str) -> Result<TiffCompression, ValueError> {
         "zip" => Ok(TiffCompression::Deflate),
         _ => Err(ValueError::TiffCompression),
     }
+}
+
+fn when_closed(s: &str) -> Result<photocraft_engine::prefs::WhenAppClosed, ValueError> {
+    photocraft_engine::prefs::WhenAppClosed::parse(s).ok_or(ValueError::WhenClosed)
 }
 
 fn on_off(s: &str) -> Result<bool, ValueError> {
@@ -474,6 +497,11 @@ fn steps(m: &ArgMatches) -> Vec<Step> {
 /// stray.psd --help`): clap reports the mistake first.
 pub(crate) fn parse(args: &[OsString]) -> Result<Cli, clap::Error> {
     let mut cmd = Cli::command().mut_subcommands(|sub| sub.mut_args(blank_env_is_unset));
+    // `mcp --headless` reaches no app: a PHOTOCRAFT_CONTROL_PORT exported for another tool is not
+    // read, so a value it couldn't use anyway doesn't stop it.
+    if args.first().is_some_and(|a| a == "mcp") && args.iter().take_while(|a| *a != "--").any(|a| a == "--headless") {
+        cmd = cmd.mut_subcommand("mcp", |sub| sub.mut_arg("bridge", |arg| arg.env(None::<&str>)));
+    }
     let argv = std::iter::once(OsString::from("photocraft-cli")).chain(args.iter().cloned());
     let matches = match cmd.try_get_matches_from_mut(argv) {
         Err(e) if args.iter().take_while(|a| *a != "--").any(|a| *a == "--help" || *a == "-h") => {
@@ -490,6 +518,21 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Cli, clap::Error> {
             check_gpu_env(&mut cmd, m)?;
         }
         (Command::Mcp(a), Some((name, m))) => {
+            if a.headless {
+                // `--headless` reaches no app. Given on the command line, the bridge's flags
+                // conflict; exported for another tool, they are left alone.
+                for (id, flag) in [("bridge", "--bridge"), ("control_token", "--control-token"), ("control_token_file", "--control-token-file")] {
+                    if m.value_source(id) == Some(ValueSource::CommandLine) {
+                        if let Some(sub) = cmd.find_subcommand_mut(name) {
+                            return Err(ServerOptionError::HeadlessBridge(flag).into_clap(sub));
+                        }
+                        return Err(ServerOptionError::HeadlessBridge(flag).into_clap(&mut cmd));
+                    }
+                }
+                a.bridge = None;
+                check_gpu_env(&mut cmd, m)?;
+                return Ok(cli);
+            }
             a.bridge_from_env = from_env(m, "bridge");
             if a.bridge_from_env
                 && let Some(Bridge::Addr(v)) = &a.bridge
@@ -516,6 +559,9 @@ pub(crate) fn parse(args: &[OsString]) -> Result<Cli, clap::Error> {
                     return Err(ServerOptionError::BridgeGpu.into_clap(sub));
                 }
                 check_server(sub, m, a.bridge.is_some(), "--bridge")?;
+                if a.bridge.is_some() && a.when_closed.is_some() {
+                    return Err(ServerOptionError::BridgeWhenClosed.into_clap(sub));
+                }
             }
             if a.bridge.is_none() {
                 check_gpu_env(&mut cmd, m)?;

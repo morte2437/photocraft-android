@@ -174,8 +174,9 @@ fn modifiers_shape_selection_and_invalid_control_params_are_consistent() {
     pointer(&mut app, ToolEvent::Down { x: 100., y: 100., pressure: 1. }, mods);
     pointer(&mut app, ToolEvent::Up { x: 130., y: 120. }, mods);
     let f = selected(&app).unwrap().frame.as_ref().unwrap();
-    assert_eq!(f.bounds(), Rect::new(70, 70, 130, 130));
-    assert_eq!(TestMask(f.outline()).value(70, 70), 0.0, "triangle rather than bounding rectangle");
+    // Shift squares from the shorter side (#13865): 20 px each way around the start.
+    assert_eq!(f.bounds(), Rect::new(80, 80, 120, 120));
+    assert_eq!(TestMask(f.outline()).value(80, 80), 0.0, "triangle rather than bounding rectangle");
     let frame = selected(&app).unwrap().id;
     let content = app
         .session
