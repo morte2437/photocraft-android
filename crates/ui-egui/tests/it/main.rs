@@ -31,6 +31,7 @@ mod crop_turn_keeps_frame_inside;
 mod custom_print_paper;
 mod display_shadows;
 mod drag_preview_canvas;
+mod eraser_reset_defaults;
 mod export_as_scaling;
 mod eyedropper_ring;
 mod full_res_preview;

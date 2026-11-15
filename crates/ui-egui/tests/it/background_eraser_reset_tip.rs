@@ -96,18 +96,17 @@ fn a_first_use_starts_with_the_tip() {
 
 #[test]
 fn other_tools_and_session_strokes_keep_their_tips() {
-    for tool in [Tool::Eraser, Tool::Blur] {
-        let mut a = app();
-        pick(&mut a, tool);
-        scramble(&mut a);
-        control(&mut a, "ui.menu.invoke", json!({"id": "tool.reset"}));
-        assert_eq!(tip(&mut a), DEFAULT_TIP, "{tool:?}");
-    }
+    // The Eraser has its own reset tip since #11936 (`eraser_reset_defaults`); the Blur tool hasn't.
+    let mut a = app();
+    pick(&mut a, Tool::Blur);
+    scramble(&mut a);
+    control(&mut a, "ui.menu.invoke", json!({"id": "tool.reset"}));
+    assert_eq!(tip(&mut a), DEFAULT_TIP, "Blur");
     let mut app = app();
     assert_eq!(tip(&mut app), DEFAULT_TIP, "what `paint.stroke` / `paint.backgroundEraser` paint with when no `brush` is given");
     // A first use of another tool still takes the current tip, as before.
     pick(&mut app, Tool::Pencil);
     scramble(&mut app);
-    pick(&mut app, Tool::Eraser);
+    pick(&mut app, Tool::Blur);
     assert_eq!(tip(&mut app)[0], 57.0);
 }
