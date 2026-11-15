@@ -627,6 +627,8 @@ pub struct Services {
     /// the web (see `prefs_ui`).
     pub load_prefs: Option<LoadTextFn>,
     pub save_prefs: Option<SaveTextFn>,
+    /// The asynchronous Actions library write must finish before saving its shortcut changes.
+    pub actions_write_pending: Option<Box<dyn Fn() -> bool>>,
     /// Load/save the bounded deterministic GPU compositor failure memo (native only).
     pub load_gpu_memo: Option<LoadTextFn>,
     pub save_gpu_memo: Option<SaveTextFn>,

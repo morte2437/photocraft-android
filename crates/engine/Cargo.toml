@@ -41,6 +41,7 @@ blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 photocraft-codecs = { workspace = true }
 photocraft-formats = { workspace = true }
 flate2 = { workspace = true }
+getrandom = { workspace = true, features = ["wasm_js"] }
 craft-print = { workspace = true }
 
 # Release tags use the same semantic versions as Cargo.

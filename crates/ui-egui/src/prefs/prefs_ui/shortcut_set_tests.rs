@@ -183,7 +183,7 @@ fn the_set_dropdown_keeps_action_function_keys_like_use_set() {
         p.shortcut_sets.insert("B".into(), b);
     });
     h.state_mut().run("edit.keyboardShortcuts", json!({"useSet": ""})).unwrap();
-    crate::actions::assign_shortcut(h.state_mut(), "Sepia", "F2").unwrap();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"set":{"actions.play:Sepia":"F2"},"allowUnknown":true,"removeConflicts":false})).unwrap();
     let ctx = h.ctx.clone();
     let id = crate::menus::invoke(h.state_mut(), &ctx, "edit.keyboardShortcuts", json!({})).unwrap()["dialog"].as_u64().unwrap();
     h.run_steps(4);
@@ -215,7 +215,7 @@ fn an_edit_still_marks_the_set_modified_and_sets_save_no_action_keys() {
     let (mut h, first, _) = dialog(vec![]);
     h.state_mut().ui.dialogs.retain(|d| d.id != first);
     h.state_mut().run("edit.keyboardShortcuts", json!({"set": {"edit.copy": "F9"}, "saveSet": "A"})).unwrap();
-    crate::actions::assign_shortcut(h.state_mut(), "Sepia", "F2").unwrap();
+    h.state_mut().run("edit.keyboardShortcuts", json!({"set":{"actions.play:Sepia":"F2"},"allowUnknown":true,"removeConflicts":false})).unwrap();
     let ctx = h.ctx.clone();
     let id = crate::menus::invoke(h.state_mut(), &ctx, "edit.keyboardShortcuts", json!({})).unwrap()["dialog"].as_u64().unwrap();
     h.run_steps(4);

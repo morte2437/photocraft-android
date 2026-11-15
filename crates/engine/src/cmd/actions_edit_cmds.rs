@@ -14,8 +14,13 @@ use crate::commands::CommandSpec;
 use crate::{EngineError, Result, Session};
 
 mod insert_path;
+mod library_commands;
 mod record_again;
+
 pub use insert_path::selected_path as selected_recording_path;
+pub(crate) use library_commands::enabled as library_change_enabled;
+pub use library_commands::{LibraryUndo, undo_library_label};
+pub(crate) use library_commands::{check_library_size, confirmed_idle, publish_library};
 pub use record_again::{RecordAgainTarget, target as record_again_target};
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
@@ -88,8 +93,7 @@ fn insert(s: &mut Session, p: &Value) -> Result<Value> {
     };
     if id == "actions.play" {
         // Refuse the one cycle visible here; deeper ones are caught at playback.
-        let target = params.get("action");
-        let is_self = target.and_then(Value::as_str) == Some(s.actions.list[idx].name.as_str()) || target.and_then(Value::as_u64) == Some(idx as u64);
+        let is_self = crate::actions_cmds::resolve_play_target(&s.actions.list, &params, cmd).ok() == Some(idx);
         if is_self {
             return Err(bad(cmd, "an action cannot play itself"));
         }
@@ -131,7 +135,10 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         if p.get("action").is_some() || p.get("step").is_some() {
             return Err(bad(cmd, "select a set or an action step, not both"));
         }
-        return duplicate_set(s, set.as_str().ok_or_else(|| bad(cmd, "set must be a name"))?);
+        let name = set.as_str().ok_or_else(|| bad(cmd, "set must be a name"))?;
+        let slot = set_slot(s, p, Some(name), cmd)?;
+        // Omitted selects by caption, null selects the implicit group, and a number selects one physical folder.
+        return duplicate_set(s, name, p.get("setSlot").map(|_| slot));
     }
     let idx = resolve(&s.actions.list, p, cmd)?;
     if let Some(step) = index(p, "step", cmd)? {
@@ -161,6 +168,8 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "stop recording before duplicating an action"));
     }
     let mut copied = s.actions.list[idx].clone();
+    copied.action_id = None;
+    copied.legacy_shortcut_owner = false;
     let mut names = crate::atn_cmds::UniqueNames::new(s.actions.list.iter().map(|a| a.name.clone()));
     copied.name = names.claim(&format!("{} copy", copied.name));
     let at = idx + 1;
@@ -171,8 +180,8 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(result)
 }
 
-/// Copy the named group represented by main, including a session-only empty New Set.
-fn duplicate_set(s: &mut Session, source: &str) -> Result<Value> {
+/// Copy a physical folder occurrence or the legacy named group, including empty folders.
+fn duplicate_set(s: &mut Session, source: &str, slot_filter: Option<Option<usize>>) -> Result<Value> {
     let cmd = "actions.duplicate";
     if s.actions.recording.is_some() {
         return Err(bad(cmd, "stop recording before duplicating a set"));
@@ -182,32 +191,58 @@ fn duplicate_set(s: &mut Session, source: &str) -> Result<Value> {
         return Err(bad(cmd, "the selected set no longer exists"));
     }
     let name = crate::atn_cmds::UniqueNames::new(sets).claim(&format!("{source} copy"));
-    if let Some(first) = s.actions.list.iter().position(|action| action.set.as_deref() == Some(source)) {
-        let mut names = crate::atn_cmds::UniqueNames::new(s.actions.list.iter().map(|action| action.name.clone()));
-        let copies: Vec<_> = s
-            .actions
-            .list
-            .iter()
-            .filter(|action| action.set.as_deref() == Some(source))
-            .cloned()
-            .map(|mut action| {
-                action.name = names.claim(&format!("{} copy", action.name));
-                action.set = Some(name.clone());
-                action
-            })
-            .collect();
-        // Classic groups rows by name even when a set's actions are interleaved.
-        let at = first + s.actions.list[first..].iter().take_while(|action| action.set.as_deref() == Some(source)).count();
-        let count = copies.len();
+    let copy_slot = slot_filter.flatten().map(|slot| slot + 1);
+    let belongs = |action: &crate::actions_cmds::Action| action.set.as_deref() == Some(source) && slot_filter.is_none_or(|slot| action.set_slot == slot);
+    let first = s.actions.list.iter().position(belongs);
+    // The panel groups a folder's actions even when they are interleaved in the underlying list.
+    let at = first.map(|first| first + s.actions.list[first..].iter().take_while(|action| belongs(action)).count());
+    let mut names = crate::atn_cmds::UniqueNames::new(s.actions.list.iter().map(|action| action.name.clone()));
+    let copies: Vec<_> = s
+        .actions
+        .list
+        .iter()
+        .filter(|action| belongs(action))
+        .cloned()
+        .map(|mut action| {
+            action.name = names.claim(&format!("{} copy", action.name));
+            action.set = Some(name.clone());
+            action.set_slot = copy_slot;
+            action.action_id = None;
+            action.legacy_shortcut_owner = false;
+            action
+        })
+        .collect();
+    let count = copies.len();
+    let mut result = json!({"set": name, "actions": count});
+    if let Some(slot) = copy_slot {
+        let old_len = s.actions.set_rows.len();
+        s.actions.set_rows.insert(slot, name);
+        s.actions.set_rows_revision = s.actions.set_rows_revision.wrapping_add(1);
+        for action in &mut s.actions.list {
+            if let Some(row) = &mut action.set_slot
+                && (slot..old_len).contains(row)
+            {
+                *row += 1;
+            }
+        }
+        result["setSlot"] = json!(slot);
+    } else if at.is_none() {
+        if let Some(at) = s.actions.sets.iter().position(|set| set == source) {
+            s.actions.sets.insert(at + 1, name);
+        } else if slot_filter.is_none() {
+            // The caption can identify an empty imported folder with no legacy row to insert after.
+            s.actions.sets.push(name);
+        } else {
+            return Err(bad(cmd, "the selected set no longer exists"));
+        }
+    }
+    if let Some(at) = at {
         s.actions.list.splice(at..at, copies);
         crate::actions_cmds::shift_action_calls(&mut s.actions.list, at, count);
-        s.actions.touch();
-        return Ok(json!({"set": name, "index": at, "actions": count}));
+        result["index"] = json!(at);
     }
-    let at = s.actions.sets.iter().position(|set| set == source).ok_or_else(|| bad(cmd, "the selected set no longer exists"))? + 1;
-    s.actions.sets.insert(at, name.clone());
     s.actions.touch();
-    Ok(json!({"set": name, "actions": 0}))
+    Ok(result)
 }
 
 /// The panel's dialog toggle column. With `step`, switch one step's dialog on or off; without
@@ -252,22 +287,58 @@ fn assign_set(s: &mut Session, p: &Value) -> Result<Value> {
     let idx = resolve(&s.actions.list, p, cmd)?;
     let set = match p.get("set") {
         None | Some(Value::Null) => None,
+        Some(Value::String(n)) if p.get("setSlot").and_then(Value::as_u64).is_some() => Some(n.clone()),
+        Some(Value::String(n)) if set_names(s).contains(n) => Some(n.clone()),
         Some(Value::String(n)) if !n.trim().is_empty() => Some(n.trim().to_string()),
         Some(Value::String(_)) => return Err(bad(cmd, "`set` is empty; pass null to take the action out of its set")),
         Some(_) => return Err(bad(cmd, "`set` must be a name or null")),
     };
+    let slot = assignment_slot(s, p, set.as_deref(), cmd)?;
     let action = &mut s.actions.list[idx];
     action.set = set;
+    action.set_slot = slot;
     let result = json!({"action": action.name, "set": action.set});
     s.actions.touch();
     Ok(result)
 }
 
-/// Every set name, in the Actions panel's order: the sets of the actions as they first appear,
-/// then the empty ones New Set made.
+/// Distinct set captions, including legacy empty sets.
+/// Use `actions.list`'s ordered `setRows` for physical folder occurrences.
 pub fn set_names(s: &Session) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    s.actions.list.iter().filter_map(|a| a.set.as_ref()).chain(&s.actions.sets).filter(|set| seen.insert(set.as_str())).cloned().collect()
+    s.actions
+        .list
+        .iter()
+        .filter_map(|a| a.set.as_ref())
+        .chain(&s.actions.sets)
+        .chain(&s.actions.set_rows)
+        .filter(|set| seen.insert(set.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// An explicit folder is selected by both its current slot and caption.
+pub(crate) fn set_slot(s: &Session, p: &Value, name: Option<&str>, cmd: &str) -> Result<Option<usize>> {
+    let Some(slot) = index(p, "setSlot", cmd)? else { return Ok(None) };
+    if s.actions.set_rows.get(slot).map(String::as_str) != name || name.is_none() {
+        return Err(bad(cmd, "the selected Actions folder changed"));
+    }
+    Ok(Some(slot))
+}
+
+/// Record or assign by caption alone only when it denotes one explicit occurrence.
+/// Explicit null and captions shared with a legacy set keep their name-only semantics.
+pub(crate) fn assignment_slot(s: &Session, p: &Value, name: Option<&str>, cmd: &str) -> Result<Option<usize>> {
+    if p.get("setSlot").is_some() {
+        return set_slot(s, p, name, cmd);
+    }
+    let Some(name) = name else { return Ok(None) };
+    if s.actions.sets.iter().any(|set| set == name) || s.actions.list.iter().any(|action| action.set_slot.is_none() && action.set.as_deref() == Some(name)) {
+        return Ok(None);
+    }
+    let mut matches = s.actions.set_rows.iter().enumerate().filter(|(_, caption)| caption.as_str() == name);
+    let first = matches.next().map(|(slot, _)| slot);
+    Ok(if matches.next().is_none() { first } else { None })
 }
 
 /// New Set…: an empty set folder, named `name` or "Set N" (the first number no set has), that New
@@ -384,31 +455,54 @@ fn conditional(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::String(c)) => c.clone(),
         _ => return Err(bad(cmd, format!("needs `if`, one of {}", CONDITIONS.join("|")))),
     };
-    let branch = |key: &str| -> Result<Option<String>> {
-        match p.get(key) {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(n)) if !n.trim().is_empty() => Ok(Some(n.clone())),
-            Some(Value::String(_)) => Ok(None),
-            Some(_) => Err(bad(cmd, format!("`{key}` must be an action name or null"))),
-        }
-    };
-    let (then, otherwise) = (branch("then")?, branch("else")?);
+    let (then, otherwise) = (crate::actions_cmds::conditional_branch(p, "then")?, crate::actions_cmds::conditional_branch(p, "else")?);
     let holds = evaluate(s, &condition)?;
     let played = if holds { then } else { otherwise };
-    let mut out = json!({"if": condition, "holds": holds, "played": played});
-    if let Some(name) = played {
-        let r = s.execute("actions.play", json!({"action": name}))?;
+    let mut out = json!({"if": condition, "holds": holds, "played": played.as_ref().and_then(|p| p.get("action"))});
+    if let Some(params) = played {
+        let r = s.execute("actions.play", params)?;
         if let Some(f) = r.get("failed") {
             out["failed"] = f.clone();
         }
         out["ran"] = r.get("ran").cloned().unwrap_or(json!(0));
-        out["action"] = json!(name);
+        out["action"] = r["action"].clone();
+        out["played"] = r["action"].clone();
     }
     Ok(out)
 }
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "actions.clearAll",
+            label: "Clear All Actions",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"confirm":true} → {cleared}. Removes the Actions library, including empty folders. Undo with actions.undoLibrary."#,
+            enabled: library_commands::enabled,
+            run: library_commands::clear,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.reset",
+            label: "Reset Actions…",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"confirm":true,"mode":"replace"|"append"} → {set,slot,actions,appended}. Restores the original PhotoCraft Basics set."#,
+            enabled: library_commands::enabled,
+            run: library_commands::reset,
+            journal: false,
+        },
+        CommandSpec {
+            id: "actions.undoLibrary",
+            label: "Undo Actions Library Change",
+            menu: &[],
+            shortcut: None,
+            params: "{} → {undone}. Restores the latest Clear All, Reset or Replace without editing document History.",
+            enabled: library_commands::undo_enabled,
+            run: library_commands::undo,
+            journal: false,
+        },
         CommandSpec {
             id: "actions.insertMenuItem",
             label: "Insert Menu Item…",
@@ -454,7 +548,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Duplicate Action",
             menu: &[],
             shortcut: None,
-            params: r##"{"action":name|index,"step":index?} or {"set":name} → {action?,index?,step?,steps?,set?,actions?}. Copy an action, step or named set below the source. Copies retain settings and flags, and leave shortcuts with the originals."##,
+            params: r##"{"action":name|index,"step":index?} or {"set":name,"setSlot":index|null?} → {action?,index?,step?,steps?,set?,setSlot?,actions?}. Copy an action, step or set below the source. A null setSlot selects the implicit set; omission selects by caption. Copies retain settings and flags, and leave shortcuts with the originals."##,
             enabled: always,
             run: duplicate,
             journal: false,
@@ -494,7 +588,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Move to Set",
             menu: &[],
             shortcut: None,
-            params: r##"{"action":name|index, "set":name|null} → {action, set}. The set folder the Actions panel shows the action under (what Load Actions fills and Save Actions writes); null takes it out of any set."##,
+            params: r##"{"action":name|index, "set":name|null, "setSlot":index?} → {action, set}. Move the action into a set or an explicit folder occurrence. Null takes it out of any set."##,
             enabled: always,
             run: assign_set,
             journal: false,
@@ -504,7 +598,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "New Set",
             menu: &[],
             shortcut: None,
-            params: r##"{"name":str? (default "Set N")} → {set}. An empty set folder in the Actions panel, as Photoshop's New Set… makes; New Action records into the selected set (actions.record's `set`). Save Actions… (actions.save's `set`) writes it even while empty; it is remembered between sessions once it holds an action."##,
+            params: r##"{"name":str? (default "Set N")} → {set}. An empty set folder in the Actions panel. New Action records into it and Save Actions… writes it even while empty."##,
             enabled: always,
             run: new_set,
             journal: false,
@@ -516,6 +610,26 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     use super::*;
     use crate::actions_cmds::Action;
+
+    #[test]
+    fn inserted_play_calls_use_resolved_occurrences_for_self_call_guard() {
+        let mut s = Session::new();
+        let first = "112233445566778899aabbccddeeff00";
+        let second = "112233445566778899aabbccddeeff11";
+        for id in [first, second] {
+            let mut action = Action::new("Same", vec![]);
+            action.action_id = Some(id.into());
+            s.actions.list.push(action);
+        }
+        // An ID-bound self call cannot hide behind another displayed name.
+        assert!(s.execute("actions.insert", json!({"action":1,"id":"actions.play","params":{"action":"Other","actionId":second}})).is_err());
+        assert!(s.actions.list[1].steps.is_empty());
+        // The first same-caption row and an explicit other ID are legitimate children.
+        s.execute("actions.insert", json!({"action":1,"id":"actions.play","params":{"action":"Same"}})).unwrap();
+        s.execute("actions.insert", json!({"action":1,"id":"actions.play","params":{"action":"Same","actionId":first}})).unwrap();
+        assert_eq!(s.actions.list[1].steps.len(), 2);
+        assert!(s.execute("actions.insert", json!({"action":0,"id":"actions.play","params":{"action":"Same"}})).is_err());
+    }
 
     fn session_with(steps: &[&str]) -> Session {
         let mut s = Session::new();

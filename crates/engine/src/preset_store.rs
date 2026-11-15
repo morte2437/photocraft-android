@@ -57,6 +57,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Session;
 
+mod actions;
 mod patterns;
 pub use patterns::{Loaded as LoadedPattern, MAX_PATTERN_BYTES, PATTERNS_FILE, PREVIEW_SIDE as PATTERN_PREVIEW_SIDE};
 
@@ -516,8 +517,10 @@ pub struct PresetStore {
     /// Tip hash → file size, for every tip file the store owns.
     tips: HashMap<String, u64>,
     index: Option<IndexFile>,
-    /// [`crate::actions_cmds::ActionState::rev`] last written (or loaded).
+    /// [`crate::actions_cmds::ActionState::rev`] last loaded, written, or skipped.
     actions_rev: u64,
+    /// Revision acknowledged by a successful definitions write to this backend.
+    actions_written_rev: Option<u64>,
     /// `actions.json` exists but failed to load: left on disk untouched, so it is never written.
     actions_skipped: bool,
     /// The pattern files and index (`patterns.json`).
@@ -543,6 +546,8 @@ pub struct Opened {
     pub warnings: Vec<String>,
     /// Recorded actions (`actions.json`). Empty when the file is missing or unreadable.
     pub actions: Vec<crate::actions_cmds::Action>,
+    action_sets: Vec<String>,
+    action_set_rows: Vec<String>,
     /// Imported and defined patterns (`patterns.json`), in library order; large ones as previews.
     pub patterns: Vec<patterns::Loaded>,
 }
@@ -620,7 +625,7 @@ pub fn open(backend: Box<dyn PresetBackend>) -> Opened {
 
     let loaded_actions = load_actions(backend.as_ref(), &mut warnings);
     let actions_skipped = loaded_actions.is_none();
-    let actions = loaded_actions.unwrap_or_default();
+    let crate::actions_cmds::ActionsFile { actions, sets: action_sets, set_rows: action_set_rows, .. } = loaded_actions.unwrap_or_default();
     let (patterns, pattern_files) = patterns::load(backend.as_ref(), &mut warnings);
     let mut store = PresetStore {
         backend,
@@ -630,6 +635,7 @@ pub fn open(backend: Box<dyn PresetBackend>) -> Opened {
         tips: HashMap::new(),
         index: None,
         actions_rev: 0,
+        actions_written_rev: None,
         actions_skipped,
         patterns: pattern_files,
         warnings: Vec::new(),
@@ -690,22 +696,28 @@ pub fn open(backend: Box<dyn PresetBackend>) -> Opened {
     let hidden_builtins = index.as_ref().map(|i| i.hidden_builtins.clone()).unwrap_or_default();
     let order = index.as_ref().map(|i| i.order.clone()).unwrap_or_default();
     store.index = index;
-    Opened { store, presets, hidden_builtins, order, warnings, actions, patterns }
+    Opened { store, presets, hidden_builtins, order, warnings, actions, action_sets, action_set_rows, patterns }
 }
 
 /// `actions.json`: a missing file is an empty list. Anything else unreadable is a warning.
 /// The saved actions; `None` when `actions.json` exists but could not be loaded.
-fn load_actions(backend: &dyn PresetBackend, warnings: &mut Vec<String>) -> Option<Vec<crate::actions_cmds::Action>> {
+fn load_actions(backend: &dyn PresetBackend, warnings: &mut Vec<String>) -> Option<crate::actions_cmds::ActionsFile> {
     let bytes = match backend.read(ACTIONS_FILE, MAX_ACTIONS_BYTES) {
         Ok(b) => b,
-        Err(e) if missing_file(&e) => return Some(Vec::new()),
+        Err(e) if missing_file(&e) => return Some(crate::actions_cmds::ActionsFile::default()),
         Err(e) => {
             warnings.push(format!("actions: {ACTIONS_FILE} skipped: {e}"));
             return None;
         }
     };
     match serde_json::from_slice::<crate::actions_cmds::ActionsFile>(&bytes) {
-        Ok(file) if file.version == 1 => Some(file.actions),
+        Ok(mut file) if file.version == 1 => {
+            crate::actions_cmds::invalidate_duplicate_ids(&mut file.actions);
+            for action in &mut file.actions {
+                action.set_slot = action.set_slot.filter(|&slot| action.set.is_some() && file.set_rows.get(slot) == action.set.as_ref());
+            }
+            Some(file)
+        }
         Ok(file) => {
             warnings.push(format!("actions: {ACTIONS_FILE} skipped: unsupported version {}", file.version));
             None
@@ -805,6 +817,11 @@ pub fn open_dir_async(root: std::path::PathBuf) -> std::sync::mpsc::Receiver<Ope
 }
 
 impl PresetStore {
+    /// The existing Actions record could not be read and must be preserved.
+    pub fn actions_load_failed(&self) -> bool {
+        self.actions_skipped
+    }
+
     /// Warnings from writes since the last call (the shell shows them in the status bar).
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
@@ -1048,33 +1065,54 @@ impl PresetStore {
     /// Write the Actions list when `rev` differs from the last load or write.
     /// An oversized list is warned once and not retried. An I/O error is warned and retried
     /// on the next command.
-    pub fn sync_actions(&mut self, list: &[crate::actions_cmds::Action], rev: u64) {
+    pub fn sync_actions(&mut self, state: &crate::actions_cmds::ActionState) {
+        self.write_unsynced_actions(state);
+    }
+
+    fn write_unsynced_actions(&mut self, state: &crate::actions_cmds::ActionState) -> bool {
+        let rev = state.rev;
         if self.actions_rev == rev {
-            return;
+            return false;
         }
-        if self.actions_skipped {
-            self.warnings.push(format!("Couldn't save actions: {ACTIONS_FILE} could not be read, so it was left unchanged"));
-            self.actions_rev = rev;
-            return;
-        }
-        let file = crate::actions_cmds::ActionsFile { version: 1, actions: list.to_vec() };
-        let bytes = match serde_json::to_vec_pretty(&file) {
-            Ok(b) => b,
-            Err(e) => {
-                self.warnings.push(format!("Couldn't save actions: {e}"));
+        let bytes = match self.action_bytes(state) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.warnings.push(error);
                 self.actions_rev = rev;
-                return;
+                return false;
             }
         };
-        if bytes.len() as u64 > MAX_ACTIONS_BYTES {
-            self.warnings.push(format!("actions: the action list is too large to save ({} MB limit)", MAX_ACTIONS_BYTES >> 20));
-            self.actions_rev = rev;
-            return;
-        }
         match self.backend.write(ACTIONS_FILE, &bytes) {
-            Ok(()) => self.actions_rev = rev,
-            Err(e) => self.warnings.push(format!("Couldn't save actions: {e}")),
+            Ok(()) => {
+                self.actions_rev = rev;
+                self.actions_written_rev = Some(rev);
+                true
+            }
+            Err(e) => {
+                self.warnings.push(format!("Couldn't save actions: {e}"));
+                false
+            }
         }
+    }
+
+    pub(crate) fn commit_action_definitions(&mut self, state: &crate::actions_cmds::ActionState, rev: u64) -> Result<(), String> {
+        let bytes = self.action_bytes(state)?;
+        self.backend.write(ACTIONS_FILE, &bytes).map_err(|error| format!("Couldn't save actions: {error}"))?;
+        self.actions_rev = rev;
+        self.actions_written_rev = Some(rev);
+        Ok(())
+    }
+
+    fn action_bytes(&self, state: &crate::actions_cmds::ActionState) -> Result<Vec<u8>, String> {
+        if self.actions_skipped {
+            return Err(format!("Couldn't save actions: {ACTIONS_FILE} could not be read, so it was left unchanged"));
+        }
+        let file = crate::actions_cmds::ActionsFile { version: 1, actions: state.list.clone(), sets: state.sets.clone(), set_rows: state.set_rows.clone() };
+        let bytes = serde_json::to_vec_pretty(&file).map_err(|error| format!("Couldn't save actions: {error}"))?;
+        if bytes.len() as u64 > MAX_ACTIONS_BYTES {
+            return Err(format!("actions: the action list is too large to save ({} MB limit)", MAX_ACTIONS_BYTES >> 20));
+        }
+        Ok(bytes)
     }
 }
 
@@ -1094,7 +1132,12 @@ impl Session {
     /// built-in of the same name; presets created before the store finished loading win), hide
     /// deleted built-ins, then sync. Returns the load warnings.
     pub fn attach_preset_store(&mut self, opened: Opened) -> Vec<String> {
-        let Opened { store, presets, hidden_builtins, order, mut warnings, actions: disk, patterns } = opened;
+        self.attach_preset_store_with_action_write(opened).0
+    }
+
+    /// Attach as usual and report whether the merged Actions definitions were written.
+    pub fn attach_preset_store_with_action_write(&mut self, opened: Opened) -> (Vec<String>, bool) {
+        let Opened { store, presets, hidden_builtins, order, mut warnings, actions: mut disk, action_sets, action_set_rows, patterns } = opened;
         let builtins = crate::pattern_cmds::builtin();
         for l in patterns {
             let id = l.pattern.id.clone();
@@ -1133,24 +1176,47 @@ impl Session {
             lib.sort_by_key(|p| pos.get(&p.name.to_lowercase()).copied().unwrap_or(usize::MAX));
         }
         self.preset_store = Some(store);
-        // In-memory actions (created before the store finished loading) win on name. Disk-only
-        // names are appended. An empty session takes the disk list and does not rewrite it.
-        if self.actions.list.is_empty() {
+        self.actions.set_rows_revision = self.actions.set_rows_revision.wrapping_add(1);
+        // A replacement made before attachment is already the whole library. Keep its
+        // undo snapshot and let the ordinary sync write the chosen definitions.
+        if std::mem::take(&mut self.actions.replaced_before_attachment) {
+            self.actions.rev = self.actions.rev.max(1);
+        } else if self.actions.list.is_empty() && self.actions.sets.is_empty() && self.actions.set_rows.is_empty() && self.actions.library_undo.is_none() {
             self.actions.list = disk;
+            self.actions.sets = action_sets;
+            self.actions.set_rows = action_set_rows;
             self.actions.rev = 1;
             if let Some(st) = self.preset_store.as_mut() {
                 st.actions_rev = 1;
             }
         } else {
-            for action in disk {
-                if !self.actions.list.iter().any(|have| have.name == action.name) {
+            let merges_disk = !disk.is_empty() || !action_sets.is_empty() || !action_set_rows.is_empty();
+            actions::pin_disk_targets(self, &mut disk, &mut warnings);
+            let offset = self.actions.set_rows.len();
+            self.actions.set_rows.extend(action_set_rows);
+            for name in action_sets {
+                if !self.actions.sets.contains(&name) {
+                    self.actions.sets.push(name);
+                }
+            }
+            for mut action in disk {
+                if action.set_slot.is_some()
+                    || action.action_id.is_some()
+                    || action.legacy_shortcut_owner
+                    || !self.actions.list.iter().any(|have| have.name == action.name)
+                {
+                    action.set_slot = action.set_slot.and_then(|slot| slot.checked_add(offset));
                     self.actions.list.push(action);
                 }
+            }
+            crate::actions_cmds::invalidate_duplicate_ids(&mut self.actions.list);
+            if merges_disk {
+                self.actions.library_undo = None;
             }
             self.actions.rev = self.actions.rev.saturating_add(1).max(1);
         }
         self.brush_presets_changed();
-        self.sync_preset_store();
+        let actions_written = self.sync_preset_store_with_action_write();
         // A brush remembered from the previous run (or picked before the store loaded) may be
         // painting with previews; load the full tips now (a missing one keeps its preview).
         let mut brush = std::mem::take(&mut self.tools.brush);
@@ -1159,13 +1225,21 @@ impl Session {
         if let Some(st) = self.preset_store.as_mut() {
             warnings.extend(st.take_warnings());
         }
-        warnings
+        (warnings, actions_written)
     }
 
     /// Write pending brush preset, Actions and pattern changes to the attached store (no-op without one).
     pub fn sync_preset_store(&mut self) {
+        self.sync_preset_store_with_action_write();
+    }
+
+    /// Whether this store confirmed a successful definitions write for the current Actions revision.
+    pub fn action_definitions_written(&self) -> bool {
+        self.preset_store.as_ref().is_some_and(|store| store.actions_written_rev == Some(self.actions.rev))
+    }
+
+    fn sync_preset_store_with_action_write(&mut self) -> bool {
         let rev = self.tools.presets_rev;
-        let actions_rev = self.actions.rev;
         if let Some(st) = self.preset_store.as_mut() {
             if st.synced_rev != Some(rev) {
                 st.sync(&mut self.tools.presets);
@@ -1176,9 +1250,11 @@ impl Session {
                     self.tools.brush_changed();
                 }
             }
-            st.sync_actions(&self.actions.list, actions_rev);
+            let actions_written = st.write_unsynced_actions(&self.actions);
             st.sync_patterns(&self.patterns);
+            return actions_written;
         }
+        false
     }
 
     /// Load the stored tips of `b` (a preset's settings picked as the tool's brush, or exported) so

@@ -1,5 +1,238 @@
 use super::*;
 
+#[test]
+fn recorded_first_duplicate_keeps_its_target_after_dialog_pause_and_reorder() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width":8,"height":8})).unwrap();
+    let mut first =
+        Action::new("Same", vec![("filter.blur.gaussianBlur".into(), json!({"radius":1.5})), ("layer.new.layer".into(), json!({"name":"selected first"}))]);
+    first.dialogs.insert(0);
+    app.session.actions.list.extend([first, Action::new("Same", vec![("layer.new.layer".into(), json!({"name":"wrong namesake"}))])]);
+    app.run("actions.record", json!({"name":"Recorder"})).unwrap();
+    let played = play(&mut app, &json!({"action":0})).unwrap();
+    let dialog = played["paused"]["dialog"].as_u64().unwrap();
+    let id = app.session.actions.list[0].action_id.clone().expect("the first duplicate is bound before the call pauses");
+    assert!(app.session.actions.recording.is_none());
+    crate::dialogs::confirm(&mut app, dialog).unwrap();
+    app.run("actions.stop", json!({})).unwrap();
+    assert_eq!(app.session.actions.list[2].steps, [("actions.play".to_string(), json!({"action":"Same","actionId":id}))]);
+
+    app.run("actions.move", json!({"action":0,"to":1})).unwrap();
+    app.run("file.new", json!({"width":8,"height":8})).unwrap();
+    app.automation_input = true;
+    let replayed = play(&mut app, &json!({"action":"Recorder"})).unwrap();
+    assert!(replayed.get("failed").is_none(), "{replayed}");
+    assert!(replayed.get("paused").is_none(), "headless replay uses the recorded values: {replayed}");
+    assert_eq!(layer_names(&app), ["selected first"]);
+    assert_eq!(app.session.actions.playing, 0);
+    assert!(app.session.actions.playback_stack.is_empty());
+}
+
+/// The real confirmation route keeps its library revision and shares Edit Undo with the keyboard.
+#[test]
+fn library_dialog_cancel_stale_and_undo_leave_document_history_untouched() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width":8,"height":8})).unwrap();
+    app.run("actions.newSet", json!({"name":"Keep"})).unwrap();
+    let history = app.session.active().unwrap().history.past_len();
+    let clear = |app: &mut PhotocraftApp| library::open(app, library::Kind::Clear).unwrap()["dialog"].as_u64().unwrap();
+    let id = clear(&mut app);
+    crate::dialogs::cancel(&mut app, id).unwrap();
+    assert_eq!(app.session.actions.sets, ["Keep"]);
+    let id = clear(&mut app);
+    app.run("actions.newSet", json!({"name":"Newer"})).unwrap();
+    assert!(crate::dialogs::confirm(&mut app, id).is_err());
+    assert_eq!(app.session.actions.sets, ["Keep", "Newer"]);
+    let id = clear(&mut app);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert!(app.session.actions.sets.is_empty());
+    let ctx = egui::Context::default();
+    assert_eq!(library::edit_undo_label(&app), Some("Undo Clear All Actions"));
+    app.run("layer.new.layer", json!({})).unwrap();
+    assert!(library::edit_undo_label(&app).is_none());
+    crate::menus::invoke(&mut app, &ctx, "edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.active().unwrap().history.past_len(), history);
+    assert!(app.session.actions.sets.is_empty(), "the newer document edit was undone first");
+    assert_eq!(library::edit_undo_label(&app), Some("Undo Clear All Actions"));
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.actions.sets, ["Keep", "Newer"]);
+    assert_eq!(app.session.active().unwrap().history.past_len(), history);
+}
+
+#[test]
+fn repeated_factory_rows_select_and_play_independently() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    for _ in 0..2 {
+        app.run("actions.reset", json!({"confirm":true,"mode":"append"})).unwrap();
+    }
+    let rows: Vec<_> = app
+        .session
+        .actions
+        .list
+        .iter()
+        .map(|a| Row {
+            name: a.name.clone(),
+            steps: Vec::new(),
+            disabled: Default::default(),
+            dialogs: Default::default(),
+            set: a.set.clone(),
+            set_slot: a.set_slot,
+            color: String::new(),
+        })
+        .collect();
+    let displayed = display_order(&rows, &[], &app.session.actions.set_rows);
+    assert!(matches!(&displayed[0], PanelRow::Set(Folder { slot: Some(0), .. }, 2)));
+    assert!(matches!(&displayed[3], PanelRow::Set(Folder { slot: Some(1), .. }, 2)));
+    app.ui.actions.selected_set = Some("PhotoCraft Basics".into());
+    app.ui.actions.selected_set_slot = Some(1);
+    app.ui.actions.slot_revision = app.session.actions.set_rows_revision;
+    assert_eq!(playback_targets(&app), [2, 3]);
+    assert_eq!(new_action_set(&app).unwrap().slot, Some(1));
+}
+
+#[test]
+fn duplicate_selected_physical_folder_keeps_occurrences_and_shortcuts() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.actions.set_rows = ["Same", "Same", "Same", "Later"].map(str::to_owned).to_vec();
+    app.session.actions.list = [("First", "Same", 0), ("Chosen", "Same", 1), ("Later action", "Later", 3)]
+        .into_iter()
+        .map(|(name, set, slot)| Action { set: Some(set.into()), set_slot: Some(slot), ..Action::new(name, Vec::new()) })
+        .collect();
+    let id = "0123456789abcdef0123456789abcdef";
+    app.session.actions.list[1].action_id = Some(id.into());
+    app.session.actions.list[1].legacy_shortcut_owner = true;
+    let occurrence = actions_cmds::occurrence_key(id);
+    app.session.edit_prefs(|prefs| {
+        prefs.shortcuts.insert("actions.play:Chosen".into(), "F2".into());
+        prefs.shortcuts.insert(occurrence.clone(), "F3".into());
+    });
+    app.ui.actions.selected_set = Some("Same".into());
+    app.ui.actions.selected_set_slot = Some(1);
+    app.ui.actions.expanded = vec![true, true, true];
+    app.ui.actions.collapsed_set_slots = vec![1, 3];
+
+    let copied = duplicate_selection(&mut app).unwrap();
+    assert_eq!(copied, json!({"set": "Same copy", "setSlot": 2, "index": 2, "actions": 1}));
+    assert_eq!(app.session.actions.set_rows, ["Same", "Same", "Same copy", "Same", "Later"]);
+    assert_eq!(app.ui.actions.selected_set.as_deref(), Some("Same copy"));
+    assert_eq!(app.ui.actions.selected_set_slot, Some(2));
+    assert_eq!(selected_set_actions(&app), [2]);
+    assert_eq!(app.ui.actions.collapsed_set_slots, [1, 4]);
+    assert_eq!(app.ui.actions.expanded, [true, true, false, true]);
+    assert_eq!(
+        app.session.actions.list.iter().map(|a| (a.name.as_str(), a.set_slot)).collect::<Vec<_>>(),
+        [("First", Some(0)), ("Chosen", Some(1)), ("Chosen copy", Some(2)), ("Later action", Some(4))]
+    );
+    assert_eq!(app.session.prefs().shortcuts["actions.play:Chosen"], "F2");
+    assert!(!app.session.prefs().shortcuts.contains_key("actions.play:Chosen copy"));
+    assert_eq!(actions_cmds::shortcut_row(&app.session.actions.list, &occurrence), Some(1));
+    assert!(app.session.actions.list[2].action_id.is_none());
+    assert!(!app.session.actions.list[2].legacy_shortcut_owner);
+
+    app.ui.actions.selected_set = Some("Same".into());
+    app.ui.actions.selected_set_slot = Some(3);
+    let copied = duplicate_selection(&mut app).unwrap();
+    assert_eq!(copied, json!({"set": "Same copy 2", "setSlot": 4, "actions": 0}));
+    assert_eq!(app.session.actions.set_rows, ["Same", "Same", "Same copy", "Same", "Same copy 2", "Later"]);
+    assert_eq!(app.ui.actions.selected_set.as_deref(), Some("Same copy 2"));
+    assert_eq!(app.ui.actions.selected_set_slot, Some(4));
+    assert!(selected_set_actions(&app).is_empty());
+    assert_eq!(app.ui.actions.collapsed_set_slots, [1, 5]);
+    assert_eq!(app.session.actions.list[3].set_slot, Some(5));
+
+    let legacy = app.run("actions.duplicate", json!({"set": "Later"})).unwrap();
+    assert_eq!(legacy, json!({"set": "Later copy", "index": 4, "actions": 1}));
+    assert_eq!(app.session.actions.list[4].set_slot, None);
+    assert_eq!(app.session.actions.set_rows.len(), 6);
+
+    let action_copy = app.run("actions.duplicate", json!({"action": 1})).unwrap();
+    assert_eq!(action_copy["index"], 2);
+    assert!(app.session.actions.list[2].action_id.is_none());
+    assert!(!app.session.actions.list[2].legacy_shortcut_owner);
+    assert_eq!(actions_cmds::shortcut_row(&app.session.actions.list, &occurrence), Some(1));
+}
+
+/// A nested Load can compact same-caption rows before the panel repaints.
+#[test]
+fn stale_same_caption_selection_does_not_follow_a_compacted_slot() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.actions.set_rows = vec!["Remove".into(), "Same".into(), "Same".into()];
+    app.ui.actions.selected_set = Some("Same".into());
+    app.ui.actions.selected_set_slot = Some(1);
+    assert_eq!(selected_set(&app), Some("Same"));
+    let archive = action_set_bytes("Remove", "Loaded");
+    app.session.execute("actions.load", json!({"data":photocraft_engine::paint::tile::b64_encode(&archive)})).unwrap();
+    assert_eq!(app.session.actions.set_rows[1], "Same");
+    assert!(selected_set(&app).is_none());
+    assert!(playback_targets(&app).is_empty());
+    assert!(duplicate_selection(&mut app).is_err());
+}
+
+/// The selected path and held replacement bytes need current authorization.
+#[test]
+fn replace_picker_checks_selected_source_and_rechecks_payload_on_confirm() {
+    use crate::file_dialog::{FileDialogAnswer, fake};
+    use std::{cell::Cell, rc::Rc};
+    let (file_dialog, _) = fake(vec![
+        Some(FileDialogAnswer::Paths(vec!["blocked-actions.atn".into()])),
+        Some(FileDialogAnswer::Contents("replacement.atn".into(), action_set_bytes("Replacement", "Invert"))),
+    ]);
+    let permit_data = Rc::new(Cell::new(true));
+    let policy = Rc::clone(&permit_data);
+    let automation_command = Box::new(move |id: &str, p: &Value| -> Result<(), String> {
+        if id != "actions.replace" {
+            return Ok(());
+        }
+        if p.get("path").is_some() {
+            return Err("path denied by policy".into());
+        }
+        if p.get("data").is_some() && policy.get() { Ok(()) } else { Err("payload denied by policy".into()) }
+    });
+    let mut app = PhotocraftApp::new(
+        photocraft_engine::Session::new(),
+        crate::Services { file_dialog: Some(file_dialog), automation_command: Some(automation_command), ..Default::default() },
+    );
+    app.run("actions.newSet", json!({"name":"Keep"})).unwrap();
+    let ctx = egui::Context::default();
+    for attempt in 0..2 {
+        app.automation_input = true;
+        assert!(library::open(&mut app, library::Kind::Replace).is_ok());
+        app.automation_input = false;
+        app.poll_file_dialog(&ctx, None);
+        app.poll_file_dialog(&ctx, None);
+        if attempt == 0 {
+            assert!(app.ui.status.contains("path denied by policy"), "{}", app.ui.status);
+            assert!(app.held_actions_library.is_none());
+        }
+    }
+    let dialog = app.ui.dialogs.iter().find(|dialog| library::owns(&dialog.fields)).unwrap().id;
+    permit_data.set(false);
+    assert!(crate::dialogs::confirm(&mut app, dialog).is_err());
+    assert_eq!(app.session.actions.sets, ["Keep"]);
+    assert!(app.session.actions.set_rows.is_empty());
+}
+
+#[test]
+fn replace_picker_holds_validated_bytes_until_confirmed() {
+    use crate::file_dialog::{FileDialogAnswer, fake};
+    let bytes = action_set_bytes("Replacement", "Invert");
+    let (service, _) = fake(vec![Some(FileDialogAnswer::Contents("replacement.atn".into(), bytes))]);
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services { file_dialog: Some(service), ..Default::default() });
+    app.run("actions.newSet", json!({"name":"Original"})).unwrap();
+    library::open(&mut app, library::Kind::Replace).unwrap();
+    let ctx = egui::Context::default();
+    app.poll_file_dialog(&ctx, None);
+    app.poll_file_dialog(&ctx, None);
+    let dialog = app.ui.dialogs.iter().find(|dialog| library::owns(&dialog.fields)).unwrap();
+    let id = dialog.id;
+    assert!(!dialog.fields.contains_key("data"));
+    assert_eq!(app.session.actions.sets, ["Original"]);
+    crate::dialogs::confirm(&mut app, id).unwrap();
+    assert_eq!(app.session.actions.set_rows, ["Replacement"]);
+    assert!(app.session.actions.sets.is_empty());
+    assert_eq!(app.session.actions.list[0].name, "Invert");
+}
+
 /// A small valid Photoshop set, generated without external action files.
 fn action_set_bytes(set: &str, action: &str) -> Vec<u8> {
     use craft_psd::atn::{AtnAction, AtnEvent, AtnFile, AtnItem};
@@ -172,6 +405,21 @@ fn paused_spelling_repeated_changes_and_errors_keep_one_owned_history() {
         assert!(app.session.undo());
         assert_eq!(app.session.active().unwrap().doc.as_ref(), after.as_ref());
     }
+}
+
+#[test]
+fn spelling_playback_blocks_library_edits_until_done() {
+    let (mut app, _, _) = paused_history_spelling(false, None);
+    assert_eq!(app.session.actions.playing, 0);
+    let error = app.run("actions.clearAll", json!({"confirm": true})).unwrap_err();
+    assert_eq!(app.ui.status, error);
+    assert!(app.ui.status_error);
+    assert_eq!(app.session.actions.list[0].name, "Spell");
+    crate::type_panels_ui::close_spelling(&mut app);
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "Tail");
+    app.run("actions.clearAll", json!({"confirm": true})).unwrap();
+    assert!(app.session.actions.list.is_empty());
 }
 
 fn deny_second_spelling_change(id: &str, params: &Value) -> photocraft_engine::Result<()> {
@@ -406,6 +654,47 @@ fn actions_list_grows_with_panel_and_keeps_footer_visible() {
     assert!(crate::dock::Group::History.scrolls_itself(1));
 }
 
+#[test]
+fn assigning_an_action_shortcut_clears_only_conflicting_action_alternates() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.actions.list = vec![Action::new("First", Vec::new()), Action::new("Second", Vec::new())];
+    let id = "0123456789abcdef0123456789abcdef";
+    app.session.actions.list[1].action_id = Some(id.into());
+    app.session.edit_prefs(|prefs| {
+        prefs.alternate_shortcuts.insert("actions.play:First".into(), vec!["F6".into(), "F7".into()]);
+        prefs.alternate_shortcuts.insert("file.save".into(), vec!["F6".into(), "F8".into()]);
+    });
+    assign_shortcut(&mut app, 1, "F6").unwrap();
+    assert_eq!(app.session.prefs().shortcuts[&actions_cmds::occurrence_key(id)], "F6");
+    assert_eq!(app.session.prefs().alternate_shortcuts["actions.play:First"], ["F7"]);
+    assert_eq!(app.session.prefs().alternate_shortcuts["file.save"], ["F6", "F8"]);
+}
+
+#[test]
+fn assigning_a_primary_shortcut_clears_mixed_case_legacy_conflicts() {
+    for pending in [false, true] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let id = "0123456789abcdef0123456789abcdef";
+        app.session.actions.list = vec![Action::new("First", Vec::new()), Action::new("Second", Vec::new())];
+        app.session.actions.list[1].action_id = Some(id.into());
+        app.session.edit_prefs(|prefs| {
+            prefs.shortcuts.insert("actions.play:First".into(), "f6".into());
+            prefs.shortcuts.insert("file.save".into(), "f6".into());
+        });
+        app.ui.actions.preset_store_disconnected = pending;
+        assign_shortcut(&mut app, 1, "F6").unwrap();
+        if pending {
+            finish_deferred_shortcut_conflicts(&mut app, false);
+            assert_eq!(app.session.prefs().shortcuts["actions.play:First"], "f6");
+            finish_deferred_shortcut_conflicts(&mut app, true);
+        }
+        let prefs = app.session.prefs();
+        assert_eq!(prefs.shortcuts[&actions_cmds::occurrence_key(id)], "F6");
+        assert_eq!(prefs.shortcuts["actions.play:First"], "");
+        assert_eq!(prefs.shortcuts["file.save"], "f6");
+    }
+}
+
 /// #7646: an action's function key can take Shift and Command, as in Photoshop's Action
 /// Options, and only that combination plays it.
 #[test]
@@ -421,7 +710,7 @@ fn a_function_key_with_shift_and_command_plays_its_action() {
     });
     let key = photocraft_engine::atn_cmds::function_key_name(2, true, true);
     assert_eq!(key, "Cmd+Shift+F2");
-    assign_shortcut(&mut app, "Action 1", &key).unwrap();
+    assign_shortcut(&mut app, 0, &key).unwrap();
     let ctx = egui::Context::default();
     let press = |app: &mut PhotocraftApp, modifiers| {
         ctx.begin_pass(egui::RawInput {
@@ -1083,7 +1372,7 @@ fn set_folders_group_actions_and_collapse() {
     assert!(h.get_by_label("Also loose").rect().top() < folder.top());
     assert!(h.get_by_label("Sharpen").rect().top() > folder.top());
     assert!(h.get_by_label("Soften").rect().top() > h.get_by_label("Sharpen").rect().top());
-    assert_eq!(display_order(&[]), Vec::<usize>::new());
+    assert!(display_order(&[], &[], &[]).is_empty());
     // Clicking the folder's triangle collapses it; its actions disappear and the state is remembered.
     click_set_triangle(&mut h, "Retouch");
     assert_eq!(h.state().ui.actions.collapsed_sets, ["Retouch"]);
@@ -1760,13 +2049,13 @@ fn moving_an_action_next_to_another_set_joins_it() {
     app.session.actions.list.push(b);
     app.session.actions.list.push(Action::new("C", vec![]));
     // C dropped below B: it joins B's set, "Two".
-    move_row(&mut app, DragRow { action: 2, step: None }, 2);
+    move_row(&mut app, DragRow { action: 2, step: None }, 2, 1);
     assert_eq!(app.session.actions.list[2].set.as_deref(), Some("Two"));
     // B dropped to the top, above A: the row below decides when there is none above.
-    move_row(&mut app, DragRow { action: 1, step: None }, 0);
+    move_row(&mut app, DragRow { action: 1, step: None }, 0, 0);
     assert_eq!((app.session.actions.list[0].name.as_str(), app.session.actions.list[0].set.as_deref()), ("B", Some("One")));
-    // C dropped between A (One) and nothing: the row above wins.
-    move_row(&mut app, DragRow { action: 2, step: None }, 2);
+    // C dropped below the displayed A row: it joins A's set.
+    move_row(&mut app, DragRow { action: 2, step: None }, 2, 1);
     assert_eq!((app.session.actions.list[2].name.as_str(), app.session.actions.list[2].set.as_deref()), ("C", Some("One")));
 }
 
@@ -2098,6 +2387,54 @@ fn pause_child(app: &mut PhotocraftApp) -> u64 {
 }
 
 #[test]
+fn a_bound_same_name_call_resumes_the_selected_occurrence() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 8, "height": 6, "background": "#203040"})).unwrap();
+    let id = "a".repeat(32);
+    let mut second =
+        Action::new("Same", vec![("filter.blur.gaussianBlur".into(), json!({"radius": 1.5})), ("layer.new.layer".into(), json!({"name":"Suffix"}))]);
+    second.action_id = Some(id.clone());
+    second.dialogs.insert(0);
+    let first =
+        Action::new("Same", vec![("actions.play".into(), json!({"action":"Same","actionId":id})), ("layer.new.layer".into(), json!({"name":"caller tail"}))]);
+    app.session.actions.list.extend([first, second]);
+
+    let playback = play(&mut app, &json!({"action":"Same"})).unwrap();
+    let dialog = playback["paused"]["dialog"].as_u64().expect("the selected occurrence's blur dialog");
+    crate::dialogs::confirm(&mut app, dialog).unwrap();
+    assert_eq!(layer_names(&app), ["Suffix", "caller tail"]);
+}
+
+#[test]
+fn paused_legacy_duplicate_resumes_its_row_and_refuses_a_move() {
+    for moved in [false, true] {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 8, "height": 6, "background": "#203040"})).unwrap();
+        for _ in 0..2 {
+            app.session.execute("actions.reset", json!({"confirm": true, "mode": "append"})).unwrap();
+        }
+        let list = &mut app.session.actions.list;
+        list[0].steps = vec![("actions.play".into(), json!({"action": 2})), ("layer.new.layer".into(), json!({"name": "caller tail"}))];
+        list[2].steps = vec![("filter.blur.gaussianBlur".into(), json!({"radius": 1.5})), ("layer.new.layer".into(), json!({"name": "later occurrence"}))];
+        list[2].dialogs.insert(0);
+        let playback = play(&mut app, &json!({"action": 0})).unwrap();
+        let dialog = playback["paused"]["dialog"].as_u64().expect("the sibling's blur dialog");
+        if moved {
+            app.run("actions.move", json!({"action": 2, "to": 1})).unwrap();
+        }
+        let result = crate::dialogs::confirm(&mut app, dialog);
+        if moved {
+            assert!(result.unwrap_err().contains("the action changed"));
+            assert!(layer_names(&app).is_empty());
+        } else {
+            result.unwrap();
+            assert_eq!(layer_names(&app), ["later occurrence", "caller tail"]);
+        }
+        assert!(app.session.actions.playback_stack.is_empty());
+    }
+}
+
+#[test]
 fn a_recorded_call_paused_by_a_dialog_records_one_call_and_replays_once() {
     let mut app = recording_with_dialog_child();
     let refusal = crate::i18n::t("Confirm or cancel the open action step dialog first").to_string();
@@ -2190,6 +2527,35 @@ fn a_suspended_call_is_recorded_into_its_action_after_the_list_changes() {
     assert!(app.session.actions.list[1].steps.is_empty(), "the action now at the old index gets nothing");
     assert_eq!(app.session.actions.list[2].name, "Owner");
     assert_eq!(app.session.actions.list[2].steps, child_call());
+}
+
+#[test]
+fn a_script_deleted_recording_owner_does_not_resume_into_its_namesake() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 300, "height": 100})).unwrap();
+    app.run("type.create", json!({"x": 10, "y": 50, "text": "Teh brwon"})).unwrap();
+    let mut spelling =
+        Action::new("Spell", vec![("edit.checkSpelling".into(), json!({"allLayers": false})), ("layer.renameLayer".into(), json!({"name": "Tail"}))]);
+    spelling.dialogs.insert(0);
+    let namesake = Action::new("Owner", vec![]);
+    app.session.actions.list = vec![spelling, Action::new("Owner", vec![]), namesake.clone()];
+    app.run("actions.record", json!({"action": 1})).unwrap();
+    let paused = play(&mut app, &json!({"action": "Spell"})).unwrap();
+    assert_eq!(paused["paused"]["dialog"], crate::type_panels_ui::SPELLING);
+    assert!(app.session.actions.recording.is_none());
+    assert!(crate::menus::modal_allows(&app, "file.scripts.browse"));
+
+    let deleted = app.run("file.scripts.browse", json!({"steps": [["actions.delete", {"action": 1}]]})).unwrap();
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    assert_eq!(app.session.actions.list[1], namesake);
+    let journal = app.session.journal.len();
+    crate::type_panels_ui::close_spelling(&mut app);
+
+    assert!(app.session.actions.recording.is_none(), "the remaining namesake does not own this recording");
+    assert_eq!(app.session.actions.list[1], namesake);
+    assert!(app.session.journal[journal..].iter().all(|(id, _)| id != "actions.play"));
+    let st = app.session.active().unwrap();
+    assert_eq!(st.doc.layer(st.active_layer.unwrap()).unwrap().name, "Tail");
 }
 
 #[test]
@@ -2852,11 +3218,88 @@ fn a_users_key_plays_an_action_automation_wrote_under_its_gate() {
     let mut planted = Action::new("Backup", vec![("file.openAs".into(), json!({"path": "/outside/secret.png"}))]);
     planted.automation = true;
     app.session.actions.list.push(planted);
-    assign_shortcut(&mut app, "Backup", "F9").unwrap();
-    crate::shortcut_dispatch::dispatch(&mut app, &egui::Context::default(), &shortcut_id("Backup"));
+    assign_shortcut(&mut app, 0, "F9").unwrap();
+    let shortcut = actions_cmds::occurrence_key(app.session.actions.list[0].action_id.as_deref().unwrap());
+    crate::shortcut_dispatch::dispatch(&mut app, &egui::Context::default(), &shortcut);
     assert!(app.session.documents().is_empty());
     assert!(app.ui.status.contains("disabled"), "the refusal is reported: {}", app.ui.status);
     assert!(app.session.authorize.is_none(), "the kept gate is removed after playback");
+}
+
+/// Whole-library replacement retains origin through Classic IDs in both playback routes.
+#[test]
+fn replacement_origin_keeps_its_gate_for_same_name_occurrence_playback() {
+    fn deny_invert(id: &str, _: &Value) -> photocraft_engine::Result<()> {
+        if id == "image.adjustments.invert" { Err(photocraft_engine::EngineError::Other("automation invert denied".into())) } else { Ok(()) }
+    }
+    for automation in [false, true] {
+        let services = crate::Services { automation_authorize: Some(deny_invert), ..Default::default() };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        app.run("file.new", json!({"width": 8, "height": 8})).unwrap();
+        app.session.authorize = if automation { Some(deny_invert) } else { None };
+        let bytes = action_set_bytes("Replacement", "Same");
+        app.session.execute("actions.replace", json!({"confirm": true, "data": photocraft_engine::paint::tile::b64_encode(&bytes)})).unwrap();
+        app.session.authorize = None;
+        assert_eq!(app.session.actions.list[0].automation, automation);
+        app.session.actions.list.insert(0, Action::new("Same", Vec::new()));
+        let id = actions_cmds::prepare_action_id(&app.session.actions.list, 1).unwrap();
+        actions_cmds::commit_action_id(&mut app.session, 1, id.clone()).unwrap();
+        let target = json!({"action": "Same", "actionId": id});
+        let engine = app.session.execute("actions.play", target.clone()).unwrap();
+        let shell = play(&mut app, &target).unwrap();
+        for result in [engine, shell] {
+            if automation {
+                assert_eq!(result["ran"], 0);
+                assert!(result["failed"]["error"].as_str().unwrap().contains("automation invert denied"), "{result}");
+            } else {
+                assert_eq!(result["ran"], 1, "the user's selected occurrence plays, not its empty namesake");
+                assert!(result.get("failed").is_none(), "{result}");
+            }
+        }
+        assert!(app.session.authorize.is_none(), "neither route leaks the kept gate");
+    }
+}
+
+/// A paused bound namesake retakes its own gate without applying it to its caller.
+#[test]
+fn a_bound_same_name_pause_keeps_only_the_selected_occurrences_gate() {
+    fn deny_tails(id: &str, p: &Value) -> photocraft_engine::Result<()> {
+        if id == "layer.new.layer" && matches!(p.get("name").and_then(Value::as_str), Some("Suffix" | "caller tail")) {
+            Err(photocraft_engine::EngineError::Other("automation tail denied".into()))
+        } else {
+            Ok(())
+        }
+    }
+    for disabled in [false, true] {
+        let services = crate::Services { automation_authorize: Some(deny_tails), ..Default::default() };
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), services);
+        app.run("file.new", json!({"width": 8, "height": 6, "background": "#203040"})).unwrap();
+        let id = "a".repeat(32);
+        let mut second =
+            Action::new("Same", vec![("filter.blur.gaussianBlur".into(), json!({"radius": 1.5})), ("layer.new.layer".into(), json!({"name": "Suffix"}))]);
+        second.action_id = Some(id.clone());
+        second.automation = true;
+        second.dialogs.insert(0);
+        if disabled {
+            second.disabled.insert(1);
+        }
+        let first = Action::new(
+            "Same",
+            vec![("actions.play".into(), json!({"action": "Same", "actionId": id})), ("layer.new.layer".into(), json!({"name": "caller tail"}))],
+        );
+        app.session.actions.list.extend([first, second]);
+        let playback = play(&mut app, &json!({"action": "Same"})).unwrap();
+        let dialog = playback["paused"]["dialog"].as_u64().expect("the selected occurrence's blur dialog");
+        let confirmed = crate::dialogs::confirm(&mut app, dialog);
+        if disabled {
+            confirmed.unwrap();
+            assert_eq!(layer_names(&app), ["caller tail"], "the user's caller retains its access");
+        } else {
+            assert!(layer_names(&app).is_empty(), "the marked tail is refused and stops its caller");
+            assert!(app.ui.status.contains("automation tail denied"), "{}", app.ui.status);
+        }
+        assert!(app.session.authorize.is_none(), "the selected occurrence's gate is removed");
+    }
 }
 
 /// CodeRabbit on #9783: the kept gate of an action automation wrote stays with that action. A set
@@ -3043,4 +3486,18 @@ fn bulk_load_summary_counts_unsupported_steps_of_surviving_sets() {
     let names: Vec<&str> = app.session.actions.list.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(names, ["A", "B"]);
     assert!(app.session.actions.list[0].steps.iter().any(|(id, _)| id == "actions.photoshopStep"));
+}
+
+/// Dropping onto a visible folder member uses that occurrence even if raw rows interleave.
+#[test]
+fn dragging_uses_the_displayed_folder_occurrence() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.session.actions.set_rows = vec!["Same".into(), "Same".into()];
+    app.session.actions.list = [("A", 0), ("B", 1), ("C", 0)]
+        .into_iter()
+        .map(|(name, slot)| Action { set: Some("Same".into()), set_slot: Some(slot), ..Action::new(name, Vec::new()) })
+        .collect();
+    move_row(&mut app, DragRow { action: 0, step: None }, 1, 2);
+    assert_eq!(app.session.actions.list[1].name, "A");
+    assert_eq!(app.session.actions.list[1].set_slot, Some(0));
 }

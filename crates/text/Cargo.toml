@@ -15,6 +15,7 @@ photocraft-color = { workspace = true }
 photocraft-raster = { workspace = true }
 photocraft-doc = { workspace = true }
 craft-psd = { workspace = true }
+craft-plist = { workspace = true }
 # No `system` feature: fontique's system backend links fontconfig on Linux. We scan font
 # directories ourselves (native) and always register the bundled fonts (native + web).
 parley = { version = "0.11", default-features = false, features = ["std"] }
