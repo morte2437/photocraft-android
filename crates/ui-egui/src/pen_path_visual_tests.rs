@@ -33,6 +33,7 @@ fn button(pos: Pos2, pressed: bool) -> Event {
 #[test]
 #[ignore = "manual offscreen visual fixture; writes synthetic screenshots"]
 fn saved_path_drag_visual_fixture() {
+    let _gpu = photocraft_testkit::gpu_lock();
     let baseline = std::env::var("PHOTOCRAFT_PEN_VISUAL_BASELINE").is_ok_and(|v| v == "1");
     let output = std::env::var_os("PHOTOCRAFT_PEN_VISUAL_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| "log/pen-path-visual".into());
     std::fs::create_dir_all(&output).expect("create synthetic screenshot directory");

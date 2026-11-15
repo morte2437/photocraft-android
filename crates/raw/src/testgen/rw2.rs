@@ -95,14 +95,17 @@ impl V4Writer<'_> {
             self.nbits += (RW2_PAGE as u32) * 8;
             self.pos += RW2_PAGE;
         }
-        let mut at = ((self.nbits - num) >> 3) as usize ^ 0x3FF0;
-        at = (at + RW2_PAGE - RW2_COMPRESSED_SPLIT) % RW2_PAGE;
-        let at = self.base + at + self.pos - RW2_PAGE;
+        // The field is a little-endian 16-bit word at a byte of the logical page; each of its two bytes
+        // lands where the page split puts it (the word can straddle the split).
+        let logical = ((self.nbits - num) >> 3) as usize ^ 0x3FF0;
+        let page = self.base + self.pos - RW2_PAGE;
+        let physical = |l: usize| page + (l + RW2_PAGE - RW2_COMPRESSED_SPLIT) % RW2_PAGE;
+        let (lo, hi) = (physical(logical), physical(logical + 1));
         self.nbits -= num;
-        let cur = u32::from(self.buf[at]) | (u32::from(self.buf[at + 1]) << 8);
+        let cur = u32::from(self.buf[lo]) | (u32::from(self.buf[hi]) << 8);
         let cur = cur | ((v & ((1 << num) - 1)) << (self.nbits & 7));
-        self.buf[at] = cur as u8;
-        self.buf[at + 1] = (cur >> 8) as u8;
+        self.buf[lo] = cur as u8;
+        self.buf[hi] = (cur >> 8) as u8;
     }
 
     /// Encodes one row as 14-pixel groups: the scale selector is always 0 and
